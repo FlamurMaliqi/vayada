@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: vayada-postgres
+    environment:
+      POSTGRES_USER: vayada_user
+      POSTGRES_PASSWORD: vayada_password
+      POSTGRES_DB: vayada_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./vayada-creator-marketplace-backend/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vayada_user -d vayada_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  backend:
+    build:
+      context: ./vayada-creator-marketplace-backend
+      dockerfile: Dockerfile
+    container_name: vayada-backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./vayada-creator-marketplace-backend/.env
+    environment:
+      # Force the backend to talk to the postgres service inside the Docker network
+      DATABASE_URL: postgresql://vayada_user:vayada_password@postgres:5432/vayada_db
+      # CORS settings to allow frontend
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
+    volumes:
+      - ./vayada-creator-marketplace-backend/app:/app/app
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+  frontend:
+    build:
+      context: ./vayada-creator-marketplace-frontend
+      dockerfile: Dockerfile.dev
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: vayada-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    volumes:
+      - ./vayada-creator-marketplace-frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+volumes:
+  postgres_data:
+
+networks:
+  vayada-network:
+    driver: bridge
+
