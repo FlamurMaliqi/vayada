@@ -1,0 +1,9 @@
+[submodule "vayada-creator-marketplace-backend"]
+	path = vayada-creator-marketplace-backend
+	url = https://github.com/FlamurMaliqi/vayada-creator-marketplace-backend.git
+[submodule "vayada-creator-marketplace-frontend"]
+	path = vayada-creator-marketplace-frontend
+	url = https://github.com/FlamurMaliqi/vayada-creator-marketplace-frontend.git
+[submodule "vayada-creator-marketplace-frontend-admin"]
+	path = vayada-creator-marketplace-frontend-admin
+	url = https://github.com/FlamurMaliqi/vayada-creator-marketplace-frontend-admin.git
