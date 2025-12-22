@@ -71,3 +71,4 @@ networks:
   vayada-network:
     driver: bridge
 
+
