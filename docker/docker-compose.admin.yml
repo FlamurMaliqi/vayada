@@ -10,7 +10,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./vayada-creator-marketplace-backend/migrations:/docker-entrypoint-initdb.d
+      - ../marketplace/vayada-creator-marketplace-backend/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vayada_user -d vayada_db"]
       interval: 10s
@@ -21,7 +21,7 @@ services:
 
   backend:
     build:
-      context: ./vayada-creator-marketplace-backend
+      context: ../marketplace/vayada-creator-marketplace-backend
       dockerfile: Dockerfile
     container_name: vayada-backend
     ports:
@@ -30,34 +30,32 @@ services:
       postgres:
         condition: service_healthy
     env_file:
-      - ./vayada-creator-marketplace-backend/.env
+      - ../marketplace/vayada-creator-marketplace-backend/.env
     environment:
       # Force the backend to talk to the postgres service inside the Docker network
       DATABASE_URL: postgresql://vayada_user:vayada_password@postgres:5432/vayada_db
-      # CORS settings to allow frontend
+      # CORS settings to allow admin frontend
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
     volumes:
-      - ./vayada-creator-marketplace-backend/app:/app/app
+      - ../marketplace/vayada-creator-marketplace-backend/app:/app/app
     restart: unless-stopped
     networks:
       - vayada-network
 
-  frontend:
+  admin-frontend:
     build:
-      context: ./vayada-creator-marketplace-frontend
+      context: ../marketplace/vayada-creator-marketplace-frontend-admin
       dockerfile: Dockerfile.dev
-      args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    container_name: vayada-frontend
+    container_name: vayada-admin-frontend
     ports:
-      - "3000:3000"
+      - "3001:3001"
+    volumes:
+      - ../marketplace/vayada-creator-marketplace-frontend-admin:/app
+      - /app/node_modules
+      - /app/.next
     environment:
       - NODE_ENV=development
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    volumes:
-      - ./vayada-creator-marketplace-frontend:/app
-      - /app/node_modules
-      - /app/.next
     depends_on:
       - backend
     restart: unless-stopped
@@ -70,5 +68,3 @@ volumes:
 networks:
   vayada-network:
     driver: bridge
-
-

@@ -10,7 +10,7 @@ services:
       - "5434:5432"
     volumes:
       - booking_postgres_data:/var/lib/postgresql/data
-      - ./vayada-booking-engine-backend/migrations:/docker-entrypoint-initdb.d
+      - ../booking-engine/vayada-booking-engine-backend/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vayada_booking_user -d vayada_booking_db"]
       interval: 10s
@@ -19,7 +19,7 @@ services:
 
   backend:
     build:
-      context: ./vayada-booking-engine-backend
+      context: ../booking-engine/vayada-booking-engine-backend
       dockerfile: Dockerfile
     container_name: vayada-booking-backend
     ports:
@@ -33,12 +33,12 @@ services:
       API_PORT: "8001"
       DEBUG: "true"
     volumes:
-      - ./vayada-booking-engine-backend/app:/app/app
+      - ../booking-engine/vayada-booking-engine-backend/app:/app/app
     restart: unless-stopped
 
   frontend:
     build:
-      context: ./vayada-booking-engine-frontend
+      context: ../booking-engine/vayada-booking-engine-frontend
       dockerfile: Dockerfile.dev
     container_name: vayada-booking-frontend
     ports:
@@ -47,7 +47,7 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8001
       - NEXT_PUBLIC_HOTEL_SLUG=hotel-alpenrose
     volumes:
-      - ./vayada-booking-engine-frontend:/app
+      - ../booking-engine/vayada-booking-engine-frontend:/app
       - /app/node_modules
       - /app/.next
     depends_on:
