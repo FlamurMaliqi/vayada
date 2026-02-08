@@ -1,0 +1,284 @@
+###############################################################################
+# Vayada — All Services
+#
+# Starts every service: marketplace (3) + booking engine (3) + shared infra.
+#
+# Usage:
+#   docker compose up              # start everything
+#   docker compose up -d           # start in background
+#   docker compose down            # stop everything
+#   docker compose down -v         # stop and remove volumes
+#
+# Ports:
+#   3000  Marketplace frontend
+#   3001  Marketplace admin frontend
+#   3002  Booking engine frontend
+#   3003  Booking engine admin frontend
+#   8000  Marketplace backend API
+#   8001  Booking engine backend API
+#   5432  Marketplace PostgreSQL
+#   5434  Booking engine PostgreSQL
+#   5435  Auth PostgreSQL (shared)
+#   9000  MinIO S3 API
+#   9001  MinIO console
+###############################################################################
+
+services:
+
+  # ─── Databases ─────────────────────────────────────────────────────────
+
+  marketplace-postgres:
+    image: postgres:15-alpine
+    container_name: vayada-marketplace-postgres
+    environment:
+      POSTGRES_USER: vayada_user
+      POSTGRES_PASSWORD: vayada_password
+      POSTGRES_DB: vayada_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - marketplace_postgres_data:/var/lib/postgresql/data
+      - ./marketplace/vayada-creator-marketplace-backend/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vayada_user -d vayada_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  booking-postgres:
+    image: postgres:15-alpine
+    container_name: vayada-booking-postgres
+    environment:
+      POSTGRES_USER: vayada_booking_user
+      POSTGRES_PASSWORD: vayada_booking_password
+      POSTGRES_DB: vayada_booking_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - booking_postgres_data:/var/lib/postgresql/data
+      - ./booking-engine/vayada-booking-engine-backend/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vayada_booking_user -d vayada_booking_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  auth-postgres:
+    image: postgres:15-alpine
+    container_name: vayada-auth-postgres
+    environment:
+      POSTGRES_USER: vayada_auth_user
+      POSTGRES_PASSWORD: vayada_auth_password
+      POSTGRES_DB: vayada_auth_db
+    ports:
+      - "5435:5432"
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data
+      - ./auth-db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vayada_auth_user -d vayada_auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  # ─── Object Storage (Marketplace) ─────────────────────────────────────
+
+  minio:
+    image: minio/minio:latest
+    container_name: vayada-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  minio-setup:
+    image: minio/mc:latest
+    container_name: vayada-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/vayada-uploads;
+      mc anonymous set download local/vayada-uploads;
+      exit 0;
+      "
+    networks:
+      - vayada-network
+
+  # ─── Marketplace Backend ───────────────────────────────────────────────
+
+  marketplace-backend:
+    build:
+      context: ./marketplace/vayada-creator-marketplace-backend
+      dockerfile: Dockerfile
+    container_name: vayada-marketplace-backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      marketplace-postgres:
+        condition: service_healthy
+      auth-postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - ./marketplace/vayada-creator-marketplace-backend/.env
+    environment:
+      DATABASE_URL: postgresql://vayada_user:vayada_password@marketplace-postgres:5432/vayada_db
+      AUTH_DATABASE_URL: postgresql://vayada_auth_user:vayada_auth_password@auth-postgres:5432/vayada_auth_db
+      CORS_ORIGINS: http://localhost:3000,http://localhost:3001
+      S3_BUCKET_NAME: vayada-uploads
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_URL: http://localhost:9000
+      S3_USE_PUBLIC_URLS: "true"
+    volumes:
+      - ./marketplace/vayada-creator-marketplace-backend/app:/app/app
+      - ./marketplace/vayada-creator-marketplace-backend/scripts:/app/scripts
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+  # ─── Booking Engine Backend ────────────────────────────────────────────
+
+  booking-backend:
+    build:
+      context: ./booking-engine/vayada-booking-engine-backend
+      dockerfile: Dockerfile
+    container_name: vayada-booking-backend
+    ports:
+      - "8001:8001"
+    depends_on:
+      booking-postgres:
+        condition: service_healthy
+      auth-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://vayada_booking_user:vayada_booking_password@booking-postgres:5432/vayada_booking_db
+      AUTH_DATABASE_URL: postgresql://vayada_auth_user:vayada_auth_password@auth-postgres:5432/vayada_auth_db
+      JWT_SECRET_KEY: your-secret-key-change-in-production
+      JWT_ALGORITHM: HS256
+      CORS_ORIGINS: http://localhost:3002,http://localhost:3003
+      API_PORT: "8001"
+      DEBUG: "true"
+    volumes:
+      - ./booking-engine/vayada-booking-engine-backend/app:/app/app
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+  # ─── Marketplace Frontends ─────────────────────────────────────────────
+
+  marketplace-frontend:
+    build:
+      context: ./marketplace/vayada-creator-marketplace-frontend
+      dockerfile: Dockerfile.dev
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8000
+    container_name: vayada-marketplace-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    volumes:
+      - ./marketplace/vayada-creator-marketplace-frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - marketplace-backend
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+  marketplace-admin-frontend:
+    build:
+      context: ./marketplace/vayada-creator-marketplace-frontend-admin
+      dockerfile: Dockerfile.dev
+    container_name: vayada-marketplace-admin-frontend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    volumes:
+      - ./marketplace/vayada-creator-marketplace-frontend-admin:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - marketplace-backend
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+  # ─── Booking Engine Frontends ──────────────────────────────────────────
+
+  booking-frontend:
+    build:
+      context: ./booking-engine/vayada-booking-engine-frontend
+      dockerfile: Dockerfile.dev
+    container_name: vayada-booking-frontend
+    ports:
+      - "3002:3002"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_HOTEL_SLUG=hotel-alpenrose
+    volumes:
+      - ./booking-engine/vayada-booking-engine-frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - booking-backend
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+  booking-admin-frontend:
+    build:
+      context: ./booking-engine/vayada-booking-engine-frontend-admin
+      dockerfile: Dockerfile.dev
+    container_name: vayada-booking-admin-frontend
+    ports:
+      - "3003:3003"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+    volumes:
+      - ./booking-engine/vayada-booking-engine-frontend-admin:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - booking-backend
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+volumes:
+  marketplace_postgres_data:
+  booking_postgres_data:
+  auth_postgres_data:
+  minio_data:
+
+networks:
+  vayada-network:
+    driver: bridge
