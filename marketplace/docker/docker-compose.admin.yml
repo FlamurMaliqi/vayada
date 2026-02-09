@@ -10,7 +10,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../marketplace/vayada-creator-marketplace-backend/migrations:/docker-entrypoint-initdb.d
+      - ../vayada-creator-marketplace-backend/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vayada_user -d vayada_db"]
       interval: 10s
@@ -19,9 +19,65 @@ services:
     networks:
       - vayada-network
 
+  auth-postgres:
+    image: postgres:15-alpine
+    container_name: vayada-auth-postgres
+    environment:
+      POSTGRES_USER: vayada_auth_user
+      POSTGRES_PASSWORD: vayada_auth_password
+      POSTGRES_DB: vayada_auth_db
+    ports:
+      - "5435:5432"
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data
+      - ../../auth-db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vayada_auth_user -d vayada_auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: vayada-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  minio-setup:
+    image: minio/mc:latest
+    container_name: vayada-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/vayada-uploads;
+      mc anonymous set download local/vayada-uploads;
+      exit 0;
+      "
+    networks:
+      - vayada-network
+
   backend:
     build:
-      context: ../marketplace/vayada-creator-marketplace-backend
+      context: ../vayada-creator-marketplace-backend
       dockerfile: Dockerfile
     container_name: vayada-backend
     ports:
@@ -29,28 +85,41 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      auth-postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     env_file:
-      - ../marketplace/vayada-creator-marketplace-backend/.env
+      - ../vayada-creator-marketplace-backend/.env
     environment:
       # Force the backend to talk to the postgres service inside the Docker network
       DATABASE_URL: postgresql://vayada_user:vayada_password@postgres:5432/vayada_db
+      AUTH_DATABASE_URL: postgresql://vayada_auth_user:vayada_auth_password@auth-postgres:5432/vayada_auth_db
       # CORS settings to allow admin frontend
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
+      # MinIO S3-compatible storage
+      S3_BUCKET_NAME: vayada-uploads
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_URL: http://localhost:9000
+      S3_USE_PUBLIC_URLS: "true"
     volumes:
-      - ../marketplace/vayada-creator-marketplace-backend/app:/app/app
+      - ../vayada-creator-marketplace-backend/app:/app/app
     restart: unless-stopped
     networks:
       - vayada-network
 
   admin-frontend:
     build:
-      context: ../marketplace/vayada-creator-marketplace-frontend-admin
+      context: ../vayada-creator-marketplace-frontend-admin
       dockerfile: Dockerfile.dev
     container_name: vayada-admin-frontend
     ports:
       - "3001:3001"
     volumes:
-      - ../marketplace/vayada-creator-marketplace-frontend-admin:/app
+      - ../vayada-creator-marketplace-frontend-admin:/app
       - /app/node_modules
       - /app/.next
     environment:
@@ -64,6 +133,8 @@ services:
 
 volumes:
   postgres_data:
+  auth_postgres_data:
+  minio_data:
 
 networks:
   vayada-network:
