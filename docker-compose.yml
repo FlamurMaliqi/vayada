@@ -175,9 +175,12 @@ services:
         condition: service_healthy
       auth-postgres:
         condition: service_healthy
+      marketplace-postgres:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://vayada_booking_user:vayada_booking_password@booking-postgres:5432/vayada_booking_db
       AUTH_DATABASE_URL: postgresql://vayada_auth_user:vayada_auth_password@auth-postgres:5432/vayada_auth_db
+      MARKETPLACE_DATABASE_URL: postgresql://vayada_user:vayada_password@marketplace-postgres:5432/vayada_db
       JWT_SECRET_KEY: your-secret-key-change-in-production
       JWT_ALGORITHM: HS256
       CORS_ORIGINS: http://localhost:3002,http://localhost:3003
