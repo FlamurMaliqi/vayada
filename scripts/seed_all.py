@@ -31,6 +31,17 @@ def main():
     print(f"\n{'=' * 60}")
     print("  All seeds complete!")
     print(f"{'=' * 60}")
+    print()
+    print("  Booking engine setup status:")
+    print("    hotel1@mock.com (Hotel Alpenrose)     — almost complete (currency=EUR is default)")
+    print("    hotel2@mock.com (Grand Hotel Riviera)  — COMPLETE")
+    print("    hotel3@mock.com (The Birchwood Lodge)  — COMPLETE")
+    print("    hotel4@mock.com (City Center Hotel)    — incomplete (minimal data)")
+    print("    hotel5@mock.com (Seaside Retreat)      — no booking record (marketplace pre-fill)")
+    print()
+    print("  Credentials:")
+    print("    Admin:  admin@vayada.com / Vayada123")
+    print("    Hotels: hotel[1-5]@mock.com / Test1234")
 
 
 if __name__ == "__main__":

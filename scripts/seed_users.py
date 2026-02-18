@@ -101,6 +101,14 @@ MOCK_USERS = [
         "email_verified": False,
         "avatar": "https://i.pravatar.cc/150?img=33",
     },
+    {
+        "email": "hotel5@mock.com",
+        "name": "Seaside Retreat",
+        "type": "hotel",
+        "status": "verified",
+        "email_verified": True,
+        "avatar": "https://i.pravatar.cc/150?img=60",
+    },
 ]
 
 

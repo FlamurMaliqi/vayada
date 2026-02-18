@@ -23,6 +23,13 @@ AUTH_DATABASE_URL = os.getenv(
     "postgresql://vayada_auth_user:vayada_auth_password@localhost:5435/vayada_auth_db",
 )
 
+# Setup completion status (per GET /admin/settings/setup-status):
+#   hotel1 (Hotel Alpenrose)     — almost complete (currency=EUR is DB default → 1 missing)
+#   hotel2 (Grand Hotel Riviera) — COMPLETE (all 10 setup fields filled)
+#   hotel3 (The Birchwood Lodge) — COMPLETE (all 10 setup fields filled)
+#   hotel4 (City Center Hotel)   — very incomplete (minimal record, 9 fields missing)
+#   hotel5 (Seaside Retreat)     — no booking record (tests marketplace pre-fill)
+
 HOTELS = [
     {
         "user_email": "hotel1@mock.com",
@@ -53,6 +60,9 @@ HOTELS = [
         "social_facebook": "https://facebook.com/hotelalpenrose",
         "social_instagram": "https://instagram.com/hotelalpenrose",
         "branding_primary_color": "#1E3EDB",
+        "branding_accent_color": "#F4A261",
+        "branding_font_pairing": "Playfair Display / Source Sans Pro",
+        "timezone": "Europe/Vienna",
     },
     {
         "user_email": "hotel2@mock.com",
@@ -62,7 +72,7 @@ HOTELS = [
         "location": "Amalfi, Italy",
         "country": "Italy",
         "star_rating": 5,
-        "currency": "EUR",
+        "currency": "USD",
         "hero_image": "https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=1920&q=80",
         "images": [
             "https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=800&q=80",
@@ -83,6 +93,9 @@ HOTELS = [
         "social_facebook": "https://facebook.com/grandhotelriviera",
         "social_instagram": "https://instagram.com/grandhotelriviera",
         "branding_primary_color": "#0E7C6B",
+        "branding_accent_color": "#FFD166",
+        "branding_font_pairing": "Montserrat / Open Sans",
+        "timezone": "Europe/Rome",
     },
     {
         "user_email": "hotel3@mock.com",
@@ -110,6 +123,27 @@ HOTELS = [
         "contact_email": "hello@birchwoodlodge.co.uk",
         "social_instagram": "https://instagram.com/birchwoodlodge",
         "branding_primary_color": "#8B5E3C",
+        "branding_accent_color": "#D4A574",
+        "branding_font_pairing": "Lora / Inter",
+        "timezone": "Europe/London",
+    },
+    {
+        "user_email": "hotel4@mock.com",
+        "name": "City Center Hotel",
+        "slug": "city-center-hotel",
+        "description": "",
+        "location": "Paris, France",
+        "country": "France",
+        "star_rating": 4,
+        "currency": "EUR",
+        "hero_image": "",
+        "images": [],
+        "amenities": [],
+        "check_in_time": "14:00",
+        "check_out_time": "12:00",
+        "contact_address": "",
+        "contact_phone": "",
+        "contact_email": "",
     },
 ]
 
@@ -163,13 +197,15 @@ INSERT_HOTEL_SQL = """
         hero_image, images, amenities, check_in_time, check_out_time,
         contact_address, contact_phone, contact_email, contact_whatsapp,
         social_facebook, social_instagram,
-        branding_primary_color, user_id
+        branding_primary_color, branding_accent_color, branding_font_pairing,
+        timezone, user_id
     ) VALUES (
         $1, $2, $3, $4, $5, $6, $7,
         $8, $9::jsonb, $10::jsonb, $11, $12,
         $13, $14, $15, $16,
         $17, $18,
-        $19, $20
+        $19, $20, $21,
+        $22, $23
     ) ON CONFLICT (slug) DO NOTHING
 """
 
@@ -225,7 +261,10 @@ async def main():
                 hotel.get("contact_whatsapp"),
                 hotel.get("social_facebook"),
                 hotel.get("social_instagram"),
-                hotel["branding_primary_color"],
+                hotel.get("branding_primary_color"),
+                hotel.get("branding_accent_color"),
+                hotel.get("branding_font_pairing"),
+                hotel.get("timezone") or "UTC",
                 user_id,
             )
             owner = f" -> {hotel['user_email']}" if user_id else " (no owner)"

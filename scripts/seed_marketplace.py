@@ -447,6 +447,46 @@ HOTEL_PROFILES = {
             },
         ],
     },
+    "hotel5@mock.com": {
+        "name": "Seaside Retreat",
+        "location": "Dubrovnik, Croatia",
+        "about": "Charming coastal retreat with stunning Adriatic views and authentic Croatian hospitality",
+        "website": "https://seasideretreat.hr",
+        "phone": "+385-20-123-456",
+        "picture": "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800",
+        "profile_complete": True,
+        "listings": [
+            {
+                "name": "Sea View Suite",
+                "location": "Dubrovnik - Old Town",
+                "description": "Elegant suite with panoramic Adriatic views and private terrace",
+                "accommodation_type": "Boutique Hotel",
+                "images": [
+                    "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800",
+                    "https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=800",
+                ],
+                "status": "verified",
+                "collaboration_offerings": [
+                    {
+                        "collaboration_type": "Free Stay",
+                        "availability_months": ["April", "May", "June", "September", "October"],
+                        "platforms": ["Instagram", "TikTok", "YouTube"],
+                        "free_stay_min_nights": 3,
+                        "free_stay_max_nights": 7,
+                    },
+                ],
+                "creator_requirements": {
+                    "platforms": ["Instagram", "TikTok", "YouTube"],
+                    "min_followers": 100000,
+                    "target_countries": ["UK", "Germany", "USA", "France", "Croatia"],
+                    "target_age_min": 25,
+                    "target_age_max": 45,
+                    "target_age_groups": ["25-34", "35-44"],
+                    "creator_types": ["Travel"],
+                },
+            },
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
