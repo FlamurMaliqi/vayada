@@ -16,3 +16,9 @@
 [submodule "marketplace/vayada-creator-marketplace-frontend-admin"]
 	path = marketplace/vayada-creator-marketplace-frontend-admin
 	url = https://github.com/FlamurMaliqi/vayada-creator-marketplace-frontend-admin.git
+[submodule "pms/vayada-pms-backend"]
+	path = pms/vayada-pms-backend
+	url = https://github.com/FlamurMaliqi/vayada-pms-backend.git
+[submodule "pms/vayada-pms-frontend"]
+	path = pms/vayada-pms-frontend
+	url = https://github.com/FlamurMaliqi/vayada-pms-frontend.git
