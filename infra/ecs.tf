@@ -27,6 +27,7 @@ locals {
       log_group      = "/ecs/vayada-booking-frontend"
       environment = [
         { name = "NEXT_PUBLIC_API_URL", value = "https://booking-api.vayada.com" },
+        { name = "NEXT_PUBLIC_PMS_URL", value = "https://pms-api.vayada.com" },
       ]
     }
     booking-admin = {
@@ -52,6 +53,7 @@ locals {
         { name = "AUTH_DATABASE_URL", value = "postgresql://vayada_auth_user:${var.db_auth_password}@${var.rds_endpoint}:5432/vayada_auth_db" },
         { name = "JWT_SECRET_KEY", value = var.jwt_secret_key },
         { name = "CORS_ORIGINS", value = "https://pms.vayada.com,https://admin.booking.vayada.com" },
+        { name = "CORS_ORIGIN_REGEX", value = "https://.*\\.booking\\.vayada\\.com" },
         { name = "API_PORT", value = "8002" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "S3_BUCKET_NAME", value = "vayada-uploads-prod" },
