@@ -1,7 +1,7 @@
 ###############################################################################
 # Vayada — All Services
 #
-# Starts every service: marketplace (3) + booking engine (3) + shared infra.
+# Starts every service: marketplace (3) + booking engine (3) + PMS (2) + shared infra.
 #
 # Usage:
 #   docker compose up              # start everything
@@ -14,11 +14,14 @@
 #   3001  Marketplace admin frontend
 #   3002  Booking engine frontend
 #   3003  Booking engine admin frontend
+#   3004  PMS frontend
 #   8000  Marketplace backend API
 #   8001  Booking engine backend API
+#   8002  PMS backend API
 #   5432  Marketplace PostgreSQL
 #   5434  Booking engine PostgreSQL
 #   5435  Auth PostgreSQL (shared)
+#   5436  PMS PostgreSQL
 #   9000  MinIO S3 API
 #   9001  MinIO console
 ###############################################################################
@@ -81,6 +84,26 @@ services:
       - ./auth-db/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vayada_auth_user -d vayada_auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vayada-network
+
+  pms-postgres:
+    image: postgres:15-alpine
+    container_name: vayada-pms-postgres
+    environment:
+      POSTGRES_USER: vayada_pms_user
+      POSTGRES_PASSWORD: vayada_pms_password
+      POSTGRES_DB: vayada_pms_db
+    ports:
+      - "5436:5432"
+    volumes:
+      - pms_postgres_data:/var/lib/postgresql/data
+      - ./pms/vayada-pms-backend/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vayada_pms_user -d vayada_pms_db"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -183,11 +206,48 @@ services:
       MARKETPLACE_DATABASE_URL: postgresql://vayada_user:vayada_password@marketplace-postgres:5432/vayada_db
       JWT_SECRET_KEY: your-secret-key-change-in-production
       JWT_ALGORITHM: HS256
-      CORS_ORIGINS: http://localhost:3002,http://localhost:3003
+      CORS_ORIGINS: http://localhost:3002,http://localhost:3003,http://localhost:3004
       API_PORT: "8001"
       DEBUG: "true"
     volumes:
       - ./booking-engine/vayada-booking-engine-backend/app:/app/app
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
+  # ─── PMS Backend ──────────────────────────────────────────────────────
+
+  pms-backend:
+    build:
+      context: ./pms/vayada-pms-backend
+      dockerfile: Dockerfile
+    container_name: vayada-pms-backend
+    ports:
+      - "8002:8002"
+    depends_on:
+      pms-postgres:
+        condition: service_healthy
+      auth-postgres:
+        condition: service_healthy
+    env_file:
+      - ./pms/vayada-pms-backend/.env
+    environment:
+      DATABASE_URL: postgresql://vayada_pms_user:vayada_pms_password@pms-postgres:5432/vayada_pms_db
+      AUTH_DATABASE_URL: postgresql://vayada_auth_user:vayada_auth_password@auth-postgres:5432/vayada_auth_db
+      CORS_ORIGINS: http://localhost:3002,http://localhost:3003,http://localhost:3004
+      API_HOST: "0.0.0.0"
+      API_PORT: "8002"
+      DEBUG: "true"
+      S3_BUCKET_NAME: vayada-uploads
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_URL: http://localhost:9000
+      S3_USE_PUBLIC_URLS: "true"
+    volumes:
+      - ./pms/vayada-pms-backend/app:/app/app
+      - ./pms/vayada-pms-backend/scripts:/app/scripts
     restart: unless-stopped
     networks:
       - vayada-network
@@ -246,7 +306,9 @@ services:
       - "3002:3002"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_PMS_URL=http://localhost:8002
       - NEXT_PUBLIC_HOTEL_SLUG=hotel-alpenrose
+      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_51T4q9fHPi3htfo3SVbB0UNZAFqwHGEwJrUmD90xdp5cLssb1t7G1JAv5k3WV3IAJjyTXqqgnCuAG2rEm1IqGx6bF00dLXvkm1P
     volumes:
       - ./booking-engine/vayada-booking-engine-frontend:/app
       - /app/node_modules
@@ -276,10 +338,33 @@ services:
     networks:
       - vayada-network
 
+  # ─── PMS Frontend ─────────────────────────────────────────────────────
+
+  pms-frontend:
+    build:
+      context: ./pms/vayada-pms-frontend
+      dockerfile: Dockerfile.dev
+    container_name: vayada-pms-frontend
+    ports:
+      - "3004:3004"
+    environment:
+      - NEXT_PUBLIC_AUTH_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_PMS_API_URL=http://localhost:8002
+    volumes:
+      - ./pms/vayada-pms-frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - pms-backend
+    restart: unless-stopped
+    networks:
+      - vayada-network
+
 volumes:
   marketplace_postgres_data:
   booking_postgres_data:
   auth_postgres_data:
+  pms_postgres_data:
   minio_data:
 
 networks:

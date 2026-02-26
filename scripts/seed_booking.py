@@ -1,5 +1,6 @@
 """
-Seed booking engine database with hotel properties and translations.
+Seed booking engine database with hotel properties and translations,
+and PMS database with hotels, room types, and sample bookings.
 
 Requires seed_users.py to have been run first (hotel users must exist in auth DB).
 
@@ -10,7 +11,7 @@ Usage:
 import asyncio
 import json
 import os
-import sys
+from datetime import date, timedelta
 
 import asyncpg
 
@@ -21,6 +22,10 @@ DATABASE_URL = os.getenv(
 AUTH_DATABASE_URL = os.getenv(
     "AUTH_DATABASE_URL",
     "postgresql://vayada_auth_user:vayada_auth_password@localhost:5435/vayada_auth_db",
+)
+PMS_DATABASE_URL = os.getenv(
+    "PMS_DATABASE_URL",
+    "postgresql://vayada_pms_user:vayada_pms_password@localhost:5436/vayada_pms_db",
 )
 
 # Setup completion status (per GET /admin/settings/setup-status):
@@ -191,6 +196,214 @@ GERMAN_TRANSLATIONS = [
     },
 ]
 
+# ── Room Types ────────────────────────────────────────────────────────
+
+ROOM_TYPES = {
+    "hotel-alpenrose": [
+        {
+            "name": "Standard Alpine Room",
+            "description": "A comfortable room with traditional Alpine decor, offering warm wooden interiors and views of the surrounding mountains. Perfect for couples or solo travellers seeking an authentic Austrian experience.",
+            "short_description": "Cozy Alpine room with mountain views",
+            "max_occupancy": 2,
+            "size": 28,
+            "base_rate": 120,
+            "currency": "EUR",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Mini Bar", "Heated Bathroom Floor", "Safe"],
+            "images": ["https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=800&q=80"],
+            "bed_type": "Queen Bed",
+            "features": ["Mountain View", "Balcony", "Non-smoking"],
+            "total_rooms": 8,
+            "sort_order": 0,
+        },
+        {
+            "name": "Superior Mountain View",
+            "description": "A spacious room with floor-to-ceiling windows framing the Alpine panorama. Features premium furnishings, a sitting area, and a luxurious marble bathroom with rain shower.",
+            "short_description": "Spacious room with panoramic mountain views",
+            "max_occupancy": 2,
+            "size": 38,
+            "base_rate": 180,
+            "currency": "EUR",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Mini Bar", "Nespresso Machine", "Bathrobe & Slippers", "Safe"],
+            "images": ["https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=800&q=80"],
+            "bed_type": "King Bed",
+            "features": ["Panoramic View", "Sitting Area", "Rain Shower", "Balcony"],
+            "total_rooms": 5,
+            "sort_order": 1,
+        },
+        {
+            "name": "Junior Suite",
+            "description": "An elegant suite combining a spacious bedroom with a separate living area. Enjoy the warmth of a decorative fireplace and breathtaking views from your private terrace.",
+            "short_description": "Elegant suite with separate living area",
+            "max_occupancy": 3,
+            "size": 52,
+            "base_rate": 280,
+            "currency": "EUR",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Mini Bar", "Nespresso Machine", "Bathrobe & Slippers", "Safe", "Bluetooth Speaker"],
+            "images": ["https://images.unsplash.com/photo-1591088398332-8a7791972843?w=800&q=80"],
+            "bed_type": "King Bed",
+            "features": ["Private Terrace", "Fireplace", "Living Area", "Panoramic View"],
+            "total_rooms": 3,
+            "sort_order": 2,
+        },
+        {
+            "name": "Alpine Penthouse Suite",
+            "description": "The crown jewel of Hotel Alpenrose. A two-level penthouse featuring a master bedroom, private spa bath, panoramic rooftop terrace, and butler service.",
+            "short_description": "Luxurious two-level penthouse with rooftop terrace",
+            "max_occupancy": 4,
+            "size": 95,
+            "base_rate": 520,
+            "currency": "EUR",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Mini Bar", "Nespresso Machine", "Bathrobe & Slippers", "Safe", "Bluetooth Speaker", "Butler Service"],
+            "images": ["https://images.unsplash.com/photo-1578683010236-d716f9a3f461?w=800&q=80"],
+            "bed_type": "King Bed + Sofa Bed",
+            "features": ["Rooftop Terrace", "Private Spa Bath", "Butler Service", "360° Views"],
+            "total_rooms": 1,
+            "sort_order": 3,
+        },
+    ],
+    "grand-hotel-riviera": [
+        {
+            "name": "Classic Sea View",
+            "description": "A beautifully appointed room with Mediterranean decor and a private balcony overlooking the Amalfi coastline. Wake up to the sound of waves and stunning sunrises.",
+            "short_description": "Mediterranean room with sea view balcony",
+            "max_occupancy": 2,
+            "size": 32,
+            "base_rate": 250,
+            "currency": "USD",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Mini Bar", "Safe", "Air Conditioning"],
+            "images": ["https://images.unsplash.com/photo-1590490360182-c33d955c0fd7?w=800&q=80"],
+            "bed_type": "Queen Bed",
+            "features": ["Sea View", "Balcony", "Air Conditioning"],
+            "total_rooms": 10,
+            "sort_order": 0,
+        },
+        {
+            "name": "Superior Terrace Room",
+            "description": "A generously sized room featuring a large private terrace with sun loungers and panoramic views of the Mediterranean Sea. Includes premium Italian linens and a marble bathroom.",
+            "short_description": "Spacious room with large private terrace",
+            "max_occupancy": 2,
+            "size": 42,
+            "base_rate": 380,
+            "currency": "USD",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Mini Bar", "Nespresso Machine", "Bathrobe & Slippers", "Safe"],
+            "images": ["https://images.unsplash.com/photo-1602002418816-5c0aeef426aa?w=800&q=80"],
+            "bed_type": "King Bed",
+            "features": ["Large Terrace", "Sun Loungers", "Sea View", "Marble Bathroom"],
+            "total_rooms": 6,
+            "sort_order": 1,
+        },
+        {
+            "name": "Riviera Suite",
+            "description": "An opulent suite with a separate living room, dining area, and a wrap-around terrace with plunge pool. The pinnacle of Amalfi Coast luxury with dedicated concierge service.",
+            "short_description": "Luxury suite with plunge pool and wrap-around terrace",
+            "max_occupancy": 4,
+            "size": 85,
+            "base_rate": 750,
+            "currency": "USD",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Mini Bar", "Nespresso Machine", "Bathrobe & Slippers", "Safe", "Bluetooth Speaker", "Dedicated Concierge"],
+            "images": ["https://images.unsplash.com/photo-1631049421450-348ccd7f8949?w=800&q=80"],
+            "bed_type": "King Bed + Sofa Bed",
+            "features": ["Plunge Pool", "Wrap-around Terrace", "Living Room", "Dedicated Concierge"],
+            "total_rooms": 2,
+            "sort_order": 2,
+        },
+    ],
+    "the-birchwood-lodge": [
+        {
+            "name": "Highland Room",
+            "description": "A warm and inviting room with rustic timber finishes and tartan accents. Features a comfortable bed and views of the surrounding woodland and hills.",
+            "short_description": "Rustic room with woodland views",
+            "max_occupancy": 2,
+            "size": 24,
+            "base_rate": 85,
+            "currency": "GBP",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Tea & Coffee Making", "Hairdryer"],
+            "images": ["https://images.unsplash.com/photo-1595576508898-0ad5c879a061?w=800&q=80"],
+            "bed_type": "Double Bed",
+            "features": ["Woodland View", "Underfloor Heating", "Pet Friendly"],
+            "total_rooms": 6,
+            "sort_order": 0,
+        },
+        {
+            "name": "Loch View Room",
+            "description": "A charming room offering stunning views over the loch. Enjoy the tranquillity of the Highlands from your private window seat, perfect for reading or watching the sunset.",
+            "short_description": "Charming room with loch views and window seat",
+            "max_occupancy": 2,
+            "size": 30,
+            "base_rate": 120,
+            "currency": "GBP",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Tea & Coffee Making", "Hairdryer", "Binoculars"],
+            "images": ["https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=800&q=80"],
+            "bed_type": "King Bed",
+            "features": ["Loch View", "Window Seat", "Underfloor Heating"],
+            "total_rooms": 4,
+            "sort_order": 1,
+        },
+        {
+            "name": "Lodge Suite",
+            "description": "Our finest accommodation featuring a spacious bedroom, sitting area with wood-burning stove, and a private deck overlooking the loch. The ultimate Highland retreat.",
+            "short_description": "Spacious suite with wood-burning stove and loch deck",
+            "max_occupancy": 3,
+            "size": 48,
+            "base_rate": 195,
+            "currency": "GBP",
+            "amenities": ["Free WiFi", "Flat-screen TV", "Tea & Coffee Making", "Hairdryer", "Binoculars", "Bathrobe & Slippers"],
+            "images": ["https://images.unsplash.com/photo-1602343168585-a27d3b7a1299?w=800&q=80"],
+            "bed_type": "King Bed + Day Bed",
+            "features": ["Private Deck", "Wood-burning Stove", "Loch View", "Sitting Area"],
+            "total_rooms": 2,
+            "sort_order": 2,
+        },
+    ],
+}
+
+# ── Sample Bookings for Hotel Alpenrose ───────────────────────────────
+
+SAMPLE_BOOKINGS = [
+    {
+        "hotel_slug": "hotel-alpenrose",
+        "room_name": "Superior Mountain View",
+        "booking_reference": "VAY-TEST01",
+        "guest_first_name": "Anna",
+        "guest_last_name": "Mueller",
+        "guest_email": "anna.mueller@example.com",
+        "guest_phone": "+49 170 123 4567",
+        "check_in": date.today() + timedelta(days=10),
+        "check_out": date.today() + timedelta(days=14),
+        "adults": 2,
+        "children": 0,
+        "status": "confirmed",
+    },
+    {
+        "hotel_slug": "hotel-alpenrose",
+        "room_name": "Junior Suite",
+        "booking_reference": "VAY-TEST02",
+        "guest_first_name": "James",
+        "guest_last_name": "Thompson",
+        "guest_email": "james.t@example.com",
+        "guest_phone": "+44 7700 900000",
+        "check_in": date.today() + timedelta(days=3),
+        "check_out": date.today() + timedelta(days=7),
+        "adults": 2,
+        "children": 1,
+        "status": "pending",
+    },
+    {
+        "hotel_slug": "hotel-alpenrose",
+        "room_name": "Standard Alpine Room",
+        "booking_reference": "VAY-TEST03",
+        "guest_first_name": "Sophie",
+        "guest_last_name": "Dubois",
+        "guest_email": "sophie.d@example.com",
+        "guest_phone": "+33 6 12 34 56 78",
+        "check_in": date.today() - timedelta(days=5),
+        "check_out": date.today() - timedelta(days=2),
+        "adults": 1,
+        "children": 0,
+        "status": "confirmed",
+    },
+]
+
 INSERT_HOTEL_SQL = """
     INSERT INTO booking_hotels (
         name, slug, description, location, country, star_rating, currency,
@@ -219,11 +432,50 @@ INSERT_TRANSLATION_SQL = """
     ON CONFLICT (hotel_id, locale) DO NOTHING
 """
 
+INSERT_PMS_HOTEL_SQL = """
+    INSERT INTO hotels (slug, name, contact_email, user_id)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (slug) DO NOTHING
+"""
+
+INSERT_ROOM_TYPE_SQL = """
+    INSERT INTO room_types (
+        hotel_id, name, description, short_description,
+        max_occupancy, size, base_rate, currency,
+        amenities, images, bed_type, features,
+        total_rooms, sort_order
+    )
+    SELECT h.id, $2, $3, $4, $5, $6, $7, $8,
+           $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14
+    FROM hotels h WHERE h.slug = $1
+    ON CONFLICT DO NOTHING
+    RETURNING id
+"""
+
+INSERT_BOOKING_SQL = """
+    INSERT INTO bookings (
+        hotel_id, room_type_id, booking_reference,
+        guest_first_name, guest_last_name, guest_email, guest_phone,
+        check_in, check_out, adults, children,
+        nightly_rate, total_amount, currency, status
+    ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+    ) ON CONFLICT (booking_reference) DO NOTHING
+"""
+
 
 async def main():
     conn = await asyncpg.connect(DATABASE_URL)
     auth_conn = await asyncpg.connect(AUTH_DATABASE_URL)
-    print("Connected to booking engine + auth databases\n")
+    print("Connected to booking engine + auth databases")
+
+    # Connect to PMS DB (optional — skip room types/bookings if not available)
+    pms_conn = None
+    try:
+        pms_conn = await asyncpg.connect(PMS_DATABASE_URL)
+        print("Connected to PMS database\n")
+    except Exception as e:
+        print(f"PMS database not available ({e}) — skipping room types & bookings\n")
 
     try:
         # Look up user IDs from auth DB
@@ -238,6 +490,8 @@ async def main():
                     user_ids[email] = str(row["id"])
                 else:
                     print(f"  WARNING: {email} not found in auth DB — run seed_users.py first")
+
+        # ── Seed Booking Engine Hotels ───────────────────────────────
 
         for hotel in HOTELS:
             user_id = user_ids.get(hotel.get("user_email"))
@@ -270,6 +524,8 @@ async def main():
             owner = f" -> {hotel['user_email']}" if user_id else " (no owner)"
             print(f"  Seeded: {hotel['name']} ({hotel['slug']}){owner}")
 
+        # ── Seed Translations ────────────────────────────────────────
+
         for t in GERMAN_TRANSLATIONS:
             await conn.execute(
                 INSERT_TRANSLATION_SQL,
@@ -286,10 +542,134 @@ async def main():
 
         count = await conn.fetchval("SELECT COUNT(*) FROM booking_hotels")
         trans_count = await conn.fetchval("SELECT COUNT(*) FROM booking_hotel_translations")
-        print(f"\nDone. {count} hotel(s), {trans_count} translation(s) in booking DB.")
+        print(f"\nBooking DB: {count} hotel(s), {trans_count} translation(s).")
+
+        # ── Seed PMS Database ────────────────────────────────────────
+
+        if not pms_conn:
+            print("Skipping PMS seeding (no connection).")
+            return
+
+        # Check if PMS tables exist
+        table_exists = await pms_conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'hotels')"
+        )
+        if not table_exists:
+            print("\nSKIPPING PMS seeding — run PMS migrations first")
+            return
+
+        # Seed PMS hotels table (minimal mirror)
+        for hotel in HOTELS:
+            user_id = user_ids.get(hotel.get("user_email"))
+            await pms_conn.execute(
+                INSERT_PMS_HOTEL_SQL,
+                hotel["slug"],
+                hotel["name"],
+                hotel.get("contact_email", ""),
+                user_id,
+            )
+            print(f"  PMS hotel registered: {hotel['slug']}")
+
+        # Seed room types (into PMS DB)
+        rt_table_exists = await pms_conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'room_types')"
+        )
+        if not rt_table_exists:
+            print("\n  SKIPPING room types & bookings — run PMS migrations 002 + 003 first")
+            return
+
+        room_name_to_id = {}  # (slug, room_name) -> room_type_id
+
+        for slug, rooms in ROOM_TYPES.items():
+            for room in rooms:
+                row = await pms_conn.fetchrow(
+                    INSERT_ROOM_TYPE_SQL,
+                    slug,
+                    room["name"],
+                    room["description"],
+                    room["short_description"],
+                    room["max_occupancy"],
+                    room["size"],
+                    room["base_rate"],
+                    room["currency"],
+                    json.dumps(room["amenities"]),
+                    json.dumps(room["images"]),
+                    room["bed_type"],
+                    json.dumps(room["features"]),
+                    room["total_rooms"],
+                    room["sort_order"],
+                )
+                if row:
+                    room_name_to_id[(slug, room["name"])] = str(row["id"])
+                    print(f"  Seeded room type: {slug} / {room['name']}")
+                else:
+                    # Already exists — look up ID
+                    existing = await pms_conn.fetchrow(
+                        "SELECT rt.id FROM room_types rt "
+                        "JOIN hotels h ON h.id = rt.hotel_id "
+                        "WHERE h.slug = $1 AND rt.name = $2",
+                        slug,
+                        room["name"],
+                    )
+                    if existing:
+                        room_name_to_id[(slug, room["name"])] = str(existing["id"])
+                    print(f"  Room type already exists: {slug} / {room['name']}")
+
+        # ── Seed Sample Bookings (into PMS DB) ───────────────────────
+
+        for b in SAMPLE_BOOKINGS:
+            slug = b["hotel_slug"]
+            room_type_id = room_name_to_id.get((slug, b["room_name"]))
+            if not room_type_id:
+                print(f"  WARNING: room type '{b['room_name']}' not found for {slug}")
+                continue
+
+            hotel_row = await pms_conn.fetchrow(
+                "SELECT id FROM hotels WHERE slug = $1", slug
+            )
+            if not hotel_row:
+                continue
+
+            hotel_id = str(hotel_row["id"])
+
+            # Look up base rate for the room type
+            rt = await pms_conn.fetchrow(
+                "SELECT base_rate, currency FROM room_types WHERE id = $1",
+                room_type_id,
+            )
+            nights = (b["check_out"] - b["check_in"]).days
+            nightly_rate = float(rt["base_rate"])
+            total_amount = nightly_rate * nights
+
+            await pms_conn.execute(
+                INSERT_BOOKING_SQL,
+                hotel_id,
+                room_type_id,
+                b["booking_reference"],
+                b["guest_first_name"],
+                b["guest_last_name"],
+                b["guest_email"],
+                b["guest_phone"],
+                b["check_in"],
+                b["check_out"],
+                b["adults"],
+                b["children"],
+                nightly_rate,
+                total_amount,
+                rt["currency"],
+                b["status"],
+            )
+            print(f"  Seeded booking: {b['booking_reference']} ({b['guest_first_name']} {b['guest_last_name']})")
+
+        rt_count = await pms_conn.fetchval("SELECT COUNT(*) FROM room_types")
+        bk_count = await pms_conn.fetchval("SELECT COUNT(*) FROM bookings")
+        pms_hotel_count = await pms_conn.fetchval("SELECT COUNT(*) FROM hotels")
+        print(f"\nPMS DB: {pms_hotel_count} hotel(s), {rt_count} room type(s), {bk_count} booking(s).")
     finally:
         await conn.close()
         await auth_conn.close()
+        if pms_conn:
+            await pms_conn.close()
 
 
 if __name__ == "__main__":
