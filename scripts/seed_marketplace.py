@@ -460,7 +460,7 @@ HOTEL_PROFILES = {
                 "name": "Sea View Suite",
                 "location": "Dubrovnik - Old Town",
                 "description": "Elegant suite with panoramic Adriatic views and private terrace",
-                "accommodation_type": "Boutique Hotel",
+                "accommodation_type": "Boutiques Hotel",
                 "images": [
                     "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800",
                     "https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=800",
