@@ -673,33 +673,13 @@ def parse_date(val):
 
 
 async def ensure_marketplace_user(conn, auth_conn, email):
-    """Copy user from auth DB to marketplace DB if missing."""
-    existing = await conn.fetchrow("SELECT id FROM users WHERE email = $1", email)
-    if existing:
-        return existing["id"]
-
+    """Look up user ID from auth DB (users table no longer exists in marketplace DB)."""
     auth_user = await auth_conn.fetchrow(
-        "SELECT id, email, password_hash, name, type, status, email_verified, avatar FROM users WHERE email = $1",
+        "SELECT id FROM users WHERE email = $1",
         email,
     )
     if not auth_user:
         return None
-
-    await conn.execute(
-        """
-        INSERT INTO users (id, email, password_hash, name, type, status, email_verified, avatar)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (email) DO NOTHING
-        """,
-        auth_user["id"],
-        auth_user["email"],
-        auth_user["password_hash"],
-        auth_user["name"],
-        auth_user["type"],
-        auth_user["status"],
-        auth_user["email_verified"],
-        auth_user["avatar"],
-    )
     return auth_user["id"]
 
 
@@ -710,7 +690,7 @@ async def main():
 
     try:
         # ------------------------------------------------------------------
-        # 1. Sync users from auth DB into marketplace DB
+        # 1. Look up user IDs from auth DB
         # ------------------------------------------------------------------
         all_emails = list(CREATOR_PROFILES.keys()) + list(HOTEL_PROFILES.keys())
         user_ids = {}
@@ -867,18 +847,25 @@ async def main():
         print("\nSeeding collaborations...")
 
         # Build lookup: listing name+hotel email -> listing row
+        # user_ids maps email -> auth user UUID; reverse it for hotel_profiles lookup
+        uid_to_email = {v: k for k, v in user_ids.items()}
         all_listings = await conn.fetch(
             """
-            SELECT hl.id, hl.name, hp.id as hotel_id, u.email as hotel_email
+            SELECT hl.id, hl.name, hp.id as hotel_id, hp.user_id
             FROM hotel_listings hl
             JOIN hotel_profiles hp ON hp.id = hl.hotel_profile_id
-            JOIN users u ON u.id = hp.user_id
-            WHERE u.email LIKE '%@mock.com'
             """
         )
         listing_lookup = {}
         for row in all_listings:
-            listing_lookup[(row["hotel_email"], row["name"])] = row
+            hotel_email = uid_to_email.get(row["user_id"])
+            if hotel_email:
+                listing_lookup[(hotel_email, row["name"])] = {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "hotel_id": row["hotel_id"],
+                    "hotel_email": hotel_email,
+                }
 
         collab_count = 0
         for c in COLLABORATIONS:
@@ -955,13 +942,10 @@ async def main():
         print("\nSeeding chat messages...")
         all_collabs = await conn.fetch(
             """
-            SELECT c.id, c.status, cr_u.id as creator_user_id, hot_u.id as hotel_user_id
+            SELECT c.id, c.status, cr.user_id as creator_user_id, hp.user_id as hotel_user_id
             FROM collaborations c
             JOIN creators cr ON cr.id = c.creator_id
-            JOIN users cr_u ON cr_u.id = cr.user_id
             JOIN hotel_profiles hp ON hp.id = c.hotel_id
-            JOIN users hot_u ON hot_u.id = hp.user_id
-            WHERE cr_u.email LIKE '%@mock.com'
             """
         )
         chat_count = 0
@@ -1014,9 +998,7 @@ async def main():
             """
             SELECT c.id, c.creator_id, c.hotel_id
             FROM collaborations c
-            JOIN creators cr ON cr.id = c.creator_id
-            JOIN users u ON u.id = cr.user_id
-            WHERE u.email LIKE '%@mock.com' AND c.status IN ('completed', 'accepted')
+            WHERE c.status IN ('completed', 'accepted')
             """
         )
         review_count = 0
