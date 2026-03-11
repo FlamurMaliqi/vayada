@@ -12,8 +12,9 @@ locals {
         { name = "AUTH_DATABASE_URL", value = "postgresql://vayada_auth_user:${var.db_auth_password}@${var.rds_endpoint}:5432/vayada_auth_db" },
         { name = "JWT_SECRET_KEY", value = var.jwt_secret_key },
         { name = "CORS_ORIGINS", value = "https://admin.booking.vayada.com,https://pms.vayada.com" },
-        { name = "CORS_ORIGIN_REGEX", value = "https://.*\\.booking\\.vayada\\.com" },
+        { name = "CORS_ORIGIN_REGEX", value = "https://.*\\.vayada\\.com" },
         { name = "API_PORT", value = "8001" },
+        { name = "PMS_DATABASE_URL", value = "postgresql://vayada_pms_user:${var.db_pms_password}@${var.rds_endpoint}:5432/vayada_pms_db" },
         { name = "ENVIRONMENT", value = "production" },
         { name = "DEBUG", value = "false" },
       ]
@@ -28,6 +29,7 @@ locals {
       environment = [
         { name = "NEXT_PUBLIC_API_URL", value = "https://booking-api.vayada.com" },
         { name = "NEXT_PUBLIC_PMS_URL", value = "https://pms-api.vayada.com" },
+        { name = "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", value = var.stripe_publishable_key },
       ]
     }
     booking-admin = {
@@ -52,8 +54,8 @@ locals {
         { name = "DATABASE_URL", value = "postgresql://vayada_pms_user:${var.db_pms_password}@${var.rds_endpoint}:5432/vayada_pms_db" },
         { name = "AUTH_DATABASE_URL", value = "postgresql://vayada_auth_user:${var.db_auth_password}@${var.rds_endpoint}:5432/vayada_auth_db" },
         { name = "JWT_SECRET_KEY", value = var.jwt_secret_key },
-        { name = "CORS_ORIGINS", value = "https://pms.vayada.com,https://admin.booking.vayada.com" },
-        { name = "CORS_ORIGIN_REGEX", value = "https://.*\\.booking\\.vayada\\.com" },
+        { name = "CORS_ORIGINS", value = "https://pms.vayada.com,https://admin.booking.vayada.com,https://admin.vayada.com" },
+        { name = "CORS_ORIGIN_REGEX", value = "https://.*\\.vayada\\.com" },
         { name = "API_PORT", value = "8002" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "S3_BUCKET_NAME", value = "vayada-uploads-prod" },
@@ -62,6 +64,8 @@ locals {
         { name = "SMTP_USERNAME", value = var.smtp_username },
         { name = "SMTP_PASSWORD", value = var.smtp_password },
         { name = "SMTP_FROM", value = "noreply@vayada.com" },
+        { name = "STRIPE_SECRET_KEY", value = var.stripe_secret_key },
+        { name = "STRIPE_WEBHOOK_SECRET", value = var.stripe_webhook_secret },
         { name = "ENVIRONMENT", value = "production" },
         { name = "DEBUG", value = "false" },
       ]

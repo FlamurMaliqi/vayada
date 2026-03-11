@@ -84,6 +84,26 @@ variable "smtp_password" {
   default     = ""
 }
 
+variable "stripe_secret_key" {
+  description = "Stripe secret key"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "stripe_publishable_key" {
+  description = "Stripe publishable key"
+  type        = string
+  default     = ""
+}
+
+variable "stripe_webhook_secret" {
+  description = "Stripe webhook signing secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "alb_sg_id" {
   description = "Existing ALB security group ID"
   type        = string
