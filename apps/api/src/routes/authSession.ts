@@ -169,6 +169,7 @@ type AuthOrganizationCandidate = {
   workosOrganizationId: string;
   displayName: string;
   kind: OrganizationKind;
+  roleKey: string;
 };
 
 type OrganizationAccessOptions = {
@@ -360,6 +361,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     const surfacePolicy = getSurfacePolicy(stateContext.surface, options);
 
     let session: AuthKitSession;
+    let effectiveStateContext = stateContext;
     let signupOrganization: AuthSignupOrganizationContext | undefined;
     let signupMembership: AuthSignupMembershipContext | undefined;
     try {
@@ -370,12 +372,32 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
       const signupResolution = await ensureSignupOrganizationSession(
         authenticatedSession,
-        stateContext,
+        effectiveStateContext,
         options.authKitClient,
       );
-      session = signupResolution.session;
-      signupOrganization = signupResolution.organization;
-      signupMembership = signupResolution.membership;
+      let resolvedSignup = signupResolution;
+      if (!resolvedSignup.organization && !authenticatedSession.organizationId) {
+        const loginSignupIntent = await loginPageSignupIntent(
+          authenticatedSession,
+          effectiveStateContext,
+          options,
+        );
+        if (loginSignupIntent) {
+          effectiveStateContext = {
+            ...effectiveStateContext,
+            authFlow: "signup",
+            signupIntent: loginSignupIntent,
+          };
+          resolvedSignup = await ensureSignupOrganizationSession(
+            authenticatedSession,
+            effectiveStateContext,
+            options.authKitClient,
+          );
+        }
+      }
+      session = resolvedSignup.session;
+      signupOrganization = resolvedSignup.organization;
+      signupMembership = resolvedSignup.membership;
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
@@ -387,7 +409,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         options,
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
-        signupContextFromState(stateContext, signupOrganization, signupMembership),
+        signupContextFromState(effectiveStateContext, signupOrganization, signupMembership),
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
@@ -404,11 +426,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     await options.productAuditSink.record({
       action: "auth.login",
-      authFlow: stateContext.authFlow ?? "login",
+      authFlow: effectiveStateContext.authFlow ?? "login",
       actorUserId: resolution.user.userId,
       organizationId: resolution.organizationId,
-      surface: stateContext.surface,
-      signupIntent: stateContext.signupIntent,
+      surface: effectiveStateContext.surface,
+      signupIntent: effectiveStateContext.signupIntent,
       workosUserId: session.user.id,
       workosOrgId: resolution.session.organizationId,
       workosSessionId: resolution.session.sessionId,
@@ -953,6 +975,18 @@ async function ensureSignupOrganizationSession(
   return { session: refreshed, organization: signupOrganization, membership: signupMembership };
 }
 
+async function loginPageSignupIntent(
+  session: AuthKitSession,
+  stateContext: AuthStateContext,
+  options: AuthSessionRouteOptions,
+): Promise<AuthSignupIntent | undefined> {
+  if (stateContext.authFlow || session.organizationId) return undefined;
+  const intents = signupIntentsForSurface(stateContext.surface);
+  if (intents.length !== 1) return undefined;
+  const user = await options.identityRepository.findUserByProviderUserId("workos", session.user.id);
+  return user ? undefined : intents[0];
+}
+
 function signupContextFromState(
   stateContext: AuthStateContext,
   organization?: AuthSignupOrganizationContext,
@@ -1318,12 +1352,31 @@ async function resolveSelectableOrganization(
   );
 
   if (candidates.length === 1) {
+    const candidate = candidates[0]!;
     const refreshed = await options.authKitClient.refreshSession({
       sealedSession: session.sealedSession,
-      organizationId: candidates[0]!.workosOrganizationId,
+      organizationId: candidate.workosOrganizationId,
     });
-    if (!refreshed) {
-      throw new Error("Unable to refresh AuthKit session for selected organization");
+    if (refreshed?.organizationId !== candidate.workosOrganizationId) {
+      const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+        workosUserId: session.user.id,
+        workosOrganizationId: candidate.workosOrganizationId,
+        roleKey: candidate.roleKey,
+      });
+      if (membership.status && membership.status !== "active") {
+        throw new Error("WorkOS organization membership is not active for selected organization");
+      }
+      const retried = await options.authKitClient.refreshSession({
+        sealedSession: session.sealedSession,
+        organizationId: candidate.workosOrganizationId,
+      });
+      if (retried?.organizationId !== candidate.workosOrganizationId) {
+        throw new Error("Unable to refresh AuthKit session for selected organization");
+      }
+      return resolveOrganizationAccess(retried, user, options, surfacePolicy, {
+        ...accessOptions,
+        skipSelection: true,
+      });
     }
     return resolveOrganizationAccess(refreshed, user, options, surfacePolicy, {
       ...accessOptions,
@@ -1372,6 +1425,7 @@ async function findSurfaceOrganizationCandidates(
       workosOrganizationId: membership.workosOrgId!,
       displayName: membership.name,
       kind: membership.kind,
+      roleKey: membership.membership.roleKey,
     }));
 }
 
@@ -1433,7 +1487,12 @@ function sendOrganizationSelectionResponse(
   return reply.send({
     organizationSelectionRequired: true,
     csrfToken,
-    organizations: error.candidates,
+    organizations: error.candidates.map((candidate) => ({
+      organizationId: candidate.organizationId,
+      workosOrganizationId: candidate.workosOrganizationId,
+      displayName: candidate.displayName,
+      kind: candidate.kind,
+    })),
     user: {
       id: error.user.userId,
       email: error.user.email,

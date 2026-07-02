@@ -482,6 +482,158 @@ describe("AuthKit session routes", () => {
     expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
   });
 
+  it("treats the WorkOS sign-up link from PMS login as hotel signup", async () => {
+    const auditEvents: ProductAuditEvent[] = [];
+    const commands: IdentityLifecycleCommand[] = [];
+    const workosCalls: string[] = [];
+    const pmsSignupSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      user: {
+        ...session.user,
+        id: "user_workos_contact",
+        email: "contact@flamur-maliqi.de",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://pms.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithCode() {
+          return pmsSignupSession;
+        },
+        async createSignupOrganization(input) {
+          workosCalls.push("organization");
+          expect(input.externalId).toBe("vayada-signup:pms-web:hotel:pms-login-state");
+          expect(input.metadata).toMatchObject({
+            auth_flow: "signup",
+            surface: "pms-web",
+            signup_intent: "hotel",
+            organization_kind: "hotel_group",
+            role_key: "hotel_owner",
+          });
+          return { organizationId: "org_workos_signup_hotel" };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          workosCalls.push("membership");
+          expect(input).toEqual({
+            workosUserId: "user_workos_contact",
+            workosOrganizationId: "org_workos_signup_hotel",
+            roleKey: "hotel_owner",
+          });
+          return {
+            membershipId: "om_signup_hotel",
+            roleSlugs: ["hotel_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          workosCalls.push("refresh");
+          expect(input.organizationId).toBe("org_workos_signup_hotel");
+          return {
+            ...pmsSignupSession,
+            organizationId: "org_workos_signup_hotel",
+            sealedSession: "refreshed-pms-signup-session",
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_hotel_group",
+          workosOrgId: "org_workos_signup_hotel",
+          name: "Contact Hotel Group",
+          kind: "hotel_group",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_hotel",
+          status: "active",
+          roleKey: "hotel_owner",
+          workosMembershipId: "om_signup_hotel",
+          workosRoleSlugs: ["hotel_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: "user_hotel",
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "pms-web": {
+          requiredOrganizationKind: "hotel_group",
+          callbackReturnUrl: "https://pms.localhost/login?auth=callback",
+          selectedOrganizationCookieName: "vayada_pms_selected_org",
+        },
+      },
+      productAuditSink: {
+        async record(event) {
+          auditEvents.push(event);
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=pms-login-state",
+      headers: {
+        cookie: `vayada_workos_state=${encodeTestStateCookie([
+          {
+            state: "pms-login-state",
+            surface: "pms-web",
+            returnTo: "https://pms.localhost/login?auth=callback",
+          },
+        ])}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://pms.localhost/login?auth=callback");
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=refreshed-pms-signup-session"),
+        expect.stringContaining("vayada_pms_selected_org=org_workos_signup_hotel"),
+      ]),
+    );
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        action: "auth.login",
+        authFlow: "signup",
+        actorUserId: "user_hotel",
+        surface: "pms-web",
+        signupIntent: "hotel",
+      }),
+    ]);
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          email: "contact@flamur-maliqi.de",
+          legacyUserType: "hotel",
+          organization: {
+            kind: "hotel_group",
+            name: "Contact Hotel Group",
+            workosExternalId: "vayada-signup:pms-web:hotel:pms-login-state",
+            workosOrgId: "org_workos_signup_hotel",
+          },
+          membership: {
+            status: "active",
+            roleKey: "hotel_owner",
+            workosMembershipId: "om_signup_hotel",
+            workosRoleSlugs: ["hotel_owner"],
+          },
+        }),
+      }),
+    ]);
+    expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
+  });
+
   it.each(["flamur.maliqi2811@gmail.com", "other@vayada.com"])(
     "allows linked platform admin %s",
     async (email) => {
@@ -727,6 +879,122 @@ describe("AuthKit session routes", () => {
     expect(response.json().message).toBe(
       "No active platform organization is available for this surface",
     );
+  });
+
+  it("mirrors a missing WorkOS membership when callback auto-selects one organization", async () => {
+    const calls: string[] = [];
+    const noOrgSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      user: {
+        ...session.user,
+        id: "user_workos_hotel",
+        email: "hotel@example.com",
+      },
+    };
+    const selectedSession: AuthKitSession = {
+      ...noOrgSession,
+      sealedSession: "selected-hotel-session",
+      organizationId: "org_workos_hotel_group",
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://pms.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithCode() {
+          return noOrgSession;
+        },
+        async refreshSession(input) {
+          calls.push(`refresh:${input.organizationId}`);
+          expect(input.organizationId).toBe("org_workos_hotel_group");
+          return calls.length === 1 ? noOrgSession : selectedSession;
+        },
+        async ensureSignupOrganizationMembership(input) {
+          calls.push("membership");
+          expect(input).toEqual({
+            workosUserId: "user_workos_hotel",
+            workosOrganizationId: "org_workos_hotel_group",
+            roleKey: "hotel_owner",
+          });
+          return {
+            membershipId: "om_hotel",
+            roleSlugs: ["hotel_owner"],
+            status: "active",
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_hotel_admin",
+          email: "hotel@example.com",
+          status: "active",
+        }),
+        membershipOrganizations: async () => [
+          {
+            organizationId: "org_hotel_group",
+            workosOrgId: "org_workos_hotel_group",
+            name: "Hotel Group",
+            kind: "hotel_group",
+            status: "active",
+            membership: {
+              membershipId: "membership_hotel",
+              status: "active",
+              roleKey: "hotel_owner",
+              workosMembershipId: null,
+              workosRoleSlugs: [],
+            },
+          },
+        ],
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_hotel_group",
+          workosOrgId: "org_workos_hotel_group",
+          name: "Hotel Group",
+          kind: "hotel_group",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_hotel",
+          status: "active",
+          roleKey: "hotel_owner",
+          workosMembershipId: "om_hotel",
+          workosRoleSlugs: ["hotel_owner"],
+        }),
+      }),
+      surfacePolicies: {
+        "pms-web": {
+          requiredOrganizationKind: "hotel_group",
+          callbackReturnUrl: "https://pms.localhost/login?auth=callback",
+          selectedOrganizationCookieName: "vayada_pms_selected_org",
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=pms-login-state",
+      headers: {
+        cookie: `vayada_workos_state=${encodeTestStateCookie([
+          {
+            state: "pms-login-state",
+            surface: "pms-web",
+            returnTo: "https://pms.localhost/login?auth=callback",
+          },
+        ])}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://pms.localhost/login?auth=callback");
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=selected-hotel-session"),
+        expect.stringContaining("vayada_pms_selected_org=org_workos_hotel_group"),
+      ]),
+    );
+    expect(calls).toEqual([
+      "refresh:org_workos_hotel_group",
+      "membership",
+      "refresh:org_workos_hotel_group",
+    ]);
   });
 
   it("auto-selects a single PMS hotel-group organization without showing a selector", async () => {
