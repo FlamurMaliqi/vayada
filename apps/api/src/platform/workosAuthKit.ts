@@ -64,17 +64,14 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
         cookiePassword: config.cookiePassword,
         organizationId: input.organizationId,
       });
-      if (!refreshed.authenticated || !refreshed.sealedSession) return null;
-
-      const authenticated = await workos.userManagement
-        .loadSealedSession({
-          sessionData: refreshed.sealedSession,
-          cookiePassword: config.cookiePassword,
-        })
-        .authenticate();
-      if (!authenticated.authenticated) return null;
+      if (!refreshed.authenticated || !refreshed.sealedSession || !refreshed.session) return null;
+      const accessToken =
+        "accessToken" in refreshed && typeof refreshed.accessToken === "string"
+          ? refreshed.accessToken
+          : refreshed.session.accessToken;
       return toAuthKitSession({
-        ...authenticated,
+        ...refreshed,
+        accessToken,
         sealedSession: refreshed.sealedSession,
       });
     },
