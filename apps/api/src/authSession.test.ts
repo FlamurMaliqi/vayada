@@ -153,6 +153,39 @@ describe("AuthKit session routes", () => {
     });
   });
 
+  it("rejects legacy callback state with a return URL outside configured origins", async () => {
+    const legacyState = Buffer.from(
+      JSON.stringify([
+        {
+          state: "legacy-state",
+          surface: "platform-admin",
+          returnTo: "https://evil.example/callback",
+        },
+      ]),
+    ).toString("base64url");
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({
+        async authenticateWithCode() {
+          throw new Error("Invalid legacy state must be rejected before AuthKit code exchange");
+        },
+      }),
+      allowedOrigins: ["https://admin.localhost"],
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=legacy-state",
+      headers: {
+        cookie: `vayada_workos_state=v1.${legacyState}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "invalid_auth_state",
+    });
+  });
+
   it("rejects hosted signup return URLs outside configured origins", async () => {
     app = buildAuthSessionApp({
       allowedOrigins: ["https://pms.localhost"],
@@ -434,7 +467,7 @@ describe("AuthKit session routes", () => {
           organization: {
             kind: "creator_workspace",
             name: "Creator Workspace",
-            workosExternalId: "org_workos_signup_creator",
+            workosExternalId: "vayada-signup:marketplace-web:creator:signup-state",
             workosOrgId: "org_workos_signup_creator",
           },
           membership: {
@@ -2138,8 +2171,14 @@ function readStateCookieContexts(response: { headers: { "set-cookie"?: unknown }
     .find((cookie) => cookie.startsWith("vayada_workos_state="));
   if (!stateCookie) throw new Error("state cookie missing");
   const value = stateCookie.split(";")[0]!.slice("vayada_workos_state=".length);
-  const [, payload] = value.split(".");
-  if (!payload) throw new Error("state cookie payload missing");
+  const [version, payload, signature] = value.split(".");
+  if (version !== "v2" || !payload || !signature) {
+    throw new Error("state cookie payload missing");
+  }
+  const expectedSignature = createHmac("sha256", TEST_STATE_COOKIE_SECRET)
+    .update(payload)
+    .digest("base64url");
+  expect(signature).toBe(expectedSignature);
   return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
 }
 

@@ -297,7 +297,7 @@ Surface contract:
 | `marketplace-web` | `creator` / `hotel` | Marketplace creator completion or hotel setup guard |
 
 `platform-admin` is intentionally absent from hosted signup. Platform
-administrators must be provisioned by an invite or administrative flow, not a
+administrators must be provisioned by an invitation or administrative flow, not a
 public self-service register page.
 
 The AuthKit callback recomputes the signup organization kind and owner role from
@@ -306,7 +306,7 @@ finds the WorkOS organization membership, then refreshes the sealed session with
 the new `organization_id` before continuing. The callback creates or links the
 internal user through `identity.user.create` when needed, and the identity
 lifecycle command creates the internal organization and owner membership from
-the stored signup context. Existing users that enter a hosted signup flow receive
+the stored signup context. Existing users who enter a hosted signup flow receive
 the same organization access through `identity.access.grant`. Product-specific
 profile setup still belongs to the destination app's setup guard; the callback
 must not recreate legacy password registration behavior.

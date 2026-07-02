@@ -140,6 +140,7 @@ type AuthStateContext = {
 
 type AuthSignupOrganizationContext = {
   workosOrganizationId: string;
+  workosExternalId: string;
   name: string;
   kind: OrganizationKind;
   roleKey: string;
@@ -344,7 +345,12 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     const stateContext = decodeStateCookies(
       readCookies(request, STATE_COOKIE),
       options.stateCookieSecret,
-    ).find((candidate) => candidate.state === query.state);
+    )
+      .flatMap((candidate) => {
+        const validated = validateDecodedStateContext(candidate, options.allowedOrigins);
+        return validated ? [validated] : [];
+      })
+      .find((candidate) => candidate.state === query.state);
     if (!query.code || !query.state || !stateContext) {
       return reply.code(400).send({
         error: "invalid_auth_state",
@@ -717,6 +723,7 @@ async function createSignupOrganizationContext(
   });
   return {
     workosOrganizationId: organization.organizationId,
+    workosExternalId: template.externalId,
     name: template.name,
     kind: template.kind,
     roleKey: template.roleKey,
@@ -874,6 +881,21 @@ function parseStateContext(candidate: unknown): AuthStateContext | null {
         authFlow === "signup" && typeof raw.signupIntent === "string"
           ? parseSignupIntent(surface, raw.signupIntent)
           : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function validateDecodedStateContext(
+  candidate: AuthStateContext,
+  allowedOrigins: string[],
+): AuthStateContext | null {
+  if (!candidate.returnTo) return candidate;
+  try {
+    return {
+      ...candidate,
+      returnTo: validateReturnTo(candidate.returnTo, allowedOrigins),
     };
   } catch {
     return null;
@@ -1054,7 +1076,7 @@ async function resolveOrCreateIdentity(
                 kind: signupContext.organization.kind,
                 name: signupContext.organization.name,
                 workosOrgId: signupContext.organization.workosOrganizationId,
-                workosExternalId: signupContext.organization.workosOrganizationId,
+                workosExternalId: signupContext.organization.workosExternalId,
               },
               membership: {
                 status: signupContext.membership?.status,
@@ -1097,7 +1119,7 @@ async function resolveOrCreateIdentity(
           kind: signupContext.organization.kind,
           name: signupContext.organization.name,
           workosOrgId: signupContext.organization.workosOrganizationId,
-          workosExternalId: signupContext.organization.workosOrganizationId,
+          workosExternalId: signupContext.organization.workosExternalId,
         },
         membership: {
           status: signupContext.membership?.status,

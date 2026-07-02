@@ -138,7 +138,9 @@ async function createIdentityUser(
       throw new Error("identity.user.create did not return a user id");
     }
 
-    await insertExternalIdentityWithClient(client, userId, command);
+    if (command.payload.providerIdentity?.providerUserId) {
+      await insertExternalIdentityWithClient(client, userId, command);
+    }
 
     const organizationId =
       command.payload.organization && command.payload.membership
@@ -209,6 +211,9 @@ async function insertExternalIdentityWithClient(
   userId: string,
   command: CreateIdentityUserCommand,
 ): Promise<void> {
+  const providerUserId = command.payload.providerIdentity?.providerUserId;
+  if (!providerUserId) return;
+
   const result = await client.query<{ user_id: string }>(
     `INSERT INTO identity.external_identities
        (user_id, provider, provider_user_id, provider_email, provider_email_verified, last_login_at, raw_profile)
@@ -225,7 +230,7 @@ async function insertExternalIdentityWithClient(
     [
       userId,
       command.payload.providerIdentity?.provider ?? "workos",
-      command.payload.providerIdentity?.providerUserId ?? null,
+      providerUserId,
       command.payload.email,
       command.payload.providerIdentity?.providerEmailVerified ?? false,
       JSON.stringify({
@@ -235,7 +240,7 @@ async function insertExternalIdentityWithClient(
       }),
     ],
   );
-  if (command.payload.providerIdentity?.providerUserId && result.rowCount === 0) {
+  if (result.rowCount === 0) {
     throw new Error("WorkOS provider identity is already linked to another user");
   }
 }
@@ -460,6 +465,50 @@ async function upsertOrganization(
   organization: GrantIdentityAccessCommand["payload"]["organization"],
 ): Promise<string> {
   const slug = organization.slug ?? slugify(organization.name);
+  if (!organization.organizationId && (organization.workosOrgId || organization.workosExternalId)) {
+    const existing = await client.query<{ id: string }>(
+      `SELECT id
+       FROM identity.organizations
+       WHERE ($1::text IS NOT NULL AND workos_org_id = $1)
+          OR ($2::text IS NOT NULL AND workos_external_id = $2)
+       ORDER BY CASE WHEN workos_org_id = $1 THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [organization.workosOrgId ?? null, organization.workosExternalId ?? null],
+    );
+    const existingId = existing.rows[0]?.id;
+    if (existingId) {
+      const result = await client.query<{ id: string }>(
+        `UPDATE identity.organizations
+         SET kind = $2,
+             name = $3,
+             slug = $4,
+             status = COALESCE($5, 'active'),
+             workos_org_id = COALESCE(identity.organizations.workos_org_id, $6),
+             workos_external_id = COALESCE(identity.organizations.workos_external_id, $7),
+             updated_at = now()
+         WHERE id = $1
+           AND ($6::text IS NULL OR workos_org_id IS NULL OR workos_org_id = $6)
+           AND ($7::text IS NULL OR workos_external_id IS NULL OR workos_external_id = $7)
+         RETURNING id`,
+        [
+          existingId,
+          organization.kind,
+          organization.name,
+          slug,
+          organization.status ?? "active",
+          organization.workosOrgId ?? null,
+          organization.workosExternalId ?? null,
+        ],
+      );
+      const updatedId = result.rows[0]?.id;
+      if (!updatedId) {
+        throw new Error(
+          "WorkOS organization identifiers are already linked to another organization",
+        );
+      }
+      return updatedId;
+    }
+  }
   if (organization.organizationId) {
     const result = await client.query<{ id: string }>(
       `INSERT INTO identity.organizations
