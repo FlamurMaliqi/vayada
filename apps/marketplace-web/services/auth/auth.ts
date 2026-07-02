@@ -3,7 +3,7 @@
  */
 
 import { apiClient, ApiErrorResponse } from "../api/client";
-import type { RegisterRequest, RegisterResponse, LoginRequest, LoginResponse } from "@/lib/types";
+import type { LoginRequest, LoginResponse } from "@/lib/types";
 import { STORAGE_KEYS } from "@/lib/constants";
 import {
   clearAuthData,
@@ -182,33 +182,6 @@ export const authService = {
     } catch {
       clearAuthData();
       return false;
-    }
-  },
-
-  /**
-   * Register user
-   */
-  register: async (data: RegisterRequest): Promise<RegisterResponse> => {
-    try {
-      const response = await apiClient.post<RegisterResponse>("/auth/register", data);
-
-      // Store token and user data
-      storeToken(response.access_token, response.expires_in);
-      storeUserData({
-        id: response.id,
-        email: response.email,
-        name: response.name,
-        type: response.type,
-        status: response.status,
-        is_superadmin: response.is_superadmin,
-      });
-
-      return response;
-    } catch (error) {
-      if (error instanceof ApiErrorResponse) {
-        throw error;
-      }
-      throw new Error("Registration failed: Network error");
     }
   },
 

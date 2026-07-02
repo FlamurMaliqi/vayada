@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   IdentityLifecycleCommandBus,
   IdentityLifecycleCommandResult,
@@ -6,6 +6,7 @@ import type {
   IdentityResourceLink,
   IdentityRepository,
   IdentityUser,
+  MembershipStatus,
   OrganizationKind,
   Product,
   ResourceType,
@@ -34,6 +35,7 @@ export type AuthKitClient = {
     state: string;
     organizationId?: string;
     loginHint?: string;
+    screenHint?: "sign-in" | "sign-up";
   }): string;
   authenticateWithCode(input: {
     code: string;
@@ -45,15 +47,27 @@ export type AuthKitClient = {
     sealedSession: string;
     organizationId?: string;
   }): Promise<AuthKitSession | null>;
+  createSignupOrganization(input: {
+    name: string;
+    externalId: string;
+    metadata: Record<string, string>;
+  }): Promise<{ organizationId: string }>;
+  ensureSignupOrganizationMembership(input: {
+    workosUserId: string;
+    workosOrganizationId: string;
+    roleKey: string;
+  }): Promise<{ membershipId: string; roleSlugs: string[]; status?: MembershipStatus }>;
   getLogoutUrl(input: { sealedSession: string; returnTo: string }): Promise<string>;
   updateUserExternalId(input: { workosUserId: string; externalId: string }): Promise<void>;
 };
 
 export type ProductAuditEvent = {
   action: "auth.login" | "auth.logout" | "auth.compatibility_token.issued";
+  authFlow?: "login" | "signup";
   actorUserId?: string;
   organizationId?: string;
   surface?: AuthSurface;
+  signupIntent?: AuthSignupIntent;
   resourceScope?: Record<string, string[]>;
   workosUserId?: string;
   workosOrgId?: string;
@@ -72,6 +86,8 @@ export type AuthSurface =
   | "pms-web"
   | "affiliate-dashboard"
   | "marketplace-web";
+
+export type AuthSignupIntent = "admin" | "hotel" | "creator";
 
 export type RequiredResourceLink = {
   product: Product;
@@ -103,6 +119,7 @@ export type AuthSessionRouteOptions = {
   requiredOrganizationKind: OrganizationKind;
   surfacePolicies?: Partial<Record<AuthSurface, AuthSurfacePolicy>>;
   cookieSecure: boolean;
+  stateCookieSecret: string;
   cookieDomain?: string;
   legacyMarketplaceJwtSecret?: string;
 };
@@ -117,6 +134,34 @@ type AuthStateContext = {
   state: string;
   surface: AuthSurface;
   returnTo?: string;
+  authFlow?: "login" | "signup";
+  signupIntent?: AuthSignupIntent;
+};
+
+type AuthSignupOrganizationContext = {
+  workosOrganizationId: string;
+  workosExternalId: string;
+  name: string;
+  kind: OrganizationKind;
+  roleKey: string;
+};
+
+type AuthSignupContext = {
+  intent: AuthSignupIntent;
+  organization: AuthSignupOrganizationContext;
+  membership?: AuthSignupMembershipContext;
+};
+
+type AuthSignupMembershipContext = {
+  workosMembershipId: string;
+  workosRoleSlugs: string[];
+  status?: MembershipStatus;
+};
+
+type AuthSignupSessionResolution = {
+  session: AuthKitSession;
+  organization?: AuthSignupOrganizationContext;
+  membership?: AuthSignupMembershipContext;
 };
 
 type AuthOrganizationCandidate = {
@@ -176,11 +221,15 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           serializeCookie(
             STATE_COOKIE,
             encodeStateCookie(
-              addStateContext(decodeStateCookies(readCookies(request, STATE_COOKIE)), {
-                state,
-                surface,
-                returnTo,
-              }),
+              addStateContext(
+                decodeStateCookies(readCookies(request, STATE_COOKIE), options.stateCookieSecret),
+                {
+                  state,
+                  surface,
+                  returnTo,
+                },
+              ),
+              options.stateCookieSecret,
             ),
             {
               maxAge: 600,
@@ -191,6 +240,76 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         ],
       })
       .redirect(authorizationUrl);
+  });
+
+  app.get("/workos/signup", async (request, reply) => {
+    try {
+      const query = request.query as {
+        login_hint?: string;
+        surface?: string;
+        return_to?: string;
+        intent?: string;
+      };
+      const surface = parseRequiredSignupSurface(query.surface);
+      const surfacePolicy = getSurfacePolicy(surface, options);
+      const signupIntent = parseSignupIntent(surface, query.intent);
+      const returnTo = query.return_to
+        ? validateReturnTo(query.return_to, options.allowedOrigins)
+        : undefined;
+      const state = randomBytes(24).toString("base64url");
+      const authorizationUrl = options.authKitClient.getAuthorizationUrl({
+        redirectUri: options.callbackUrl,
+        state,
+        loginHint: query.login_hint,
+        screenHint: "sign-up",
+      });
+
+      return reply
+        .headers({
+          "set-cookie": [
+            ...clearHostOnlyCookies(
+              [
+                STATE_COOKIE,
+                SESSION_COOKIE,
+                CSRF_COOKIE,
+                ...selectedOrganizationCookieNames(surfacePolicy),
+              ],
+              {
+                secure: options.cookieSecure,
+                domain: options.cookieDomain,
+              },
+            ),
+            ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
+            serializeCookie(
+              STATE_COOKIE,
+              encodeStateCookie(
+                addStateContext(
+                  decodeStateCookies(readCookies(request, STATE_COOKIE), options.stateCookieSecret),
+                  {
+                    state,
+                    surface,
+                    returnTo,
+                    authFlow: "signup",
+                    signupIntent,
+                  },
+                ),
+                options.stateCookieSecret,
+              ),
+              {
+                maxAge: 600,
+                secure: options.cookieSecure,
+                domain: options.cookieDomain,
+              },
+            ),
+          ],
+        })
+        .redirect(authorizationUrl);
+    } catch (error) {
+      return reply.code(400).send({
+        error: "invalid_signup_request",
+        message: error instanceof Error ? error.message : "Invalid hosted signup request.",
+      });
+    }
   });
 
   for (const path of [
@@ -223,9 +342,15 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         message: query.error_description ?? query.error,
       });
     }
-    const stateContext = decodeStateCookies(readCookies(request, STATE_COOKIE)).find(
-      (candidate) => candidate.state === query.state,
-    );
+    const stateContext = decodeStateCookies(
+      readCookies(request, STATE_COOKIE),
+      options.stateCookieSecret,
+    )
+      .flatMap((candidate) => {
+        const validated = validateDecodedStateContext(candidate, options.allowedOrigins);
+        return validated ? [validated] : [];
+      })
+      .find((candidate) => candidate.state === query.state);
     if (!query.code || !query.state || !stateContext) {
       return reply.code(400).send({
         error: "invalid_auth_state",
@@ -234,11 +359,26 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     const surfacePolicy = getSurfacePolicy(stateContext.surface, options);
 
-    const session = await options.authKitClient.authenticateWithCode({
-      code: query.code,
-      ipAddress: request.ip,
-      userAgent: request.headers["user-agent"],
-    });
+    let session: AuthKitSession;
+    let signupOrganization: AuthSignupOrganizationContext | undefined;
+    let signupMembership: AuthSignupMembershipContext | undefined;
+    try {
+      const authenticatedSession = await options.authKitClient.authenticateWithCode({
+        code: query.code,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+      const signupResolution = await ensureSignupOrganizationSession(
+        authenticatedSession,
+        stateContext,
+        options.authKitClient,
+      );
+      session = signupResolution.session;
+      signupOrganization = signupResolution.organization;
+      signupMembership = signupResolution.membership;
+    } catch (error) {
+      return reply.code(403).send(toAuthError(error));
+    }
     let resolution: IdentityResolution;
     try {
       resolution = await resolveOrCreateIdentity(
@@ -247,6 +387,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         options,
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
+        signupContextFromState(stateContext, signupOrganization, signupMembership),
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
@@ -263,8 +404,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     await options.productAuditSink.record({
       action: "auth.login",
+      authFlow: stateContext.authFlow ?? "login",
       actorUserId: resolution.user.userId,
       organizationId: resolution.organizationId,
+      surface: stateContext.surface,
+      signupIntent: stateContext.signupIntent,
       workosUserId: session.user.id,
       workosOrgId: resolution.session.organizationId,
       workosSessionId: resolution.session.sessionId,
@@ -522,6 +666,117 @@ function parseSurface(value: string | undefined): AuthSurface {
   throw new Error(`Unsupported AuthKit surface: ${value}`);
 }
 
+function parseRequiredSignupSurface(value: string | undefined): AuthSurface {
+  if (!value) {
+    throw new Error("Hosted signup surface is required");
+  }
+  return parseSurface(value);
+}
+
+function parseSignupIntent(surface: AuthSurface, value: string | undefined): AuthSignupIntent {
+  const supported = signupIntentsForSurface(surface);
+  if (supported.length === 0) {
+    throw new Error(`Hosted signup is not supported for ${surface}`);
+  }
+  const intent = value;
+  if (!intent) {
+    throw new Error(`Hosted signup intent is required for ${surface}`);
+  }
+  if (!intent || !supported.includes(intent as AuthSignupIntent)) {
+    throw new Error(`Unsupported hosted signup intent for ${surface}`);
+  }
+  return intent as AuthSignupIntent;
+}
+
+function signupIntentsForSurface(surface: AuthSurface): readonly AuthSignupIntent[] {
+  switch (surface) {
+    case "platform-admin":
+      return [];
+    case "booking-admin":
+    case "pms-web":
+      return ["hotel"];
+    case "marketplace-web":
+      return ["creator", "hotel"];
+    case "affiliate-dashboard":
+      return [];
+  }
+}
+
+async function createSignupOrganizationContext(
+  authKitClient: AuthKitClient,
+  surface: AuthSurface,
+  signupIntent: AuthSignupIntent,
+  loginHint: string | undefined,
+  externalIdSuffix: string,
+): Promise<AuthSignupOrganizationContext> {
+  const template = signupOrganizationTemplate(surface, signupIntent, loginHint, externalIdSuffix);
+  const organization = await authKitClient.createSignupOrganization({
+    name: template.name,
+    externalId: template.externalId,
+    metadata: {
+      auth_flow: "signup",
+      surface,
+      signup_intent: signupIntent,
+      organization_kind: template.kind,
+      role_key: template.roleKey,
+    },
+  });
+  return {
+    workosOrganizationId: organization.organizationId,
+    workosExternalId: template.externalId,
+    name: template.name,
+    kind: template.kind,
+    roleKey: template.roleKey,
+  };
+}
+
+function signupOrganizationTemplate(
+  surface: AuthSurface,
+  signupIntent: AuthSignupIntent,
+  loginHint: string | undefined,
+  externalIdSuffix: string,
+): { externalId: string; kind: OrganizationKind; name: string; roleKey: string } {
+  const emailLabel = loginHint?.split("@")[0]?.trim();
+  const displayName = emailLabel ? humanizeLabel(emailLabel) : null;
+  switch (signupIntent) {
+    case "admin":
+      return {
+        externalId: `vayada-signup:${surface}:admin:${externalIdSuffix}`,
+        kind: "platform",
+        name: displayName ? `${displayName} Platform Admin` : "Vayada Platform Admin",
+        roleKey: "platform_admin",
+      };
+    case "hotel":
+      return {
+        externalId: `vayada-signup:${surface}:hotel:${externalIdSuffix}`,
+        kind: "hotel_group",
+        name: displayName ? `${displayName} Hotel Group` : "New Hotel Group",
+        roleKey: "hotel_owner",
+      };
+    case "creator":
+      return {
+        externalId: `vayada-signup:${surface}:creator:${externalIdSuffix}`,
+        kind: "creator_workspace",
+        name: displayName ? `${displayName} Workspace` : "New Creator Workspace",
+        roleKey: "creator_owner",
+      };
+  }
+}
+
+function humanizeLabel(value: string): string {
+  const label = value
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  return (
+    label
+      .split(" ")
+      .filter(Boolean)
+      .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+      .join(" ") || "New"
+  );
+}
+
 function getSurfacePolicy(
   surface: AuthSurface,
   options: AuthSessionRouteOptions,
@@ -563,16 +818,31 @@ function addStateContext(existing: AuthStateContext[], next: AuthStateContext): 
   );
 }
 
-function encodeStateCookie(input: AuthStateContext[]): string {
-  return `v1.${Buffer.from(JSON.stringify(input)).toString("base64url")}`;
+function encodeStateCookie(input: AuthStateContext[], secret: string): string {
+  const payload = Buffer.from(JSON.stringify(input)).toString("base64url");
+  return `v2.${payload}.${signStatePayload(payload, secret)}`;
 }
 
-function decodeStateCookies(values: string[]): AuthStateContext[] {
-  return values.flatMap(decodeStateCookie);
+function decodeStateCookies(values: string[], secret: string): AuthStateContext[] {
+  return values.flatMap((value) => decodeStateCookie(value, secret));
 }
 
-function decodeStateCookie(value: string | undefined): AuthStateContext[] {
+function decodeStateCookie(value: string | undefined, secret: string): AuthStateContext[] {
   if (!value) return [];
+  if (value.startsWith("v2.")) {
+    const [, payload, signature] = value.split(".");
+    if (!payload || !signature || !verifyStatePayload(payload, signature, secret)) return [];
+    try {
+      const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+      const candidates = Array.isArray(parsed) ? parsed : [parsed];
+      return candidates.flatMap((candidate) => {
+        const stateContext = parseStateContext(candidate);
+        return stateContext ? [stateContext] : [];
+      });
+    } catch {
+      return [];
+    }
+  }
   if (!value.startsWith("v1.")) {
     return [{ state: value, surface: DEFAULT_SURFACE }];
   }
@@ -581,6 +851,7 @@ function decodeStateCookie(value: string | undefined): AuthStateContext[] {
     const candidates = Array.isArray(parsed) ? parsed : [parsed];
     return candidates.flatMap((candidate) => {
       const stateContext = parseStateContext(candidate);
+      if (stateContext?.authFlow === "signup") return [];
       return stateContext ? [stateContext] : [];
     });
   } catch {
@@ -590,17 +861,111 @@ function decodeStateCookie(value: string | undefined): AuthStateContext[] {
 
 function parseStateContext(candidate: unknown): AuthStateContext | null {
   if (!candidate || typeof candidate !== "object") return null;
-  const raw = candidate as { state?: unknown; surface?: unknown; returnTo?: unknown };
+  const raw = candidate as {
+    state?: unknown;
+    surface?: unknown;
+    returnTo?: unknown;
+    authFlow?: unknown;
+    signupIntent?: unknown;
+  };
   if (typeof raw.state !== "string") return null;
   try {
+    const surface = parseSurface(typeof raw.surface === "string" ? raw.surface : undefined);
+    const authFlow = raw.authFlow === "signup" ? "signup" : undefined;
     return {
       state: raw.state,
-      surface: parseSurface(typeof raw.surface === "string" ? raw.surface : undefined),
+      surface,
       returnTo: typeof raw.returnTo === "string" ? raw.returnTo : undefined,
+      authFlow,
+      signupIntent:
+        authFlow === "signup" && typeof raw.signupIntent === "string"
+          ? parseSignupIntent(surface, raw.signupIntent)
+          : undefined,
     };
   } catch {
     return null;
   }
+}
+
+function validateDecodedStateContext(
+  candidate: AuthStateContext,
+  allowedOrigins: string[],
+): AuthStateContext | null {
+  if (!candidate.returnTo) return candidate;
+  try {
+    return {
+      ...candidate,
+      returnTo: validateReturnTo(candidate.returnTo, allowedOrigins),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function signStatePayload(payload: string, secret: string): string {
+  return createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+function verifyStatePayload(payload: string, signature: string, secret: string): boolean {
+  const expected = signStatePayload(payload, secret);
+  try {
+    return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSignupOrganizationSession(
+  session: AuthKitSession,
+  stateContext: AuthStateContext,
+  authKitClient: AuthKitClient,
+): Promise<AuthSignupSessionResolution> {
+  if (stateContext.authFlow !== "signup" || !stateContext.signupIntent) {
+    return { session };
+  }
+  const signupOrganization = await createSignupOrganizationContext(
+    authKitClient,
+    stateContext.surface,
+    stateContext.signupIntent,
+    session.user.email,
+    stateContext.state,
+  );
+  const membership = await authKitClient.ensureSignupOrganizationMembership({
+    workosUserId: session.user.id,
+    workosOrganizationId: signupOrganization.workosOrganizationId,
+    roleKey: signupOrganization.roleKey,
+  });
+  const signupMembership = {
+    workosMembershipId: membership.membershipId,
+    workosRoleSlugs: membership.roleSlugs,
+    status: membership.status,
+  };
+  if (session.organizationId === signupOrganization.workosOrganizationId) {
+    return { session, organization: signupOrganization, membership: signupMembership };
+  }
+  const refreshed = await authKitClient.refreshSession({
+    sealedSession: session.sealedSession,
+    organizationId: signupOrganization.workosOrganizationId,
+  });
+  if (!refreshed || refreshed.organizationId !== signupOrganization.workosOrganizationId) {
+    throw new Error("AuthKit signup organization session could not be selected");
+  }
+  return { session: refreshed, organization: signupOrganization, membership: signupMembership };
+}
+
+function signupContextFromState(
+  stateContext: AuthStateContext,
+  organization?: AuthSignupOrganizationContext,
+  membership?: AuthSignupMembershipContext,
+): AuthSignupContext | undefined {
+  if (stateContext.authFlow !== "signup" || !stateContext.signupIntent || !organization) {
+    return undefined;
+  }
+  return {
+    intent: stateContext.signupIntent,
+    organization,
+    membership,
+  };
 }
 
 function registerCompatibilityTokenRoute(
@@ -684,6 +1049,7 @@ async function resolveOrCreateIdentity(
   options: AuthSessionRouteOptions,
   surfacePolicy: AuthSurfacePolicy,
   accessOptions: OrganizationAccessOptions = {},
+  signupContext?: AuthSignupContext,
 ): Promise<IdentityResolution> {
   let user = await options.identityRepository.findUserByProviderUserId("workos", session.user.id);
   if (!user) {
@@ -703,6 +1069,25 @@ async function resolveOrCreateIdentity(
         email: session.user.email,
         name: session.user.name ?? undefined,
         initialStatus: "active",
+        ...(signupContext
+          ? {
+              legacyUserType: signupContext.intent,
+              organization: {
+                kind: signupContext.organization.kind,
+                name: signupContext.organization.name,
+                workosOrgId: signupContext.organization.workosOrganizationId,
+                workosExternalId: signupContext.organization.workosExternalId,
+              },
+              membership: {
+                status: signupContext.membership?.status,
+                roleKey: signupContext.organization.roleKey,
+                workosMembershipId: signupContext.membership?.workosMembershipId,
+                workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
+                  signupContext.organization.roleKey,
+                ],
+              },
+            }
+          : {}),
         providerIdentity: {
           provider: "workos",
           providerUserId: session.user.id,
@@ -714,6 +1099,37 @@ async function resolveOrCreateIdentity(
     await options.authKitClient.updateUserExternalId({
       workosUserId: session.user.id,
       externalId: user.userId,
+    });
+  } else if (signupContext) {
+    await options.lifecycleCommandBus.execute({
+      commandType: "identity.access.grant",
+      commandId: randomUUID(),
+      idempotencyKey: `workos-signup-access:${session.user.id}:${signupContext.organization.workosOrganizationId}`,
+      audit: {
+        actor: { kind: "system", service: "apps/api-authkit" },
+        source: "web",
+        requestId: request.id,
+        correlationId: session.sessionId,
+        reason: "AuthKit hosted signup organization access",
+        requestedAt: new Date().toISOString(),
+      },
+      payload: {
+        userId: user.userId,
+        organization: {
+          kind: signupContext.organization.kind,
+          name: signupContext.organization.name,
+          workosOrgId: signupContext.organization.workosOrganizationId,
+          workosExternalId: signupContext.organization.workosExternalId,
+        },
+        membership: {
+          status: signupContext.membership?.status,
+          roleKey: signupContext.organization.roleKey,
+          workosMembershipId: signupContext.membership?.workosMembershipId,
+          workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
+            signupContext.organization.roleKey,
+          ],
+        },
+      },
     });
   }
   const access = await resolveOrganizationAccess(

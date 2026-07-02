@@ -336,6 +336,7 @@ const app = buildApp({
             },
           },
           cookieSecure: config.authSession.authCookieSecure,
+          stateCookieSecret: config.authSession.authCookieSecret,
           cookieDomain: config.authSession.authCookieDomain,
           legacyMarketplaceJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,
         }

@@ -1,6 +1,7 @@
 import { WorkOS } from "@workos-inc/node";
 
 import type { AuthKitClient, AuthKitSession } from "../routes/authSession.js";
+import type { MembershipStatus } from "@vayada/backend-auth";
 
 type WorkOSAuthKitClientConfig = {
   apiKey: string;
@@ -22,6 +23,7 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
         state: input.state,
         organizationId: input.organizationId,
         loginHint: input.loginHint,
+        screenHint: input.screenHint,
       });
     },
 
@@ -77,6 +79,48 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       });
     },
 
+    async createSignupOrganization(input) {
+      const organization = await workos.organizations.createOrganization(
+        {
+          name: input.name,
+          externalId: input.externalId,
+          metadata: input.metadata,
+        },
+        {
+          idempotencyKey: input.externalId,
+        },
+      );
+      return { organizationId: organization.id };
+    },
+
+    async ensureSignupOrganizationMembership(input) {
+      const existing = await workos.userManagement.listOrganizationMemberships({
+        userId: input.workosUserId,
+        organizationId: input.workosOrganizationId,
+        statuses: ["active", "pending"],
+        limit: 1,
+      });
+      const existingMembership = existing.data[0];
+      if (existingMembership) {
+        return {
+          membershipId: existingMembership.id,
+          roleSlugs: membershipRoleSlugs(existingMembership, [input.roleKey]),
+          status: membershipStatus(existingMembership.status),
+        };
+      }
+
+      const membership = await workos.userManagement.createOrganizationMembership({
+        userId: input.workosUserId,
+        organizationId: input.workosOrganizationId,
+        roleSlug: input.roleKey,
+      });
+      return {
+        membershipId: membership.id,
+        roleSlugs: membershipRoleSlugs(membership, [input.roleKey]),
+        status: membershipStatus(membership.status),
+      };
+    },
+
     async getLogoutUrl(input) {
       return workos.userManagement
         .loadSealedSession({
@@ -95,6 +139,28 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       });
     },
   };
+}
+
+function membershipRoleSlugs(
+  membership: { roles?: Array<{ slug: string }>; role?: { slug: string } },
+  fallback: string[],
+): string[] {
+  const roleSlugs = membership.roles?.map((role) => role.slug).filter(Boolean) ?? [];
+  if (roleSlugs.length > 0) return roleSlugs;
+  if (membership.role?.slug) return [membership.role.slug];
+  return fallback;
+}
+
+function membershipStatus(status: string | undefined): MembershipStatus | undefined {
+  if (
+    status === "active" ||
+    status === "pending" ||
+    status === "inactive" ||
+    status === "suspended"
+  ) {
+    return status;
+  }
+  return undefined;
 }
 
 function toAuthKitSession(response: {

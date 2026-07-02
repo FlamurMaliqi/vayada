@@ -270,6 +270,47 @@ Creator workspaces can start as solo organizations but should use the same
 membership model so agencies or assistants can be added later without another
 identity rewrite.
 
+### Hosted AuthKit signup contract
+
+Next-generation signup/register surfaces use hosted AuthKit, not legacy password
+signup endpoints on `next-api`.
+
+The entrypoint is:
+
+```text
+GET /auth/workos/signup?surface=<surface>&intent=<intent>&return_to=<url>&login_hint=<email>
+```
+
+`surface` and `intent` are both required. `next-api` validates them, validates
+`return_to` against configured `AUTH_ALLOWED_ORIGINS`, stores the minimal signup
+context in a signed AuthKit state cookie, and redirects to WorkOS with
+`screen_hint=sign-up`. The public signup GET does not create a WorkOS
+organization. `POST /auth/register` and `POST /auth/login` remain absent from
+`next-api`.
+
+Surface contract:
+
+| Surface           | Signup intent       | Post-auth destination owner                         |
+| ----------------- | ------------------- | --------------------------------------------------- |
+| `booking-admin`   | `hotel`             | Booking Admin setup/dashboard guard                 |
+| `pms-web`         | `hotel`             | PMS setup/dashboard guard                           |
+| `marketplace-web` | `creator` / `hotel` | Marketplace creator completion or hotel setup guard |
+
+`platform-admin` is intentionally absent from hosted signup. Platform
+administrators must be provisioned by an invitation or administrative flow, not a
+public self-service register page.
+
+The AuthKit callback recomputes the signup organization kind and owner role from
+the signed `surface + intent` pair, creates the WorkOS organization, creates or
+finds the WorkOS organization membership, then refreshes the sealed session with
+the new `organization_id` before continuing. The callback creates or links the
+internal user through `identity.user.create` when needed, and the identity
+lifecycle command creates the internal organization and owner membership from
+the stored signup context. Existing users who enter a hosted signup flow receive
+the same organization access through `identity.access.grant`. Product-specific
+profile setup still belongs to the destination app's setup guard; the callback
+must not recreate legacy password registration behavior.
+
 ### Affiliates
 
 Affiliate dashboard login should use WorkOS and an `affiliate_partner`

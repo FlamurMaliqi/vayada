@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type {
   IdentityLifecycleCommand,
   IdentityLifecycleCommandBus,
@@ -14,6 +15,8 @@ import type {
   AuthSurfacePolicy,
   ProductAuditEvent,
 } from "./routes/authSession.js";
+
+const TEST_STATE_COOKIE_SECRET = "test-state-cookie-secret";
 
 const user: IdentityUser = {
   userId: "user_platform_admin",
@@ -59,6 +62,232 @@ describe("AuthKit session routes", () => {
     );
   });
 
+  it("redirects hosted signup to AuthKit with validated surface intent state", async () => {
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({
+        async createSignupOrganization() {
+          throw new Error("Signup redirect must not create a WorkOS organization");
+        },
+      }),
+      allowedOrigins: ["https://marketplace.localhost"],
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          callbackReturnUrl: "https://marketplace.localhost/marketplace",
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/signup?surface=marketplace-web&intent=creator&login_hint=creator%40example.com&return_to=https%3A%2F%2Fmarketplace.localhost%2Fmarketplace%3Fsignup%3Dcreator",
+    });
+
+    expect(response.statusCode).toBe(302);
+    const location = new URL(response.headers.location as string);
+    expect(location.origin + location.pathname).toBe("https://auth.workos.test/authorize");
+    expect(location.searchParams.get("organization_id")).toBeNull();
+    expect(location.searchParams.get("screen_hint")).toBe("sign-up");
+    expect(location.searchParams.get("login_hint")).toBe("creator@example.com");
+
+    const contexts = readStateCookieContexts(response);
+    expect(contexts).toEqual([
+      {
+        state: location.searchParams.get("state"),
+        surface: "marketplace-web",
+        returnTo: "https://marketplace.localhost/marketplace?signup=creator",
+        authFlow: "signup",
+        signupIntent: "creator",
+      },
+    ]);
+  });
+
+  it("rejects hosted signup callback when signed state is tampered", async () => {
+    const signedState = encodeTestStateCookie([
+      {
+        state: "signup-state",
+        surface: "marketplace-web",
+        returnTo: "https://marketplace.localhost/marketplace?signup=creator",
+        authFlow: "signup",
+        signupIntent: "creator",
+      },
+    ]);
+    const [, payload, signature] = signedState.split(".");
+    const tamperedPayload = Buffer.from(
+      JSON.stringify([
+        {
+          state: "signup-state",
+          surface: "marketplace-web",
+          returnTo: "https://evil.example/callback",
+          authFlow: "signup",
+          signupIntent: "hotel",
+        },
+      ]),
+    ).toString("base64url");
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({
+        async authenticateWithCode() {
+          throw new Error("Tampered state must be rejected before AuthKit code exchange");
+        },
+      }),
+      allowedOrigins: ["https://marketplace.localhost"],
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=signup-state",
+      headers: {
+        cookie: `vayada_workos_state=v2.${tamperedPayload}.${signature}`,
+      },
+    });
+
+    expect(payload).toBeTruthy();
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "invalid_auth_state",
+    });
+  });
+
+  it("rejects legacy callback state with a return URL outside configured origins", async () => {
+    const legacyState = Buffer.from(
+      JSON.stringify([
+        {
+          state: "legacy-state",
+          surface: "platform-admin",
+          returnTo: "https://evil.example/callback",
+        },
+      ]),
+    ).toString("base64url");
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({
+        async authenticateWithCode() {
+          throw new Error("Invalid legacy state must be rejected before AuthKit code exchange");
+        },
+      }),
+      allowedOrigins: ["https://admin.localhost"],
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=legacy-state",
+      headers: {
+        cookie: `vayada_workos_state=v1.${legacyState}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "invalid_auth_state",
+    });
+  });
+
+  it("rejects hosted signup return URLs outside configured origins", async () => {
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://pms.localhost"],
+      surfacePolicies: {
+        "pms-web": {
+          requiredOrganizationKind: "hotel_group",
+          callbackReturnUrl: "https://pms.localhost/setup",
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/signup?surface=pms-web&intent=hotel&return_to=https%3A%2F%2Fevil.example%2Fsetup",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "invalid_signup_request",
+      message: "AuthKit return_to origin is not allowed",
+    });
+  });
+
+  it("rejects hosted signup requests without explicit surface or intent", async () => {
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://pms.localhost"],
+      surfacePolicies: {
+        "pms-web": {
+          requiredOrganizationKind: "hotel_group",
+        },
+      },
+    });
+
+    const missingSurface = await app.inject({
+      method: "GET",
+      url: "/auth/workos/signup?intent=hotel",
+    });
+    expect(missingSurface.statusCode).toBe(400);
+    expect(missingSurface.json()).toMatchObject({
+      error: "invalid_signup_request",
+      message: "Hosted signup surface is required",
+    });
+
+    const missingIntent = await app.inject({
+      method: "GET",
+      url: "/auth/workos/signup?surface=pms-web",
+    });
+    expect(missingIntent.statusCode).toBe(400);
+    expect(missingIntent.json()).toMatchObject({
+      error: "invalid_signup_request",
+      message: "Hosted signup intent is required for pms-web",
+    });
+  });
+
+  it("rejects hosted signup intents unsupported by the selected surface", async () => {
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/signup?surface=marketplace-web&intent=admin",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "invalid_signup_request",
+      message: "Unsupported hosted signup intent for marketplace-web",
+    });
+  });
+
+  it("rejects public hosted platform-admin signup", async () => {
+    app = buildAuthSessionApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/signup?surface=platform-admin&intent=admin",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "invalid_signup_request",
+      message: "Hosted signup is not supported for platform-admin",
+    });
+  });
+
+  it("keeps legacy password register absent from next-api", async () => {
+    app = buildAuthSessionApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
   it("completes callback for an existing linked user and emits login audit", async () => {
     const auditEvents: ProductAuditEvent[] = [];
     app = buildAuthSessionApp({
@@ -102,6 +331,155 @@ describe("AuthKit session routes", () => {
         workosUserId: "user_workos_platform",
       }),
     ]);
+  });
+
+  it("keeps hosted signup intent through callback audit", async () => {
+    const auditEvents: ProductAuditEvent[] = [];
+    const commands: IdentityLifecycleCommand[] = [];
+    const workosCalls: string[] = [];
+    const marketplaceSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      user: {
+        ...session.user,
+        id: "user_workos_creator",
+        email: "creator@example.com",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithCode() {
+          return marketplaceSession;
+        },
+        async createSignupOrganization(input) {
+          workosCalls.push("organization");
+          expect(input.externalId).toBe("vayada-signup:marketplace-web:creator:signup-state");
+          expect(input.metadata).toMatchObject({
+            auth_flow: "signup",
+            surface: "marketplace-web",
+            signup_intent: "creator",
+            organization_kind: "creator_workspace",
+            role_key: "creator_owner",
+          });
+          return { organizationId: "org_workos_signup_creator" };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          workosCalls.push("membership");
+          expect(input).toEqual({
+            workosUserId: "user_workos_creator",
+            workosOrganizationId: "org_workos_signup_creator",
+            roleKey: "creator_owner",
+          });
+          return {
+            membershipId: "om_signup_creator",
+            roleSlugs: ["creator_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          workosCalls.push("refresh");
+          expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
+          expect(input.organizationId).toBe("org_workos_signup_creator");
+          return {
+            ...marketplaceSession,
+            organizationId: "org_workos_signup_creator",
+            sealedSession: "refreshed-signup-session",
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_creator_workspace",
+          workosOrgId: "org_workos_signup_creator",
+          name: "Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: "user_creator",
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+      productAuditSink: {
+        async record(event) {
+          auditEvents.push(event);
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=signup-state",
+      headers: {
+        cookie: `vayada_workos_state=${encodeTestStateCookie([
+          {
+            state: "signup-state",
+            surface: "marketplace-web",
+            returnTo: "https://marketplace.localhost/marketplace?signup=creator",
+            authFlow: "signup",
+            signupIntent: "creator",
+          },
+        ])}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(
+      "https://marketplace.localhost/marketplace?signup=creator",
+    );
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        action: "auth.login",
+        authFlow: "signup",
+        actorUserId: "user_creator",
+        surface: "marketplace-web",
+        signupIntent: "creator",
+      }),
+    ]);
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          email: "creator@example.com",
+          legacyUserType: "creator",
+          organization: {
+            kind: "creator_workspace",
+            name: "Creator Workspace",
+            workosExternalId: "vayada-signup:marketplace-web:creator:signup-state",
+            workosOrgId: "org_workos_signup_creator",
+          },
+          membership: {
+            status: "active",
+            roleKey: "creator_owner",
+            workosMembershipId: "om_signup_creator",
+            workosRoleSlugs: ["creator_owner"],
+          },
+        }),
+      }),
+    ]);
+    expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
   });
 
   it.each(["flamur.maliqi2811@gmail.com", "other@vayada.com"])(
@@ -1714,6 +2092,7 @@ function buildAuthSessionApp(
       requiredOrganizationKind: "platform",
       surfacePolicies: options.surfacePolicies,
       cookieSecure: false,
+      stateCookieSecret: TEST_STATE_COOKIE_SECRET,
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
     },
   });
@@ -1733,6 +2112,7 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
       url.searchParams.set("state", input.state);
       if (input.organizationId) url.searchParams.set("organization_id", input.organizationId);
       if (input.loginHint) url.searchParams.set("login_hint", input.loginHint);
+      if (input.screenHint) url.searchParams.set("screen_hint", input.screenHint);
       return url.toString();
     },
     async authenticateWithCode() {
@@ -1748,6 +2128,18 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
         sealedSession: "refreshed-sealed-session",
       };
     },
+    async createSignupOrganization(input) {
+      return {
+        organizationId: `org_workos_signup_${input.metadata.signup_intent}`,
+      };
+    },
+    async ensureSignupOrganizationMembership(input) {
+      return {
+        membershipId: `om_signup_${input.roleKey}`,
+        roleSlugs: [input.roleKey],
+        status: "active",
+      };
+    },
     async getLogoutUrl(input) {
       return `https://auth.workos.test/logout?return_to=${encodeURIComponent(input.returnTo)}`;
     },
@@ -1757,9 +2149,37 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
 }
 
 function encodeTestStateCookie(
-  input: Array<{ state: string; surface?: string; returnTo?: string }>,
+  input: Array<{
+    state: string;
+    surface?: string;
+    returnTo?: string;
+    authFlow?: string;
+    signupIntent?: string;
+  }>,
 ): string {
-  return `v1.${Buffer.from(JSON.stringify(input)).toString("base64url")}`;
+  const payload = Buffer.from(JSON.stringify(input)).toString("base64url");
+  return `v2.${payload}.${createHmac("sha256", TEST_STATE_COOKIE_SECRET)
+    .update(payload)
+    .digest("base64url")}`;
+}
+
+function readStateCookieContexts(response: { headers: { "set-cookie"?: unknown } }): unknown {
+  const setCookie = response.headers["set-cookie"];
+  const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+  const stateCookie = cookies
+    .filter((cookie): cookie is string => typeof cookie === "string")
+    .find((cookie) => cookie.startsWith("vayada_workos_state="));
+  if (!stateCookie) throw new Error("state cookie missing");
+  const value = stateCookie.split(";")[0]!.slice("vayada_workos_state=".length);
+  const [version, payload, signature] = value.split(".");
+  if (version !== "v2" || !payload || !signature) {
+    throw new Error("state cookie payload missing");
+  }
+  const expectedSignature = createHmac("sha256", TEST_STATE_COOKIE_SECRET)
+    .update(payload)
+    .digest("base64url");
+  expect(signature).toBe(expectedSignature);
+  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
 }
 
 function createIdentityRepository(

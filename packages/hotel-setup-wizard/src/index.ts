@@ -53,7 +53,15 @@ export {
   resolveSharedHotelSetupGuardDecision,
   type SharedHotelSetupGuardDecision,
 } from "./sharedHotelSetupGuard";
-export { firstSearchParam, safeRelativeReturnTo, type ReturnToParam } from "./returnTo";
+export {
+  buildHostedSignupRedirectUrl,
+  firstSearchParam,
+  safeRelativeReturnTo,
+  type HostedSignupIntent,
+  type HostedSignupRedirectInput,
+  type HostedSignupSurface,
+  type ReturnToParam,
+} from "./returnTo";
 export {
   default as PropertyStep,
   type CountryOption,

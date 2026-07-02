@@ -19,6 +19,23 @@ test.describe("pms-web smoke", () => {
     expect(returnTo.searchParams.get("returnTo")).toBe("/dashboard");
   });
 
+  test("@signup register redirects to hosted AuthKit signup", async ({ request }) => {
+    const response = await request.get("/register", { maxRedirects: 0 });
+
+    expect(response.status()).toBe(307);
+    const hostedSignupUrl = new URL(response.headers().location ?? "");
+    expect(hostedSignupUrl.pathname).toBe("/auth/workos/signup");
+    expect(hostedSignupUrl.searchParams.get("surface")).toBe("pms-web");
+    expect(hostedSignupUrl.searchParams.get("intent")).toBe("hotel");
+    expect(hostedSignupUrl.pathname).not.toBe("/auth/register");
+    expect(hostedSignupUrl.pathname).not.toBe("/auth/login");
+
+    const returnTo = new URL(hostedSignupUrl.searchParams.get("return_to") ?? "");
+    expect(returnTo.pathname).toBe("/login");
+    expect(returnTo.searchParams.get("auth")).toBe("callback");
+    expect(returnTo.searchParams.get("returnTo")).toBe("/dashboard");
+  });
+
   test("loads migrated PMS operations surfaces without legacy helper calls", async ({
     page,
   }, testInfo) => {

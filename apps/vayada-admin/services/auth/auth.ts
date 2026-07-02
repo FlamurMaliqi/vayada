@@ -24,19 +24,6 @@ const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.l
 const PLATFORM_AUTH_SURFACE = "platform-admin";
 const PLATFORM_WORKOS_ORG_ID = process.env.NEXT_PUBLIC_PLATFORM_WORKOS_ORG_ID;
 
-export interface RegisterRequest {
-  name: string;
-  email: string;
-  password: string;
-}
-
-export interface RegisterResponse {
-  message: string;
-  id: string;
-  email: string;
-  name: string;
-}
-
 type CompatibilityTokenResponse = {
   accessToken: string;
   expiresIn: number;
@@ -154,16 +141,6 @@ export const authService = {
       clearAuthData();
       return false;
     }
-  },
-
-  /**
-   * Superadmin access is granted by toggling users.is_superadmin in the auth DB.
-   */
-  register: async (data: RegisterRequest): Promise<RegisterResponse> => {
-    void data;
-    throw new Error(
-      "Admin self-registration is disabled. Grant is_superadmin on an existing user.",
-    );
   },
 
   /**

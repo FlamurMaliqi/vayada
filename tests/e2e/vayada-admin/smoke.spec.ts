@@ -18,6 +18,15 @@ test.describe("vayada-admin smoke", () => {
     await assertHealthy();
   });
 
+  test("register redirects to login because public admin signup is closed", async ({ request }) => {
+    const response = await request.get("/register", { maxRedirects: 0 });
+
+    expect(response.status()).toBe(307);
+    const location = new URL(response.headers().location ?? "", "https://admin.localhost");
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("register")).toBe("closed");
+  });
+
   test("marketplace preview uses next-api discovery without legacy calls", async ({
     page,
     baseURL,

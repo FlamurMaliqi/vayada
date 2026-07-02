@@ -72,12 +72,22 @@ async function createIdentityUser(
       );
       const existingUserId = existingIdentity.rows[0]?.user_id;
       if (existingUserId) {
+        const organizationId =
+          command.payload.organization && command.payload.membership
+            ? await grantIdentityAccessWithClient(client, {
+                userId: existingUserId,
+                organization: command.payload.organization,
+                membership: command.payload.membership,
+                resourceLinks: command.payload.resourceLinks,
+              })
+            : undefined;
         await client.query("COMMIT");
         return {
           status: "idempotent_replay",
           commandId: command.commandId,
           idempotencyKey: command.idempotencyKey,
           userId: existingUserId,
+          organizationId,
           events: [],
         };
       }
@@ -94,12 +104,25 @@ async function createIdentityUser(
     );
     const existingEmailUserId = existingEmail.rows[0]?.id;
     if (existingEmailUserId) {
+      if (command.payload.providerIdentity?.providerUserId) {
+        await insertExternalIdentityWithClient(client, existingEmailUserId, command);
+      }
+      const organizationId =
+        command.payload.organization && command.payload.membership
+          ? await grantIdentityAccessWithClient(client, {
+              userId: existingEmailUserId,
+              organization: command.payload.organization,
+              membership: command.payload.membership,
+              resourceLinks: command.payload.resourceLinks,
+            })
+          : undefined;
       await client.query("COMMIT");
       return {
         status: "idempotent_replay",
         commandId: command.commandId,
         idempotencyKey: command.idempotencyKey,
         userId: existingEmailUserId,
+        organizationId,
         events: [],
       };
     }
@@ -115,23 +138,19 @@ async function createIdentityUser(
       throw new Error("identity.user.create did not return a user id");
     }
 
-    await client.query(
-      `INSERT INTO identity.external_identities
-         (user_id, provider, provider_user_id, provider_email, provider_email_verified, last_login_at, raw_profile)
-       VALUES ($1, $2, $3, $4, $5, now(), $6)`,
-      [
-        userId,
-        command.payload.providerIdentity?.provider ?? "workos",
-        command.payload.providerIdentity?.providerUserId ?? null,
-        command.payload.email,
-        command.payload.providerIdentity?.providerEmailVerified ?? false,
-        JSON.stringify({
-          commandId: command.commandId,
-          idempotencyKey: command.idempotencyKey,
-          source: "authkit_jit",
-        }),
-      ],
-    );
+    if (command.payload.providerIdentity?.providerUserId) {
+      await insertExternalIdentityWithClient(client, userId, command);
+    }
+
+    const organizationId =
+      command.payload.organization && command.payload.membership
+        ? await grantIdentityAccessWithClient(client, {
+            userId,
+            organization: command.payload.organization,
+            membership: command.payload.membership,
+            resourceLinks: command.payload.resourceLinks,
+          })
+        : undefined;
 
     const event: IdentityLifecycleEvent = {
       eventType: "identity.user.created",
@@ -139,6 +158,7 @@ async function createIdentityUser(
       commandId: command.commandId,
       idempotencyKey: command.idempotencyKey,
       userId,
+      organizationId,
       occurredAt: new Date().toISOString(),
       audit: command.audit,
       payload: command.payload,
@@ -162,6 +182,7 @@ async function createIdentityUser(
       commandId: command.commandId,
       idempotencyKey: command.idempotencyKey,
       userId,
+      organizationId,
       events: [event],
     };
   } catch (error) {
@@ -185,6 +206,45 @@ async function updateIdentityUserProfile(
   return accepted(command, command.payload.userId, "identity.user.profile.updated");
 }
 
+async function insertExternalIdentityWithClient(
+  client: pg.PoolClient,
+  userId: string,
+  command: CreateIdentityUserCommand,
+): Promise<void> {
+  const providerUserId = command.payload.providerIdentity?.providerUserId;
+  if (!providerUserId) return;
+
+  const result = await client.query<{ user_id: string }>(
+    `INSERT INTO identity.external_identities
+       (user_id, provider, provider_user_id, provider_email, provider_email_verified, last_login_at, raw_profile)
+     VALUES ($1, $2, $3, $4, $5, now(), $6)
+     ON CONFLICT (provider, provider_user_id)
+     WHERE provider_user_id IS NOT NULL
+     DO UPDATE SET
+       provider_email = EXCLUDED.provider_email,
+       provider_email_verified = EXCLUDED.provider_email_verified,
+       last_login_at = now(),
+       updated_at = now()
+     WHERE identity.external_identities.user_id = EXCLUDED.user_id
+     RETURNING user_id`,
+    [
+      userId,
+      command.payload.providerIdentity?.provider ?? "workos",
+      providerUserId,
+      command.payload.email,
+      command.payload.providerIdentity?.providerEmailVerified ?? false,
+      JSON.stringify({
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+        source: "authkit_jit",
+      }),
+    ],
+  );
+  if (result.rowCount === 0) {
+    throw new Error("WorkOS provider identity is already linked to another user");
+  }
+}
+
 async function updateIdentityUserEmail(
   pool: pg.Pool,
   command: UpdateIdentityUserEmailCommand,
@@ -201,11 +261,7 @@ async function updateIdentityUserEmail(
          provider_email_verified = COALESCE($3, provider_email_verified),
          updated_at = now()
      WHERE user_id = $1`,
-    [
-      command.payload.userId,
-      command.payload.email,
-      command.payload.providerEmailVerified ?? null,
-    ],
+    [command.payload.userId, command.payload.email, command.payload.providerEmailVerified ?? null],
   );
   return accepted(command, command.payload.userId, "identity.user.email.updated");
 }
@@ -291,45 +347,7 @@ async function grantIdentityAccess(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const organizationId = await upsertOrganization(client, command.payload.organization);
-    await client.query(
-      `INSERT INTO identity.organization_memberships
-         (organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs, invited_at)
-       VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, COALESCE($6, '{}'), $7)
-       ON CONFLICT (organization_id, user_id)
-       DO UPDATE SET
-         status = EXCLUDED.status,
-         role_key = EXCLUDED.role_key,
-         workos_membership_id = COALESCE(EXCLUDED.workos_membership_id, identity.organization_memberships.workos_membership_id),
-         workos_role_slugs = EXCLUDED.workos_role_slugs,
-         updated_at = now()`,
-      [
-        organizationId,
-        command.payload.userId,
-        command.payload.membership.status ?? "active",
-        command.payload.membership.roleKey,
-        command.payload.membership.workosMembershipId ?? null,
-        command.payload.membership.workosRoleSlugs ?? [],
-        command.payload.membership.invitedAt ?? null,
-      ],
-    );
-    for (const link of command.payload.resourceLinks ?? []) {
-      await client.query(
-        `INSERT INTO identity.organization_resource_links
-           (organization_id, product, resource_type, resource_id, relationship, status)
-         VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'active'))
-         ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
-         DO UPDATE SET status = EXCLUDED.status, updated_at = now()`,
-        [
-          link.organizationId ?? organizationId,
-          link.product,
-          link.resourceType,
-          link.resourceId,
-          link.relationship,
-          link.status ?? "active",
-        ],
-      );
-    }
+    const organizationId = await grantIdentityAccessWithClient(client, command.payload);
     for (const grant of command.payload.permissionGrants ?? []) {
       await client.query(
         `INSERT INTO identity.role_permission_grants
@@ -347,6 +365,52 @@ async function grantIdentityAccess(
   } finally {
     client.release();
   }
+}
+
+async function grantIdentityAccessWithClient(
+  client: pg.PoolClient,
+  payload: GrantIdentityAccessCommand["payload"],
+): Promise<string> {
+  const organizationId = await upsertOrganization(client, payload.organization);
+  await client.query(
+    `INSERT INTO identity.organization_memberships
+       (organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs, invited_at)
+     VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, COALESCE($6, '{}'), $7)
+     ON CONFLICT (organization_id, user_id)
+     DO UPDATE SET
+       status = EXCLUDED.status,
+       role_key = EXCLUDED.role_key,
+       workos_membership_id = COALESCE(EXCLUDED.workos_membership_id, identity.organization_memberships.workos_membership_id),
+       workos_role_slugs = EXCLUDED.workos_role_slugs,
+       updated_at = now()`,
+    [
+      organizationId,
+      payload.userId,
+      payload.membership.status ?? "active",
+      payload.membership.roleKey,
+      payload.membership.workosMembershipId ?? null,
+      payload.membership.workosRoleSlugs ?? [],
+      payload.membership.invitedAt ?? null,
+    ],
+  );
+  for (const link of payload.resourceLinks ?? []) {
+    await client.query(
+      `INSERT INTO identity.organization_resource_links
+         (organization_id, product, resource_type, resource_id, relationship, status)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'active'))
+       ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
+       DO UPDATE SET status = EXCLUDED.status, updated_at = now()`,
+      [
+        link.organizationId ?? organizationId,
+        link.product,
+        link.resourceType,
+        link.resourceId,
+        link.relationship,
+        link.status ?? "active",
+      ],
+    );
+  }
+  return organizationId;
 }
 
 async function revokeIdentityAccess(
@@ -401,6 +465,50 @@ async function upsertOrganization(
   organization: GrantIdentityAccessCommand["payload"]["organization"],
 ): Promise<string> {
   const slug = organization.slug ?? slugify(organization.name);
+  if (!organization.organizationId && (organization.workosOrgId || organization.workosExternalId)) {
+    const existing = await client.query<{ id: string }>(
+      `SELECT id
+       FROM identity.organizations
+       WHERE ($1::text IS NOT NULL AND workos_org_id = $1)
+          OR ($2::text IS NOT NULL AND workos_external_id = $2)
+       ORDER BY CASE WHEN workos_org_id = $1 THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [organization.workosOrgId ?? null, organization.workosExternalId ?? null],
+    );
+    const existingId = existing.rows[0]?.id;
+    if (existingId) {
+      const result = await client.query<{ id: string }>(
+        `UPDATE identity.organizations
+         SET kind = $2,
+             name = $3,
+             slug = $4,
+             status = COALESCE($5, 'active'),
+             workos_org_id = COALESCE(identity.organizations.workos_org_id, $6),
+             workos_external_id = COALESCE(identity.organizations.workos_external_id, $7),
+             updated_at = now()
+         WHERE id = $1
+           AND ($6::text IS NULL OR workos_org_id IS NULL OR workos_org_id = $6)
+           AND ($7::text IS NULL OR workos_external_id IS NULL OR workos_external_id = $7)
+         RETURNING id`,
+        [
+          existingId,
+          organization.kind,
+          organization.name,
+          slug,
+          organization.status ?? "active",
+          organization.workosOrgId ?? null,
+          organization.workosExternalId ?? null,
+        ],
+      );
+      const updatedId = result.rows[0]?.id;
+      if (!updatedId) {
+        throw new Error(
+          "WorkOS organization identifiers are already linked to another organization",
+        );
+      }
+      return updatedId;
+    }
+  }
   if (organization.organizationId) {
     const result = await client.query<{ id: string }>(
       `INSERT INTO identity.organizations
@@ -424,6 +532,56 @@ async function upsertOrganization(
         organization.status ?? "active",
         organization.workosOrgId ?? null,
         organization.workosExternalId ?? null,
+      ],
+    );
+    return result.rows[0]!.id;
+  }
+
+  if (organization.workosOrgId) {
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO identity.organizations
+         (kind, name, slug, status, workos_org_id, workos_external_id)
+       VALUES ($1, $2, $3, COALESCE($4, 'active'), $5, $6)
+       ON CONFLICT (workos_org_id)
+       DO UPDATE SET
+         kind = EXCLUDED.kind,
+         name = EXCLUDED.name,
+         slug = EXCLUDED.slug,
+         status = EXCLUDED.status,
+         workos_external_id = COALESCE(EXCLUDED.workos_external_id, identity.organizations.workos_external_id),
+         updated_at = now()
+       RETURNING id`,
+      [
+        organization.kind,
+        organization.name,
+        slug,
+        organization.status ?? "active",
+        organization.workosOrgId,
+        organization.workosExternalId ?? null,
+      ],
+    );
+    return result.rows[0]!.id;
+  }
+
+  if (organization.workosExternalId) {
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO identity.organizations
+         (kind, name, slug, status, workos_external_id)
+       VALUES ($1, $2, $3, COALESCE($4, 'active'), $5)
+       ON CONFLICT (workos_external_id)
+       DO UPDATE SET
+         kind = EXCLUDED.kind,
+         name = EXCLUDED.name,
+         slug = EXCLUDED.slug,
+         status = EXCLUDED.status,
+         updated_at = now()
+       RETURNING id`,
+      [
+        organization.kind,
+        organization.name,
+        slug,
+        organization.status ?? "active",
+        organization.workosExternalId,
       ],
     );
     return result.rows[0]!.id;

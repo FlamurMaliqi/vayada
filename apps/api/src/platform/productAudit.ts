@@ -61,6 +61,8 @@ async function insertProductAuditEvent(pool: pg.Pool, event: ProductAuditEvent):
         workosOrgId: event.workosOrgId,
         workosSessionId: event.workosSessionId,
         surface: event.surface,
+        authFlow: event.authFlow,
+        signupIntent: event.signupIntent,
         resourceScope: event.resourceScope,
       }),
       JSON.stringify({

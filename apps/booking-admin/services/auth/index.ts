@@ -44,24 +44,6 @@ export interface LoginResponse {
   totp_session?: string;
 }
 
-export interface RegisterRequest {
-  name: string;
-  email: string;
-  password: string;
-}
-
-export interface RegisterResponse {
-  message: string;
-  id: string;
-  email: string;
-  name: string;
-  access_token: string;
-  token_type: string;
-  expires_in: number;
-  type: string;
-  status: string;
-}
-
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
     ...options,
@@ -167,31 +149,6 @@ export const authService = {
       clearAuthData();
       return false;
     }
-  },
-
-  /**
-   * Register a new hotel admin user
-   */
-  register: async (data: RegisterRequest): Promise<RegisterResponse> => {
-    const response = await apiClient.post<RegisterResponse>("/auth/register", {
-      ...data,
-      terms_accepted: true,
-      privacy_accepted: true,
-    });
-
-    setLegacyPasswordSession({
-      token: response.access_token,
-      expiresIn: response.expires_in,
-      user: {
-        id: response.id,
-        email: response.email,
-        name: response.name,
-        type: response.type,
-        status: response.status,
-      },
-    });
-
-    return response;
   },
 
   /**
