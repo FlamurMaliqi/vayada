@@ -35,17 +35,24 @@ describe("createWorkOSAuthKitClient", () => {
     });
     workosMocks.refresh.mockResolvedValue({
       authenticated: true,
+      accessToken: "refreshed-access-token",
       organizationId: "org_workos_hotel",
       sealedSession: "refreshed-sealed-session",
       session: {
-        accessToken: "refreshed-access-token",
+        accessToken: "nested-access-token",
         refreshToken: "refresh-token",
         user: {
-          id: "user_workos_hotel",
-          email: "hotel@example.com",
-          emailVerified: true,
-          name: "Hotel Owner",
+          id: "nested_user",
+          email: "nested@example.test",
+          emailVerified: false,
+          name: "Nested User",
         },
+      },
+      user: {
+        id: "user_workos_hotel",
+        email: "hotel@example.com",
+        emailVerified: true,
+        name: "Hotel Owner",
       },
       sessionId: "session_refreshed",
     });
@@ -66,6 +73,9 @@ describe("createWorkOSAuthKitClient", () => {
       organizationId: "org_workos_hotel",
       sealedSession: "refreshed-sealed-session",
       sessionId: "session_refreshed",
+      user: {
+        id: "user_workos_hotel",
+      },
     });
     expect(workosMocks.refresh).toHaveBeenCalledWith({
       cookiePassword: "a".repeat(32),

@@ -65,10 +65,13 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
         organizationId: input.organizationId,
       });
       if (!refreshed.authenticated || !refreshed.sealedSession || !refreshed.session) return null;
+      const accessToken =
+        "accessToken" in refreshed && typeof refreshed.accessToken === "string"
+          ? refreshed.accessToken
+          : refreshed.session.accessToken;
       return toAuthKitSession({
-        ...refreshed.session,
-        organizationId: refreshed.organizationId,
-        sessionId: refreshed.sessionId,
+        ...refreshed,
+        accessToken,
         sealedSession: refreshed.sealedSession,
       });
     },

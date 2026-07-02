@@ -491,8 +491,8 @@ describe("AuthKit session routes", () => {
       organizationId: undefined,
       user: {
         ...session.user,
-        id: "user_workos_contact",
-        email: "contact@flamur-maliqi.de",
+        id: "user_workos_hotel_owner",
+        email: "hotel-owner@example.test",
       },
     };
     app = buildAuthSessionApp({
@@ -516,7 +516,7 @@ describe("AuthKit session routes", () => {
         async ensureSignupOrganizationMembership(input) {
           workosCalls.push("membership");
           expect(input).toEqual({
-            workosUserId: "user_workos_contact",
+            workosUserId: "user_workos_hotel_owner",
             workosOrganizationId: "org_workos_signup_hotel",
             roleKey: "hotel_owner",
           });
@@ -541,7 +541,7 @@ describe("AuthKit session routes", () => {
         organizationByWorkosOrgId: async () => ({
           organizationId: "org_hotel_group",
           workosOrgId: "org_workos_signup_hotel",
-          name: "Contact Hotel Group",
+          name: "Test Hotel Group",
           kind: "hotel_group",
           status: "active",
         }),
@@ -614,11 +614,11 @@ describe("AuthKit session routes", () => {
       expect.objectContaining({
         commandType: "identity.user.create",
         payload: expect.objectContaining({
-          email: "contact@flamur-maliqi.de",
+          email: "hotel-owner@example.test",
           legacyUserType: "hotel",
           organization: {
             kind: "hotel_group",
-            name: "Contact Hotel Group",
+            name: "Hotel Owner Hotel Group",
             workosExternalId: "vayada-signup:pms-web:hotel:pms-login-state",
             workosOrgId: "org_workos_signup_hotel",
           },
