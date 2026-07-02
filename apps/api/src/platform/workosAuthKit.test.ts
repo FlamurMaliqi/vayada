@@ -83,4 +83,29 @@ describe("createWorkOSAuthKitClient", () => {
     });
     expect(workosMocks.authenticate).not.toHaveBeenCalled();
   });
+
+  it("treats stale sealed-session JWKS mismatches as invalid sessions", async () => {
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          loadSealedSession: workosMocks.loadSealedSession,
+        },
+      };
+    });
+    workosMocks.loadSealedSession.mockReturnValue({
+      authenticate: workosMocks.authenticate,
+    });
+    const error = new Error("no applicable key found in the JSON Web Key Set");
+    Object.defineProperty(error, "name", { value: "JWKSNoMatchingKey" });
+    Object.assign(error, { code: "ERR_JWKS_NO_MATCHING_KEY" });
+    workosMocks.authenticate.mockRejectedValue(error);
+
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await expect(client.authenticateSession({ sealedSession: "stale-session" })).resolves.toBeNull();
+  });
 });

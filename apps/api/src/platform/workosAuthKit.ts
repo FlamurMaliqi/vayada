@@ -42,12 +42,18 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
     },
 
     async authenticateSession(input) {
-      const response = await workos.userManagement
-        .loadSealedSession({
-          sessionData: input.sealedSession,
-          cookiePassword: config.cookiePassword,
-        })
-        .authenticate();
+      let response: Awaited<ReturnType<ReturnType<typeof workos.userManagement.loadSealedSession>["authenticate"]>>;
+      try {
+        response = await workos.userManagement
+          .loadSealedSession({
+            sessionData: input.sealedSession,
+            cookiePassword: config.cookiePassword,
+          })
+          .authenticate();
+      } catch (error) {
+        if (isInvalidSealedSessionError(error)) return null;
+        throw error;
+      }
       if (!response.authenticated) return null;
       return toAuthKitSession({
         ...response,
@@ -146,6 +152,17 @@ function membershipRoleSlugs(
   if (roleSlugs.length > 0) return roleSlugs;
   if (membership.role?.slug) return [membership.role.slug];
   return fallback;
+}
+
+function isInvalidSealedSessionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    code === "ERR_JWKS_NO_MATCHING_KEY" ||
+    code === "ERR_JWT_EXPIRED" ||
+    error.name === "JWKSNoMatchingKey" ||
+    error.name === "JWTExpired"
+  );
 }
 
 function membershipStatus(status: string | undefined): MembershipStatus | undefined {
