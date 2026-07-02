@@ -30,6 +30,7 @@ export default async function SignUpPage({ searchParams }: SignUpPageProps) {
       intent,
       fallbackOrigin: "https://app.vayada.com",
       returnTo,
+      returnToFallback: "/marketplace",
       loginHint,
     }),
   );

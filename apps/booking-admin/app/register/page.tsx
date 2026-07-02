@@ -27,6 +27,7 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
       intent: "hotel",
       fallbackOrigin: "https://admin.booking.vayada.com",
       returnTo,
+      returnToFallback: "/dashboard",
       loginHint,
     }),
   );

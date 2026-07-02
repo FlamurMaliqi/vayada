@@ -57,7 +57,9 @@ export {
   buildHostedSignupRedirectUrl,
   firstSearchParam,
   safeRelativeReturnTo,
+  type HostedSignupIntent,
   type HostedSignupRedirectInput,
+  type HostedSignupSurface,
   type ReturnToParam,
 } from "./returnTo";
 export {
