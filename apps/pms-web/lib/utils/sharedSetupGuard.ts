@@ -5,10 +5,9 @@ import {
 } from "@vayada/hotel-setup-wizard";
 
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { SELECTED_SHARED_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
 
 type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem">;
-
-export const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
 
 export async function resolvePmsSetupGuard(
   returnTo: string,

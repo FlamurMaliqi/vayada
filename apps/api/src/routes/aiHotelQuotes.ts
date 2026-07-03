@@ -51,8 +51,6 @@ export type PublicHotelQuoteReadPool = {
   end(): Promise<void>;
 };
 
-type FetchLike = (input: URL, init?: { signal?: AbortSignal }) => Promise<Response>;
-
 type TargetPublicHotelQuoteRow = {
   quoteSessionId: string;
   publicQuoteReference: string;
@@ -87,28 +85,6 @@ type TargetRoomOfferSnapshotQuoteRow = {
   discounts: string | number;
   currency: string;
   generatedAt: Date | string | null;
-};
-
-type PmsPublicRoomType = {
-  id: string;
-  name: string;
-  maxOccupancy?: number | null;
-  maxAdults?: number | null;
-  maxChildren?: number | null;
-  baseRate?: number | null;
-  nonRefundableRate?: number | null;
-  nightlyRates?: number[] | null;
-  nonRefundableNightlyRates?: number[] | null;
-  currency: string;
-  remainingRooms: number;
-  flexibleRateEnabled?: boolean | null;
-  cancellationPolicy?: string | null;
-  nonRefundableCancellationPolicy?: string | null;
-  ratePaymentMethods?: Record<string, PublicBookabilityOffer["paymentOptions"]> | null;
-  rateDepositSettings?: Record<
-    string,
-    { enabled?: boolean; percentage?: number | null } | null
-  > | null;
 };
 
 type PublicHotelQuoteParams = {
@@ -155,31 +131,16 @@ export async function registerAiHotelQuoteRoutes(
 
 export function createCompatibilityPublicHotelQuoteRepository(config: {
   profileRepository: PublicHotelProfileRepository;
-  pmsPublicApiUrl?: string;
-  fetch?: FetchLike;
   now?: () => Date;
 }): PublicHotelQuoteRepository {
   const now = config.now ?? (() => new Date());
-  const fetchImpl = config.fetch ?? fetch;
-  const pmsPublicApiUrl = config.pmsPublicApiUrl?.trim();
 
   return {
     async findQuoteBySlug(slug, query) {
       const profile = await config.profileRepository.findProfileBySlug(slug);
       if (!profile) return null;
 
-      const parsed = parsePublicHotelQuoteRequest(profile.hotel, query, now());
-      if (parsed.reasons.length > 0 || !pmsPublicApiUrl) {
-        return toUnavailablePublicHotelQuoteProjection(profile.hotel, query, now());
-      }
-
-      return fetchPublicHotelQuoteFromPms({
-        hotel: profile.hotel,
-        request: parsed.request,
-        pmsPublicApiUrl,
-        fetch: fetchImpl,
-        now: now(),
-      });
+      return toUnavailablePublicHotelQuoteProjection(profile.hotel, query, now());
     },
   };
 }
@@ -570,154 +531,6 @@ export function serializePublicHotelQuoteProjection(
   return serialized;
 }
 
-async function fetchPublicHotelQuoteFromPms(config: {
-  hotel: PublicBookabilityHotelProfile;
-  request: PublicBookabilityQuoteRequest;
-  pmsPublicApiUrl: string;
-  fetch: FetchLike;
-  now: Date;
-}): Promise<PublicBookabilityQuoteProjection> {
-  const generatedAt = config.now.toISOString();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3_000);
-
-  try {
-    const url = new URL(
-      `/api/hotels/${encodeURIComponent(config.hotel.slug)}/rooms`,
-      config.pmsPublicApiUrl,
-    );
-    url.searchParams.set("check_in", config.request.checkIn);
-    url.searchParams.set("check_out", config.request.checkOut);
-    url.searchParams.set("adults", String(config.request.adults));
-    url.searchParams.set("children", String(config.request.children));
-
-    const response = await config.fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      return buildPmsUnavailableQuote(config.hotel, config.request, generatedAt);
-    }
-
-    const rooms = (await response.json()) as unknown;
-    if (!Array.isArray(rooms)) {
-      return buildPmsUnavailableQuote(config.hotel, config.request, generatedAt);
-    }
-
-    return buildQuoteFromPmsRooms(config.hotel, config.request, generatedAt, rooms);
-  } catch {
-    return buildPmsUnavailableQuote(config.hotel, config.request, generatedAt);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function buildQuoteFromPmsRooms(
-  hotel: PublicBookabilityHotelProfile,
-  request: PublicBookabilityQuoteRequest,
-  generatedAt: string,
-  rooms: unknown[],
-): PublicBookabilityQuoteProjection {
-  const { offers, offerPolicies, unsupportedOccupancy } = rooms.reduce<{
-    offers: PublicBookabilityAvailabilityOfferInput[];
-    offerPolicies: PublicBookabilityBookingOfferPolicyInput[];
-    unsupportedOccupancy: boolean;
-  }>(
-    (result, rawRoom) => {
-      const room = normalizePmsPublicRoom(rawRoom);
-      if (!room || room.currency !== request.currency || room.remainingRooms < request.rooms) {
-        return result;
-      }
-      if (!roomCanHoldRequest(room, request)) {
-        result.unsupportedOccupancy = true;
-        return result;
-      }
-
-      const flexibleOffer = buildPmsRoomOffer(room, request, "flexible");
-      if (flexibleOffer) {
-        result.offers.push(flexibleOffer.offer);
-        result.offerPolicies.push(flexibleOffer.policy);
-      }
-
-      const nonRefundableOffer = buildPmsRoomOffer(room, request, "nonrefundable");
-      if (nonRefundableOffer) {
-        result.offers.push(nonRefundableOffer.offer);
-        result.offerPolicies.push(nonRefundableOffer.policy);
-      }
-
-      return result;
-    },
-    { offers: [], offerPolicies: [], unsupportedOccupancy: false },
-  );
-  const quoteId = buildPublicQuoteId(request);
-  const expiresAt = new Date(Date.parse(generatedAt) + 15 * 60 * 1_000).toISOString();
-
-  return buildPublicBookabilityQuoteProjection(generatedAt, {
-    request,
-    hotelCatalog: { lastUpdatedAt: generatedAt },
-    booking: { lastUpdatedAt: generatedAt, offerPolicies },
-    pms: {
-      availabilityReady: true,
-      lastUpdatedAt: generatedAt,
-      offers,
-      unavailableReasons: quoteUnavailableReasonsFromPms(
-        hotel,
-        request,
-        generatedAt,
-        offers,
-        unsupportedOccupancy,
-      ),
-    },
-    finance: {
-      lastUpdatedAt: generatedAt,
-      publicPaymentOptions: publicPaymentOptionsForQuote(hotel, offers),
-      supportedCurrencies: hotel.supportedCurrencies,
-    },
-    bookingWeb: {
-      offerBookingUrlBase: `${hotel.bookingBaseUrl}/${request.locale}/book`,
-      deepLink: buildPublicQuoteDeepLink(hotel, request, quoteId, expiresAt),
-    },
-    quote: {
-      quoteId,
-      quoteHash: buildPublicQuoteHash(request, offers),
-      expiresAt,
-      priceGuarantee: "expires_at",
-    },
-  });
-}
-
-function buildPmsUnavailableQuote(
-  hotel: PublicBookabilityHotelProfile,
-  request: PublicBookabilityQuoteRequest,
-  generatedAt: string,
-): PublicBookabilityQuoteProjection {
-  return buildPublicBookabilityQuoteProjection(generatedAt, {
-    request,
-    hotelCatalog: { lastUpdatedAt: generatedAt },
-    booking: { lastUpdatedAt: generatedAt, offerPolicies: [] },
-    pms: {
-      availabilityReady: false,
-      freshness: { status: "unavailable", reasonCode: "source_unavailable" },
-      offers: [],
-      unavailableReasons: [
-        { code: "unavailable_data", detail: "Public availability source is unavailable." },
-      ],
-    },
-    finance: {
-      lastUpdatedAt: generatedAt,
-      publicPaymentOptions: publicHotelPaymentOptions(hotel),
-      supportedCurrencies: hotel.supportedCurrencies,
-    },
-    bookingWeb: {
-      offerBookingUrlBase: `${hotel.bookingBaseUrl}/${request.locale}/book`,
-      deepLink: null,
-    },
-    quote: {
-      quoteId: buildPublicQuoteId(request),
-      quoteHash: buildPublicQuoteHash(request, []),
-      expiresAt: generatedAt,
-      priceGuarantee: "none",
-    },
-  });
-}
-
 function parsePublicHotelQuoteRequest(
   hotel: PublicBookabilityHotelProfile,
   query: PublicHotelQuoteQuery,
@@ -1061,6 +874,24 @@ function paymentOptionsArray(value: unknown): PublicBookabilityOffer["paymentOpt
   return options.length > 0 ? [...new Set(options)] : ["card"];
 }
 
+function normalizePublicPaymentMethod(
+  value: unknown,
+): PublicBookabilityOffer["paymentOptions"][number] | null {
+  if (value === "card" || value === "credit_card" || value === "stripe" || value === "xendit") {
+    return "card";
+  }
+  if (value === "pay_at_property" || value === "cash" || value === "on_arrival") {
+    return "pay_at_property";
+  }
+  if (value === "bank_transfer") {
+    return "bank_transfer";
+  }
+  if (value === "paypal") {
+    return "paypal";
+  }
+  return null;
+}
+
 function reasonCode(value: string | null): PublicBookabilityReasonCode | null {
   if (
     value === "sold_out" ||
@@ -1151,126 +982,6 @@ function buildFallbackBookingUrl(
   if (request.promoCode) url.searchParams.set("promo_code", request.promoCode);
   if (request.referralCode) url.searchParams.set("referral_code", request.referralCode);
   return url.toString();
-}
-
-function normalizePmsPublicRoom(value: unknown): PmsPublicRoomType | null {
-  if (!value || typeof value !== "object") return null;
-  const room = value as Record<string, unknown>;
-  const id = stringValue(room["id"]);
-  const name = stringValue(room["name"]);
-  const currency = stringValue(room["currency"]);
-  if (!id || !name || !currency) return null;
-
-  return {
-    id,
-    name,
-    maxOccupancy: numberValue(room["maxOccupancy"]),
-    maxAdults: numberValue(room["maxAdults"]),
-    maxChildren: numberValue(room["maxChildren"]),
-    baseRate: numberValue(room["baseRate"]),
-    nonRefundableRate: numberValue(room["nonRefundableRate"]),
-    nightlyRates: numberArrayValue(room["nightlyRates"]),
-    nonRefundableNightlyRates: numberArrayValue(room["nonRefundableNightlyRates"]),
-    currency,
-    remainingRooms: numberValue(room["remainingRooms"]) ?? 0,
-    flexibleRateEnabled: booleanValue(room["flexibleRateEnabled"]),
-    cancellationPolicy: stringValue(room["cancellationPolicy"]),
-    nonRefundableCancellationPolicy: stringValue(room["nonRefundableCancellationPolicy"]),
-    ratePaymentMethods: publicPaymentMethodMap(room["ratePaymentMethods"]),
-    rateDepositSettings: depositSettingsMap(room["rateDepositSettings"]),
-  };
-}
-
-function buildPmsRoomOffer(
-  room: PmsPublicRoomType,
-  request: PublicBookabilityQuoteRequest,
-  rateType: "flexible" | "nonrefundable",
-): {
-  offer: PublicBookabilityAvailabilityOfferInput;
-  policy: PublicBookabilityBookingOfferPolicyInput;
-} | null {
-  const nightlyRates =
-    rateType === "nonrefundable" ? room.nonRefundableNightlyRates : room.nightlyRates;
-  const fallbackRate = rateType === "nonrefundable" ? room.nonRefundableRate : room.baseRate;
-  const roomTotal = stayRoomTotal(nightlyRates, fallbackRate, request.nights, request.rooms);
-  const deposit = room.rateDepositSettings?.[rateType] ?? null;
-  const paymentOptions = ratePaymentOptions(room, rateType, deposit);
-  if (
-    roomTotal <= 0 ||
-    paymentOptions.length === 0 ||
-    (rateType === "flexible" && room.flexibleRateEnabled === false) ||
-    (rateType === "nonrefundable" &&
-      !room.nonRefundableRate &&
-      !room.nonRefundableNightlyRates?.length)
-  ) {
-    return null;
-  }
-
-  return {
-    offer: {
-      offerId: `${room.id}_${rateType}`,
-      roomTypeId: room.id,
-      ratePlanId: rateType,
-      name: rateType === "nonrefundable" ? `${room.name} - Non-refundable` : room.name,
-      occupancy: {
-        maxAdults: room.maxAdults ?? room.maxOccupancy ?? request.adults,
-        maxChildren: room.maxChildren ?? 0,
-      },
-      availableRooms: room.remainingRooms,
-      refundable: rateType === "flexible",
-      mealPlan: null,
-      paymentOptions,
-      totals: {
-        currency: request.currency,
-        roomTotal,
-        taxesAndFees: 0,
-        discounts: 0,
-        grandTotal: roomTotal,
-      },
-    },
-    policy: {
-      roomTypeId: room.id,
-      ratePlanId: rateType,
-      cancellation:
-        rateType === "nonrefundable"
-          ? room.nonRefundableCancellationPolicy || "Non-refundable from booking"
-          : room.cancellationPolicy || "Free until 7 days before",
-      deposit: depositSummary(deposit),
-    },
-  };
-}
-
-function roomCanHoldRequest(
-  room: PmsPublicRoomType,
-  request: PublicBookabilityQuoteRequest,
-): boolean {
-  const maxAdults = room.maxAdults ?? room.maxOccupancy ?? request.adults;
-  const maxChildren = room.maxChildren ?? Math.max(0, (room.maxOccupancy ?? maxAdults) - maxAdults);
-  const maxOccupancy = room.maxOccupancy ?? maxAdults + maxChildren;
-
-  return (
-    request.adults <= maxAdults * request.rooms &&
-    request.children <= maxChildren * request.rooms &&
-    request.adults + request.children <= maxOccupancy * request.rooms
-  );
-}
-
-function quoteUnavailableReasonsFromPms(
-  hotel: PublicBookabilityHotelProfile,
-  request: PublicBookabilityQuoteRequest,
-  generatedAt: string,
-  offers: PublicBookabilityAvailabilityOfferInput[],
-  unsupportedOccupancy: boolean,
-): PublicBookabilityUnavailableReason[] {
-  if (offers.length > 0) return [];
-  if (unsupportedOccupancy) return [{ code: "unsupported_occupancy" }];
-  return [
-    {
-      code: isSamePropertyDay(request.checkIn, hotel.timezone, new Date(generatedAt))
-        ? "same_day_cutoff_passed"
-        : "sold_out",
-    },
-  ];
 }
 
 function serializeOffer(offer: PublicBookabilityOffer): PublicBookabilityOffer {
@@ -1398,19 +1109,6 @@ function daysBetweenDateOnly(start: string, end: string): number | null {
   return Math.round((endMs - startMs) / 86_400_000);
 }
 
-function stayRoomTotal(
-  nightlyRates: number[] | null | undefined,
-  fallbackRate: number | null | undefined,
-  nights: number,
-  rooms: number,
-): number {
-  const perRoom =
-    nightlyRates && nightlyRates.length === nights
-      ? nightlyRates.reduce((total, rate) => total + rate, 0)
-      : (fallbackRate ?? 0) * nights;
-  return roundMoney(perRoom * rooms);
-}
-
 function publicHotelPaymentOptions(
   hotel: PublicBookabilityHotelProfile,
 ): PublicBookabilityOffer["paymentOptions"] {
@@ -1430,26 +1128,6 @@ function publicPaymentOptionsForQuote(
       ...offers.flatMap((offer) => offer.paymentOptions ?? []),
     ]),
   ];
-}
-
-function ratePaymentOptions(
-  room: PmsPublicRoomType,
-  rateType: "flexible" | "nonrefundable",
-  deposit: { enabled?: boolean; percentage?: number | null } | null,
-): PublicBookabilityOffer["paymentOptions"] {
-  const configured = room.ratePaymentMethods?.[rateType] ?? ["card", "pay_at_property"];
-  const allowed = new Set(configured);
-  if (deposit?.enabled) {
-    allowed.delete("pay_at_property");
-  }
-  return [...allowed];
-}
-
-function depositSummary(
-  settings: { enabled?: boolean; percentage?: number | null } | null,
-): string | null {
-  if (!settings?.enabled) return "No deposit required.";
-  return settings.percentage ? `${settings.percentage}% deposit required.` : "Deposit required.";
 }
 
 function sanitizePublicCode(value: string | undefined): string | null {
@@ -1501,76 +1179,12 @@ function booleanValue(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
-function numberArrayValue(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const numbers = value.filter(
-    (item): item is number => typeof item === "number" && Number.isFinite(item),
-  );
-  return numbers.length === value.length ? numbers : null;
-}
-
-function publicPaymentMethodMap(
-  value: unknown,
-): Record<string, PublicBookabilityOffer["paymentOptions"]> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, methods]) => [
-      key,
-      Array.isArray(methods)
-        ? methods
-            .map(normalizePublicPaymentMethod)
-            .filter((method): method is PublicBookabilityOffer["paymentOptions"][number] =>
-              Boolean(method),
-            )
-        : [],
-    ]),
-  );
-}
-
-function normalizePublicPaymentMethod(
-  method: unknown,
-): PublicBookabilityOffer["paymentOptions"][number] | null {
-  if (
-    method === "card" ||
-    method === "pay_at_property" ||
-    method === "bank_transfer" ||
-    method === "paypal"
-  ) {
-    return method;
-  }
-  if (method === "xendit") return "card";
-  return null;
-}
-
-function depositSettingsMap(
-  value: unknown,
-): Record<string, { enabled?: boolean; percentage?: number | null } | null> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const result: Record<string, { enabled?: boolean; percentage?: number | null } | null> = {};
-  for (const [key, settings] of Object.entries(value as Record<string, unknown>)) {
-    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-      result[key] = null;
-      continue;
-    }
-    const record = settings as Record<string, unknown>;
-    result[key] = {
-      enabled: booleanValue(record["enabled"]) ?? false,
-      percentage: numberValue(record["percentage"]),
-    };
-  }
-  return result;
-}
-
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
 function isBeforePropertyToday(checkIn: string, timezone: string, now: Date): boolean {
   return checkIn < propertyDateOnly(timezone, now);
-}
-
-function isSamePropertyDay(checkIn: string, timezone: string, now: Date): boolean {
-  return checkIn === propertyDateOnly(timezone, now);
 }
 
 function propertyDateOnly(timezone: string, now: Date): string {

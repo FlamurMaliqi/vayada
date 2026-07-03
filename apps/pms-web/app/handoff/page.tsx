@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect } from "react";
-import { listPmsProperties, type PmsPropertySummary } from "@/services/api/pmsPropertyClient";
+import {
+  getStoredPmsPropertyId,
+  listPmsProperties,
+  storeSelectedPmsPropertyId,
+  type PmsPropertySummary,
+} from "@/services/api/pmsPropertyClient";
 
 export default function HandoffPage() {
   useEffect(() => {
@@ -48,21 +53,21 @@ export default function HandoffPage() {
       // valid selected PMS property) > setup (if incomplete) > dashboard.
       (async () => {
         let properties: PmsPropertySummary[] = [];
-        let selectedPmsPropertyId: string | null = null;
+        let selectedPmsPropertyId = handoffHotelId?.trim() || getStoredPmsPropertyId();
 
-        try {
-          properties = await listPmsProperties();
-          selectedPmsPropertyId =
-            handoffHotelId && properties.some((property) => property.id === handoffHotelId)
-              ? handoffHotelId
-              : null;
-          if (selectedPmsPropertyId) {
-            localStorage.setItem("selectedHotelId", selectedPmsPropertyId);
-          } else {
-            localStorage.removeItem("selectedHotelId");
+        if (selectedPmsPropertyId) {
+          storeSelectedPmsPropertyId(selectedPmsPropertyId);
+        } else {
+          try {
+            properties = await listPmsProperties();
+            const selected = properties[0] ?? null;
+            if (selected) {
+              selectedPmsPropertyId = selected.id;
+              storeSelectedPmsPropertyId(selected.id);
+            }
+          } catch {
+            /* A missing list read model should not clear a valid AuthKit resource selection. */
           }
-        } catch {
-          localStorage.removeItem("selectedHotelId");
         }
 
         if (!safeRedirect && !selectedPmsPropertyId && properties.length > 1) {
@@ -70,7 +75,7 @@ export default function HandoffPage() {
           return;
         }
 
-        const setupComplete = properties.length > 0;
+        const setupComplete = Boolean(selectedPmsPropertyId || properties.length > 0);
         localStorage.setItem("pmsSetupComplete", setupComplete ? "true" : "false");
 
         if (safeRedirect) {
@@ -89,13 +94,14 @@ export default function HandoffPage() {
           return;
         }
 
-        if (properties.length === 1) {
-          localStorage.setItem("selectedHotelId", properties[0].id);
-        }
         window.location.href = "/dashboard";
       })().catch(() => {
+        if (getStoredPmsPropertyId()) {
+          localStorage.setItem("pmsSetupComplete", "true");
+          window.location.href = safeRedirect ?? "/dashboard";
+          return;
+        }
         localStorage.setItem("pmsSetupComplete", "false");
-        localStorage.removeItem("selectedHotelId");
         window.location.href = "/setup";
       });
     } else {

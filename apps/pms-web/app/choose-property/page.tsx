@@ -2,6 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  clearStoredPmsPropertyId,
+  getStoredPmsPropertyId,
+  storeSelectedPmsPropertyId,
+} from "@/services/api/pmsPropertyClient";
 import { authService } from "@/services/auth";
 import { pmsSettingsService, type HotelSummary } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
@@ -60,15 +65,19 @@ export default function PmsChoosePropertyPage() {
           return;
         }
         if (list.length === 1) {
-          localStorage.setItem("selectedHotelId", list[0].id);
+          storeSelectedPmsPropertyId(list[0].id);
           router.replace("/dashboard");
           return;
         }
         setHotels(list);
       } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : t("auth.chooseProperty.loadError"));
+        if (cancelled) return;
+        if (getStoredPmsPropertyId()) {
+          localStorage.setItem("pmsSetupComplete", "true");
+          router.replace("/dashboard");
+          return;
         }
+        setError(e instanceof Error ? e.message : t("auth.chooseProperty.loadError"));
       }
     }
 
@@ -79,7 +88,7 @@ export default function PmsChoosePropertyPage() {
   }, [router, t]);
 
   const selectHotel = (hotel: HotelSummary) => {
-    localStorage.setItem("selectedHotelId", hotel.id);
+    storeSelectedPmsPropertyId(hotel.id);
     localStorage.setItem("pmsSetupComplete", "true");
     router.replace("/dashboard");
   };
@@ -185,9 +194,7 @@ export default function PmsChoosePropertyPage() {
         <div className="border-t border-gray-100 mt-5 pt-4">
           <button
             onClick={() => {
-              try {
-                localStorage.removeItem("selectedHotelId");
-              } catch {}
+              clearStoredPmsPropertyId();
               window.location.href = buildHandoffUrl(BOOKING_ADMIN_URL, "/setup?mode=add");
             }}
             className="w-full flex items-center justify-center gap-2 text-[13px] text-primary-600 hover:text-primary-700 font-medium py-2"

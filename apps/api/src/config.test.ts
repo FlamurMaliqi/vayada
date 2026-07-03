@@ -180,9 +180,6 @@ describe("api config", () => {
       apiRuntime: "next",
       bookingDatabaseUrl: undefined,
       bookingReservationsReadDatabaseUrl: undefined,
-      bookingPublicApiUrl: undefined,
-      pmsApiUrl: undefined,
-      pmsPublicApiUrl: undefined,
       publicHotelProfileSource: "target",
       bookingDomainResolutionSource: "target",
       publicBookabilitySource: "target",
@@ -229,10 +226,19 @@ describe("api config", () => {
         FINANCE_SOURCE: "target",
         BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
         BOOKING_DATABASE_URL: "postgresql://booking-db",
+      }),
+    ).toThrow("API_RUNTIME=next forbids legacy runtime envs: BOOKING_DATABASE_URL");
+  });
+
+  it("rejects removed legacy Python integration URL envs in every runtime", () => {
+    expect(() =>
+      loadConfig({
+        BOOKING_PUBLIC_API_URL: "https://api.booking.localhost",
+        PMS_API_URL: "https://api.pms.localhost",
         PMS_PUBLIC_API_URL: "https://api.pms.localhost",
       }),
     ).toThrow(
-      "API_RUNTIME=next forbids legacy runtime envs: BOOKING_DATABASE_URL, PMS_PUBLIC_API_URL",
+      "apps/api no longer supports legacy Python integration envs: BOOKING_PUBLIC_API_URL, PMS_API_URL, PMS_PUBLIC_API_URL",
     );
   });
 
@@ -355,14 +361,6 @@ describe("api config", () => {
         BOOKING_RESERVATIONS_SOURCE: "pms",
       }),
     ).toThrow("BOOKING_RESERVATIONS_SOURCE must be one of: legacy, target");
-  });
-
-  it("loads optional booking public API config", () => {
-    expect(
-      loadConfig({
-        BOOKING_PUBLIC_API_URL: "https://api.booking.localhost",
-      }).bookingPublicApiUrl,
-    ).toBe("https://api.booking.localhost");
   });
 
   it("defaults Booking Web event sink to disabled until target auth config is explicit", () => {
@@ -551,14 +549,6 @@ describe("api config", () => {
     ).toEqual(["https://marketplace.localhost", "https://admin.localhost"]);
   });
 
-  it("loads optional PMS public API config", () => {
-    expect(
-      loadConfig({
-        PMS_PUBLIC_API_URL: "https://api.pms.localhost",
-      }).pmsPublicApiUrl,
-    ).toBe("https://api.pms.localhost");
-  });
-
   it("defaults public bookability to the legacy source", () => {
     expect(loadConfig({}).publicBookabilitySource).toBe("legacy");
   });
@@ -647,14 +637,6 @@ describe("api config", () => {
         BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED: "sometimes",
       }),
     ).toThrow("BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED must be true or false");
-  });
-
-  it("loads optional PMS admin API config", () => {
-    expect(
-      loadConfig({
-        PMS_API_URL: "https://api.pms.localhost",
-      }).pmsApiUrl,
-    ).toBe("https://api.pms.localhost");
   });
 
   it("loads optional booking host base config", () => {

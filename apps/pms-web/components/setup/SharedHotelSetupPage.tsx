@@ -13,6 +13,7 @@ import {
 
 import { authService } from "@/services/auth";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { SELECTED_SHARED_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
 
 export function SharedHotelSetupPage({
   defaultEntryProduct,
@@ -61,7 +62,7 @@ export function SharedHotelSetupPage({
   const initialAddProperty = searchParams.get("mode") === "add";
 
   const handleProductContinue = (input: SharedFirstRunProductContinueInput) => {
-    localStorage.setItem("selectedSharedPropertyId", input.propertyId);
+    localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, input.propertyId);
     if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {
       router.push(input.returnTo);
       return;
