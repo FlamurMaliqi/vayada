@@ -28,7 +28,14 @@ test.describe("pms-web shared setup", () => {
 
     await page.goto("/setup?entryProduct=pms&returnTo=/dashboard");
 
-    await expect(page.getByRole("heading", { level: 2, name: "Add property" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Add property" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Property details" })).toBeVisible();
+    await page.getByRole("button", { name: "Save and continue" }).click();
+    await expect(page.getByText("Property name is required.")).toBeVisible();
+    await expect(page.getByText("Website is required to complete setup.")).toBeVisible();
+    await expect(page.getByText("Photo URL is required to complete setup.")).toBeVisible();
+    await expect(page.getByLabel("Property name")).toHaveAttribute("aria-invalid", "true");
+
     await page.getByLabel("Property name").fill("Alpenrose Munich");
     await page.getByLabel("Country code").fill("DE");
     await page.getByLabel("City").fill("Munich");
@@ -41,6 +48,9 @@ test.describe("pms-web shared setup", () => {
     await expect(page.getByRole("heading", { level: 2, name: "Choose products" })).toBeVisible();
     await expect(page.getByText("Alpenrose Munich")).toBeVisible();
     await expect(page.getByLabel("PMS")).toBeChecked();
+    await expect(
+      page.locator("label").filter({ hasText: "PMS" }).getByText("Selected"),
+    ).toBeVisible();
     expect(statusRequests.length).toBeGreaterThan(0);
     expect(
       statusRequests.every(

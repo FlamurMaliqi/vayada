@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import {
+  ArrowRightIcon,
+  CheckIcon,
+  ExclamationCircleIcon,
+  PlusIcon,
+} from "@heroicons/react/24/outline";
 
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
@@ -82,6 +88,18 @@ const MARKETPLACE_ACTIVATION_STEPS: Record<string, { title: string; description:
     title: "Marketplace listing setup",
     description: "Add the listing details and photos creators use for discovery.",
   },
+};
+
+const SETUP_STEPS = [
+  { label: "Property", description: "Shared profile and location" },
+  { label: "Products", description: "Choose enabled products" },
+  { label: "Continue", description: "Open the selected product" },
+] as const;
+
+const PRODUCT_DESCRIPTIONS: Record<SharedHotelSetupProduct, string> = {
+  booking: "Direct booking pages, checkout, and guest-facing availability.",
+  pms: "Rooms, calendar, reservations, and daily property operations.",
+  marketplace: "Creator discovery, collaboration offers, and listing tools.",
 };
 
 const EMPTY_DRAFT: ProfileDraft = {
@@ -220,8 +238,9 @@ export default function SharedFirstRunPropertySetupWizard({
   const handleSaveProfile = async () => {
     setError("");
     setFieldErrors({});
-    if (!draft.displayName.trim()) {
-      setFieldErrors({ displayName: ["Property name is required."] });
+    const nextFieldErrors = validateProfileDraft(draft);
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setFieldErrors(nextFieldErrors);
       return;
     }
 
@@ -281,7 +300,10 @@ export default function SharedFirstRunPropertySetupWizard({
     if (!loading && error) {
       return (
         <WizardShell title="Setup unavailable" view={view}>
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <div
+            className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+            role="alert"
+          >
             {error}
           </div>
         </WizardShell>
@@ -294,7 +316,10 @@ export default function SharedFirstRunPropertySetupWizard({
   return (
     <WizardShell title={view.title} view={view} status={status}>
       {error && !(view.screen === "property_profile" && profileLoadFailed) && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div
+          className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+          role="alert"
+        >
           {error}
         </div>
       )}
@@ -374,52 +399,103 @@ function WizardShell({
   loading?: boolean;
 }) {
   const progress =
-    view.screen === "product_selection" ? 2 : view.screen === "enter_product" ? 3 : 1;
+    view.screen === "product_selection"
+      ? 2
+      : view.screen === "product_activation" || view.screen === "enter_product"
+        ? 3
+        : 1;
+  const currentStep = SETUP_STEPS[progress - 1];
+  const nextStep = SETUP_STEPS.at(progress) ?? null;
+
   return (
-    <main className="min-h-screen bg-gray-50 px-4 py-8 text-gray-900 sm:px-6 lg:px-8">
-      <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-            {status?.hotelGroup.displayName ?? "Hotel setup"}
-          </p>
-          <h1 className="mt-2 text-xl font-semibold text-gray-950">{title}</h1>
-          <div className="mt-5 space-y-3">
-            {["Property", "Products", "Continue"].map((label, index) => {
-              const active = index + 1 <= progress;
+    <main className="min-h-screen bg-gray-50 px-4 py-6 text-gray-900 sm:px-6 lg:px-8">
+      <div className="mx-auto grid max-w-6xl gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="rounded-lg border border-gray-200 bg-white shadow-sm lg:self-start">
+          <div className="border-b border-gray-100 p-5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
+              {status?.hotelGroup.displayName ?? "Hotel setup"}
+            </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-normal text-gray-950">{title}</h1>
+            <p className="mt-2 text-sm text-gray-500">
+              Step {progress} of {SETUP_STEPS.length}: {currentStep.description}
+            </p>
+          </div>
+
+          <ol className="space-y-1 p-4" aria-label="Setup progress">
+            {SETUP_STEPS.map((step, index) => {
+              const stepNumber = index + 1;
+              const complete = stepNumber < progress;
+              const current = stepNumber === progress;
               return (
-                <div key={label} className="flex items-center gap-3">
+                <li
+                  key={step.label}
+                  aria-current={current ? "step" : undefined}
+                  className={`flex items-start gap-3 rounded-lg px-3 py-3 ${
+                    current ? "bg-primary-50" : ""
+                  }`}
+                >
                   <span
-                    className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold ${
-                      active ? "bg-gray-950 text-white" : "bg-gray-100 text-gray-500"
+                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                      complete
+                        ? "bg-primary-600 text-white"
+                        : current
+                          ? "bg-gray-950 text-white"
+                          : "bg-gray-100 text-gray-500"
                     }`}
                   >
-                    {index + 1}
+                    {complete ? <CheckIcon className="h-4 w-4" aria-hidden="true" /> : stepNumber}
                   </span>
-                  <span className={`text-sm ${active ? "text-gray-950" : "text-gray-500"}`}>
-                    {label}
+                  <span>
+                    <span
+                      className={`block text-sm font-medium ${
+                        current || complete ? "text-gray-950" : "text-gray-500"
+                      }`}
+                    >
+                      {step.label}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-gray-500">{step.description}</span>
                   </span>
-                </div>
+                </li>
               );
             })}
-          </div>
+          </ol>
+
           {status?.entry.entryProduct && (
-            <p className="mt-6 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+            <p className="mx-5 mb-5 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
               Started from {DEFAULT_PRODUCT_LABELS[status.entry.entryProduct]}.
             </p>
           )}
         </aside>
 
-        <section className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
+        <section className="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+              Current step
+            </p>
+            <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <h2 className="text-lg font-semibold text-gray-950">{currentStep.label}</h2>
+              {nextStep && <p className="text-sm text-gray-500">Next: {nextStep.label}</p>}
+            </div>
+          </div>
           {loading ? (
-            <div className="flex min-h-80 items-center justify-center">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
+            <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
+              <LoadingSpinner label="Loading setup" />
             </div>
           ) : (
-            children
+            <div className="p-5 sm:p-6">{children}</div>
           )}
         </section>
       </div>
     </main>
+  );
+}
+
+function LoadingSpinner({ label }: { label: string }) {
+  return (
+    <div role="status" aria-label={label}>
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
+      <span className="sr-only">{label}</span>
+    </div>
   );
 }
 
@@ -434,18 +510,19 @@ function PropertySelection({
 }) {
   return (
     <div>
-      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-950">Choose property</h2>
-          <p className="mt-1 text-sm text-gray-500">
-            Pick the hotel you want to finish setting up.
+          <h2 className="text-lg font-semibold text-gray-950">Select a property</h2>
+          <p className="mt-1 max-w-2xl text-sm text-gray-500">
+            Pick an existing property to finish setup, or add a new one to this hotel group.
           </p>
         </div>
         <button
           type="button"
           onClick={onAdd}
-          className="inline-flex items-center justify-center rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800"
         >
+          <PlusIcon className="h-4 w-4" aria-hidden="true" />
           Add property
         </button>
       </div>
@@ -456,7 +533,7 @@ function PropertySelection({
             key={property.propertyId}
             type="button"
             onClick={() => onSelect(property.propertyId)}
-            className="rounded-lg border border-gray-200 p-4 text-left transition hover:border-gray-950 hover:bg-gray-50"
+            className="rounded-lg border border-gray-200 p-4 text-left transition hover:border-gray-950 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-950"
           >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -467,9 +544,9 @@ function PropertySelection({
                   <p className="mt-1 text-sm text-gray-500">{property.locationSummary}</p>
                 )}
               </div>
-              <div className="text-sm text-gray-500">
-                {property.sharedProfile.completionPercent}% profile
-              </div>
+              <span className="inline-flex w-fit items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
+                {property.sharedProfile.completionPercent}% profile complete
+              </span>
             </div>
           </button>
         ))}
@@ -481,10 +558,18 @@ function PropertySelection({
 function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
     <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-      <h2 className="text-lg font-semibold text-red-900">Property profile unavailable</h2>
-      <p className="mt-2 text-sm text-red-700">
-        {error || "The existing property profile could not be loaded."}
-      </p>
+      <div className="flex gap-3">
+        <ExclamationCircleIcon
+          className="mt-0.5 h-5 w-5 shrink-0 text-red-600"
+          aria-hidden="true"
+        />
+        <div>
+          <h2 className="text-lg font-semibold text-red-900">Property profile unavailable</h2>
+          <p className="mt-2 text-sm text-red-700">
+            {error || "The existing property profile could not be loaded."}
+          </p>
+        </div>
+      </div>
       <button
         type="button"
         onClick={onRetry}
@@ -520,7 +605,7 @@ function ProfileForm({
   if (loading) {
     return (
       <div className="flex min-h-80 items-center justify-center">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
+        <LoadingSpinner label="Loading property profile" />
       </div>
     );
   }
@@ -534,19 +619,19 @@ function ProfileForm({
 
   return (
     <form
+      noValidate
       onSubmit={(event) => {
         event.preventDefault();
         onSave();
       }}
-      className="space-y-5"
+      className="space-y-6"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-950">
-            {mode === "create" ? "Add property" : "Property profile"}
-          </h2>
-          <p className="mt-1 text-sm text-gray-500">
-            {(selectedProperty?.displayName ?? draft.displayName) || "Shared hotel details"}
+          <h2 className="text-lg font-semibold text-gray-950">Property details</h2>
+          <p className="mt-1 max-w-2xl text-sm text-gray-500">
+            Complete the shared information needed before products can open. Required fields are
+            marked.
           </p>
         </div>
         {selectedProperty && (
@@ -556,97 +641,146 @@ function ProfileForm({
         )}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <TextField
-          label="Property name"
-          value={draft.displayName}
-          error={fieldErrors.displayName?.[0]}
-          onChange={(value) => setField("displayName", value)}
-        />
-        <TextField
-          label="Country code"
-          value={draft.countryCode}
-          placeholder="DE"
-          error={fieldErrors["location.countryCode"]?.[0]}
-          onChange={(value) => setField("countryCode", value.toUpperCase().slice(0, 2))}
-        />
-        <TextField
-          label="City"
-          value={draft.city}
-          error={fieldErrors["location.city"]?.[0]}
-          onChange={(value) => setField("city", value)}
-        />
-        <TextField
-          label="Region"
-          value={draft.region}
-          error={fieldErrors["location.region"]?.[0]}
-          onChange={(value) => setField("region", value)}
-        />
-        {showRawLocation && (
-          <div className="md:col-span-2">
-            <TextField
-              label="Location"
-              value={draft.rawMarketplaceLocation}
-              readOnly
-              onChange={() => undefined}
-            />
-          </div>
-        )}
-        <TextField
-          label="Street address"
-          value={draft.streetAddress}
-          error={fieldErrors["location.streetAddress"]?.[0]}
-          onChange={(value) => setField("streetAddress", value)}
-        />
-        <TextField
-          label="Postal code"
-          value={draft.postalCode}
-          error={fieldErrors["location.postalCode"]?.[0]}
-          onChange={(value) => setField("postalCode", value)}
-        />
-        <TextField
-          label="Website"
-          type="url"
-          value={draft.website}
-          placeholder="https://example.com"
-          error={fieldErrors.website?.[0]}
-          onChange={(value) => setField("website", value)}
-        />
-        <TextField
-          label="Phone"
-          value={draft.phone}
-          error={fieldErrors.phone?.[0]}
-          onChange={(value) => setField("phone", value)}
-        />
-        <TextField
-          label="Timezone"
-          value={draft.timezone}
-          placeholder="Europe/Berlin"
-          error={fieldErrors["location.timezone"]?.[0]}
-          onChange={(value) => setField("timezone", value)}
-        />
-        <TextField
-          label="Photo URL"
-          type="url"
-          value={draft.mediaUrl}
-          placeholder="https://example.com/photo.jpg"
-          error={fieldErrors["media.0.url"]?.[0] ?? fieldErrors.media?.[0]}
-          onChange={(value) => setField("mediaUrl", value)}
-        />
+      <div>
+        <h3 className="text-sm font-semibold text-gray-950">Identity</h3>
+        <p className="mt-1 text-sm text-gray-500">
+          These details are shared by PMS, Booking Engine, and Marketplace.
+        </p>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <TextField
+            label="Property name"
+            value={draft.displayName}
+            placeholder="Alpenrose Munich"
+            helper="Use the name staff and guests recognize."
+            required
+            error={fieldErrors.displayName?.[0]}
+            onChange={(value) => setField("displayName", value)}
+          />
+          <TextField
+            label="Website"
+            type="url"
+            value={draft.website}
+            placeholder="https://alpenrose.example"
+            helper="Public website used by guest and creator-facing products."
+            required
+            error={fieldErrors.website?.[0]}
+            onChange={(value) => setField("website", value)}
+          />
+          <TextField
+            label="Phone"
+            value={draft.phone}
+            placeholder="+49 89 123456"
+            helper="Contact number shown where products need it."
+            required
+            error={fieldErrors.phone?.[0]}
+            onChange={(value) => setField("phone", value)}
+          />
+          <TextField
+            label="Photo URL"
+            type="url"
+            value={draft.mediaUrl}
+            placeholder="https://images.example/alpenrose.jpg"
+            helper="First image for shared product setup."
+            required
+            error={fieldErrors["media.0.url"]?.[0] ?? fieldErrors.media?.[0]}
+            onChange={(value) => setField("mediaUrl", value)}
+          />
+        </div>
       </div>
 
-      <TextArea
-        label="Short description"
-        value={draft.shortDescription}
-        error={fieldErrors.shortDescription?.[0]}
-        onChange={(value) => setField("shortDescription", value)}
-      />
-      <TextArea
-        label="Long description"
-        value={draft.longDescription}
-        error={fieldErrors.longDescription?.[0]}
-        onChange={(value) => setField("longDescription", value)}
-      />
+      <div className="border-t border-gray-100 pt-6">
+        <h3 className="text-sm font-semibold text-gray-950">Location</h3>
+        <p className="mt-1 text-sm text-gray-500">
+          City or country code is required to continue; exact public map settings can be refined
+          later.
+        </p>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <TextField
+            label="Country code"
+            value={draft.countryCode}
+            placeholder="DE"
+            helper="Two-letter ISO code."
+            requirementLabel="One required"
+            error={fieldErrors["location.countryCode"]?.[0]}
+            onChange={(value) => setField("countryCode", value.toUpperCase().slice(0, 2))}
+          />
+          <TextField
+            label="City"
+            value={draft.city}
+            placeholder="Munich"
+            requirementLabel="One required"
+            error={fieldErrors["location.city"]?.[0]}
+            onChange={(value) => setField("city", value)}
+          />
+          <TextField
+            label="Region"
+            value={draft.region}
+            placeholder="Bavaria"
+            error={fieldErrors["location.region"]?.[0]}
+            onChange={(value) => setField("region", value)}
+          />
+          <TextField
+            label="Timezone"
+            value={draft.timezone}
+            placeholder="Europe/Berlin"
+            helper="IANA timezone used for calendars and operations."
+            error={fieldErrors["location.timezone"]?.[0]}
+            onChange={(value) => setField("timezone", value)}
+          />
+          {showRawLocation && (
+            <div className="md:col-span-2">
+              <TextField
+                label="Imported location"
+                value={draft.rawMarketplaceLocation}
+                readOnly
+                helper="Read-only location imported from the existing marketplace profile."
+                onChange={() => undefined}
+              />
+            </div>
+          )}
+          <TextField
+            label="Street address"
+            value={draft.streetAddress}
+            placeholder="Marienplatz 1"
+            error={fieldErrors["location.streetAddress"]?.[0]}
+            onChange={(value) => setField("streetAddress", value)}
+          />
+          <TextField
+            label="Postal code"
+            value={draft.postalCode}
+            placeholder="80331"
+            error={fieldErrors["location.postalCode"]?.[0]}
+            onChange={(value) => setField("postalCode", value)}
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-gray-100 pt-6">
+        <h3 className="text-sm font-semibold text-gray-950">Description</h3>
+        <p className="mt-1 text-sm text-gray-500">
+          Keep the short version scannable; use the long description for details.
+        </p>
+        <div className="mt-4 grid gap-4">
+          <TextArea
+            label="Short description"
+            value={draft.shortDescription}
+            placeholder="A city hotel close to the old town."
+            helper="One description is required. Use this for a scannable summary."
+            requirementLabel="One required"
+            error={fieldErrors.shortDescription?.[0]}
+            onChange={(value) => setField("shortDescription", value)}
+          />
+          <TextArea
+            label="Long description"
+            value={draft.longDescription}
+            placeholder="Add guest-facing details, amenities, and useful context."
+            helper="Use this instead of the short description if more context is needed."
+            requirementLabel="One required"
+            error={fieldErrors.longDescription?.[0]}
+            onChange={(value) => setField("longDescription", value)}
+          />
+        </div>
+      </div>
 
       <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:justify-end">
         {onCancel && (
@@ -655,15 +789,22 @@ function ProfileForm({
             onClick={onCancel}
             className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
-            Back
+            Back to properties
           </button>
         )}
         <button
           type="submit"
           disabled={saving}
-          className="rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {saving ? "Saving..." : "Save and continue"}
+          {saving && (
+            <span
+              className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+              aria-hidden="true"
+            />
+          )}
+          <span>{saving ? "Saving..." : "Save and continue"}</span>
+          {!saving && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
         </button>
       </div>
     </form>
@@ -685,13 +826,19 @@ function ProductSelection({
   onToggle: (product: SharedHotelSetupProduct) => void;
   onSave: () => void;
 }) {
+  const needsSelection = selectedProducts.length === 0;
+
   return (
     <div>
       <div className="mb-5">
         <h2 className="text-lg font-semibold text-gray-950">Choose products</h2>
-        <p className="mt-1 text-sm text-gray-500">
-          {selectedProperty?.displayName ?? "Selected property"}
+        <p className="mt-1 max-w-2xl text-sm text-gray-500">
+          Select the products this property should use. Disabled products are not available for this
+          property.
         </p>
+        {selectedProperty?.displayName && (
+          <p className="mt-2 text-sm font-medium text-gray-700">{selectedProperty.displayName}</p>
+        )}
       </div>
 
       <div className="grid gap-3">
@@ -705,21 +852,26 @@ function ProductSelection({
                 disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
               } ${
                 checked
-                  ? "border-gray-950 bg-gray-50"
+                  ? "border-primary-600 bg-primary-50"
                   : disabled
                     ? "border-gray-200"
                     : "border-gray-200 hover:border-gray-400"
               }`}
             >
-              <span>
-                <span className="block text-sm font-medium text-gray-950">{labels[product]}</span>
+              <span className="min-w-0 pr-4">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-gray-950">{labels[product]}</span>
+                  <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
+                    {productStatusLabel(selectedProperty, product, checked)}
+                  </span>
+                </span>
                 <span className="mt-1 block text-xs text-gray-500">
-                  {productStatusLabel(selectedProperty, product)}
+                  {PRODUCT_DESCRIPTIONS[product]}
                 </span>
               </span>
               <input
                 type="checkbox"
-                className="h-4 w-4 rounded border-gray-300 text-gray-950"
+                className="h-4 w-4 shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
                 checked={checked}
                 disabled={disabled}
                 onChange={() => {
@@ -731,14 +883,30 @@ function ProductSelection({
         })}
       </div>
 
-      <div className="mt-5 flex justify-end border-t border-gray-100 pt-5">
+      {needsSelection && (
+        <p className="mt-3 text-sm text-red-600" role="alert">
+          Select at least one available product to continue.
+        </p>
+      )}
+
+      <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-gray-500">
+          {selectedProducts.length} product{selectedProducts.length === 1 ? "" : "s"} selected
+        </p>
         <button
           type="button"
-          disabled={saving || selectedProducts.length === 0}
+          disabled={saving || needsSelection}
           onClick={onSave}
-          className="rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {saving ? "Saving..." : "Save products"}
+          {saving && (
+            <span
+              className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+              aria-hidden="true"
+            />
+          )}
+          <span>{saving ? "Saving..." : "Save products"}</span>
+          {!saving && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
         </button>
       </div>
     </div>
@@ -777,13 +945,17 @@ function ProductContinue({
                 ? labels[product]
                 : "Product setup"}
         </h2>
-        <p className="mt-1 text-sm text-gray-500">
+        <p className="mt-1 max-w-2xl text-sm text-gray-500">
           {isMarketplaceActivation
             ? `Set up Marketplace for ${view.selectedProperty?.displayName ?? "this property"}.`
             : (view.selectedProperty?.displayName ?? "Selected property")}
         </p>
       </div>
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+      <div
+        className={`rounded-lg border p-4 ${
+          isBlockedMarketplaceActivation ? "border-red-200 bg-red-50" : "border-gray-200 bg-gray-50"
+        }`}
+      >
         <p className="text-sm text-gray-700">
           {isBlockedMarketplaceActivation
             ? marketplaceBlockedActivationCopy(activation?.status)
@@ -812,13 +984,18 @@ function ProductContinue({
           type="button"
           disabled={!product || isBlockedMarketplaceActivation}
           onClick={onContinue}
-          className="rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isBlockedMarketplaceActivation
-            ? "Marketplace unavailable"
-            : isMarketplaceActivation
-              ? "Open Marketplace listing tools"
-              : "Continue"}
+          <span>
+            {isBlockedMarketplaceActivation
+              ? "Marketplace unavailable"
+              : isMarketplaceActivation
+                ? "Open Marketplace listing tools"
+                : "Continue"}
+          </span>
+          {!isBlockedMarketplaceActivation && (
+            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+          )}
         </button>
       </div>
     </div>
@@ -846,38 +1023,97 @@ function marketplaceActivationStepCopy(step: string): { title: string; descripti
   );
 }
 
+function validateProfileDraft(draft: ProfileDraft): Record<string, string[]> {
+  const errors: Record<string, string[]> = {};
+  const hasLocation = Boolean(
+    draft.city.trim() || draft.countryCode.trim() || draft.rawMarketplaceLocation.trim(),
+  );
+  const hasDescription = Boolean(draft.shortDescription.trim() || draft.longDescription.trim());
+
+  if (!draft.displayName.trim()) errors.displayName = ["Property name is required."];
+  if (!hasLocation) {
+    errors["location.countryCode"] = ["Enter a country code or city to continue."];
+    errors["location.city"] = ["Enter a city or country code to continue."];
+  }
+  if (!draft.website.trim()) errors.website = ["Website is required to complete setup."];
+  if (!draft.phone.trim()) errors.phone = ["Phone is required to complete setup."];
+  if (!hasDescription) {
+    errors.shortDescription = ["Add a short or long description to continue."];
+    errors.longDescription = ["Add a long or short description to continue."];
+  }
+  if (!draft.mediaUrl.trim()) errors["media.0.url"] = ["Photo URL is required to complete setup."];
+
+  return errors;
+}
+
 function TextField({
   label,
   value,
   onChange,
   error,
+  helper,
+  requirementLabel,
   placeholder,
   type = "text",
   readOnly = false,
+  required = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   error?: string;
+  helper?: string;
+  requirementLabel?: string;
   placeholder?: string;
   type?: string;
   readOnly?: boolean;
+  required?: boolean;
 }) {
+  const generatedId = useId();
+  const inputId = `setup-${generatedId}`;
+  const helperId = helper ? `${inputId}-helper` : undefined;
+  const errorId = error ? `${inputId}-error` : undefined;
+  const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
+
   return (
-    <label className="block">
-      <span className="text-sm font-medium text-gray-700">{label}</span>
+    <div>
+      <label
+        htmlFor={inputId}
+        className="flex items-center gap-2 text-sm font-medium text-gray-700"
+      >
+        <span>{label}</span>
+        <span
+          aria-hidden="true"
+          className={required ? "text-xs font-medium text-red-600" : "text-xs text-gray-400"}
+        >
+          {requirementLabel ?? (required ? "Required" : "Optional")}
+        </span>
+      </label>
+      {helper && (
+        <p id={helperId} className="mt-1 text-xs text-gray-500">
+          {helper}
+        </p>
+      )}
       <input
+        id={inputId}
         type={type}
         value={value}
         placeholder={placeholder}
         readOnly={readOnly}
+        aria-invalid={Boolean(error)}
+        aria-describedby={describedBy}
+        aria-required={required}
         onChange={(event) => onChange(event.target.value)}
-        className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-gray-900 ${
-          error ? "border-red-300" : "border-gray-200"
+        className={`mt-2 w-full rounded-lg border px-3 py-2 text-sm outline-none transition focus:border-gray-950 focus:ring-2 focus:ring-gray-950 ${
+          error ? "border-red-300 bg-red-50" : "border-gray-200"
         } ${readOnly ? "bg-gray-50 text-gray-600" : ""}`}
       />
-      {error && <span className="mt-1 block text-xs text-red-600">{error}</span>}
-    </label>
+      {error && (
+        <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -886,33 +1122,75 @@ function TextArea({
   value,
   onChange,
   error,
+  helper,
+  requirementLabel,
+  placeholder,
+  required = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   error?: string;
+  helper?: string;
+  requirementLabel?: string;
+  placeholder?: string;
+  required?: boolean;
 }) {
+  const generatedId = useId();
+  const inputId = `setup-${generatedId}`;
+  const helperId = helper ? `${inputId}-helper` : undefined;
+  const errorId = error ? `${inputId}-error` : undefined;
+  const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
+
   return (
-    <label className="block">
-      <span className="text-sm font-medium text-gray-700">{label}</span>
+    <div>
+      <label
+        htmlFor={inputId}
+        className="flex items-center gap-2 text-sm font-medium text-gray-700"
+      >
+        <span>{label}</span>
+        <span
+          aria-hidden="true"
+          className={required ? "text-xs font-medium text-red-600" : "text-xs text-gray-400"}
+        >
+          {requirementLabel ?? (required ? "Required" : "Optional")}
+        </span>
+      </label>
+      {helper && (
+        <p id={helperId} className="mt-1 text-xs text-gray-500">
+          {helper}
+        </p>
+      )}
       <textarea
+        id={inputId}
         value={value}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
+        aria-invalid={Boolean(error)}
+        aria-describedby={describedBy}
+        aria-required={required}
         rows={3}
-        className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-gray-900 ${
-          error ? "border-red-300" : "border-gray-200"
+        className={`mt-2 w-full rounded-lg border px-3 py-2 text-sm outline-none transition focus:border-gray-950 focus:ring-2 focus:ring-gray-950 ${
+          error ? "border-red-300 bg-red-50" : "border-gray-200"
         }`}
       />
-      {error && <span className="mt-1 block text-xs text-red-600">{error}</span>}
-    </label>
+      {error && (
+        <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
 function productStatusLabel(
   property: SharedSetupProperty | null,
   product: SharedHotelSetupProduct,
+  checked: boolean,
 ): string {
   const status = property?.products[product].status ?? "not_selected";
+  if (checked && status === "not_selected") return "Selected";
+  if (!checked && (status === "active" || status === "selected_incomplete")) return "Not selected";
   if (status === "active") return "Active";
   if (status === "selected_incomplete") return "Setup needed";
   if (status === "suspended") return "Suspended";
