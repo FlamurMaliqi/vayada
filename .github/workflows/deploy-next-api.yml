@@ -2,6 +2,15 @@ name: Deploy Next TypeScript API
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/api/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-next-api.yml"
 
 permissions:
   id-token: write
