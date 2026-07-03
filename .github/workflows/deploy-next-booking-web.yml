@@ -2,6 +2,12 @@ name: Deploy Next Booking Web
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/booking-web/**"
+      - ".github/workflows/deploy-next-booking-web.yml"
 
 permissions:
   id-token: write

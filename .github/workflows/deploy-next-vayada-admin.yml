@@ -2,6 +2,15 @@ name: Deploy Next Vayada Admin
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/vayada-admin/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-next-vayada-admin.yml"
 
 permissions:
   id-token: write
