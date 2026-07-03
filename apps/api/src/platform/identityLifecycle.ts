@@ -393,6 +393,7 @@ async function grantIdentityAccessWithClient(
       payload.membership.invitedAt ?? null,
     ],
   );
+  await insertMembershipPermissionGrantsWithClient(client, payload);
   for (const link of payload.resourceLinks ?? []) {
     await client.query(
       `INSERT INTO identity.organization_resource_links
@@ -411,6 +412,31 @@ async function grantIdentityAccessWithClient(
     );
   }
   return organizationId;
+}
+
+async function insertMembershipPermissionGrantsWithClient(
+  client: pg.PoolClient,
+  payload: Pick<GrantIdentityAccessCommand["payload"], "organization" | "membership">,
+): Promise<void> {
+  for (const grant of membershipPermissionGrantRows(payload)) {
+    await client.query(
+      `INSERT INTO identity.role_permission_grants
+         (organization_kind, role_key, permission_key)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (organization_kind, role_key, permission_key) DO NOTHING`,
+      [grant.organizationKind, grant.roleKey, grant.permissionKey],
+    );
+  }
+}
+
+export function membershipPermissionGrantRows(
+  payload: Pick<GrantIdentityAccessCommand["payload"], "organization" | "membership">,
+) {
+  return (payload.membership.permissionKeys ?? []).map((permissionKey) => ({
+    organizationKind: payload.organization.kind,
+    roleKey: payload.membership.roleKey,
+    permissionKey,
+  }));
 }
 
 async function revokeIdentityAccess(
