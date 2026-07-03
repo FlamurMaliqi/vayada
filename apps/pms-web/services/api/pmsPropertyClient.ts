@@ -1,8 +1,5 @@
-import {
-  assertPmsOperationsReadModelEnabled,
-  pmsOperationsClient,
-  pmsOperationsRequestOptions,
-} from "./pmsOperationsClient";
+import { assertPmsOperationsReadModelEnabled } from "./pmsOperationsClient";
+import { unsupportedPmsNextStackFeature } from "./unsupported";
 
 export interface PmsPropertySummary {
   id: string;
@@ -32,76 +29,103 @@ export interface PmsCalendarSettings {
   autoOpenWarnings: string[];
 }
 
+const SELECTED_PMS_PROPERTY_ID_KEY = "selectedHotelId";
+const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
+
 export async function listPmsProperties(): Promise<PmsPropertySummary[]> {
   assertPmsOperationsReadModelEnabled();
-  return pmsOperationsClient.get<PmsPropertySummary[]>(
-    "/api/pms/properties",
-    pmsOperationsRequestOptions,
-  );
+  const selectedPropertyId = getStoredPmsPropertyId();
+  if (selectedPropertyId) {
+    return [selectedPropertySummary(selectedPropertyId)];
+  }
+  return unsupportedPmsNextStackFeature("PMS property list");
 }
 
 export async function resolveSelectedPmsPropertyId(action = "loading PMS data"): Promise<string> {
-  const properties = await listPmsProperties();
-  const storedPropertyId =
-    typeof window !== "undefined" ? localStorage.getItem("selectedHotelId")?.trim() : "";
-  const selected =
-    properties.find((property) => property.id === storedPropertyId) ?? properties[0] ?? null;
-  if (!selected) {
+  const storedPropertyId = getStoredPmsPropertyId();
+  if (storedPropertyId) {
+    return storedPropertyId;
+  }
+
+  try {
+    const properties = await listPmsProperties();
+    const selected = properties[0] ?? null;
+    if (selected) {
+      storeSelectedPmsPropertyId(selected.id);
+      return selected.id;
+    }
+  } catch {
     throw new Error(`Select a PMS property before ${action}.`);
   }
 
-  if (typeof window !== "undefined" && storedPropertyId !== selected.id) {
-    localStorage.setItem("selectedHotelId", selected.id);
-  }
-  return selected.id;
+  throw new Error(`Select a PMS property before ${action}.`);
 }
 
 export async function getPmsPropertyProfile(): Promise<PmsPropertyProfile> {
-  const propertyId = await resolveSelectedPmsPropertyId("loading property settings");
-  return pmsOperationsClient.get<PmsPropertyProfile>(
-    propertyEndpoint(propertyId, "profile"),
-    pmsOperationsRequestOptions,
-  );
+  return unsupportedPmsNextStackFeature("PMS property profile");
 }
 
 export async function updatePmsPropertyProfile(
   data: Partial<PmsPropertyProfile>,
 ): Promise<PmsPropertyProfile> {
-  const propertyId = await resolveSelectedPmsPropertyId("saving property settings");
-  return pmsOperationsClient.patch<PmsPropertyProfile>(
-    propertyEndpoint(propertyId, "profile"),
-    data,
-    pmsOperationsRequestOptions,
-  );
+  void data;
+  return unsupportedPmsNextStackFeature("PMS property profile");
 }
 
 export async function getPmsCalendarSettings(): Promise<PmsCalendarSettings> {
-  const propertyId = await resolveSelectedPmsPropertyId("loading calendar settings");
-  return pmsOperationsClient.get<PmsCalendarSettings>(
-    propertyEndpoint(propertyId, "calendar-settings"),
-    pmsOperationsRequestOptions,
-  );
+  return unsupportedPmsNextStackFeature("PMS calendar settings");
 }
 
 export async function updatePmsCalendarSettings(
   data: Partial<PmsCalendarSettings>,
 ): Promise<PmsCalendarSettings> {
-  const propertyId = await resolveSelectedPmsPropertyId("saving calendar settings");
-  return pmsOperationsClient.patch<PmsCalendarSettings>(
-    propertyEndpoint(propertyId, "calendar-settings"),
-    data,
-    pmsOperationsRequestOptions,
-  );
+  void data;
+  return unsupportedPmsNextStackFeature("PMS calendar settings");
 }
 
 export async function getPmsMessagingUnreadCount(): Promise<{ unreadCount: number }> {
-  const propertyId = await resolveSelectedPmsPropertyId("loading unread messages");
-  return pmsOperationsClient.get<{ unreadCount: number }>(
-    propertyEndpoint(propertyId, "messaging/unread-count"),
-    pmsOperationsRequestOptions,
-  );
+  return unsupportedPmsNextStackFeature("PMS messaging unread count");
 }
 
 export function propertyEndpoint(propertyId: string, suffix: string): string {
   return `/api/pms/properties/${encodeURIComponent(propertyId)}/${suffix}`;
+}
+
+export function getStoredPmsPropertyId(): string | null {
+  const storage = browserStorage();
+  const selectedHotelId = storage?.getItem(SELECTED_PMS_PROPERTY_ID_KEY)?.trim();
+  const selectedSharedPropertyId = storage?.getItem(SELECTED_SHARED_PROPERTY_ID_KEY)?.trim();
+  const selectedPropertyId = selectedHotelId || selectedSharedPropertyId || null;
+  if (selectedPropertyId) {
+    storeSelectedPmsPropertyId(selectedPropertyId);
+  }
+  return selectedPropertyId;
+}
+
+export function storeSelectedPmsPropertyId(propertyId: string): void {
+  const selectedPropertyId = propertyId.trim();
+  if (!selectedPropertyId) return;
+  const storage = browserStorage();
+  storage?.setItem(SELECTED_PMS_PROPERTY_ID_KEY, selectedPropertyId);
+  storage?.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, selectedPropertyId);
+}
+
+export function clearStoredPmsPropertyId(): void {
+  const storage = browserStorage();
+  storage?.removeItem(SELECTED_PMS_PROPERTY_ID_KEY);
+  storage?.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY);
+}
+
+function selectedPropertySummary(propertyId: string): PmsPropertySummary {
+  return {
+    id: propertyId,
+    name: "Selected PMS property",
+    slug: propertyId,
+    location: "",
+    country: "",
+  };
+}
+
+function browserStorage(): Storage | null {
+  return typeof window === "undefined" ? null : window.localStorage;
 }

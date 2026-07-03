@@ -18,7 +18,6 @@ import type {
 } from "./routes/pmsOperations.js";
 import type { AuthSessionRouteOptions } from "./routes/authSession.js";
 import type {
-  BookingGuestFormSettingsSync,
   BookingSettingsReadRepository,
   BookingSettingsWriteRepository,
 } from "./routes/bookingSettings.js";
@@ -138,7 +137,6 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
   bookingSettingsRepository?: BookingSettingsReadRepository;
   bookingSettingsWriteRepository?: BookingSettingsWriteRepository;
-  bookingGuestFormSettingsSync?: BookingGuestFormSettingsSync;
   bookingCustomDomainRepository?: BookingCustomDomainRepository;
   publicHotelProfileRepository?: PublicHotelProfileRepository;
   publicHotelQuoteRepository?: PublicHotelQuoteRepository;
@@ -167,16 +165,12 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   platformAdminDashboardRepository?: PlatformAdminDashboardRepository;
   marketplaceDiscoveryAllowedOrigins?: string[];
   identityPrivacyAllowedOrigins?: string[];
-  bookingPublicApiUrl?: string;
   bookingDomainResolutionSource?: BookingDomainResolutionSource;
-  pmsPublicApiUrl?: string;
   bookingWebCalendarRepository?: BookingWebCalendarRepository;
-  legacyCheckoutCommandProxyEnabled?: boolean;
   bookingWebCheckoutAdapter?: BookingWebCheckoutAdapter;
   bookingWebAffiliateHotelResolver?: BookingWebAffiliateHotelResolver;
   bookingWebAffiliateRepository?: BookingWebAffiliateRepository;
   bookingWebAttributionSink?: BookingWebAttributionSink;
-  bookingWebPublicFetch?: BookingWebPublicRoutesOptions["fetch"];
   bookingWebPublicNow?: BookingWebPublicRoutesOptions["now"];
   affiliateDashboardRepository?: Partial<AffiliateDashboardReadRepository>;
   financeRepository?: FinanceRoutesOptions["repository"];
@@ -250,17 +244,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/booking-web",
       profileRepository: options.publicHotelProfileRepository,
       quoteRepository: options.publicHotelQuoteRepository,
-      bookingPublicApiUrl: options.bookingPublicApiUrl,
       bookingDomainResolutionSource: options.bookingDomainResolutionSource,
-      pmsPublicApiUrl: options.pmsPublicApiUrl,
       calendarRepository: options.bookingWebCalendarRepository,
-      legacyCheckoutCommandProxyEnabled: options.legacyCheckoutCommandProxyEnabled,
       checkoutAdapter: options.bookingWebCheckoutAdapter,
       affiliateHotelResolver:
         options.bookingWebAffiliateHotelResolver ?? options.publicHotelProfileRepository,
       affiliateRepository: options.bookingWebAffiliateRepository,
       attributionSink: options.bookingWebAttributionSink,
-      fetch: options.bookingWebPublicFetch,
       now: options.bookingWebPublicNow,
     });
   } else if (options.bookingWebAffiliateRepository && options.bookingWebAffiliateHotelResolver) {
@@ -331,7 +321,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     reservationsRepository: options.bookingReservationsRepository,
     settingsRepository: options.bookingSettingsRepository,
     settingsWriteRepository: options.bookingSettingsWriteRepository,
-    guestFormSettingsSync: options.bookingGuestFormSettingsSync,
     customDomainRepository: options.bookingCustomDomainRepository,
   });
   app.register(registerAffiliateDashboardRoutes, {

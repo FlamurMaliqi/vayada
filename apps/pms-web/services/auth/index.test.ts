@@ -61,6 +61,7 @@ describe("PMS AuthKit session refresh", () => {
       },
     });
     localStorage.setItem("selectedSharedPropertyId", "property_a");
+    localStorage.setItem("selectedHotelId", "property_a");
 
     setAuthKitSession({
       accessToken: "org-b-token",
@@ -73,6 +74,30 @@ describe("PMS AuthKit session refresh", () => {
     });
 
     expect(localStorage.getItem("selectedSharedPropertyId")).toBeNull();
+    expect(localStorage.getItem("selectedHotelId")).toBeNull();
+  });
+
+  it("stores the PMS resource scope as the selected property", () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.stubGlobal("window", { localStorage: storage });
+
+    setAuthKitSession({
+      accessToken: "authkit-token",
+      organizationId: "org_hotel_a",
+      resources: {
+        "pms:pms_property": [" property_a "],
+      },
+      user: {
+        id: "user_hotel_admin",
+        email: "hotel@example.com",
+        status: "active",
+      },
+    });
+
+    expect(localStorage.getItem("selectedSharedPropertyId")).toBe("property_a");
+    expect(localStorage.getItem("selectedHotelId")).toBe("property_a");
+    expect(localStorage.getItem("selectedSharedPropertyOrganizationId")).toBe("org_hotel_a");
   });
 });
 

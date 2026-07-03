@@ -9,6 +9,7 @@ export type AuthKitSessionResponse = {
   accessToken: string;
   csrfToken?: string;
   organizationId?: string;
+  resources?: Record<string, string[]>;
   user: AuthUser;
 };
 
@@ -30,8 +31,10 @@ export type AuthSessionResponse = AuthKitSessionResponse | AuthOrganizationSelec
 
 const LEGACY_TOKEN_KEY = "access_token";
 const LEGACY_EXPIRES_AT_KEY = "token_expires_at";
+const SELECTED_PMS_PROPERTY_ID_KEY = "selectedHotelId";
 const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
 const SELECTED_SHARED_PROPERTY_ORG_ID_KEY = "selectedSharedPropertyOrganizationId";
+const PMS_PROPERTY_RESOURCE_KEY = "pms:pms_property";
 
 let authKitSession: AuthKitSessionResponse | null = null;
 let pendingOrganizationSelectionCsrfToken: string | null = null;
@@ -54,6 +57,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   pendingOrganizationSelectionCsrfToken = null;
   if (typeof window === "undefined") return;
   clearSharedPropertySelectionIfOrganizationChanged(session.organizationId);
+  persistPmsResourceSelection(session);
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_EXPIRES_AT_KEY);
   localStorage.setItem("isLoggedIn", "true");
@@ -127,6 +131,7 @@ export function clearAuthData(): void {
   localStorage.removeItem("userType");
   localStorage.removeItem("userStatus");
   localStorage.removeItem("user");
+  localStorage.removeItem(SELECTED_PMS_PROPERTY_ID_KEY);
   localStorage.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY);
   localStorage.removeItem(SELECTED_SHARED_PROPERTY_ORG_ID_KEY);
   localStorage.setItem("isLoggedIn", "false");
@@ -187,16 +192,33 @@ export function isAuthOrganizationSelectionResponse(
 
 function clearSharedPropertySelectionIfOrganizationChanged(organizationId?: string): void {
   const storedOrganizationId = localStorage.getItem(SELECTED_SHARED_PROPERTY_ORG_ID_KEY);
-  const hasSelectedProperty = Boolean(localStorage.getItem(SELECTED_SHARED_PROPERTY_ID_KEY));
+  const hasSelectedProperty = Boolean(
+    localStorage.getItem(SELECTED_SHARED_PROPERTY_ID_KEY) ||
+    localStorage.getItem(SELECTED_PMS_PROPERTY_ID_KEY),
+  );
 
   if (!organizationId) {
-    if (hasSelectedProperty) localStorage.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY);
+    if (hasSelectedProperty) {
+      localStorage.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY);
+      localStorage.removeItem(SELECTED_PMS_PROPERTY_ID_KEY);
+    }
     localStorage.removeItem(SELECTED_SHARED_PROPERTY_ORG_ID_KEY);
     return;
   }
 
   if (hasSelectedProperty && storedOrganizationId !== organizationId) {
     localStorage.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY);
+    localStorage.removeItem(SELECTED_PMS_PROPERTY_ID_KEY);
   }
   localStorage.setItem(SELECTED_SHARED_PROPERTY_ORG_ID_KEY, organizationId);
+}
+
+function persistPmsResourceSelection(session: AuthKitSessionResponse): void {
+  const propertyId = session.resources?.[PMS_PROPERTY_RESOURCE_KEY]?.find((id) => id.trim());
+  if (!propertyId) return;
+  localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, propertyId.trim());
+  localStorage.setItem(SELECTED_PMS_PROPERTY_ID_KEY, propertyId.trim());
+  if (session.organizationId) {
+    localStorage.setItem(SELECTED_SHARED_PROPERTY_ORG_ID_KEY, session.organizationId);
+  }
 }

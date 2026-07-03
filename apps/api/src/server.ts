@@ -34,7 +34,6 @@ import { createPgTargetBookingPromoCodesRepository } from "./routes/bookingPromo
 import { createCompatibilityPmsBookingReservationsReadRepository } from "./routes/bookingReservations.js";
 import { createTargetBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.js";
 import {
-  createHttpPmsGuestFormSettingsSync,
   createPgBookingSettingsReadRepository,
   createPgTargetBookingSettingsRepository,
 } from "./routes/bookingSettings.js";
@@ -102,13 +101,6 @@ const bookingSettingsRepository =
           connectionString: config.bookingDatabaseUrl,
         })
       : undefined;
-
-const bookingGuestFormSettingsSync =
-  config.pmsApiUrl && config.bookingSettingsSource !== "target"
-    ? createHttpPmsGuestFormSettingsSync({
-        pmsApiUrl: config.pmsApiUrl,
-      })
-    : undefined;
 
 const bookingCustomDomainRepository = config.targetDatabaseUrl
   ? createTargetBookingCustomDomainRepository({
@@ -396,7 +388,6 @@ const app = buildApp({
   pmsOperationsAllowedOrigins: config.pmsOperationsAllowedOrigins,
   bookingSettingsRepository,
   bookingSettingsWriteRepository: bookingSettingsRepository,
-  bookingGuestFormSettingsSync,
   bookingCustomDomainRepository,
   marketplaceDiscoveryRepository,
   marketplaceCollaborationRepository:
@@ -439,9 +430,7 @@ const app = buildApp({
   identityPrivacyAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   publicHotelProfileRepository,
   publicHotelQuoteRepository,
-  bookingPublicApiUrl: config.bookingPublicApiUrl,
   bookingDomainResolutionSource: config.bookingDomainResolutionSource,
-  pmsPublicApiUrl: config.pmsPublicApiUrl,
   bookingWebCalendarRepository,
   bookingWebCheckoutAdapter,
   askModel: askModelProvider?.model,
@@ -452,7 +441,6 @@ const app = buildApp({
       })
     : undefined,
   askEvidenceRepository,
-  legacyCheckoutCommandProxyEnabled: config.bookingWebLegacyCheckoutCommandProxyEnabled,
   bookingWebAttributionSink:
     config.bookingWebEventSink === "target" && config.auth
       ? createPgBookingWebEventSink({

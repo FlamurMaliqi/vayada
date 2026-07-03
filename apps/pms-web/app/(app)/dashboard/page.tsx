@@ -116,13 +116,13 @@ export default function DashboardPage() {
       roomsService.list(),
       bookingsService.listAll(),
       bookingsService.getPaymentSettings(),
-      pmsSettingsService.getHotelDetails(),
+      pmsSettingsService.getHotelDetails().catch(() => null),
     ])
       .then(([roomsList, bookingsList, settingsRes, hotelRes]) => {
         setRooms(roomsList);
         setBookings(bookingsList);
         setHotelCurrency(settingsRes.paymentSettings.defaultCurrency || "EUR");
-        setHotelTimezone(hotelRes.timezone || null);
+        setHotelTimezone(hotelRes?.timezone || null);
       })
       .catch(console.error)
       .finally(() => setLoading(false));

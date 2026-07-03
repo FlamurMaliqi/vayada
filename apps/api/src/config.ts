@@ -86,7 +86,6 @@ export type ApiConfig = {
   publicBookabilitySource: PublicBookabilitySource;
   bookingSettingsSource: "legacy" | "target";
   bookingReservationsReadDatabaseUrl?: string;
-  bookingPublicApiUrl?: string;
   marketplaceDiscoverySource: MarketplaceDiscoverySource;
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
@@ -95,8 +94,6 @@ export type ApiConfig = {
   marketplaceDiscoveryAllowedOrigins: string[];
   affiliatePublicSource?: "target";
   pmsOperationsAllowedOrigins: string[];
-  pmsApiUrl?: string;
-  pmsPublicApiUrl?: string;
   bookingCheckoutCommandSource: BookingCheckoutCommandSource;
   bookingWebLegacyCheckoutCommandProxyEnabled: boolean;
   bookingWebEventSink: BookingWebEventSink;
@@ -109,6 +106,9 @@ export type ApiConfig = {
 const NEXT_API_FORBIDDEN_LEGACY_ENV_KEYS = [
   "BOOKING_DATABASE_URL",
   "BOOKING_RESERVATIONS_READ_DATABASE_URL",
+] as const;
+
+const REMOVED_LEGACY_PYTHON_INTEGRATION_ENV_KEYS = [
   "BOOKING_PUBLIC_API_URL",
   "PMS_API_URL",
   "PMS_PUBLIC_API_URL",
@@ -320,6 +320,8 @@ function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfi
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
+  assertRemovedLegacyPythonIntegrationEnv(env);
+
   const server = loadServerConfig(env, {
     host: "0.0.0.0",
     port: 8003,
@@ -398,9 +400,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     env,
     "BOOKING_RESERVATIONS_READ_DATABASE_URL",
   );
-  const bookingPublicApiUrl = readOptionalEnv(env, "BOOKING_PUBLIC_API_URL");
-  const pmsApiUrl = readOptionalEnv(env, "PMS_API_URL");
-  const pmsPublicApiUrl = readOptionalEnv(env, "PMS_PUBLIC_API_URL");
   const bookingWebLegacyCheckoutCommandProxyEnabled = readBooleanEnv(
     env,
     "BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED",
@@ -477,7 +476,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     publicBookabilitySource,
     bookingSettingsSource,
     bookingReservationsReadDatabaseUrl,
-    bookingPublicApiUrl,
     marketplaceDiscoverySource,
     marketplaceAdminSource,
     marketplaceAdminLegacySuperadminFallbackEnabled: readBooleanEnv(
@@ -494,8 +492,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     pmsOperationsAllowedOrigins: readOptionalCsvEnv(env, "PMS_OPERATIONS_ALLOWED_ORIGINS", [
       "https://pms.localhost",
     ]),
-    pmsApiUrl,
-    pmsPublicApiUrl,
     bookingCheckoutCommandSource,
     bookingWebLegacyCheckoutCommandProxyEnabled,
     bookingWebEventSink,
@@ -504,6 +500,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     providerWebhooks: loadProviderWebhookConfig(env),
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };
+}
+
+function assertRemovedLegacyPythonIntegrationEnv(env: NodeJS.ProcessEnv): void {
+  const configured = REMOVED_LEGACY_PYTHON_INTEGRATION_ENV_KEYS.filter((key) =>
+    Boolean(readOptionalEnv(env, key)),
+  );
+  if (configured.length > 0) {
+    throw new Error(
+      `apps/api no longer supports legacy Python integration envs: ${configured.join(", ")}`,
+    );
+  }
 }
 
 function assertNextApiRuntimeConfig(

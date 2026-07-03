@@ -1,12 +1,17 @@
-import { findForbiddenPublicBookabilityKeys } from "@vayada/domain-distribution";
+import {
+  buildPublicBookabilityQuoteProjection,
+  findForbiddenPublicBookabilityKeys,
+  PUBLIC_BOOKABILITY_CONTRACT_VERSION,
+  PUBLIC_BOOKABILITY_VISIBILITY,
+  type PublicBookabilityAvailabilityOfferInput,
+  type PublicBookabilityHotelProfile,
+  type PublicBookabilityQuoteProjection,
+} from "@vayada/domain-distribution";
 import { describe, expect, it } from "vitest";
 
 import { buildApp } from "../app.js";
 import { BOOKING_RESERVED_PENDING_PAYMENT_EMAIL_JOB_TYPE } from "../jobs/bookingEmails.js";
-import {
-  createCompatibilityPublicHotelQuoteRepository,
-  type PublicHotelQuoteRepository,
-} from "./aiHotelQuotes.js";
+import type { PublicHotelQuoteQuery, PublicHotelQuoteRepository } from "./aiHotelQuotes.js";
 import {
   toPublicHotelProfileProjection,
   type BookingHotelProfileRow,
@@ -21,6 +26,8 @@ import {
   createTargetBookingWebCheckoutAdapter,
   recordTargetCheckoutCommand,
   resolveTargetCheckoutAmountSnapshot,
+  type BookingWebCalendarProjection,
+  type BookingWebCalendarRepository,
   type BookingWebCalendarReadPool,
   type BookingWebCheckoutAdapter,
 } from "./bookingWebPublic.js";
@@ -177,49 +184,18 @@ const legacyUnavailableDates: LegacyUnavailableDatesResponse = {
   max_stay_by_arrival: { "2026-09-15": 7 },
 };
 
-const legacyPaymentSettings = {
-  payAtPropertyEnabled: true,
-  onlineCardPayment: true,
-  bankTransfer: true,
-  paypalEnabled: true,
-  paypalEmail: "payments@alpenrose.example",
-  paypalPaymentWindowHours: 24,
-  bankDetails: {
-    accountHolder: "Hotel Alpenrose",
-    accountType: "iban",
-    iban: "AT611904300234573201",
-    bankName: "Alpine Bank",
-    swift: "ALPEATWW",
-  },
-  freeCancellationDays: 7,
-};
-
-const legacyBooking = {
-  id: "booking_internal_1",
-  bookingReference: "ALP-1001",
-  guestEmail: "guest@example.com",
-  status: "confirmed",
-  paymentStatus: "paid",
-};
-
 describe("Booking Web public bootstrap parity", () => {
   it("records affiliate click attribution through the configured sink", async () => {
     const events: unknown[] = [];
-    const legacyRequests: unknown[] = [];
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-      bookingPublicApiUrl: "https://api.booking.localhost",
       bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
       bookingWebAttributionSink: {
         async recordAffiliateClick(event) {
           events.push(event);
         },
         async recordTelemetryEvent() {},
-      },
-      async bookingWebPublicFetch(input) {
-        legacyRequests.push(input.toString());
-        return jsonResponse({ ok: true });
       },
     });
 
@@ -242,31 +218,20 @@ describe("Booking Web public bootstrap parity", () => {
         landingUrl: "https://hotel-alpenrose.booking.localhost/?ref=REF-123",
       },
     ]);
-    expect(legacyRequests).toEqual([]);
     await app.close();
   });
 
   it("records booking-web telemetry through the configured sink without legacy forwarding", async () => {
     const events: unknown[] = [];
-    const legacyRequests: unknown[] = [];
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-      bookingPublicApiUrl: "https://api.booking.localhost",
       bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
       bookingWebAttributionSink: {
         async recordAffiliateClick() {},
         async recordTelemetryEvent(event) {
           events.push(event);
         },
-      },
-      async bookingWebPublicFetch(input, init) {
-        legacyRequests.push({
-          url: input.toString(),
-          method: init?.method,
-          body: init?.body ? JSON.parse(String(init.body)) : null,
-        });
-        return jsonResponse({ ok: true });
       },
     });
 
@@ -292,20 +257,13 @@ describe("Booking Web public bootstrap parity", () => {
         metadata: { locale: "de" },
       },
     ]);
-    expect(legacyRequests).toEqual([]);
     await app.close();
   });
 
-  it("proxies booking-web public affiliate registration away from browser PMS calls", async () => {
-    const seen: Array<{ pathname: string; method: string }> = [];
+  it("fails closed for public affiliate registration without a target repository", async () => {
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-      pmsPublicApiUrl: "https://api.pms.localhost",
-      async bookingWebPublicFetch(input, init) {
-        seen.push({ pathname: input.pathname, method: init?.method ?? "GET" });
-        return jsonResponse({ id: "affiliate_123", referralCode: "REF-123" });
-      },
     });
 
     const response = await app.inject({
@@ -314,12 +272,10 @@ describe("Booking Web public bootstrap parity", () => {
       payload: { email: "guest@example.com", fullName: "Guest Example" },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.payload)).toMatchObject({
-      id: "affiliate_123",
-      referralCode: "REF-123",
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({
+      message: "Booking Web affiliate adapter is not configured.",
     });
-    expect(seen).toEqual([{ pathname: "/api/hotels/hotel-alpenrose/affiliates", method: "POST" }]);
     await app.close();
   });
 
@@ -349,9 +305,6 @@ describe("Booking Web public bootstrap parity", () => {
       hotel: legacyCustomDomainHotel,
       rooms: legacyRooms,
       unavailableDates: legacyUnavailableDates,
-      domainResolutions: {
-        "book.alpenrose.example": { slug: "hotel-alpenrose", status: 200 },
-      },
     });
 
     const response = await app.inject({
@@ -506,83 +459,10 @@ describe("Booking Web public bootstrap parity", () => {
     await app.close();
   });
 
-  it("routes checkout lifecycle calls through Booking Web target paths", async () => {
-    const legacyCalls: Array<{ method: string; path: string; body: unknown }> = [];
+  it("fails closed for checkout lifecycle routes without a target checkout adapter", async () => {
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-      bookingPublicApiUrl: "https://api.booking.localhost",
-      pmsPublicApiUrl: "https://api.pms.localhost",
-      legacyCheckoutCommandProxyEnabled: true,
-      async bookingWebPublicFetch(input, init) {
-        legacyCalls.push({
-          method: init?.method ?? "GET",
-          path: `${input.pathname}${input.search}`,
-          body: init?.body ? JSON.parse(String(init.body)) : null,
-        });
-
-        if (input.origin === "https://api.booking.localhost") {
-          return jsonResponse({
-            valid: true,
-            code: input.searchParams.get("code"),
-            discountType: "percentage",
-            discountValue: 10,
-          });
-        }
-        if (input.pathname.endsWith("/payment-settings")) {
-          return jsonResponse(legacyPaymentSettings);
-        }
-        if (input.pathname.endsWith("/confirm-authorization")) {
-          return jsonResponse({ ...legacyBooking, status: "confirmed" });
-        }
-        if (input.pathname.endsWith("/bookings/status")) {
-          return jsonResponse({
-            status: "confirmed",
-            paymentStatus: "paid",
-            hostResponseDeadline: null,
-          });
-        }
-        if (input.pathname.endsWith("/bookings/lookup")) {
-          return jsonResponse(legacyBooking);
-        }
-        if (input.pathname.endsWith("/bookings/quote")) {
-          return jsonResponse({
-            roomTypeId: "room_deluxe",
-            roomName: "Deluxe Room",
-            rateType: "flexible",
-            paymentMethod: "pay_at_property",
-            nightlyRate: 187.5,
-            numberOfRooms: 1,
-            roomTotal: 562.5,
-            addonTotal: 0,
-            promoDiscount: 0,
-            lastMinuteDiscountPercent: 0,
-            lastMinuteDiscountAmount: 0,
-            totalAmount: 562.5,
-            currency: "EUR",
-            depositRequired: false,
-            depositPercentage: null,
-            depositAmount: 0,
-            balanceAmount: 562.5,
-          });
-        }
-        if (input.pathname.endsWith("/bookings")) {
-          return jsonResponse({
-            booking: legacyBooking,
-            clientSecret: null,
-            xenditInvoiceUrl: null,
-            paymentMethod: "pay_at_property",
-            bookingReference: "ALP-1001",
-            paymentInstructions: {
-              bankTransfer: {
-                enabled: true,
-                details: legacyPaymentSettings.bankDetails,
-              },
-            },
-          });
-        }
-        return jsonResponse({ detail: "Not found" }, 404);
-      },
     });
 
     const checkoutConfig = await app.inject({
@@ -642,210 +522,21 @@ describe("Booking Web public bootstrap parity", () => {
       status.statusCode,
       lookup.statusCode,
       promo.statusCode,
-    ]).toEqual([200, 200, 200, 200, 200, 200, 200]);
-    expect(checkoutConfig.json()).toMatchObject({
-      payAtPropertyEnabled: true,
-      bankTransfer: true,
-      paypalEnabled: true,
-    });
-    expect(checkoutConfig.json()).not.toHaveProperty("bankDetails");
-    expect(checkoutConfig.json()).not.toHaveProperty("paypalEmail");
-    expect(create.json()).toMatchObject({ bookingReference: "ALP-1001" });
-    expect(quote.json()).toMatchObject({
-      paymentMethod: "pay_at_property",
-      totalAmount: 562.5,
-    });
-    expect(confirm.json()).toMatchObject({ bookingReference: "ALP-1001" });
-    expect(status.json()).toMatchObject({ status: "confirmed", paymentStatus: "paid" });
-    expect(lookup.json()).toMatchObject({ bookingReference: "ALP-1001" });
-    expect(create.json()).toMatchObject({
-      paymentInstructions: {
-        bankTransfer: { enabled: true, details: legacyPaymentSettings.bankDetails },
-      },
-    });
+    ]).toEqual([404, 404, 404, 404, 404, 404, 404]);
     expect(paymentInstructions.statusCode).toBe(404);
-    expect(promo.json()).toMatchObject({ valid: true, code: "SUMMER10" });
-    expect(legacyCalls.map((call) => `${call.method} ${call.path}`)).toEqual([
-      "GET /api/hotels/hotel-alpenrose/payment-settings",
-      "POST /api/hotels/hotel-alpenrose/bookings",
-      "POST /api/hotels/hotel-alpenrose/bookings/quote",
-      "POST /api/hotels/hotel-alpenrose/bookings/draft_1/confirm-authorization",
-      "GET /api/hotels/hotel-alpenrose/bookings/status?reference=ALP-1001&email=guest%40example.com",
-      "POST /api/hotels/hotel-alpenrose/bookings/lookup",
-      "GET /api/hotels/hotel-alpenrose/validate-promo?code=SUMMER10",
-    ]);
-    expect(legacyCalls[1]?.body).toMatchObject({ paymentMethod: "pay_at_property" });
-    expect(legacyCalls[2]?.body).toMatchObject({ paymentMethod: "pay_at_property" });
-    expect(legacyCalls[5]?.body).toEqual({
-      bookingReference: "ALP-1001",
-      guestEmail: "guest@example.com",
+    expect(create.json()).toMatchObject({
+      message: "Booking Web checkout command adapter is not configured.",
     });
-    await app.close();
-  });
-
-  it("routes cancel, withdraw, and change-request lifecycle calls through Booking Web target paths", async () => {
-    const decisionToken = "must-not-cross-public-boundary";
-    const legacyCalls: Array<{ method: string; path: string; body: unknown }> = [];
-    const legacyResponses = new Map<string, unknown>([
-      [
-        "POST /api/hotels/hotel-alpenrose/bookings/booking_refundable/cancel-preview",
-        { refundAmount: 660, refundPercentage: 100 },
-      ],
-      [
-        "POST /api/hotels/hotel-alpenrose/bookings/booking_nonrefundable/cancel-preview",
-        { refundAmount: 0, refundPercentage: 0 },
-      ],
-      [
-        "POST /api/hotels/hotel-alpenrose/bookings/booking_deposit/cancel-preview",
-        {
-          refundAmount: 100,
-          refundPercentage: 50,
-          depositAmount: 200,
-          depositRefundAmount: 100,
-          freeCancellationDays: 7,
-          daysUntilCheckIn: 3,
-          currency: "CHF",
-        },
-      ],
-      [
-        "POST /api/hotels/hotel-alpenrose/bookings/booking_refundable/cancel",
-        { status: "cancelled" },
-      ],
-      [
-        "POST /api/hotels/hotel-alpenrose/bookings/booking_pending/withdraw",
-        { status: "withdrawn" },
-      ],
-      [
-        "POST /api/hotels/hotel-alpenrose/bookings/booking_internal_1/change-request/preview",
-        {
-          oldTotal: 660,
-          newTotal: 735,
-          priceDifference: 75,
-          currency: "CHF",
-          blocked: false,
-          blockReason: null,
-          available: true,
-        },
-      ],
-      [
-        "POST /api/hotels/hotel-alpenrose/bookings/booking_internal_1/change-request",
-        { status: "pending", priceDifference: 75, decisionToken },
-      ],
-      [
-        "GET /api/hotels/hotel-alpenrose/bookings/booking_change_approved/change-request?email=guest%40example.com",
-        { status: "approved", decision_token: decisionToken },
-      ],
-      [
-        "GET /api/hotels/hotel-alpenrose/bookings/booking_change_declined/change-request?email=guest%40example.com",
-        {
-          status: "declined",
-          declineReason: "Requested dates are unavailable",
-          decisionToken,
-        },
-      ],
-    ]);
-    const app = buildApp({
-      logger: false,
-      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-      pmsPublicApiUrl: "https://api.pms.localhost",
-      legacyCheckoutCommandProxyEnabled: true,
-      async bookingWebPublicFetch(input, init) {
-        legacyCalls.push({
-          method: init?.method ?? "GET",
-          path: `${input.pathname}${input.search}`,
-          body: init?.body ? JSON.parse(String(init.body)) : null,
-        });
-        return jsonResponse(
-          legacyResponses.get(`${init?.method ?? "GET"} ${input.pathname}${input.search}`) ?? {
-            detail: "Not found",
-          },
-          legacyResponses.has(`${init?.method ?? "GET"} ${input.pathname}${input.search}`)
-            ? 200
-            : 404,
-        );
-      },
-    });
-
-    const requests = [
-      ["booking_refundable/cancel-preview", { guestEmail: "guest@example.com" }],
-      ["booking_nonrefundable/cancel-preview", { guestEmail: "guest@example.com" }],
-      ["booking_deposit/cancel-preview", { guestEmail: "guest@example.com" }],
-      ["booking_refundable/cancel", { guestEmail: "guest@example.com" }],
-      ["booking_pending/withdraw", { guestEmail: "pending@example.com" }],
-      ["booking_internal_1/change-request/preview", changeRequestPayload()],
-      ["booking_internal_1/change-request", changeRequestPayload()],
-    ] as const;
-    const responses = await Promise.all(
-      requests.map(([path, payload]) =>
-        app.inject({
-          method: "POST",
-          url: `/api/booking-web/hotels/hotel-alpenrose/bookings/${path}`,
-          payload,
-        }),
-      ),
-    );
-    responses.push(
-      await app.inject({
-        method: "GET",
-        url: "/api/booking-web/hotels/hotel-alpenrose/bookings/booking_change_approved/change-request?email=guest%40example.com",
-      }),
-      await app.inject({
-        method: "GET",
-        url: "/api/booking-web/hotels/hotel-alpenrose/bookings/booking_change_declined/change-request?email=guest%40example.com",
-      }),
-    );
-    const bodies = responses.map((response) => response.json());
-
-    expect(responses.map((response) => response.statusCode)).toEqual(Array(9).fill(200));
-    expect(bodies[0]).toMatchObject({ refundAmount: 660, refundPercentage: 100 });
-    expect(bodies[1]).toMatchObject({ refundAmount: 0, refundPercentage: 0 });
-    expect(bodies[2]).toMatchObject({
-      depositAmount: 200,
-      depositRefundAmount: 100,
-      refundAmount: 100,
-    });
-    expect(bodies[3]).toEqual({ status: "cancelled" });
-    expect(bodies[4]).toEqual({ status: "withdrawn" });
-    expect(bodies[5]).toMatchObject({
-      oldTotal: 660,
-      newTotal: 735,
-      blocked: false,
-      available: true,
-    });
-    expect(bodies[6]).toMatchObject({ status: "pending", priceDifference: 75 });
-    expect(bodies[7]).toMatchObject({ status: "approved" });
-    expect(bodies[8]).toMatchObject({
-      status: "declined",
-      declineReason: "Requested dates are unavailable",
-    });
-    expect(bodies[6]).not.toHaveProperty("decisionToken");
-    expect(bodies[7]).not.toHaveProperty("decision_token");
-    expect(bodies[8]).not.toHaveProperty("decisionToken");
-    expect(legacyCalls.map((call) => `${call.method} ${call.path}`)).toEqual([
-      ...legacyResponses.keys(),
-    ]);
-    expect(legacyCalls[0]?.body).toEqual({ guest_email: "guest@example.com" });
-    expect(legacyCalls[4]?.body).toEqual({ guest_email: "pending@example.com" });
-    expect(legacyCalls[5]?.body).toMatchObject({
-      guestEmail: "guest@example.com",
-      checkIn: "2026-09-13",
-      checkOut: "2026-09-16",
-      addonIds: ["addon_breakfast"],
+    expect(promo.json()).toMatchObject({
+      message: "Booking Web promo validation adapter is not configured.",
     });
     await app.close();
   });
 
   it("does not proxy checkout commands to legacy PMS unless explicitly enabled", async () => {
-    const legacyCalls: string[] = [];
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-      bookingPublicApiUrl: "https://api.booking.localhost",
-      pmsPublicApiUrl: "https://api.pms.localhost",
-      async bookingWebPublicFetch(input) {
-        legacyCalls.push(input.pathname);
-        return jsonResponse({});
-      },
     });
 
     const create = await app.inject({
@@ -878,7 +569,6 @@ describe("Booking Web public bootstrap parity", () => {
     expect(withdraw.statusCode).toBe(404);
     expect(cancelPreview.statusCode).toBe(404);
     expect(changePreview.statusCode).toBe(404);
-    expect(legacyCalls).toEqual([]);
     await app.close();
   });
 
@@ -888,9 +578,6 @@ describe("Booking Web public bootstrap parity", () => {
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
       bookingWebAffiliateRepository: affiliateRepository,
-      async bookingWebPublicFetch(input) {
-        throw new Error(`Unexpected legacy fetch: ${input.toString()}`);
-      },
     });
 
     const before = await app.inject({
@@ -1821,49 +1508,20 @@ function buildParityApp(config: {
   hotel: LegacyHotelResponse;
   rooms: LegacyRoomResponse[];
   unavailableDates: LegacyUnavailableDatesResponse;
-  domainResolutions?: Record<string, { slug: string; status: number }>;
   domainResolutionSource?: "legacy" | "target";
   slugAliases?: Record<string, LegacyHotelResponse>;
 }): ReturnType<typeof buildApp> {
   const profileRepository = createProfileRepository(config.hotel, config.slugAliases ?? {});
   const quoteRepository = createQuoteRepository(profileRepository, config.rooms);
+  const calendarRepository = createCalendarRepository(config.unavailableDates);
 
   return buildApp({
     logger: false,
     publicHotelProfileRepository: profileRepository,
     publicHotelQuoteRepository: quoteRepository,
-    bookingPublicApiUrl: "https://api.booking.localhost",
+    bookingWebCalendarRepository: calendarRepository,
     bookingDomainResolutionSource: config.domainResolutionSource,
-    pmsPublicApiUrl: "https://api.pms.localhost",
     bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
-    async bookingWebPublicFetch(input) {
-      if (input.origin === "https://api.booking.localhost") {
-        if (config.domainResolutionSource === "target") {
-          throw new Error("Target domain resolution must not call legacy Booking");
-        }
-        const host = input.searchParams.get("domain") ?? "";
-        const resolved = config.domainResolutions?.[host];
-        return new Response(
-          JSON.stringify(resolved ? { slug: resolved.slug } : { detail: "Not found" }),
-          {
-            status: resolved?.status ?? 404,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-
-      if (input.pathname.endsWith("/unavailable-dates")) {
-        return new Response(JSON.stringify(config.unavailableDates), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-
-      return new Response(JSON.stringify(config.rooms), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
   });
 }
 
@@ -1938,13 +1596,6 @@ class InMemoryAffiliateRepository implements BookingWebAffiliateRepository {
   }
 }
 
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
 function changeRequestPayload(): Record<string, unknown> {
   return {
     guestEmail: "guest@example.com",
@@ -1984,18 +1635,194 @@ function createQuoteRepository(
   profileRepository: PublicHotelProfileRepository,
   rooms: LegacyRoomResponse[],
 ): PublicHotelQuoteRepository {
-  return createCompatibilityPublicHotelQuoteRepository({
-    profileRepository,
-    pmsPublicApiUrl: "https://api.pms.localhost",
-    now: () => new Date("2026-06-06T11:00:00.000Z"),
-    async fetch(input) {
-      expect(input.pathname).toBe("/api/hotels/hotel-alpenrose/rooms");
-      return new Response(JSON.stringify(rooms), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+  return {
+    async findQuoteBySlug(slug, query) {
+      const profile = await profileRepository.findProfileBySlug(slug);
+      if (!profile) return null;
+      return parityQuoteProjection(profile.hotel, rooms, query);
+    },
+  };
+}
+
+function createCalendarRepository(
+  unavailableDates: LegacyUnavailableDatesResponse,
+): BookingWebCalendarRepository {
+  return {
+    async findCalendarByHotel(hotel, query): Promise<BookingWebCalendarProjection> {
+      return {
+        contractVersion: PUBLIC_BOOKABILITY_CONTRACT_VERSION,
+        generatedAt: "2026-06-06T11:00:00.000Z",
+        publicVisibility: PUBLIC_BOOKABILITY_VISIBILITY,
+        request: {
+          hotelSlug: hotel.slug,
+          start: query.start ?? "",
+          end: query.end ?? "",
+        },
+        calendar: {
+          unavailableDates: unavailableDates.dates,
+          minStayByArrival: unavailableDates.min_stay_by_arrival,
+          maxStayByArrival: unavailableDates.max_stay_by_arrival,
+        },
+        freshness: {
+          status: "fresh",
+          generatedAt: "2026-06-06T11:00:00.000Z",
+          sources: [
+            {
+              owner: "pms",
+              lastUpdatedAt: "2026-06-06T11:00:00.000Z",
+              status: "fresh",
+            },
+            {
+              owner: "distribution",
+              lastUpdatedAt: "2026-06-06T11:00:00.000Z",
+              status: "fresh",
+            },
+          ],
+        },
+        dataSources: ["pms", "distribution"],
+      };
+    },
+  };
+}
+
+function parityQuoteProjection(
+  hotel: PublicBookabilityHotelProfile,
+  rooms: LegacyRoomResponse[],
+  query: PublicHotelQuoteQuery,
+): PublicBookabilityQuoteProjection {
+  const generatedAt = "2026-06-06T11:00:00.000Z";
+  const request = {
+    hotelSlug: hotel.slug,
+    checkIn: query.check_in ?? "2026-09-12",
+    checkOut: query.check_out ?? "2026-09-15",
+    nights: nightsBetween(query.check_in ?? "2026-09-12", query.check_out ?? "2026-09-15"),
+    adults: Number(query.adults ?? 2),
+    children: Number(query.children ?? 0),
+    rooms: Number(query.rooms ?? 1),
+    currency: query.currency ?? hotel.defaultCurrency,
+    locale: query.locale ?? hotel.defaultLocale,
+    promoCode: query.promo_code ?? null,
+    referralCode: query.referral_code ?? null,
+  };
+
+  return buildPublicBookabilityQuoteProjection(generatedAt, {
+    request,
+    hotelCatalog: { lastUpdatedAt: generatedAt },
+    booking: {
+      lastUpdatedAt: generatedAt,
+      offerPolicies: rooms.flatMap((room) => [
+        {
+          roomTypeId: room.id,
+          ratePlanId: "flexible",
+          cancellation: room.cancellationPolicy,
+          deposit: "No deposit required.",
+        },
+        {
+          roomTypeId: room.id,
+          ratePlanId: "nonrefundable",
+          cancellation: room.nonRefundableCancellationPolicy ?? room.cancellationPolicy,
+          deposit: "50% deposit required.",
+        },
+      ]),
+    },
+    pms: {
+      availabilityReady: true,
+      lastUpdatedAt: generatedAt,
+      offers: rooms.flatMap((room) => parityOffers(room)),
+    },
+    finance: {
+      lastUpdatedAt: generatedAt,
+      publicPaymentOptions: ["card", "pay_at_property", "bank_transfer", "paypal"],
+      supportedCurrencies: hotel.supportedCurrencies,
+    },
+    bookingWeb: {
+      offerBookingUrlBase: `${hotel.bookingBaseUrl}/${request.locale}/book`,
+    },
+    quote: {
+      quoteId: "quote_parity_001",
+      quoteHash: "sha256:parity",
+      expiresAt: "2026-06-06T11:15:00.000Z",
+      priceGuarantee: "expires_at",
     },
   });
+}
+
+function parityOffers(room: LegacyRoomResponse): PublicBookabilityAvailabilityOfferInput[] {
+  const flexibleTotal = sum(room.nightlyRates);
+  const nonRefundableTotal = sum(room.nonRefundableNightlyRates ?? []);
+  const flexible = {
+    offerId: `${room.id}:flexible`,
+    roomTypeId: room.id,
+    ratePlanId: "flexible",
+    name: room.name,
+    occupancy: {
+      maxAdults: room.maxAdults,
+      maxChildren: room.maxChildren,
+    },
+    availableRooms: room.remainingRooms,
+    refundable: true,
+    paymentOptions: parityPaymentOptions(room.ratePaymentMethods?.flexible, [
+      "card",
+      "pay_at_property",
+    ]),
+    totals: {
+      currency: room.currency,
+      roomTotal: flexibleTotal,
+      taxesAndFees: 0,
+      discounts: 0,
+      grandTotal: flexibleTotal,
+    },
+  };
+
+  if (!room.nonRefundableNightlyRates || room.nonRefundableNightlyRates.length === 0) {
+    return [flexible];
+  }
+
+  return [
+    flexible,
+    {
+      offerId: `${room.id}:nonrefundable`,
+      roomTypeId: room.id,
+      ratePlanId: "nonrefundable",
+      name: room.name,
+      occupancy: {
+        maxAdults: room.maxAdults,
+        maxChildren: room.maxChildren,
+      },
+      availableRooms: room.remainingRooms,
+      refundable: false,
+      paymentOptions: parityPaymentOptions(room.ratePaymentMethods?.nonrefundable, ["card"]),
+      totals: {
+        currency: room.currency,
+        roomTotal: nonRefundableTotal,
+        taxesAndFees: 0,
+        discounts: 0,
+        grandTotal: nonRefundableTotal,
+      },
+    },
+  ];
+}
+
+function parityPaymentOptions(
+  values: string[] | undefined,
+  fallback: NonNullable<PublicBookabilityAvailabilityOfferInput["paymentOptions"]>,
+): PublicBookabilityAvailabilityOfferInput["paymentOptions"] {
+  const allowed = new Set(["card", "pay_at_property", "bank_transfer", "paypal"]);
+  const options = (values ?? fallback).filter((value) => allowed.has(value));
+  return options as PublicBookabilityAvailabilityOfferInput["paymentOptions"];
+}
+
+function nightsBetween(checkIn: string, checkOut: string): number {
+  return Math.max(
+    0,
+    Math.round(
+      (Date.parse(`${checkOut}T00:00:00.000Z`) - Date.parse(`${checkIn}T00:00:00.000Z`)) / 86400000,
+    ),
+  );
+}
+
+function sum(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }
 
 function toProfileRow(hotel: LegacyHotelResponse): BookingHotelProfileRow {

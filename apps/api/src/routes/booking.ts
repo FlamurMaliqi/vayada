@@ -22,7 +22,6 @@ import {
 } from "./bookingReservations.js";
 import {
   registerBookingSettingsRoutes,
-  type BookingGuestFormSettingsSync,
   type BookingSettingsReadRepository,
   type BookingSettingsWriteRepository,
 } from "./bookingSettings.js";
@@ -39,7 +38,6 @@ export type BookingRoutesOptions = {
   reservationsRepository?: BookingReservationsReadRepository;
   settingsRepository?: BookingSettingsReadRepository;
   settingsWriteRepository?: BookingSettingsWriteRepository;
-  guestFormSettingsSync?: BookingGuestFormSettingsSync;
   customDomainRepository?: BookingCustomDomainRepository;
 };
 
@@ -60,7 +58,6 @@ export async function registerBookingRoutes(
       app,
       options.settingsRepository,
       options.settingsWriteRepository,
-      options.guestFormSettingsSync,
     );
   }
 

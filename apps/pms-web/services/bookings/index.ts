@@ -605,14 +605,8 @@ export const bookingsService = {
     );
   },
 
-  updatePaymentSettings: async (data: Partial<PaymentSettings>) => {
-    const propertyId = await resolveSelectedPmsPropertyId("saving payment settings");
-    return pmsOperationsClient.patch(
-      propertyEndpoint(propertyId, "payment-settings"),
-      data,
-      pmsOperationsRequestOptions,
-    );
-  },
+  updatePaymentSettings: (_data: Partial<PaymentSettings>) =>
+    unsupportedPmsNextStackFeature("Payment settings updates"),
 
   updateCancellationPolicy: (_data: Partial<CancellationPolicy>) =>
     unsupportedPmsNextStackFeature("Cancellation policy updates"),

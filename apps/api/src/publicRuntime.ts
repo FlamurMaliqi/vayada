@@ -49,7 +49,6 @@ export function createPublicRuntimeRepositories(config: ApiConfig, pools: Public
       : publicHotelProfileRepository
         ? createCompatibilityPublicHotelQuoteRepository({
             profileRepository: publicHotelProfileRepository,
-            pmsPublicApiUrl: config.pmsPublicApiUrl,
           })
         : undefined;
 

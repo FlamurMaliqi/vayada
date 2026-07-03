@@ -22,7 +22,7 @@ import type {
   PmsRoomType,
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
-import { requireAuthContext, type LinkedResource } from "@vayada/backend-auth";
+import { requireAuthContext } from "@vayada/backend-auth";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const PMS_OPERATIONS_CONTRACT_VERSION = "pms-operations.v1" as const;
@@ -699,14 +699,6 @@ type PmsCalendarQuery = {
   to?: string;
 };
 
-type PmsLegacyHotelSummary = {
-  id: string;
-  name: string;
-  slug: string;
-  location: string;
-  country: string;
-};
-
 type PmsRoomBlocksQuery = {
   from?: string;
   to?: string;
@@ -859,23 +851,11 @@ export async function registerPmsOperationsRoutes(
       });
     }
 
-    const context = requireAuthContext(request);
-    const properties: PmsLegacyHotelSummary[] = [];
-    let firstPolicyError: PmsOperationsError | null = null;
-
-    for (const resource of context.linkedResources.filter(isPmsPropertyResource)) {
-      const policy = checkPmsPropertyReadPolicy(request, resource.resourceId);
-      if (policy.ok) {
-        properties.push(toLegacyPmsHotelSummary(resource.resourceId));
-      } else {
-        firstPolicyError ??= policy.error;
-      }
-    }
-
-    if (properties.length === 0) {
-      return sendPmsOperationsError(reply, firstPolicyError ?? missingPmsPropertyAccessError());
-    }
-    return properties;
+    if (!enforcePmsOperationsListPolicy(request, reply)) return reply;
+    return sendPmsOperationsError(
+      reply,
+      readModelUnavailable("PMS property summary read model is unavailable."),
+    );
   });
 
   app.get<{ Params: PmsPropertyParams }>(
@@ -1055,23 +1035,6 @@ export async function registerPmsOperationsRoutes(
     },
   );
 
-  app.patch<{ Params: PmsPropertyParams; Body: unknown }>(
-    "/properties/:propertyId/payment-settings",
-    async (request, reply) => {
-      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
-        return sendPmsOperationsError(reply, {
-          statusCode: 403,
-          code: "missing_permission",
-          category: "authorization",
-          message: "PMS operations origin is not allowed.",
-        });
-      }
-      const { propertyId } = request.params;
-      if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
-      return legacyPmsPaymentSettings(request.body);
-    },
-  );
-
   app.get<{ Params: PmsPropertyParams }>(
     "/properties/:propertyId/profile",
     async (request, reply) => {
@@ -1085,7 +1048,10 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return toLegacyPmsHotel(propertyId);
+      return sendPmsOperationsError(
+        reply,
+        readModelUnavailable("PMS property profile read model is unavailable."),
+      );
     },
   );
 
@@ -1102,7 +1068,10 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
-      return toLegacyPmsHotel(propertyId, request.body);
+      return sendPmsOperationsError(
+        reply,
+        readModelUnavailable("PMS property profile write model is unavailable."),
+      );
     },
   );
 
@@ -1119,7 +1088,10 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return legacyPmsCalendarSettings();
+      return sendPmsOperationsError(
+        reply,
+        readModelUnavailable("PMS calendar settings read model is unavailable."),
+      );
     },
   );
 
@@ -1136,7 +1108,10 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
-      return legacyPmsCalendarSettings(request.body);
+      return sendPmsOperationsError(
+        reply,
+        readModelUnavailable("PMS calendar settings write model is unavailable."),
+      );
     },
   );
 
@@ -1153,7 +1128,10 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return legacyPmsChannexStatus();
+      return sendPmsOperationsError(
+        reply,
+        readModelUnavailable("PMS Channex status read model is unavailable."),
+      );
     },
   );
 
@@ -1170,7 +1148,10 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return { channels: [] };
+      return sendPmsOperationsError(
+        reply,
+        readModelUnavailable("PMS Channex channels read model is unavailable."),
+      );
     },
   );
 
@@ -1187,7 +1168,10 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return { unreadCount: 0 };
+      return sendPmsOperationsError(
+        reply,
+        readModelUnavailable("PMS messaging unread count read model is unavailable."),
+      );
     },
   );
 
@@ -2043,71 +2027,6 @@ export async function registerPmsOperationsRoutes(
   }
 }
 
-function isPmsPropertyResource(resource: LinkedResource): boolean {
-  return (
-    resource.status === "active" &&
-    resource.product === "pms" &&
-    resource.resourceType === "pms_property"
-  );
-}
-
-type PmsPropertyReadPolicyCheck =
-  | { ok: true }
-  | {
-      ok: false;
-      error: PmsOperationsError;
-    };
-
-function checkPmsPropertyReadPolicy(
-  request: FastifyRequest,
-  propertyId: string,
-): PmsPropertyReadPolicyCheck {
-  try {
-    enforceRoutePolicy(request, {
-      permission: "pms.operations.read",
-      entitlement: {
-        product: "pms",
-        key: "property-management",
-        resource: {
-          product: "pms",
-          resourceType: "pms_property",
-          resourceId: propertyId,
-        },
-      },
-      resource: {
-        product: "pms",
-        resourceType: "pms_property",
-        resourceId: propertyId,
-        allowedRelationships: ["owner", "operator", "front_desk"],
-      },
-    });
-    return { ok: true };
-  } catch (error) {
-    const contractError = toPmsOperationsAccessError(error, request, propertyId);
-    if (!contractError) throw error;
-    return { ok: false, error: contractError };
-  }
-}
-
-function missingPmsPropertyAccessError(): PmsOperationsError {
-  return {
-    statusCode: 403,
-    code: "missing_resource_access",
-    category: "authorization",
-    message: toPmsOperationsAuthorizationMessage("missing_resource_access"),
-  };
-}
-
-function toLegacyPmsHotelSummary(propertyId: string): PmsLegacyHotelSummary {
-  return {
-    id: propertyId,
-    name: propertyId,
-    slug: propertyId,
-    location: "",
-    country: "",
-  };
-}
-
 async function listCalendarReservationsOverlappingStayRange(
   repository: PmsOperationsReadRepository,
   propertyId: string,
@@ -2139,121 +2058,6 @@ function paginateReservationResult(
   };
 }
 
-function toLegacyPmsHotel(propertyId: string, body?: unknown) {
-  const raw = isLegacyRecord(body) ? body : {};
-  const timezone = legacyString(raw.timezone) ?? "UTC";
-  const country = legacyString(raw.country) ?? "";
-  const instantBook = legacyBoolean(raw.instant_book) ?? legacyBoolean(raw.instantBook) ?? false;
-  const sameDayBookingsEnabled =
-    legacyBoolean(raw.same_day_bookings_enabled) ??
-    legacyBoolean(raw.sameDayBookingsEnabled) ??
-    true;
-  const snakeCutoff = legacyNullableString(raw.same_day_booking_cutoff_time);
-  const camelCutoff = legacyNullableString(raw.sameDayBookingCutoffTime);
-  const sameDayBookingCutoffTime =
-    snakeCutoff !== undefined ? snakeCutoff : camelCutoff !== undefined ? camelCutoff : "18:00";
-
-  return {
-    id: propertyId,
-    name: "Property",
-    slug: propertyId,
-    location: "",
-    country,
-    timezone,
-    instant_book: instantBook,
-    instantBook,
-    same_day_bookings_enabled: sameDayBookingsEnabled,
-    sameDayBookingsEnabled: sameDayBookingsEnabled,
-    same_day_booking_cutoff_time: sameDayBookingCutoffTime,
-    sameDayBookingCutoffTime: sameDayBookingCutoffTime,
-  };
-}
-
-function legacyPmsPaymentSettings(body?: unknown) {
-  const raw = isLegacyRecord(body) ? body : {};
-  const defaultCurrency = legacyString(raw.defaultCurrency) ?? "EUR";
-  const payAtPropertyEnabled = legacyBoolean(raw.payAtPropertyEnabled) ?? true;
-  const onlineCardPayment = legacyBoolean(raw.onlineCardPayment) ?? false;
-  const bankTransfer = legacyBoolean(raw.bankTransfer) ?? false;
-  const xenditPaymentsEnabled = legacyBoolean(raw.xenditPaymentsEnabled) ?? false;
-  const paymentProvider = legacyString(raw.paymentProvider);
-
-  return {
-    paymentSettings: {
-      stripeConnectAccountId: null,
-      stripeConnectOnboarded: false,
-      platformFeeType: "percentage",
-      platformFeeValue: 0,
-      platformFeeWithAffiliate: 0,
-      payAtPropertyEnabled,
-      onlineCardPayment,
-      bankTransfer,
-      xenditPaymentsEnabled,
-      paymentProvider:
-        paymentProvider === "xendit" || paymentProvider === "vayada" ? paymentProvider : "stripe",
-      xenditChannelCode: null,
-      xenditAccountNumber: null,
-      xenditAccountHolderName: null,
-      defaultCurrency,
-    },
-    cancellationPolicy: {
-      freeCancellationDays: 7,
-      partialRefundPct: 50,
-    },
-  };
-}
-
-function legacyPmsChannexStatus() {
-  return {
-    isConnected: false,
-    channexPropertyId: null,
-    roomTypesProvisioned: 0,
-    ratePlansProvisioned: 0,
-    lastBookingSyncAt: null,
-    lastAriSyncAt: null,
-    lastAriSyncError: null,
-    lastAriSyncFailedAt: null,
-    messagingAppInstalled: false,
-  };
-}
-
-function legacyPmsCalendarSettings(body?: unknown) {
-  const raw = isLegacyRecord(body) ? body : {};
-  const autoOpenMode = legacyString(raw.autoOpenMode) === "fixed" ? "fixed" : "rolling";
-  const rawAutoOpenMonths = Number(raw.autoOpenMonths);
-  const autoOpenMonths =
-    rawAutoOpenMonths === 12 || rawAutoOpenMonths === 18 || rawAutoOpenMonths === 24
-      ? rawAutoOpenMonths
-      : 18;
-
-  return {
-    autoRearrangeEnabled: legacyBoolean(raw.autoRearrangeEnabled) ?? true,
-    autoOpenEnabled: legacyBoolean(raw.autoOpenEnabled) ?? false,
-    autoOpenMode,
-    autoOpenMonths,
-    autoOpenFixedMonth: legacyNullableString(raw.autoOpenFixedMonth) ?? null,
-    autoOpenThrough: null,
-    autoOpenWarnings: [],
-  };
-}
-
-function isLegacyRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function legacyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function legacyNullableString(value: unknown): string | null | undefined {
-  if (value === null) return null;
-  return legacyString(value);
-}
-
-function legacyBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function enforcePmsOperationsReadPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -2281,6 +2085,24 @@ function enforcePmsOperationsReadPolicy(
     return true;
   } catch (error) {
     const contractError = toPmsOperationsAccessError(error, request, propertyId);
+    if (!contractError) throw error;
+    sendPmsOperationsError(reply, contractError);
+    return false;
+  }
+}
+
+function enforcePmsOperationsListPolicy(request: FastifyRequest, reply: FastifyReply): boolean {
+  try {
+    enforceRoutePolicy(request, {
+      permission: "pms.operations.read",
+      entitlement: {
+        product: "pms",
+        key: "property-management",
+      },
+    });
+    return true;
+  } catch (error) {
+    const contractError = toPmsOperationsAccessError(error, request, "");
     if (!contractError) throw error;
     sendPmsOperationsError(reply, contractError);
     return false;

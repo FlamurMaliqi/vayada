@@ -111,9 +111,6 @@ describe("next-api legacy-free runtime check", () => {
       apiRuntime: "next",
       bookingDatabaseUrl: undefined,
       bookingReservationsReadDatabaseUrl: undefined,
-      bookingPublicApiUrl: undefined,
-      pmsApiUrl: undefined,
-      pmsPublicApiUrl: undefined,
       publicHotelProfileSource: "target",
       bookingDomainResolutionSource: "target",
       publicBookabilitySource: "target",
@@ -136,9 +133,6 @@ describe("next-api legacy-free runtime check", () => {
       logger: false,
       ...publicRuntime,
       bookingDomainResolutionSource: config.bookingDomainResolutionSource,
-      async bookingWebPublicFetch(input) {
-        throw new Error(`VAY-882 legacy runtime HTTP client called: ${input.toString()}`);
-      },
     });
     await app.ready();
 

@@ -1,8 +1,4 @@
-import {
-  pmsOperationsClient,
-  pmsOperationsRequestOptions,
-} from "@/services/api/pmsOperationsClient";
-import { propertyEndpoint, resolveSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
+import { resolveSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
 import { unsupportedPmsNextStackFeature } from "@/services/api/unsupported";
 
 export interface ChannexSyncStatus {
@@ -71,11 +67,8 @@ export const channexService = {
 
   // Status
   getStatus: async () => {
-    const propertyId = await resolveSelectedPmsPropertyId("loading channel manager status");
-    return pmsOperationsClient.get<ChannexSyncStatus>(
-      propertyEndpoint(propertyId, "channex/status"),
-      pmsOperationsRequestOptions,
-    );
+    await resolveSelectedPmsPropertyId("loading channel manager status");
+    return unsupportedPmsNextStackFeature<ChannexSyncStatus>("Channex status");
   },
 
   // Re-provision (after adding new room types)
@@ -113,10 +106,7 @@ export const channexService = {
 
   // Connected OTA channels
   listChannels: async () => {
-    const propertyId = await resolveSelectedPmsPropertyId("loading connected channels");
-    return pmsOperationsClient.get<ConnectedChannelsResponse>(
-      propertyEndpoint(propertyId, "channex/channels"),
-      pmsOperationsRequestOptions,
-    );
+    await resolveSelectedPmsPropertyId("loading connected channels");
+    return unsupportedPmsNextStackFeature<ConnectedChannelsResponse>("Connected OTA channels");
   },
 };

@@ -30,7 +30,6 @@ import {
   type BookingWebAffiliateRepository,
 } from "./bookingWebAffiliate.js";
 
-type FetchLike = (input: URL, init?: RequestInit) => Promise<Response>;
 export type BookingDomainResolutionSource = "legacy" | "target";
 
 type BookingWebHostParams = {
@@ -318,16 +317,12 @@ export type BookingWebPublicRoutesOptions = {
   profileRepository: PublicHotelProfileRepository;
   quoteRepository?: PublicHotelQuoteRepository;
   calendarRepository?: BookingWebCalendarRepository;
-  bookingPublicApiUrl?: string;
   bookingDomainResolutionSource?: BookingDomainResolutionSource;
-  pmsPublicApiUrl?: string;
-  legacyCheckoutCommandProxyEnabled?: boolean;
   checkoutAdapter?: BookingWebCheckoutAdapter;
   affiliateHotelResolver?: BookingWebAffiliateHotelResolver;
   affiliateRepository?: BookingWebAffiliateRepository;
   affiliateAdapter?: BookingWebAffiliateAdapter;
   attributionSink?: BookingWebAttributionSink;
-  fetch?: FetchLike;
   now?: () => Date;
 };
 
@@ -335,22 +330,10 @@ export async function registerBookingWebPublicRoutes(
   app: FastifyInstance,
   options: BookingWebPublicRoutesOptions,
 ): Promise<void> {
-  const fetchImpl = options.fetch ?? fetch;
   const now = options.now ?? (() => new Date());
-  const checkoutAdapter =
-    options.checkoutAdapter ??
-    createCompatibilityBookingWebCheckoutAdapter({
-      pmsPublicApiUrl: options.pmsPublicApiUrl,
-      bookingPublicApiUrl: options.bookingPublicApiUrl,
-      legacyCheckoutCommandProxyEnabled: options.legacyCheckoutCommandProxyEnabled,
-      fetch: fetchImpl,
-    });
+  const checkoutAdapter = options.checkoutAdapter ?? createUnavailableBookingWebCheckoutAdapter();
   const affiliateAdapter =
-    options.affiliateAdapter ??
-    createCompatibilityBookingWebAffiliateAdapter({
-      pmsPublicApiUrl: options.pmsPublicApiUrl,
-      fetch: fetchImpl,
-    });
+    options.affiliateAdapter ?? createUnavailableBookingWebAffiliateAdapter();
 
   app.addHook("onRequest", async (request, reply) => {
     writeBookingWebCorsHeaders(request, reply);
@@ -377,9 +360,7 @@ export async function registerBookingWebPublicRoutes(
     const profile = await findProfileForHost({
       repository: options.profileRepository,
       host,
-      bookingPublicApiUrl: options.bookingPublicApiUrl,
       source: options.bookingDomainResolutionSource ?? "legacy",
-      fetch: fetchImpl,
     });
     if (!profile) {
       throw createHttpError(404, "Booking Web host not found.");
@@ -441,8 +422,6 @@ export async function registerBookingWebPublicRoutes(
         hotel: profile.hotel,
         query: request.query,
         repository: options.calendarRepository,
-        pmsPublicApiUrl: options.pmsPublicApiUrl,
-        fetch: fetchImpl,
         now: now(),
       });
       assertPublicBookabilityPublicSafe(response);
@@ -1430,167 +1409,53 @@ export function createTargetBookingWebCheckoutAdapter(
   };
 }
 
-export function createCompatibilityBookingWebCheckoutAdapter(config: {
-  pmsPublicApiUrl?: string;
-  bookingPublicApiUrl?: string;
-  legacyCheckoutCommandProxyEnabled?: boolean;
-  fetch?: FetchLike;
-}): BookingWebCheckoutAdapter {
-  const fetchImpl = config.fetch ?? fetch;
-  const pmsPublicApiUrl = config.pmsPublicApiUrl?.trim();
-  const bookingPublicApiUrl = config.bookingPublicApiUrl?.trim();
-  // Legacy write proxying is an explicit transitional escape hatch until Booking
-  // owns idempotency, audit visibility, and PMS reservation sink handoff here.
-  const legacyCheckoutCommandProxyEnabled = config.legacyCheckoutCommandProxyEnabled === true;
-  const proxyBookingCommand = (
-    slug: string,
-    bookingId: string,
-    command: string,
-    method: "GET" | "POST",
-    body?: unknown,
-  ): Promise<unknown> => {
-    assertLegacyCheckoutCommandProxyEnabled(legacyCheckoutCommandProxyEnabled);
-    return fetchJson({
-      baseUrl: pmsPublicApiUrl,
-      path: bookingCommandPath(slug, bookingId, command),
-      method,
-      body,
-      fetch: fetchImpl,
-    });
-  };
-
+export function createUnavailableBookingWebCheckoutAdapter(): BookingWebCheckoutAdapter {
   return {
-    async getCheckoutConfig(slug) {
-      const settings = await fetchJson<Record<string, unknown>>({
-        baseUrl: pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/payment-settings`,
-        method: "GET",
-        fetch: fetchImpl,
-      });
-      return sanitizeCheckoutConfig(settings);
+    async getCheckoutConfig() {
+      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
     },
-    async createBooking(slug, request) {
-      assertLegacyCheckoutCommandProxyEnabled(legacyCheckoutCommandProxyEnabled);
-      return fetchJson({
-        baseUrl: pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/bookings`,
-        method: "POST",
-        body: request,
-        fetch: fetchImpl,
-      });
+    async createBooking() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async quoteBooking(slug, request) {
-      assertLegacyCheckoutCommandProxyEnabled(legacyCheckoutCommandProxyEnabled);
-      return fetchJson({
-        baseUrl: pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/bookings/quote`,
-        method: "POST",
-        body: request,
-        fetch: fetchImpl,
-      });
+    async quoteBooking() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async confirmAuthorization(slug, handle) {
-      assertLegacyCheckoutCommandProxyEnabled(legacyCheckoutCommandProxyEnabled);
-      return fetchJson({
-        baseUrl: pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/bookings/${encodeURIComponent(handle)}/confirm-authorization`,
-        method: "POST",
-        fetch: fetchImpl,
-      });
+    async confirmAuthorization() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async getStatus(slug, query) {
-      const params = new URLSearchParams();
-      if (query.reference) params.set("reference", query.reference);
-      if (query.email) params.set("email", query.email);
-      return fetchJson({
-        baseUrl: pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/bookings/status?${params.toString()}`,
-        method: "GET",
-        fetch: fetchImpl,
-      });
+    async getStatus() {
+      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
     },
-    async lookup(slug, request) {
-      return fetchJson({
-        baseUrl: pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/bookings/lookup`,
-        method: "POST",
-        body: request,
-        fetch: fetchImpl,
-      });
+    async lookup() {
+      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
     },
-    async withdraw(slug, bookingId, request) {
-      return proxyBookingCommand(
-        slug,
-        bookingId,
-        "withdraw",
-        "POST",
-        normalizeGuestActionRequest(request),
-      );
+    async withdraw() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async cancelPreview(slug, bookingId, request) {
-      return proxyBookingCommand(
-        slug,
-        bookingId,
-        "cancel-preview",
-        "POST",
-        normalizeGuestActionRequest(request),
-      );
+    async cancelPreview() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async cancel(slug, bookingId, request) {
-      return proxyBookingCommand(
-        slug,
-        bookingId,
-        "cancel",
-        "POST",
-        normalizeGuestActionRequest(request),
-      );
+    async cancel() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async previewChangeRequest(slug, bookingId, request) {
-      return proxyBookingCommand(
-        slug,
-        bookingId,
-        "change-request/preview",
-        "POST",
-        normalizeChangeRequest(request),
-      );
+    async previewChangeRequest() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async submitChangeRequest(slug, bookingId, request) {
-      const response = await proxyBookingCommand(
-        slug,
-        bookingId,
-        "change-request",
-        "POST",
-        normalizeChangeRequest(request),
-      );
-      return sanitizeChangeRequestResponse(response);
+    async submitChangeRequest() {
+      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
     },
-    async getChangeRequest(slug, bookingId, query) {
-      const params = new URLSearchParams();
-      if (query.email) params.set("email", query.email);
-      const response = await proxyBookingCommand(
-        slug,
-        bookingId,
-        `change-request?${params.toString()}`,
-        "GET",
-      );
-      return sanitizeChangeRequestResponse(response);
+    async getChangeRequest() {
+      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
     },
     async getPaymentInstructions() {
       throw createHttpError(404, "Booking-scoped payment instructions are not configured.");
     },
-    async validatePromo(slug, request) {
+    async validatePromo(_slug, request) {
       const code = typeof request.code === "string" ? request.code.trim() : "";
       if (!code) {
         return { valid: false, code, message: "Promo code is required" };
       }
-      return fetchJson({
-        baseUrl: bookingPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/validate-promo?${new URLSearchParams({
-          code,
-        }).toString()}`,
-        method: "GET",
-        fetch: fetchImpl,
-      });
+      throw createHttpError(404, "Booking Web promo validation adapter is not configured.");
     },
   };
 }
@@ -2993,49 +2858,18 @@ export function resolveTargetCheckoutAmountSnapshot(
   };
 }
 
-export function createCompatibilityBookingWebAffiliateAdapter(config: {
-  pmsPublicApiUrl?: string;
-  fetch?: FetchLike;
-}): BookingWebAffiliateAdapter {
-  const fetchImpl = config.fetch ?? fetch;
+export function createUnavailableBookingWebAffiliateAdapter(): BookingWebAffiliateAdapter {
   return {
-    async checkEmail(slug, email) {
-      return fetchJson({
-        baseUrl: config.pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/affiliates/check-email?${new URLSearchParams({ email }).toString()}`,
-        method: "GET",
-        fetch: fetchImpl,
-      });
+    async checkEmail() {
+      throw createHttpError(404, "Booking Web affiliate adapter is not configured.");
     },
-    async register(slug, request) {
-      return fetchJson({
-        baseUrl: config.pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/affiliates`,
-        method: "POST",
-        body: request,
-        fetch: fetchImpl,
-      });
+    async register() {
+      throw createHttpError(404, "Booking Web affiliate adapter is not configured.");
     },
-    async createStripeConnectLink(slug, affiliateId, request) {
-      return fetchJson({
-        baseUrl: config.pmsPublicApiUrl,
-        path: `/api/hotels/${encodeURIComponent(slug)}/affiliates/${encodeURIComponent(affiliateId)}/stripe/connect`,
-        method: "POST",
-        body: request,
-        fetch: fetchImpl,
-      });
+    async createStripeConnectLink() {
+      throw createHttpError(404, "Booking Web affiliate adapter is not configured.");
     },
   };
-}
-
-function assertLegacyCheckoutCommandProxyEnabled(enabled: boolean): void {
-  if (!enabled) {
-    throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-  }
-}
-
-function bookingCommandPath(slug: string, bookingId: string, command: string): string {
-  return `/api/hotels/${encodeURIComponent(slug)}/bookings/${encodeURIComponent(bookingId)}/${command}`;
 }
 
 function normalizeGuestActionRequest(request: BookingWebGuestActionRequest): {
@@ -3057,20 +2891,10 @@ function normalizeChangeRequest(request: BookingWebChangeRequest): BookingWebCha
   };
 }
 
-function sanitizeChangeRequestResponse(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const sanitized = { ...(value as Record<string, unknown>) };
-  delete sanitized["decisionToken"];
-  delete sanitized["decision_token"];
-  return sanitized;
-}
-
 async function findProfileForHost(config: {
   repository: PublicHotelProfileRepository;
   host: string;
-  bookingPublicApiUrl?: string;
   source: BookingDomainResolutionSource;
-  fetch: FetchLike;
 }): Promise<PublicBookabilityProfileProjection | null> {
   const { repository, host } = config;
   const subdomainSlug = slugFromKnownBookingHost(host);
@@ -3082,44 +2906,11 @@ async function findProfileForHost(config: {
     return repository.findProfileByCustomDomain?.(host) ?? null;
   }
 
-  const resolvedSlug = await resolveVerifiedCustomDomainSlug(config);
-  if (resolvedSlug) {
-    return repository.findProfileBySlug(resolvedSlug);
-  }
-  if (config.bookingPublicApiUrl?.trim()) {
-    return null;
-  }
-
   if (repository.findProfileByCustomDomain) {
     return repository.findProfileByCustomDomain(host);
   }
 
   return null;
-}
-
-async function resolveVerifiedCustomDomainSlug(config: {
-  host: string;
-  bookingPublicApiUrl?: string;
-  fetch: FetchLike;
-}): Promise<string | null> {
-  if (!config.bookingPublicApiUrl?.trim()) return null;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3_000);
-  try {
-    const url = new URL("/api/resolve-domain", config.bookingPublicApiUrl);
-    url.searchParams.set("domain", config.host);
-    const response = await config.fetch(url, { signal: controller.signal });
-    if (!response.ok) return null;
-    const payload = (await response.json()) as unknown;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-    const slug = (payload as Record<string, unknown>)["slug"];
-    return typeof slug === "string" && slug.trim() ? slug.trim() : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function serializeHostResolution(
@@ -3154,8 +2945,6 @@ async function fetchCalendarProjection(config: {
   hotel: Pick<PublicBookabilityHotelProfile, "propertyId" | "slug">;
   query: BookingWebCalendarQuery;
   repository?: BookingWebCalendarRepository;
-  pmsPublicApiUrl?: string;
-  fetch: FetchLike;
   now: Date;
 }): Promise<BookingWebCalendarProjection> {
   const generatedAt = config.now.toISOString();
@@ -3164,40 +2953,7 @@ async function fetchCalendarProjection(config: {
   if (config.repository) {
     return config.repository.findCalendarByHotel(config.hotel, config.query);
   }
-  if (!start || !end || start >= end || !config.pmsPublicApiUrl?.trim()) {
-    return unavailableCalendar(config.hotel.slug, start, end, generatedAt);
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3_000);
-  try {
-    const url = new URL(
-      `/api/hotels/${encodeURIComponent(config.hotel.slug)}/unavailable-dates`,
-      config.pmsPublicApiUrl,
-    );
-    url.searchParams.set("start", start);
-    url.searchParams.set("end", end);
-
-    const response = await config.fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      return unavailableCalendar(config.hotel.slug, start, end, generatedAt);
-    }
-
-    const payload = normalizeLegacyCalendarPayload(await response.json());
-    return {
-      contractVersion: PUBLIC_BOOKABILITY_CONTRACT_VERSION,
-      generatedAt,
-      publicVisibility: PUBLIC_BOOKABILITY_VISIBILITY,
-      request: { hotelSlug: config.hotel.slug, start, end },
-      calendar: payload,
-      freshness: freshness(generatedAt, "fresh"),
-      dataSources: ["pms", "distribution"],
-    };
-  } catch {
-    return unavailableCalendar(config.hotel.slug, start, end, generatedAt);
-  } finally {
-    clearTimeout(timeout);
-  }
+  return unavailableCalendar(config.hotel.slug, start, end, generatedAt);
 }
 
 function unavailableCalendar(
@@ -3222,16 +2978,6 @@ function unavailableCalendar(
     },
     freshness: freshness(generatedAt, "unavailable"),
     dataSources: ["pms", "distribution"],
-  };
-}
-
-function normalizeLegacyCalendarPayload(value: unknown): BookingWebCalendarProjection["calendar"] {
-  const record = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const raw = record as Record<string, unknown>;
-  return {
-    unavailableDates: stringArray(raw["dates"]),
-    minStayByArrival: numberRecord(raw["min_stay_by_arrival"]),
-    maxStayByArrival: numberRecord(raw["max_stay_by_arrival"]),
   };
 }
 
@@ -3693,64 +3439,6 @@ function stableJson(value: unknown): string {
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function sanitizeCheckoutConfig(settings: Record<string, unknown>): Record<string, unknown> {
-  const sanitized = { ...settings };
-  delete sanitized["bankDetails"];
-  delete sanitized["paypalEmail"];
-  return sanitized;
-}
-
-async function fetchJson<T = unknown>(config: {
-  baseUrl?: string;
-  path: string;
-  method: "GET" | "POST";
-  body?: unknown;
-  fetch: FetchLike;
-}): Promise<T> {
-  if (!config.baseUrl?.trim()) {
-    throw createHttpError(404, "Booking Web checkout adapter is not configured.");
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5_000);
-  try {
-    const response = await config.fetch(new URL(config.path, config.baseUrl), {
-      signal: controller.signal,
-      method: config.method,
-      headers: config.method === "POST" ? { "content-type": "application/json" } : undefined,
-      body: config.body === undefined ? undefined : JSON.stringify(config.body),
-    });
-    const payload = await responseJson(response);
-    if (!response.ok) {
-      throw createHttpError(response.status, legacyErrorMessage(payload));
-    }
-    return payload as T;
-  } catch (error) {
-    if (isHttpError(error)) throw error;
-    throw createHttpError(502, "Booking Web checkout adapter request failed.");
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function responseJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
-function legacyErrorMessage(payload: unknown): string {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return "Booking Web checkout adapter request failed.";
-  }
-  const detail = (payload as Record<string, unknown>)["detail"];
-  return typeof detail === "string" && detail.trim()
-    ? detail
-    : "Booking Web checkout adapter request failed.";
 }
 
 function createHttpError(statusCode: number, message: string): HttpError {

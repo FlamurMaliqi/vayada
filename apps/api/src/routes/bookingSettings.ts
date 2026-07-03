@@ -372,15 +372,6 @@ export type BookingSettingsWriteRepository = {
   close?(): Promise<void>;
 };
 
-export type BookingGuestFormSettingsSync = {
-  syncGuestFormSettingsByHotelId(
-    hotelId: string,
-    settings: BookingGuestFormSettingsResponse,
-    authHeader?: string,
-  ): Promise<void>;
-  close?(): Promise<void>;
-};
-
 export type BookingSettingsRepository = BookingSettingsReadRepository &
   BookingSettingsWriteRepository;
 
@@ -1808,54 +1799,12 @@ export function createPgTargetBookingSettingsRepository(config: {
   };
 }
 
-export function createHttpPmsGuestFormSettingsSync(config: {
-  pmsApiUrl: string;
-  fetch?: typeof fetch;
-}): BookingGuestFormSettingsSync {
-  const baseUrl = config.pmsApiUrl.trim().replace(/\/+$/, "");
-  if (!baseUrl) {
-    throw new Error("PMS guest-form settings sync pmsApiUrl must not be empty");
-  }
-
-  const endpoint = `${baseUrl}/admin/guest-form-settings`;
-  new URL(endpoint);
-
-  const fetchImpl = config.fetch ?? fetch;
-  return {
-    async syncGuestFormSettingsByHotelId(hotelId, settings, authHeader) {
-      const headers: Record<string, string> = {
-        "content-type": "application/json",
-        "x-hotel-id": hotelId,
-      };
-      if (authHeader?.trim()) {
-        headers.authorization = authHeader;
-      }
-
-      const response = await fetchImpl(endpoint, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({
-          special_requests_enabled: settings.specialRequestsEnabled,
-          arrival_time_enabled: settings.arrivalTimeEnabled,
-          guest_count_enabled: settings.guestCountEnabled,
-        }),
-      });
-
-      if (!response.ok) {
-        const details = await response.text().catch(() => "");
-        throw new Error(`PMS guest-form settings sync failed with ${response.status}: ${details}`);
-      }
-    },
-  };
-}
-
 export async function registerBookingSettingsRoutes(
   app: FastifyInstance,
   repository: BookingSettingsReadRepository,
   writeRepository?: BookingSettingsWriteRepository,
-  guestFormSettingsSync?: BookingGuestFormSettingsSync,
 ): Promise<void> {
-  const closeables = new Set([repository, writeRepository, guestFormSettingsSync].filter(Boolean));
+  const closeables = new Set([repository, writeRepository].filter(Boolean));
   app.addHook("onClose", async () => {
     await Promise.all([...closeables].map((closeable) => closeable?.close?.()));
   });
@@ -2225,22 +2174,6 @@ export async function registerBookingSettingsRoutes(
         parseBody: parseGuestFormSettingsWriteBody,
         write: (hotelId, settings) =>
           writeRepository.updateGuestFormSettingsByHotelId(hotelId, settings),
-        afterWrite: async (hotelId, _settings, stored, request) => {
-          if (!guestFormSettingsSync) return;
-
-          try {
-            await guestFormSettingsSync.syncGuestFormSettingsByHotelId(
-              hotelId,
-              toGuestFormSettingsResponse(stored),
-              request.headers.authorization,
-            );
-          } catch (error) {
-            request.log.warn(
-              { err: error, hotelId },
-              "PMS guest-form settings sync failed after Booking settings write",
-            );
-          }
-        },
         toResponse: toGuestFormSettingsResponse,
       }),
   );
