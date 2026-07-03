@@ -375,7 +375,7 @@ async function grantIdentityAccessWithClient(
   await client.query(
     `INSERT INTO identity.organization_memberships
        (organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs, invited_at)
-     VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, COALESCE($6, '{}'), $7)
+     VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, COALESCE($6::text[], '{}'::text[]), $7)
      ON CONFLICT (organization_id, user_id)
      DO UPDATE SET
        status = EXCLUDED.status,
