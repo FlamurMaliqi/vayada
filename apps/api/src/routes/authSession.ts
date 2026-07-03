@@ -8,6 +8,7 @@ import type {
   IdentityUser,
   MembershipStatus,
   OrganizationKind,
+  PermissionKey,
   Product,
   ResourceType,
   TokenVerifier,
@@ -1115,6 +1116,7 @@ async function resolveOrCreateIdentity(
               membership: {
                 status: signupContext.membership?.status,
                 roleKey: signupContext.organization.roleKey,
+                permissionKeys: hostedSignupPermissionKeys(signupContext),
                 workosMembershipId: signupContext.membership?.workosMembershipId,
                 workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
                   signupContext.organization.roleKey,
@@ -1158,6 +1160,7 @@ async function resolveOrCreateIdentity(
         membership: {
           status: signupContext.membership?.status,
           roleKey: signupContext.organization.roleKey,
+          permissionKeys: hostedSignupPermissionKeys(signupContext),
           workosMembershipId: signupContext.membership?.workosMembershipId,
           workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
             signupContext.organization.roleKey,
@@ -1174,6 +1177,11 @@ async function resolveOrCreateIdentity(
     accessOptions,
   );
   return { user, ...access };
+}
+
+function hostedSignupPermissionKeys(signupContext: AuthSignupContext): PermissionKey[] | undefined {
+  if (signupContext.organization.kind !== "hotel_group") return undefined;
+  return ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"];
 }
 
 async function resolveExistingIdentity(
