@@ -19,6 +19,7 @@ import {
   formatCompactPrice,
 } from "@/lib/utils";
 import { parseBookingAmenities } from "@/lib/parseBookingAmenities";
+import { SELECTED_PMS_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
 
 const BED_TYPES = [
   "King Bed",
@@ -3464,7 +3465,7 @@ export default function RoomTypeForm({
                 resourceType: "pms_hotel",
                 resourceId:
                   typeof window !== "undefined"
-                    ? localStorage.getItem("selectedHotelId") || "pms_hotel_current"
+                    ? localStorage.getItem(SELECTED_PMS_PROPERTY_ID_KEY) || "pms_hotel_current"
                     : "pms_hotel_current",
                 targetResourceId: roomTypeId || "pending-room-type",
               }}

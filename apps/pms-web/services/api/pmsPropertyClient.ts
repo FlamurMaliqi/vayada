@@ -1,3 +1,8 @@
+import {
+  SELECTED_PMS_PROPERTY_ID_KEY,
+  SELECTED_SHARED_PROPERTY_ID_KEY,
+} from "@/lib/utils/pmsPropertySelectionKeys";
+
 import { assertPmsOperationsReadModelEnabled } from "./pmsOperationsClient";
 import { unsupportedPmsNextStackFeature } from "./unsupported";
 
@@ -29,9 +34,6 @@ export interface PmsCalendarSettings {
   autoOpenWarnings: string[];
 }
 
-const SELECTED_PMS_PROPERTY_ID_KEY = "selectedHotelId";
-const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
-
 export async function listPmsProperties(): Promise<PmsPropertySummary[]> {
   assertPmsOperationsReadModelEnabled();
   const selectedPropertyId = getStoredPmsPropertyId();
@@ -45,17 +47,6 @@ export async function resolveSelectedPmsPropertyId(action = "loading PMS data"):
   const storedPropertyId = getStoredPmsPropertyId();
   if (storedPropertyId) {
     return storedPropertyId;
-  }
-
-  try {
-    const properties = await listPmsProperties();
-    const selected = properties[0] ?? null;
-    if (selected) {
-      storeSelectedPmsPropertyId(selected.id);
-      return selected.id;
-    }
-  } catch {
-    throw new Error(`Select a PMS property before ${action}.`);
   }
 
   throw new Error(`Select a PMS property before ${action}.`);

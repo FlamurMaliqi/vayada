@@ -3,6 +3,7 @@ import {
   createPlatformMediaImport,
   shouldUseLegacyMarketplaceImageUpload,
 } from "../platform-media";
+import { SELECTED_PMS_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
 
 export interface ExtractedRoomType {
   name: string;
@@ -62,7 +63,7 @@ export const importService = {
 
     const resourceId =
       typeof window !== "undefined"
-        ? localStorage.getItem("selectedHotelId") || "pms_hotel_current"
+        ? localStorage.getItem(SELECTED_PMS_PROPERTY_ID_KEY) || "pms_hotel_current"
         : "pms_hotel_current";
     const importJob = await createPlatformMediaImport({
       resource: {

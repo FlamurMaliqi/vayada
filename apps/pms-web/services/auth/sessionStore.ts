@@ -1,3 +1,9 @@
+import {
+  SELECTED_PMS_PROPERTY_ID_KEY,
+  SELECTED_SHARED_PROPERTY_ID_KEY,
+  SELECTED_SHARED_PROPERTY_ORG_ID_KEY,
+} from "@/lib/utils/pmsPropertySelectionKeys";
+
 export type AuthUser = {
   id: string;
   email: string;
@@ -31,9 +37,6 @@ export type AuthSessionResponse = AuthKitSessionResponse | AuthOrganizationSelec
 
 const LEGACY_TOKEN_KEY = "access_token";
 const LEGACY_EXPIRES_AT_KEY = "token_expires_at";
-const SELECTED_PMS_PROPERTY_ID_KEY = "selectedHotelId";
-const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
-const SELECTED_SHARED_PROPERTY_ORG_ID_KEY = "selectedSharedPropertyOrganizationId";
 const PMS_PROPERTY_RESOURCE_KEY = "pms:pms_property";
 
 let authKitSession: AuthKitSessionResponse | null = null;

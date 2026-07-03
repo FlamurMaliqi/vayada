@@ -6,6 +6,10 @@ import { useRouter } from "next/navigation";
 import { authService } from "@/services/auth";
 import { bookingsService } from "@/services/bookings";
 import { pmsSettingsService, settingsService, HotelSummary } from "@/services/settings";
+import {
+  getStoredPmsPropertyId,
+  storeSelectedPmsPropertyId,
+} from "@/services/api/pmsPropertyClient";
 import { isPmsOperationsReadModelEnabled } from "@/services/api/pmsOperationsClient";
 import {
   getArrivalsToday,
@@ -106,11 +110,11 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
       .then((list) => {
         setHotels(list);
         if (list.length > 0) {
-          const savedId = localStorage.getItem("selectedHotelId");
+          const savedId = getStoredPmsPropertyId();
           const saved = list.find((h) => h.id === savedId);
           const selected = saved || list[0];
           setSelectedHotel(selected);
-          localStorage.setItem("selectedHotelId", selected.id);
+          storeSelectedPmsPropertyId(selected.id);
         }
       })
       .catch(() => {});
@@ -140,9 +144,9 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
   };
 
   useEffect(() => {
-    Promise.all([bookingsService.listAll(), pmsSettingsService.getHotelDetails()])
+    Promise.all([bookingsService.listAll(), pmsSettingsService.getHotelDetails().catch(() => null)])
       .then(([bookings, hotel]) => {
-        const today = getPropertyToday(hotel.timezone);
+        const today = getPropertyToday(hotel?.timezone ?? null);
         const arrivalsToday = getArrivalsToday(bookings, today);
         const departuresToday = getDeparturesToday(bookings, today);
         setStats({
@@ -217,7 +221,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                       key={hotel.id}
                       onClick={() => {
                         if (!isSelected) {
-                          localStorage.setItem("selectedHotelId", hotel.id);
+                          storeSelectedPmsPropertyId(hotel.id);
                           window.location.reload();
                         }
                         setPropertyOpen(false);
