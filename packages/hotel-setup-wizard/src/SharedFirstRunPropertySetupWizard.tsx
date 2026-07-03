@@ -557,7 +557,7 @@ function PropertySelection({
 
 function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
-    <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+    <div className="rounded-lg border border-red-200 bg-red-50 p-4" role="alert">
       <div className="flex gap-3">
         <ExclamationCircleIcon
           className="mt-0.5 h-5 w-5 shrink-0 text-red-600"
@@ -1035,15 +1035,32 @@ function validateProfileDraft(draft: ProfileDraft): Record<string, string[]> {
     errors["location.countryCode"] = ["Enter a country code or city to continue."];
     errors["location.city"] = ["Enter a city or country code to continue."];
   }
-  if (!draft.website.trim()) errors.website = ["Website is required to complete setup."];
+  if (!draft.website.trim()) {
+    errors.website = ["Website is required to complete setup."];
+  } else if (!isHttpUrl(draft.website)) {
+    errors.website = ["Enter a valid website URL."];
+  }
   if (!draft.phone.trim()) errors.phone = ["Phone is required to complete setup."];
   if (!hasDescription) {
     errors.shortDescription = ["Add a short or long description to continue."];
     errors.longDescription = ["Add a long or short description to continue."];
   }
-  if (!draft.mediaUrl.trim()) errors["media.0.url"] = ["Photo URL is required to complete setup."];
+  if (!draft.mediaUrl.trim()) {
+    errors["media.0.url"] = ["Photo URL is required to complete setup."];
+  } else if (!isHttpUrl(draft.mediaUrl)) {
+    errors["media.0.url"] = ["Enter a valid photo URL."];
+  }
 
   return errors;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function TextField({

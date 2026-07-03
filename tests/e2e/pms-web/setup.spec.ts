@@ -34,9 +34,23 @@ test.describe("pms-web shared setup", () => {
     await expect(page.getByText("Property name is required.")).toBeVisible();
     await expect(page.getByText("Website is required to complete setup.")).toBeVisible();
     await expect(page.getByText("Photo URL is required to complete setup.")).toBeVisible();
-    await expect(page.getByLabel("Property name")).toHaveAttribute("aria-invalid", "true");
+    const propertyNameField = page.getByLabel("Property name");
+    await expect(propertyNameField).toHaveAttribute("aria-invalid", "true");
+    const describedBy = await propertyNameField.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    const propertyNameError = page.getByText("Property name is required.");
+    const propertyNameErrorId = await propertyNameError.getAttribute("id");
+    expect(propertyNameErrorId).toBeTruthy();
+    expect(describedBy!.split(/\s+/)).toContain(propertyNameErrorId!);
+    await expect(propertyNameError).toHaveAttribute("role", "alert");
 
     await page.getByLabel("Property name").fill("Alpenrose Munich");
+    await page.getByLabel("Website").fill("not-a-url");
+    await page.getByLabel("Photo URL").fill("ftp://images.example/alpenrose.jpg");
+    await page.getByRole("button", { name: "Save and continue" }).click();
+    await expect(page.getByText("Enter a valid website URL.")).toBeVisible();
+    await expect(page.getByText("Enter a valid photo URL.")).toBeVisible();
+
     await page.getByLabel("Country code").fill("DE");
     await page.getByLabel("City").fill("Munich");
     await page.getByLabel("Website").fill("https://alpenrose.example");
@@ -48,9 +62,8 @@ test.describe("pms-web shared setup", () => {
     await expect(page.getByRole("heading", { level: 2, name: "Choose products" })).toBeVisible();
     await expect(page.getByText("Alpenrose Munich")).toBeVisible();
     await expect(page.getByLabel("PMS")).toBeChecked();
-    await expect(
-      page.locator("label").filter({ hasText: "PMS" }).getByText("Selected"),
-    ).toBeVisible();
+    const pmsProductOption = page.getByLabel("PMS").locator("xpath=ancestor::label");
+    await expect(pmsProductOption.getByText("Selected", { exact: true })).toBeVisible();
     expect(statusRequests.length).toBeGreaterThan(0);
     expect(
       statusRequests.every(
