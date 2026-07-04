@@ -28,8 +28,8 @@ To stop the Docker backend services and portless proxy started by the script:
 
 ## `dev-portless.sh`
 
-Start the transitional legacy local stack with Docker databases/FastAPI backends
-and portless frontends.
+Start the transitional local stack with Docker databases/FastAPI backends and
+repo-root portless apps.
 
 ```sh
 ./scripts/dev-portless.sh
