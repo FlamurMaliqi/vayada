@@ -9,11 +9,11 @@ import {
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL;
 const LOCAL_AUTH_API_BASE_URL = "https://api.localhost";
 
-type RegisterPageProps = {
+type SignupPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-export default async function RegisterPage({ searchParams }: RegisterPageProps) {
+export default async function SignupPage({ searchParams }: SignupPageProps) {
   const params = (await searchParams) ?? {};
   const returnTo = safeRelativeReturnTo(params.returnTo, "/dashboard");
   const headerList = await headers();
