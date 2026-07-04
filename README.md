@@ -279,11 +279,15 @@ The auth database (`auth-db/`) provides centralized user management for all serv
    Run `./scripts/portless-setup.sh` once if portless has not been trusted and
    configured on the machine.
 
-3. **Seed test data:**
+3. **Seed test data when needed:**
 
    ```bash
    npm run seed:test-data
    ```
+
+   `npm run dev:workos-local` runs this automatically unless `SKIP_SEED=1` is
+   set. Run it manually for `npm run dev:portless`, raw Compose, or individual
+   app development.
 
 4. **Access the applications:**
 
