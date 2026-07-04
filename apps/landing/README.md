@@ -36,8 +36,9 @@ npm run lint
 ```
 
 `NEXT_PUBLIC_API_URL` points the contact form and HCN data fetch at the public
-API host (`http://localhost:8003` for the target API locally,
-`https://api.vayada.com` in prod). See `.env.example`.
+API host. The current portless local default is the marketplace FastAPI API; use
+`http://localhost:8003` only when testing a target `apps/api` cutover. See
+`.env.example`.
 
 ## Deploy
 

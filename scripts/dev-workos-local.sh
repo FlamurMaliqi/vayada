@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Start the local Vayada stack with WorkOS/AuthKit on portless.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.portless.yml)
+BACKEND_SERVICES=(
+  marketplace-postgres
+  booking-postgres
+  auth-postgres
+  pms-postgres
+  auth-db-migrate
+  minio
+  minio-setup
+  marketplace-backend
+  booking-backend
+  pms-backend
+)
+
+cd "$ROOT_DIR"
+
+if [[ "${1:-}" == "--stop" ]]; then
+  docker compose "${COMPOSE_FILES[@]}" stop "${BACKEND_SERVICES[@]}"
+  portless proxy stop >/dev/null 2>&1 || true
+  exit 0
+fi
+
+if ! command -v portless >/dev/null 2>&1; then
+  echo "portless is not installed. Run: npm install -g portless" >&2
+  exit 1
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker is not installed or not on PATH." >&2
+  exit 1
+fi
+
+if [[ ! -f apps/api/.env ]]; then
+  echo "Missing apps/api/.env with local WorkOS settings." >&2
+  exit 1
+fi
+
+set -a
+source apps/api/.env
+set +a
+
+unset BOOKING_DATABASE_URL
+unset BOOKING_RESERVATIONS_READ_DATABASE_URL
+unset BOOKING_PUBLIC_API_URL
+unset PMS_API_URL
+unset PMS_PUBLIC_API_URL
+unset BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED
+
+export PORTLESS_PORT="${PORTLESS_PORT:-443}"
+export PORTLESS_SYNC_HOSTS="${PORTLESS_SYNC_HOSTS:-0}"
+
+PORT_SUFFIX=""
+if [[ "$PORTLESS_PORT" != "443" ]]; then
+  PORT_SUFFIX=":$PORTLESS_PORT"
+fi
+
+API_ORIGIN="https://api.localhost${PORT_SUFFIX}"
+ADMIN_ORIGIN="https://admin.localhost${PORT_SUFFIX}"
+BOOKING_ADMIN_ORIGIN="https://admin.booking.localhost${PORT_SUFFIX}"
+BOOKING_ORIGIN="https://booking.localhost${PORT_SUFFIX}"
+PMS_ORIGIN="https://pms.localhost${PORT_SUFFIX}"
+MARKETPLACE_ORIGIN="https://marketplace.localhost${PORT_SUFFIX}"
+AFFILIATE_ORIGIN="https://affiliate.localhost${PORT_SUFFIX}"
+LANDING_ORIGIN="https://landing.localhost${PORT_SUFFIX}"
+MARKETPLACE_API_ORIGIN="https://api.marketplace.localhost${PORT_SUFFIX}"
+BOOKING_API_ORIGIN="https://api.booking.localhost${PORT_SUFFIX}"
+PMS_API_ORIGIN="https://api.pms.localhost${PORT_SUFFIX}"
+
+export AUTH_COOKIE_SECRET="${AUTH_COOKIE_SECRET:-local-dev-auth-cookie-secret-0123456789abcdef}"
+export AUTH_CALLBACK_URL="${AUTH_CALLBACK_URL:-${API_ORIGIN}/auth/workos/callback}"
+export AUTH_SUCCESS_URL="${AUTH_SUCCESS_URL:-${ADMIN_ORIGIN}/dashboard}"
+export AUTH_LOGOUT_URL="${AUTH_LOGOUT_URL:-${ADMIN_ORIGIN}/login}"
+export AUTH_ALLOWED_ORIGINS="${AUTH_ALLOWED_ORIGINS:-${API_ORIGIN},${ADMIN_ORIGIN},${BOOKING_ADMIN_ORIGIN},${BOOKING_ORIGIN},${PMS_ORIGIN},${MARKETPLACE_ORIGIN},${AFFILIATE_ORIGIN},${LANDING_ORIGIN}}"
+export AUTH_COOKIE_SECURE="${AUTH_COOKIE_SECURE:-true}"
+export AUTH_BOOKING_ADMIN_SUCCESS_URL="${AUTH_BOOKING_ADMIN_SUCCESS_URL:-${BOOKING_ADMIN_ORIGIN}/dashboard}"
+export AUTH_BOOKING_ADMIN_LOGOUT_URL="${AUTH_BOOKING_ADMIN_LOGOUT_URL:-${BOOKING_ADMIN_ORIGIN}/login}"
+export AUTH_PMS_WEB_SUCCESS_URL="${AUTH_PMS_WEB_SUCCESS_URL:-${PMS_ORIGIN}/dashboard}"
+export AUTH_PMS_WEB_LOGOUT_URL="${AUTH_PMS_WEB_LOGOUT_URL:-${PMS_ORIGIN}/login}"
+export AUTH_AFFILIATE_DASHBOARD_SUCCESS_URL="${AUTH_AFFILIATE_DASHBOARD_SUCCESS_URL:-${AFFILIATE_ORIGIN}/dashboard}"
+export AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL="${AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL:-${AFFILIATE_ORIGIN}/login}"
+export AUTH_MARKETPLACE_WEB_SUCCESS_URL="${AUTH_MARKETPLACE_WEB_SUCCESS_URL:-${MARKETPLACE_ORIGIN}/marketplace}"
+export AUTH_MARKETPLACE_WEB_LOGOUT_URL="${AUTH_MARKETPLACE_WEB_LOGOUT_URL:-${MARKETPLACE_ORIGIN}/login}"
+export AUTH_LEGACY_MARKETPLACE_JWT_SECRET="${AUTH_LEGACY_MARKETPLACE_JWT_SECRET:-local-legacy-marketplace-secret}"
+export AUTH_LEGACY_BOOKING_JWT_SECRET="${AUTH_LEGACY_BOOKING_JWT_SECRET:-local-legacy-booking-secret}"
+export AUTH_LEGACY_PMS_JWT_SECRET="${AUTH_LEGACY_PMS_JWT_SECRET:-local-legacy-pms-secret}"
+export AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET="${AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET:-local-legacy-affiliate-secret}"
+
+echo "==> Starting Docker databases and FastAPI backends"
+docker compose "${COMPOSE_FILES[@]}" up -d "${BACKEND_SERVICES[@]}"
+
+echo "==> Ensuring portless API aliases exist"
+portless alias api.marketplace 8000
+portless alias api.booking 8001
+portless alias api.pms 8002
+
+echo "==> Starting portless proxy with wildcard routing"
+portless proxy start --wildcard
+
+if [[ "${SKIP_SEED:-0}" != "1" ]]; then
+  if [[ ! -x .venv/bin/python ]]; then
+    python3 -m venv .venv
+  fi
+  if ! .venv/bin/python - <<'PY' >/dev/null 2>&1
+import asyncpg, bcrypt
+PY
+  then
+    .venv/bin/python -m pip install asyncpg bcrypt
+  fi
+  PYTHON_BIN=.venv/bin/python npm run seed:test-data
+fi
+
+children=()
+
+cleanup() {
+  if ((${#children[@]})); then
+    kill "${children[@]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup INT TERM EXIT
+
+start_app() {
+  local dir="$1"
+  local app_port="$2"
+  shift 2
+  (
+    cd "$dir"
+    env "$@" PORTLESS_APP_PORT="$app_port" portless run npm run dev
+  ) &
+  children+=("$!")
+}
+
+COMMON_FRONTEND_ENV=(
+  "NEXT_PUBLIC_AUTH_API_URL=${API_ORIGIN}"
+  "NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=${API_ORIGIN}"
+  "NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true"
+  "NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true"
+  "NEXT_PUBLIC_PMS_URL=${PMS_ORIGIN}"
+  "NEXT_PUBLIC_MARKETPLACE_URL=${MARKETPLACE_ORIGIN}"
+  "NEXT_PUBLIC_MARKETING_URL=${LANDING_ORIGIN}"
+  "NEXT_PUBLIC_BOOKING_ADMIN_URL=${BOOKING_ADMIN_ORIGIN}"
+  "NEXT_PUBLIC_APP_URL=${MARKETPLACE_ORIGIN}"
+)
+
+echo
+echo "==> Starting local apps"
+echo "    Admin: ${ADMIN_ORIGIN}"
+echo "    Booking tenant: https://hotel-alpenrose.booking.localhost${PORT_SUFFIX}"
+echo "    Stop with Ctrl-C. Stop Docker services with: npm run dev:workos-local -- --stop"
+echo
+
+start_app apps/api 8003
+start_app apps/marketplace-web 3000 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${MARKETPLACE_API_ORIGIN}"
+start_app apps/vayada-admin 3001 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
+start_app apps/booking-web 3002 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_BOOKING_WEB_API_URL=${API_ORIGIN}" "NEXT_PUBLIC_API_URL=${BOOKING_API_ORIGIN}"
+start_app apps/booking-admin 3003 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${API_ORIGIN}" "NEXT_PUBLIC_PMS_API_URL=${PMS_API_ORIGIN}"
+start_app apps/pms-web 3004 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_PMS_API_URL=${PMS_API_ORIGIN}" "NEXT_PUBLIC_PMS_OPERATIONS_API_URL=${API_ORIGIN}"
+start_app apps/affiliate-dashboard 3005 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
+start_app apps/landing 3006 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${MARKETPLACE_API_ORIGIN}"
+
+wait

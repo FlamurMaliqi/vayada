@@ -7,11 +7,14 @@
 # This script:
 #   1. Installs the portless local CA into the system trust store (sudo prompt).
 #   2. Registers the three FastAPI backends as static aliases so portless
-#      proxies the named URL to the existing uvicorn port. The Next.js apps
-#      register themselves via their package.json "portless" key when launched
-#      through portless.
+#      proxies the named URL to the existing uvicorn port. The TypeScript
+#      apps/api and Next.js apps register themselves via package.json when
+#      launched through portless.
 #
 # Naming scheme (full project at https://linear.app project "Adopt portless for local dev URLs"):
+#
+#   apps/api (TypeScript, registered via package.json):
+#     api.localhost                      apps/api               (port 8003)
 #
 #   Frontends (Next.js, registered via package.json):
 #     marketplace.localhost              marketplace-web        (port 3000)
@@ -27,8 +30,9 @@
 #     api.booking.localhost              booking-api            (port 8001)
 #     api.pms.localhost                  pms-api                (port 8002)
 #
-# Run apps via `portless` from each app dir (frontends) or `uvicorn` as today
-# (backends). From the monorepo root, `portless` starts all workspace apps.
+# Run apps/api and frontends via `portless` from each app dir, or from the
+# monorepo root to start all workspace apps. Legacy FastAPI backends still run
+# via uvicorn or Docker Compose.
 
 set -euo pipefail
 

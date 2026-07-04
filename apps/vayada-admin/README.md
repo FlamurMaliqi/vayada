@@ -4,7 +4,7 @@ Admin panel for managing vayada users, built with Next.js 14.
 
 ## Getting Started
 
-### Option 1: Local Development (without Docker)
+### Local Development
 
 1. Install dependencies:
 
@@ -15,7 +15,8 @@ npm install
 2. Create a `.env.local` file:
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8003
+NEXT_PUBLIC_AUTH_API_URL=http://localhost:8003
 ```
 
 3. Run the development server:
@@ -26,28 +27,12 @@ npm run dev
 
 The admin panel will be available at [http://localhost:3001](http://localhost:3001)
 
-### Option 2: Docker Development
-
-1. Create a `.env.local` file (optional, defaults to `http://localhost:8000`):
-
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-```
-
-2. Run with Docker Compose:
-
-```bash
-docker-compose up
-```
-
-The admin panel will be available at [http://localhost:3001](http://localhost:3001)
-
-### Option 3: Production Build with Docker
+### Production Build with Docker
 
 1. Build the Docker image:
 
 ```bash
-docker build --build-arg NEXT_PUBLIC_API_URL=http://your-api-url:8000 -t vayada-admin-frontend .
+docker build --build-arg NEXT_PUBLIC_API_URL=https://api.example.com -t vayada-admin-frontend .
 ```
 
 2. Run the container:
@@ -59,7 +44,7 @@ docker run -p 3001:3001 vayada-admin-frontend
 Or build and run in one command:
 
 ```bash
-docker build --build-arg NEXT_PUBLIC_API_URL=http://your-api-url:8000 -t vayada-admin-frontend . && docker run -p 3001:3001 vayada-admin-frontend
+docker build --build-arg NEXT_PUBLIC_API_URL=https://api.example.com -t vayada-admin-frontend . && docker run -p 3001:3001 vayada-admin-frontend
 ```
 
 ## Features
@@ -72,5 +57,3 @@ docker build --build-arg NEXT_PUBLIC_API_URL=http://your-api-url:8000 -t vayada-
 ## Docker Files
 
 - `Dockerfile` - Production multi-stage build (optimized)
-- `Dockerfile.dev` - Development build
-- `docker-compose.yml` - Local development setup

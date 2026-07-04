@@ -10,6 +10,7 @@ This file is the **canonical, tool-neutral agent guide**. Claude Code, Codex, an
 
 | Path                       | Stack      | Port | Local URL                           |
 | -------------------------- | ---------- | ---- | ----------------------------------- |
+| `apps/api`                 | Node/TS    | 8003 | `https://api.localhost`             |
 | `apps/marketplace-api`     | FastAPI    | 8000 | `https://api.marketplace.localhost` |
 | `apps/marketplace-web`     | Next.js 14 | 3000 | `https://marketplace.localhost`     |
 | `apps/vayada-admin`        | Next.js 14 | 3001 | `https://admin.localhost`           |
@@ -27,7 +28,7 @@ Local URLs are the recommended way to reach each app — see [Local dev — port
 
 ## Local dev — portless
 
-[portless](https://portless.sh) maps every app to a stable HTTPS URL on `*.localhost` (column 4 of the App map above). No port numbers to remember, no per-worktree port collisions, and frontends reach their backends via the same named URLs whether you're in the main tree or a worktree. **portless is the recommended local-dev workflow.** Plain `localhost:PORT` still works — see [Plain-port fallback](#plain-port-fallback) below.
+[portless](https://portless.sh) maps every app to a stable HTTPS URL on `*.localhost` (column 4 of the App map above). No port numbers to remember, no per-worktree port collisions, and frontends reach their backends via the same named URLs whether you're in the main tree or a worktree. **`npm run dev:workos-local` is the current local workflow for AuthKit and next-stack work.** Plain `localhost:PORT` still works — see [Plain-port fallback](#plain-port-fallback) below.
 
 ### One-time setup
 
@@ -41,15 +42,17 @@ npm install -g portless                # requires Node 24+
 
 ### Running apps
 
-| What                            | Command                                                                          |
-| ------------------------------- | -------------------------------------------------------------------------------- |
-| Start every Next.js app at once | `portless` from the repo root                                                    |
-| Start one Next.js app           | `cd apps/<name> && portless`                                                     |
-| Start a FastAPI backend         | `cd apps/<api> && uvicorn app.main:app --reload --port <P>` (P from the App map) |
+| What                                  | Command                                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------------- |
+| Start AuthKit / next-stack local dev  | `npm run dev:workos-local` (starts support services, `apps/api`, and frontends)  |
+| Start transitional legacy local stack | `npm run dev:portless`                                                           |
+| Start one Next.js app                 | `cd apps/<name> && portless`                                                     |
+| Start `apps/api`                      | `cd apps/api && npm run dev`                                                     |
+| Start a FastAPI backend               | `cd apps/<api> && uvicorn app.main:app --reload --port <P>` (P from the App map) |
 
-The Next.js apps register their portless name via a `"portless"` key in `apps/<name>/package.json`. The FastAPI apps run on their existing uvicorn ports (8000 / 8001 / 8002) and are reached at `https://api.<product>.localhost` thanks to the static aliases registered by `scripts/portless-setup.sh`.
+The Next.js apps and `apps/api` register their portless names via a `"portless"` key in `apps/<name>/package.json`. The FastAPI apps run on their existing uvicorn ports (8000 / 8001 / 8002) and are reached at `https://api.<product>.localhost` thanks to the static aliases registered by `scripts/portless-setup.sh`.
 
-The frontend API fallbacks (`process.env.NEXT_PUBLIC_*_URL || …`) default to the portless URLs, so a contributor running portless needs **no `.env.local` to talk to the right APIs**.
+`npm run dev:workos-local` requires `apps/api/.env` with local WorkOS settings and wires AuthKit/target frontend calls to `https://api.localhost`. `npm run dev:portless` is the transitional path for legacy FastAPI-backed surfaces and does not provide WorkOS/AuthKit env wiring.
 
 ### Worktrees
 
@@ -71,13 +74,24 @@ Plain-port fallback still works: `cd apps/booking-web && npm run dev` and reach 
 
 ### Plain-port fallback
 
-Without portless, `npm run dev` in each Next.js app binds to its conventional port (3000–3006), and uvicorn binds to 8000/8001/8002 as before. To make the frontends talk to plain-port backends, override the API URLs in `apps/<name>/.env.local` — each `apps/*/.env.example` lists the plain-port URL alongside the portless default.
+Without portless, `npm run dev` in each Next.js app binds to its conventional port (3000-3006), `apps/api` binds to 8003, and uvicorn binds to 8000/8001/8002 as before. To make the frontends talk to plain-port backends, override the API URLs in `apps/<name>/.env.local` — each `apps/*/.env.example` lists the plain-port URL alongside the portless default.
 
 ### Pre-1.0 caveat
 
 portless is pre-1.0 (currently 0.13.x). Upgrades occasionally change the state-dir format; if `portless list` shows nothing or HTTPS suddenly fails, re-run `portless trust` and `./scripts/portless-setup.sh`.
 
 ## Per-stack commands
+
+**TypeScript backend** (`apps/api`):
+
+```bash
+cd apps/api
+npm install
+npm run dev      # port 8003; portless URL https://api.localhost
+npm run build
+npm run typecheck
+npm run test
+```
 
 **FastAPI backends** (Python 3.11):
 
@@ -102,6 +116,8 @@ Root npm workspace commands:
 
 ```bash
 npm run dev:booking-web
+npm run dev:workos-local
+npm run dev:portless
 npm run build:booking-web
 npm run lint:booking-web
 npm run build       # all workspaces with build scripts
