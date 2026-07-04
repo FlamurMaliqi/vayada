@@ -27,8 +27,8 @@ test.describe("booking-admin smoke", () => {
     expect(returnTo.searchParams.get("returnTo")).toBe("/dashboard");
   });
 
-  test("@signup register redirects to hosted AuthKit signup", async ({ request, baseURL }) => {
-    const response = await request.get("/register", { maxRedirects: 0 });
+  test("@signup signup redirects to hosted AuthKit signup", async ({ request, baseURL }) => {
+    const response = await request.get("/signup", { maxRedirects: 0 });
 
     expect(response.status()).toBe(307);
     const hostedSignupUrl = new URL(response.headers().location ?? "");
