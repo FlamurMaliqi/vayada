@@ -20,6 +20,7 @@
     "dev:vayada-admin": "npm --workspace vayada-admin run dev",
     "dev:marketplace-web": "npm --workspace vayada-creator-marketplace run dev",
     "dev:portless": "./scripts/dev-portless.sh",
+    "dev:workos-local": "./scripts/dev-workos-local.sh",
     "dev:pms-web": "npm --workspace vayada-pms-frontend run dev",
     "seed:test-data": "./scripts/seed_test_data.sh",
     "build": "npm --workspaces --if-present run build",

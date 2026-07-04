@@ -8,7 +8,7 @@ A FastAPI-based backend service for the vayada Creator Marketplace platform. Thi
 
 Before you begin, make sure you have the following installed:
 
-- **Docker** and **Docker Compose** - Required to run the application
+- **Docker** and **Docker Compose** - Required for local databases and backend services
 - **Python 3.11+** - Only needed if you want to develop locally without Docker
 
 ### Getting Started
@@ -16,18 +16,20 @@ Before you begin, make sure you have the following installed:
 1. **Start the application:**
 
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
-   This command starts all services (database, backend, and frontend) in the background.
+   Run this from the repository root. It starts local databases, MinIO, auth-DB
+   migrations, and the legacy FastAPI backends. Frontends run from npm/portless,
+   not Docker Compose.
 
 2. **Verify everything is running:**
 
    ```bash
-   docker-compose ps
+   docker compose ps
    ```
 
-   You should see all services with a "running" status.
+   You should see the support services with a "running" status.
 
 3. **Access the API:**
    - API Base URL: `http://localhost:8000`
@@ -107,7 +109,7 @@ The PostgreSQL database runs automatically in a Docker container. Database migra
 To connect to the database directly using the command line:
 
 ```bash
-docker-compose exec postgres psql -U vayada_user -d vayada_db
+docker compose exec marketplace-postgres psql -U vayada_user -d vayada_db
 ```
 
 ## 🔌 API Endpoints
@@ -131,8 +133,8 @@ Authentication-related endpoints are available. See the `/docs` page for the com
 When you modify the code, you need to rebuild the backend container:
 
 ```bash
-docker-compose build backend
-docker-compose up -d backend
+docker compose build marketplace-backend
+docker compose up -d marketplace-backend
 ```
 
 ### Viewing Logs
@@ -140,23 +142,23 @@ docker-compose up -d backend
 To see what's happening in real-time:
 
 ```bash
-docker-compose logs -f backend
+docker compose logs -f marketplace-backend
 ```
 
 Press `Ctrl+C` to stop viewing logs.
 
 ### Stopping Services
 
-To stop all services:
+To stop support services:
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 To stop and remove all data (including database):
 
 ```bash
-docker-compose down -v
+docker compose down -v
 ```
 
 ## 🔗 Frontend Integration

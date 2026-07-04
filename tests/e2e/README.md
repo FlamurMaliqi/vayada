@@ -36,6 +36,12 @@ To have Playwright start plain-port Next.js dev servers for all apps:
 E2E_START_SERVERS=1 npm run e2e
 ```
 
+Server mode starts only the Next.js frontends on ports 3000-3006. It does not
+start `apps/api` on 8003 or the legacy FastAPI APIs on 8000-8002. Current smokes
+either mock backend calls or assert local AuthKit redirects; for real backend
+flows, start `npm run dev:workos-local` first and leave `E2E_START_SERVERS`
+unset.
+
 Plain-port server mode uses:
 
 - `http://127.0.0.1:3006` for landing

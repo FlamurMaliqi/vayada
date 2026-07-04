@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the local Vayada stack with portless frontends and Docker backends.
+# Start the transitional portless stack with Docker support services.
 
 set -euo pipefail
 
@@ -44,9 +44,9 @@ portless alias api.booking 8001
 portless alias api.pms 8002
 
 echo
-echo "==> Starting portless frontends"
-echo "    Frontends: https://marketplace.localhost, https://booking.localhost, https://pms.localhost, https://admin.localhost"
-echo "    Stop frontends with Ctrl-C. Stop Docker backends with: $0 --stop"
+echo "==> Starting portless apps"
+echo "    Apps: https://api.localhost, https://marketplace.localhost, https://booking.localhost, https://pms.localhost, https://admin.localhost"
+echo "    Stop portless apps with Ctrl-C. Stop Docker backends with: $0 --stop"
 echo
 
 exec portless

@@ -1,22 +1,17 @@
 ###############################################################################
-# vayada — All Services
+# vayada — Local Support Services
 #
-# Starts every service: marketplace (3) + booking engine (3) + PMS (2) + shared infra.
+# Starts local databases, MinIO, auth-DB migrations, and legacy FastAPI backends.
+# Next.js frontends and apps/api run from the npm workspace / portless so local
+# @vayada/* workspace packages resolve from the repo root.
 #
 # Usage:
-#   docker compose up              # start everything
+#   docker compose up              # start support services
 #   docker compose up -d           # start in background
 #   docker compose down            # stop everything
 #   docker compose down -v         # stop and remove volumes
 #
 # Ports:
-#   3000  Marketplace frontend
-#   3001  Vayada admin frontend
-#   3002  Booking engine frontend
-#   3003  Booking engine admin frontend
-#   3004  PMS frontend
-#   3005  Affiliate dashboard frontend
-#   3006  Marketing / landing site
 #   8000  Marketplace backend API
 #   8001  Booking engine backend API
 #   8002  PMS backend API
@@ -278,165 +273,6 @@ services:
     volumes:
       - ./apps/pms-api/app:/app/app
       - ./apps/pms-api/scripts:/app/scripts
-    restart: unless-stopped
-    networks:
-      - vayada-network
-
-  # ─── Marketplace Frontends ─────────────────────────────────────────────
-
-  marketplace-frontend:
-    build:
-      context: ./apps/marketplace-web
-      dockerfile: Dockerfile.dev
-      args:
-        - NEXT_PUBLIC_API_URL=http://localhost:8000
-    container_name: vayada-marketplace-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-    volumes:
-      - ./apps/marketplace-web:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - marketplace-backend
-    restart: unless-stopped
-    networks:
-      - vayada-network
-
-  marketing-landing:
-    build:
-      context: ./apps/landing
-      dockerfile: Dockerfile.dev
-      args:
-        - NEXT_PUBLIC_API_URL=http://localhost:8000
-    container_name: vayada-marketing-landing
-    ports:
-      - "3006:3006"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-    volumes:
-      - ./apps/landing:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - marketplace-backend
-    restart: unless-stopped
-    networks:
-      - vayada-network
-
-  vayada-admin-frontend:
-    build:
-      context: ./apps/vayada-admin
-      dockerfile: Dockerfile.dev
-    container_name: vayada-admin-frontend
-    ports:
-      - "3001:3001"
-    environment:
-      - NODE_ENV=development
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-      - NEXT_PUBLIC_BOOKING_API_URL=http://localhost:8001
-      - NEXT_PUBLIC_PMS_API_URL=http://localhost:8002
-      - NEXT_PUBLIC_PMS_URL=http://localhost:8002
-      - NEXT_PUBLIC_BOOKING_URL_TEMPLATE=http://{slug}.localhost:3002
-    volumes:
-      - ./apps/vayada-admin:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - marketplace-backend
-    restart: unless-stopped
-    networks:
-      - vayada-network
-
-  # ─── Booking Engine Frontends ──────────────────────────────────────────
-
-  booking-frontend:
-    build:
-      context: ./apps/booking-web
-      dockerfile: Dockerfile.dev
-    container_name: vayada-booking-frontend
-    ports:
-      - "3002:3002"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - NEXT_PUBLIC_BOOKING_WEB_API_URL=http://host.docker.internal:8003
-      - NEXT_PUBLIC_API_URL=http://localhost:8001
-      - NEXT_PUBLIC_HOTEL_SLUG=testvayada
-      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_51T4q9fHPi3htfo3SVbB0UNZAFqwHGEwJrUmD90xdp5cLssb1t7G1JAv5k3WV3IAJjyTXqqgnCuAG2rEm1IqGx6bF00dLXvkm1P
-    volumes:
-      - ./apps/booking-web:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - booking-backend
-    restart: unless-stopped
-    networks:
-      - vayada-network
-
-  booking-admin-frontend:
-    build:
-      context: ./apps/booking-admin
-      dockerfile: Dockerfile.dev
-    container_name: vayada-booking-admin-frontend
-    ports:
-      - "3003:3003"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8001
-      - NEXT_PUBLIC_PMS_URL=http://localhost:8002
-      - NEXT_PUBLIC_PMS_FRONTEND_URL=http://localhost:3004
-      - NEXT_PUBLIC_MARKETPLACE_API_URL=http://localhost:8000
-      - NEXT_PUBLIC_BOOKING_URL_TEMPLATE=http://{slug}.localhost:3002
-    volumes:
-      - ./apps/booking-admin:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - booking-backend
-    restart: unless-stopped
-    networks:
-      - vayada-network
-
-  # ─── PMS Frontend ─────────────────────────────────────────────────────
-
-  pms-frontend:
-    build:
-      context: ./apps/pms-web
-      dockerfile: Dockerfile.dev
-    container_name: vayada-pms-frontend
-    ports:
-      - "3004:3004"
-    environment:
-      - NEXT_PUBLIC_AUTH_API_URL=http://localhost:8001
-      - NEXT_PUBLIC_PMS_API_URL=http://localhost:8002
-      - NEXT_PUBLIC_BOOKING_ADMIN_URL=http://localhost:3003
-    volumes:
-      - ./apps/pms-web:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - pms-backend
-    restart: unless-stopped
-    networks:
-      - vayada-network
-
-  # ─── Affiliate Dashboard Frontend ────────────────────────────────────
-
-  affiliate-frontend:
-    build:
-      context: ./apps/affiliate-dashboard
-      dockerfile: Dockerfile.dev
-    container_name: vayada-affiliate-frontend
-    ports:
-      - "3005:3005"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-    volumes:
-      - ./apps/affiliate-dashboard:/app
-      - /app/node_modules
-      - /app/.next
     restart: unless-stopped
     networks:
       - vayada-network
