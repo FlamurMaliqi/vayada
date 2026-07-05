@@ -13,7 +13,9 @@ import {
   hasAuthenticatedSession,
   isAuthOrganizationSelectionResponse,
   isAuthKitLoginEnabled,
+  isCompatibilityTokenEnabled,
   setAuthKitSession,
+  setLegacyCompatibilityToken,
   setPendingOrganizationSelection,
   type AuthSessionResponse,
 } from "./sessionStore";
@@ -22,6 +24,11 @@ const TOKEN_KEY = "access_token";
 const EXPIRES_AT_KEY = "token_expires_at";
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 const AUTH_SURFACE = "marketplace-web";
+
+type CompatibilityTokenResponse = {
+  accessToken: string;
+  expiresIn: number;
+};
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
@@ -92,6 +99,20 @@ function storeUserData(data: {
       is_superadmin: data.is_superadmin || false,
     }),
   );
+}
+
+async function attachMarketplaceCompatibilityToken(): Promise<void> {
+  const csrfToken = getAuthCsrfToken();
+  if (!csrfToken) return;
+
+  const response = await authFetch<CompatibilityTokenResponse>(
+    "/auth/compat/marketplace-web-token",
+    {
+      method: "POST",
+      headers: { "x-vayada-csrf": csrfToken },
+    },
+  );
+  setLegacyCompatibilityToken(response.accessToken, response.expiresIn);
 }
 
 /**
@@ -170,6 +191,9 @@ export const authService = {
       return response;
     }
     setAuthKitSession(response);
+    if (isCompatibilityTokenEnabled()) {
+      await attachMarketplaceCompatibilityToken();
+    }
     return response;
   },
 

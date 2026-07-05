@@ -11,6 +11,7 @@ import {
 } from "@vayada/marketplace-shared/api/discovery";
 import { uploadPlatformMedia } from "@vayada/marketplace-shared/api/platformMedia";
 import { apiClient } from "./client";
+import { targetApiClient } from "./targetClient";
 
 // Backend API response type for marketplace endpoint (snake_case from backend)
 interface CreatorMarketplaceResponse {
@@ -36,6 +37,67 @@ interface CreatorMarketplaceResponse {
   total_reviews: number;
   created_at: string;
 }
+
+type TargetCreatorProfileStatus = {
+  profileComplete: boolean;
+  missingFields: string[];
+  missingPlatforms: boolean;
+  completionSteps: string[];
+};
+
+type TargetCreatorProfile = {
+  creatorProfileId: string;
+  displayName: string | null;
+  creatorType: "lifestyle" | "travel" | "other";
+  locationText: string | null;
+  shortDescription: string | null;
+  portfolioUrl: string | null;
+  phone: string | null;
+  profilePictureUrl: string | null;
+  profileComplete: boolean;
+  profileStatus: "pending" | "active" | "rejected" | "suspended" | "archived";
+  platforms: TargetCreatorPlatform[];
+  audienceSize: number;
+  rating: {
+    averageRating: number;
+    totalReviews: number;
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
+type TargetCreatorPlatform = {
+  platformId: string;
+  platform: "instagram" | "tiktok" | "youtube" | "facebook" | "blog" | "x" | "other";
+  handle: string;
+  profileUrl: string | null;
+  followerCount: number;
+  engagementRate: number;
+  audienceCountries: Array<{ country: string; percentage: number }>;
+  audienceAgeGroups: Array<{ ageRange: string; percentage: number }>;
+  audienceGenderSplit: { male: number; female: number; other?: number } | null;
+};
+
+type TargetUpdateCreatorProfile = {
+  displayName?: string;
+  creatorType?: "lifestyle" | "travel" | "other";
+  locationText?: string | null;
+  shortDescription?: string | null;
+  portfolioUrl?: string | null;
+  phone?: string | null;
+  profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
+  platforms?: Array<{
+    platform: TargetCreatorPlatform["platform"];
+    handle: string;
+    profileUrl?: string | null;
+    followerCount: number;
+    engagementRate: number;
+    audienceCountries?: Array<{ country: string; percentage: number }>;
+    audienceAgeGroups?: Array<{ ageRange: string; percentage: number }>;
+    audienceGenderSplit?: { male: number; female: number; other?: number } | null;
+  }>;
+};
 
 export const creatorService = {
   /**
@@ -69,19 +131,26 @@ export const creatorService = {
 
   /**
    * Get current creator's profile
-   * GET /creators/me
+   * GET /api/marketplace/creators/me
    */
   getMyProfile: async (): Promise<Creator> => {
-    return apiClient.get<Creator>("/creators/me");
+    return toLegacyCreator(
+      await targetApiClient.get<TargetCreatorProfile>("/api/marketplace/creators/me"),
+    );
   },
 
   /**
    * Update creator profile
-   * PUT /creators/me
+   * PUT /api/marketplace/creators/me
    * Accepts JSON only (no FormData support)
    */
   updateMyProfile: async (data: Partial<Creator>): Promise<Creator> => {
-    return apiClient.put<Creator>("/creators/me", data);
+    return toLegacyCreator(
+      await targetApiClient.put<TargetCreatorProfile>(
+        "/api/marketplace/creators/me",
+        toTargetCreatorUpdate(data),
+      ),
+    );
   },
 
   /**
@@ -127,12 +196,123 @@ export const creatorService = {
 
   /**
    * Get creator profile completion status
-   * GET /creators/me/profile-status
+   * GET /api/marketplace/creators/me/profile-status
    */
   getProfileStatus: async (): Promise<CreatorProfileStatus> => {
-    return apiClient.get<CreatorProfileStatus>("/creators/me/profile-status");
+    const status = await targetApiClient.get<TargetCreatorProfileStatus>(
+      "/api/marketplace/creators/me/profile-status",
+    );
+    return {
+      profile_complete: status.profileComplete,
+      missing_fields: status.missingFields,
+      missing_platforms: status.missingPlatforms,
+      completion_steps: status.completionSteps,
+    };
   },
 };
+
+function toTargetCreatorUpdate(data: Partial<Creator>): TargetUpdateCreatorProfile {
+  const input = data as Partial<Creator> & {
+    profile_picture?: string | null;
+    profilePictureMediaObjectId?: string | null;
+    profile_picture_media_object_id?: string | null;
+  };
+  return {
+    ...(input.name !== undefined ? { displayName: input.name } : {}),
+    ...(input.location !== undefined ? { locationText: input.location } : {}),
+    ...(input.creatorType !== undefined
+      ? { creatorType: toTargetCreatorType(input.creatorType) }
+      : {}),
+    ...(input.portfolioLink !== undefined ? { portfolioUrl: input.portfolioLink ?? null } : {}),
+    ...(input.shortDescription !== undefined
+      ? { shortDescription: input.shortDescription ?? null }
+      : {}),
+    ...(input.phone !== undefined ? { phone: input.phone ?? null } : {}),
+    ...(input.profilePicture !== undefined || input.profile_picture !== undefined
+      ? { profilePictureUrl: input.profilePicture ?? input.profile_picture ?? null }
+      : {}),
+    ...(input.profilePictureMediaObjectId !== undefined ||
+    input.profile_picture_media_object_id !== undefined
+      ? {
+          profilePictureMediaObjectId:
+            input.profilePictureMediaObjectId ?? input.profile_picture_media_object_id ?? null,
+        }
+      : {}),
+    ...(input.platforms !== undefined
+      ? {
+          platforms: input.platforms.map((platform) => ({
+            platform: toTargetPlatformName(platform.name),
+            handle: platform.handle,
+            followerCount: Number(platform.followers) || 0,
+            engagementRate: Number(platform.engagementRate) || 0,
+            audienceCountries: platform.topCountries ?? [],
+            audienceAgeGroups: platform.topAgeGroups ?? [],
+            audienceGenderSplit: platform.genderSplit ?? null,
+          })),
+        }
+      : {}),
+  };
+}
+
+function toLegacyCreator(profile: TargetCreatorProfile): Creator {
+  return {
+    id: profile.creatorProfileId,
+    email: "",
+    name: profile.displayName ?? "",
+    platforms: profile.platforms.map((platform) => ({
+      name: toLegacyPlatformName(platform.platform),
+      handle: platform.handle,
+      followers: platform.followerCount,
+      engagementRate: platform.engagementRate,
+      topCountries: platform.audienceCountries,
+      topAgeGroups: platform.audienceAgeGroups,
+      genderSplit: platform.audienceGenderSplit ?? undefined,
+    })),
+    audienceSize: profile.audienceSize,
+    location: profile.locationText ?? "",
+    portfolioLink: profile.portfolioUrl ?? undefined,
+    shortDescription: profile.shortDescription ?? undefined,
+    phone: profile.phone,
+    profilePicture: profile.profilePictureUrl ?? undefined,
+    creatorType: profile.creatorType === "travel" ? "Travel" : "Lifestyle",
+    rating: profile.rating,
+    status: toLegacyStatus(profile.profileStatus),
+    createdAt: new Date(profile.createdAt),
+    updatedAt: new Date(profile.updatedAt),
+  };
+}
+
+function toTargetCreatorType(creatorType: Creator["creatorType"]): "lifestyle" | "travel" {
+  return creatorType === "Travel" ? "travel" : "lifestyle";
+}
+
+function toTargetPlatformName(platform: string): TargetCreatorPlatform["platform"] {
+  switch (platform.toLowerCase()) {
+    case "instagram":
+      return "instagram";
+    case "tiktok":
+    case "tik tok":
+      return "tiktok";
+    case "youtube":
+    case "you tube":
+      return "youtube";
+    case "facebook":
+      return "facebook";
+    case "blog":
+      return "blog";
+    case "x":
+    case "twitter":
+      return "x";
+    default:
+      return "other";
+  }
+}
+
+function toLegacyStatus(status: TargetCreatorProfile["profileStatus"]): Creator["status"] {
+  if (status === "active") return "verified";
+  if (status === "rejected" || status === "suspended") return status;
+  return "pending";
+}
 
 function toLegacyCreatorMarketplaceResponse(
   creator: MarketplaceCreatorReadModel,

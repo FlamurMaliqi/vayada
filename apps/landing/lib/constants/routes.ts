@@ -43,7 +43,6 @@ export const ROUTES = {
   CHAT: app("/chat"),
 
   // Auth — on the app domain
-  CHOOSE_PRODUCT: app("/choose-product"),
   LOGIN: app("/login"),
   SIGNUP: app("/signup"),
   FORGOT_PASSWORD: app("/forgot-password"),
@@ -79,20 +78,3 @@ export const ROUTES = {
   SETTINGS_DELETE_ACCOUNT: app("/settings/delete-account"),
   SETTINGS_NEWSLETTER: app("/settings/newsletter"),
 } as const;
-
-/**
- * PMS & Booking Engine is a separate product deployed on its own domain.
- * Base URL is configurable per environment; defaults to the production host.
- */
-export const PMS_BASE_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
-
-/**
- * Login destinations for the product chooser page.
- * Hotel Creator Network login lives in the app; PMS login is external.
- */
-export const PRODUCT_LOGIN_URLS = {
-  PMS: `${PMS_BASE_URL}/login`,
-  HOTEL_CREATOR_NETWORK: ROUTES.LOGIN,
-} as const;
-
-export type ProductKey = keyof typeof PRODUCT_LOGIN_URLS;

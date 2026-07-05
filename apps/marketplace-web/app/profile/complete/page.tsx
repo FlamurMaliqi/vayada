@@ -469,9 +469,10 @@ export default function ProfileCompletePage() {
   };
 
   if (loading) return <LoadingScreen />;
-  if (!userType || !profileStatus) return null;
+  if (!userType) return null;
+  const effectiveProfileStatus = profileStatus ?? emptyProfileStatus(userType);
 
-  if (profileCompleted || profileStatus.profile_complete) {
+  if (profileCompleted || effectiveProfileStatus.profile_complete) {
     return (
       <ProfileCompletionScreen
         userType={userType}
@@ -483,7 +484,7 @@ export default function ProfileCompletePage() {
 
   const steps = userType === "creator" ? creatorSteps : hotelSteps;
   const totalSteps = steps.length;
-  const completionPercentage = profileStatus?.profile_complete
+  const completionPercentage = effectiveProfileStatus.profile_complete
     ? 100
     : userType === "creator"
       ? creatorForm.calculateProgress()
@@ -604,4 +605,22 @@ export default function ProfileCompletePage() {
       </div>
     </div>
   );
+}
+
+function emptyProfileStatus(userType: UserType): CreatorProfileStatus | HotelProfileStatus {
+  if (userType === "creator") {
+    return {
+      profile_complete: false,
+      missing_fields: [],
+      missing_platforms: true,
+      completion_steps: [],
+    };
+  }
+  return {
+    profile_complete: false,
+    missing_fields: [],
+    has_defaults: { location: false },
+    missing_listings: true,
+    completion_steps: [],
+  };
 }

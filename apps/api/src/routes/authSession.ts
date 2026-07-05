@@ -130,6 +130,7 @@ const STATE_COOKIE = "vayada_workos_state";
 const CSRF_COOKIE = "vayada_auth_csrf";
 const DEFAULT_SURFACE: AuthSurface = "platform-admin";
 const MAX_PENDING_AUTH_STATES = 5;
+const AUTH_STATE_COOKIE_MAX_AGE_SECONDS = 60 * 60;
 
 type AuthStateContext = {
   state: string;
@@ -234,7 +235,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
               options.stateCookieSecret,
             ),
             {
-              maxAge: 600,
+              maxAge: AUTH_STATE_COOKIE_MAX_AGE_SECONDS,
               secure: options.cookieSecure,
               domain: options.cookieDomain,
             },
@@ -298,7 +299,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
                 options.stateCookieSecret,
               ),
               {
-                maxAge: 600,
+                maxAge: AUTH_STATE_COOKIE_MAX_AGE_SECONDS,
                 secure: options.cookieSecure,
                 domain: options.cookieDomain,
               },
@@ -356,7 +357,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!query.code || !query.state || !stateContext) {
       return reply.code(400).send({
         error: "invalid_auth_state",
-        message: "AuthKit callback state is missing or invalid.",
+        message: "AuthKit callback state is missing, expired, or invalid.",
       });
     }
     const surfacePolicy = getSurfacePolicy(stateContext.surface, options);
@@ -672,6 +673,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     path: "/compat/affiliate-dashboard-token",
     surface: "affiliate-dashboard",
     userType: "affiliate",
+  });
+  registerCompatibilityTokenRoute(app, options, {
+    path: "/compat/marketplace-web-token",
+    surface: "marketplace-web",
   });
 };
 
@@ -1006,7 +1011,7 @@ function signupContextFromState(
 function registerCompatibilityTokenRoute(
   app: FastifyInstance,
   options: AuthSessionRouteOptions,
-  route: { path: string; surface: AuthSurface; userType: string },
+  route: { path: string; surface: AuthSurface; userType?: string },
 ): void {
   app.post(route.path, async (request, reply) => {
     if (!writeCorsHeaders(request, reply, options)) {
@@ -1064,7 +1069,10 @@ function registerCompatibilityTokenRoute(
         {
           sub: resolution.user.userId,
           email: resolution.user.email,
-          type: surfacePolicy.legacyJwtUserType ?? route.userType,
+          type:
+            surfacePolicy.legacyJwtUserType ??
+            route.userType ??
+            legacyUserTypeForOrganizationKind(resolution.organizationKind),
           org: resolution.organizationId,
           surface: route.surface,
           resources: resourceScope,
@@ -1076,6 +1084,13 @@ function registerCompatibilityTokenRoute(
       tokenType: "Bearer",
     });
   });
+}
+
+function legacyUserTypeForOrganizationKind(kind: OrganizationKind | undefined): string {
+  if (kind === "creator_workspace") return "creator";
+  if (kind === "hotel_group") return "hotel";
+  if (kind === "affiliate_partner") return "affiliate";
+  return "admin";
 }
 
 async function resolveOrCreateIdentity(
@@ -1687,7 +1702,7 @@ function serializeCookie(
     `${name}=${encodeURIComponent(value)}`,
     "Path=/auth",
     `Max-Age=${options.maxAge}`,
-    "SameSite=Lax",
+    `SameSite=${options.secure ? "None" : "Lax"}`,
   ];
   if (options.httpOnly !== false) parts.push("HttpOnly");
   if (options.secure) parts.push("Secure");

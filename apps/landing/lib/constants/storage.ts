@@ -18,7 +18,6 @@ export const STORAGE_KEYS = {
 
   // UI state
   SIDEBAR_COLLAPSED: "sidebarCollapsed",
-  LAST_PRODUCT: "vayada_last_product",
 
   // Cookie consent
   COOKIE_CONSENT: "vayada_cookie_consent",
