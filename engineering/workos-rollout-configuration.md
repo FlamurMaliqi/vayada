@@ -160,7 +160,9 @@ MFA policy:
 
 Allowed authentication methods:
 
-- Enable AuthKit hosted login.
+- Use WorkOS AuthKit APIs behind Vayada-owned auth UI for migrated users.
+  Hosted AuthKit UI is not the target for self-service email/password login or
+  signup.
 - Enable email/password only through WorkOS, not Vayada local password
   verification, for migrated users.
 - Allow SSO connections for enterprise hotel groups and platform staff as they
