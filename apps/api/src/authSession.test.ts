@@ -506,6 +506,13 @@ describe("AuthKit session routes", () => {
         expect.stringContaining("vayada_auth_csrf="),
       ]),
     );
+    const csrfCookie = (response.headers["set-cookie"] as string[]).find((cookie) =>
+      cookie.startsWith("vayada_auth_csrf="),
+    );
+    expect(csrfCookie).toContain("Path=/auth");
+    expect(csrfCookie).toContain("Max-Age=604800");
+    expect(csrfCookie).toContain("SameSite=None");
+    expect(csrfCookie).toContain("Secure");
   });
 
   it("treats the WorkOS sign-up link from PMS login as hotel signup", async () => {

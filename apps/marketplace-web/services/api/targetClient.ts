@@ -8,14 +8,14 @@ async function targetRequest<T>(endpoint: string, options: RequestInit = {}): Pr
   const token = await getOrRefreshAuthKitAccessToken();
   if (!token) throw new ApiErrorResponse(401, { detail: "Not authenticated" });
 
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  headers.set("Authorization", `Bearer ${token}`);
+
   const response = await fetch(`${TARGET_API_BASE_URL}${endpoint}`, {
     ...options,
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers as Record<string, string> | undefined),
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
   });
 
   const contentType = response.headers.get("content-type");

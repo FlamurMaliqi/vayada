@@ -184,8 +184,8 @@ done
 echo "==> Starting Docker databases and FastAPI backends"
 docker compose "${COMPOSE_FILES[@]}" up -d "${BACKEND_SERVICES[@]}"
 
-echo "==> Applying target identity/API migrations to local auth DB"
-TARGET_DATABASE_URL="$AUTH_DATABASE_URL" npm --workspace @vayada/backend-migration run target:migrate -- --env local
+echo "==> Applying target identity/API migrations to local target DB"
+npm --workspace @vayada/backend-migration run target:migrate -- --env local
 
 echo "==> Ensuring portless API aliases exist"
 portless alias api.marketplace 8000

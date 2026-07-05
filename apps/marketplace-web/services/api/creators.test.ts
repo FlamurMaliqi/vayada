@@ -19,6 +19,10 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
+function requestHeader(init: RequestInit | undefined, name: string): string | null {
+  return new Headers(init?.headers).get(name);
+}
+
 const targetProfile = {
   creatorProfileId: "creator_profile_local",
   displayName: "Lina Creator",
@@ -66,9 +70,7 @@ describe("creator target self-service client", () => {
     setLegacyCompatibilityToken("legacy-marketplace-token", 900);
 
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect((init?.headers as Record<string, string>).Authorization).toBe(
-        "Bearer workos-access-token",
-      );
+      expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
       return jsonResponse({
         profileComplete: false,
         missingFields: ["displayName"],
@@ -104,9 +106,7 @@ describe("creator target self-service client", () => {
         });
       }
       if (href === "https://api.localhost/api/marketplace/creators/me/profile-status") {
-        expect((init?.headers as Record<string, string>).Authorization).toBe(
-          "Bearer workos-access-token",
-        );
+        expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
         return jsonResponse({
           profileComplete: false,
           missingFields: [],
@@ -170,6 +170,13 @@ describe("creator target self-service client", () => {
         },
       ],
     });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/api/marketplace/creators/me",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    expect(requestHeader(fetchMock.mock.calls[0]?.[1], "Authorization")).toBe(
+      "Bearer workos-access-token",
+    );
     expect(profile).toMatchObject({
       id: "creator_profile_local",
       name: "Lina Creator",
