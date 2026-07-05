@@ -17,6 +17,18 @@ BACKEND_SERVICES=(
   booking-backend
   pms-backend
 )
+COMPOSE_CONTAINERS=(
+  vayada-marketplace-postgres
+  vayada-booking-postgres
+  vayada-auth-postgres
+  vayada-pms-postgres
+  vayada-auth-db-migrate
+  vayada-minio
+  vayada-minio-setup
+  vayada-marketplace-backend
+  vayada-booking-backend
+  vayada-pms-backend
+)
 
 cd "$ROOT_DIR"
 
@@ -36,6 +48,22 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v workos >/dev/null 2>&1; then
+  echo "WorkOS CLI is not installed. Run: npm install -g workos" >&2
+  exit 1
+fi
+
+for container in "${COMPOSE_CONTAINERS[@]}"; do
+  owner="$(docker inspect "$container" --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' 2>/dev/null || true)"
+  if [[ -n "$owner" && "$owner" != "$ROOT_DIR" ]]; then
+    echo "Docker container '$container' is owned by another Vayada checkout:" >&2
+    echo "  $owner" >&2
+    echo "Remove that stale stack first, then rerun npm run dev:workos-local." >&2
+    echo "Suggested: docker rm -f ${COMPOSE_CONTAINERS[*]}" >&2
+    exit 1
+  fi
+done
+
 if [[ ! -f apps/api/.env ]]; then
   echo "Missing apps/api/.env with local WorkOS settings." >&2
   exit 1
@@ -44,6 +72,31 @@ fi
 set -a
 source apps/api/.env
 set +a
+
+if [[ -z "${WORKOS_API_KEY:-}" ]]; then
+  echo "Missing WORKOS_API_KEY in apps/api/.env." >&2
+  exit 1
+fi
+
+if [[ "${WORKOS_API_KEY:-}" == sk_live_* ]]; then
+  echo "Refusing to start local AuthKit with a production WorkOS API key." >&2
+  echo "Use the staging WorkOS project locally and copy production branding into staging." >&2
+  exit 1
+fi
+
+ensure_workos_role() {
+  local slug="$1"
+  local name="$2"
+  if WORKOS_MODE=agent workos role get "$slug" --json >/dev/null 2>&1; then
+    return
+  fi
+  WORKOS_MODE=agent workos role create --slug="$slug" --name="$name" --json >/dev/null
+}
+
+echo "==> Ensuring WorkOS local role slugs exist"
+ensure_workos_role platform_admin "Platform Admin"
+ensure_workos_role hotel_owner "Hotel Owner"
+ensure_workos_role creator_owner "Creator Owner"
 
 unset BOOKING_DATABASE_URL
 unset BOOKING_RESERVATIONS_READ_DATABASE_URL
@@ -73,6 +126,7 @@ BOOKING_API_ORIGIN="https://api.booking.localhost${PORT_SUFFIX}"
 PMS_API_ORIGIN="https://api.pms.localhost${PORT_SUFFIX}"
 
 export AUTH_COOKIE_SECRET="${AUTH_COOKIE_SECRET:-local-dev-auth-cookie-secret-0123456789abcdef}"
+export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-${AUTH_DATABASE_URL:-}}"
 export AUTH_CALLBACK_URL="${AUTH_CALLBACK_URL:-${API_ORIGIN}/auth/workos/callback}"
 export AUTH_SUCCESS_URL="${AUTH_SUCCESS_URL:-${ADMIN_ORIGIN}/dashboard}"
 export AUTH_LOGOUT_URL="${AUTH_LOGOUT_URL:-${ADMIN_ORIGIN}/login}"
@@ -86,13 +140,30 @@ export AUTH_AFFILIATE_DASHBOARD_SUCCESS_URL="${AUTH_AFFILIATE_DASHBOARD_SUCCESS_
 export AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL="${AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL:-${AFFILIATE_ORIGIN}/login}"
 export AUTH_MARKETPLACE_WEB_SUCCESS_URL="${AUTH_MARKETPLACE_WEB_SUCCESS_URL:-${MARKETPLACE_ORIGIN}/marketplace}"
 export AUTH_MARKETPLACE_WEB_LOGOUT_URL="${AUTH_MARKETPLACE_WEB_LOGOUT_URL:-${MARKETPLACE_ORIGIN}/login}"
-export AUTH_LEGACY_MARKETPLACE_JWT_SECRET="${AUTH_LEGACY_MARKETPLACE_JWT_SECRET:-local-legacy-marketplace-secret}"
+export AUTH_LEGACY_MARKETPLACE_JWT_SECRET="${AUTH_LEGACY_MARKETPLACE_JWT_SECRET:-your-secret-key-change-in-production}"
 export AUTH_LEGACY_BOOKING_JWT_SECRET="${AUTH_LEGACY_BOOKING_JWT_SECRET:-local-legacy-booking-secret}"
 export AUTH_LEGACY_PMS_JWT_SECRET="${AUTH_LEGACY_PMS_JWT_SECRET:-local-legacy-pms-secret}"
 export AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET="${AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET:-local-legacy-affiliate-secret}"
 
+echo "==> Ensuring WorkOS local app URLs are registered"
+WORKOS_MODE=agent workos config redirect add "$AUTH_CALLBACK_URL" --json >/dev/null
+for origin in \
+  "$API_ORIGIN" \
+  "$ADMIN_ORIGIN" \
+  "$BOOKING_ADMIN_ORIGIN" \
+  "$BOOKING_ORIGIN" \
+  "$PMS_ORIGIN" \
+  "$MARKETPLACE_ORIGIN" \
+  "$AFFILIATE_ORIGIN" \
+  "$LANDING_ORIGIN"; do
+  WORKOS_MODE=agent workos config cors add "$origin" --json >/dev/null
+done
+
 echo "==> Starting Docker databases and FastAPI backends"
 docker compose "${COMPOSE_FILES[@]}" up -d "${BACKEND_SERVICES[@]}"
+
+echo "==> Applying target identity/API migrations to local auth DB"
+TARGET_DATABASE_URL="$AUTH_DATABASE_URL" npm --workspace @vayada/backend-migration run target:migrate -- --env local
 
 echo "==> Ensuring portless API aliases exist"
 portless alias api.marketplace 8000

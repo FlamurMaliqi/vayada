@@ -13,12 +13,18 @@ npm run dev:workos-local
 ```
 
 The script starts the Docker support services needed by the legacy FastAPI APIs,
-loads `apps/api/.env`, starts `apps/api` on port 8003, and runs all Next.js apps
-through portless. It also starts portless with wildcard routing for
-`*.booking.localhost`.
+loads `apps/api/.env`, applies the target identity/API migrations to the local
+auth DB, ensures the local WorkOS role slugs exist, starts `apps/api` on port
+8003, and runs all Next.js apps through portless. It also starts portless with
+wildcard routing for `*.booking.localhost`.
 
 Use this for WorkOS/AuthKit, target API, and current next-stack frontend work.
-It requires local WorkOS settings in `apps/api/.env`.
+It requires staging WorkOS settings in `apps/api/.env`; production `sk_live_*`
+keys are refused locally. Keep the local/staging login UI aligned by copying
+the production AuthKit branding into the staging WorkOS environment. Disable
+AuthKit's built-in public "Sign up" control for the staging/local environment in
+the WorkOS dashboard; Vayada signups must start from product-specific `/signup`
+routes so the callback carries a `creator` or `hotel` organization intent.
 
 To stop the Docker backend services and portless proxy started by the script:
 
