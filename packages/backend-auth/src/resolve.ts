@@ -104,6 +104,7 @@ export async function resolveRequestContext(
     selectedOrganization: {
       organizationId: org.organizationId,
       workosOrgId: org.workosOrgId ?? undefined,
+      name: org.name,
       kind: org.kind,
       status: org.status,
     },

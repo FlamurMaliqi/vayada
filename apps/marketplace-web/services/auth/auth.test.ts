@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { authService } from "./auth";
-import { clearAuthData, getAuthBearerToken } from "./sessionStore";
+import {
+  clearAuthData,
+  getAuthBearerToken,
+  setAuthKitSession,
+  setLegacyCompatibilityToken,
+} from "./sessionStore";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -46,5 +51,25 @@ describe("marketplace AuthKit compatibility token", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
+  });
+
+  it("clears stale compatibility tokens when the AuthKit session changes", () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    setAuthKitSession({
+      accessToken: "old-workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+    setLegacyCompatibilityToken("legacy-marketplace-token", 900);
+
+    expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
+
+    setAuthKitSession({
+      accessToken: "new-workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    expect(getAuthBearerToken()).toBe("new-workos-access-token");
   });
 });

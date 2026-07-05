@@ -58,11 +58,12 @@ describe("AuthKit session routes", () => {
     expect(response.headers.location).toContain("https://auth.workos.test/authorize?");
     expect(response.headers.location).toContain("login_hint=admin%40example.com");
     expect(response.headers["set-cookie"]).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("vayada_workos_state="),
-        expect.stringContaining("Max-Age=3600"),
-      ]),
+      expect.arrayContaining([expect.stringContaining("vayada_workos_state=")]),
     );
+    const stateCookie = (response.headers["set-cookie"] as string[]).find((cookie) =>
+      cookie.startsWith("vayada_workos_state="),
+    );
+    expect(stateCookie).toContain("Max-Age=3600");
   });
 
   it("redirects hosted signup to AuthKit with validated surface intent state", async () => {

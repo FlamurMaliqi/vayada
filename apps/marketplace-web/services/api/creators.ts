@@ -21,7 +21,7 @@ interface CreatorMarketplaceResponse {
   short_description: string;
   portfolio_link: string | null;
   profile_picture: string | null;
-  creator_type: "Lifestyle" | "Travel";
+  creator_type: "Lifestyle" | "Travel" | "Other";
   platforms: Array<{
     id: string;
     name: string;
@@ -274,7 +274,7 @@ function toLegacyCreator(profile: TargetCreatorProfile): Creator {
     shortDescription: profile.shortDescription ?? undefined,
     phone: profile.phone,
     profilePicture: profile.profilePictureUrl ?? undefined,
-    creatorType: profile.creatorType === "travel" ? "Travel" : "Lifestyle",
+    creatorType: toLegacyCreatorType(profile.creatorType),
     rating: profile.rating,
     status: toLegacyStatus(profile.profileStatus),
     createdAt: new Date(profile.createdAt),
@@ -282,8 +282,20 @@ function toLegacyCreator(profile: TargetCreatorProfile): Creator {
   };
 }
 
-function toTargetCreatorType(creatorType: Creator["creatorType"]): "lifestyle" | "travel" {
-  return creatorType === "Travel" ? "travel" : "lifestyle";
+function toLegacyCreatorType(
+  creatorType: TargetCreatorProfile["creatorType"],
+): Creator["creatorType"] {
+  if (creatorType === "travel") return "Travel";
+  if (creatorType === "other") return "Other";
+  return "Lifestyle";
+}
+
+function toTargetCreatorType(
+  creatorType: Creator["creatorType"],
+): "lifestyle" | "travel" | "other" {
+  if (creatorType === "Travel") return "travel";
+  if (creatorType === "Other") return "other";
+  return "lifestyle";
 }
 
 function toTargetPlatformName(platform: string): TargetCreatorPlatform["platform"] {
@@ -324,7 +336,7 @@ function toLegacyCreatorMarketplaceResponse(
     short_description: creator.shortDescription ?? "",
     portfolio_link: creator.portfolioUrl,
     profile_picture: creator.profilePictureUrl,
-    creator_type: creator.creatorType === "travel" ? "Travel" : "Lifestyle",
+    creator_type: toLegacyCreatorType(creator.creatorType),
     platforms: creator.platforms.map((platform) => ({
       id: platform.platformId,
       name: toLegacyPlatformName(platform.platform),

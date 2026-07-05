@@ -7,8 +7,8 @@ export type UserType = "hotel" | "creator" | "admin";
 
 export type UserStatus = "pending" | "verified" | "rejected" | "suspended";
 
-// Creator type (Lifestyle vs Travel)
-export type CreatorType = "Lifestyle" | "Travel";
+// Creator type
+export type CreatorType = "Lifestyle" | "Travel" | "Other";
 
 // Profile Status types
 export interface CreatorProfileStatus {

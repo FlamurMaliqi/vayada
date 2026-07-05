@@ -24,6 +24,10 @@ const CREATOR_TYPE_CONFIG = {
     icon: PaperAirplaneIcon,
     label: "Travel Creator",
   },
+  Other: {
+    icon: SparklesIcon,
+    label: "Other Creator",
+  },
 };
 
 interface CreatorOverviewTabProps {
@@ -105,7 +109,7 @@ export function CreatorOverviewTab({
               Creator Category <span className="text-red-500">*</span>
             </label>
             {isEditing ? (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {CREATOR_TYPE_OPTIONS.map((type) => {
                   const config = CREATOR_TYPE_CONFIG[type as keyof typeof CREATOR_TYPE_CONFIG];
                   const Icon = config.icon;

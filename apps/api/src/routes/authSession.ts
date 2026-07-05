@@ -323,6 +323,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     "/compat/booking-admin-token",
     "/compat/pms-web-token",
     "/compat/affiliate-dashboard-token",
+    "/compat/marketplace-web-token",
   ]) {
     app.options(path, async (request, reply) => {
       if (!writeCorsHeaders(request, reply, options)) {

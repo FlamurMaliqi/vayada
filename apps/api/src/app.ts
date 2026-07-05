@@ -297,10 +297,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.marketplaceHotelProfileStatusRepository,
     });
   }
-  if (options.marketplaceCreatorSelfServiceRepository) {
+  if (options.marketplaceCreatorSelfServiceRepository && options.identityLifecycleCommandBus) {
     app.register(registerMarketplaceCreatorSelfServiceRoutes, {
       prefix: "/api/marketplace",
       repository: options.marketplaceCreatorSelfServiceRepository,
+      lifecycleCommandBus: options.identityLifecycleCommandBus,
     });
   }
   if (options.sharedHotelSetupStatusRepository) {

@@ -21,11 +21,11 @@ export async function checkProfileStatus(
     }
     return null;
   } catch (error) {
-    // If profile doesn't exist or other error, return null
     if (error instanceof ApiErrorResponse) {
+      if (error.status === 404) return null;
       console.error("Failed to check profile status:", error);
     }
-    return null;
+    throw error;
   }
 }
 

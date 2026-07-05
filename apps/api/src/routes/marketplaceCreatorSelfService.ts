@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+
+import type { IdentityLifecycleCommandBus, RequestContext } from "@vayada/backend-auth";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 import type {
   CreatorPlatformVerificationStatus,
@@ -35,6 +38,7 @@ export type MarketplaceCreatorSelfServiceRepository = {
 
 type MarketplaceCreatorSelfServiceRoutesOptions = {
   repository: MarketplaceCreatorSelfServiceRepository;
+  lifecycleCommandBus: IdentityLifecycleCommandBus;
 };
 
 type MarketplaceCreatorSelfServiceClient = {
@@ -90,19 +94,23 @@ const platformNames = new Set<MarketplacePlatformName>([
 ]);
 
 const creatorTypes = new Set<MarketplaceCreatorType>(["lifestyle", "travel", "other"]);
+const maxCreatorPlatforms = 20;
+const maxAudienceEntries = 50;
 
 export async function registerMarketplaceCreatorSelfServiceRoutes(
   app: FastifyInstance,
   options: MarketplaceCreatorSelfServiceRoutesOptions,
 ): Promise<void> {
-  const { repository } = options;
+  const { lifecycleCommandBus, repository } = options;
+  const resolveAccess = (request: FastifyRequest, reply: FastifyReply) =>
+    resolveCreatorProfileAccess(request, reply, repository, lifecycleCommandBus);
 
   app.addHook("onClose", async () => {
     await repository.close?.();
   });
 
   app.get("/creators/me/profile-status", async (request, reply) => {
-    const access = await resolveCreatorProfileAccess(request, reply, repository);
+    const access = await resolveAccess(request, reply);
     if (!access) return;
 
     const profile = await repository.getCreatorProfile(access);
@@ -116,7 +124,7 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
   });
 
   app.get("/creators/me", async (request, reply) => {
-    const access = await resolveCreatorProfileAccess(request, reply, repository);
+    const access = await resolveAccess(request, reply);
     if (!access) return;
 
     const profile = await repository.getCreatorProfile(access);
@@ -135,7 +143,7 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
       return reply.status(400).send({ code: "invalid_body", detail: parsed.error });
     }
 
-    const access = await resolveCreatorProfileAccess(request, reply, repository);
+    const access = await resolveAccess(request, reply);
     if (!access) return;
 
     const profile = await repository.updateCreatorProfile({
@@ -200,6 +208,21 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
           return { creatorProfileId: existingProfileId };
         }
 
+        const existingProfile = await client.query<{ creatorProfileId: string }>(
+          `SELECT profile.id::text AS "creatorProfileId"
+           FROM marketplace.creator_profiles profile
+           WHERE profile.organization_id::text = $1
+             AND profile.source_system = 'marketplace'
+           ORDER BY profile.updated_at DESC, profile.id ASC
+           LIMIT 1`,
+          [organizationId],
+        );
+        const existingUnlinkedProfileId = existingProfile.rows[0]?.creatorProfileId;
+        if (existingUnlinkedProfileId) {
+          await client.query("COMMIT");
+          return { creatorProfileId: existingUnlinkedProfileId };
+        }
+
         const inserted = await client.query<{ creatorProfileId: string }>(
           `INSERT INTO marketplace.creator_profiles
              (organization_id, owner_user_id, source_system, creator_type, profile_status)
@@ -211,15 +234,6 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
         if (!creatorProfileId) {
           throw new Error("Failed to create creator profile");
         }
-
-        await client.query(
-          `INSERT INTO identity.organization_resource_links
-             (organization_id, product, resource_type, resource_id, relationship, status)
-           VALUES ($1, 'marketplace', 'creator_profile', $2, 'owner', 'active')
-           ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
-           DO UPDATE SET status = 'active', updated_at = now()`,
-          [organizationId, creatorProfileId],
-        );
 
         await client.query("COMMIT");
         return { creatorProfileId };
@@ -269,6 +283,7 @@ async function resolveCreatorProfileAccess(
   request: FastifyRequest,
   reply: FastifyReply,
   repository: MarketplaceCreatorSelfServiceRepository,
+  lifecycleCommandBus: IdentityLifecycleCommandBus,
 ): Promise<CreatorProfileAccess | null> {
   try {
     const context = enforceRoutePolicy(request, { permission: "marketplace.profile.manage" });
@@ -303,6 +318,7 @@ async function resolveCreatorProfileAccess(
         ownerUserId: context.actor.internalUserId,
       });
       creatorProfileId = created.creatorProfileId;
+      await grantCreatorProfileAccess(lifecycleCommandBus, context, creatorProfileId);
       context.linkedResources.push({
         product: "marketplace",
         resourceType: "creator_profile",
@@ -339,6 +355,62 @@ async function resolveCreatorProfileAccess(
     }
     throw error;
   }
+}
+
+async function grantCreatorProfileAccess(
+  lifecycleCommandBus: IdentityLifecycleCommandBus,
+  context: RequestContext,
+  creatorProfileId: string,
+): Promise<void> {
+  const organizationName = context.selectedOrganization.name;
+  if (!organizationName) {
+    throw new Error("Selected organization name is required to grant creator profile access");
+  }
+
+  await lifecycleCommandBus.execute({
+    commandType: "identity.access.grant",
+    commandId: randomUUID(),
+    idempotencyKey: `marketplace-creator-profile:${context.selectedOrganization.organizationId}:${creatorProfileId}:owner`,
+    audit: {
+      actor: {
+        kind: "user",
+        userId: context.actor.internalUserId,
+        organizationId: context.selectedOrganization.organizationId,
+      },
+      source: context.audit.source,
+      requestId: context.audit.requestId,
+      correlationId: context.audit.correlationId,
+      reason: "Marketplace creator self-service profile bootstrap",
+      requestedAt: context.audit.receivedAt,
+    },
+    payload: {
+      userId: context.actor.internalUserId,
+      organization: {
+        organizationId: context.selectedOrganization.organizationId,
+        kind: context.selectedOrganization.kind,
+        name: organizationName,
+        status: context.selectedOrganization.status,
+        workosOrgId: context.selectedOrganization.workosOrgId,
+      },
+      membership: {
+        status: context.membership.status,
+        roleKey: context.membership.roleKey,
+        permissionKeys: context.membership.permissions,
+        workosMembershipId: context.membership.workosMembershipId,
+        workosRoleSlugs: context.membership.workosRoleSlugs,
+      },
+      resourceLinks: [
+        {
+          organizationId: context.selectedOrganization.organizationId,
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: creatorProfileId,
+          relationship: "owner",
+          status: "active",
+        },
+      ],
+    },
+  });
 }
 
 async function readCreatorProfile(
@@ -668,6 +740,9 @@ function parseUpdateCreatorProfileRequest(
     if (!Array.isArray(body.platforms)) {
       return { ok: false, error: "platforms must be an array" };
     }
+    if (body.platforms.length > maxCreatorPlatforms) {
+      return { ok: false, error: `platforms must contain at most ${maxCreatorPlatforms} entries` };
+    }
     const platforms: CreatorProfilePlatformInput[] = [];
     for (const [index, platform] of body.platforms.entries()) {
       const parsed = parsePlatformInput(platform, index);
@@ -784,6 +859,9 @@ function audienceCountryArray(
   | { ok: false; error: string } {
   if (value === undefined || value === null) return { ok: true, value: [] };
   if (!Array.isArray(value)) return { ok: false, error: `${field} must be an array` };
+  if (value.length > maxAudienceEntries) {
+    return { ok: false, error: `${field} must contain at most ${maxAudienceEntries} entries` };
+  }
 
   const entries: Array<{ country: string; percentage: number }> = [];
   for (const [index, entry] of value.entries()) {
@@ -811,6 +889,9 @@ function audienceAgeGroupArray(
   | { ok: false; error: string } {
   if (value === undefined || value === null) return { ok: true, value: [] };
   if (!Array.isArray(value)) return { ok: false, error: `${field} must be an array` };
+  if (value.length > maxAudienceEntries) {
+    return { ok: false, error: `${field} must contain at most ${maxAudienceEntries} entries` };
+  }
 
   const entries: Array<{ ageRange: string; percentage: number }> = [];
   for (const [index, entry] of value.entries()) {

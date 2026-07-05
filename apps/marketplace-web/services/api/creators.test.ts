@@ -177,4 +177,26 @@ describe("creator target self-service client", () => {
       audienceSize: 1200,
     });
   });
+
+  it("preserves the other creator type in target reads and writes", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    let body: unknown;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return jsonResponse({ ...targetProfile, creatorType: "other" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const profile = await creatorService.updateMyProfile({
+      creatorType: "Other",
+    } as Partial<Creator>);
+
+    expect(body).toMatchObject({ creatorType: "other" });
+    expect(profile.creatorType).toBe("Other");
+  });
 });

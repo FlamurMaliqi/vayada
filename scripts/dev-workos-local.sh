@@ -93,6 +93,28 @@ ensure_workos_role() {
   WORKOS_MODE=agent workos role create --slug="$slug" --name="$name" --json >/dev/null
 }
 
+workos_config_has() {
+  local kind="$1"
+  local value="$2"
+  WORKOS_MODE=agent workos config "$kind" list --json 2>/dev/null | grep -Fq "\"$value\""
+}
+
+ensure_workos_redirect() {
+  local url="$1"
+  if workos_config_has redirect "$url"; then
+    return
+  fi
+  WORKOS_MODE=agent workos config redirect add "$url" --json >/dev/null
+}
+
+ensure_workos_cors() {
+  local origin="$1"
+  if workos_config_has cors "$origin"; then
+    return
+  fi
+  WORKOS_MODE=agent workos config cors add "$origin" --json >/dev/null
+}
+
 echo "==> Ensuring WorkOS local role slugs exist"
 ensure_workos_role platform_admin "Platform Admin"
 ensure_workos_role hotel_owner "Hotel Owner"
@@ -146,7 +168,7 @@ export AUTH_LEGACY_PMS_JWT_SECRET="${AUTH_LEGACY_PMS_JWT_SECRET:-local-legacy-pm
 export AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET="${AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET:-local-legacy-affiliate-secret}"
 
 echo "==> Ensuring WorkOS local app URLs are registered"
-WORKOS_MODE=agent workos config redirect add "$AUTH_CALLBACK_URL" --json >/dev/null
+ensure_workos_redirect "$AUTH_CALLBACK_URL"
 for origin in \
   "$API_ORIGIN" \
   "$ADMIN_ORIGIN" \
@@ -156,7 +178,7 @@ for origin in \
   "$MARKETPLACE_ORIGIN" \
   "$AFFILIATE_ORIGIN" \
   "$LANDING_ORIGIN"; do
-  WORKOS_MODE=agent workos config cors add "$origin" --json >/dev/null
+  ensure_workos_cors "$origin"
 done
 
 echo "==> Starting Docker databases and FastAPI backends"

@@ -1,5 +1,7 @@
 import {
   createFakeVerifier,
+  type IdentityLifecycleCommand,
+  type IdentityLifecycleCommandBus,
   type IdentityRepository,
   type LinkedResource,
   type OrganizationKind,
@@ -37,8 +39,10 @@ afterEach(async () => {
 describe("marketplace creator self-service routes", () => {
   it("bootstraps a target creator profile when the selected creator workspace has no link", async () => {
     const calls: string[] = [];
+    const lifecycleCommandBus = createRecordingCommandBus();
     app = buildMarketplaceCreatorApp({
       linkedResources: [],
+      lifecycleCommandBus,
       repository: {
         async ensureCreatorProfile(input) {
           calls.push(`ensure:${input.organizationId}:${input.ownerUserId}`);
@@ -81,6 +85,25 @@ describe("marketplace creator self-service routes", () => {
     expect(calls).toEqual([
       "ensure:org_creator_workspace:user_creator",
       `get:org_creator_workspace:${creatorProfileId}`,
+    ]);
+    expect(lifecycleCommandBus.commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.access.grant",
+        idempotencyKey: `marketplace-creator-profile:org_creator_workspace:${creatorProfileId}:owner`,
+        payload: expect.objectContaining({
+          userId: "user_creator",
+          resourceLinks: [
+            {
+              organizationId: "org_creator_workspace",
+              product: "marketplace",
+              resourceType: "creator_profile",
+              resourceId: creatorProfileId,
+              relationship: "owner",
+              status: "active",
+            },
+          ],
+        }),
+      }),
     ]);
   });
 
@@ -184,6 +207,60 @@ describe("marketplace creator self-service routes", () => {
     });
   });
 
+  it("rejects creator profile updates with too many platforms", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        platforms: Array.from({ length: 21 }, (_, index) => ({
+          platform: "instagram",
+          handle: `creator${index}`,
+          followerCount: 1200,
+          engagementRate: 4.2,
+        })),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe("platforms must contain at most 20 entries");
+  });
+
+  it("rejects creator profile updates with too many audience entries", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        platforms: [
+          {
+            platform: "instagram",
+            handle: "creator",
+            followerCount: 1200,
+            engagementRate: 4.2,
+            audienceCountries: Array.from({ length: 51 }, (_, index) => ({
+              country: `Country ${index}`,
+              percentage: 1,
+            })),
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe(
+      "platforms[0].audienceCountries must contain at most 50 entries",
+    );
+  });
+
   it("rejects non-creator selected organizations", async () => {
     app = buildMarketplaceCreatorApp({
       organizationKind: "hotel_group",
@@ -237,6 +314,7 @@ describe("marketplace creator self-service routes", () => {
 
 function buildMarketplaceCreatorApp(options: {
   repository: MarketplaceCreatorSelfServiceRepository;
+  lifecycleCommandBus?: IdentityLifecycleCommandBus;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
   organizationKind?: OrganizationKind;
@@ -244,6 +322,7 @@ function buildMarketplaceCreatorApp(options: {
   return buildApp({
     logger: false,
     marketplaceCreatorSelfServiceRepository: options.repository,
+    identityLifecycleCommandBus: options.lifecycleCommandBus ?? createRecordingCommandBus(),
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository({
@@ -275,6 +354,7 @@ function identityRepository(options: {
       return {
         organizationId: "org_creator_workspace",
         workosOrgId: session.workosOrgId ?? null,
+        name: "Creator Workspace",
         kind: options.organizationKind ?? "creator_workspace",
         status: "active",
       };
@@ -290,6 +370,40 @@ function identityRepository(options: {
     },
     async findLinkedResources() {
       return options.linkedResources ?? [creatorProfileLink(creatorProfileId)];
+    },
+  };
+}
+
+function createRecordingCommandBus(): IdentityLifecycleCommandBus & {
+  commands: IdentityLifecycleCommand[];
+} {
+  const commands: IdentityLifecycleCommand[] = [];
+  return {
+    commands,
+    async execute(command) {
+      commands.push(command);
+      return {
+        status: "accepted",
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+        userId:
+          "payload" in command && "userId" in command.payload ? command.payload.userId : undefined,
+        events: [],
+      };
+    },
+  };
+}
+
+function repositoryThatShouldNotBeCalled(): MarketplaceCreatorSelfServiceRepository {
+  return {
+    async ensureCreatorProfile() {
+      throw new Error("invalid body should not bootstrap");
+    },
+    async getCreatorProfile() {
+      throw new Error("invalid body should not read");
+    },
+    async updateCreatorProfile() {
+      throw new Error("invalid body should not update");
     },
   };
 }

@@ -57,6 +57,7 @@ export function isCompatibilityTokenEnabled(): boolean {
 export function setAuthKitSession(session: AuthKitSessionResponse): void {
   authKitSession = session;
   pendingOrganizationSelectionCsrfToken = null;
+  legacyCompatibilityToken = null;
   if (typeof window === "undefined") return;
 
   clearSharedPropertySelectionIfOrganizationChanged(session.organizationId);
