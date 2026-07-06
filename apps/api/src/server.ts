@@ -319,6 +319,7 @@ const app = buildApp({
             },
             "marketplace-web": {
               requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+              allowMissingOrganization: true,
               logoutReturnUrl:
                 config.authSession.authMarketplaceWebLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,

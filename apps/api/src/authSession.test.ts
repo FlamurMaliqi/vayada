@@ -282,8 +282,9 @@ describe("AuthKit session routes", () => {
     );
   });
 
-  it("signs up a selected account type through Google OAuth callback", async () => {
+  it("signs up a Google account and redirects to onboarding without product provisioning", async () => {
     const commands: IdentityLifecycleCommand[] = [];
+    const workosCalls: string[] = [];
     let state = "";
     const googleSession: AuthKitSession = {
       ...session,
@@ -304,32 +305,21 @@ describe("AuthKit session routes", () => {
           return `https://auth.workos.test/google?state=${encodeURIComponent(input.state)}`;
         },
         async authenticateWithCode() {
+          workosCalls.push("code");
           return googleSession;
         },
-        async refreshSession(input) {
-          return {
-            ...googleSession,
-            organizationId: input.organizationId,
-            sealedSession: "selected-google-signup-session",
-          };
+        async createSignupOrganization() {
+          throw new Error("Product organization should be created by onboarding");
+        },
+        async ensureSignupOrganizationMembership() {
+          throw new Error("Product membership should be created by onboarding");
+        },
+        async refreshSession() {
+          throw new Error("Signup callback should not select a product organization");
         },
       }),
       identityRepository: createIdentityRepository({
         userByProviderUserId: async () => null,
-        organizationByWorkosOrgId: async () => ({
-          organizationId: "org_creator_workspace",
-          workosOrgId: "org_workos_signup_creator",
-          name: "Creator Workspace",
-          kind: "creator_workspace",
-          status: "active",
-        }),
-        activeMembership: async () => ({
-          membershipId: "membership_creator",
-          status: "active",
-          roleKey: "creator_owner",
-          workosMembershipId: "om_signup_creator_owner",
-          workosRoleSlugs: ["creator_owner"],
-        }),
       }),
       lifecycleCommandBus: {
         async execute(command) {
@@ -346,6 +336,7 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          allowMissingOrganization: true,
         },
       },
     });
@@ -353,9 +344,9 @@ describe("AuthKit session routes", () => {
     const start = await app.inject({
       method: "GET",
       url:
-        "/auth/oauth/google/start?surface=marketplace-web&flow=signup&type=creator" +
-        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin%3Fauth%3Dcallback%26returnTo%3D%252Fprofile%252Fcomplete" +
-        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Fsignup%3Ftype%3Dcreator",
+        "/auth/oauth/google/start?surface=marketplace-web&flow=signup" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin%3Fauth%3Dcallback%26returnTo%3D%252Fonboarding" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Fsignup",
       headers: { host: "api.localhost", "x-forwarded-proto": "https" },
     });
     const callback = await app.inject({
@@ -366,24 +357,27 @@ describe("AuthKit session routes", () => {
 
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toBe(
-      "https://marketplace.localhost/login?auth=callback&returnTo=%2Fprofile%2Fcomplete",
+      "https://marketplace.localhost/login?auth=callback&returnTo=%2Fonboarding",
     );
     expect(callback.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("vayada_workos_session=selected-google-signup-session"),
+        expect.stringContaining("vayada_workos_session=google-signup-sealed-session"),
       ]),
     );
+    expect(workosCalls).toEqual(["code"]);
     expect(commands).toEqual([
       expect.objectContaining({
         commandType: "identity.user.create",
         payload: expect.objectContaining({
-          legacyUserType: "creator",
           providerIdentity: expect.objectContaining({
             providerUserId: "user_workos_google_signup",
           }),
         }),
       }),
     ]);
+    expect(commands[0]?.payload).not.toHaveProperty("legacyUserType");
+    expect(commands[0]?.payload).not.toHaveProperty("organization");
+    expect(commands[0]?.payload).not.toHaveProperty("membership");
   });
 
   it.each([
@@ -721,7 +715,7 @@ describe("AuthKit session routes", () => {
     });
   });
 
-  it("completes a creator signup after WorkOS email verification", async () => {
+  it("completes account signup after WorkOS email verification without product provisioning", async () => {
     const commands: IdentityLifecycleCommand[] = [];
     const workosCalls: string[] = [];
     const verifiedSession: AuthKitSession = {
@@ -748,52 +742,18 @@ describe("AuthKit session routes", () => {
           });
           return verifiedSession;
         },
-        async createSignupOrganization(input) {
-          workosCalls.push("organization");
-          expect(input.externalId).toBe(
-            "vayada-signup:marketplace-web:creator:user_workos_verified_creator",
-          );
-          return { organizationId: "org_workos_verified_creator" };
+        async createSignupOrganization() {
+          throw new Error("Product organization should be created by onboarding");
         },
-        async ensureSignupOrganizationMembership(input) {
-          workosCalls.push("membership");
-          expect(input).toEqual({
-            workosUserId: "user_workos_verified_creator",
-            workosOrganizationId: "org_workos_verified_creator",
-            roleKey: "creator_owner",
-          });
-          return {
-            membershipId: "om_verified_creator",
-            roleSlugs: ["creator_owner"],
-            status: "active",
-          };
+        async ensureSignupOrganizationMembership() {
+          throw new Error("Product membership should be created by onboarding");
         },
-        async refreshSession(input) {
-          workosCalls.push("refresh");
-          expect(input.organizationId).toBe("org_workos_verified_creator");
-          return {
-            ...verifiedSession,
-            organizationId: "org_workos_verified_creator",
-            sealedSession: "verified-selected-session",
-          };
+        async refreshSession() {
+          throw new Error("Email verification should not select a product organization");
         },
       }),
       identityRepository: createIdentityRepository({
         userByProviderUserId: async () => null,
-        organizationByWorkosOrgId: async () => ({
-          organizationId: "org_verified_creator",
-          workosOrgId: "org_workos_verified_creator",
-          name: "Verified Creator Workspace",
-          kind: "creator_workspace",
-          status: "active",
-        }),
-        activeMembership: async () => ({
-          membershipId: "membership_verified_creator",
-          status: "active",
-          roleKey: "creator_owner",
-          workosMembershipId: "om_verified_creator",
-          workosRoleSlugs: ["creator_owner"],
-        }),
       }),
       lifecycleCommandBus: {
         async execute(command) {
@@ -810,6 +770,7 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          allowMissingOrganization: true,
         },
       },
     });
@@ -824,7 +785,7 @@ describe("AuthKit session routes", () => {
       payload: {
         pendingAuthenticationToken: "pending-email-token",
         code: "123456",
-        type: "creator",
+        flow: "signup",
         surface: "marketplace-web",
       },
     });
@@ -833,8 +794,6 @@ describe("AuthKit session routes", () => {
     expect(response.json()).toMatchObject({
       accessToken: verifiedSession.accessToken,
       csrfToken: expect.any(String),
-      organizationId: "org_verified_creator",
-      workosOrganizationId: "org_workos_verified_creator",
       user: {
         id: "user_verified_creator",
         email: "verified-creator@example.test",
@@ -845,7 +804,6 @@ describe("AuthKit session routes", () => {
       expect.objectContaining({
         commandType: "identity.user.create",
         payload: expect.objectContaining({
-          legacyUserType: "creator",
           providerIdentity: expect.objectContaining({
             providerUserId: "user_workos_verified_creator",
             providerEmailVerified: true,
@@ -853,7 +811,10 @@ describe("AuthKit session routes", () => {
         }),
       }),
     ]);
-    expect(workosCalls).toEqual(["verify", "organization", "membership", "refresh"]);
+    expect(commands[0]?.payload).not.toHaveProperty("legacyUserType");
+    expect(commands[0]?.payload).not.toHaveProperty("organization");
+    expect(commands[0]?.payload).not.toHaveProperty("membership");
+    expect(workosCalls).toEqual(["verify"]);
   });
 
   it("returns a controlled error for invalid WorkOS verification state", async () => {
@@ -951,36 +912,18 @@ describe("AuthKit session routes", () => {
     expect(resendCount).toBe(1);
   });
 
-  it.each([
-    {
-      intent: "creator" as const,
-      workosUserId: "user_workos_creator_signup",
-      workosOrgId: "org_workos_signup_creator",
-      organizationId: "org_creator_workspace",
-      organizationKind: "creator_workspace" as const,
-      roleKey: "creator_owner",
-      email: "creator-signup@example.test",
-    },
-    {
-      intent: "hotel" as const,
-      workosUserId: "user_workos_hotel_signup",
-      workosOrgId: "org_workos_signup_hotel",
-      organizationId: "org_hotel_group",
-      organizationKind: "hotel_group" as const,
-      roleKey: "hotel_owner",
-      email: "hotel-signup@example.test",
-    },
-  ])("signs up a $intent through custom password signup", async (scenario) => {
+  it("signs up an account through custom password signup before product onboarding", async () => {
     const commands: IdentityLifecycleCommand[] = [];
     const auditEvents: ProductAuditEvent[] = [];
     const workosCalls: string[] = [];
+    const email = "account-signup@example.test";
     const unsignedSession: AuthKitSession = {
       ...session,
       organizationId: undefined,
-      sealedSession: `sealed_${scenario.intent}_signup`,
+      sealedSession: "sealed_account_signup",
       user: {
-        id: scenario.workosUserId,
-        email: scenario.email,
+        id: "user_workos_account_signup",
+        email,
         emailVerified: true,
         name: "Signup Example",
       },
@@ -991,77 +934,36 @@ describe("AuthKit session routes", () => {
         async createUser(input) {
           workosCalls.push("user");
           expect(input).toMatchObject({
-            email: scenario.email,
+            email,
             password: "correct-password",
             metadata: {
               auth_flow: "signup",
               surface: "marketplace-web",
-              signup_intent: scenario.intent,
             },
           });
+          expect(input.metadata).not.toHaveProperty("signup_intent");
           return unsignedSession.user;
         },
         async authenticateWithPassword(input) {
           workosCalls.push("password");
           expect(input).toMatchObject({
-            email: scenario.email,
+            email,
             password: "correct-password",
           });
           return unsignedSession;
         },
-        async createSignupOrganization(input) {
-          workosCalls.push("organization");
-          expect(input.externalId).toBe(
-            `vayada-signup:marketplace-web:${scenario.intent}:${scenario.workosUserId}`,
-          );
-          expect(input.metadata).toMatchObject({
-            auth_flow: "signup",
-            surface: "marketplace-web",
-            signup_intent: scenario.intent,
-            organization_kind: scenario.organizationKind,
-            role_key: scenario.roleKey,
-          });
-          return { organizationId: scenario.workosOrgId };
+        async createSignupOrganization() {
+          throw new Error("Product organization should be created by onboarding");
         },
-        async ensureSignupOrganizationMembership(input) {
-          workosCalls.push("membership");
-          expect(input).toEqual({
-            workosUserId: scenario.workosUserId,
-            workosOrganizationId: scenario.workosOrgId,
-            roleKey: scenario.roleKey,
-          });
-          return {
-            membershipId: `om_${scenario.intent}`,
-            roleSlugs: [scenario.roleKey],
-            status: "active",
-          };
+        async ensureSignupOrganizationMembership() {
+          throw new Error("Product membership should be created by onboarding");
         },
-        async refreshSession(input) {
-          workosCalls.push("refresh");
-          expect(input.organizationId).toBe(scenario.workosOrgId);
-          return {
-            ...unsignedSession,
-            organizationId: scenario.workosOrgId,
-            sealedSession: `selected_${scenario.intent}_session`,
-          };
+        async refreshSession() {
+          throw new Error("Signup should not select a product organization");
         },
       }),
       identityRepository: createIdentityRepository({
         userByProviderUserId: async () => null,
-        organizationByWorkosOrgId: async () => ({
-          organizationId: scenario.organizationId,
-          workosOrgId: scenario.workosOrgId,
-          name: scenario.intent === "creator" ? "Creator Workspace" : "Hotel Group",
-          kind: scenario.organizationKind,
-          status: "active",
-        }),
-        activeMembership: async () => ({
-          membershipId: `membership_${scenario.intent}`,
-          status: "active",
-          roleKey: scenario.roleKey,
-          workosMembershipId: `om_${scenario.intent}`,
-          workosRoleSlugs: [scenario.roleKey],
-        }),
       }),
       lifecycleCommandBus: {
         async execute(command) {
@@ -1070,7 +972,7 @@ describe("AuthKit session routes", () => {
             status: "accepted",
             commandId: command.commandId,
             idempotencyKey: command.idempotencyKey,
-            userId: `user_${scenario.intent}`,
+            userId: "user_signup",
             events: [],
           };
         },
@@ -1078,6 +980,7 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          allowMissingOrganization: true,
         },
       },
       productAuditSink: {
@@ -1094,9 +997,8 @@ describe("AuthKit session routes", () => {
         origin: "https://marketplace.localhost",
       },
       payload: {
-        email: ` ${scenario.email} `,
+        email: ` ${email} `,
         password: "correct-password",
-        type: scenario.intent,
         surface: "marketplace-web",
       },
     });
@@ -1105,11 +1007,198 @@ describe("AuthKit session routes", () => {
     expect(response.json()).toMatchObject({
       accessToken: unsignedSession.accessToken,
       csrfToken: expect.any(String),
+      user: {
+        id: "user_signup",
+        email,
+        workosUserId: "user_workos_account_signup",
+      },
+    });
+    expect(response.json().organizationId).toBeUndefined();
+    expect(response.json().organizationKind).toBeUndefined();
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          email,
+          providerIdentity: expect.objectContaining({
+            providerUserId: "user_workos_account_signup",
+          }),
+        }),
+      }),
+    ]);
+    expect(commands[0]?.payload).not.toHaveProperty("legacyUserType");
+    expect(commands[0]?.payload).not.toHaveProperty("organization");
+    expect(commands[0]?.payload).not.toHaveProperty("membership");
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        action: "auth.login",
+        authFlow: "signup",
+        surface: "marketplace-web",
+      }),
+    ]);
+    expect(workosCalls).toEqual(["user", "password"]);
+  });
+
+  it.each([
+    {
+      surface: "booking-admin" as const,
+      email: "booking-signup@example.test",
+      workosUserId: "user_workos_booking_signup",
+      workosOrgId: "org_workos_booking_hotel",
+      organizationId: "org_booking_hotel",
+      selectedSession: "selected_booking_hotel_session",
+    },
+    {
+      surface: "pms-web" as const,
+      email: "pms-signup@example.test",
+      workosUserId: "user_workos_pms_signup",
+      workosOrgId: "org_workos_pms_hotel",
+      organizationId: "org_pms_hotel",
+      selectedSession: "selected_pms_hotel_session",
+    },
+  ])("keeps hotel organization provisioning for $surface password signup", async (scenario) => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const workosCalls: string[] = [];
+    const unsignedSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      sealedSession: `${scenario.surface}-unselected-session`,
+      user: {
+        id: scenario.workosUserId,
+        email: scenario.email,
+        emailVerified: true,
+        name: "Hotel Signup",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: [
+        `https://${scenario.surface === "booking-admin" ? "admin.booking" : "pms"}.localhost`,
+      ],
+      authKitClient: createAuthKitClient({
+        async createUser(input) {
+          workosCalls.push("user");
+          expect(input).toMatchObject({
+            email: scenario.email,
+            password: "correct-password",
+            metadata: {
+              auth_flow: "signup",
+              surface: scenario.surface,
+              signup_intent: "hotel",
+            },
+          });
+          return unsignedSession.user;
+        },
+        async authenticateWithPassword(input) {
+          workosCalls.push("password");
+          expect(input).toMatchObject({
+            email: scenario.email,
+            password: "correct-password",
+          });
+          return unsignedSession;
+        },
+        async createSignupOrganization(input) {
+          workosCalls.push("organization");
+          expect(input).toMatchObject({
+            externalId: `vayada-signup:${scenario.surface}:hotel:${scenario.workosUserId}`,
+            metadata: {
+              auth_flow: "signup",
+              surface: scenario.surface,
+              signup_intent: "hotel",
+              organization_kind: "hotel_group",
+              role_key: "hotel_owner",
+            },
+          });
+          return { organizationId: scenario.workosOrgId };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          workosCalls.push("membership");
+          expect(input).toEqual({
+            workosUserId: scenario.workosUserId,
+            workosOrganizationId: scenario.workosOrgId,
+            roleKey: "hotel_owner",
+          });
+          return {
+            membershipId: `om_${scenario.surface}`,
+            roleSlugs: ["hotel_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          workosCalls.push("refresh");
+          expect(input).toEqual({
+            sealedSession: `${scenario.surface}-unselected-session`,
+            organizationId: scenario.workosOrgId,
+          });
+          return {
+            ...unsignedSession,
+            organizationId: scenario.workosOrgId,
+            sealedSession: scenario.selectedSession,
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: scenario.organizationId,
+          workosOrgId: scenario.workosOrgId,
+          name: "Hotel Group",
+          kind: "hotel_group",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: `membership_${scenario.surface}`,
+          status: "active",
+          roleKey: "hotel_owner",
+          workosMembershipId: `om_${scenario.surface}`,
+          workosRoleSlugs: ["hotel_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: `user_${scenario.surface}`,
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        [scenario.surface]: {
+          requiredOrganizationKind: "hotel_group",
+          logoutReturnUrl: `https://${scenario.surface === "booking-admin" ? "admin.booking" : "pms"}.localhost/login`,
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/signup",
+      headers: {
+        origin: `https://${scenario.surface === "booking-admin" ? "admin.booking" : "pms"}.localhost`,
+      },
+      payload: {
+        email: scenario.email,
+        password: "correct-password",
+        surface: scenario.surface,
+        type: "hotel",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`vayada_workos_session=${scenario.selectedSession}`),
+      ]),
+    );
+    expect(response.json()).toMatchObject({
       organizationId: scenario.organizationId,
       workosOrganizationId: scenario.workosOrgId,
-      organizationKind: scenario.organizationKind,
+      organizationKind: "hotel_group",
       user: {
-        id: `user_${scenario.intent}`,
+        id: `user_${scenario.surface}`,
         email: scenario.email,
         workosUserId: scenario.workosUserId,
       },
@@ -1118,65 +1207,19 @@ describe("AuthKit session routes", () => {
       expect.objectContaining({
         commandType: "identity.user.create",
         payload: expect.objectContaining({
-          email: scenario.email,
-          legacyUserType: scenario.intent,
+          legacyUserType: "hotel",
           organization: expect.objectContaining({
-            kind: scenario.organizationKind,
+            kind: "hotel_group",
             workosOrgId: scenario.workosOrgId,
           }),
           membership: expect.objectContaining({
-            roleKey: scenario.roleKey,
-            workosMembershipId: `om_${scenario.intent}`,
+            roleKey: "hotel_owner",
+            workosMembershipId: `om_${scenario.surface}`,
           }),
         }),
       }),
     ]);
-    expect(auditEvents).toEqual([
-      expect.objectContaining({
-        action: "auth.login",
-        authFlow: "signup",
-        signupIntent: scenario.intent,
-        surface: "marketplace-web",
-      }),
-    ]);
     expect(workosCalls).toEqual(["user", "password", "organization", "membership", "refresh"]);
-  });
-
-  it("rejects custom signup without creating WorkOS resources when intent is invalid", async () => {
-    let createUserCalled = false;
-    app = buildAuthSessionApp({
-      allowedOrigins: ["https://marketplace.localhost"],
-      authKitClient: createAuthKitClient({
-        async createUser() {
-          createUserCalled = true;
-          return session.user;
-        },
-      }),
-      surfacePolicies: {
-        "marketplace-web": {
-          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
-        },
-      },
-    });
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/auth/password/signup",
-      headers: { origin: "https://marketplace.localhost" },
-      payload: {
-        email: "creator@example.test",
-        password: "correct-password",
-        type: "admin",
-        surface: "marketplace-web",
-      },
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({
-      state: "auth_failed",
-      message: "Signup type must be creator or hotel.",
-    });
-    expect(createUserCalled).toBe(false);
   });
 
   it("rejects custom signup when the WorkOS email already exists", async () => {
@@ -1211,7 +1254,6 @@ describe("AuthKit session routes", () => {
       payload: {
         email: "existing@example.test",
         password: "correct-password",
-        type: "creator",
         surface: "marketplace-web",
       },
     });
@@ -1279,7 +1321,6 @@ describe("AuthKit session routes", () => {
       payload: {
         email: "unverified@example.test",
         password: "correct-password",
-        type: "creator",
         surface: "marketplace-web",
       },
     });
@@ -1292,6 +1333,159 @@ describe("AuthKit session routes", () => {
     });
     expect(emailVerificationId).toBe("email_verification_signup");
     expect(commands).toEqual([]);
+  });
+
+  it("creates the selected creator workspace during onboarding", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const workosCalls: string[] = [];
+    const noOrgSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      sealedSession: "sealed-account-session",
+      user: {
+        ...session.user,
+        id: "user_workos_account_signup",
+        email: "account-signup@example.test",
+      },
+    };
+    const creatorSession: AuthKitSession = {
+      ...noOrgSession,
+      accessToken: "creator-workos-access-token",
+      organizationId: "org_workos_onboarding_creator",
+      sealedSession: "creator-selected-session",
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return noOrgSession;
+        },
+        async createSignupOrganization(input) {
+          workosCalls.push("organization");
+          expect(input).toMatchObject({
+            externalId: "vayada-signup:marketplace-web:creator:user_workos_account_signup",
+            metadata: {
+              auth_flow: "signup",
+              surface: "marketplace-web",
+              signup_intent: "creator",
+              organization_kind: "creator_workspace",
+              role_key: "creator_owner",
+            },
+          });
+          return { organizationId: "org_workos_onboarding_creator" };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          workosCalls.push("membership");
+          expect(input).toEqual({
+            workosUserId: "user_workos_account_signup",
+            workosOrganizationId: "org_workos_onboarding_creator",
+            roleKey: "creator_owner",
+          });
+          return {
+            membershipId: "om_onboarding_creator",
+            roleSlugs: ["creator_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          workosCalls.push("refresh");
+          expect(input).toEqual({
+            sealedSession: "sealed-account-session",
+            organizationId: "org_workos_onboarding_creator",
+          });
+          return creatorSession;
+        },
+      }),
+      tokenVerifier: createTokenVerifier(noOrgSession),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_signup",
+          email: "account-signup@example.test",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_onboarding_creator",
+          workosOrgId: "org_workos_onboarding_creator",
+          name: "Account Signup Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_onboarding_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_onboarding_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          allowMissingOrganization: true,
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/onboarding",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: {
+        type: "creator",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=creator-selected-session"),
+      ]),
+    );
+    expect(response.json()).toMatchObject({
+      accessToken: "creator-workos-access-token",
+      csrfToken: "csrf-token",
+      organizationId: "org_onboarding_creator",
+      workosOrganizationId: "org_workos_onboarding_creator",
+      organizationKind: "creator_workspace",
+      user: {
+        id: "user_signup",
+        email: "account-signup@example.test",
+      },
+    });
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.access.grant",
+        idempotencyKey: "workos-onboarding:user_signup:creator",
+        payload: expect.objectContaining({
+          userId: "user_signup",
+          organization: expect.objectContaining({
+            kind: "creator_workspace",
+            workosOrgId: "org_workos_onboarding_creator",
+          }),
+          membership: expect.objectContaining({
+            roleKey: "creator_owner",
+            workosMembershipId: "om_onboarding_creator",
+          }),
+        }),
+      }),
+    ]);
+    expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
   });
 
   it("auto-selects a single PMS hotel-group organization without showing a selector", async () => {

@@ -174,7 +174,7 @@ export default function PublicPropertiesPage() {
                         build your professional portfolio.
                       </p>
                       <div className="space-y-3">
-                        <Link href={`${ROUTES.SIGNUP}?type=creator`} className="block">
+                        <Link href={ROUTES.SIGNUP} className="block">
                           <Button variant="primary" size="lg" className="w-full">
                             Sign Up Free to See All
                           </Button>
@@ -247,7 +247,7 @@ export default function PublicPropertiesPage() {
             listings.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link href={`${ROUTES.SIGNUP}?type=creator`}>
+            <Link href={ROUTES.SIGNUP}>
               <Button
                 variant="outline"
                 size="lg"

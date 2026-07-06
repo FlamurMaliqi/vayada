@@ -25,11 +25,11 @@ export const siteConfig = {
     cta: {
       hotel: {
         text: "I'm a Hotel",
-        href: "/signup?type=hotel",
+        href: "/signup",
       },
       creator: {
         text: "I'm a Creator",
-        href: "/signup?type=creator",
+        href: "/signup",
       },
     },
   },
@@ -38,12 +38,12 @@ export const siteConfig = {
     links: {
       hotels: [
         { label: "How It Works", href: `${MARKETING_BASE_URL}/#hotels` },
-        { label: "Sign Up", href: "/signup?type=hotel" },
+        { label: "Sign Up", href: "/signup" },
         { label: "Benefits", href: `${MARKETING_BASE_URL}/pricing` },
       ],
       creators: [
         { label: "How It Works", href: `${MARKETING_BASE_URL}/#creators` },
-        { label: "Sign Up", href: "/signup?type=creator" },
+        { label: "Sign Up", href: "/signup" },
         { label: "Benefits", href: `${MARKETING_BASE_URL}/creator-benefits` },
       ],
       company: [

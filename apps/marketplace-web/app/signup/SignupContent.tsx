@@ -8,26 +8,17 @@ import { GoogleIcon } from "@/components/auth/GoogleIcon";
 import { MARKETING_BASE_URL, ROUTES } from "@/lib/constants";
 import { AuthStateError, authService, storePendingEmailVerification } from "@/services/auth";
 
-type SignupIntent = "creator" | "hotel";
-
 type SignupContentProps = {
-  intent: SignupIntent | null;
   authError?: string;
 };
 
-export function SignupContent({ intent, authError }: SignupContentProps) {
+export function SignupContent({ authError }: SignupContentProps) {
   const router = useRouter();
-  const [selectedIntent, setSelectedIntent] = useState<SignupIntent>(intent ?? "hotel");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitError, setSubmitError] = useState(authError ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const accountTypeDescription =
-    selectedIntent === "hotel"
-      ? "For properties managing bookings and creator partnerships."
-      : "For creators applying to hotel collaborations.";
-  const nextPath = selectedIntent === "hotel" ? ROUTES.SETUP : ROUTES.PROFILE_COMPLETE;
   const termsUrl = `${MARKETING_BASE_URL}${ROUTES.TERMS}`;
   const privacyUrl = `${MARKETING_BASE_URL}${ROUTES.PRIVACY}`;
 
@@ -39,14 +30,13 @@ export function SignupContent({ intent, authError }: SignupContentProps) {
       await authService.signup({
         email,
         password,
-        type: selectedIntent,
       });
-      router.push(nextPath);
+      router.push(ROUTES.ONBOARDING);
     } catch (error) {
       if (
         error instanceof AuthStateError &&
         error.state === "email_verification_required" &&
-        storePendingEmailVerification({ ...error, type: selectedIntent })
+        storePendingEmailVerification({ ...error, flow: "signup" })
       ) {
         router.push(ROUTES.VERIFY_EMAIL);
         return;
@@ -73,50 +63,13 @@ export function SignupContent({ intent, authError }: SignupContentProps) {
               />
               <h1 className="text-xl font-bold text-gray-900">Create your vayada account</h1>
               <p className="mt-1 text-[13px] text-gray-500">
-                Choose how you want to join, then create your account.
+                Use Google or your email and password to continue.
               </p>
-            </div>
-
-            <div className="mb-5">
-              <div className="mb-1.5 text-sm font-medium text-gray-700">Account type</div>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  aria-pressed={selectedIntent === "hotel"}
-                  onClick={() => {
-                    setSubmitError("");
-                    setSelectedIntent("hotel");
-                  }}
-                  className={`rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
-                    selectedIntent === "hotel"
-                      ? "border-primary-600 bg-primary-50 text-primary-700"
-                      : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  Hotel / property
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={selectedIntent === "creator"}
-                  onClick={() => {
-                    setSubmitError("");
-                    setSelectedIntent("creator");
-                  }}
-                  className={`rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
-                    selectedIntent === "creator"
-                      ? "border-primary-600 bg-primary-50 text-primary-700"
-                      : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  Creator
-                </button>
-              </div>
-              <p className="mt-2 text-xs text-gray-500">{accountTypeDescription}</p>
             </div>
 
             <button
               type="button"
-              onClick={() => authService.startGoogleSignup(selectedIntent, nextPath)}
+              onClick={() => authService.startGoogleSignup(ROUTES.ONBOARDING)}
               className="mb-5 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-900 transition-colors hover:bg-gray-50"
             >
               <GoogleIcon className="h-4 w-4" />

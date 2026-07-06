@@ -197,13 +197,11 @@ describe("authService", () => {
     });
   });
 
-  it("posts product signup intent to the backend and stores the AuthKit session", async () => {
+  it("posts account signup credentials to the backend and stores the AuthKit session", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         accessToken: "signup-workos-access-token",
         csrfToken: "signup-csrf-token",
-        organizationId: "org_creator",
-        organizationKind: "creator_workspace",
         user: {
           id: "user_creator",
           email: "creator@example.test",
@@ -216,7 +214,6 @@ describe("authService", () => {
     const response = await authService.signup({
       email: "creator@example.test",
       password: "correct-password",
-      type: "creator",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -227,7 +224,6 @@ describe("authService", () => {
         body: JSON.stringify({
           email: "creator@example.test",
           password: "correct-password",
-          type: "creator",
           surface: "marketplace-web",
         }),
       }),
@@ -261,9 +257,9 @@ describe("authService", () => {
     expect(url.searchParams.get("error_return_to")).toBe("https://marketplace.localhost/login");
   });
 
-  it("starts Google signup with the selected account type", () => {
+  it("starts Google signup for the onboarding flow", () => {
     const location = {
-      href: "https://marketplace.localhost/signup?type=creator",
+      href: "https://marketplace.localhost/signup",
       origin: "https://marketplace.localhost",
     };
     const localStorage = createStorageMock();
@@ -273,19 +269,17 @@ describe("authService", () => {
     });
     vi.stubGlobal("localStorage", localStorage);
 
-    authService.startGoogleSignup("creator", "/profile/complete");
+    authService.startGoogleSignup("/onboarding");
 
     const url = new URL(location.href);
     expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
     expect(url.searchParams.get("surface")).toBe("marketplace-web");
     expect(url.searchParams.get("flow")).toBe("signup");
-    expect(url.searchParams.get("type")).toBe("creator");
+    expect(url.searchParams.get("type")).toBeNull();
     expect(url.searchParams.get("return_to")).toBe(
-      "https://marketplace.localhost/login?auth=callback&returnTo=%2Fprofile%2Fcomplete",
+      "https://marketplace.localhost/login?auth=callback&returnTo=%2Fonboarding",
     );
-    expect(url.searchParams.get("error_return_to")).toBe(
-      "https://marketplace.localhost/signup?type=creator",
-    );
+    expect(url.searchParams.get("error_return_to")).toBe("https://marketplace.localhost/signup");
   });
 
   it("requests password reset through the AuthKit backend", async () => {
@@ -340,20 +334,18 @@ describe("authService", () => {
         pendingAuthenticationToken: "pending-email-token",
         email: "creator@example.test",
         emailVerificationId: "email_verification_123",
-        type: "creator",
+        flow: "signup",
       }),
     ).toBe(true);
     expect(getPendingEmailVerification()).toMatchObject({
       pendingAuthenticationToken: "pending-email-token",
-      type: "creator",
+      flow: "signup",
     });
 
     fetchMock.mockResolvedValue(
       jsonResponse({
         accessToken: "verified-workos-access-token",
         csrfToken: "verified-csrf-token",
-        organizationId: "org_creator",
-        organizationKind: "creator_workspace",
         user: {
           id: "user_creator",
           email: "creator@example.test",
@@ -374,7 +366,7 @@ describe("authService", () => {
         body: JSON.stringify({
           pendingAuthenticationToken: "pending-email-token",
           code: "123456",
-          type: "creator",
+          flow: "signup",
           surface: "marketplace-web",
         }),
       }),
@@ -382,6 +374,48 @@ describe("authService", () => {
     expect(getAuthBearerToken()).toBe("verified-workos-access-token");
     expect(getAuthCsrfToken()).toBe("verified-csrf-token");
     expect(getPendingEmailVerification()).toBeNull();
+  });
+
+  it("completes onboarding with the selected account type", async () => {
+    setAuthKitSession({
+      accessToken: "signup-workos-access-token",
+      csrfToken: "signup-csrf-token",
+      user: { id: "user_creator", email: "creator@example.test", status: "active" },
+    });
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        accessToken: "creator-workos-access-token",
+        csrfToken: "creator-csrf-token",
+        organizationId: "org_creator",
+        organizationKind: "creator_workspace",
+        user: {
+          id: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+          workosUserId: "user_workos_creator",
+        },
+      }),
+    );
+
+    await expect(authService.completeOnboarding("creator")).resolves.toMatchObject({
+      organizationKind: "creator_workspace",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/onboarding",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({
+          "x-vayada-csrf": "signup-csrf-token",
+        }),
+        body: JSON.stringify({
+          type: "creator",
+          surface: "marketplace-web",
+        }),
+      }),
+    );
+    expect(getAuthBearerToken()).toBe("creator-workos-access-token");
+    expect(getAuthCsrfToken()).toBe("creator-csrf-token");
   });
 
   it("falls back when pending verification storage is blocked", () => {

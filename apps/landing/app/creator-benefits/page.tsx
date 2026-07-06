@@ -40,7 +40,7 @@ export default function CreatorBenefitsPage() {
                   chaos of manual outreach and negotiation.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-3">
-                  <Link href={`${ROUTES.SIGNUP}?type=creator`}>
+                  <Link href={ROUTES.SIGNUP}>
                     <Button
                       variant="primary"
                       size="md"
@@ -336,7 +336,7 @@ export default function CreatorBenefitsPage() {
                 Join thousands of creators who have professionalized their hotel partnerships
               </p>
               <div className="pt-2">
-                <Link href={`${ROUTES.SIGNUP}?type=creator`}>
+                <Link href={ROUTES.SIGNUP}>
                   <Button
                     variant="primary"
                     size="lg"
@@ -510,7 +510,7 @@ export default function CreatorBenefitsPage() {
               partnerships and sustainable income.
             </p>
             <div className="pt-2">
-              <Link href={`${ROUTES.SIGNUP}?type=creator`}>
+              <Link href={ROUTES.SIGNUP}>
                 <Button
                   variant="primary"
                   size="lg"

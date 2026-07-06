@@ -121,6 +121,7 @@ export type RequiredResourceLink = {
 
 export type AuthSurfacePolicy = {
   requiredOrganizationKind: OrganizationKind | OrganizationKind[];
+  allowMissingOrganization?: boolean;
   logoutReturnUrl?: string;
   legacyJwtSecret?: string;
   legacyJwtUserType?: string;
@@ -185,6 +186,7 @@ type AuthOrganizationCandidate = {
 type OrganizationAccessOptions = {
   requireResourceLink?: boolean;
   skipSelection?: boolean;
+  allowMissingOrganization?: boolean;
   explicitOrganizationSelection?: boolean;
   selectedWorkosOrganizationId?: string | null;
 };
@@ -198,6 +200,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
   for (const path of [
     "/email-verification/confirm",
     "/email-verification/resend",
+    "/onboarding",
     "/password/login",
     "/password/reset/confirm",
     "/password/reset/request",
@@ -292,9 +295,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
 
     const surfacePolicy = getSurfacePolicy(state.value.surface, options);
-    let signupContext: AuthSignupContext | undefined;
-    let selectedSession = session;
-    if (state.value.flow === "signup" && state.value.intent) {
+    const selectedSession = session;
+    if (state.value.flow === "signup") {
       const existingUser = await options.identityRepository.findUserByProviderUserId(
         "workos",
         session.user.id,
@@ -304,40 +306,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           reply,
           state.value,
           "This email already has a Vayada account. Sign in instead.",
-        );
-      }
-      try {
-        const signupOrganization = await createSignupOrganizationContext(
-          options.authKitClient,
-          state.value.surface,
-          state.value.intent,
-          session.user.email,
-          session.user.id,
-        );
-        const membership = await options.authKitClient.ensureSignupOrganizationMembership({
-          workosUserId: session.user.id,
-          workosOrganizationId: signupOrganization.workosOrganizationId,
-          roleKey: signupOrganization.roleKey,
-        });
-        signupContext = {
-          intent: state.value.intent,
-          organization: signupOrganization,
-          membership: {
-            workosMembershipId: membership.membershipId,
-            workosRoleSlugs: membership.roleSlugs,
-            status: membership.status,
-          },
-        };
-        selectedSession = await selectSignupOrganizationSession(
-          session,
-          signupOrganization,
-          options.authKitClient,
-        );
-      } catch {
-        return redirectWithOAuthError(
-          reply,
-          state.value,
-          "Google sign-up failed. Please try again.",
         );
       }
     } else {
@@ -362,7 +330,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         options,
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
-        signupContext,
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
@@ -388,7 +355,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       actorUserId: resolution.user.userId,
       organizationId: resolution.organizationId,
       surface: state.value.surface,
-      signupIntent: state.value.intent,
+      signupIntent: undefined,
       workosUserId: selectedSession.user.id,
       workosOrgId: resolution.session.organizationId,
       workosSessionId: resolution.session.sessionId,
@@ -527,7 +494,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         metadata: {
           auth_flow: "signup",
           surface: parsed.surface,
-          signup_intent: parsed.intent,
+          ...(parsed.intent ? { signup_intent: parsed.intent } : {}),
         },
       });
       createdUser = true;
@@ -560,34 +527,36 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         .send(mapped);
     }
 
-    let signupOrganization: AuthSignupOrganizationContext;
-    let signupMembership: AuthSignupMembershipContext;
-    let selectedSession: AuthKitSession;
-    try {
-      signupOrganization = await createSignupOrganizationContext(
-        options.authKitClient,
-        parsed.surface,
-        parsed.intent,
-        parsed.email,
-        session.user.id,
-      );
-      const membership = await options.authKitClient.ensureSignupOrganizationMembership({
-        workosUserId: session.user.id,
-        workosOrganizationId: signupOrganization.workosOrganizationId,
-        roleKey: signupOrganization.roleKey,
-      });
-      signupMembership = {
-        workosMembershipId: membership.membershipId,
-        workosRoleSlugs: membership.roleSlugs,
-        status: membership.status,
-      };
-      selectedSession = await selectSignupOrganizationSession(
-        session,
-        signupOrganization,
-        options.authKitClient,
-      );
-    } catch (error) {
-      return reply.code(403).send(toAuthError(error));
+    let signupOrganization: AuthSignupOrganizationContext | undefined;
+    let signupMembership: AuthSignupMembershipContext | undefined;
+    let selectedSession = session;
+    if (parsed.intent) {
+      try {
+        signupOrganization = await createSignupOrganizationContext(
+          options.authKitClient,
+          parsed.surface,
+          parsed.intent,
+          parsed.email,
+          session.user.id,
+        );
+        const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+          workosUserId: session.user.id,
+          workosOrganizationId: signupOrganization.workosOrganizationId,
+          roleKey: signupOrganization.roleKey,
+        });
+        signupMembership = {
+          workosMembershipId: membership.membershipId,
+          workosRoleSlugs: membership.roleSlugs,
+          status: membership.status,
+        };
+        selectedSession = await selectSignupOrganizationSession(
+          session,
+          signupOrganization,
+          options.authKitClient,
+        );
+      } catch (error) {
+        return reply.code(403).send(toAuthError(error));
+      }
     }
 
     let resolution: IdentityResolution;
@@ -598,11 +567,13 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         options,
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
-        {
-          intent: parsed.intent,
-          organization: signupOrganization,
-          membership: signupMembership,
-        },
+        parsed.intent && signupOrganization
+          ? {
+              intent: parsed.intent,
+              organization: signupOrganization,
+              membership: signupMembership,
+            }
+          : undefined,
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
@@ -685,59 +656,20 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(400).send(toEmailVerificationError(error));
     }
 
-    let signupOrganization: AuthSignupOrganizationContext | undefined;
-    let signupMembership: AuthSignupMembershipContext | undefined;
-    let selectedSession = verifiedSession;
-    if (parsed.intent) {
-      try {
-        signupOrganization = await createSignupOrganizationContext(
-          options.authKitClient,
-          parsed.surface,
-          parsed.intent,
-          verifiedSession.user.email,
-          verifiedSession.user.id,
-        );
-        const membership = await options.authKitClient.ensureSignupOrganizationMembership({
-          workosUserId: verifiedSession.user.id,
-          workosOrganizationId: signupOrganization.workosOrganizationId,
-          roleKey: signupOrganization.roleKey,
-        });
-        signupMembership = {
-          workosMembershipId: membership.membershipId,
-          workosRoleSlugs: membership.roleSlugs,
-          status: membership.status,
-        };
-        selectedSession = await selectSignupOrganizationSession(
-          verifiedSession,
-          signupOrganization,
-          options.authKitClient,
-        );
-      } catch (error) {
-        return reply.code(403).send(toAuthError(error));
-      }
-    }
-
     let resolution: IdentityResolution;
     try {
       resolution = await resolveOrCreateIdentity(
-        selectedSession,
+        verifiedSession,
         request,
         options,
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
-        parsed.intent && signupOrganization
-          ? {
-              intent: parsed.intent,
-              organization: signupOrganization,
-              membership: signupMembership,
-            }
-          : undefined,
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
         return sendOrganizationSelectionSessionResponse(
           reply,
-          selectedSession,
+          verifiedSession,
           error,
           surfacePolicy,
           options,
@@ -748,12 +680,12 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
     await options.productAuditSink.record({
       action: "auth.login",
-      authFlow: parsed.intent ? "signup" : "login",
+      authFlow: parsed.flow,
       actorUserId: resolution.user.userId,
       organizationId: resolution.organizationId,
       surface: parsed.surface,
-      signupIntent: parsed.intent,
-      workosUserId: selectedSession.user.id,
+      signupIntent: undefined,
+      workosUserId: verifiedSession.user.id,
       workosOrgId: resolution.session.organizationId,
       workosSessionId: resolution.session.sessionId,
       requestId: request.id,
@@ -996,6 +928,136 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
   });
 
+  app.post("/onboarding", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({ error: "origin_rejected" });
+    }
+    if (!passesCsrfCheck(request, options)) {
+      return reply.code(403).send({ error: "csrf_rejected" });
+    }
+    const parsed = parseOnboardingBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+    const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+    const sealedSession = readCookie(request, SESSION_COOKIE);
+    if (!sealedSession) {
+      return reply.code(401).send({ error: "missing_session" });
+    }
+    const session = await options.authKitClient.authenticateSession({ sealedSession });
+    if (!session) {
+      return reply.code(401).send({ error: "invalid_session" });
+    }
+
+    let baseResolution: IdentityResolution;
+    try {
+      baseResolution = await resolveExistingIdentity(
+        session,
+        options,
+        surfacePolicy,
+        organizationAccessOptionsFromRequest(request, surfacePolicy),
+      );
+    } catch (error) {
+      return reply.code(403).send(toAuthError(error));
+    }
+    if (baseResolution.organizationKind) {
+      return reply.send(
+        toSessionResponse(
+          baseResolution.session,
+          baseResolution.user,
+          readCookie(request, CSRF_COOKIE),
+          baseResolution.organizationId,
+          baseResolution.organizationKind,
+          baseResolution.resourceScope,
+        ),
+      );
+    }
+
+    let selectedSession: AuthKitSession;
+    try {
+      const signupOrganization = await createSignupOrganizationContext(
+        options.authKitClient,
+        parsed.surface,
+        parsed.intent,
+        session.user.email,
+        session.user.id,
+      );
+      const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+        workosUserId: session.user.id,
+        workosOrganizationId: signupOrganization.workosOrganizationId,
+        roleKey: signupOrganization.roleKey,
+      });
+      await options.lifecycleCommandBus.execute({
+        commandType: "identity.access.grant",
+        commandId: randomUUID(),
+        idempotencyKey: `workos-onboarding:${baseResolution.user.userId}:${parsed.intent}`,
+        audit: {
+          actor: { kind: "user", userId: baseResolution.user.userId },
+          source: "web",
+          requestId: request.id,
+          correlationId: session.sessionId,
+          reason: "Marketplace self-service onboarding",
+          requestedAt: new Date().toISOString(),
+        },
+        payload: {
+          userId: baseResolution.user.userId,
+          organization: {
+            kind: signupOrganization.kind,
+            name: signupOrganization.name,
+            workosOrgId: signupOrganization.workosOrganizationId,
+            workosExternalId: signupOrganization.workosExternalId,
+          },
+          membership: {
+            status: membership.status,
+            roleKey: signupOrganization.roleKey,
+            permissionKeys:
+              signupOrganization.kind === "hotel_group"
+                ? ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"]
+                : undefined,
+            workosMembershipId: membership.membershipId,
+            workosRoleSlugs: membership.roleSlugs,
+          },
+        },
+      });
+      selectedSession = await selectSignupOrganizationSession(
+        session,
+        signupOrganization,
+        options.authKitClient,
+      );
+    } catch (error) {
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      resolution = await resolveOrCreateIdentity(
+        selectedSession,
+        request,
+        options,
+        surfacePolicy,
+        organizationAccessOptionsFromRequest(request, surfacePolicy, { skipSelection: true }),
+      );
+    } catch (error) {
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    const csrfToken = readCookie(request, CSRF_COOKIE) ?? randomBytes(24).toString("base64url");
+    reply.header(
+      "set-cookie",
+      authSessionCookieHeaders(selectedSession, csrfToken, surfacePolicy, options),
+    );
+    return reply.send(
+      toSessionResponse(
+        resolution.session,
+        resolution.user,
+        csrfToken,
+        resolution.organizationId,
+        resolution.organizationKind,
+        resolution.resourceScope,
+      ),
+    );
+  });
+
   app.post("/logout", async (request, reply) => {
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({ error: "origin_rejected" });
@@ -1186,23 +1248,11 @@ function parseGoogleOAuthStartQuery(
       error: { error: "invalid_return_to", message: "OAuth return URL is not allowed." },
     };
   }
-  const rawIntent = typeof query.type === "string" ? query.type : query.intent;
-  let intent: AuthSignupIntent | undefined;
-  if (flow === "signup") {
-    try {
-      intent = parseSignupIntent(surface, typeof rawIntent === "string" ? rawIntent : undefined);
-    } catch {
-      return {
-        ok: false,
-        error: { error: "invalid_signup_intent", message: "Signup type must be creator or hotel." },
-      };
-    }
-  }
   return {
     ok: true,
     flow,
     surface,
-    intent,
+    intent: undefined,
     returnTo,
     errorReturnTo,
     loginHint: typeof query.login_hint === "string" ? query.login_hint : undefined,
@@ -1367,7 +1417,7 @@ function parsePasswordSignupBody(body: unknown):
       email: string;
       password: string;
       surface: AuthSurface;
-      intent: AuthSignupIntent;
+      intent?: AuthSignupIntent;
     }
   | {
       ok: false;
@@ -1376,7 +1426,7 @@ function parsePasswordSignupBody(body: unknown):
   if (!body || typeof body !== "object") {
     return {
       ok: false,
-      error: { state: "auth_failed", message: "Email, password, and signup type are required." },
+      error: { state: "auth_failed", message: "Email and password are required." },
     };
   }
   const input = body as {
@@ -1398,17 +1448,48 @@ function parsePasswordSignupBody(body: unknown):
     const surface = parseSurface(
       typeof input.surface === "string" ? input.surface : "marketplace-web",
     );
+    if (surface === "marketplace-web") {
+      return { ok: true, email, password, surface };
+    }
+    const rawIntent = typeof input.type === "string" ? input.type : input.intent;
+    return {
+      ok: true,
+      email,
+      password,
+      surface,
+      intent: parseSignupIntent(surface, typeof rawIntent === "string" ? rawIntent : undefined),
+    };
+  } catch {
+    return { ok: false, error: { state: "auth_failed", message: "Unsupported signup request." } };
+  }
+}
+
+function parseOnboardingBody(
+  body: unknown,
+):
+  | { ok: true; surface: AuthSurface; intent: AuthSignupIntent }
+  | { ok: false; error: { state: "auth_failed"; message: string } } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Onboarding account type is required." },
+    };
+  }
+  const input = body as { surface?: unknown; type?: unknown; intent?: unknown };
+  try {
+    const surface = parseSurface(
+      typeof input.surface === "string" ? input.surface : "marketplace-web",
+    );
     const rawIntent = typeof input.type === "string" ? input.type : input.intent;
     if (rawIntent !== "creator" && rawIntent !== "hotel") {
       return {
         ok: false,
-        error: { state: "auth_failed", message: "Signup type must be creator or hotel." },
+        error: { state: "auth_failed", message: "Choose creator or hotel to continue." },
       };
     }
-    const intent = parseSignupIntent(surface, rawIntent);
-    return { ok: true, email, password, surface, intent };
+    return { ok: true, surface, intent: parseSignupIntent(surface, rawIntent) };
   } catch {
-    return { ok: false, error: { state: "auth_failed", message: "Unsupported signup request." } };
+    return { ok: false, error: { state: "auth_failed", message: "Unsupported onboarding type." } };
   }
 }
 
@@ -1418,7 +1499,7 @@ function parseEmailVerificationConfirmBody(body: unknown):
       pendingAuthenticationToken: string;
       code: string;
       surface: AuthSurface;
-      intent?: AuthSignupIntent;
+      flow?: "login" | "signup";
     }
   | {
       ok: false;
@@ -1434,8 +1515,7 @@ function parseEmailVerificationConfirmBody(body: unknown):
     pendingAuthenticationToken?: unknown;
     code?: unknown;
     surface?: unknown;
-    type?: unknown;
-    intent?: unknown;
+    flow?: unknown;
   };
   const pendingAuthenticationToken =
     typeof input.pendingAuthenticationToken === "string"
@@ -1453,17 +1533,13 @@ function parseEmailVerificationConfirmBody(body: unknown):
     const surface = parseSurface(
       typeof input.surface === "string" ? input.surface : "marketplace-web",
     );
-    const rawIntent = typeof input.type === "string" ? input.type : input.intent;
-    const intent =
-      typeof rawIntent === "string" && rawIntent.length > 0
-        ? parseSignupIntent(surface, rawIntent)
-        : undefined;
+    const flow = input.flow === "signup" ? "signup" : "login";
     return {
       ok: true,
       pendingAuthenticationToken,
       code,
       surface,
-      intent,
+      flow,
     };
   } catch {
     return {
@@ -2083,6 +2159,10 @@ async function resolveSelectableOrganization(
     throw new OrganizationSelectionRequiredError(session, user, candidates);
   }
 
+  if (accessOptions.allowMissingOrganization) {
+    return { session };
+  }
+
   throw new Error(
     `No active ${requiredOrganizationKindLabel(
       surfacePolicy.requiredOrganizationKind,
@@ -2201,6 +2281,7 @@ function organizationAccessOptionsFromRequest(
 ): OrganizationAccessOptions {
   const selectedOrganizationCookieName = surfacePolicy.selectedOrganizationCookieName;
   return {
+    allowMissingOrganization: surfacePolicy.allowMissingOrganization === true,
     selectedWorkosOrganizationId: selectedOrganizationCookieName
       ? (readCookie(request, selectedOrganizationCookieName) ?? null)
       : null,

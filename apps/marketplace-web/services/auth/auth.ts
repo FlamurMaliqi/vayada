@@ -33,8 +33,9 @@ type CompatibilityTokenResponse = {
 type SignupRequest = {
   email: string;
   password: string;
-  type: "creator" | "hotel";
 };
+
+type OnboardingAccountType = "creator" | "hotel";
 
 export type AuthStateResponse = {
   state:
@@ -72,7 +73,7 @@ export type PendingEmailVerification = {
   pendingAuthenticationToken: string;
   email?: string;
   emailVerificationId?: string;
-  type?: SignupRequest["type"];
+  flow?: "login" | "signup";
 };
 
 const PENDING_EMAIL_VERIFICATION_KEY = "vayada_pending_email_verification";
@@ -124,7 +125,7 @@ export function storePendingEmailVerification(
     pendingAuthenticationToken: input.pendingAuthenticationToken,
     email: input.email,
     emailVerificationId: input.emailVerificationId,
-    type: input.type,
+    flow: input.flow,
   };
   try {
     window.sessionStorage.setItem(PENDING_EMAIL_VERIFICATION_KEY, JSON.stringify(pending));
@@ -146,7 +147,7 @@ export function getPendingEmailVerification(): PendingEmailVerification | null {
       email: typeof parsed.email === "string" ? parsed.email : undefined,
       emailVerificationId:
         typeof parsed.emailVerificationId === "string" ? parsed.emailVerificationId : undefined,
-      type: parsed.type === "creator" || parsed.type === "hotel" ? parsed.type : undefined,
+      flow: parsed.flow === "signup" ? "signup" : "login",
     };
   } catch {
     return null;
@@ -235,7 +236,7 @@ export const authService = {
     window.location.href = url.toString();
   },
 
-  startGoogleSignup: (type: SignupRequest["type"], returnTo: string): void => {
+  startGoogleSignup: (returnTo: string): void => {
     if (typeof window === "undefined") return;
 
     const callbackUrl = new URL("/login", window.location.origin);
@@ -244,11 +245,9 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/signup", window.location.origin);
-    errorUrl.searchParams.set("type", type);
     const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "signup");
-    url.searchParams.set("type", type);
     url.searchParams.set("return_to", callbackUrl.toString());
     url.searchParams.set("error_return_to", errorUrl.toString());
     window.location.href = url.toString();
@@ -473,7 +472,7 @@ export const authService = {
         body: JSON.stringify({
           pendingAuthenticationToken: pending.pendingAuthenticationToken,
           code,
-          type: pending.type,
+          flow: pending.flow,
           surface: AUTH_SURFACE,
         }),
       });
@@ -512,5 +511,26 @@ export const authService = {
       }
       throw new Error("Failed to resend verification code. Please try again.");
     }
+  },
+
+  completeOnboarding: async (type: OnboardingAccountType): Promise<AuthSessionResponse> => {
+    const csrfToken = getAuthCsrfToken();
+    if (!csrfToken) {
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+    const response = await authFetch<AuthSessionResponse>("/auth/onboarding", {
+      method: "POST",
+      headers: { "x-vayada-csrf": csrfToken },
+      body: JSON.stringify({ type, surface: AUTH_SURFACE }),
+    });
+    if (isAuthOrganizationSelectionResponse(response)) {
+      setPendingOrganizationSelection(response);
+      return response;
+    }
+    setAuthKitSession(response);
+    if (isCompatibilityTokenEnabled()) {
+      await attachMarketplaceCompatibilityToken();
+    }
+    return response;
   },
 };

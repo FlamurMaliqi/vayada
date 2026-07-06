@@ -184,7 +184,7 @@ export default function PublicCreatorsPage() {
                         invitations, and manage your partnerships.
                       </p>
                       <div className="space-y-3">
-                        <Link href={`${ROUTES.SIGNUP}?type=hotel`} className="block">
+                        <Link href={ROUTES.SIGNUP} className="block">
                           <Button variant="primary" size="lg" className="w-full">
                             Sign Up Free to See All
                           </Button>
@@ -257,7 +257,7 @@ export default function PublicCreatorsPage() {
             creators.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link href={`${ROUTES.SIGNUP}?type=hotel`}>
+            <Link href={ROUTES.SIGNUP}>
               <Button
                 variant="outline"
                 size="lg"
