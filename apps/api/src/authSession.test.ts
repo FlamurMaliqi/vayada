@@ -616,6 +616,288 @@ describe("AuthKit session routes", () => {
     );
   });
 
+  it("requests a WorkOS password reset and returns a generic response", async () => {
+    let resetEmail: string | undefined;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async createPasswordReset(input) {
+          resetEmail = input.email;
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/reset/request",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        email: " creator@example.test ",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(resetEmail).toBe("creator@example.test");
+    expect(response.json()).toEqual({
+      message: "If an account with that email exists, a password reset link has been sent.",
+    });
+  });
+
+  it("resets a WorkOS password with a valid reset token", async () => {
+    let resetInput: Parameters<AuthKitClient["resetPassword"]>[0] | undefined;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async resetPassword(input) {
+          resetInput = input;
+          return session.user;
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/reset/confirm",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        token: "password-reset-token",
+        newPassword: "new-secure-password",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(resetInput).toEqual({
+      token: "password-reset-token",
+      newPassword: "new-secure-password",
+    });
+    expect(response.json()).toEqual({
+      message: "Password reset successful. Please sign in with your new password.",
+    });
+  });
+
+  it("returns a controlled error for invalid WorkOS reset tokens", async () => {
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async resetPassword() {
+          throw { status: 404 };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/reset/confirm",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        token: "expired-reset-token",
+        newPassword: "new-secure-password",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      state: "auth_failed",
+      message: "Invalid or expired reset token. Please request a new password reset link.",
+    });
+  });
+
+  it("completes a creator signup after WorkOS email verification", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const workosCalls: string[] = [];
+    const verifiedSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      sealedSession: "verified-unselected-session",
+      user: {
+        id: "user_workos_verified_creator",
+        email: "verified-creator@example.test",
+        emailVerified: true,
+        name: "Verified Creator",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithEmailVerification(input) {
+          workosCalls.push("verify");
+          expect(input).toMatchObject({
+            pendingAuthenticationToken: "pending-email-token",
+            code: "123456",
+            userAgent: "vitest",
+            ipAddress: expect.any(String),
+          });
+          return verifiedSession;
+        },
+        async createSignupOrganization(input) {
+          workosCalls.push("organization");
+          expect(input.externalId).toBe(
+            "vayada-signup:marketplace-web:creator:user_workos_verified_creator",
+          );
+          return { organizationId: "org_workos_verified_creator" };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          workosCalls.push("membership");
+          expect(input).toEqual({
+            workosUserId: "user_workos_verified_creator",
+            workosOrganizationId: "org_workos_verified_creator",
+            roleKey: "creator_owner",
+          });
+          return {
+            membershipId: "om_verified_creator",
+            roleSlugs: ["creator_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          workosCalls.push("refresh");
+          expect(input.organizationId).toBe("org_workos_verified_creator");
+          return {
+            ...verifiedSession,
+            organizationId: "org_workos_verified_creator",
+            sealedSession: "verified-selected-session",
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_verified_creator",
+          workosOrgId: "org_workos_verified_creator",
+          name: "Verified Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_verified_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_verified_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: "user_verified_creator",
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/confirm",
+      headers: {
+        origin: "https://marketplace.localhost",
+        "user-agent": "vitest",
+      },
+      payload: {
+        pendingAuthenticationToken: "pending-email-token",
+        code: "123456",
+        type: "creator",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      accessToken: verifiedSession.accessToken,
+      csrfToken: expect.any(String),
+      organizationId: "org_verified_creator",
+      workosOrganizationId: "org_workos_verified_creator",
+      user: {
+        id: "user_verified_creator",
+        email: "verified-creator@example.test",
+        workosUserId: "user_workos_verified_creator",
+      },
+    });
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          legacyUserType: "creator",
+          providerIdentity: expect.objectContaining({
+            providerUserId: "user_workos_verified_creator",
+            providerEmailVerified: true,
+          }),
+        }),
+      }),
+    ]);
+    expect(workosCalls).toEqual(["verify", "organization", "membership", "refresh"]);
+  });
+
+  it("returns a controlled error for invalid WorkOS verification state", async () => {
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithEmailVerification() {
+          throw { code: "invalid_grant" };
+        },
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/confirm",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        pendingAuthenticationToken: "expired-email-token",
+        code: "123456",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      state: "auth_failed",
+      message: "Invalid or expired verification code. Please sign in again.",
+    });
+  });
+
+  it("resends a WorkOS verification code from the verification state id", async () => {
+    let emailVerificationId: string | undefined;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async resendVerificationEmail(input) {
+          emailVerificationId = input.emailVerificationId;
+          return { email: "creator@example.test" };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/resend",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        emailVerificationId: "email_verification_123",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(emailVerificationId).toBe("email_verification_123");
+    expect(response.json()).toEqual({
+      message: "A new verification code has been sent.",
+    });
+  });
+
   it.each([
     {
       intent: "creator" as const,
@@ -3266,7 +3548,17 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
     async authenticateWithPassword() {
       return session;
     },
+    async authenticateWithEmailVerification() {
+      return session;
+    },
     async createUser() {
+      return session.user;
+    },
+    async resendVerificationEmail() {
+      return { email: session.user.email };
+    },
+    async createPasswordReset() {},
+    async resetPassword() {
       return session.user;
     },
     async authenticateSession() {

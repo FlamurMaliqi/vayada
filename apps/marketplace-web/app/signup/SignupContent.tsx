@@ -4,7 +4,7 @@ import { useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { ROUTES } from "@/lib/constants";
-import { authService } from "@/services/auth";
+import { AuthStateError, authService, storePendingEmailVerification } from "@/services/auth";
 
 type SignupIntent = "creator" | "hotel";
 
@@ -35,6 +35,14 @@ export function SignupContent({ intent }: SignupContentProps) {
       });
       router.push(nextPath);
     } catch (error) {
+      if (
+        error instanceof AuthStateError &&
+        error.state === "email_verification_required" &&
+        storePendingEmailVerification({ ...error, type: intent })
+      ) {
+        router.push(ROUTES.VERIFY_EMAIL);
+        return;
+      }
       setSubmitError(error instanceof Error ? error.message : "Signup failed. Please try again.");
     } finally {
       setIsSubmitting(false);

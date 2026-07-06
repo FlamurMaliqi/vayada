@@ -1,170 +1,196 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import Link from "next/link";
+import { useEffect, useState, type FormEvent } from "react";
 import Image from "next/image";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { ArrowLeftIcon, CheckCircleIcon, XCircleIcon } from "@heroicons/react/24/outline";
 import { ROUTES } from "@/lib/constants/routes";
-import { getErrorMessage } from "@/lib/utils";
-import { authService } from "@/services/auth";
-import { ApiErrorResponse } from "@/services/api/client";
-import { CheckCircleIcon, XCircleIcon, ArrowLeftIcon } from "@heroicons/react/24/outline";
+import {
+  authService,
+  clearPendingEmailVerification,
+  getPendingEmailVerification,
+  type PendingEmailVerification,
+} from "@/services/auth";
 
-function VerifyEmailForm() {
-  const searchParams = useSearchParams();
+export default function VerifyEmailPage() {
   const router = useRouter();
-  const [verifying, setVerifying] = useState(true);
+  const [pending, setPending] = useState<PendingEmailVerification | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [code, setCode] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const [resendMessage, setResendMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResending, setIsResending] = useState(false);
   const [verified, setVerified] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [email, setEmail] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = searchParams.get("token");
+    setPending(getPendingEmailVerification());
+    setLoaded(true);
+  }, []);
 
-    if (!token) {
-      setError(
-        "No verification token provided. Please check your email for the verification link.",
-      );
-      setVerifying(false);
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitError("");
+    setResendMessage("");
+    if (!code.trim()) {
+      setSubmitError("Enter the verification code from your email.");
       return;
     }
 
-    const verifyEmail = async () => {
-      try {
-        const response = await authService.verifyEmail(token);
-        if (response.verified) {
-          setVerified(true);
-          setEmail(response.email);
-
-          // Redirect to login after 3 seconds
-          setTimeout(() => {
-            router.push(ROUTES.LOGIN);
-          }, 3000);
+    setIsSubmitting(true);
+    try {
+      await authService.confirmEmailVerification(code.trim());
+      setVerified(true);
+      setTimeout(() => {
+        if (pending?.type === "hotel") {
+          router.push(ROUTES.SETUP);
+        } else if (pending?.type === "creator") {
+          router.push(ROUTES.PROFILE_COMPLETE);
         } else {
-          setError(response.message || "Email verification failed. Please try again.");
+          router.push(ROUTES.MARKETPLACE);
         }
-      } catch (error) {
-        if (error instanceof ApiErrorResponse) {
-          const detail = error.data.detail;
-          if (typeof detail === "string") {
-            setError(detail);
-          } else {
-            setError(
-              "Invalid or expired verification token. Please request a new verification link.",
-            );
-          }
-        } else {
-          setError(getErrorMessage(error, "Failed to verify email. Please try again."));
-        }
-      } finally {
-        setVerifying(false);
-      }
-    };
+      }, 1200);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Failed to verify email.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
 
-    verifyEmail();
-  }, [searchParams, router]);
+  async function handleResend() {
+    setSubmitError("");
+    setResendMessage("");
+    setIsResending(true);
+    try {
+      const response = await authService.resendEmailVerification();
+      setResendMessage(response.message);
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error ? error.message : "Failed to resend verification code.",
+      );
+    } finally {
+      setIsResending(false);
+    }
+  }
+
+  function handleBackToLogin() {
+    clearPendingEmailVerification();
+  }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-md">
-        {/* Back to Home Button */}
+    <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+      <div className="w-full max-w-sm rounded-lg border border-gray-100 bg-white p-8 shadow-lg">
         <Link
-          href={ROUTES.HOME}
-          className="inline-flex items-center gap-2 text-gray-600 hover:text-primary-600 transition-colors mb-6"
+          href={ROUTES.LOGIN}
+          onClick={handleBackToLogin}
+          className="mb-6 inline-flex items-center gap-2 text-sm font-medium text-gray-600 transition-colors hover:text-primary-600"
         >
-          <ArrowLeftIcon className="w-5 h-5" />
-          <span className="text-sm font-medium">Back to Home</span>
+          <ArrowLeftIcon className="h-5 w-5" />
+          Back to sign in
         </Link>
 
-        <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-8">
-          {/* Logo */}
-          <div className="mb-6 text-center">
-            <Image
-              src="/vayada-logo.png"
-              alt="vayada"
-              width={40}
-              height={40}
-              className="h-10 w-auto mx-auto mb-4"
-            />
-          </div>
+        <div className="mb-6 text-center">
+          <Image
+            src="/vayada-logo.png"
+            alt="vayada"
+            width={120}
+            height={40}
+            className="mx-auto mb-4 h-10 w-auto"
+            priority
+          />
+          <h1 className="text-xl font-bold text-gray-900">Verify your email</h1>
+          <p className="mt-1 text-[13px] text-gray-500">
+            {pending?.email
+              ? `Enter the code sent to ${pending.email}.`
+              : "Enter the verification code from your email."}
+          </p>
+        </div>
 
-          {/* Title */}
-          <h1 className="text-3xl font-bold text-gray-900 mb-2 text-center">Email Verification</h1>
-          <p className="text-gray-600 mb-8 text-center">Verifying your email address...</p>
+        {!loaded && <p className="text-center text-sm text-gray-600">Loading...</p>}
 
-          {/* Loading State */}
-          {verifying && (
-            <div className="text-center py-8">
-              <div className="inline-block w-12 h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-              <p className="text-sm text-gray-600">Please wait while we verify your email...</p>
-            </div>
-          )}
-
-          {/* Success State */}
-          {!verifying && verified && (
-            <div className="text-center py-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 bg-green-100 rounded-full mb-4">
-                <CheckCircleIcon className="w-10 h-10 text-green-600" />
-              </div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">
-                Email Verified Successfully!
-              </h2>
-              {email && (
-                <p className="text-sm text-gray-600 mb-4">
-                  Your email <span className="font-medium text-gray-900">{email}</span> has been
-                  verified.
-                </p>
-              )}
-              <p className="text-sm text-gray-600 mb-6">
-                Your account is now fully activated. Redirecting to login...
+        {loaded && !pending && (
+          <div className="space-y-5 text-center">
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+              <XCircleIcon className="mx-auto mb-3 h-10 w-10 text-red-600" />
+              <p className="text-sm font-medium text-red-700">
+                Verification has expired. Please sign in again.
               </p>
-              <Link
-                href={ROUTES.LOGIN}
-                className="inline-block px-6 py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 transition-colors"
+            </div>
+            <Link
+              href={ROUTES.LOGIN}
+              className="block rounded-lg bg-primary-600 px-4 py-2.5 text-center text-sm font-medium text-white transition-colors hover:bg-primary-700"
+            >
+              Back to Sign In
+            </Link>
+          </div>
+        )}
+
+        {loaded && pending && verified && (
+          <div className="space-y-5 text-center">
+            <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+              <CheckCircleIcon className="mx-auto mb-3 h-10 w-10 text-green-600" />
+              <p className="text-sm font-medium text-green-700">Email verified. Redirecting...</p>
+            </div>
+          </div>
+        )}
+
+        {loaded && pending && !verified && (
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div>
+              <label
+                htmlFor="verification-code"
+                className="mb-1.5 block text-sm font-medium text-gray-700"
               >
-                Go to Login
-              </Link>
+                Verification code
+              </label>
+              <input
+                id="verification-code"
+                name="verification-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(event) => {
+                  setCode(event.target.value);
+                  if (submitError) setSubmitError("");
+                }}
+                disabled={isSubmitting}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+              />
             </div>
-          )}
 
-          {/* Error State */}
-          {!verifying && !verified && error && (
-            <div className="text-center py-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-4">
-                <XCircleIcon className="w-10 h-10 text-red-600" />
+            {submitError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {submitError}
               </div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">Verification Failed</h2>
-              <p className="text-sm text-gray-600 mb-6">{error}</p>
-              <div className="space-y-3">
-                <Link
-                  href={ROUTES.LOGIN}
-                  className="block px-6 py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 transition-colors text-center"
-                >
-                  Go to Login
-                </Link>
-                <p className="text-xs text-gray-500">
-                  If you need a new verification link, please complete your profile again or contact
-                  support.
-                </p>
+            )}
+
+            {resendMessage && (
+              <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                {resendMessage}
               </div>
-            </div>
-          )}
-        </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSubmitting ? "Verifying..." : "Verify Email"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={isResending || !pending.emailVerificationId}
+              className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isResending ? "Sending..." : "Send New Code"}
+            </button>
+          </form>
+        )}
       </div>
-    </div>
-  );
-}
-
-export default function VerifyEmailPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="min-h-screen flex items-center justify-center">
-          <div className="w-12 h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
-        </div>
-      }
-    >
-      <VerifyEmailForm />
-    </Suspense>
+    </main>
   );
 }

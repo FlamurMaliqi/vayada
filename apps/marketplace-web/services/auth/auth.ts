@@ -36,6 +36,47 @@ type SignupRequest = {
   type: "creator" | "hotel";
 };
 
+export type AuthStateResponse = {
+  state:
+    | "invalid_credentials"
+    | "email_verification_required"
+    | "organization_selection_required"
+    | "mfa_required"
+    | "sso_required"
+    | "auth_failed";
+  message: string;
+  pendingAuthenticationToken?: string;
+  email?: string;
+  emailVerificationId?: string;
+};
+
+export class AuthStateError extends Error {
+  status: number;
+  state: AuthStateResponse["state"];
+  pendingAuthenticationToken?: string;
+  email?: string;
+  emailVerificationId?: string;
+
+  constructor(status: number, response: AuthStateResponse) {
+    super(response.message);
+    this.name = "AuthStateError";
+    this.status = status;
+    this.state = response.state;
+    this.pendingAuthenticationToken = response.pendingAuthenticationToken;
+    this.email = response.email;
+    this.emailVerificationId = response.emailVerificationId;
+  }
+}
+
+export type PendingEmailVerification = {
+  pendingAuthenticationToken: string;
+  email?: string;
+  emailVerificationId?: string;
+  type?: SignupRequest["type"];
+};
+
+const PENDING_EMAIL_VERIFICATION_KEY = "vayada_pending_email_verification";
+
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
     ...options,
@@ -53,12 +94,64 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
       : null;
 
   if (!response.ok) {
+    if (isAuthStateResponse(body)) {
+      throw new AuthStateError(response.status, body);
+    }
     throw new ApiErrorResponse(response.status, {
       detail: body?.message ?? body?.error ?? "Authentication request failed",
     });
   }
 
   return body as T;
+}
+
+function isAuthStateResponse(value: unknown): value is AuthStateResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { state?: unknown }).state === "string" &&
+    typeof (value as { message?: unknown }).message === "string"
+  );
+}
+
+export function storePendingEmailVerification(
+  input: Omit<PendingEmailVerification, "pendingAuthenticationToken"> & {
+    pendingAuthenticationToken?: string;
+  },
+): boolean {
+  if (typeof window === "undefined" || !input.pendingAuthenticationToken) return false;
+  const pending: PendingEmailVerification = {
+    pendingAuthenticationToken: input.pendingAuthenticationToken,
+    email: input.email,
+    emailVerificationId: input.emailVerificationId,
+    type: input.type,
+  };
+  sessionStorage.setItem(PENDING_EMAIL_VERIFICATION_KEY, JSON.stringify(pending));
+  return true;
+}
+
+export function getPendingEmailVerification(): PendingEmailVerification | null {
+  if (typeof window === "undefined") return null;
+  const raw = sessionStorage.getItem(PENDING_EMAIL_VERIFICATION_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingEmailVerification>;
+    if (typeof parsed.pendingAuthenticationToken !== "string") return null;
+    return {
+      pendingAuthenticationToken: parsed.pendingAuthenticationToken,
+      email: typeof parsed.email === "string" ? parsed.email : undefined,
+      emailVerificationId:
+        typeof parsed.emailVerificationId === "string" ? parsed.emailVerificationId : undefined,
+      type: parsed.type === "creator" || parsed.type === "hotel" ? parsed.type : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingEmailVerification(): void {
+  if (typeof window === "undefined") return;
+  sessionStorage.removeItem(PENDING_EMAIL_VERIFICATION_KEY);
 }
 
 async function attachMarketplaceCompatibilityToken(): Promise<void> {
@@ -192,7 +285,7 @@ export const authService = {
       }
       return response;
     } catch (error) {
-      if (error instanceof ApiErrorResponse) {
+      if (error instanceof ApiErrorResponse || error instanceof AuthStateError) {
         throw error;
       }
       throw new Error("Login failed: Network error");
@@ -216,7 +309,7 @@ export const authService = {
       setAuthKitSession(response);
       return response;
     } catch (error) {
-      if (error instanceof ApiErrorResponse) {
+      if (error instanceof ApiErrorResponse || error instanceof AuthStateError) {
         throw error;
       }
       throw new Error("Signup failed: Network error");
@@ -293,21 +386,11 @@ export const authService = {
    */
   forgotPassword: async (email: string): Promise<{ message: string }> => {
     try {
-      const response = await apiClient.post<{ message: string; token: string | null }>(
-        "/auth/forgot-password",
-        { email },
-      );
-      return { message: response.message };
-    } catch (error: unknown) {
-      // For security, always show success message even if email doesn't exist
-      // This prevents email enumeration attacks
-      if (error instanceof ApiErrorResponse) {
-        // Still return success message for security
-        return {
-          message: "If an account with that email exists, a password reset link has been sent.",
-        };
-      }
-      // For network errors, still show success to maintain security
+      return await authFetch<{ message: string }>("/auth/password/reset/request", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+    } catch {
       return {
         message: "If an account with that email exists, a password reset link has been sent.",
       };
@@ -328,43 +411,18 @@ export const authService = {
         throw new Error("Password must be at least 8 characters long.");
       }
 
-      const response = await apiClient.post<{ message: string }>("/auth/reset-password", {
-        token,
-        new_password: newPassword,
+      const response = await authFetch<{ message: string }>("/auth/password/reset/confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          token,
+          newPassword,
+        }),
       });
 
       return response;
     } catch (error: unknown) {
-      if (error instanceof ApiErrorResponse) {
-        // Handle backend validation errors
-        if (error.status === 400 || error.status === 422) {
-          const detail = error.data.detail;
-          if (typeof detail === "string") {
-            throw new Error(detail);
-          }
-          if (Array.isArray(detail) && detail.length > 0) {
-            // Pydantic validation errors
-            const firstError = detail[0];
-            const field = Array.isArray(firstError.loc)
-              ? firstError.loc.slice(1).join(".")
-              : "field";
-            throw new Error(`${field}: ${firstError.msg || "Validation error"}`);
-          }
-          throw new Error(
-            "Invalid or expired reset token. Please request a new password reset link.",
-          );
-        }
-        if (error.status === 404) {
-          throw new Error(
-            "Invalid or expired reset token. Please request a new password reset link.",
-          );
-        }
-        // For other errors, use the detail message if available
-        const detail = error.data.detail;
-        if (typeof detail === "string") {
-          throw new Error(detail);
-        }
-        throw new Error("Failed to reset password. Please try again.");
+      if (error instanceof AuthStateError || error instanceof ApiErrorResponse) {
+        throw new Error(error.message);
       }
       if (error instanceof Error) {
         throw new Error(error.message || "Failed to reset password. Please try again.");
@@ -373,101 +431,56 @@ export const authService = {
     }
   },
 
-  /**
-   * Send email verification code
-   * Sends a verification code to the provided email address
-   * Code expires in 15 minutes
-   */
-  sendVerificationCode: async (
-    email: string,
-  ): Promise<{ message: string; code: string | null }> => {
-    try {
-      const response = await apiClient.post<{ message: string; code: string | null }>(
-        "/auth/send-verification-code",
-        { email },
-      );
-      return response;
-    } catch (error: unknown) {
-      if (error instanceof ApiErrorResponse) {
-        const detail = error.data.detail;
-        if (typeof detail === "string") {
-          throw new Error(detail);
-        }
-        throw new Error("Failed to send verification code. Please try again.");
-      }
-      throw new Error("Failed to send verification code. Please try again.");
+  confirmEmailVerification: async (code: string): Promise<AuthSessionResponse> => {
+    const pending = getPendingEmailVerification();
+    if (!pending) {
+      throw new Error("Verification has expired. Please sign in again.");
     }
-  },
 
-  /**
-   * Verify email verification code
-   * Verifies the code sent to the email address
-   * Code can only be used once
-   * @deprecated Use verifyEmail with token instead (link-based verification)
-   */
-  verifyEmailCode: async (
-    email: string,
-    code: string,
-  ): Promise<{ message: string; verified: boolean }> => {
     try {
-      const response = await apiClient.post<{ message: string; verified: boolean }>(
-        "/auth/verify-email-code",
-        {
-          email,
+      const response = await authFetch<AuthSessionResponse>("/auth/email-verification/confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          pendingAuthenticationToken: pending.pendingAuthenticationToken,
           code,
-        },
-      );
-      return response;
-    } catch (error: unknown) {
-      if (error instanceof ApiErrorResponse) {
-        const detail = error.data.detail;
-        if (typeof detail === "string") {
-          throw new Error(detail);
-        }
-        // Check if it's a verification error
-        if (error.status === 400 || error.status === 422) {
-          throw new Error("Invalid or expired verification code. Please request a new code.");
-        }
-        throw new Error("Failed to verify code. Please try again.");
-      }
-      throw new Error("Failed to verify code. Please try again.");
-    }
-  },
+          type: pending.type,
+          surface: AUTH_SURFACE,
+        }),
+      });
 
-  /**
-   * Verify email using token from verification link
-   * Used after profile completion - user clicks link in email
-   * Token expires after 48 hours
-   */
-  verifyEmail: async (
-    token: string,
-  ): Promise<{ message: string; verified: boolean; email: string | null }> => {
-    try {
-      if (!token || token.trim() === "") {
-        throw new Error("Invalid verification token. Please request a new verification link.");
+      if (isAuthOrganizationSelectionResponse(response)) {
+        setPendingOrganizationSelection(response);
+        return response;
       }
-
-      const response = await apiClient.get<{
-        message: string;
-        verified: boolean;
-        email: string | null;
-      }>(`/auth/verify-email?token=${encodeURIComponent(token)}`);
+      setAuthKitSession(response);
+      clearPendingEmailVerification();
       return response;
-    } catch (error: unknown) {
-      if (error instanceof ApiErrorResponse) {
-        const detail = error.data.detail;
-        if (typeof detail === "string") {
-          throw new Error(detail);
-        }
-        // Check if it's a verification error
-        if (error.status === 400 || error.status === 404 || error.status === 422) {
-          throw new Error(
-            "Invalid or expired verification token. Please request a new verification link.",
-          );
-        }
-        throw new Error("Failed to verify email. Please try again.");
+    } catch (error) {
+      if (error instanceof AuthStateError || error instanceof ApiErrorResponse) {
+        throw error;
       }
       throw new Error("Failed to verify email. Please try again.");
+    }
+  },
+
+  resendEmailVerification: async (): Promise<{ message: string }> => {
+    const pending = getPendingEmailVerification();
+    if (!pending?.emailVerificationId) {
+      throw new Error("Please sign in again to request a new verification code.");
+    }
+
+    try {
+      return await authFetch<{ message: string }>("/auth/email-verification/resend", {
+        method: "POST",
+        body: JSON.stringify({
+          emailVerificationId: pending.emailVerificationId,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof AuthStateError || error instanceof ApiErrorResponse) {
+        throw error;
+      }
+      throw new Error("Failed to resend verification code. Please try again.");
     }
   },
 };

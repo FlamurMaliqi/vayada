@@ -51,6 +51,12 @@ export type AuthKitClient = {
     ipAddress?: string;
     userAgent?: string;
   }): Promise<AuthKitSession>;
+  authenticateWithEmailVerification(input: {
+    pendingAuthenticationToken: string;
+    code: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<AuthKitSession>;
   createUser(input: {
     email: string;
     password: string;
@@ -58,6 +64,9 @@ export type AuthKitClient = {
     userAgent?: string;
     metadata?: Record<string, string>;
   }): Promise<AuthKitUser>;
+  resendVerificationEmail(input: { emailVerificationId: string }): Promise<{ email: string }>;
+  createPasswordReset(input: { email: string }): Promise<void>;
+  resetPassword(input: { token: string; newPassword: string }): Promise<AuthKitUser>;
   authenticateSession(input: { sealedSession: string }): Promise<AuthKitSession | null>;
   refreshSession(input: {
     sealedSession: string;
@@ -332,7 +341,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
   });
 
   for (const path of [
+    "/email-verification/confirm",
+    "/email-verification/resend",
     "/password/login",
+    "/password/reset/confirm",
+    "/password/reset/request",
     "/password/signup",
     "/session",
     "/session/refresh",
@@ -612,6 +625,221 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         resolution.resourceScope,
       ),
     );
+  });
+
+  app.post("/email-verification/confirm", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Authentication request origin is not allowed.",
+      });
+    }
+    const parsed = parseEmailVerificationConfirmBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+    let verifiedSession: AuthKitSession;
+    try {
+      verifiedSession = await options.authKitClient.authenticateWithEmailVerification({
+        pendingAuthenticationToken: parsed.pendingAuthenticationToken,
+        code: parsed.code,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+    } catch (error) {
+      return reply.code(400).send(toEmailVerificationError(error));
+    }
+
+    let signupOrganization: AuthSignupOrganizationContext | undefined;
+    let signupMembership: AuthSignupMembershipContext | undefined;
+    let selectedSession = verifiedSession;
+    if (parsed.intent) {
+      try {
+        signupOrganization = await createSignupOrganizationContext(
+          options.authKitClient,
+          parsed.surface,
+          parsed.intent,
+          verifiedSession.user.email,
+          verifiedSession.user.id,
+        );
+        const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+          workosUserId: verifiedSession.user.id,
+          workosOrganizationId: signupOrganization.workosOrganizationId,
+          roleKey: signupOrganization.roleKey,
+        });
+        signupMembership = {
+          workosMembershipId: membership.membershipId,
+          workosRoleSlugs: membership.roleSlugs,
+          status: membership.status,
+        };
+        selectedSession = await selectSignupOrganizationSession(
+          verifiedSession,
+          signupOrganization,
+          options.authKitClient,
+        );
+      } catch (error) {
+        return reply.code(403).send(toAuthError(error));
+      }
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      resolution = await resolveOrCreateIdentity(
+        selectedSession,
+        request,
+        options,
+        surfacePolicy,
+        organizationAccessOptionsFromRequest(request, surfacePolicy),
+        parsed.intent && signupOrganization
+          ? {
+              intent: parsed.intent,
+              organization: signupOrganization,
+              membership: signupMembership,
+            }
+          : undefined,
+      );
+    } catch (error) {
+      if (error instanceof OrganizationSelectionRequiredError) {
+        return sendOrganizationSelectionRedirect(
+          reply,
+          selectedSession,
+          error,
+          undefined,
+          surfacePolicy,
+          options,
+        );
+      }
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    await options.productAuditSink.record({
+      action: "auth.login",
+      authFlow: parsed.intent ? "signup" : "login",
+      actorUserId: resolution.user.userId,
+      organizationId: resolution.organizationId,
+      surface: parsed.surface,
+      signupIntent: parsed.intent,
+      workosUserId: selectedSession.user.id,
+      workosOrgId: resolution.session.organizationId,
+      workosSessionId: resolution.session.sessionId,
+      requestId: request.id,
+      occurredAt: new Date().toISOString(),
+    });
+
+    const csrfToken = randomBytes(24).toString("base64url");
+    reply.headers({
+      "set-cookie": [
+        serializeCookie(STATE_COOKIE, "", {
+          maxAge: 0,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+        }),
+        serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
+          maxAge: 60 * 60 * 24 * 7,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+        }),
+        serializeCookie(CSRF_COOKIE, csrfToken, {
+          maxAge: 60 * 60 * 24 * 7,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+          httpOnly: false,
+        }),
+        ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
+      ],
+    });
+    return reply.send(
+      toSessionResponse(
+        resolution.session,
+        resolution.user,
+        csrfToken,
+        resolution.organizationId,
+        resolution.organizationKind,
+        resolution.resourceScope,
+      ),
+    );
+  });
+
+  app.post("/email-verification/resend", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Authentication request origin is not allowed.",
+      });
+    }
+    const parsed = parseEmailVerificationResendBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    try {
+      await options.authKitClient.resendVerificationEmail({
+        emailVerificationId: parsed.emailVerificationId,
+      });
+    } catch {
+      return reply.code(400).send({
+        state: "auth_failed",
+        message: "We could not resend this verification code. Please sign in again.",
+      });
+    }
+
+    return reply.send({
+      message: "A new verification code has been sent.",
+    });
+  });
+
+  app.post("/password/reset/request", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Authentication request origin is not allowed.",
+      });
+    }
+    const parsed = parsePasswordResetRequestBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    try {
+      await options.authKitClient.createPasswordReset({ email: parsed.email });
+    } catch (error) {
+      request.log.warn({ error }, "WorkOS password reset request failed");
+    }
+
+    return reply.send({
+      message: "If an account with that email exists, a password reset link has been sent.",
+    });
+  });
+
+  app.post("/password/reset/confirm", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Authentication request origin is not allowed.",
+      });
+    }
+    const parsed = parsePasswordResetConfirmBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    try {
+      await options.authKitClient.resetPassword({
+        token: parsed.token,
+        newPassword: parsed.newPassword,
+      });
+    } catch {
+      return reply.code(400).send({
+        state: "auth_failed",
+        message: "Invalid or expired reset token. Please request a new password reset link.",
+      });
+    }
+
+    return reply.send({
+      message: "Password reset successful. Please sign in with your new password.",
+    });
   });
 
   app.get("/workos/callback", async (request, reply) => {
@@ -1099,6 +1327,148 @@ function parsePasswordSignupBody(body: unknown):
   } catch {
     return { ok: false, error: { state: "auth_failed", message: "Unsupported signup request." } };
   }
+}
+
+function parseEmailVerificationConfirmBody(body: unknown):
+  | {
+      ok: true;
+      pendingAuthenticationToken: string;
+      code: string;
+      surface: AuthSurface;
+      intent?: AuthSignupIntent;
+    }
+  | {
+      ok: false;
+      error: { state: "auth_failed"; message: string };
+    } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Verification token and code are required." },
+    };
+  }
+  const input = body as {
+    pendingAuthenticationToken?: unknown;
+    code?: unknown;
+    surface?: unknown;
+    type?: unknown;
+    intent?: unknown;
+  };
+  const pendingAuthenticationToken =
+    typeof input.pendingAuthenticationToken === "string"
+      ? input.pendingAuthenticationToken.trim()
+      : "";
+  const code = typeof input.code === "string" ? input.code.trim() : "";
+  if (!pendingAuthenticationToken || !code) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Verification token and code are required." },
+    };
+  }
+
+  try {
+    const surface = parseSurface(
+      typeof input.surface === "string" ? input.surface : "marketplace-web",
+    );
+    const rawIntent = typeof input.type === "string" ? input.type : input.intent;
+    const intent =
+      typeof rawIntent === "string" && rawIntent.length > 0
+        ? parseSignupIntent(surface, rawIntent)
+        : undefined;
+    return {
+      ok: true,
+      pendingAuthenticationToken,
+      code,
+      surface,
+      intent,
+    };
+  } catch {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Unsupported verification request." },
+    };
+  }
+}
+
+function parseEmailVerificationResendBody(
+  body: unknown,
+):
+  | { ok: true; emailVerificationId: string }
+  | { ok: false; error: { state: "auth_failed"; message: string } } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Verification state is required." },
+    };
+  }
+  const input = body as { emailVerificationId?: unknown };
+  const emailVerificationId =
+    typeof input.emailVerificationId === "string" ? input.emailVerificationId.trim() : "";
+  if (!emailVerificationId) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Verification state is required." },
+    };
+  }
+  return { ok: true, emailVerificationId };
+}
+
+function parsePasswordResetRequestBody(
+  body: unknown,
+): { ok: true; email: string } | { ok: false; error: { state: "auth_failed"; message: string } } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "A valid email address is required." },
+    };
+  }
+  const input = body as { email?: unknown };
+  const email = typeof input.email === "string" ? input.email.trim() : "";
+  if (!isLikelyEmail(email)) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "A valid email address is required." },
+    };
+  }
+  return { ok: true, email };
+}
+
+function parsePasswordResetConfirmBody(
+  body: unknown,
+):
+  | { ok: true; token: string; newPassword: string }
+  | { ok: false; error: { state: "auth_failed"; message: string } } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Reset token and new password are required." },
+    };
+  }
+  const input = body as { token?: unknown; newPassword?: unknown; new_password?: unknown };
+  const token = typeof input.token === "string" ? input.token.trim() : "";
+  const newPassword =
+    typeof input.newPassword === "string"
+      ? input.newPassword
+      : typeof input.new_password === "string"
+        ? input.new_password
+        : "";
+  if (!token || !newPassword) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Reset token and new password are required." },
+    };
+  }
+  if (newPassword.length < 8) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Password must be at least 8 characters long." },
+    };
+  }
+  return { ok: true, token, newPassword };
+}
+
+function isLikelyEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function parseSignupIntent(surface: AuthSurface, value: string | undefined): AuthSignupIntent {
@@ -2150,6 +2520,17 @@ function toAuthError(error: unknown) {
   return {
     error: "auth_session_rejected",
     message: error instanceof Error ? error.message : "AuthKit session was rejected.",
+  };
+}
+
+function toEmailVerificationError(error: unknown) {
+  const mapped = mapWorkOSAuthError(error);
+  if (mapped.state === "email_verification_required") {
+    return mapped;
+  }
+  return {
+    state: "auth_failed",
+    message: "Invalid or expired verification code. Please sign in again.",
   };
 }
 

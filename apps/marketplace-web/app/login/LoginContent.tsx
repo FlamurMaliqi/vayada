@@ -5,7 +5,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import LoginForm from "@/components/auth/LoginForm";
 import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
-import { authService } from "@/services/auth";
+import { AuthStateError, authService, storePendingEmailVerification } from "@/services/auth";
 import {
   isAuthOrganizationSelectionResponse,
   type AuthOrganizationSelectionResponse,
@@ -69,12 +69,20 @@ export function LoginContent({
         }
         await redirectAfterLogin();
       } catch (error) {
+        if (
+          error instanceof AuthStateError &&
+          error.state === "email_verification_required" &&
+          storePendingEmailVerification(error)
+        ) {
+          router.push(ROUTES.VERIFY_EMAIL);
+          return;
+        }
         setSubmitError(error instanceof Error ? error.message : "Login failed. Please try again.");
       } finally {
         setIsSubmitting(false);
       }
     },
-    [redirectAfterLogin],
+    [redirectAfterLogin, router],
   );
 
   const handleOrganizationSelect = useCallback(
