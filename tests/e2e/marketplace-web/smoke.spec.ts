@@ -1,19 +1,12 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("marketplace-web smoke", () => {
-  test("login page redirects to hosted auth", async ({ request }) => {
-    const response = await request.get("/login", { maxRedirects: 0 });
+  test("login page renders the custom password form", async ({ page }) => {
+    await page.goto("/login");
 
-    expect(response.status()).toBe(307);
-
-    const hostedLoginUrl = new URL(response.headers().location ?? "");
-    expect(hostedLoginUrl.pathname).toBe("/auth/workos/login");
-    expect(hostedLoginUrl.searchParams.get("surface")).toBe("marketplace-web");
-
-    const returnTo = new URL(hostedLoginUrl.searchParams.get("return_to") ?? "");
-    expect(returnTo.pathname).toBe("/login");
-    expect(returnTo.searchParams.get("auth")).toBe("callback");
-    expect(returnTo.searchParams.get("returnTo")).toBe("/marketplace");
+    await expect(page.getByRole("heading", { name: "Sign in to vayada" })).toBeVisible();
+    await expect(page.getByLabel("Email address")).toBeVisible();
+    await expect(page.getByLabel("Password")).toBeVisible();
   });
 
   test("login callback renders locally", async ({ request }) => {
