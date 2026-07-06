@@ -15,6 +15,30 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
   });
 
   return {
+    getAuthorizationUrl(input) {
+      return workos.userManagement.getAuthorizationUrl({
+        provider: input.provider,
+        redirectUri: input.redirectUri,
+        clientId: config.clientId,
+        state: input.state,
+        loginHint: input.loginHint,
+      });
+    },
+
+    async authenticateWithCode(input) {
+      const response = await workos.userManagement.authenticateWithCode({
+        code: input.code,
+        clientId: config.clientId,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+        session: {
+          sealSession: true,
+          cookiePassword: config.cookiePassword,
+        },
+      });
+      return toAuthKitSession(response);
+    },
+
     async authenticateWithPassword(input) {
       const response = await workos.userManagement.authenticateWithPassword({
         email: input.email,

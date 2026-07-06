@@ -276,6 +276,7 @@ const app = buildApp({
           }),
           logoutReturnUrl: config.authSession.authLogoutUrl,
           allowedOrigins: config.authSession.authAllowedOrigins,
+          oauthStateSecret: config.authSession.authCookieSecret,
           requiredOrganizationKind: "platform",
           surfacePolicies: {
             "booking-admin": {

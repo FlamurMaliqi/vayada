@@ -175,6 +175,217 @@ describe("AuthKit session routes", () => {
     ]);
   });
 
+  it("starts Google OAuth with a signed callback state", async () => {
+    let authorizationInput: Parameters<AuthKitClient["getAuthorizationUrl"]>[0] | undefined;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          authorizationInput = input;
+          return `https://auth.workos.test/google?state=${encodeURIComponent(input.state)}`;
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin%3Fauth%3Dcallback" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toContain("https://auth.workos.test/google");
+    expect(String(response.headers["set-cookie"])).toContain("vayada_oauth_state=");
+    expect(authorizationInput).toMatchObject({
+      provider: "GoogleOAuth",
+      redirectUri: "https://api.localhost/auth/oauth/google/callback",
+    });
+  });
+
+  it("logs in an existing marketplace account through Google OAuth callback", async () => {
+    let state = "";
+    const marketplaceSession: AuthKitSession = {
+      ...session,
+      accessToken: "google-workos-access-token",
+      sealedSession: "google-sealed-session",
+      organizationId: "org_workos_creator",
+      user: {
+        ...session.user,
+        id: "user_workos_google_creator",
+        email: "creator@example.test",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return `https://auth.workos.test/google?state=${encodeURIComponent(input.state)}`;
+        },
+        async authenticateWithCode(input) {
+          expect(input.code).toBe("google-code");
+          return marketplaceSession;
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_creator",
+          workosOrgId: "org_workos_creator",
+          name: "Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const start = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin%3Fauth%3Dcallback" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieHeader(start, "vayada_oauth_state") },
+    });
+
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe("https://marketplace.localhost/login?auth=callback");
+    expect(callback.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=google-sealed-session"),
+        expect.stringContaining("vayada_auth_csrf="),
+      ]),
+    );
+  });
+
+  it("signs up a selected account type through Google OAuth callback", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    let state = "";
+    const googleSession: AuthKitSession = {
+      ...session,
+      accessToken: "google-signup-access-token",
+      sealedSession: "google-signup-sealed-session",
+      organizationId: undefined,
+      user: {
+        ...session.user,
+        id: "user_workos_google_signup",
+        email: "creator-google@example.test",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return `https://auth.workos.test/google?state=${encodeURIComponent(input.state)}`;
+        },
+        async authenticateWithCode() {
+          return googleSession;
+        },
+        async refreshSession(input) {
+          return {
+            ...googleSession,
+            organizationId: input.organizationId,
+            sealedSession: "selected-google-signup-session",
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_creator_workspace",
+          workosOrgId: "org_workos_signup_creator",
+          name: "Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_signup_creator_owner",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: "user_creator_google",
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const start = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=signup&type=creator" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin%3Fauth%3Dcallback%26returnTo%3D%252Fprofile%252Fcomplete" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Fsignup%3Ftype%3Dcreator",
+      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieHeader(start, "vayada_oauth_state") },
+    });
+
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe(
+      "https://marketplace.localhost/login?auth=callback&returnTo=%2Fprofile%2Fcomplete",
+    );
+    expect(callback.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=selected-google-signup-session"),
+      ]),
+    );
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          legacyUserType: "creator",
+          providerIdentity: expect.objectContaining({
+            providerUserId: "user_workos_google_signup",
+          }),
+        }),
+      }),
+    ]);
+  });
+
   it.each([
     {
       name: "invalid credentials",
@@ -281,6 +492,51 @@ describe("AuthKit session routes", () => {
         surface: "marketplace-web",
       }),
     );
+  });
+
+  it("sends a WorkOS verification email when password login requires email verification", async () => {
+    let emailVerificationId: string | undefined;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithPassword() {
+          throw {
+            code: "email_verification_required",
+            pending_authentication_token: "pending_email",
+            email: "creator@example.test",
+            email_verification_id: "email_verification_123",
+          };
+        },
+        async resendVerificationEmail(input) {
+          emailVerificationId = input.emailVerificationId;
+          return { email: "creator@example.test" };
+        },
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        email: "creator@example.test",
+        password: "correct-password",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(emailVerificationId).toBe("email_verification_123");
+    expect(response.json()).toMatchObject({
+      state: "email_verification_required",
+      pendingAuthenticationToken: "pending_email",
+      emailVerificationId: "email_verification_123",
+    });
   });
 
   it("records a failed password login audit when identity resolution rejects the session", async () => {
@@ -923,18 +1179,9 @@ describe("AuthKit session routes", () => {
     expect(createUserCalled).toBe(false);
   });
 
-  it("grants product organization access for an existing WorkOS user signup", async () => {
-    const commands: IdentityLifecycleCommand[] = [];
-    const existingSession: AuthKitSession = {
-      ...session,
-      organizationId: undefined,
-      user: {
-        id: "user_workos_existing",
-        email: "existing@example.test",
-        emailVerified: true,
-        name: "Existing User",
-      },
-    };
+  it("rejects custom signup when the WorkOS email already exists", async () => {
+    let authenticateCalled = false;
+    let organizationCalled = false;
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
       authKitClient: createAuthKitClient({
@@ -942,58 +1189,14 @@ describe("AuthKit session routes", () => {
           throw { status: 409, name: "ConflictException" };
         },
         async authenticateWithPassword() {
-          return existingSession;
+          authenticateCalled = true;
+          return session;
         },
         async createSignupOrganization() {
+          organizationCalled = true;
           return { organizationId: "org_workos_existing_creator" };
         },
-        async ensureSignupOrganizationMembership() {
-          return {
-            membershipId: "om_existing_creator",
-            roleSlugs: ["creator_owner"],
-            status: "active",
-          };
-        },
-        async refreshSession() {
-          return {
-            ...existingSession,
-            organizationId: "org_workos_existing_creator",
-            sealedSession: "selected_existing_session",
-          };
-        },
       }),
-      identityRepository: createIdentityRepository({
-        userByProviderUserId: async () => ({
-          userId: "user_existing",
-          email: "existing@example.test",
-          status: "active",
-        }),
-        organizationByWorkosOrgId: async () => ({
-          organizationId: "org_existing_creator",
-          workosOrgId: "org_workos_existing_creator",
-          name: "Existing Creator Workspace",
-          kind: "creator_workspace",
-          status: "active",
-        }),
-        activeMembership: async () => ({
-          membershipId: "membership_existing_creator",
-          status: "active",
-          roleKey: "creator_owner",
-          workosMembershipId: "om_existing_creator",
-          workosRoleSlugs: ["creator_owner"],
-        }),
-      }),
-      lifecycleCommandBus: {
-        async execute(command) {
-          commands.push(command);
-          return {
-            status: "accepted",
-            commandId: command.commandId,
-            idempotencyKey: command.idempotencyKey,
-            events: [],
-          };
-        },
-      },
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
@@ -1013,23 +1216,18 @@ describe("AuthKit session routes", () => {
       },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(commands).toEqual([
-      expect.objectContaining({
-        commandType: "identity.access.grant",
-        payload: expect.objectContaining({
-          userId: "user_existing",
-          organization: expect.objectContaining({
-            kind: "creator_workspace",
-            workosOrgId: "org_workos_existing_creator",
-          }),
-        }),
-      }),
-    ]);
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      state: "auth_failed",
+      message: "This email already has a Vayada account. Sign in instead.",
+    });
+    expect(authenticateCalled).toBe(false);
+    expect(organizationCalled).toBe(false);
   });
 
   it("returns verification-required state from custom signup without creating a Vayada organization", async () => {
     const commands: IdentityLifecycleCommand[] = [];
+    let emailVerificationId: string | undefined;
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
       authKitClient: createAuthKitClient({
@@ -1045,7 +1243,12 @@ describe("AuthKit session routes", () => {
             code: "email_verification_required",
             pending_authentication_token: "pending_email",
             email: "unverified@example.test",
+            email_verification_id: "email_verification_signup",
           };
+        },
+        async resendVerificationEmail(input) {
+          emailVerificationId = input.emailVerificationId;
+          return { email: "unverified@example.test" };
         },
         async createSignupOrganization() {
           throw new Error("Vayada organization should not be created before verification");
@@ -1085,7 +1288,9 @@ describe("AuthKit session routes", () => {
     expect(response.json()).toMatchObject({
       state: "email_verification_required",
       pendingAuthenticationToken: "pending_email",
+      emailVerificationId: "email_verification_signup",
     });
+    expect(emailVerificationId).toBe("email_verification_signup");
     expect(commands).toEqual([]);
   });
 
@@ -2516,6 +2721,7 @@ function buildAuthSessionApp(
       allowedOrigins: options.allowedOrigins ?? ["https://admin.localhost"],
       requiredOrganizationKind: "platform",
       surfacePolicies: options.surfacePolicies,
+      oauthStateSecret: "test-oauth-state-secret",
       cookieSecure: false,
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
     },
@@ -2528,8 +2734,24 @@ function readJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
 }
 
+function cookieHeader(response: { headers: Record<string, unknown> }, name: string): string {
+  const setCookie = response.headers["set-cookie"];
+  const values = Array.isArray(setCookie) ? setCookie : [setCookie];
+  const cookie = values.find(
+    (value): value is string => typeof value === "string" && value.startsWith(`${name}=`),
+  );
+  if (!cookie) throw new Error(`Missing cookie ${name}`);
+  return cookie.split(";")[0]!;
+}
+
 function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitClient {
   return {
+    getAuthorizationUrl(input) {
+      return `https://auth.workos.test/oauth?state=${encodeURIComponent(input.state)}`;
+    },
+    async authenticateWithCode() {
+      return session;
+    },
     async authenticateWithPassword() {
       return session;
     },

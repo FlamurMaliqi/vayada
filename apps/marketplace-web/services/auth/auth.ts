@@ -218,17 +218,39 @@ function getToken(): string | null {
 export const authService = {
   isAuthKitEnabled: isAuthKitLoginEnabled,
 
-  startHostedLogin: (loginHint?: string, returnTo?: string): void => {
+  startGoogleLogin: (returnTo?: string): void => {
     if (typeof window === "undefined") return;
 
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/workos/login`);
-    url.searchParams.set("surface", AUTH_SURFACE);
-    const callbackUrl = new URL("/login?auth=callback", window.location.origin);
+    const callbackUrl = new URL("/login", window.location.origin);
+    callbackUrl.searchParams.set("auth", "callback");
     if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
+    const errorUrl = new URL("/login", window.location.origin);
+    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    url.searchParams.set("surface", AUTH_SURFACE);
+    url.searchParams.set("flow", "login");
     url.searchParams.set("return_to", callbackUrl.toString());
-    if (loginHint) url.searchParams.set("login_hint", loginHint);
+    url.searchParams.set("error_return_to", errorUrl.toString());
+    window.location.href = url.toString();
+  },
+
+  startGoogleSignup: (type: SignupRequest["type"], returnTo: string): void => {
+    if (typeof window === "undefined") return;
+
+    const callbackUrl = new URL("/login", window.location.origin);
+    callbackUrl.searchParams.set("auth", "callback");
+    if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      callbackUrl.searchParams.set("returnTo", returnTo);
+    }
+    const errorUrl = new URL("/signup", window.location.origin);
+    errorUrl.searchParams.set("type", type);
+    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    url.searchParams.set("surface", AUTH_SURFACE);
+    url.searchParams.set("flow", "signup");
+    url.searchParams.set("type", type);
+    url.searchParams.set("return_to", callbackUrl.toString());
+    url.searchParams.set("error_return_to", errorUrl.toString());
     window.location.href = url.toString();
   },
 

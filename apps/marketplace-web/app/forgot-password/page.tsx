@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { ROUTES } from "@/lib/constants/routes";
 import { authService } from "@/services/auth";
@@ -20,10 +21,8 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex">
-      {/* Left Side - Forgot Password Form (50% width) */}
-      <div className="w-full lg:w-1/2 bg-white flex items-center justify-center p-8 relative">
-        {/* Back to Home Button */}
+    <div className="flex min-h-screen bg-white">
+      <div className="relative flex w-full items-center justify-center p-8 lg:w-[40%]">
         <Link
           href={ROUTES.HOME}
           className="absolute top-6 left-6 flex items-center gap-2 text-gray-600 hover:text-primary-600 transition-colors"
@@ -33,12 +32,17 @@ export default function ForgotPasswordPage() {
         </Link>
 
         <div className="w-full max-w-md">
-          {/* Logo */}
           <div className="mb-6">
-            <img src="/vayada-logo.png" alt="vayada" className="h-10 mb-4" />
+            <Image
+              src="/vayada-logo.png"
+              alt="vayada"
+              width={120}
+              height={40}
+              className="mb-4 h-10 w-auto"
+              priority
+            />
           </div>
 
-          {/* Title */}
           <h1 className="text-4xl font-bold text-gray-900 mb-2">Forgot password?</h1>
           <p className="text-gray-600 mb-8">
             No worries! Enter your email address and we&apos;ll send you a link to reset your
@@ -53,15 +57,16 @@ export default function ForgotPasswordPage() {
         </div>
       </div>
 
-      {/* Right Side - Image (50% width) */}
-      <div className="hidden lg:block lg:w-1/2 relative">
-        <div className="absolute inset-0">
-          <img
-            src="/hotel-hero.JPG"
-            alt="Luxury hotel resort"
-            className="w-full h-full object-cover"
-          />
-        </div>
+      <div className="relative hidden min-h-screen flex-1 overflow-hidden bg-gray-900 lg:block">
+        <Image
+          src="/hotel-hero.JPG"
+          alt=""
+          fill
+          sizes="60vw"
+          className="object-cover"
+          aria-hidden="true"
+        />
+        <div className="absolute inset-0 bg-gray-950/20" />
       </div>
     </div>
   );

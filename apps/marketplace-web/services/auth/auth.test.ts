@@ -237,6 +237,57 @@ describe("authService", () => {
     expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
   });
 
+  it("starts Google login through the AuthKit backend", () => {
+    const location = {
+      href: "https://marketplace.localhost/login",
+      origin: "https://marketplace.localhost",
+    };
+    const localStorage = createStorageMock();
+    vi.stubGlobal("window", {
+      location,
+      localStorage,
+    });
+    vi.stubGlobal("localStorage", localStorage);
+
+    authService.startGoogleLogin("/marketplace");
+
+    const url = new URL(location.href);
+    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(url.searchParams.get("surface")).toBe("marketplace-web");
+    expect(url.searchParams.get("flow")).toBe("login");
+    expect(url.searchParams.get("return_to")).toBe(
+      "https://marketplace.localhost/login?auth=callback&returnTo=%2Fmarketplace",
+    );
+    expect(url.searchParams.get("error_return_to")).toBe("https://marketplace.localhost/login");
+  });
+
+  it("starts Google signup with the selected account type", () => {
+    const location = {
+      href: "https://marketplace.localhost/signup?type=creator",
+      origin: "https://marketplace.localhost",
+    };
+    const localStorage = createStorageMock();
+    vi.stubGlobal("window", {
+      location,
+      localStorage,
+    });
+    vi.stubGlobal("localStorage", localStorage);
+
+    authService.startGoogleSignup("creator", "/profile/complete");
+
+    const url = new URL(location.href);
+    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(url.searchParams.get("surface")).toBe("marketplace-web");
+    expect(url.searchParams.get("flow")).toBe("signup");
+    expect(url.searchParams.get("type")).toBe("creator");
+    expect(url.searchParams.get("return_to")).toBe(
+      "https://marketplace.localhost/login?auth=callback&returnTo=%2Fprofile%2Fcomplete",
+    );
+    expect(url.searchParams.get("error_return_to")).toBe(
+      "https://marketplace.localhost/signup?type=creator",
+    );
+  });
+
   it("requests password reset through the AuthKit backend", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   IdentityLifecycleCommandBus,
   IdentityLifecycleCommandResult,
@@ -33,6 +33,17 @@ export type AuthKitSession = {
 };
 
 export type AuthKitClient = {
+  getAuthorizationUrl(input: {
+    provider: "GoogleOAuth";
+    redirectUri: string;
+    state: string;
+    loginHint?: string;
+  }): string;
+  authenticateWithCode(input: {
+    code: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<AuthKitSession>;
   authenticateWithPassword(input: {
     email: string;
     password: string;
@@ -129,6 +140,7 @@ export type AuthSessionRouteOptions = {
   allowedOrigins: string[];
   requiredOrganizationKind: OrganizationKind;
   surfacePolicies?: Partial<Record<AuthSurface, AuthSurfacePolicy>>;
+  oauthStateSecret: string;
   cookieSecure: boolean;
   cookieDomain?: string;
   legacyMarketplaceJwtSecret?: string;
@@ -136,6 +148,8 @@ export type AuthSessionRouteOptions = {
 
 const SESSION_COOKIE = "vayada_workos_session";
 const CSRF_COOKIE = "vayada_auth_csrf";
+const OAUTH_STATE_COOKIE = "vayada_oauth_state";
+const OAUTH_STATE_MAX_AGE_SECONDS = 10 * 60;
 const DEFAULT_SURFACE: AuthSurface = "platform-admin";
 const EMAIL_SEND_COOLDOWN_MS = 60_000;
 const EMAIL_SEND_COOLDOWN_MESSAGE = "Please wait before requesting another email.";
@@ -205,6 +219,190 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     });
   }
 
+  app.get("/oauth/google/start", async (request, reply) => {
+    const parsed = parseGoogleOAuthStartQuery(request, options);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    const state = createOAuthState(options, {
+      provider: "google",
+      flow: parsed.flow,
+      surface: parsed.surface,
+      intent: parsed.intent,
+      returnTo: parsed.returnTo,
+      errorReturnTo: parsed.errorReturnTo,
+    });
+    const authorizationUrl = options.authKitClient.getAuthorizationUrl({
+      provider: "GoogleOAuth",
+      redirectUri: googleOAuthCallbackUrl(request),
+      state: state.value,
+      loginHint: parsed.loginHint,
+    });
+
+    reply.header(
+      "set-cookie",
+      serializeCookie(OAUTH_STATE_COOKIE, state.nonce, {
+        maxAge: OAUTH_STATE_MAX_AGE_SECONDS,
+        secure: options.cookieSecure,
+        domain: options.cookieDomain,
+      }),
+    );
+    return reply.redirect(authorizationUrl);
+  });
+
+  app.get("/oauth/google/callback", async (request, reply) => {
+    const query = request.query as { code?: unknown; state?: unknown; error?: unknown };
+    const stateValue = typeof query.state === "string" ? query.state : "";
+    const state = readOAuthState(stateValue, options);
+    if (!state.ok) {
+      return reply.code(400).send({ error: "invalid_oauth_state" });
+    }
+    if (readCookie(request, OAUTH_STATE_COOKIE) !== state.value.nonce) {
+      return redirectWithOAuthError(
+        reply,
+        state.value,
+        "Google sign-in expired. Please try again.",
+      );
+    }
+    reply.header(
+      "set-cookie",
+      serializeCookie(OAUTH_STATE_COOKIE, "", {
+        maxAge: 0,
+        secure: options.cookieSecure,
+        domain: options.cookieDomain,
+      }),
+    );
+    if (typeof query.error === "string") {
+      return redirectWithOAuthError(reply, state.value, "Google sign-in was cancelled.");
+    }
+    if (typeof query.code !== "string" || !query.code) {
+      return redirectWithOAuthError(reply, state.value, "Google sign-in failed. Please try again.");
+    }
+
+    let session: AuthKitSession;
+    try {
+      session = await options.authKitClient.authenticateWithCode({
+        code: query.code,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+    } catch {
+      return redirectWithOAuthError(reply, state.value, "Google sign-in failed. Please try again.");
+    }
+
+    const surfacePolicy = getSurfacePolicy(state.value.surface, options);
+    let signupContext: AuthSignupContext | undefined;
+    let selectedSession = session;
+    if (state.value.flow === "signup" && state.value.intent) {
+      const existingUser = await options.identityRepository.findUserByProviderUserId(
+        "workos",
+        session.user.id,
+      );
+      if (existingUser) {
+        return redirectWithOAuthError(
+          reply,
+          state.value,
+          "This email already has a Vayada account. Sign in instead.",
+        );
+      }
+      try {
+        const signupOrganization = await createSignupOrganizationContext(
+          options.authKitClient,
+          state.value.surface,
+          state.value.intent,
+          session.user.email,
+          session.user.id,
+        );
+        const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+          workosUserId: session.user.id,
+          workosOrganizationId: signupOrganization.workosOrganizationId,
+          roleKey: signupOrganization.roleKey,
+        });
+        signupContext = {
+          intent: state.value.intent,
+          organization: signupOrganization,
+          membership: {
+            workosMembershipId: membership.membershipId,
+            workosRoleSlugs: membership.roleSlugs,
+            status: membership.status,
+          },
+        };
+        selectedSession = await selectSignupOrganizationSession(
+          session,
+          signupOrganization,
+          options.authKitClient,
+        );
+      } catch {
+        return redirectWithOAuthError(
+          reply,
+          state.value,
+          "Google sign-up failed. Please try again.",
+        );
+      }
+    } else {
+      const existingUser = await options.identityRepository.findUserByProviderUserId(
+        "workos",
+        session.user.id,
+      );
+      if (!existingUser) {
+        return redirectWithOAuthError(
+          reply,
+          state.value,
+          "No Vayada account exists for this Google login. Create an account first.",
+        );
+      }
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      resolution = await resolveOrCreateIdentity(
+        selectedSession,
+        request,
+        options,
+        surfacePolicy,
+        organizationAccessOptionsFromRequest(request, surfacePolicy),
+        signupContext,
+      );
+    } catch (error) {
+      if (error instanceof OrganizationSelectionRequiredError) {
+        const csrfToken = randomBytes(24).toString("base64url");
+        reply.headers({
+          "set-cookie": [
+            ...authSessionCookieHeaders(error.session, csrfToken, surfacePolicy, options),
+            ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
+          ],
+        });
+        return reply.redirect(state.value.returnTo);
+      }
+      return redirectWithOAuthError(
+        reply,
+        state.value,
+        error instanceof Error ? error.message : "Google sign-in failed. Please try again.",
+      );
+    }
+
+    await options.productAuditSink.record({
+      action: "auth.login",
+      authFlow: state.value.flow,
+      actorUserId: resolution.user.userId,
+      organizationId: resolution.organizationId,
+      surface: state.value.surface,
+      signupIntent: state.value.intent,
+      workosUserId: selectedSession.user.id,
+      workosOrgId: resolution.session.organizationId,
+      workosSessionId: resolution.session.sessionId,
+      requestId: request.id,
+      occurredAt: new Date().toISOString(),
+    });
+
+    const csrfToken = randomBytes(24).toString("base64url");
+    reply.headers({
+      "set-cookie": authSessionCookieHeaders(resolution.session, csrfToken, surfacePolicy, options),
+    });
+    return reply.redirect(state.value.returnTo);
+  });
+
   app.post("/password/login", async (request, reply) => {
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({
@@ -228,6 +426,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
     } catch (error) {
       const mapped = mapWorkOSAuthError(error);
+      await sendVerificationEmailForAuthState(options, request, mapped);
       await recordPasswordLoginFailure(options, request, parsed.surface, mapped.state);
       if (mapped.state === "auth_failed") {
         request.log.error({ err: error }, "WorkOS password authentication failed");
@@ -333,12 +532,16 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
       createdUser = true;
     } catch (error) {
-      if (!isConflictError(error)) {
-        return reply.code(400).send({
+      if (isConflictError(error)) {
+        return reply.code(409).send({
           state: "auth_failed",
-          message: "Signup failed. Please check your details and try again.",
+          message: "This email already has a Vayada account. Sign in instead.",
         });
       }
+      return reply.code(400).send({
+        state: "auth_failed",
+        message: "Signup failed. Please check your details and try again.",
+      });
     }
 
     let session: AuthKitSession;
@@ -351,6 +554,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
     } catch (error) {
       const mapped = mapWorkOSAuthError(error);
+      await sendVerificationEmailForAuthState(options, request, mapped);
       return reply
         .code(mapped.state === "invalid_credentials" && !createdUser ? 401 : 403)
         .send(mapped);
@@ -899,6 +1103,24 @@ function sendEmailSendCooldownResponse(reply: FastifyReply, retryAfterSeconds: n
   });
 }
 
+async function sendVerificationEmailForAuthState(
+  options: AuthSessionRouteOptions,
+  request: FastifyRequest,
+  authState: { state: string; emailVerificationId?: string },
+): Promise<void> {
+  if (authState.state !== "email_verification_required" || !authState.emailVerificationId) {
+    return;
+  }
+
+  try {
+    await options.authKitClient.resendVerificationEmail({
+      emailVerificationId: authState.emailVerificationId,
+    });
+  } catch (error) {
+    request.log.warn({ err: error }, "WorkOS verification email delivery failed");
+  }
+}
+
 function parseSurface(value: string | undefined): AuthSurface {
   if (!value) return DEFAULT_SURFACE;
   if (
@@ -911,6 +1133,165 @@ function parseSurface(value: string | undefined): AuthSurface {
     return value;
   }
   throw new Error(`Unsupported AuthKit surface: ${value}`);
+}
+
+type GoogleOAuthFlow = "login" | "signup";
+
+type GoogleOAuthState = {
+  provider: "google";
+  flow: GoogleOAuthFlow;
+  surface: AuthSurface;
+  intent?: AuthSignupIntent;
+  returnTo: string;
+  errorReturnTo: string;
+  nonce: string;
+  issuedAt: number;
+};
+
+function parseGoogleOAuthStartQuery(
+  request: FastifyRequest,
+  options: AuthSessionRouteOptions,
+):
+  | {
+      ok: true;
+      flow: GoogleOAuthFlow;
+      surface: AuthSurface;
+      intent?: AuthSignupIntent;
+      returnTo: string;
+      errorReturnTo: string;
+      loginHint?: string;
+    }
+  | { ok: false; error: { error: string; message: string } } {
+  const query = request.query as {
+    flow?: unknown;
+    surface?: unknown;
+    type?: unknown;
+    intent?: unknown;
+    return_to?: unknown;
+    error_return_to?: unknown;
+    login_hint?: unknown;
+  };
+  const flow = query.flow === "signup" ? "signup" : "login";
+  let surface: AuthSurface;
+  try {
+    surface = parseSurface(typeof query.surface === "string" ? query.surface : undefined);
+  } catch {
+    return { ok: false, error: { error: "invalid_surface", message: "Unsupported auth surface." } };
+  }
+  const returnTo = safeAllowedReturnTo(query.return_to, options);
+  const errorReturnTo = safeAllowedReturnTo(query.error_return_to, options);
+  if (!returnTo || !errorReturnTo) {
+    return {
+      ok: false,
+      error: { error: "invalid_return_to", message: "OAuth return URL is not allowed." },
+    };
+  }
+  const rawIntent = typeof query.type === "string" ? query.type : query.intent;
+  let intent: AuthSignupIntent | undefined;
+  if (flow === "signup") {
+    try {
+      intent = parseSignupIntent(surface, typeof rawIntent === "string" ? rawIntent : undefined);
+    } catch {
+      return {
+        ok: false,
+        error: { error: "invalid_signup_intent", message: "Signup type must be creator or hotel." },
+      };
+    }
+  }
+  return {
+    ok: true,
+    flow,
+    surface,
+    intent,
+    returnTo,
+    errorReturnTo,
+    loginHint: typeof query.login_hint === "string" ? query.login_hint : undefined,
+  };
+}
+
+function safeAllowedReturnTo(value: unknown, options: AuthSessionRouteOptions): string | null {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const url = new URL(value);
+    return options.allowedOrigins.includes(url.origin) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function googleOAuthCallbackUrl(request: FastifyRequest): string {
+  const proto = firstHeader(request.headers["x-forwarded-proto"]) ?? request.protocol;
+  const host =
+    firstHeader(request.headers["x-forwarded-host"]) ?? firstHeader(request.headers.host);
+  if (!host) throw new Error("Missing request host");
+  return `${proto}://${host}/auth/oauth/google/callback`;
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function createOAuthState(
+  options: AuthSessionRouteOptions,
+  input: Omit<GoogleOAuthState, "nonce" | "issuedAt">,
+): { value: string; nonce: string } {
+  const nonce = randomBytes(18).toString("base64url");
+  const payload: GoogleOAuthState = {
+    ...input,
+    nonce,
+    issuedAt: Date.now(),
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", options.oauthStateSecret)
+    .update(encoded)
+    .digest("base64url");
+  return { value: `${encoded}.${signature}`, nonce };
+}
+
+function readOAuthState(
+  value: string,
+  options: AuthSessionRouteOptions,
+): { ok: true; value: GoogleOAuthState } | { ok: false } {
+  const [encoded, signature] = value.split(".");
+  if (!encoded || !signature) return { ok: false };
+  const expected = createHmac("sha256", options.oauthStateSecret)
+    .update(encoded)
+    .digest("base64url");
+  if (!safeEqual(signature, expected)) return { ok: false };
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (!isGoogleOAuthState(parsed)) return { ok: false };
+    if (Date.now() - parsed.issuedAt > OAUTH_STATE_MAX_AGE_SECONDS * 1000) return { ok: false };
+    return { ok: true, value: parsed };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function isGoogleOAuthState(value: unknown): value is GoogleOAuthState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Partial<GoogleOAuthState>;
+  return (
+    state.provider === "google" &&
+    (state.flow === "login" || state.flow === "signup") &&
+    typeof state.surface === "string" &&
+    typeof state.returnTo === "string" &&
+    typeof state.errorReturnTo === "string" &&
+    typeof state.nonce === "string" &&
+    typeof state.issuedAt === "number"
+  );
+}
+
+function redirectWithOAuthError(reply: FastifyReply, state: GoogleOAuthState, message: string) {
+  const url = new URL(state.errorReturnTo);
+  url.searchParams.set("auth_error", message);
+  return reply.redirect(url.toString());
 }
 
 function parsePasswordLoginBody(body: unknown):
@@ -1473,37 +1854,7 @@ async function resolveOrCreateIdentity(
       externalId: user.userId,
     });
   } else if (signupContext) {
-    await options.lifecycleCommandBus.execute({
-      commandType: "identity.access.grant",
-      commandId: randomUUID(),
-      idempotencyKey: `workos-signup-access:${session.user.id}:${signupContext.organization.workosOrganizationId}`,
-      audit: {
-        actor: { kind: "system", service: "apps/api-authkit" },
-        source: "web",
-        requestId: request.id,
-        correlationId: session.sessionId,
-        reason: "AuthKit hosted signup organization access",
-        requestedAt: new Date().toISOString(),
-      },
-      payload: {
-        userId: user.userId,
-        organization: {
-          kind: signupContext.organization.kind,
-          name: signupContext.organization.name,
-          workosOrgId: signupContext.organization.workosOrganizationId,
-          workosExternalId: signupContext.organization.workosExternalId,
-        },
-        membership: {
-          status: signupContext.membership?.status,
-          roleKey: signupContext.organization.roleKey,
-          permissionKeys: hostedSignupPermissionKeys(signupContext),
-          workosMembershipId: signupContext.membership?.workosMembershipId,
-          workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
-            signupContext.organization.roleKey,
-          ],
-        },
-      },
-    });
+    throw new Error("This email already has a Vayada account. Sign in instead.");
   }
   const access = await resolveOrganizationAccess(
     session,
@@ -1861,6 +2212,28 @@ function selectedOrganizationCookieNames(surfacePolicy: AuthSurfacePolicy): stri
   return surfacePolicy.selectedOrganizationCookieName
     ? [surfacePolicy.selectedOrganizationCookieName]
     : [];
+}
+
+function authSessionCookieHeaders(
+  session: AuthKitSession,
+  csrfToken: string,
+  surfacePolicy: AuthSurfacePolicy,
+  options: AuthSessionRouteOptions,
+): string[] {
+  return [
+    serializeCookie(SESSION_COOKIE, session.sealedSession, {
+      maxAge: 60 * 60 * 24 * 7,
+      secure: options.cookieSecure,
+      domain: options.cookieDomain,
+    }),
+    serializeCookie(CSRF_COOKIE, csrfToken, {
+      maxAge: 60 * 60 * 24 * 7,
+      secure: options.cookieSecure,
+      domain: options.cookieDomain,
+      httpOnly: false,
+    }),
+    ...selectedOrganizationCookieHeaders(session, surfacePolicy, options),
+  ];
 }
 
 function selectedOrganizationCookieHeaders(

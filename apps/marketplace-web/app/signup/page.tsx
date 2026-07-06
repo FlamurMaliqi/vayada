@@ -10,7 +10,7 @@ type SignUpPageProps = {
 export default async function SignUpPage({ searchParams }: SignUpPageProps) {
   const params = (await searchParams) ?? {};
   const intent = signupIntent(firstSearchParam(params.type));
-  return <SignupContent intent={intent} />;
+  return <SignupContent intent={intent} authError={firstSearchParam(params.auth_error)} />;
 }
 
 function signupIntent(value: string | undefined): SignupIntent | null {

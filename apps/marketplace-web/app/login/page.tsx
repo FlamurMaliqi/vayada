@@ -8,10 +8,12 @@ type LoginPageProps = {
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = (await searchParams) ?? {};
   const returnTo = safeRelativeReturnTo(params.returnTo, "/marketplace");
+  const authError = firstSearchParam(params.auth_error);
   return (
     <LoginContent
       returnTo={returnTo}
       resumeSession={firstSearchParam(params.auth) === "callback"}
+      authError={authError}
     />
   );
 }
