@@ -34,9 +34,10 @@ WorkOS should own these provider-managed concerns:
   organization switching. WorkOS access tokens use `sub` as the WorkOS user ID
   and can include selected `org_id`, role, and permissions claims when an
   organization is selected.
-- Authentication methods: hosted login/signup, password auth, passwordless or
-  magic auth if enabled, social login if enabled, enterprise SSO, account
-  recovery, email verification, and passkeys where configured.
+- Authentication methods and provider-side flows: password auth, passwordless
+  or magic auth if enabled, social login if enabled, enterprise SSO, account
+  recovery, email verification, and passkeys where configured. Vayada may own
+  the browser UI for these flows, but WorkOS remains the provider authority.
 - MFA policy and enrollment: especially mandatory MFA for Vayada staff and hotel
   owner/admin roles.
 - Organizations: WorkOS organization ID, domains, SSO connection, directory
@@ -270,46 +271,71 @@ Creator workspaces can start as solo organizations but should use the same
 membership model so agencies or assistants can be added later without another
 identity rewrite.
 
-### Hosted AuthKit signup contract
+### Custom AuthKit UI contract
 
-Next-generation signup/register surfaces use hosted AuthKit, not legacy password
-signup endpoints on `next-api`.
+Next-generation signup, login, password reset, and email verification surfaces
+use Vayada-owned UI backed by WorkOS AuthKit APIs. WorkOS remains the source of
+truth for users, passwords, sessions, email verification, password reset,
+MFA/SSO policy, and provider identity state. Vayada owns the product-specific
+entrypoints, copy, layout, and setup routing.
 
-The entrypoint is:
+The browser must not call WorkOS management APIs directly or receive WorkOS API
+keys/client secrets. `apps/api` owns WorkOS API calls, validates product intent,
+maps WorkOS auth states into Vayada auth states, sets the sealed AuthKit session
+cookie, and returns the same first-party session response shape used by
+migrated frontends.
+
+Initial email/password entrypoints:
 
 ```text
-GET /auth/workos/signup?surface=<surface>&intent=<intent>&return_to=<url>&login_hint=<email>
+POST /auth/password/login
+POST /auth/password/signup
 ```
 
-`surface` and `intent` are both required. `next-api` validates them, validates
-`return_to` against configured `AUTH_ALLOWED_ORIGINS`, stores the minimal signup
-context in a signed AuthKit state cookie, and redirects to WorkOS with
-`screen_hint=sign-up`. The public signup GET does not create a WorkOS
-organization. `POST /auth/register` and `POST /auth/login` remain absent from
-`next-api`.
+Custom signup must keep product intent explicit. The public frontend entrypoints
+are product-specific, for example:
+
+```text
+/signup?type=creator
+/signup?type=hotel
+```
+
+Missing or unsupported product intent must be rejected before creating a WorkOS
+user or Vayada organization.
 
 Surface contract:
 
-| Surface           | Signup intent       | Post-auth destination owner                         |
+| Surface           | Signup intent       | Post-signup destination owner                       |
 | ----------------- | ------------------- | --------------------------------------------------- |
 | `booking-admin`   | `hotel`             | Booking Admin setup/dashboard guard                 |
 | `pms-web`         | `hotel`             | PMS setup/dashboard guard                           |
 | `marketplace-web` | `creator` / `hotel` | Marketplace creator completion or hotel setup guard |
 
-`platform-admin` is intentionally absent from hosted signup. Platform
-administrators must be provisioned by an invitation or administrative flow, not a
-public self-service register page.
+`platform-admin` is intentionally absent from public self-service signup.
+Platform administrators must be provisioned by an invitation or administrative
+flow, not a public register page.
 
-The AuthKit callback recomputes the signup organization kind and owner role from
-the signed `surface + intent` pair, creates the WorkOS organization, creates or
-finds the WorkOS organization membership, then refreshes the sealed session with
-the new `organization_id` before continuing. The callback creates or links the
-internal user through `identity.user.create` when needed, and the identity
-lifecycle command creates the internal organization and owner membership from
-the stored signup context. Existing users who enter a hosted signup flow receive
-the same organization access through `identity.access.grant`. Product-specific
-profile setup still belongs to the destination app's setup guard; the callback
-must not recreate legacy password registration behavior.
+The custom signup endpoint derives the organization kind and owner role from the
+validated surface and signup intent, creates the WorkOS user and organization,
+creates or finds the WorkOS organization membership, then authenticates or
+refreshes the sealed session with the selected `organization_id` before
+continuing. It creates or links the internal user through `identity.user.create`
+when needed, and the identity lifecycle command creates the internal
+organization and owner membership from the signup context. Existing WorkOS users
+who enter a valid signup flow receive the same organization access through
+`identity.access.grant`.
+
+Custom auth endpoints should expose a stable Vayada auth-state contract instead
+of leaking WorkOS SDK errors into frontend pages. Required states include
+invalid credentials, email verification required, organization selection
+required, MFA required, SSO required, and generic auth failure. MFA and SSO are
+not part of the first custom UI rollout; until they are scoped, those states
+should produce explicit unsupported responses instead of redirecting to hosted
+AuthKit UI.
+
+Product-specific profile setup still belongs to the destination app's setup
+guard. Custom auth endpoints must not recreate legacy password registration
+behavior or store/verify Vayada-owned password hashes.
 
 ### Affiliates
 
@@ -363,7 +389,7 @@ Use a staged transition:
    surfaces or pass a request-scoped internal principal into the new TypeScript
    backend.
 4. Stop minting new local password sessions once all migrated frontends use
-   WorkOS-hosted login/session refresh.
+   WorkOS-backed custom auth and session refresh.
 
 The new TypeScript backend should not carry forward the assumption that the JWT
 subject is always `users.id`. It should model an authenticated principal as both
