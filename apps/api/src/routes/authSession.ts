@@ -71,9 +71,10 @@ export type AuthKitClient = {
 };
 
 export type ProductAuditEvent = {
-  action: "auth.login" | "auth.logout" | "auth.compatibility_token.issued";
+  action: "auth.login" | "auth.login.failed" | "auth.logout" | "auth.compatibility_token.issued";
   authFlow?: "login" | "signup";
   actorUserId?: string;
+  failureReason?: string;
   organizationId?: string;
   surface?: AuthSurface;
   signupIntent?: AuthSignupIntent;
@@ -365,7 +366,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
     } catch (error) {
       const mapped = mapWorkOSAuthError(error);
-      return reply.code(mapped.state === "invalid_credentials" ? 401 : 403).send(mapped);
+      await recordPasswordLoginFailure(options, request, parsed.surface, mapped.state);
+      if (mapped.state === "auth_failed") {
+        request.log.error({ err: error }, "WorkOS password authentication failed");
+      }
+      return reply.code(statusForPasswordAuthFailure(mapped.state)).send(mapped);
     }
 
     let resolution: IdentityResolution;
@@ -388,6 +393,12 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           options,
         );
       }
+      await recordPasswordLoginFailure(options, request, parsed.surface, "identity_resolution", {
+        workosUserId: session.user.id,
+        workosOrgId: session.organizationId,
+        workosSessionId: session.sessionId,
+      });
+      request.log.warn({ err: error }, "Password login identity resolution failed");
       return reply.code(403).send(toAuthError(error));
     }
 
@@ -837,6 +848,40 @@ function parsePasswordLoginBody(body: unknown):
     };
   } catch {
     return { ok: false, error: { state: "auth_failed", message: "Unsupported login surface." } };
+  }
+}
+
+function statusForPasswordAuthFailure(state: string): 401 | 403 | 502 {
+  if (state === "invalid_credentials") return 401;
+  if (state === "auth_failed") return 502;
+  return 403;
+}
+
+async function recordPasswordLoginFailure(
+  options: AuthSessionRouteOptions,
+  request: FastifyRequest,
+  surface: AuthSurface,
+  failureReason: string,
+  workos?: {
+    workosUserId?: string;
+    workosOrgId?: string;
+    workosSessionId?: string;
+  },
+): Promise<void> {
+  try {
+    await options.productAuditSink.record({
+      action: "auth.login.failed",
+      authFlow: "login",
+      surface,
+      failureReason,
+      workosUserId: workos?.workosUserId,
+      workosOrgId: workos?.workosOrgId,
+      workosSessionId: workos?.workosSessionId,
+      requestId: request.id,
+      occurredAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    request.log.error({ err: error }, "Password login failure audit write failed");
   }
 }
 

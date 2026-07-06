@@ -27,6 +27,7 @@ export function LoginContent({
   const router = useRouter();
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [organizationSelection, setOrganizationSelection] =
     useState<AuthOrganizationSelectionResponse | null>(null);
 
@@ -100,7 +101,7 @@ export function LoginContent({
     if (!resumeSession) return;
     let cancelled = false;
     setSubmitError("");
-    setIsSubmitting(true);
+    setIsResuming(true);
     authService
       .refreshSession()
       .then(async (response) => {
@@ -117,7 +118,7 @@ export function LoginContent({
       })
       .finally(() => {
         if (!cancelled) {
-          setIsSubmitting(false);
+          setIsResuming(false);
         }
       });
     return () => {
@@ -125,7 +126,7 @@ export function LoginContent({
     };
   }, [redirectAfterLogin, resumeSession]);
 
-  const isResumingSession = resumeSession && isSubmitting && !organizationSelection && !submitError;
+  const isResumingSession = resumeSession && isResuming && !organizationSelection && !submitError;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">

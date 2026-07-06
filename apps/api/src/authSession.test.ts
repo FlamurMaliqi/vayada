@@ -500,7 +500,17 @@ describe("AuthKit session routes", () => {
         connectionIds: ["conn_123"],
       },
     },
+    {
+      name: "unmapped provider failure",
+      error: new Error("WorkOS unavailable"),
+      statusCode: 502,
+      body: {
+        state: "auth_failed",
+        message: "Authentication failed. Please try again.",
+      },
+    },
   ])("returns shared auth state for password login: $name", async ({ error, statusCode, body }) => {
+    const auditEvents: ProductAuditEvent[] = [];
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
       authKitClient: createAuthKitClient({
@@ -511,6 +521,11 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+      productAuditSink: {
+        async record(event) {
+          auditEvents.push(event);
         },
       },
     });
@@ -528,6 +543,77 @@ describe("AuthKit session routes", () => {
 
     expect(response.statusCode).toBe(statusCode);
     expect(response.json()).toMatchObject(body);
+    expect(auditEvents).toContainEqual(
+      expect.objectContaining({
+        action: "auth.login.failed",
+        authFlow: "login",
+        failureReason: body.state,
+        surface: "marketplace-web",
+      }),
+    );
+  });
+
+  it("records a failed password login audit when identity resolution rejects the session", async () => {
+    const auditEvents: ProductAuditEvent[] = [];
+    const marketplaceSession: AuthKitSession = {
+      ...session,
+      organizationId: "org_workos_missing",
+      user: {
+        ...session.user,
+        id: "user_workos_creator",
+        email: "creator@example.test",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithPassword() {
+          return marketplaceSession;
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => null,
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+      productAuditSink: {
+        async record(event) {
+          auditEvents.push(event);
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        email: "creator@example.test",
+        password: "correct-password",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(auditEvents).toContainEqual(
+      expect.objectContaining({
+        action: "auth.login.failed",
+        authFlow: "login",
+        failureReason: "identity_resolution",
+        surface: "marketplace-web",
+        workosUserId: "user_workos_creator",
+        workosOrgId: "org_workos_missing",
+        workosSessionId: "session_workos",
+      }),
+    );
   });
 
   it("keeps hosted signup intent through callback audit", async () => {

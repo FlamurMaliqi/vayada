@@ -132,6 +132,38 @@ describe("authService.login", () => {
       }),
     ).rejects.toThrow("Email or password is incorrect.");
   });
+
+  it("keeps pending organization selection state from password login", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        organizationSelectionRequired: true,
+        csrfToken: "pending-csrf-token",
+        organizations: [
+          {
+            organizationId: "org_creator",
+            workosOrganizationId: "org_workos_creator",
+            displayName: "Creator Workspace",
+            kind: "creator_workspace",
+          },
+        ],
+        user: {
+          id: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+          workosUserId: "user_workos_creator",
+        },
+      }),
+    );
+
+    const response = await authService.login({
+      email: "creator@example.test",
+      password: "correct-password",
+    });
+
+    expect(isAuthOrganizationSelectionResponse(response)).toBe(true);
+    expect(getAuthBearerToken()).toBeNull();
+    expect(getAuthCsrfToken()).toBe("pending-csrf-token");
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

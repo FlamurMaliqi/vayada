@@ -62,6 +62,7 @@ async function insertProductAuditEvent(pool: pg.Pool, event: ProductAuditEvent):
         workosSessionId: event.workosSessionId,
         surface: event.surface,
         authFlow: event.authFlow,
+        failureReason: event.failureReason,
         signupIntent: event.signupIntent,
         resourceScope: event.resourceScope,
       }),
