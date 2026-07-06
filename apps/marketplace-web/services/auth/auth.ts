@@ -30,6 +30,12 @@ type CompatibilityTokenResponse = {
   expiresIn: number;
 };
 
+type SignupRequest = {
+  email: string;
+  password: string;
+  type: "creator" | "hotel";
+};
+
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
     ...options,
@@ -190,6 +196,30 @@ export const authService = {
         throw error;
       }
       throw new Error("Login failed: Network error");
+    }
+  },
+
+  signup: async (data: SignupRequest): Promise<AuthSessionResponse> => {
+    try {
+      const response = await authFetch<AuthSessionResponse>("/auth/password/signup", {
+        method: "POST",
+        body: JSON.stringify({
+          ...data,
+          surface: AUTH_SURFACE,
+        }),
+      });
+
+      if (isAuthOrganizationSelectionResponse(response)) {
+        setPendingOrganizationSelection(response);
+        return response;
+      }
+      setAuthKitSession(response);
+      return response;
+    } catch (error) {
+      if (error instanceof ApiErrorResponse) {
+        throw error;
+      }
+      throw new Error("Signup failed: Network error");
     }
   },
 

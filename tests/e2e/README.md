@@ -94,12 +94,11 @@ All network calls are mocked via `mockBookingApis`. No seeded backend is require
 
 The smoke tests for `affiliate-dashboard`, `marketplace-web`, and `vayada-admin` navigate to `/login` and verify the login shell renders without errors. AuthKit-backed admin product pages (`booking-admin` and `pms-web`) immediately redirect to hosted auth, so their smoke asserts the local redirect target and surface.
 
-Focused next signup coverage is tagged `@signup`. It verifies PMS, Booking
-Admin, and Marketplace creator/hotel `/signup` entrypoints redirect to hosted
-AuthKit signup with the expected surface and intent instead of rendering legacy
-password signup. Vayada Admin keeps public registration closed and its smoke
-asserts `/register` redirects back to login instead of creating a platform-admin
-self-service signup.
+Focused next signup coverage is tagged `@signup`. It verifies PMS and Booking
+Admin `/signup` entrypoints redirect to hosted AuthKit signup with the expected
+surface and intent, Marketplace creator/hotel `/signup` entrypoints render the
+custom password signup forms, and Vayada Admin keeps public registration closed
+by redirecting `/register` back to login.
 
 ```bash
 npm run e2e -- \

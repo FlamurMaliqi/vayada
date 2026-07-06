@@ -616,6 +616,400 @@ describe("AuthKit session routes", () => {
     );
   });
 
+  it.each([
+    {
+      intent: "creator" as const,
+      workosUserId: "user_workos_creator_signup",
+      workosOrgId: "org_workos_signup_creator",
+      organizationId: "org_creator_workspace",
+      organizationKind: "creator_workspace" as const,
+      roleKey: "creator_owner",
+      email: "creator-signup@example.test",
+    },
+    {
+      intent: "hotel" as const,
+      workosUserId: "user_workos_hotel_signup",
+      workosOrgId: "org_workos_signup_hotel",
+      organizationId: "org_hotel_group",
+      organizationKind: "hotel_group" as const,
+      roleKey: "hotel_owner",
+      email: "hotel-signup@example.test",
+    },
+  ])("signs up a $intent through custom password signup", async (scenario) => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const auditEvents: ProductAuditEvent[] = [];
+    const workosCalls: string[] = [];
+    const unsignedSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      sealedSession: `sealed_${scenario.intent}_signup`,
+      user: {
+        id: scenario.workosUserId,
+        email: scenario.email,
+        emailVerified: true,
+        name: "Signup Example",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async createUser(input) {
+          workosCalls.push("user");
+          expect(input).toMatchObject({
+            email: scenario.email,
+            password: "correct-password",
+            metadata: {
+              auth_flow: "signup",
+              surface: "marketplace-web",
+              signup_intent: scenario.intent,
+            },
+          });
+          return unsignedSession.user;
+        },
+        async authenticateWithPassword(input) {
+          workosCalls.push("password");
+          expect(input).toMatchObject({
+            email: scenario.email,
+            password: "correct-password",
+          });
+          return unsignedSession;
+        },
+        async createSignupOrganization(input) {
+          workosCalls.push("organization");
+          expect(input.externalId).toBe(
+            `vayada-signup:marketplace-web:${scenario.intent}:${scenario.workosUserId}`,
+          );
+          expect(input.metadata).toMatchObject({
+            auth_flow: "signup",
+            surface: "marketplace-web",
+            signup_intent: scenario.intent,
+            organization_kind: scenario.organizationKind,
+            role_key: scenario.roleKey,
+          });
+          return { organizationId: scenario.workosOrgId };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          workosCalls.push("membership");
+          expect(input).toEqual({
+            workosUserId: scenario.workosUserId,
+            workosOrganizationId: scenario.workosOrgId,
+            roleKey: scenario.roleKey,
+          });
+          return {
+            membershipId: `om_${scenario.intent}`,
+            roleSlugs: [scenario.roleKey],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          workosCalls.push("refresh");
+          expect(input.organizationId).toBe(scenario.workosOrgId);
+          return {
+            ...unsignedSession,
+            organizationId: scenario.workosOrgId,
+            sealedSession: `selected_${scenario.intent}_session`,
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: scenario.organizationId,
+          workosOrgId: scenario.workosOrgId,
+          name: scenario.intent === "creator" ? "Creator Workspace" : "Hotel Group",
+          kind: scenario.organizationKind,
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: `membership_${scenario.intent}`,
+          status: "active",
+          roleKey: scenario.roleKey,
+          workosMembershipId: `om_${scenario.intent}`,
+          workosRoleSlugs: [scenario.roleKey],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: `user_${scenario.intent}`,
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+      productAuditSink: {
+        async record(event) {
+          auditEvents.push(event);
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/signup",
+      headers: {
+        origin: "https://marketplace.localhost",
+      },
+      payload: {
+        email: ` ${scenario.email} `,
+        password: "correct-password",
+        type: scenario.intent,
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      accessToken: unsignedSession.accessToken,
+      csrfToken: expect.any(String),
+      organizationId: scenario.organizationId,
+      workosOrganizationId: scenario.workosOrgId,
+      organizationKind: scenario.organizationKind,
+      user: {
+        id: `user_${scenario.intent}`,
+        email: scenario.email,
+        workosUserId: scenario.workosUserId,
+      },
+    });
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          email: scenario.email,
+          legacyUserType: scenario.intent,
+          organization: expect.objectContaining({
+            kind: scenario.organizationKind,
+            workosOrgId: scenario.workosOrgId,
+          }),
+          membership: expect.objectContaining({
+            roleKey: scenario.roleKey,
+            workosMembershipId: `om_${scenario.intent}`,
+          }),
+        }),
+      }),
+    ]);
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        action: "auth.login",
+        authFlow: "signup",
+        signupIntent: scenario.intent,
+        surface: "marketplace-web",
+      }),
+    ]);
+    expect(workosCalls).toEqual(["user", "password", "organization", "membership", "refresh"]);
+  });
+
+  it("rejects custom signup without creating WorkOS resources when intent is invalid", async () => {
+    let createUserCalled = false;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async createUser() {
+          createUserCalled = true;
+          return session.user;
+        },
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/signup",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        email: "creator@example.test",
+        password: "correct-password",
+        type: "admin",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      state: "auth_failed",
+      message: "Signup type must be creator or hotel.",
+    });
+    expect(createUserCalled).toBe(false);
+  });
+
+  it("grants product organization access for an existing WorkOS user signup", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const existingSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      user: {
+        id: "user_workos_existing",
+        email: "existing@example.test",
+        emailVerified: true,
+        name: "Existing User",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async createUser() {
+          throw { status: 409, name: "ConflictException" };
+        },
+        async authenticateWithPassword() {
+          return existingSession;
+        },
+        async createSignupOrganization() {
+          return { organizationId: "org_workos_existing_creator" };
+        },
+        async ensureSignupOrganizationMembership() {
+          return {
+            membershipId: "om_existing_creator",
+            roleSlugs: ["creator_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession() {
+          return {
+            ...existingSession,
+            organizationId: "org_workos_existing_creator",
+            sealedSession: "selected_existing_session",
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_existing",
+          email: "existing@example.test",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_existing_creator",
+          workosOrgId: "org_workos_existing_creator",
+          name: "Existing Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_existing_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_existing_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/signup",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        email: "existing@example.test",
+        password: "correct-password",
+        type: "creator",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.access.grant",
+        payload: expect.objectContaining({
+          userId: "user_existing",
+          organization: expect.objectContaining({
+            kind: "creator_workspace",
+            workosOrgId: "org_workos_existing_creator",
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it("returns verification-required state from custom signup without creating a Vayada organization", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async createUser() {
+          return {
+            id: "user_workos_unverified",
+            email: "unverified@example.test",
+            emailVerified: false,
+          };
+        },
+        async authenticateWithPassword() {
+          throw {
+            code: "email_verification_required",
+            pending_authentication_token: "pending_email",
+            email: "unverified@example.test",
+          };
+        },
+        async createSignupOrganization() {
+          throw new Error("Vayada organization should not be created before verification");
+        },
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/signup",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        email: "unverified@example.test",
+        password: "correct-password",
+        type: "creator",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      state: "email_verification_required",
+      pendingAuthenticationToken: "pending_email",
+    });
+    expect(commands).toEqual([]);
+  });
+
   it("keeps hosted signup intent through callback audit", async () => {
     const auditEvents: ProductAuditEvent[] = [];
     const commands: IdentityLifecycleCommand[] = [];
@@ -2871,6 +3265,9 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
     },
     async authenticateWithPassword() {
       return session;
+    },
+    async createUser() {
+      return session.user;
     },
     async authenticateSession() {
       return session;
