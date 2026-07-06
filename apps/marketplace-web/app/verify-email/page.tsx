@@ -6,12 +6,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeftIcon, CheckCircleIcon, XCircleIcon } from "@heroicons/react/24/outline";
 import { ROUTES } from "@/lib/constants/routes";
+import { getMarketplacePostLoginRedirect } from "@/lib/utils/postLoginRedirect";
 import {
   authService,
   clearPendingEmailVerification,
   getPendingEmailVerification,
   type PendingEmailVerification,
 } from "@/services/auth";
+import {
+  isAuthOrganizationSelectionResponse,
+  type AuthOrganizationSelectionResponse,
+} from "@/services/auth/sessionStore";
 
 export default function VerifyEmailPage() {
   const router = useRouter();
@@ -23,6 +28,8 @@ export default function VerifyEmailPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResending, setIsResending] = useState(false);
   const [verified, setVerified] = useState(false);
+  const [organizationSelection, setOrganizationSelection] =
+    useState<AuthOrganizationSelectionResponse | null>(null);
 
   useEffect(() => {
     setPending(getPendingEmailVerification());
@@ -40,22 +47,49 @@ export default function VerifyEmailPage() {
 
     setIsSubmitting(true);
     try {
-      await authService.confirmEmailVerification(code.trim());
-      setVerified(true);
-      setTimeout(() => {
-        if (pending?.type === "hotel") {
-          router.push(ROUTES.SETUP);
-        } else if (pending?.type === "creator") {
-          router.push(ROUTES.PROFILE_COMPLETE);
-        } else {
-          router.push(ROUTES.MARKETPLACE);
-        }
-      }, 1200);
+      const response = await authService.confirmEmailVerification(code.trim());
+      if (isAuthOrganizationSelectionResponse(response)) {
+        setOrganizationSelection(response);
+        return;
+      }
+      await redirectAfterVerifiedSession();
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Failed to verify email.");
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  async function handleOrganizationSelect(workosOrganizationId: string) {
+    setSubmitError("");
+    setResendMessage("");
+    setIsSubmitting(true);
+    try {
+      const response = await authService.refreshSession(workosOrganizationId);
+      if (isAuthOrganizationSelectionResponse(response)) {
+        setOrganizationSelection(response);
+        return;
+      }
+      clearPendingEmailVerification();
+      setVerified(true);
+      const redirectPath = await getMarketplacePostLoginRedirect();
+      setTimeout(() => router.push(redirectPath), 1200);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Failed to verify email.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function redirectAfterVerifiedSession() {
+    const redirectPath =
+      pending?.type === "hotel"
+        ? ROUTES.SETUP
+        : pending?.type === "creator"
+          ? ROUTES.PROFILE_COMPLETE
+          : await getMarketplacePostLoginRedirect();
+    setVerified(true);
+    setTimeout(() => router.push(redirectPath), 1200);
   }
 
   async function handleResend() {
@@ -99,11 +133,15 @@ export default function VerifyEmailPage() {
             className="mx-auto mb-4 h-10 w-auto"
             priority
           />
-          <h1 className="text-xl font-bold text-gray-900">Verify your email</h1>
+          <h1 className="text-xl font-bold text-gray-900">
+            {organizationSelection ? "Choose workspace" : "Verify your email"}
+          </h1>
           <p className="mt-1 text-[13px] text-gray-500">
-            {pending?.email
-              ? `Enter the code sent to ${pending.email}.`
-              : "Enter the verification code from your email."}
+            {organizationSelection
+              ? "Select where you want to continue."
+              : pending?.email
+                ? `Enter the code sent to ${pending.email}.`
+                : "Enter the verification code from your email."}
           </p>
         </div>
 
@@ -135,7 +173,28 @@ export default function VerifyEmailPage() {
           </div>
         )}
 
-        {loaded && pending && !verified && (
+        {loaded && pending && organizationSelection && !verified && (
+          <div className="mb-5 space-y-2">
+            {organizationSelection.organizations.map((organization) => (
+              <button
+                key={organization.workosOrganizationId}
+                type="button"
+                onClick={() => handleOrganizationSelect(organization.workosOrganizationId)}
+                disabled={isSubmitting}
+                className="w-full rounded-lg border border-gray-200 px-4 py-3 text-left text-sm font-medium text-gray-900 transition-colors hover:border-primary-300 hover:bg-primary-50 disabled:opacity-60"
+              >
+                {organization.displayName}
+              </button>
+            ))}
+            {submitError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {submitError}
+              </div>
+            )}
+          </div>
+        )}
+
+        {loaded && pending && !verified && !organizationSelection && (
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
               <label

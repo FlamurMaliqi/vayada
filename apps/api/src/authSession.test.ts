@@ -643,6 +643,39 @@ describe("AuthKit session routes", () => {
     });
   });
 
+  it("throttles repeated WorkOS password reset requests by email", async () => {
+    let resetCount = 0;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async createPasswordReset() {
+          resetCount += 1;
+        },
+      }),
+    });
+
+    const firstResponse = await app.inject({
+      method: "POST",
+      url: "/auth/password/reset/request",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: { email: "creator@example.test" },
+    });
+    const secondResponse = await app.inject({
+      method: "POST",
+      url: "/auth/password/reset/request",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: { email: "creator@example.test" },
+    });
+
+    expect(firstResponse.statusCode).toBe(200);
+    expect(secondResponse.statusCode).toBe(429);
+    expect(secondResponse.json()).toEqual({
+      state: "auth_failed",
+      message: "Please wait before requesting another email.",
+    });
+    expect(resetCount).toBe(1);
+  });
+
   it("resets a WorkOS password with a valid reset token", async () => {
     let resetInput: Parameters<AuthKitClient["resetPassword"]>[0] | undefined;
     app = buildAuthSessionApp({
@@ -896,6 +929,40 @@ describe("AuthKit session routes", () => {
     expect(response.json()).toEqual({
       message: "A new verification code has been sent.",
     });
+  });
+
+  it("throttles repeated WorkOS verification resends by verification state", async () => {
+    let resendCount = 0;
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async resendVerificationEmail() {
+          resendCount += 1;
+          return { email: "creator@example.test" };
+        },
+      }),
+    });
+
+    const firstResponse = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/resend",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: { emailVerificationId: "email_verification_123" },
+    });
+    const secondResponse = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/resend",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: { emailVerificationId: "email_verification_123" },
+    });
+
+    expect(firstResponse.statusCode).toBe(200);
+    expect(secondResponse.statusCode).toBe(429);
+    expect(secondResponse.json()).toEqual({
+      state: "auth_failed",
+      message: "Please wait before requesting another email.",
+    });
+    expect(resendCount).toBe(1);
   });
 
   it.each([

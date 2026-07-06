@@ -126,15 +126,19 @@ export function storePendingEmailVerification(
     emailVerificationId: input.emailVerificationId,
     type: input.type,
   };
-  sessionStorage.setItem(PENDING_EMAIL_VERIFICATION_KEY, JSON.stringify(pending));
-  return true;
+  try {
+    window.sessionStorage.setItem(PENDING_EMAIL_VERIFICATION_KEY, JSON.stringify(pending));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getPendingEmailVerification(): PendingEmailVerification | null {
   if (typeof window === "undefined") return null;
-  const raw = sessionStorage.getItem(PENDING_EMAIL_VERIFICATION_KEY);
-  if (!raw) return null;
   try {
+    const raw = window.sessionStorage.getItem(PENDING_EMAIL_VERIFICATION_KEY);
+    if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PendingEmailVerification>;
     if (typeof parsed.pendingAuthenticationToken !== "string") return null;
     return {
@@ -151,7 +155,11 @@ export function getPendingEmailVerification(): PendingEmailVerification | null {
 
 export function clearPendingEmailVerification(): void {
   if (typeof window === "undefined") return;
-  sessionStorage.removeItem(PENDING_EMAIL_VERIFICATION_KEY);
+  try {
+    window.sessionStorage.removeItem(PENDING_EMAIL_VERIFICATION_KEY);
+  } catch {
+    return;
+  }
 }
 
 async function attachMarketplaceCompatibilityToken(): Promise<void> {

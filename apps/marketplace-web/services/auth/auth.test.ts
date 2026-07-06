@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AuthStateError,
   authService,
+  clearPendingEmailVerification,
   getPendingEmailVerification,
   storePendingEmailVerification,
 } from "./auth";
@@ -330,6 +331,28 @@ describe("authService", () => {
     expect(getAuthBearerToken()).toBe("verified-workos-access-token");
     expect(getAuthCsrfToken()).toBe("verified-csrf-token");
     expect(getPendingEmailVerification()).toBeNull();
+  });
+
+  it("falls back when pending verification storage is blocked", () => {
+    mockBrowserStorage();
+    vi.mocked(window.sessionStorage.setItem).mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.mocked(window.sessionStorage.getItem).mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.mocked(window.sessionStorage.removeItem).mockImplementation(() => {
+      throw new Error("blocked");
+    });
+
+    expect(
+      storePendingEmailVerification({
+        pendingAuthenticationToken: "pending-email-token",
+        email: "creator@example.test",
+      }),
+    ).toBe(false);
+    expect(getPendingEmailVerification()).toBeNull();
+    expect(() => clearPendingEmailVerification()).not.toThrow();
   });
 
   it("surfaces controlled invalid reset token errors", async () => {

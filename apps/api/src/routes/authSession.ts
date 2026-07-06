@@ -156,6 +156,8 @@ const CSRF_COOKIE = "vayada_auth_csrf";
 const DEFAULT_SURFACE: AuthSurface = "platform-admin";
 const MAX_PENDING_AUTH_STATES = 5;
 const AUTH_STATE_COOKIE_MAX_AGE_SECONDS = 60 * 60;
+const EMAIL_SEND_COOLDOWN_MS = 60_000;
+const EMAIL_SEND_COOLDOWN_MESSAGE = "Please wait before requesting another email.";
 
 type AuthStateContext = {
   state: string;
@@ -210,6 +212,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
   app: FastifyInstance,
   options: AuthSessionRouteOptions,
 ) => {
+  const emailSendCooldowns = new Map<string, number>();
+
   app.get("/workos/login", async (request, reply) => {
     const query = request.query as {
       organization_id?: string;
@@ -773,6 +777,13 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!parsed.ok) {
       return reply.code(400).send(parsed.error);
     }
+    const cooldown = consumeEmailSendCooldown(
+      emailSendCooldowns,
+      `email-verification:${parsed.emailVerificationId}`,
+    );
+    if (!cooldown.ok) {
+      return sendEmailSendCooldownResponse(reply, cooldown.retryAfterSeconds);
+    }
 
     try {
       await options.authKitClient.resendVerificationEmail({
@@ -800,6 +811,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     const parsed = parsePasswordResetRequestBody(request.body);
     if (!parsed.ok) {
       return reply.code(400).send(parsed.error);
+    }
+    const cooldown = consumeEmailSendCooldown(emailSendCooldowns, `password-reset:${parsed.email}`);
+    if (!cooldown.ok) {
+      return sendEmailSendCooldownResponse(reply, cooldown.retryAfterSeconds);
     }
 
     try {
@@ -1189,6 +1204,27 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     surface: "marketplace-web",
   });
 };
+
+function consumeEmailSendCooldown(
+  cooldowns: Map<string, number>,
+  key: string,
+  now: number = Date.now(),
+): { ok: true } | { ok: false; retryAfterSeconds: number } {
+  const cooldownKey = key.toLowerCase();
+  const expiresAt = cooldowns.get(cooldownKey);
+  if (expiresAt && expiresAt > now) {
+    return { ok: false, retryAfterSeconds: Math.ceil((expiresAt - now) / 1000) };
+  }
+  cooldowns.set(cooldownKey, now + EMAIL_SEND_COOLDOWN_MS);
+  return { ok: true };
+}
+
+function sendEmailSendCooldownResponse(reply: FastifyReply, retryAfterSeconds: number) {
+  return reply.code(429).header("retry-after", String(retryAfterSeconds)).send({
+    state: "auth_failed",
+    message: EMAIL_SEND_COOLDOWN_MESSAGE,
+  });
+}
 
 function parseSurface(value: string | undefined): AuthSurface {
   if (!value) return DEFAULT_SURFACE;
