@@ -56,6 +56,21 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       return toAuthKitSession(response);
     },
 
+    async authenticateWithEmailVerification(input) {
+      const response = await workos.userManagement.authenticateWithEmailVerification({
+        pendingAuthenticationToken: input.pendingAuthenticationToken,
+        code: input.code,
+        clientId: config.clientId,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+        session: {
+          sealSession: true,
+          cookiePassword: config.cookiePassword,
+        },
+      });
+      return toAuthKitSession(response);
+    },
+
     async createUser(input) {
       const user = await workos.userManagement.createUser({
         email: input.email,
@@ -65,6 +80,30 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
         metadata: input.metadata,
       });
       return toAuthKitUser(user);
+    },
+
+    async resendVerificationEmail(input) {
+      const verification = await workos.userManagement.getEmailVerification(
+        input.emailVerificationId,
+      );
+      const result = await workos.userManagement.sendVerificationEmail({
+        userId: verification.userId,
+      });
+      return { email: result.user.email };
+    },
+
+    async createPasswordReset(input) {
+      await workos.userManagement.createPasswordReset({
+        email: input.email,
+      });
+    },
+
+    async resetPassword(input) {
+      const result = await workos.userManagement.resetPassword({
+        token: input.token,
+        newPassword: input.newPassword,
+      });
+      return toAuthKitUser(result.user);
     },
 
     async authenticateSession(input) {

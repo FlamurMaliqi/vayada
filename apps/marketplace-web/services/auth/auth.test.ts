@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { authService } from "./auth";
+import {
+  AuthStateError,
+  authService,
+  clearPendingEmailVerification,
+  getPendingEmailVerification,
+  storePendingEmailVerification,
+} from "./auth";
 import {
   clearAuthData,
   getAuthBearerToken,
@@ -159,6 +165,38 @@ describe("authService", () => {
     expect(getAuthCsrfToken()).toBe("pending-csrf-token");
   });
 
+  it("preserves verification-required auth state for the verification page", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          state: "email_verification_required",
+          message: "Verify your email address to continue.",
+          pendingAuthenticationToken: "pending-email-token",
+          email: "creator@example.test",
+          emailVerificationId: "email_verification_123",
+        },
+        403,
+      ),
+    );
+
+    let thrown: unknown;
+    try {
+      await authService.login({
+        email: "creator@example.test",
+        password: "correct-password",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AuthStateError);
+    expect(thrown).toMatchObject({
+      state: "email_verification_required",
+      pendingAuthenticationToken: "pending-email-token",
+      emailVerificationId: "email_verification_123",
+    });
+  });
+
   it("posts product signup intent to the backend and stores the AuthKit session", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
@@ -198,6 +236,140 @@ describe("authService", () => {
     expect(getAuthCsrfToken()).toBe("signup-csrf-token");
     expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
   });
+
+  it("requests password reset through the AuthKit backend", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        message: "If an account with that email exists, a password reset link has been sent.",
+      }),
+    );
+
+    await expect(authService.forgotPassword("creator@example.test")).resolves.toEqual({
+      message: "If an account with that email exists, a password reset link has been sent.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/password/reset/request",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({
+          email: "creator@example.test",
+        }),
+      }),
+    );
+  });
+
+  it("confirms password reset through the AuthKit backend", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        message: "Password reset successful. Please sign in with your new password.",
+      }),
+    );
+
+    await expect(authService.resetPassword("reset-token", "new-secure-password")).resolves.toEqual({
+      message: "Password reset successful. Please sign in with your new password.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/password/reset/confirm",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({
+          token: "reset-token",
+          newPassword: "new-secure-password",
+        }),
+      }),
+    );
+  });
+
+  it("uses pending verification state to confirm email and store the AuthKit session", async () => {
+    mockBrowserStorage();
+    expect(
+      storePendingEmailVerification({
+        pendingAuthenticationToken: "pending-email-token",
+        email: "creator@example.test",
+        emailVerificationId: "email_verification_123",
+        type: "creator",
+      }),
+    ).toBe(true);
+    expect(getPendingEmailVerification()).toMatchObject({
+      pendingAuthenticationToken: "pending-email-token",
+      type: "creator",
+    });
+
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        accessToken: "verified-workos-access-token",
+        csrfToken: "verified-csrf-token",
+        organizationId: "org_creator",
+        organizationKind: "creator_workspace",
+        user: {
+          id: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+          workosUserId: "user_workos_creator",
+        },
+      }),
+    );
+
+    await expect(authService.confirmEmailVerification("123456")).resolves.toMatchObject({
+      accessToken: "verified-workos-access-token",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/email-verification/confirm",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({
+          pendingAuthenticationToken: "pending-email-token",
+          code: "123456",
+          type: "creator",
+          surface: "marketplace-web",
+        }),
+      }),
+    );
+    expect(getAuthBearerToken()).toBe("verified-workos-access-token");
+    expect(getAuthCsrfToken()).toBe("verified-csrf-token");
+    expect(getPendingEmailVerification()).toBeNull();
+  });
+
+  it("falls back when pending verification storage is blocked", () => {
+    mockBrowserStorage();
+    vi.mocked(window.sessionStorage.setItem).mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.mocked(window.sessionStorage.getItem).mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.mocked(window.sessionStorage.removeItem).mockImplementation(() => {
+      throw new Error("blocked");
+    });
+
+    expect(
+      storePendingEmailVerification({
+        pendingAuthenticationToken: "pending-email-token",
+        email: "creator@example.test",
+      }),
+    ).toBe(false);
+    expect(getPendingEmailVerification()).toBeNull();
+    expect(() => clearPendingEmailVerification()).not.toThrow();
+  });
+
+  it("surfaces controlled invalid reset token errors", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          state: "auth_failed",
+          message: "Invalid or expired reset token. Please request a new password reset link.",
+        },
+        400,
+      ),
+    );
+
+    await expect(authService.resetPassword("expired-token", "new-secure-password")).rejects.toThrow(
+      "Invalid or expired reset token. Please request a new password reset link.",
+    );
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -207,4 +379,28 @@ function jsonResponse(body: unknown, status = 200): Response {
       "content-type": "application/json",
     },
   });
+}
+
+function mockBrowserStorage() {
+  const sessionStorage = createStorageMock();
+  const localStorage = createStorageMock();
+  vi.stubGlobal("window", { sessionStorage, localStorage });
+  vi.stubGlobal("sessionStorage", sessionStorage);
+  vi.stubGlobal("localStorage", localStorage);
+}
+
+function createStorageMock(): Storage {
+  const values = new Map<string, string>();
+  return {
+    length: 0,
+    clear: vi.fn(() => values.clear()),
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    key: vi.fn((index: number) => Array.from(values.keys())[index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      values.delete(key);
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      values.set(key, String(value));
+    }),
+  };
 }

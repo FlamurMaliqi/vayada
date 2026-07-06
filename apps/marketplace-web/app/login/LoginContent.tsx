@@ -4,16 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import LoginForm from "@/components/auth/LoginForm";
-import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
-import { authService } from "@/services/auth";
+import { ROUTES } from "@/lib/constants";
+import { getMarketplacePostLoginRedirect } from "@/lib/utils/postLoginRedirect";
+import { AuthStateError, authService, storePendingEmailVerification } from "@/services/auth";
 import {
   isAuthOrganizationSelectionResponse,
   type AuthOrganizationSelectionResponse,
 } from "@/services/auth/sessionStore";
-import { checkProfileStatus } from "@/lib/utils";
-import { resolveMarketplaceSetupGuard } from "@/lib/utils/sharedSetupGuard";
-import { getPostLoginProfileRedirect } from "@/lib/utils/profileRedirect";
-import type { UserType } from "@/lib/types";
 
 type LoginContentProps = {
   returnTo?: string;
@@ -32,29 +29,7 @@ export function LoginContent({
     useState<AuthOrganizationSelectionResponse | null>(null);
 
   const redirectAfterLogin = useCallback(async () => {
-    const userType = localStorage.getItem(STORAGE_KEYS.USER_TYPE) as UserType | null;
-    let redirectPath: string = ROUTES.MARKETPLACE;
-
-    if (userType === "hotel") {
-      const decision = await resolveMarketplaceSetupGuard(returnTo);
-      localStorage.setItem(
-        STORAGE_KEYS.PROFILE_COMPLETE,
-        String(decision.action === "enter_product"),
-      );
-      router.push(decision.action === "enter_product" ? returnTo : decision.redirectPath);
-      return;
-    }
-
-    if (userType === "creator") {
-      const profileStatus = await checkProfileStatus(userType);
-      const decision = getPostLoginProfileRedirect(userType, profileStatus);
-      redirectPath = decision.redirectPath;
-      if (decision.profileComplete !== null) {
-        localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, String(decision.profileComplete));
-      }
-    }
-
-    router.push(redirectPath);
+    router.push(await getMarketplacePostLoginRedirect(returnTo));
   }, [returnTo, router]);
 
   const handleLogin = useCallback(
@@ -69,12 +44,20 @@ export function LoginContent({
         }
         await redirectAfterLogin();
       } catch (error) {
+        if (
+          error instanceof AuthStateError &&
+          error.state === "email_verification_required" &&
+          storePendingEmailVerification(error)
+        ) {
+          router.push(ROUTES.VERIFY_EMAIL);
+          return;
+        }
         setSubmitError(error instanceof Error ? error.message : "Login failed. Please try again.");
       } finally {
         setIsSubmitting(false);
       }
     },
-    [redirectAfterLogin],
+    [redirectAfterLogin, router],
   );
 
   const handleOrganizationSelect = useCallback(
