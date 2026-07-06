@@ -1,4 +1,5 @@
 import { loadServerConfig } from "@vayada/backend-config";
+import { createHmac } from "node:crypto";
 
 import {
   loadPlatformMediaServingConfig,
@@ -17,6 +18,7 @@ export type ApiAuthSessionConfig = {
   workosApiKey: string;
   workosWebhookSecret?: string;
   authCookieSecret: string;
+  oauthStateSecret: string;
   authLogoutUrl: string;
   authAllowedOrigins: string[];
   authCookieSecure: boolean;
@@ -117,6 +119,10 @@ type NextRuntimeSourceRequirement = {
 function readOptionalEnv(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const value = env[key]?.trim();
   return value ? value : undefined;
+}
+
+function derivePurposeSecret(secret: string, purpose: string): string {
+  return createHmac("sha256", secret).update(purpose).digest("base64url");
 }
 
 function normalizePgConnectionString(connectionString: string): string {
@@ -241,6 +247,9 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
     workosApiKey: values["WORKOS_API_KEY"]!,
     workosWebhookSecret: readOptionalEnv(env, "WORKOS_WEBHOOK_SECRET"),
     authCookieSecret: values["AUTH_COOKIE_SECRET"]!,
+    oauthStateSecret:
+      readOptionalEnv(env, "AUTH_OAUTH_STATE_SECRET") ??
+      derivePurposeSecret(values["AUTH_COOKIE_SECRET"]!, "vayada.auth.oauth-state.v1"),
     authLogoutUrl: values["AUTH_LOGOUT_URL"]!,
     authAllowedOrigins: readOptionalCsvEnv(env, "AUTH_ALLOWED_ORIGINS"),
     authCookieSecure: readOptionalEnv(env, "AUTH_COOKIE_SECURE") !== "false",

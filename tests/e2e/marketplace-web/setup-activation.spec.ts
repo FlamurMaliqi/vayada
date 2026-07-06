@@ -1,4 +1,5 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 
 const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
@@ -139,6 +140,10 @@ async function mockSharedSetupStatus(page: Page, status: ReturnType<typeof share
 
 async function mockMarketplaceProfileApis(page: Page) {
   await page.route(/\/api\/marketplace\/hotels\/me\/profile-status/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
     await route.fulfill({
       status: 200,
       headers: corsHeaders(route),
@@ -233,22 +238,4 @@ function activation(product: string, status: string, missingSteps: string[]) {
         : [`${product}_${status}`],
     updatedAt: status === "not_selected" ? null : "2026-06-30T00:00:00.000Z",
   };
-}
-
-function corsHeaders(route: Route) {
-  const origin = route.request().headers().origin ?? "http://127.0.0.1:3000";
-  return {
-    "access-control-allow-credentials": "true",
-    "access-control-allow-headers": "authorization, content-type, x-vayada-csrf",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-origin": origin,
-    "content-type": "application/json",
-  };
-}
-
-async function fulfillCorsPreflight(route: Route) {
-  await route.fulfill({
-    status: 204,
-    headers: corsHeaders(route),
-  });
 }

@@ -1,7 +1,7 @@
-import { APP_BASE_URL } from "@/lib/constants/routes";
+import { ROUTES } from "@/lib/constants/routes";
 
 // Signup lives in the app (app.vayada.com), not on this marketing site.
-const SIGNUP_URL = `${APP_BASE_URL}/signup`;
+const SIGNUP_URL = ROUTES.SIGNUP;
 
 export const siteConfig = {
   name: "vayada",

@@ -1,4 +1,5 @@
-import { expect, test, type Route } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 
 test.describe("marketplace-web smoke", () => {
   test("login page renders the custom auth form", async ({ page }) => {
@@ -84,21 +85,3 @@ test.describe("marketplace-web smoke", () => {
     await expect(page).toHaveURL(/\/profile\/complete$/);
   });
 });
-
-function corsHeaders(route: Route) {
-  const origin = route.request().headers().origin ?? "http://localhost:3000";
-  return {
-    "access-control-allow-credentials": "true",
-    "access-control-allow-headers": "content-type, x-vayada-csrf",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-origin": origin,
-    "content-type": "application/json",
-  };
-}
-
-async function fulfillCorsPreflight(route: Route) {
-  await route.fulfill({
-    status: 204,
-    headers: corsHeaders(route),
-  });
-}

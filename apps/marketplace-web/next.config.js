@@ -3,6 +3,7 @@ const path = require("path");
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  allowedDevOrigins: ["127.0.0.1"],
   turbopack: {
     root: path.join(__dirname, "../.."),
   },
