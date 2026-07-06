@@ -337,6 +337,199 @@ describe("AuthKit session routes", () => {
     ]);
   });
 
+  it("logs in with email and password through WorkOS and creates the AuthKit browser session", async () => {
+    const auditEvents: ProductAuditEvent[] = [];
+    let passwordAuthInput: Parameters<AuthKitClient["authenticateWithPassword"]>[0] | undefined;
+    const marketplaceSession: AuthKitSession = {
+      ...session,
+      accessToken: "creator-workos-access-token",
+      sealedSession: "creator-sealed-session",
+      organizationId: "org_workos_creator",
+      user: {
+        ...session.user,
+        id: "user_workos_creator",
+        email: "creator@example.test",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithPassword(input) {
+          passwordAuthInput = input;
+          return marketplaceSession;
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_creator",
+          workosOrgId: "org_workos_creator",
+          name: "Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+      productAuditSink: {
+        async record(event) {
+          auditEvents.push(event);
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: {
+        origin: "https://marketplace.localhost",
+        "user-agent": "vitest",
+      },
+      payload: {
+        email: " creator@example.test ",
+        password: "correct-password",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(passwordAuthInput).toMatchObject({
+      email: "creator@example.test",
+      password: "correct-password",
+      userAgent: "vitest",
+      ipAddress: expect.any(String),
+    });
+    expect(response.json()).toMatchObject({
+      accessToken: "creator-workos-access-token",
+      csrfToken: expect.any(String),
+      organizationId: "org_creator",
+      workosOrganizationId: "org_workos_creator",
+      organizationKind: "creator_workspace",
+      user: {
+        id: "user_creator",
+        email: "creator@example.test",
+        workosUserId: "user_workos_creator",
+      },
+    });
+    expect(response.json()).not.toHaveProperty("sealedSession");
+    expect(response.json()).not.toHaveProperty("clientSecret");
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=creator-sealed-session"),
+        expect.stringContaining("vayada_auth_csrf="),
+      ]),
+    );
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        action: "auth.login",
+        authFlow: "login",
+        actorUserId: "user_creator",
+        organizationId: "org_creator",
+        surface: "marketplace-web",
+        workosUserId: "user_workos_creator",
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      name: "invalid credentials",
+      error: { code: "invalid_grant" },
+      statusCode: 401,
+      body: {
+        state: "invalid_credentials",
+        message: "Email or password is incorrect.",
+      },
+    },
+    {
+      name: "email verification required",
+      error: {
+        code: "email_verification_required",
+        pending_authentication_token: "pending_email",
+        email: "creator@example.test",
+      },
+      statusCode: 403,
+      body: {
+        state: "email_verification_required",
+        pendingAuthenticationToken: "pending_email",
+      },
+    },
+    {
+      name: "organization selection required",
+      error: {
+        code: "organization_selection_required",
+        pending_authentication_token: "pending_org",
+        organizations: [{ id: "org_workos_creator", name: "Creator Workspace" }],
+      },
+      statusCode: 403,
+      body: {
+        state: "organization_selection_required",
+        pendingAuthenticationToken: "pending_org",
+        organizations: [{ id: "org_workos_creator", name: "Creator Workspace" }],
+      },
+    },
+    {
+      name: "MFA required",
+      error: { code: "mfa_challenge", pendingAuthenticationToken: "pending_mfa" },
+      statusCode: 403,
+      body: {
+        state: "mfa_required",
+        pendingAuthenticationToken: "pending_mfa",
+      },
+    },
+    {
+      name: "SSO required",
+      error: { error: "sso_required", connection_ids: ["conn_123"] },
+      statusCode: 403,
+      body: {
+        state: "sso_required",
+        connectionIds: ["conn_123"],
+      },
+    },
+  ])("returns shared auth state for password login: $name", async ({ error, statusCode, body }) => {
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithPassword() {
+          throw error;
+        },
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        email: "creator@example.test",
+        password: "wrong-password",
+        surface: "marketplace-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json()).toMatchObject(body);
+  });
+
   it("keeps hosted signup intent through callback audit", async () => {
     const auditEvents: ProductAuditEvent[] = [];
     const commands: IdentityLifecycleCommand[] = [];
@@ -2588,6 +2781,9 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
       return url.toString();
     },
     async authenticateWithCode() {
+      return session;
+    },
+    async authenticateWithPassword() {
       return session;
     },
     async authenticateSession() {

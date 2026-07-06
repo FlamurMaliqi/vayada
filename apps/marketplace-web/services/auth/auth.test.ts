@@ -1,55 +1,50 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { authService } from "./auth";
 import {
   clearAuthData,
   getAuthBearerToken,
+  getAuthCsrfToken,
+  isAuthOrganizationSelectionResponse,
   setAuthKitSession,
   setLegacyCompatibilityToken,
 } from "./sessionStore";
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: {
-      get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null),
-    },
-    json: async () => body,
-  } as Response;
-}
+const fetchMock = vi.fn();
+
+afterEach(() => {
+  clearAuthData();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 describe("marketplace AuthKit compatibility token", () => {
-  afterEach(() => {
-    clearAuthData();
-    vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
-  });
-
   it("prefers the marketplace compatibility token after session refresh", async () => {
     vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      const href = String(url);
-      if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
-        return jsonResponse({
-          accessToken: "workos-access-token",
-          csrfToken: "csrf-token",
-          organizationKind: "creator_workspace",
-          user: { id: "user_creator", email: "creator@example.com", status: "active" },
-        });
-      }
-      if (href === "https://api.localhost/auth/compat/marketplace-web-token") {
-        expect(init?.method).toBe("POST");
-        expect((init?.headers as Record<string, string>)["x-vayada-csrf"]).toBe("csrf-token");
-        return jsonResponse({ accessToken: "legacy-marketplace-token", expiresIn: 900 });
-      }
-      throw new Error(`Unexpected fetch: ${href}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+          return jsonResponse({
+            accessToken: "workos-access-token",
+            csrfToken: "csrf-token",
+            organizationKind: "creator_workspace",
+            user: { id: "user_creator", email: "creator@example.com", status: "active" },
+          });
+        }
+        if (href === "https://api.localhost/auth/compat/marketplace-web-token") {
+          expect(init?.method).toBe("POST");
+          expect((init?.headers as Record<string, string>)["x-vayada-csrf"]).toBe("csrf-token");
+          return jsonResponse({ accessToken: "legacy-marketplace-token", expiresIn: 900 });
+        }
+        throw new Error(`Unexpected fetch: ${href}`);
+      }),
+    );
 
     await authService.refreshSession();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
   });
 
@@ -73,3 +68,77 @@ describe("marketplace AuthKit compatibility token", () => {
     expect(getAuthBearerToken()).toBe("new-workos-access-token");
   });
 });
+
+describe("authService.login", () => {
+  beforeEach(() => {
+    clearAuthData();
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  it("posts credentials to the backend password endpoint and stores the AuthKit session", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        accessToken: "workos-access-token",
+        csrfToken: "csrf-token",
+        organizationId: "org_creator",
+        organizationKind: "creator_workspace",
+        user: {
+          id: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+          workosUserId: "user_workos_creator",
+        },
+      }),
+    );
+
+    const response = await authService.login({
+      email: "creator@example.test",
+      password: "correct-password",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/password/login",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({
+          email: "creator@example.test",
+          password: "correct-password",
+          surface: "marketplace-web",
+        }),
+      }),
+    );
+    expect(getAuthBearerToken()).toBe("workos-access-token");
+    expect(getAuthCsrfToken()).toBe("csrf-token");
+    expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
+  });
+
+  it("preserves controlled backend login errors", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          state: "invalid_credentials",
+          message: "Email or password is incorrect.",
+        },
+        401,
+      ),
+    );
+
+    await expect(
+      authService.login({
+        email: "creator@example.test",
+        password: "wrong-password",
+      }),
+    ).rejects.toThrow("Email or password is incorrect.");
+  });
+});
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+    },
+  });
+}
