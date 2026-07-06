@@ -88,6 +88,7 @@ export default function VerifyEmailPage() {
         : pending?.type === "creator"
           ? ROUTES.PROFILE_COMPLETE
           : await getMarketplacePostLoginRedirect();
+    clearPendingEmailVerification();
     setVerified(true);
     setTimeout(() => router.push(redirectPath), 1200);
   }
