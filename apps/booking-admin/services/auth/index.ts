@@ -13,9 +13,7 @@ import {
   isAuthOrganizationSelectionResponse,
   isAuthKitLoginEnabled,
   isCompatibilityTokenEnabled,
-  isLegacyPasswordFallbackEnabled,
   setAuthKitSession,
-  setLegacyPasswordSession,
   setPendingOrganizationSelection,
   type AuthSessionResponse,
 } from "./sessionStore";
@@ -29,19 +27,10 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface LoginResponse {
-  id?: string;
-  email?: string;
-  name?: string;
-  type?: string;
-  status?: string;
-  access_token?: string;
-  token_type?: string;
-  expires_in?: number;
-  message: string;
-  is_superadmin?: boolean;
-  requires_totp?: boolean;
-  totp_session?: string;
+export interface SignupRequest {
+  name: string;
+  email: string;
+  password: string;
 }
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -69,43 +58,30 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
   return body as T;
 }
 
-function storeLegacyLoginResponse(response: LoginResponse): void {
-  setLegacyPasswordSession({
-    token: response.access_token!,
-    expiresIn: response.expires_in!,
-    user: {
-      id: response.id!,
-      email: response.email!,
-      name: response.name!,
-      type: response.type!,
-      status: response.status!,
-      is_superadmin: response.is_superadmin,
-    },
-  });
+async function storeAuthSessionResponse(
+  response: AuthSessionResponse,
+): Promise<AuthSessionResponse> {
+  if (isAuthOrganizationSelectionResponse(response)) {
+    setPendingOrganizationSelection(response);
+    return response;
+  }
+  setAuthKitSession(response);
+  if (!isNextApiTarget() && isCompatibilityTokenEnabled()) {
+    try {
+      await ensureBookingCompatibilityToken();
+    } catch {
+      /* Legacy admin routes will surface their normal auth error if the bridge is unavailable. */
+    }
+  }
+  return response;
 }
 
 export const authService = {
   isAuthKitEnabled: isAuthKitLoginEnabled,
 
-  isLegacyFallbackEnabled: isLegacyPasswordFallbackEnabled,
-
   ensureBookingCompatibilityToken: async (): Promise<void> => {
     if (!isCompatibilityTokenEnabled()) return;
     await ensureBookingCompatibilityToken();
-  },
-
-  startHostedLogin: (loginHint?: string, returnTo?: string): void => {
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/workos/login`);
-    url.searchParams.set("surface", AUTH_SURFACE);
-    if (typeof window !== "undefined") {
-      const callbackUrl = new URL("/login?auth=callback", window.location.origin);
-      if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
-        callbackUrl.searchParams.set("returnTo", returnTo);
-      }
-      url.searchParams.set("return_to", callbackUrl.toString());
-    }
-    if (loginHint) url.searchParams.set("login_hint", loginHint);
-    window.location.href = url.toString();
   },
 
   refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
@@ -119,19 +95,7 @@ export const authService = {
           })
         : await authFetch<AuthSessionResponse>(`/auth/session?surface=${AUTH_SURFACE}`);
 
-    if (isAuthOrganizationSelectionResponse(response)) {
-      setPendingOrganizationSelection(response);
-      return response;
-    }
-    setAuthKitSession(response);
-    if (!isNextApiTarget() && isCompatibilityTokenEnabled()) {
-      try {
-        await ensureBookingCompatibilityToken();
-      } catch {
-        /* Legacy admin routes will surface their normal auth error if the bridge is unavailable. */
-      }
-    }
-    return response;
+    return storeAuthSessionResponse(response);
   },
 
   ensureSession: async (): Promise<boolean> => {
@@ -151,43 +115,20 @@ export const authService = {
     }
   },
 
-  /**
-   * Login user (hotel admin or super admin). Returns early with requires_totp=true
-   * if TOTP is needed. Caller must call verifyTotp() to complete the flow.
-   */
-  login: async (data: LoginRequest): Promise<LoginResponse> => {
-    const response = await apiClient.post<LoginResponse>("/auth/login", data);
-
-    if (response.requires_totp) {
-      return response;
-    }
-
-    // Verify user is hotel admin or super admin
-    if (response.type !== "hotel" && !response.is_superadmin) {
-      throw new Error("Access denied. Hotel admin account required.");
-    }
-
-    storeLegacyLoginResponse(response);
-
-    return response;
+  login: async (data: LoginRequest): Promise<AuthSessionResponse> => {
+    const response = await authFetch<AuthSessionResponse>("/auth/password/login", {
+      method: "POST",
+      body: JSON.stringify({ ...data, surface: AUTH_SURFACE }),
+    });
+    return storeAuthSessionResponse(response);
   },
 
-  /**
-   * Complete TOTP login step after a successful password auth.
-   */
-  verifyTotp: async (totpSession: string, code: string): Promise<LoginResponse> => {
-    const response = await apiClient.post<LoginResponse>("/auth/totp/verify", {
-      totp_session: totpSession,
-      code,
+  signup: async (data: SignupRequest): Promise<AuthSessionResponse> => {
+    const response = await authFetch<AuthSessionResponse>("/auth/password/signup", {
+      method: "POST",
+      body: JSON.stringify({ ...data, surface: AUTH_SURFACE, type: "hotel" }),
     });
-
-    if (response.type !== "hotel" && !response.is_superadmin) {
-      throw new Error("Access denied. Hotel admin account required.");
-    }
-
-    storeLegacyLoginResponse(response);
-
-    return response;
+    return storeAuthSessionResponse(response);
   },
 
   /**

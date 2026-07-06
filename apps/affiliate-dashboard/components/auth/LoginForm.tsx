@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+import PasswordInput from "./PasswordInput";
 
 interface LoginFormProps {
-  onSubmit: (email: string) => void;
+  onSubmit: (email: string, password: string) => void;
   isSubmitting: boolean;
   submitError: string;
   onErrorClear: () => void;
@@ -18,13 +19,14 @@ export default function LoginForm({
   sessionExpired = false,
 }: LoginFormProps) {
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [emailError, setEmailError] = useState("");
 
   const validateEmail = (value: string): boolean => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setEmailError("");
     onErrorClear();
@@ -34,7 +36,7 @@ export default function LoginForm({
       return;
     }
 
-    onSubmit(email);
+    onSubmit(email, password);
   };
 
   return (
@@ -71,6 +73,21 @@ export default function LoginForm({
         {emailError && <p className="mt-1 text-sm text-red-600">{emailError}</p>}
       </div>
 
+      <div>
+        <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1.5">
+          Password
+        </label>
+        <PasswordInput
+          id="password"
+          name="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          placeholder="Enter your password"
+          autoComplete="current-password"
+        />
+      </div>
+
       {/* Error Message */}
       {submitError && (
         <div className="bg-red-50 border-2 border-red-300 rounded-lg p-4">
@@ -84,7 +101,7 @@ export default function LoginForm({
         disabled={isSubmitting}
         className="w-full px-4 py-2.5 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
-        {isSubmitting ? "Redirecting..." : "Continue with WorkOS"}
+        {isSubmitting ? "Signing in..." : "Sign in"}
       </button>
     </form>
   );

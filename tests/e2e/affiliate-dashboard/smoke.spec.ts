@@ -12,7 +12,8 @@ test.describe("affiliate-dashboard smoke", () => {
       page.getByRole("heading", { name: /vayada Affiliate Portal/i, level: 1 }),
     ).toBeVisible();
     await expect(page.getByLabel(/email address/i)).toBeVisible();
-    await expect(page.getByRole("button", { name: /continue with workos/i })).toBeVisible();
+    await expect(page.getByLabel(/^password$/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /sign in/i })).toBeVisible();
 
     await assertNoLegacyCalls();
     await assertHealthy();

@@ -1,21 +1,29 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/auth";
 import LoginForm from "@/components/auth/LoginForm";
 
 function LoginPageInner() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [submitError, setSubmitError] = useState(
     searchParams.get("expired") === "true" ? "Your session has expired. Please sign in again." : "",
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleLogin = (email: string) => {
+  const handleLogin = async (email: string, password: string) => {
     setSubmitError("");
     setIsSubmitting(true);
-    authService.startHostedLogin(email);
+    try {
+      await authService.login(email, password);
+      router.push("/dashboard");
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Login failed. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -41,7 +49,7 @@ function LoginPageInner() {
             </svg>
           </div>
           <h1 className="text-xl font-bold text-gray-900">vayada Affiliate Portal</h1>
-          <p className="text-[13px] text-gray-500 mt-1">Sign in with WorkOS AuthKit</p>
+          <p className="text-[13px] text-gray-500 mt-1">Sign in to manage affiliate payouts</p>
         </div>
 
         <LoginForm

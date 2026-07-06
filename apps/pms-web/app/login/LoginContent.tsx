@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { authService } from "@/services/auth";
 import {
@@ -12,11 +12,17 @@ import { useTranslation } from "@/lib/i18n";
 
 type LoginContentProps = {
   returnTo?: string;
+  resumeSession?: boolean;
 };
 
-export function LoginContent({ returnTo = "/dashboard" }: LoginContentProps) {
+export function LoginContent({
+  returnTo = "/dashboard",
+  resumeSession = false,
+}: LoginContentProps) {
   const { t } = useTranslation();
   const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [organizationSelection, setOrganizationSelection] =
@@ -51,7 +57,29 @@ export function LoginContent({ returnTo = "/dashboard" }: LoginContentProps) {
     [redirectAfterLogin, t],
   );
 
+  const handleLogin = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      setSubmitError("");
+      setIsSubmitting(true);
+      try {
+        const response = await authService.login({ email, password });
+        if (isAuthOrganizationSelectionResponse(response)) {
+          setOrganizationSelection(response);
+          return;
+        }
+        await redirectAfterLogin();
+      } catch (error) {
+        setSubmitError(error instanceof Error ? error.message : t("auth.login.unexpectedError"));
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [email, password, redirectAfterLogin, t],
+  );
+
   useEffect(() => {
+    if (!resumeSession) return;
     let cancelled = false;
     setIsSubmitting(true);
     authService
@@ -76,7 +104,7 @@ export function LoginContent({ returnTo = "/dashboard" }: LoginContentProps) {
     return () => {
       cancelled = true;
     };
-  }, [redirectAfterLogin, t]);
+  }, [redirectAfterLogin, resumeSession, t]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
@@ -105,7 +133,7 @@ export function LoginContent({ returnTo = "/dashboard" }: LoginContentProps) {
           <p className="text-[13px] text-gray-500 mt-1">
             {organizationSelection
               ? t("auth.login.chooseHotelGroupSubtitle")
-              : t("auth.login.redirecting")}
+              : t("auth.login.subtitle")}
           </p>
         </div>
 
@@ -125,19 +153,56 @@ export function LoginContent({ returnTo = "/dashboard" }: LoginContentProps) {
           </div>
         )}
 
-        {submitError && (
-          <div className="space-y-5">
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <p className="text-sm text-red-800 font-medium">{submitError}</p>
+        {!organizationSelection && (
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div>
+              <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-gray-700">
+                {t("auth.login.emailLabel")}
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+                autoComplete="email"
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
             </div>
+            <div>
+              <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-gray-700">
+                {t("auth.login.passwordLabel")}
+              </label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+                autoComplete="current-password"
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            {submitError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                <p className="text-sm font-medium text-red-800">{submitError}</p>
+              </div>
+            )}
             <button
-              type="button"
-              onClick={() => authService.startHostedLogin(undefined, returnTo)}
+              type="submit"
               disabled={isSubmitting}
-              className="w-full px-4 py-2.5 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-60"
+              className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:opacity-60"
             >
-              Sign in again
+              {isSubmitting ? t("auth.login.submitting") : t("auth.login.submitButton")}
             </button>
+          </form>
+        )}
+
+        {organizationSelection && submitError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+            <p className="text-sm font-medium text-red-800">{submitError}</p>
           </div>
         )}
       </div>
