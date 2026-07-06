@@ -78,7 +78,8 @@ export function SignupContent({ intent, authError }: SignupContentProps) {
             </div>
 
             <div className="mb-5">
-              <div className="grid grid-cols-2 rounded-lg border border-gray-200 bg-white p-1">
+              <div className="mb-1.5 text-sm font-medium text-gray-700">Account type</div>
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   aria-pressed={selectedIntent === "hotel"}
@@ -86,10 +87,10 @@ export function SignupContent({ intent, authError }: SignupContentProps) {
                     setSubmitError("");
                     setSelectedIntent("hotel");
                   }}
-                  className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  className={`rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
                     selectedIntent === "hotel"
-                      ? "bg-primary-600 text-white shadow-sm"
-                      : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                      ? "border-primary-600 bg-primary-50 text-primary-700"
+                      : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                   }`}
                 >
                   Hotel / property
@@ -101,16 +102,16 @@ export function SignupContent({ intent, authError }: SignupContentProps) {
                     setSubmitError("");
                     setSelectedIntent("creator");
                   }}
-                  className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  className={`rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
                     selectedIntent === "creator"
-                      ? "bg-primary-600 text-white shadow-sm"
-                      : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                      ? "border-primary-600 bg-primary-50 text-primary-700"
+                      : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                   }`}
                 >
                   Creator
                 </button>
               </div>
-              <p className="mt-2 text-center text-xs text-gray-500">{accountTypeDescription}</p>
+              <p className="mt-2 text-xs text-gray-500">{accountTypeDescription}</p>
             </div>
 
             <button
