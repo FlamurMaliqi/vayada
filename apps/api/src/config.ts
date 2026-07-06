@@ -17,23 +17,17 @@ export type ApiAuthSessionConfig = {
   workosApiKey: string;
   workosWebhookSecret?: string;
   authCookieSecret: string;
-  authCallbackUrl: string;
-  authSuccessUrl?: string;
   authLogoutUrl: string;
   authAllowedOrigins: string[];
   authCookieSecure: boolean;
   authCookieDomain?: string;
   authLegacyMarketplaceJwtSecret?: string;
-  authBookingAdminSuccessUrl?: string;
   authBookingAdminLogoutUrl?: string;
   authLegacyBookingJwtSecret?: string;
-  authPmsWebSuccessUrl?: string;
   authPmsWebLogoutUrl?: string;
   authLegacyPmsJwtSecret?: string;
-  authAffiliateDashboardSuccessUrl?: string;
   authAffiliateDashboardLogoutUrl?: string;
   authLegacyAffiliatePmsJwtSecret?: string;
-  authMarketplaceWebSuccessUrl?: string;
   authMarketplaceWebLogoutUrl?: string;
 };
 
@@ -227,7 +221,6 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
     "WORKOS_CLIENT_ID",
     "WORKOS_API_KEY",
     "AUTH_COOKIE_SECRET",
-    "AUTH_CALLBACK_URL",
     "AUTH_LOGOUT_URL",
     "AUTH_ALLOWED_ORIGINS",
   ] as const;
@@ -248,23 +241,17 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
     workosApiKey: values["WORKOS_API_KEY"]!,
     workosWebhookSecret: readOptionalEnv(env, "WORKOS_WEBHOOK_SECRET"),
     authCookieSecret: values["AUTH_COOKIE_SECRET"]!,
-    authCallbackUrl: values["AUTH_CALLBACK_URL"]!,
-    authSuccessUrl: readOptionalEnv(env, "AUTH_SUCCESS_URL"),
     authLogoutUrl: values["AUTH_LOGOUT_URL"]!,
     authAllowedOrigins: readOptionalCsvEnv(env, "AUTH_ALLOWED_ORIGINS"),
     authCookieSecure: readOptionalEnv(env, "AUTH_COOKIE_SECURE") !== "false",
     authCookieDomain: readOptionalEnv(env, "AUTH_COOKIE_DOMAIN"),
     authLegacyMarketplaceJwtSecret: readOptionalEnv(env, "AUTH_LEGACY_MARKETPLACE_JWT_SECRET"),
-    authBookingAdminSuccessUrl: readOptionalEnv(env, "AUTH_BOOKING_ADMIN_SUCCESS_URL"),
     authBookingAdminLogoutUrl: readOptionalEnv(env, "AUTH_BOOKING_ADMIN_LOGOUT_URL"),
     authLegacyBookingJwtSecret: readOptionalEnv(env, "AUTH_LEGACY_BOOKING_JWT_SECRET"),
-    authPmsWebSuccessUrl: readOptionalEnv(env, "AUTH_PMS_WEB_SUCCESS_URL"),
     authPmsWebLogoutUrl: readOptionalEnv(env, "AUTH_PMS_WEB_LOGOUT_URL"),
     authLegacyPmsJwtSecret: readOptionalEnv(env, "AUTH_LEGACY_PMS_JWT_SECRET"),
-    authAffiliateDashboardSuccessUrl: readOptionalEnv(env, "AUTH_AFFILIATE_DASHBOARD_SUCCESS_URL"),
     authAffiliateDashboardLogoutUrl: readOptionalEnv(env, "AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL"),
     authLegacyAffiliatePmsJwtSecret: readOptionalEnv(env, "AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET"),
-    authMarketplaceWebSuccessUrl: readOptionalEnv(env, "AUTH_MARKETPLACE_WEB_SUCCESS_URL"),
     authMarketplaceWebLogoutUrl: readOptionalEnv(env, "AUTH_MARKETPLACE_WEB_LOGOUT_URL"),
   };
 }

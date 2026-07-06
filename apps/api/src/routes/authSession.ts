@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type {
   IdentityLifecycleCommandBus,
   IdentityLifecycleCommandResult,
@@ -33,18 +33,6 @@ export type AuthKitSession = {
 };
 
 export type AuthKitClient = {
-  getAuthorizationUrl(input: {
-    redirectUri: string;
-    state: string;
-    organizationId?: string;
-    loginHint?: string;
-    screenHint?: "sign-in" | "sign-up";
-  }): string;
-  authenticateWithCode(input: {
-    code: string;
-    ipAddress?: string;
-    userAgent?: string;
-  }): Promise<AuthKitSession>;
   authenticateWithPassword(input: {
     email: string;
     password: string;
@@ -122,7 +110,6 @@ export type RequiredResourceLink = {
 
 export type AuthSurfacePolicy = {
   requiredOrganizationKind: OrganizationKind | OrganizationKind[];
-  callbackReturnUrl?: string;
   logoutReturnUrl?: string;
   legacyJwtSecret?: string;
   legacyJwtUserType?: string;
@@ -138,34 +125,20 @@ export type AuthSessionRouteOptions = {
   lifecycleCommandBus: IdentityLifecycleCommandBus;
   productAuditSink: ProductAuditSink;
   tokenVerifier: TokenVerifier;
-  callbackUrl: string;
-  callbackReturnUrl?: string;
   logoutReturnUrl: string;
   allowedOrigins: string[];
   requiredOrganizationKind: OrganizationKind;
   surfacePolicies?: Partial<Record<AuthSurface, AuthSurfacePolicy>>;
   cookieSecure: boolean;
-  stateCookieSecret: string;
   cookieDomain?: string;
   legacyMarketplaceJwtSecret?: string;
 };
 
 const SESSION_COOKIE = "vayada_workos_session";
-const STATE_COOKIE = "vayada_workos_state";
 const CSRF_COOKIE = "vayada_auth_csrf";
 const DEFAULT_SURFACE: AuthSurface = "platform-admin";
-const MAX_PENDING_AUTH_STATES = 5;
-const AUTH_STATE_COOKIE_MAX_AGE_SECONDS = 60 * 60;
 const EMAIL_SEND_COOLDOWN_MS = 60_000;
 const EMAIL_SEND_COOLDOWN_MESSAGE = "Please wait before requesting another email.";
-
-type AuthStateContext = {
-  state: string;
-  surface: AuthSurface;
-  returnTo?: string;
-  authFlow?: "login" | "signup";
-  signupIntent?: AuthSignupIntent;
-};
 
 type AuthSignupOrganizationContext = {
   workosOrganizationId: string;
@@ -185,12 +158,6 @@ type AuthSignupMembershipContext = {
   workosMembershipId: string;
   workosRoleSlugs: string[];
   status?: MembershipStatus;
-};
-
-type AuthSignupSessionResolution = {
-  session: AuthKitSession;
-  organization?: AuthSignupOrganizationContext;
-  membership?: AuthSignupMembershipContext;
 };
 
 type AuthOrganizationCandidate = {
@@ -213,136 +180,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
   options: AuthSessionRouteOptions,
 ) => {
   const emailSendCooldowns = new Map<string, number>();
-
-  app.get("/workos/login", async (request, reply) => {
-    const query = request.query as {
-      organization_id?: string;
-      login_hint?: string;
-      surface?: string;
-      return_to?: string;
-    };
-    const surface = parseSurface(query.surface);
-    const surfacePolicy = getSurfacePolicy(surface, options);
-    const returnTo = query.return_to
-      ? validateReturnTo(query.return_to, options.allowedOrigins)
-      : undefined;
-    const state = randomBytes(24).toString("base64url");
-    const authorizationUrl = options.authKitClient.getAuthorizationUrl({
-      redirectUri: options.callbackUrl,
-      state,
-      organizationId: query.organization_id,
-      loginHint: query.login_hint,
-    });
-
-    reply
-      .headers({
-        "set-cookie": [
-          ...clearHostOnlyCookies(
-            [
-              STATE_COOKIE,
-              SESSION_COOKIE,
-              CSRF_COOKIE,
-              ...selectedOrganizationCookieNames(surfacePolicy),
-            ],
-            {
-              secure: options.cookieSecure,
-              domain: options.cookieDomain,
-            },
-          ),
-          ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
-          serializeCookie(
-            STATE_COOKIE,
-            encodeStateCookie(
-              addStateContext(
-                decodeStateCookies(readCookies(request, STATE_COOKIE), options.stateCookieSecret),
-                {
-                  state,
-                  surface,
-                  returnTo,
-                },
-              ),
-              options.stateCookieSecret,
-            ),
-            {
-              maxAge: AUTH_STATE_COOKIE_MAX_AGE_SECONDS,
-              secure: options.cookieSecure,
-              domain: options.cookieDomain,
-            },
-          ),
-        ],
-      })
-      .redirect(authorizationUrl);
-  });
-
-  app.get("/workos/signup", async (request, reply) => {
-    try {
-      const query = request.query as {
-        login_hint?: string;
-        surface?: string;
-        return_to?: string;
-        intent?: string;
-      };
-      const surface = parseRequiredSignupSurface(query.surface);
-      const surfacePolicy = getSurfacePolicy(surface, options);
-      const signupIntent = parseSignupIntent(surface, query.intent);
-      const returnTo = query.return_to
-        ? validateReturnTo(query.return_to, options.allowedOrigins)
-        : undefined;
-      const state = randomBytes(24).toString("base64url");
-      const authorizationUrl = options.authKitClient.getAuthorizationUrl({
-        redirectUri: options.callbackUrl,
-        state,
-        loginHint: query.login_hint,
-        screenHint: "sign-up",
-      });
-
-      return reply
-        .headers({
-          "set-cookie": [
-            ...clearHostOnlyCookies(
-              [
-                STATE_COOKIE,
-                SESSION_COOKIE,
-                CSRF_COOKIE,
-                ...selectedOrganizationCookieNames(surfacePolicy),
-              ],
-              {
-                secure: options.cookieSecure,
-                domain: options.cookieDomain,
-              },
-            ),
-            ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
-            serializeCookie(
-              STATE_COOKIE,
-              encodeStateCookie(
-                addStateContext(
-                  decodeStateCookies(readCookies(request, STATE_COOKIE), options.stateCookieSecret),
-                  {
-                    state,
-                    surface,
-                    returnTo,
-                    authFlow: "signup",
-                    signupIntent,
-                  },
-                ),
-                options.stateCookieSecret,
-              ),
-              {
-                maxAge: AUTH_STATE_COOKIE_MAX_AGE_SECONDS,
-                secure: options.cookieSecure,
-                domain: options.cookieDomain,
-              },
-            ),
-          ],
-        })
-        .redirect(authorizationUrl);
-    } catch (error) {
-      return reply.code(400).send({
-        error: "invalid_signup_request",
-        message: error instanceof Error ? error.message : "Invalid hosted signup request.",
-      });
-    }
-  });
 
   for (const path of [
     "/email-verification/confirm",
@@ -409,11 +246,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionRedirect(
+        return sendOrganizationSelectionSessionResponse(
           reply,
           session,
           error,
-          undefined,
           surfacePolicy,
           options,
         );
@@ -443,11 +279,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     const csrfToken = randomBytes(24).toString("base64url");
     reply.headers({
       "set-cookie": [
-        serializeCookie(STATE_COOKIE, "", {
-          maxAge: 0,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
         serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
           maxAge: 60 * 60 * 24 * 7,
           secure: options.cookieSecure,
@@ -571,11 +402,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionRedirect(
+        return sendOrganizationSelectionSessionResponse(
           reply,
           selectedSession,
           error,
-          undefined,
           surfacePolicy,
           options,
         );
@@ -600,11 +430,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     const csrfToken = randomBytes(24).toString("base64url");
     reply.headers({
       "set-cookie": [
-        serializeCookie(STATE_COOKIE, "", {
-          maxAge: 0,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
         serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
           maxAge: 60 * 60 * 24 * 7,
           secure: options.cookieSecure,
@@ -706,11 +531,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionRedirect(
+        return sendOrganizationSelectionSessionResponse(
           reply,
           selectedSession,
           error,
-          undefined,
           surfacePolicy,
           options,
         );
@@ -735,11 +559,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     const csrfToken = randomBytes(24).toString("base64url");
     reply.headers({
       "set-cookie": [
-        serializeCookie(STATE_COOKIE, "", {
-          maxAge: 0,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
         serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
           maxAge: 60 * 60 * 24 * 7,
           secure: options.cookieSecure,
@@ -855,152 +674,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     return reply.send({
       message: "Password reset successful. Please sign in with your new password.",
     });
-  });
-
-  app.get("/workos/callback", async (request, reply) => {
-    const query = request.query as {
-      code?: string;
-      state?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (query.error) {
-      return reply.code(400).send({
-        error: "authkit_callback_error",
-        message: query.error_description ?? query.error,
-      });
-    }
-    const stateContext = decodeStateCookies(
-      readCookies(request, STATE_COOKIE),
-      options.stateCookieSecret,
-    )
-      .flatMap((candidate) => {
-        const validated = validateDecodedStateContext(candidate, options.allowedOrigins);
-        return validated ? [validated] : [];
-      })
-      .find((candidate) => candidate.state === query.state);
-    if (!query.code || !query.state || !stateContext) {
-      return reply.code(400).send({
-        error: "invalid_auth_state",
-        message: "AuthKit callback state is missing, expired, or invalid.",
-      });
-    }
-    const surfacePolicy = getSurfacePolicy(stateContext.surface, options);
-
-    let session: AuthKitSession;
-    let effectiveStateContext = stateContext;
-    let signupOrganization: AuthSignupOrganizationContext | undefined;
-    let signupMembership: AuthSignupMembershipContext | undefined;
-    try {
-      const authenticatedSession = await options.authKitClient.authenticateWithCode({
-        code: query.code,
-        ipAddress: request.ip,
-        userAgent: request.headers["user-agent"],
-      });
-      const signupResolution = await ensureSignupOrganizationSession(
-        authenticatedSession,
-        effectiveStateContext,
-        options.authKitClient,
-      );
-      let resolvedSignup = signupResolution;
-      if (!resolvedSignup.organization && !authenticatedSession.organizationId) {
-        const loginSignupIntent = await loginPageSignupIntent(
-          authenticatedSession,
-          effectiveStateContext,
-          options,
-        );
-        if (loginSignupIntent) {
-          effectiveStateContext = {
-            ...effectiveStateContext,
-            authFlow: "signup",
-            signupIntent: loginSignupIntent,
-          };
-          resolvedSignup = await ensureSignupOrganizationSession(
-            authenticatedSession,
-            effectiveStateContext,
-            options.authKitClient,
-          );
-        }
-      }
-      session = resolvedSignup.session;
-      signupOrganization = resolvedSignup.organization;
-      signupMembership = resolvedSignup.membership;
-    } catch (error) {
-      return reply.code(403).send(toAuthError(error));
-    }
-    let resolution: IdentityResolution;
-    try {
-      resolution = await resolveOrCreateIdentity(
-        session,
-        request,
-        options,
-        surfacePolicy,
-        organizationAccessOptionsFromRequest(request, surfacePolicy),
-        signupContextFromState(effectiveStateContext, signupOrganization, signupMembership),
-      );
-    } catch (error) {
-      if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionRedirect(
-          reply,
-          session,
-          error,
-          stateContext.returnTo ?? surfacePolicy.callbackReturnUrl,
-          surfacePolicy,
-          options,
-        );
-      }
-      return reply.code(403).send(toAuthError(error));
-    }
-    await options.productAuditSink.record({
-      action: "auth.login",
-      authFlow: effectiveStateContext.authFlow ?? "login",
-      actorUserId: resolution.user.userId,
-      organizationId: resolution.organizationId,
-      surface: effectiveStateContext.surface,
-      signupIntent: effectiveStateContext.signupIntent,
-      workosUserId: session.user.id,
-      workosOrgId: resolution.session.organizationId,
-      workosSessionId: resolution.session.sessionId,
-      requestId: request.id,
-      occurredAt: new Date().toISOString(),
-    });
-
-    const csrfToken = randomBytes(24).toString("base64url");
-    reply.headers({
-      "set-cookie": [
-        serializeCookie(STATE_COOKIE, "", {
-          maxAge: 0,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
-        serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
-        serializeCookie(CSRF_COOKIE, csrfToken, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-          httpOnly: false,
-        }),
-        ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
-      ],
-    });
-    const callbackReturnUrl = stateContext.returnTo ?? surfacePolicy.callbackReturnUrl;
-    if (callbackReturnUrl) {
-      return reply.redirect(callbackReturnUrl);
-    }
-    return reply.send(
-      toSessionResponse(
-        resolution.session,
-        resolution.user,
-        csrfToken,
-        resolution.organizationId,
-        resolution.organizationKind,
-        resolution.resourceScope,
-      ),
-    );
   });
 
   app.get("/session", async (request, reply) => {
@@ -1238,13 +911,6 @@ function parseSurface(value: string | undefined): AuthSurface {
     return value;
   }
   throw new Error(`Unsupported AuthKit surface: ${value}`);
-}
-
-function parseRequiredSignupSurface(value: string | undefined): AuthSurface {
-  if (!value) {
-    throw new Error("Hosted signup surface is required");
-  }
-  return parseSurface(value);
 }
 
 function parsePasswordLoginBody(body: unknown):
@@ -1617,7 +1283,6 @@ function getSurfacePolicy(
 ): AuthSurfacePolicy {
   const defaultPlatformPolicy: AuthSurfacePolicy = {
     requiredOrganizationKind: options.requiredOrganizationKind,
-    callbackReturnUrl: options.callbackReturnUrl,
     logoutReturnUrl: options.logoutReturnUrl,
     legacyJwtSecret: options.legacyMarketplaceJwtSecret,
     legacyJwtUserType: "admin",
@@ -1646,146 +1311,6 @@ function validateReturnTo(rawReturnTo: string, allowedOrigins: string[]): string
   return url.toString();
 }
 
-function addStateContext(existing: AuthStateContext[], next: AuthStateContext): AuthStateContext[] {
-  return [...existing.filter((candidate) => candidate.state !== next.state), next].slice(
-    -MAX_PENDING_AUTH_STATES,
-  );
-}
-
-function encodeStateCookie(input: AuthStateContext[], secret: string): string {
-  const payload = Buffer.from(JSON.stringify(input)).toString("base64url");
-  return `v2.${payload}.${signStatePayload(payload, secret)}`;
-}
-
-function decodeStateCookies(values: string[], secret: string): AuthStateContext[] {
-  return values.flatMap((value) => decodeStateCookie(value, secret));
-}
-
-function decodeStateCookie(value: string | undefined, secret: string): AuthStateContext[] {
-  if (!value) return [];
-  if (value.startsWith("v2.")) {
-    const [, payload, signature] = value.split(".");
-    if (!payload || !signature || !verifyStatePayload(payload, signature, secret)) return [];
-    try {
-      const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-      const candidates = Array.isArray(parsed) ? parsed : [parsed];
-      return candidates.flatMap((candidate) => {
-        const stateContext = parseStateContext(candidate);
-        return stateContext ? [stateContext] : [];
-      });
-    } catch {
-      return [];
-    }
-  }
-  if (!value.startsWith("v1.")) {
-    return [{ state: value, surface: DEFAULT_SURFACE }];
-  }
-  try {
-    const parsed = JSON.parse(Buffer.from(value.slice(3), "base64url").toString("utf8"));
-    const candidates = Array.isArray(parsed) ? parsed : [parsed];
-    return candidates.flatMap((candidate) => {
-      const stateContext = parseStateContext(candidate);
-      if (stateContext?.authFlow === "signup") return [];
-      return stateContext ? [stateContext] : [];
-    });
-  } catch {
-    return [];
-  }
-}
-
-function parseStateContext(candidate: unknown): AuthStateContext | null {
-  if (!candidate || typeof candidate !== "object") return null;
-  const raw = candidate as {
-    state?: unknown;
-    surface?: unknown;
-    returnTo?: unknown;
-    authFlow?: unknown;
-    signupIntent?: unknown;
-  };
-  if (typeof raw.state !== "string") return null;
-  try {
-    const surface = parseSurface(typeof raw.surface === "string" ? raw.surface : undefined);
-    const authFlow = raw.authFlow === "signup" ? "signup" : undefined;
-    return {
-      state: raw.state,
-      surface,
-      returnTo: typeof raw.returnTo === "string" ? raw.returnTo : undefined,
-      authFlow,
-      signupIntent:
-        authFlow === "signup" && typeof raw.signupIntent === "string"
-          ? parseSignupIntent(surface, raw.signupIntent)
-          : undefined,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function validateDecodedStateContext(
-  candidate: AuthStateContext,
-  allowedOrigins: string[],
-): AuthStateContext | null {
-  if (!candidate.returnTo) return candidate;
-  try {
-    return {
-      ...candidate,
-      returnTo: validateReturnTo(candidate.returnTo, allowedOrigins),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function signStatePayload(payload: string, secret: string): string {
-  return createHmac("sha256", secret).update(payload).digest("base64url");
-}
-
-function verifyStatePayload(payload: string, signature: string, secret: string): boolean {
-  const expected = signStatePayload(payload, secret);
-  try {
-    return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-  } catch {
-    return false;
-  }
-}
-
-async function ensureSignupOrganizationSession(
-  session: AuthKitSession,
-  stateContext: AuthStateContext,
-  authKitClient: AuthKitClient,
-): Promise<AuthSignupSessionResolution> {
-  if (stateContext.authFlow !== "signup" || !stateContext.signupIntent) {
-    return { session };
-  }
-  const signupOrganization = await createSignupOrganizationContext(
-    authKitClient,
-    stateContext.surface,
-    stateContext.signupIntent,
-    session.user.email,
-    stateContext.state,
-  );
-  const membership = await authKitClient.ensureSignupOrganizationMembership({
-    workosUserId: session.user.id,
-    workosOrganizationId: signupOrganization.workosOrganizationId,
-    roleKey: signupOrganization.roleKey,
-  });
-  const signupMembership = {
-    workosMembershipId: membership.membershipId,
-    workosRoleSlugs: membership.roleSlugs,
-    status: membership.status,
-  };
-  const selectedSession = await selectSignupOrganizationSession(
-    session,
-    signupOrganization,
-    authKitClient,
-  );
-  return {
-    session: selectedSession,
-    organization: signupOrganization,
-    membership: signupMembership,
-  };
-}
-
 async function selectSignupOrganizationSession(
   session: AuthKitSession,
   signupOrganization: AuthSignupOrganizationContext,
@@ -1802,33 +1327,6 @@ async function selectSignupOrganizationSession(
     throw new Error("AuthKit signup organization session could not be selected");
   }
   return refreshed;
-}
-
-async function loginPageSignupIntent(
-  session: AuthKitSession,
-  stateContext: AuthStateContext,
-  options: AuthSessionRouteOptions,
-): Promise<AuthSignupIntent | undefined> {
-  if (stateContext.authFlow || session.organizationId) return undefined;
-  const intents = signupIntentsForSurface(stateContext.surface);
-  if (intents.length !== 1) return undefined;
-  const user = await options.identityRepository.findUserByProviderUserId("workos", session.user.id);
-  return user ? undefined : intents[0];
-}
-
-function signupContextFromState(
-  stateContext: AuthStateContext,
-  organization?: AuthSignupOrganizationContext,
-  membership?: AuthSignupMembershipContext,
-): AuthSignupContext | undefined {
-  if (stateContext.authFlow !== "signup" || !stateContext.signupIntent || !organization) {
-    return undefined;
-  }
-  return {
-    intent: stateContext.signupIntent,
-    organization,
-    membership,
-  };
 }
 
 function registerCompatibilityTokenRoute(
@@ -2289,22 +1787,16 @@ function isSurfaceOrganizationCandidate(
   );
 }
 
-function sendOrganizationSelectionRedirect(
+function sendOrganizationSelectionSessionResponse(
   reply: FastifyReply,
   session: AuthKitSession,
   error: OrganizationSelectionRequiredError,
-  callbackReturnUrl: string | undefined,
   surfacePolicy: AuthSurfacePolicy,
   options: AuthSessionRouteOptions,
 ) {
   const csrfToken = randomBytes(24).toString("base64url");
   reply.headers({
     "set-cookie": [
-      serializeCookie(STATE_COOKIE, "", {
-        maxAge: 0,
-        secure: options.cookieSecure,
-        domain: options.cookieDomain,
-      }),
       serializeCookie(SESSION_COOKIE, session.sealedSession, {
         maxAge: 60 * 60 * 24 * 7,
         secure: options.cookieSecure,
@@ -2319,9 +1811,6 @@ function sendOrganizationSelectionRedirect(
       ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
     ],
   });
-  if (callbackReturnUrl) {
-    return reply.redirect(callbackReturnUrl);
-  }
   return sendOrganizationSelectionResponse(reply, error, csrfToken);
 }
 

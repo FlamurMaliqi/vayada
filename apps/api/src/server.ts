@@ -274,15 +274,12 @@ const app = buildApp({
             issuer: config.auth.workosIssuer,
             audience: config.auth.workosAudience,
           }),
-          callbackUrl: config.authSession.authCallbackUrl,
-          callbackReturnUrl: config.authSession.authSuccessUrl,
           logoutReturnUrl: config.authSession.authLogoutUrl,
           allowedOrigins: config.authSession.authAllowedOrigins,
           requiredOrganizationKind: "platform",
           surfacePolicies: {
             "booking-admin": {
               requiredOrganizationKind: "hotel_group",
-              callbackReturnUrl: config.authSession.authBookingAdminSuccessUrl,
               logoutReturnUrl:
                 config.authSession.authBookingAdminLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyBookingJwtSecret,
@@ -294,7 +291,6 @@ const app = buildApp({
             },
             "pms-web": {
               requiredOrganizationKind: "hotel_group",
-              callbackReturnUrl: config.authSession.authPmsWebSuccessUrl,
               logoutReturnUrl:
                 config.authSession.authPmsWebLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyPmsJwtSecret,
@@ -308,7 +304,6 @@ const app = buildApp({
             },
             "affiliate-dashboard": {
               requiredOrganizationKind: "affiliate_partner",
-              callbackReturnUrl: config.authSession.authAffiliateDashboardSuccessUrl,
               logoutReturnUrl:
                 config.authSession.authAffiliateDashboardLogoutUrl ??
                 config.authSession.authLogoutUrl,
@@ -323,14 +318,12 @@ const app = buildApp({
             },
             "marketplace-web": {
               requiredOrganizationKind: ["creator_workspace", "hotel_group"],
-              callbackReturnUrl: config.authSession.authMarketplaceWebSuccessUrl,
               logoutReturnUrl:
                 config.authSession.authMarketplaceWebLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,
             },
           },
           cookieSecure: config.authSession.authCookieSecure,
-          stateCookieSecret: config.authSession.authCookieSecret,
           cookieDomain: config.authSession.authCookieDomain,
           legacyMarketplaceJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,
         }
