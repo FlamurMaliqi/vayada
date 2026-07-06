@@ -92,13 +92,16 @@ All network calls are mocked via `mockBookingApis`. No seeded backend is require
 
 ## Auth App Smokes
 
-The smoke tests for `affiliate-dashboard`, `marketplace-web`, and `vayada-admin` navigate to `/login` and verify the login shell renders without errors. AuthKit-backed admin product pages (`booking-admin` and `pms-web`) immediately redirect to hosted auth, so their smoke asserts the local redirect target and surface.
+The smoke tests for `affiliate-dashboard`, `booking-admin`, `pms-web`, and
+`vayada-admin` navigate to `/login` and verify the custom password login shell
+renders without errors. Marketplace smoke covers its custom auth routes
+separately.
 
-Focused next signup coverage is tagged `@signup`. It verifies PMS and Booking
-Admin `/signup` entrypoints redirect to hosted AuthKit signup with the expected
-surface and intent, Marketplace creator/hotel `/signup` entrypoints render the
-custom password signup forms, and Vayada Admin keeps public registration closed
-by redirecting `/register` back to login.
+Focused next signup coverage is tagged `@signup`. It verifies PMS, Booking
+Admin, and Marketplace creator/hotel `/signup` entrypoints render custom signup
+forms instead of redirecting to hosted AuthKit. Vayada Admin keeps public
+registration closed and its smoke asserts `/register` redirects back to login
+instead of creating a platform-admin self-service signup.
 
 ```bash
 npm run e2e -- \
@@ -111,10 +114,8 @@ npm run e2e -- \
 Use `E2E_START_SERVERS=1` with the same command when portless apps are not
 already running.
 
-The next-api hosted signup contract is covered by the focused AuthKit route
-test. It verifies explicit surface/intent validation, signed callback state, and
-that the public signup GET does not create a WorkOS organization before AuthKit
-returns a user:
+The next-api auth route test asserts the old hosted AuthKit GET routes remain
+unexposed and covers the custom password login/signup/session contracts:
 
 ```bash
 npm --workspace vayada-api run test -- src/authSession.test.ts

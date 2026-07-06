@@ -3,7 +3,7 @@
  * Uses the same booking engine auth backend (port 8001)
  */
 
-import { apiClient, ApiErrorResponse } from "../api/client";
+import { ApiErrorResponse } from "../api/client";
 import {
   clearAuthData,
   getAuthBearerToken,
@@ -14,10 +14,8 @@ import {
   isAuthOrganizationSelectionResponse,
   isAuthKitLoginEnabled,
   isCompatibilityTokenEnabled,
-  isLegacyPasswordFallbackEnabled,
   setAuthKitSession,
   setLegacyCompatibilityToken,
-  setLegacyPasswordSession,
   setPendingOrganizationSelection,
   type AuthSessionResponse,
 } from "./sessionStore";
@@ -30,16 +28,10 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface LoginResponse {
-  id: string;
-  email: string;
+export interface SignupRequest {
   name: string;
-  type: string;
-  status: string;
-  access_token: string;
-  token_type: string;
-  expires_in: number;
-  message: string;
+  email: string;
+  password: string;
 }
 
 type CompatibilityTokenResponse = {
@@ -84,24 +76,26 @@ async function attachPmsCompatibilityToken(): Promise<void> {
   setLegacyCompatibilityToken(response.accessToken, response.expiresIn);
 }
 
+async function storeAuthSessionResponse(
+  response: AuthSessionResponse,
+): Promise<AuthSessionResponse> {
+  if (isAuthOrganizationSelectionResponse(response)) {
+    setPendingOrganizationSelection(response);
+    return response;
+  }
+  setAuthKitSession(response);
+  if (isCompatibilityTokenEnabled()) {
+    try {
+      await attachPmsCompatibilityToken();
+    } catch {
+      /* First-run PMS setup can complete before a legacy PMS property link exists. */
+    }
+  }
+  return response;
+}
+
 export const authService = {
   isAuthKitEnabled: isAuthKitLoginEnabled,
-
-  isLegacyFallbackEnabled: isLegacyPasswordFallbackEnabled,
-
-  startHostedLogin: (loginHint?: string, returnTo?: string): void => {
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/workos/login`);
-    url.searchParams.set("surface", AUTH_SURFACE);
-    if (typeof window !== "undefined") {
-      const callbackUrl = new URL("/login?auth=callback", window.location.origin);
-      if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
-        callbackUrl.searchParams.set("returnTo", returnTo);
-      }
-      url.searchParams.set("return_to", callbackUrl.toString());
-    }
-    if (loginHint) url.searchParams.set("login_hint", loginHint);
-    window.location.href = url.toString();
-  },
 
   refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
@@ -114,19 +108,7 @@ export const authService = {
           })
         : await authFetch<AuthSessionResponse>(`/auth/session?surface=${AUTH_SURFACE}`);
 
-    if (isAuthOrganizationSelectionResponse(response)) {
-      setPendingOrganizationSelection(response);
-      return response;
-    }
-    setAuthKitSession(response);
-    if (isCompatibilityTokenEnabled()) {
-      try {
-        await attachPmsCompatibilityToken();
-      } catch {
-        /* First-run PMS setup can complete before a legacy PMS property link exists. */
-      }
-    }
-    return response;
+    return storeAuthSessionResponse(response);
   },
 
   ensureSession: async (): Promise<boolean> => {
@@ -146,26 +128,20 @@ export const authService = {
     }
   },
 
-  login: async (data: LoginRequest): Promise<LoginResponse> => {
-    const response = await apiClient.post<LoginResponse>("/auth/login", data);
-
-    if (response.type !== "hotel") {
-      throw new Error("Access denied. Hotel admin account required.");
-    }
-
-    setLegacyPasswordSession({
-      token: response.access_token,
-      expiresIn: response.expires_in,
-      user: {
-        id: response.id,
-        email: response.email,
-        name: response.name,
-        type: response.type,
-        status: response.status,
-      },
+  login: async (data: LoginRequest): Promise<AuthSessionResponse> => {
+    const response = await authFetch<AuthSessionResponse>("/auth/password/login", {
+      method: "POST",
+      body: JSON.stringify({ ...data, surface: AUTH_SURFACE }),
     });
+    return storeAuthSessionResponse(response);
+  },
 
-    return response;
+  signup: async (data: SignupRequest): Promise<AuthSessionResponse> => {
+    const response = await authFetch<AuthSessionResponse>("/auth/password/signup", {
+      method: "POST",
+      body: JSON.stringify({ ...data, surface: AUTH_SURFACE, type: "hotel" }),
+    });
+    return storeAuthSessionResponse(response);
   },
 
   logout: async (): Promise<void> => {

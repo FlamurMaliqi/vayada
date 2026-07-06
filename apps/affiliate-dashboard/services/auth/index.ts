@@ -36,14 +36,13 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 export const authService = {
-  startHostedLogin: (loginHint?: string): void => {
-    const url = new URL(`${AUTH_API_URL}/auth/workos/login`);
-    url.searchParams.set("surface", AFFILIATE_SURFACE);
-    if (loginHint) url.searchParams.set("login_hint", loginHint);
-    if (typeof window !== "undefined") {
-      url.searchParams.set("return_to", `${window.location.origin}/dashboard`);
-    }
-    window.location.href = url.toString();
+  login: async (email: string, password: string): Promise<AuthKitSessionResponse> => {
+    const response = await authFetch<AuthKitSessionResponse>("/auth/password/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password, surface: AFFILIATE_SURFACE }),
+    });
+    setAuthKitSession(response);
+    return response;
   },
 
   refreshSession: async (organizationId?: string): Promise<AuthKitSessionResponse> => {

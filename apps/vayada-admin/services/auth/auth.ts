@@ -13,16 +13,13 @@ import {
   hasPlatformAccessMarker,
   isAuthKitLoginEnabled,
   isCompatibilityTokenEnabled,
-  isLegacyPasswordFallbackEnabled,
   setAuthKitSession,
   setLegacyCompatibilityToken,
-  setLegacyPasswordSession,
   type AuthKitSessionResponse,
 } from "./sessionStore";
 
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 const PLATFORM_AUTH_SURFACE = "platform-admin";
-const PLATFORM_WORKOS_ORG_ID = process.env.NEXT_PUBLIC_PLATFORM_WORKOS_ORG_ID;
 
 type CompatibilityTokenResponse = {
   accessToken: string;
@@ -76,33 +73,8 @@ async function attachMarketplaceCompatibilityToken(): Promise<void> {
   }
 }
 
-function storeLegacyLoginResponse(response: LoginResponse): void {
-  setLegacyPasswordSession({
-    token: response.access_token!,
-    expiresIn: response.expires_in!,
-    user: {
-      id: response.id!,
-      email: response.email!,
-      name: response.name!,
-      type: response.type!,
-      status: response.status!,
-      is_superadmin: response.is_superadmin,
-    },
-  });
-}
-
 export const authService = {
   isAuthKitEnabled: isAuthKitLoginEnabled,
-
-  isLegacyFallbackEnabled: isLegacyPasswordFallbackEnabled,
-
-  startHostedLogin: (loginHint?: string): void => {
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/workos/login`);
-    url.searchParams.set("surface", PLATFORM_AUTH_SURFACE);
-    if (PLATFORM_WORKOS_ORG_ID) url.searchParams.set("organization_id", PLATFORM_WORKOS_ORG_ID);
-    if (loginHint) url.searchParams.set("login_hint", loginHint);
-    window.location.href = url.toString();
-  },
 
   /**
    * Refresh the AuthKit browser session and in-memory access token. Passing a
@@ -143,47 +115,27 @@ export const authService = {
     }
   },
 
-  /**
-   * Legacy password fallback. AuthKit is the primary login path while rollout
-   * fallback remains enabled for unlinked users.
-   */
   login: async (data: LoginRequest): Promise<LoginResponse> => {
-    try {
-      const response = await apiClient.post<LoginResponse>("/auth/login", data);
-
-      if (response.requires_totp) {
-        return response;
-      }
-
-      if (!response.is_superadmin) {
-        throw new Error("Access denied. Superadmin account required.");
-      }
-
-      storeLegacyLoginResponse(response);
-      return response;
-    } catch (error) {
-      if (error instanceof ApiErrorResponse) {
-        throw error;
-      }
-      throw error;
-    }
-  },
-
-  /**
-   * Complete legacy TOTP login step after successful password auth.
-   */
-  verifyTotp: async (totpSession: string, code: string): Promise<LoginResponse> => {
-    const response = await apiClient.post<LoginResponse>("/auth/totp/verify", {
-      totp_session: totpSession,
-      code,
+    const response = await authFetch<AuthKitSessionResponse>("/auth/password/login", {
+      method: "POST",
+      body: JSON.stringify({ ...data, surface: PLATFORM_AUTH_SURFACE }),
     });
-
-    if (!response.is_superadmin) {
-      throw new Error("Access denied. Superadmin account required.");
+    setAuthKitSession(response);
+    if (isCompatibilityTokenEnabled()) {
+      await attachMarketplaceCompatibilityToken();
     }
-
-    storeLegacyLoginResponse(response);
-    return response;
+    return {
+      id: response.user.id,
+      email: response.user.email,
+      name: response.user.email,
+      type: "admin",
+      status: response.user.status,
+      access_token: response.accessToken,
+      token_type: "Bearer",
+      expires_in: 3600,
+      message: "Login successful",
+      is_superadmin: true,
+    };
   },
 
   /**
