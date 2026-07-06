@@ -55,52 +55,6 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
   return body as T;
 }
 
-/**
- * Store JWT token and expiration time
- */
-function storeToken(token: string, expiresIn: number): void {
-  if (typeof window === "undefined") return;
-
-  localStorage.setItem(TOKEN_KEY, token);
-  const expiresAt = Date.now() + expiresIn * 1000;
-  localStorage.setItem(EXPIRES_AT_KEY, expiresAt.toString());
-}
-
-/**
- * Store user data in localStorage
- */
-function storeUserData(data: {
-  id: string;
-  email: string;
-  name: string;
-  type: string;
-  status: string;
-  is_superadmin?: boolean;
-}): void {
-  if (typeof window === "undefined") return;
-
-  localStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
-  localStorage.setItem(STORAGE_KEYS.USER_ID, data.id);
-  localStorage.setItem(STORAGE_KEYS.USER_EMAIL, data.email);
-  localStorage.setItem(STORAGE_KEYS.USER_NAME, data.name);
-  localStorage.setItem(STORAGE_KEYS.USER_TYPE, data.type);
-  localStorage.setItem(STORAGE_KEYS.USER_STATUS, data.status);
-  localStorage.setItem(STORAGE_KEYS.IS_SUPERADMIN, data.is_superadmin ? "true" : "false");
-
-  // Store full user object for easy access
-  localStorage.setItem(
-    STORAGE_KEYS.USER,
-    JSON.stringify({
-      id: data.id,
-      email: data.email,
-      name: data.name,
-      type: data.type,
-      status: data.status,
-      is_superadmin: data.is_superadmin || false,
-    }),
-  );
-}
-
 async function attachMarketplaceCompatibilityToken(): Promise<void> {
   const csrfToken = getAuthCsrfToken();
   if (!csrfToken) return;
@@ -212,20 +166,24 @@ export const authService = {
   /**
    * Login user
    */
-  login: async (data: LoginRequest): Promise<LoginResponse> => {
+  login: async (data: LoginRequest): Promise<AuthSessionResponse> => {
     try {
-      const response = await apiClient.post<LoginResponse>("/auth/login", data);
-
-      // Store token and user data
-      storeToken(response.access_token, response.expires_in);
-      storeUserData({
-        id: response.id,
-        email: response.email,
-        name: response.name,
-        type: response.type,
-        status: response.status,
+      const response = await authFetch<AuthSessionResponse>("/auth/password/login", {
+        method: "POST",
+        body: JSON.stringify({
+          ...data,
+          surface: AUTH_SURFACE,
+        }),
       });
 
+      if (isAuthOrganizationSelectionResponse(response)) {
+        setPendingOrganizationSelection(response);
+        return response;
+      }
+      setAuthKitSession(response);
+      if (isCompatibilityTokenEnabled()) {
+        await attachMarketplaceCompatibilityToken();
+      }
       return response;
     } catch (error) {
       if (error instanceof ApiErrorResponse) {

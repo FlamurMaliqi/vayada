@@ -15,6 +15,8 @@ import type {
 } from "@vayada/backend-auth";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
+import { mapWorkOSAuthError } from "../platform/workosAuthState.js";
+
 export type AuthKitUser = {
   id: string;
   email: string;
@@ -43,6 +45,12 @@ export type AuthKitClient = {
     ipAddress?: string;
     userAgent?: string;
   }): Promise<AuthKitSession>;
+  authenticateWithPassword(input: {
+    email: string;
+    password: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<AuthKitSession>;
   authenticateSession(input: { sealedSession: string }): Promise<AuthKitSession | null>;
   refreshSession(input: {
     sealedSession: string;
@@ -63,9 +71,10 @@ export type AuthKitClient = {
 };
 
 export type ProductAuditEvent = {
-  action: "auth.login" | "auth.logout" | "auth.compatibility_token.issued";
+  action: "auth.login" | "auth.login.failed" | "auth.logout" | "auth.compatibility_token.issued";
   authFlow?: "login" | "signup";
   actorUserId?: string;
+  failureReason?: string;
   organizationId?: string;
   surface?: AuthSurface;
   signupIntent?: AuthSignupIntent;
@@ -316,6 +325,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
   });
 
   for (const path of [
+    "/password/login",
     "/session",
     "/session/refresh",
     "/logout",
@@ -332,6 +342,112 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(204).send();
     });
   }
+
+  app.post("/password/login", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Authentication request origin is not allowed.",
+      });
+    }
+    const parsed = parsePasswordLoginBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+    let session: AuthKitSession;
+    try {
+      session = await options.authKitClient.authenticateWithPassword({
+        email: parsed.email,
+        password: parsed.password,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+    } catch (error) {
+      const mapped = mapWorkOSAuthError(error);
+      await recordPasswordLoginFailure(options, request, parsed.surface, mapped.state);
+      if (mapped.state === "auth_failed") {
+        request.log.error({ err: error }, "WorkOS password authentication failed");
+      }
+      return reply.code(statusForPasswordAuthFailure(mapped.state)).send(mapped);
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      resolution = await resolveOrCreateIdentity(
+        session,
+        request,
+        options,
+        surfacePolicy,
+        organizationAccessOptionsFromRequest(request, surfacePolicy),
+      );
+    } catch (error) {
+      if (error instanceof OrganizationSelectionRequiredError) {
+        return sendOrganizationSelectionRedirect(
+          reply,
+          session,
+          error,
+          undefined,
+          surfacePolicy,
+          options,
+        );
+      }
+      await recordPasswordLoginFailure(options, request, parsed.surface, "identity_resolution", {
+        workosUserId: session.user.id,
+        workosOrgId: session.organizationId,
+        workosSessionId: session.sessionId,
+      });
+      request.log.warn({ err: error }, "Password login identity resolution failed");
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    await options.productAuditSink.record({
+      action: "auth.login",
+      authFlow: "login",
+      actorUserId: resolution.user.userId,
+      organizationId: resolution.organizationId,
+      surface: parsed.surface,
+      workosUserId: session.user.id,
+      workosOrgId: resolution.session.organizationId,
+      workosSessionId: resolution.session.sessionId,
+      requestId: request.id,
+      occurredAt: new Date().toISOString(),
+    });
+
+    const csrfToken = randomBytes(24).toString("base64url");
+    reply.headers({
+      "set-cookie": [
+        serializeCookie(STATE_COOKIE, "", {
+          maxAge: 0,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+        }),
+        serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
+          maxAge: 60 * 60 * 24 * 7,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+        }),
+        serializeCookie(CSRF_COOKIE, csrfToken, {
+          maxAge: 60 * 60 * 24 * 7,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+          httpOnly: false,
+        }),
+        ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
+      ],
+    });
+    return reply.send(
+      toSessionResponse(
+        resolution.session,
+        resolution.user,
+        csrfToken,
+        resolution.organizationId,
+        resolution.organizationKind,
+        resolution.resourceScope,
+      ),
+    );
+  });
 
   app.get("/workos/callback", async (request, reply) => {
     const query = request.query as {
@@ -700,6 +816,73 @@ function parseRequiredSignupSurface(value: string | undefined): AuthSurface {
     throw new Error("Hosted signup surface is required");
   }
   return parseSurface(value);
+}
+
+function parsePasswordLoginBody(body: unknown):
+  | { ok: true; email: string; password: string; surface: AuthSurface }
+  | {
+      ok: false;
+      error: { state: "auth_failed"; message: string };
+    } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Email and password are required." },
+    };
+  }
+  const input = body as { email?: unknown; password?: unknown; surface?: unknown };
+  const email = typeof input.email === "string" ? input.email.trim() : "";
+  const password = typeof input.password === "string" ? input.password : "";
+  if (!email || !password) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Email and password are required." },
+    };
+  }
+  try {
+    return {
+      ok: true,
+      email,
+      password,
+      surface: parseSurface(typeof input.surface === "string" ? input.surface : undefined),
+    };
+  } catch {
+    return { ok: false, error: { state: "auth_failed", message: "Unsupported login surface." } };
+  }
+}
+
+function statusForPasswordAuthFailure(state: string): 401 | 403 | 502 {
+  if (state === "invalid_credentials") return 401;
+  if (state === "auth_failed") return 502;
+  return 403;
+}
+
+async function recordPasswordLoginFailure(
+  options: AuthSessionRouteOptions,
+  request: FastifyRequest,
+  surface: AuthSurface,
+  failureReason: string,
+  workos?: {
+    workosUserId?: string;
+    workosOrgId?: string;
+    workosSessionId?: string;
+  },
+): Promise<void> {
+  try {
+    await options.productAuditSink.record({
+      action: "auth.login.failed",
+      authFlow: "login",
+      surface,
+      failureReason,
+      workosUserId: workos?.workosUserId,
+      workosOrgId: workos?.workosOrgId,
+      workosSessionId: workos?.workosSessionId,
+      requestId: request.id,
+      occurredAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    request.log.error({ err: error }, "Password login failure audit write failed");
+  }
 }
 
 function parseSignupIntent(surface: AuthSurface, value: string | undefined): AuthSignupIntent {

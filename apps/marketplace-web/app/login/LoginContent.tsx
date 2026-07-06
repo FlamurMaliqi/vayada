@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
+import LoginForm from "@/components/auth/LoginForm";
 import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
 import { authService } from "@/services/auth";
 import {
@@ -16,12 +17,17 @@ import type { UserType } from "@/lib/types";
 
 type LoginContentProps = {
   returnTo?: string;
+  resumeSession?: boolean;
 };
 
-export function LoginContent({ returnTo = ROUTES.MARKETPLACE }: LoginContentProps) {
+export function LoginContent({
+  returnTo = ROUTES.MARKETPLACE,
+  resumeSession = false,
+}: LoginContentProps) {
   const router = useRouter();
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [organizationSelection, setOrganizationSelection] =
     useState<AuthOrganizationSelectionResponse | null>(null);
 
@@ -51,6 +57,26 @@ export function LoginContent({ returnTo = ROUTES.MARKETPLACE }: LoginContentProp
     router.push(redirectPath);
   }, [returnTo, router]);
 
+  const handleLogin = useCallback(
+    async (email: string, password: string) => {
+      setSubmitError("");
+      setIsSubmitting(true);
+      try {
+        const response = await authService.login({ email, password });
+        if (isAuthOrganizationSelectionResponse(response)) {
+          setOrganizationSelection(response);
+          return;
+        }
+        await redirectAfterLogin();
+      } catch (error) {
+        setSubmitError(error instanceof Error ? error.message : "Login failed. Please try again.");
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [redirectAfterLogin],
+  );
+
   const handleOrganizationSelect = useCallback(
     async (workosOrganizationId: string) => {
       setSubmitError("");
@@ -72,9 +98,10 @@ export function LoginContent({ returnTo = ROUTES.MARKETPLACE }: LoginContentProp
   );
 
   useEffect(() => {
+    if (!resumeSession) return;
     let cancelled = false;
     setSubmitError("");
-    setIsSubmitting(true);
+    setIsResuming(true);
     authService
       .refreshSession()
       .then(async (response) => {
@@ -91,13 +118,15 @@ export function LoginContent({ returnTo = ROUTES.MARKETPLACE }: LoginContentProp
       })
       .finally(() => {
         if (!cancelled) {
-          setIsSubmitting(false);
+          setIsResuming(false);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [redirectAfterLogin]);
+  }, [redirectAfterLogin, resumeSession]);
+
+  const isResumingSession = resumeSession && isResuming && !organizationSelection && !submitError;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
@@ -112,12 +141,18 @@ export function LoginContent({ returnTo = ROUTES.MARKETPLACE }: LoginContentProp
             priority
           />
           <h1 className="text-xl font-bold text-gray-900">
-            {organizationSelection ? "Choose workspace" : "Signing you in"}
+            {organizationSelection
+              ? "Choose workspace"
+              : isResumingSession
+                ? "Signing you in"
+                : "Sign in to vayada"}
           </h1>
           <p className="text-[13px] text-gray-500 mt-1">
             {organizationSelection
               ? "Select where you want to continue."
-              : "Finishing secure sign in..."}
+              : isResumingSession
+                ? "Finishing secure sign in..."
+                : "Use your email and password to continue."}
           </p>
         </div>
 
@@ -134,23 +169,24 @@ export function LoginContent({ returnTo = ROUTES.MARKETPLACE }: LoginContentProp
                 {organization.displayName}
               </button>
             ))}
+            {submitError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {submitError}
+              </div>
+            )}
           </div>
         )}
 
-        {submitError && (
-          <div className="space-y-5">
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <p className="text-sm text-red-800 font-medium">{submitError}</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => authService.startHostedLogin(undefined, returnTo)}
-              disabled={isSubmitting}
-              className="w-full px-4 py-2.5 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 transition-colors"
-            >
-              Sign in again
-            </button>
-          </div>
+        {isResumingSession && <p className="text-center text-sm text-gray-600">Please wait...</p>}
+
+        {!organizationSelection && !isResumingSession && (
+          <LoginForm
+            onSubmit={handleLogin}
+            isSubmitting={isSubmitting}
+            submitError={submitError}
+            onErrorClear={() => setSubmitError("")}
+            showRegister={false}
+          />
         )}
       </div>
     </div>

@@ -41,8 +41,25 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       return toAuthKitSession(response);
     },
 
+    async authenticateWithPassword(input) {
+      const response = await workos.userManagement.authenticateWithPassword({
+        email: input.email,
+        password: input.password,
+        clientId: config.clientId,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+        session: {
+          sealSession: true,
+          cookiePassword: config.cookiePassword,
+        },
+      });
+      return toAuthKitSession(response);
+    },
+
     async authenticateSession(input) {
-      let response: Awaited<ReturnType<ReturnType<typeof workos.userManagement.loadSealedSession>["authenticate"]>>;
+      let response: Awaited<
+        ReturnType<ReturnType<typeof workos.userManagement.loadSealedSession>["authenticate"]>
+      >;
       try {
         response = await workos.userManagement
           .loadSealedSession({
