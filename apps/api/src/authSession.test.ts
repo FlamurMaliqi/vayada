@@ -60,6 +60,10 @@ describe("AuthKit session routes", () => {
     expect(response.headers["set-cookie"]).toEqual(
       expect.arrayContaining([expect.stringContaining("vayada_workos_state=")]),
     );
+    const stateCookie = (response.headers["set-cookie"] as string[]).find((cookie) =>
+      cookie.startsWith("vayada_workos_state="),
+    );
+    expect(stateCookie).toContain("Max-Age=3600");
   });
 
   it("redirects hosted signup to AuthKit with validated surface intent state", async () => {
@@ -480,6 +484,35 @@ describe("AuthKit session routes", () => {
       }),
     ]);
     expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
+  });
+
+  it("marks secure AuthKit cookies usable for cross-origin product app fetches", async () => {
+    app = buildAuthSessionApp({ cookieSecure: true });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=callback-state",
+      headers: {
+        cookie: "vayada_workos_state=callback-state",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "vayada_workos_session=sealed-session; Path=/auth; Max-Age=604800; SameSite=None; HttpOnly; Secure",
+        ),
+        expect.stringContaining("vayada_auth_csrf="),
+      ]),
+    );
+    const csrfCookie = (response.headers["set-cookie"] as string[]).find((cookie) =>
+      cookie.startsWith("vayada_auth_csrf="),
+    );
+    expect(csrfCookie).toContain("Path=/auth");
+    expect(csrfCookie).toContain("Max-Age=604800");
+    expect(csrfCookie).toContain("SameSite=None");
+    expect(csrfCookie).toContain("Secure");
   });
 
   it("treats the WorkOS sign-up link from PMS login as hotel signup", async () => {
@@ -2104,6 +2137,74 @@ describe("AuthKit session routes", () => {
     expect(response.json().message).toContain("booking/booking_hotel resource link");
   });
 
+  it("mints a marketplace compatibility token for creator workspaces", async () => {
+    const creatorSession: AuthKitSession = {
+      ...session,
+      organizationId: "org_workos_creator_workspace",
+      user: {
+        ...session.user,
+        id: "user_workos_creator",
+        email: "creator@example.com",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return creatorSession;
+        },
+      }),
+      tokenVerifier: createTokenVerifier(creatorSession),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_creator",
+          email: "creator@example.com",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_creator_workspace",
+          workosOrgId: "org_workos_creator_workspace",
+          name: "Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          logoutReturnUrl: "https://marketplace.localhost/login",
+          legacyJwtSecret: "legacy-marketplace-secret",
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/compat/marketplace-web-token",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(readJwtPayload(response.json().accessToken)).toMatchObject({
+      sub: "user_creator",
+      email: "creator@example.com",
+      type: "creator",
+      org: "org_creator_workspace",
+      surface: "marketplace-web",
+    });
+  });
+
   it("mints a PMS compatibility token scoped to the selected PMS property", async () => {
     const pmsSession: AuthKitSession = {
       ...session,
@@ -2437,6 +2538,7 @@ function buildAuthSessionApp(
     callbackReturnUrl?: string;
     legacyMarketplaceJwtSecret?: string;
     allowedOrigins?: string[];
+    cookieSecure?: boolean;
     surfacePolicies?: Partial<
       Record<
         "platform-admin" | "booking-admin" | "pms-web" | "affiliate-dashboard" | "marketplace-web",
@@ -2461,7 +2563,7 @@ function buildAuthSessionApp(
       allowedOrigins: options.allowedOrigins ?? ["https://admin.localhost"],
       requiredOrganizationKind: "platform",
       surfacePolicies: options.surfacePolicies,
-      cookieSecure: false,
+      cookieSecure: options.cookieSecure ?? false,
       stateCookieSecret: TEST_STATE_COOKIE_SECRET,
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
     },

@@ -19,6 +19,11 @@ const CREATOR_TYPES = [
     icon: PaperAirplaneIcon,
     label: "Travel Creator",
   },
+  {
+    type: "Other" as CreatorType,
+    icon: SparklesIcon,
+    label: "Other Creator",
+  },
 ];
 
 export function CreatorTypeStep({ selectedType, onSelect }: CreatorTypeStepProps) {
@@ -31,7 +36,7 @@ export function CreatorTypeStep({ selectedType, onSelect }: CreatorTypeStepProps
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {CREATOR_TYPES.map(({ type, icon: Icon, label }) => {
           const isSelected = selectedType === type;
 

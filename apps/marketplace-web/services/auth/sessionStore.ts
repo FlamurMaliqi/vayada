@@ -40,6 +40,7 @@ const SELECTED_SHARED_PROPERTY_ORG_ID_KEY = "selectedSharedPropertyOrganizationI
 
 let authKitSession: AuthKitSessionResponse | null = null;
 let pendingOrganizationSelectionCsrfToken: string | null = null;
+let legacyCompatibilityToken: { token: string; expiresAt: number } | null = null;
 
 // Marketplace shared API calls need the in-memory AuthKit bearer token before
 // any page-level bootstrap code runs, so the provider is intentionally wired on import.
@@ -49,9 +50,14 @@ export function isAuthKitLoginEnabled(): boolean {
   return process.env.NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED !== "false";
 }
 
+export function isCompatibilityTokenEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED === "true";
+}
+
 export function setAuthKitSession(session: AuthKitSessionResponse): void {
   authKitSession = session;
   pendingOrganizationSelectionCsrfToken = null;
+  legacyCompatibilityToken = null;
   if (typeof window === "undefined") return;
 
   clearSharedPropertySelectionIfOrganizationChanged(session.organizationId);
@@ -86,6 +92,13 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   );
 }
 
+export function setLegacyCompatibilityToken(token: string, expiresIn: number): void {
+  legacyCompatibilityToken = {
+    token,
+    expiresAt: Date.now() + expiresIn * 1000,
+  };
+}
+
 export function setPendingOrganizationSelection(
   selection: AuthOrganizationSelectionResponse,
 ): void {
@@ -95,6 +108,7 @@ export function setPendingOrganizationSelection(
 export function clearAuthData(): void {
   authKitSession = null;
   pendingOrganizationSelectionCsrfToken = null;
+  legacyCompatibilityToken = null;
   if (typeof window === "undefined") return;
 
   localStorage.removeItem(LEGACY_TOKEN_KEY);
@@ -118,6 +132,19 @@ export function getAuthCsrfToken(): string | null {
 }
 
 export function getAuthBearerToken(): string | null {
+  const compatibilityToken = getLegacyCompatibilityToken();
+  if (isCompatibilityTokenEnabled() && compatibilityToken) return compatibilityToken;
+  return getAuthKitAccessToken();
+}
+
+function getLegacyCompatibilityToken(): string | null {
+  if (legacyCompatibilityToken && Date.now() < legacyCompatibilityToken.expiresAt - 30_000) {
+    return legacyCompatibilityToken.token;
+  }
+  return null;
+}
+
+export function getAuthKitAccessToken(): string | null {
   return authKitSession?.accessToken ?? null;
 }
 

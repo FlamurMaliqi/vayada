@@ -47,6 +47,7 @@ import { createPgPmsModuleActivationRepository } from "./routes/pmsModuleActivat
 import { createPgMarketplaceCollaborationReadRepository } from "./routes/marketplaceCollaborations.js";
 import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js";
 import { createPgMarketplaceHotelProfileStatusRepository } from "./routes/marketplaceHotelProfileStatus.js";
+import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
@@ -325,6 +326,7 @@ const app = buildApp({
               callbackReturnUrl: config.authSession.authMarketplaceWebSuccessUrl,
               logoutReturnUrl:
                 config.authSession.authMarketplaceWebLogoutUrl ?? config.authSession.authLogoutUrl,
+              legacyJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,
             },
           },
           cookieSecure: config.authSession.authCookieSecure,
@@ -410,6 +412,11 @@ const app = buildApp({
           connectionString: config.targetDatabaseUrl!,
         })
       : undefined,
+  marketplaceCreatorSelfServiceRepository: config.targetDatabaseUrl
+    ? createPgMarketplaceCreatorSelfServiceRepository({
+        connectionString: config.targetDatabaseUrl,
+      })
+    : undefined,
   sharedHotelSetupStatusRepository,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth

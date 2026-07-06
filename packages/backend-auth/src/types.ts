@@ -91,6 +91,7 @@ export type RequestActor = {
 export type SelectedOrganization = {
   organizationId: string;
   workosOrgId?: string;
+  name?: string;
   kind: OrganizationKind;
   status: OrganizationStatus;
 };

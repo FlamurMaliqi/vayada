@@ -34,6 +34,7 @@ export default function ProfileCompletePage() {
   const [profileStatus, setProfileStatus] = useState<
     CreatorProfileStatus | HotelProfileStatus | null
   >(null);
+  const [profileStatusLoadFailed, setProfileStatusLoadFailed] = useState(false);
   const [error, setError] = useState("");
   const [profileCompleted, setProfileCompleted] = useState(false);
   const [currentStep, setCurrentStep] = useState<number>(1);
@@ -56,6 +57,11 @@ export default function ProfileCompletePage() {
         return;
       }
 
+      if (storedUserType === "admin") {
+        router.replace(ROUTES.MARKETPLACE);
+        return;
+      }
+
       const userName = localStorage.getItem(STORAGE_KEYS.USER_NAME) || "";
 
       if (storedUserType === "creator") {
@@ -63,7 +69,7 @@ export default function ProfileCompletePage() {
       }
 
       if (storedUserType) {
-        loadProfileStatus(storedUserType, true);
+        void loadProfileStatus(storedUserType, true);
       } else {
         router.push(ROUTES.LOGIN);
       }
@@ -71,10 +77,11 @@ export default function ProfileCompletePage() {
   }, [router]);
 
   const loadProfileStatus = async (
-    type: UserType,
+    type: "creator" | "hotel",
     skipRedirect = false,
   ): Promise<CreatorProfileStatus | HotelProfileStatus | null> => {
     setLoading(true);
+    setProfileStatusLoadFailed(false);
     try {
       const status = await checkProfileStatus(type);
       setProfileStatus(status);
@@ -84,6 +91,12 @@ export default function ProfileCompletePage() {
       return status;
     } catch (err) {
       console.error("Failed to load profile status:", err);
+      setProfileStatusLoadFailed(true);
+      setError(
+        err instanceof ApiErrorResponse
+          ? formatErrorDetail(err.data.detail) || "Failed to load profile status."
+          : "Failed to load profile status. Please try again.",
+      );
       return null;
     } finally {
       setLoading(false);
@@ -469,9 +482,22 @@ export default function ProfileCompletePage() {
   };
 
   if (loading) return <LoadingScreen />;
-  if (!userType || !profileStatus) return null;
+  if (!userType) return null;
+  if (userType !== "creator" && userType !== "hotel") return null;
+  if (profileStatusLoadFailed) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 lg:px-8">
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error || "Failed to load profile status. Please refresh the page."}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const effectiveProfileStatus = profileStatus ?? emptyProfileStatus(userType);
 
-  if (profileCompleted || profileStatus.profile_complete) {
+  if (profileCompleted || effectiveProfileStatus.profile_complete) {
     return (
       <ProfileCompletionScreen
         userType={userType}
@@ -483,7 +509,7 @@ export default function ProfileCompletePage() {
 
   const steps = userType === "creator" ? creatorSteps : hotelSteps;
   const totalSteps = steps.length;
-  const completionPercentage = profileStatus?.profile_complete
+  const completionPercentage = effectiveProfileStatus.profile_complete
     ? 100
     : userType === "creator"
       ? creatorForm.calculateProgress()
@@ -604,4 +630,24 @@ export default function ProfileCompletePage() {
       </div>
     </div>
   );
+}
+
+function emptyProfileStatus(
+  userType: "creator" | "hotel",
+): CreatorProfileStatus | HotelProfileStatus {
+  if (userType === "creator") {
+    return {
+      profile_complete: false,
+      missing_fields: [],
+      missing_platforms: true,
+      completion_steps: [],
+    };
+  }
+  return {
+    profile_complete: false,
+    missing_fields: [],
+    has_defaults: { location: false },
+    missing_listings: true,
+    completion_steps: [],
+  };
 }

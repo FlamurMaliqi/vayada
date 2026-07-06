@@ -20,10 +20,8 @@ repo contains only public website pages — no authenticated app code.
 backend API, and `/contact` submits to the target platform intake route —
 see `NEXT_PUBLIC_API_URL`.
 
-The `/choose-product` login router stays in `vayada-creator-marketplace-frontend`
-(it's part of the auth flow, linked from `/login`). The marketing chrome
-(`Navigation`, `Footer`, `LandingFooter`) is intentionally duplicated in both
-repos because app pages (`/hotels/[id]`, `/choose-product`, `/creators`,
+The marketing chrome (`Navigation`, `Footer`, `LandingFooter`) is intentionally
+duplicated in both repos because app pages (`/hotels/[id]`, `/creators`,
 `/properties`) still use it.
 
 ## Develop

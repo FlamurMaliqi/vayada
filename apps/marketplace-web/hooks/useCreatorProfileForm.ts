@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { countries } from "countries-list";
 import type { CreatorFormState, PlatformFormData } from "@/lib/types";
+import { CREATOR_TYPE_OPTIONS } from "@/lib/constants/options";
 
 const COUNTRIES = Object.values(countries)
   .map((country) => country.name)
@@ -266,10 +267,7 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
 
   // Validation
   const validateForm = useCallback((): boolean => {
-    if (
-      !form.creator_type ||
-      (form.creator_type !== "Lifestyle" && form.creator_type !== "Travel")
-    ) {
+    if (!form.creator_type || !CREATOR_TYPE_OPTIONS.includes(form.creator_type)) {
       onError?.("Please select your creator category");
       return false;
     }
@@ -371,10 +369,7 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
 
   // Can proceed to next step - Step 1: Creator Type
   const canProceedCreatorType = useCallback((): boolean => {
-    return !!(
-      form.creator_type &&
-      (form.creator_type === "Lifestyle" || form.creator_type === "Travel")
-    );
+    return !!form.creator_type && CREATOR_TYPE_OPTIONS.includes(form.creator_type);
   }, [form.creator_type]);
 
   // Can proceed to next step - Step 2: Basic Info (was step 1)

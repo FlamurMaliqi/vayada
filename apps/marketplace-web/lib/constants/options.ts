@@ -35,8 +35,8 @@ export const MONTHS_ABBR = [
   "Dec",
 ] as const;
 
-// Creator type options (Lifestyle vs Travel)
-export const CREATOR_TYPE_OPTIONS = ["Lifestyle", "Travel"] as const;
+// Creator type options
+export const CREATOR_TYPE_OPTIONS = ["Lifestyle", "Travel", "Other"] as const;
 
 // Platform options for creators (base platforms)
 export const PLATFORM_OPTIONS = ["Instagram", "TikTok", "YouTube", "Facebook"] as const;

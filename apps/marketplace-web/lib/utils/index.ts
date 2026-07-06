@@ -234,7 +234,7 @@ interface CreatorMarketplaceResponse {
   short_description: string;
   portfolio_link: string | null;
   profile_picture: string | null;
-  creator_type: "Lifestyle" | "Travel";
+  creator_type: "Lifestyle" | "Travel" | "Other";
   platforms: Array<{
     id: string;
     name: string;
