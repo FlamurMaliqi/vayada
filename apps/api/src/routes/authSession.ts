@@ -51,6 +51,13 @@ export type AuthKitClient = {
     ipAddress?: string;
     userAgent?: string;
   }): Promise<AuthKitSession>;
+  createUser(input: {
+    email: string;
+    password: string;
+    ipAddress?: string;
+    userAgent?: string;
+    metadata?: Record<string, string>;
+  }): Promise<AuthKitUser>;
   authenticateSession(input: { sealedSession: string }): Promise<AuthKitSession | null>;
   refreshSession(input: {
     sealedSession: string;
@@ -326,6 +333,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
   for (const path of [
     "/password/login",
+    "/password/signup",
     "/session",
     "/session/refresh",
     "/logout",
@@ -409,6 +417,163 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       organizationId: resolution.organizationId,
       surface: parsed.surface,
       workosUserId: session.user.id,
+      workosOrgId: resolution.session.organizationId,
+      workosSessionId: resolution.session.sessionId,
+      requestId: request.id,
+      occurredAt: new Date().toISOString(),
+    });
+
+    const csrfToken = randomBytes(24).toString("base64url");
+    reply.headers({
+      "set-cookie": [
+        serializeCookie(STATE_COOKIE, "", {
+          maxAge: 0,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+        }),
+        serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
+          maxAge: 60 * 60 * 24 * 7,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+        }),
+        serializeCookie(CSRF_COOKIE, csrfToken, {
+          maxAge: 60 * 60 * 24 * 7,
+          secure: options.cookieSecure,
+          domain: options.cookieDomain,
+          httpOnly: false,
+        }),
+        ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
+      ],
+    });
+    return reply.send(
+      toSessionResponse(
+        resolution.session,
+        resolution.user,
+        csrfToken,
+        resolution.organizationId,
+        resolution.organizationKind,
+        resolution.resourceScope,
+      ),
+    );
+  });
+
+  app.post("/password/signup", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Authentication request origin is not allowed.",
+      });
+    }
+    const parsed = parsePasswordSignupBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+    let createdUser = false;
+    try {
+      await options.authKitClient.createUser({
+        email: parsed.email,
+        password: parsed.password,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+        metadata: {
+          auth_flow: "signup",
+          surface: parsed.surface,
+          signup_intent: parsed.intent,
+        },
+      });
+      createdUser = true;
+    } catch (error) {
+      if (!isConflictError(error)) {
+        return reply.code(400).send({
+          state: "auth_failed",
+          message: "Signup failed. Please check your details and try again.",
+        });
+      }
+    }
+
+    let session: AuthKitSession;
+    try {
+      session = await options.authKitClient.authenticateWithPassword({
+        email: parsed.email,
+        password: parsed.password,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+    } catch (error) {
+      const mapped = mapWorkOSAuthError(error);
+      return reply
+        .code(mapped.state === "invalid_credentials" && !createdUser ? 401 : 403)
+        .send(mapped);
+    }
+
+    let signupOrganization: AuthSignupOrganizationContext;
+    let signupMembership: AuthSignupMembershipContext;
+    let selectedSession: AuthKitSession;
+    try {
+      signupOrganization = await createSignupOrganizationContext(
+        options.authKitClient,
+        parsed.surface,
+        parsed.intent,
+        parsed.email,
+        session.user.id,
+      );
+      const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+        workosUserId: session.user.id,
+        workosOrganizationId: signupOrganization.workosOrganizationId,
+        roleKey: signupOrganization.roleKey,
+      });
+      signupMembership = {
+        workosMembershipId: membership.membershipId,
+        workosRoleSlugs: membership.roleSlugs,
+        status: membership.status,
+      };
+      selectedSession = await selectSignupOrganizationSession(
+        session,
+        signupOrganization,
+        options.authKitClient,
+      );
+    } catch (error) {
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      resolution = await resolveOrCreateIdentity(
+        selectedSession,
+        request,
+        options,
+        surfacePolicy,
+        organizationAccessOptionsFromRequest(request, surfacePolicy),
+        {
+          intent: parsed.intent,
+          organization: signupOrganization,
+          membership: signupMembership,
+        },
+      );
+    } catch (error) {
+      if (error instanceof OrganizationSelectionRequiredError) {
+        return sendOrganizationSelectionRedirect(
+          reply,
+          selectedSession,
+          error,
+          undefined,
+          surfacePolicy,
+          options,
+        );
+      }
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    await options.productAuditSink.record({
+      action: "auth.login",
+      authFlow: "signup",
+      actorUserId: resolution.user.userId,
+      organizationId: resolution.organizationId,
+      surface: parsed.surface,
+      signupIntent: parsed.intent,
+      workosUserId: selectedSession.user.id,
       workosOrgId: resolution.session.organizationId,
       workosSessionId: resolution.session.sessionId,
       requestId: request.id,
@@ -885,6 +1050,57 @@ async function recordPasswordLoginFailure(
   }
 }
 
+function parsePasswordSignupBody(body: unknown):
+  | {
+      ok: true;
+      email: string;
+      password: string;
+      surface: AuthSurface;
+      intent: AuthSignupIntent;
+    }
+  | {
+      ok: false;
+      error: { state: "auth_failed"; message: string };
+    } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Email, password, and signup type are required." },
+    };
+  }
+  const input = body as {
+    email?: unknown;
+    password?: unknown;
+    surface?: unknown;
+    type?: unknown;
+    intent?: unknown;
+  };
+  const email = typeof input.email === "string" ? input.email.trim() : "";
+  const password = typeof input.password === "string" ? input.password : "";
+  if (!email || !password) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Email and password are required." },
+    };
+  }
+  try {
+    const surface = parseSurface(
+      typeof input.surface === "string" ? input.surface : "marketplace-web",
+    );
+    const rawIntent = typeof input.type === "string" ? input.type : input.intent;
+    if (rawIntent !== "creator" && rawIntent !== "hotel") {
+      return {
+        ok: false,
+        error: { state: "auth_failed", message: "Signup type must be creator or hotel." },
+      };
+    }
+    const intent = parseSignupIntent(surface, rawIntent);
+    return { ok: true, email, password, surface, intent };
+  } catch {
+    return { ok: false, error: { state: "auth_failed", message: "Unsupported signup request." } };
+  }
+}
+
 function parseSignupIntent(surface: AuthSurface, value: string | undefined): AuthSignupIntent {
   const supported = signupIntentsForSurface(surface);
   if (supported.length === 0) {
@@ -1152,8 +1368,25 @@ async function ensureSignupOrganizationSession(
     workosRoleSlugs: membership.roleSlugs,
     status: membership.status,
   };
+  const selectedSession = await selectSignupOrganizationSession(
+    session,
+    signupOrganization,
+    authKitClient,
+  );
+  return {
+    session: selectedSession,
+    organization: signupOrganization,
+    membership: signupMembership,
+  };
+}
+
+async function selectSignupOrganizationSession(
+  session: AuthKitSession,
+  signupOrganization: AuthSignupOrganizationContext,
+  authKitClient: AuthKitClient,
+): Promise<AuthKitSession> {
   if (session.organizationId === signupOrganization.workosOrganizationId) {
-    return { session, organization: signupOrganization, membership: signupMembership };
+    return session;
   }
   const refreshed = await authKitClient.refreshSession({
     sealedSession: session.sealedSession,
@@ -1162,7 +1395,7 @@ async function ensureSignupOrganizationSession(
   if (!refreshed || refreshed.organizationId !== signupOrganization.workosOrganizationId) {
     throw new Error("AuthKit signup organization session could not be selected");
   }
-  return { session: refreshed, organization: signupOrganization, membership: signupMembership };
+  return refreshed;
 }
 
 async function loginPageSignupIntent(
@@ -1707,6 +1940,12 @@ function sendOrganizationSelectionResponse(
       workosUserId: error.session.user.id,
     },
   });
+}
+
+function isConflictError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { status?: unknown; name?: unknown };
+  return candidate.status === 409 || candidate.name === "ConflictException";
 }
 
 function organizationAccessOptionsFromRequest(

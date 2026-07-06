@@ -56,6 +56,17 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       return toAuthKitSession(response);
     },
 
+    async createUser(input) {
+      const user = await workos.userManagement.createUser({
+        email: input.email,
+        password: input.password,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+        metadata: input.metadata,
+      });
+      return toAuthKitUser(user);
+    },
+
     async authenticateSession(input) {
       let response: Awaited<
         ReturnType<ReturnType<typeof workos.userManagement.loadSealedSession>["authenticate"]>
@@ -194,6 +205,20 @@ function membershipStatus(status: string | undefined): MembershipStatus | undefi
   return undefined;
 }
 
+function toAuthKitUser(user: {
+  id: string;
+  email: string;
+  emailVerified: boolean;
+  name?: string | null;
+}): AuthKitSession["user"] {
+  return {
+    id: user.id,
+    email: user.email,
+    emailVerified: user.emailVerified,
+    name: user.name,
+  };
+}
+
 function toAuthKitSession(response: {
   accessToken: string;
   sealedSession?: string;
@@ -212,12 +237,7 @@ function toAuthKitSession(response: {
   return {
     accessToken: response.accessToken,
     sealedSession: response.sealedSession,
-    user: {
-      id: response.user.id,
-      email: response.user.email,
-      emailVerified: response.user.emailVerified,
-      name: response.user.name,
-    },
+    user: toAuthKitUser(response.user),
     organizationId: response.organizationId,
     sessionId: response.sessionId,
   };

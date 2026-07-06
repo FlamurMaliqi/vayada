@@ -69,7 +69,7 @@ describe("marketplace AuthKit compatibility token", () => {
   });
 });
 
-describe("authService.login", () => {
+describe("authService", () => {
   beforeEach(() => {
     clearAuthData();
     fetchMock.mockReset();
@@ -146,12 +146,6 @@ describe("authService.login", () => {
             kind: "creator_workspace",
           },
         ],
-        user: {
-          id: "user_creator",
-          email: "creator@example.test",
-          status: "active",
-          workosUserId: "user_workos_creator",
-        },
       }),
     );
 
@@ -163,6 +157,46 @@ describe("authService.login", () => {
     expect(isAuthOrganizationSelectionResponse(response)).toBe(true);
     expect(getAuthBearerToken()).toBeNull();
     expect(getAuthCsrfToken()).toBe("pending-csrf-token");
+  });
+
+  it("posts product signup intent to the backend and stores the AuthKit session", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        accessToken: "signup-workos-access-token",
+        csrfToken: "signup-csrf-token",
+        organizationId: "org_creator",
+        organizationKind: "creator_workspace",
+        user: {
+          id: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+          workosUserId: "user_workos_creator",
+        },
+      }),
+    );
+
+    const response = await authService.signup({
+      email: "creator@example.test",
+      password: "correct-password",
+      type: "creator",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/password/signup",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({
+          email: "creator@example.test",
+          password: "correct-password",
+          type: "creator",
+          surface: "marketplace-web",
+        }),
+      }),
+    );
+    expect(getAuthBearerToken()).toBe("signup-workos-access-token");
+    expect(getAuthCsrfToken()).toBe("signup-csrf-token");
+    expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
   });
 });
 
