@@ -146,6 +146,7 @@ LANDING_ORIGIN="https://landing.localhost${PORT_SUFFIX}"
 MARKETPLACE_API_ORIGIN="https://api.marketplace.localhost${PORT_SUFFIX}"
 BOOKING_API_ORIGIN="https://api.booking.localhost${PORT_SUFFIX}"
 PMS_API_ORIGIN="https://api.pms.localhost${PORT_SUFFIX}"
+GOOGLE_OAUTH_CALLBACK_URL="${API_ORIGIN}/auth/oauth/google/callback"
 
 export AUTH_COOKIE_SECRET="${AUTH_COOKIE_SECRET:-local-dev-auth-cookie-secret-0123456789abcdef}"
 export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-${AUTH_DATABASE_URL:-}}"
@@ -162,7 +163,7 @@ export AUTH_LEGACY_PMS_JWT_SECRET="${AUTH_LEGACY_PMS_JWT_SECRET:-local-legacy-pm
 export AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET="${AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET:-local-legacy-affiliate-secret}"
 
 echo "==> Ensuring WorkOS local app URLs are registered"
-ensure_workos_redirect "$AUTH_CALLBACK_URL"
+ensure_workos_redirect "$GOOGLE_OAUTH_CALLBACK_URL"
 for origin in \
   "$API_ORIGIN" \
   "$ADMIN_ORIGIN" \

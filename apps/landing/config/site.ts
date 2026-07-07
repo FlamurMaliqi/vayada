@@ -1,8 +1,7 @@
-import { APP_BASE_URL } from "@/lib/constants/routes";
+import { ROUTES } from "@/lib/constants/routes";
 
 // Signup lives in the app (app.vayada.com), not on this marketing site.
-const SIGNUP_HOTEL = `${APP_BASE_URL}/signup?type=hotel`;
-const SIGNUP_CREATOR = `${APP_BASE_URL}/signup?type=creator`;
+const SIGNUP_URL = ROUTES.SIGNUP;
 
 export const siteConfig = {
   name: "vayada",
@@ -26,11 +25,11 @@ export const siteConfig = {
     cta: {
       hotel: {
         text: "I'm a Hotel",
-        href: SIGNUP_HOTEL,
+        href: SIGNUP_URL,
       },
       creator: {
         text: "I'm a Creator",
-        href: SIGNUP_CREATOR,
+        href: SIGNUP_URL,
       },
     },
   },
@@ -39,12 +38,12 @@ export const siteConfig = {
     links: {
       hotels: [
         { label: "How It Works", href: "#hotels" },
-        { label: "Sign Up", href: SIGNUP_HOTEL },
+        { label: "Sign Up", href: SIGNUP_URL },
         { label: "Benefits", href: "/pricing" },
       ],
       creators: [
         { label: "How It Works", href: "#creators" },
-        { label: "Sign Up", href: SIGNUP_CREATOR },
+        { label: "Sign Up", href: SIGNUP_URL },
         { label: "Benefits", href: "/creator-benefits" },
       ],
       company: [

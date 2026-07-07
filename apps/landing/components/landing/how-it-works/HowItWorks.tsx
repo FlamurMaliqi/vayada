@@ -32,7 +32,7 @@ export default function HowItWorks() {
             Join the transparent marketplace connecting hotels with travel creators
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <a href={`${ROUTES.SIGNUP}?type=hotel`}>
+            <a href={ROUTES.SIGNUP}>
               <Button
                 variant="secondary"
                 size="lg"
@@ -41,7 +41,7 @@ export default function HowItWorks() {
                 Sign Up as Hotel
               </Button>
             </a>
-            <a href={`${ROUTES.SIGNUP}?type=creator`}>
+            <a href={ROUTES.SIGNUP}>
               <Button
                 variant="outline"
                 size="lg"

@@ -165,14 +165,14 @@ export default async function HotelCreatorNetworkPage() {
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link
-                href={`${ROUTES.SIGNUP}?type=hotel`}
+                href={ROUTES.SIGNUP}
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-primary-500 px-7 text-base font-medium text-white shadow-glow transition-all hover:bg-primary-600"
               >
                 For Hotels
                 <ArrowRightIcon className="h-4 w-4" />
               </Link>
               <Link
-                href={`${ROUTES.SIGNUP}?type=creator`}
+                href={ROUTES.SIGNUP}
                 className="inline-flex h-12 items-center justify-center rounded-full border border-border-strong bg-white px-7 text-base text-ink transition-colors hover:bg-gray-50"
               >
                 For Creators
@@ -255,7 +255,7 @@ export default async function HotelCreatorNetworkPage() {
         title="Stop DM chaos. Start driving direct bookings."
         body="Join the marketplace to discover verified creators, manage collaboration requests and turn trusted reach into direct demand for your property."
         ctaLabel="Register hotel for free"
-        ctaHref={`${ROUTES.SIGNUP}?type=hotel`}
+        ctaHref={ROUTES.SIGNUP}
         image="/hcn-analytics.png"
         imageAlt="Creator analytics modal with Instagram and TikTok audience data"
         features={hotelFeatures}
@@ -268,7 +268,7 @@ export default async function HotelCreatorNetworkPage() {
         title="Stop chasing DMs. Start securing hotel collaborations."
         body="Create a verified profile, apply to curated hotel offers and build a professional track record with reviews from completed collaborations."
         ctaLabel="Apply as creator"
-        ctaHref={`${ROUTES.SIGNUP}?type=creator`}
+        ctaHref={ROUTES.SIGNUP}
         image="/hcn-creator-offer.png"
         imageAlt="Hotel offer detail page on the Vayada creator marketplace"
         features={creatorFeatures}

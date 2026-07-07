@@ -3,6 +3,7 @@
  */
 
 import { NavigationLink, Feature, Step, Advantage, SectionContent } from "@/lib/types";
+import { ROUTES } from "@/lib/constants/routes";
 import {
   ShieldCheckIcon,
   BoltIcon,
@@ -104,7 +105,7 @@ export const HOTELS_SECTION: SectionContent = {
     },
   ],
   ctaText: "Join as a Hotel",
-  ctaHref: "/signup?type=hotel",
+  ctaHref: ROUTES.SIGNUP,
 };
 
 // Creators section content
@@ -169,7 +170,7 @@ export const CREATORS_SECTION: SectionContent = {
     },
   ],
   ctaText: "Join as a Creator",
-  ctaHref: "/signup?type=creator",
+  ctaHref: ROUTES.SIGNUP,
 };
 
 // How it works steps

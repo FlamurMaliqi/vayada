@@ -28,7 +28,7 @@ export async function getMarketplacePostLoginRedirect(
     return decision.redirectPath;
   }
 
-  return ROUTES.MARKETPLACE;
+  return ROUTES.ONBOARDING;
 }
 
 function browserStorage(): ProfileStorage | null {

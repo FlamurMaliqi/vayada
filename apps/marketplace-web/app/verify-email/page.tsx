@@ -82,12 +82,7 @@ export default function VerifyEmailPage() {
   }
 
   async function redirectAfterVerifiedSession() {
-    const redirectPath =
-      pending?.type === "hotel"
-        ? ROUTES.SETUP
-        : pending?.type === "creator"
-          ? ROUTES.PROFILE_COMPLETE
-          : await getMarketplacePostLoginRedirect();
+    const redirectPath = await getMarketplacePostLoginRedirect();
     clearPendingEmailVerification();
     setVerified(true);
     setTimeout(() => router.push(redirectPath), 1200);

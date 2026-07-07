@@ -1,4 +1,4 @@
-import { MARKETING_BASE_URL } from "@/lib/constants/routes";
+import { MARKETING_BASE_URL, ROUTES } from "@/lib/constants/routes";
 
 // This is the authenticated app (app.vayada.com). Signup lives here; the
 // "How It Works" / Benefits / About / Contact destinations are marketing
@@ -25,11 +25,11 @@ export const siteConfig = {
     cta: {
       hotel: {
         text: "I'm a Hotel",
-        href: "/signup?type=hotel",
+        href: ROUTES.SIGNUP,
       },
       creator: {
         text: "I'm a Creator",
-        href: "/signup?type=creator",
+        href: ROUTES.SIGNUP,
       },
     },
   },
@@ -38,12 +38,12 @@ export const siteConfig = {
     links: {
       hotels: [
         { label: "How It Works", href: `${MARKETING_BASE_URL}/#hotels` },
-        { label: "Sign Up", href: "/signup?type=hotel" },
+        { label: "Sign Up", href: ROUTES.SIGNUP },
         { label: "Benefits", href: `${MARKETING_BASE_URL}/pricing` },
       ],
       creators: [
         { label: "How It Works", href: `${MARKETING_BASE_URL}/#creators` },
-        { label: "Sign Up", href: "/signup?type=creator" },
+        { label: "Sign Up", href: ROUTES.SIGNUP },
         { label: "Benefits", href: `${MARKETING_BASE_URL}/creator-benefits` },
       ],
       company: [

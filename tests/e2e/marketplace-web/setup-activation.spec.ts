@@ -1,6 +1,6 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 
-const apiOrigin = "https://api.localhost";
 const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 test.describe("marketplace-web shared setup activation", () => {
@@ -89,7 +89,7 @@ async function primeBrowserState(page: Page) {
 }
 
 async function mockAuthSession(page: Page) {
-  await page.route(`${apiOrigin}/auth/session**`, async (route) => {
+  await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await fulfillCorsPreflight(route);
       return;
@@ -111,10 +111,21 @@ async function mockAuthSession(page: Page) {
       },
     });
   });
+  await page.route(/\/auth\/compat\/marketplace-web-token/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: corsHeaders(route),
+      json: { accessToken: "legacy-marketplace-token", expiresIn: 900 },
+    });
+  });
 }
 
 async function mockSharedSetupStatus(page: Page, status: ReturnType<typeof sharedSetupStatus>) {
-  await page.route(`${apiOrigin}/api/hotel-setup/status**`, async (route) => {
+  await page.route(/\/api\/hotel-setup\/status/, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await fulfillCorsPreflight(route);
       return;
@@ -128,23 +139,24 @@ async function mockSharedSetupStatus(page: Page, status: ReturnType<typeof share
 }
 
 async function mockMarketplaceProfileApis(page: Page) {
-  await page.route(
-    "https://api.marketplace.localhost/api/marketplace/hotels/me/profile-status**",
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: corsHeaders(route),
-        json: {
-          profile_complete: false,
-          missing_fields: ["profile"],
-          has_defaults: { location: false },
-          missing_listings: false,
-          completion_steps: ["Complete your marketplace hotel profile"],
-        },
-      });
-    },
-  );
-  await page.route("https://api.marketplace.localhost/hotels/me", async (route) => {
+  await page.route(/\/api\/marketplace\/hotels\/me\/profile-status/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: corsHeaders(route),
+      json: {
+        profile_complete: false,
+        missing_fields: ["profile"],
+        has_defaults: { location: false },
+        missing_listings: false,
+        completion_steps: ["Complete your marketplace hotel profile"],
+      },
+    });
+  });
+  await page.route(/\/hotels\/me$/, async (route) => {
     await route.fulfill({
       status: 200,
       headers: corsHeaders(route),
@@ -226,22 +238,4 @@ function activation(product: string, status: string, missingSteps: string[]) {
         : [`${product}_${status}`],
     updatedAt: status === "not_selected" ? null : "2026-06-30T00:00:00.000Z",
   };
-}
-
-function corsHeaders(route: Route) {
-  const origin = route.request().headers().origin ?? "http://127.0.0.1:3000";
-  return {
-    "access-control-allow-credentials": "true",
-    "access-control-allow-headers": "authorization, content-type",
-    "access-control-allow-methods": "GET, OPTIONS",
-    "access-control-allow-origin": origin,
-    "content-type": "application/json",
-  };
-}
-
-async function fulfillCorsPreflight(route: Route) {
-  await route.fulfill({
-    status: 204,
-    headers: corsHeaders(route),
-  });
 }

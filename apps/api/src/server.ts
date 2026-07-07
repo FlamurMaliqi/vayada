@@ -276,6 +276,7 @@ const app = buildApp({
           }),
           logoutReturnUrl: config.authSession.authLogoutUrl,
           allowedOrigins: config.authSession.authAllowedOrigins,
+          oauthStateSecret: config.authSession.oauthStateSecret,
           requiredOrganizationKind: "platform",
           surfacePolicies: {
             "booking-admin": {
@@ -318,6 +319,7 @@ const app = buildApp({
             },
             "marketplace-web": {
               requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+              allowMissingOrganization: true,
               logoutReturnUrl:
                 config.authSession.authMarketplaceWebLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,

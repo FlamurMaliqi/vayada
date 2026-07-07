@@ -104,7 +104,7 @@ export const HOTELS_SECTION: SectionContent = {
     },
   ],
   ctaText: "Join as a Hotel",
-  ctaHref: "/signup?type=hotel",
+  ctaHref: "/signup",
 };
 
 // Creators section content
@@ -169,7 +169,7 @@ export const CREATORS_SECTION: SectionContent = {
     },
   ],
   ctaText: "Join as a Creator",
-  ctaHref: "/signup?type=creator",
+  ctaHref: "/signup",
 };
 
 // How it works steps

@@ -41,7 +41,7 @@ export default function HotelBenefitsPage() {
                   your target audience.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-3">
-                  <Link href={`${ROUTES.SIGNUP}?type=hotel`}>
+                  <Link href={ROUTES.SIGNUP}>
                     <Button
                       variant="primary"
                       size="md"
@@ -338,7 +338,7 @@ export default function HotelBenefitsPage() {
                 chaos.
               </p>
               <div className="pt-2">
-                <Link href={`${ROUTES.SIGNUP}?type=hotel`}>
+                <Link href={ROUTES.SIGNUP}>
                   <Button
                     variant="primary"
                     size="lg"
@@ -508,7 +508,7 @@ export default function HotelBenefitsPage() {
               partnerships drive direct bookings.
             </p>
             <div className="pt-2">
-              <Link href={`${ROUTES.SIGNUP}?type=hotel`}>
+              <Link href={ROUTES.SIGNUP}>
                 <Button
                   variant="primary"
                   size="lg"
