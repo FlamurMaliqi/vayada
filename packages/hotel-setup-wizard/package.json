@@ -14,7 +14,9 @@
     "./PoliciesStep": "./src/PoliciesStep.tsx",
     "./PropertyStep": "./src/PropertyStep.tsx",
     "./returnTo": "./src/returnTo.ts",
-    "./RoomsStep": "./src/RoomsStep.tsx"
+    "./RoomsStep": "./src/RoomsStep.tsx",
+    "./SharedHotelLoginForm": "./src/SharedHotelLoginForm.tsx",
+    "./SharedHotelSignupPage": "./src/SharedHotelSignupPage.tsx"
   },
   "peerDependencies": {
     "@heroicons/react": "^2.2.0",
