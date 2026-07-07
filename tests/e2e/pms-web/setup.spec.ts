@@ -4,7 +4,7 @@ import type {
   SharedHotelSetupProductStatus,
   SharedHotelSetupStatus,
   SharedPropertyProfile,
-} from "@vayada/hotel-setup-wizard";
+} from "@vayada/product-onboarding";
 import { mockPmsWebAuthenticatedSession } from "../support/pmsWebMocks";
 import { watchPageHealth } from "../support/pageHealth";
 

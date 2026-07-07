@@ -26,7 +26,14 @@ What this does:
 - Starts Docker databases, MinIO, auth migrations, and the three FastAPI backends in the background.
 - Applies `docker-compose.portless.yml` so backend CORS allows portless frontend origins.
 - Registers the `api.marketplace`, `api.booking`, and `api.pms` portless aliases.
-- Runs `portless` in the foreground for all Next.js frontends.
+- Starts the TypeScript API with WorkOS/AuthKit env wiring and runs `portless`
+  in the foreground for all Next.js frontends.
+
+The old FastAPI-only transitional stack is explicit:
+
+```sh
+./scripts/dev-portless.sh --legacy
+```
 
 After the Docker databases/backends are healthy, seed the local test data from a
 second shell/tool call:

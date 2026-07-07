@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 
-export type SharedHotelSignupPageProps = {
+export type SharedSignupPageProps = {
   isSubmitting: boolean;
   submitError: string;
   onErrorClear: () => void;
@@ -11,11 +11,13 @@ export type SharedHotelSignupPageProps = {
   loginHref?: string;
   termsUrl?: string;
   privacyUrl?: string;
+  onGoogleSignup?: () => void;
 };
 
 const MARKETING_BASE_URL = process.env.NEXT_PUBLIC_MARKETING_URL || "https://vayada.com";
+const PASSWORD_MIN_LENGTH = 10;
 
-export default function SharedHotelSignupPage({
+export default function SharedSignupPage({
   isSubmitting,
   submitError,
   onErrorClear,
@@ -23,7 +25,8 @@ export default function SharedHotelSignupPage({
   loginHref = "/login",
   termsUrl = `${MARKETING_BASE_URL}/terms`,
   privacyUrl = `${MARKETING_BASE_URL}/privacy`,
-}: SharedHotelSignupPageProps) {
+  onGoogleSignup,
+}: SharedSignupPageProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -42,6 +45,10 @@ export default function SharedHotelSignupPage({
     }
     if (!password) {
       setPasswordError("Password is required");
+      return;
+    }
+    if (password.length < PASSWORD_MIN_LENGTH) {
+      setPasswordError(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`);
       return;
     }
 
@@ -66,6 +73,25 @@ export default function SharedHotelSignupPage({
                 Use your email and password to continue.
               </p>
             </div>
+
+            {onGoogleSignup && (
+              <>
+                <button
+                  type="button"
+                  onClick={onGoogleSignup}
+                  disabled={isSubmitting}
+                  className="mb-5 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-900 transition-colors hover:bg-gray-50 disabled:opacity-60"
+                >
+                  <GoogleIcon />
+                  Continue with Google
+                </button>
+                <div className="mb-5 flex items-center gap-3 text-xs text-gray-400">
+                  <span className="h-px flex-1 bg-gray-200" />
+                  <span>or</span>
+                  <span className="h-px flex-1 bg-gray-200" />
+                </div>
+              </>
+            )}
 
             <form onSubmit={handleSubmit} className="space-y-5" noValidate>
               <div>
@@ -111,6 +137,7 @@ export default function SharedHotelSignupPage({
                       onErrorClear();
                     }}
                     required
+                    minLength={PASSWORD_MIN_LENGTH}
                     placeholder="Enter your password"
                     autoComplete="new-password"
                     className={`w-full rounded-lg border px-4 py-2.5 pr-12 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500 ${
@@ -131,6 +158,11 @@ export default function SharedHotelSignupPage({
                   </button>
                 </div>
                 {passwordError && <p className="mt-1 text-sm text-red-600">{passwordError}</p>}
+                {!passwordError && (
+                  <p className="mt-2 h-6 text-xs leading-5 text-gray-500">
+                    At least 10 characters. Avoid weak or breached passwords.
+                  </p>
+                )}
               </div>
 
               {submitError && (
@@ -181,5 +213,28 @@ export default function SharedHotelSignupPage({
         <div className="absolute inset-0 bg-gray-950/20" />
       </div>
     </div>
+  );
+}
+
+function GoogleIcon() {
+  return (
+    <svg className="h-4 w-4" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+      <path
+        fill="#4285F4"
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.62z"
+      />
+      <path
+        fill="#34A853"
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.81.54-1.84.86-3.05.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M3.97 10.72A5.4 5.4 0 0 1 3.69 9c0-.6.1-1.18.28-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.05l3.01-2.33z"
+      />
+      <path
+        fill="#EA4335"
+        d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.58C13.46.9 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"
+      />
+    </svg>
   );
 }

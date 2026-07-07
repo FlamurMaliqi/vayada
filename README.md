@@ -272,9 +272,10 @@ The auth database (`auth-db/`) provides centralized user management for all serv
    starts `apps/api` (`https://api.localhost`, port `8003`) and the Next.js apps
    through portless. It requires `apps/api/.env` with local WorkOS settings.
 
-   `npm run dev:portless` is the transitional portless path. It starts the
-   legacy FastAPI support services and locally configured portless apps without
-   WorkOS-specific env wiring or seed bootstrap.
+   `npm run dev:portless` delegates to the same AuthKit-capable workflow so
+   signup/login routes work by default. Use `./scripts/dev-portless.sh --legacy`
+   only for the old FastAPI-only path without WorkOS-specific env wiring or seed
+   bootstrap.
 
    Run `./scripts/portless-setup.sh` once if portless has not been trusted and
    configured on the machine.
@@ -286,8 +287,8 @@ The auth database (`auth-db/`) provides centralized user management for all serv
    ```
 
    `npm run dev:workos-local` runs this automatically unless `SKIP_SEED=1` is
-   set. Run it manually for `npm run dev:portless`, raw Compose, or individual
-   app development.
+   set. Run it manually for `./scripts/dev-portless.sh --legacy`, raw Compose,
+   or individual app development.
 
 4. **Access the applications:**
 

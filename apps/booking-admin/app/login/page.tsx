@@ -2,8 +2,8 @@
 
 import { Suspense, useCallback, useEffect, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import SharedHotelLoginForm from "@vayada/hotel-setup-wizard/SharedHotelLoginForm";
-import { safeRelativeReturnTo } from "@vayada/hotel-setup-wizard/returnTo";
+import SharedHotelLoginForm from "@vayada/product-onboarding/SharedHotelLoginForm";
+import { safeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 import { authService } from "@/services/auth";
 import {
   isAuthOrganizationSelectionResponse,
@@ -19,7 +19,8 @@ function LoginContent() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitError, setSubmitError] = useState(
-    searchParams.get("expired") === "true" ? t("auth.login.errorSessionExpired") : "",
+    searchParams.get("auth_error") ??
+      (searchParams.get("expired") === "true" ? t("auth.login.errorSessionExpired") : ""),
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [organizationSelection, setOrganizationSelection] =
@@ -110,6 +111,9 @@ function LoginContent() {
         chooseOrganizationSubtitle: "Select the hotel group you want to manage.",
         emailLabel: t("auth.login.emailLabel"),
         passwordLabel: t("auth.login.passwordLabel"),
+        forgotPassword: t("auth.login.forgotPassword"),
+        googleLogin: "Continue with Google",
+        or: "or",
         submitLabel: t("auth.login.submit"),
         submittingLabel: t("auth.login.submitting"),
         noAccount: t("auth.login.noAccount"),
@@ -120,9 +124,11 @@ function LoginContent() {
       isSubmitting={isSubmitting}
       submitError={submitError}
       organizations={organizationSelection?.organizations ?? null}
+      forgotPasswordHref="/forgot-password"
       onEmailChange={setEmail}
       onPasswordChange={setPassword}
       onSubmit={handleLogin}
+      onGoogleLogin={() => authService.startGoogleLogin(returnTo)}
       onOrganizationSelect={handleOrganizationSelect}
     />
   );

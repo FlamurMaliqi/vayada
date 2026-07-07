@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import SharedHotelSignupPage from "@vayada/hotel-setup-wizard/SharedHotelSignupPage";
+import SharedSignupPage from "@vayada/product-onboarding/SharedSignupPage";
 import { useTranslation } from "@/lib/i18n";
 import { resolveBookingSetupGuard } from "@/lib/utils/sharedSetupGuard";
 import { authService } from "@/services/auth";
@@ -12,6 +12,10 @@ export default function SignupPage() {
   const router = useRouter();
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    setSubmitError(new URLSearchParams(window.location.search).get("auth_error") ?? "");
+  }, []);
 
   async function handleSignup(data: { email: string; password: string }) {
     setSubmitError("");
@@ -29,11 +33,12 @@ export default function SignupPage() {
   }
 
   return (
-    <SharedHotelSignupPage
+    <SharedSignupPage
       onSubmit={handleSignup}
       isSubmitting={isSubmitting}
       submitError={submitError}
       onErrorClear={() => setSubmitError("")}
+      onGoogleSignup={() => authService.startGoogleSignup("/dashboard")}
     />
   );
 }

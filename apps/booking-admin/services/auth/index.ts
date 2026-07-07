@@ -79,6 +79,41 @@ async function storeAuthSessionResponse(
 export const authService = {
   isAuthKitEnabled: isAuthKitLoginEnabled,
 
+  startGoogleLogin: (returnTo?: string): void => {
+    if (typeof window === "undefined") return;
+
+    const callbackUrl = new URL("/login", window.location.origin);
+    callbackUrl.searchParams.set("auth", "callback");
+    if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      callbackUrl.searchParams.set("returnTo", returnTo);
+    }
+    const errorUrl = new URL("/login", window.location.origin);
+    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    url.searchParams.set("surface", AUTH_SURFACE);
+    url.searchParams.set("flow", "login");
+    url.searchParams.set("return_to", callbackUrl.toString());
+    url.searchParams.set("error_return_to", errorUrl.toString());
+    window.location.href = url.toString();
+  },
+
+  startGoogleSignup: (returnTo: string): void => {
+    if (typeof window === "undefined") return;
+
+    const callbackUrl = new URL("/login", window.location.origin);
+    callbackUrl.searchParams.set("auth", "callback");
+    if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      callbackUrl.searchParams.set("returnTo", returnTo);
+    }
+    const errorUrl = new URL("/signup", window.location.origin);
+    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    url.searchParams.set("surface", AUTH_SURFACE);
+    url.searchParams.set("flow", "signup");
+    url.searchParams.set("type", "hotel");
+    url.searchParams.set("return_to", callbackUrl.toString());
+    url.searchParams.set("error_return_to", errorUrl.toString());
+    window.location.href = url.toString();
+  },
+
   ensureBookingCompatibilityToken: async (): Promise<void> => {
     if (!isCompatibilityTokenEnabled()) return;
     await ensureBookingCompatibilityToken();
@@ -190,21 +225,26 @@ export const authService = {
   /**
    * Request a password reset link
    */
-  forgotPassword: async (email: string): Promise<{ message: string; token?: string }> => {
-    const response = await apiClient.post<{ message: string; token?: string }>(
-      "/auth/forgot-password",
-      { email },
-    );
-    return response;
+  forgotPassword: async (email: string): Promise<{ message: string }> => {
+    try {
+      return await authFetch<{ message: string }>("/auth/password/reset/request", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+    } catch {
+      return {
+        message: "If an account with that email exists, a password reset link has been sent.",
+      };
+    }
   },
 
   /**
    * Reset password using a reset token
    */
   resetPassword: async (token: string, newPassword: string): Promise<{ message: string }> => {
-    const response = await apiClient.post<{ message: string }>("/auth/reset-password", {
-      token,
-      new_password: newPassword,
+    const response = await authFetch<{ message: string }>("/auth/password/reset/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token, newPassword }),
     });
     return response;
   },

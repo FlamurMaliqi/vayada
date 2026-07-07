@@ -1,17 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import SharedHotelSignupPage from "@vayada/hotel-setup-wizard/SharedHotelSignupPage";
+import SharedSignupPage from "@vayada/product-onboarding/SharedSignupPage";
 import { useTranslation } from "@/lib/i18n";
 import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
-import { authService } from "@/services/auth";
+import { AuthStateError, authService, storePendingEmailVerification } from "@/services/auth";
 
 export default function SignupPage() {
   const { t } = useTranslation();
   const router = useRouter();
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    setSubmitError(new URLSearchParams(window.location.search).get("auth_error") ?? "");
+  }, []);
 
   async function handleSignup(data: { email: string; password: string }) {
     setSubmitError("");
@@ -25,6 +29,14 @@ export default function SignupPage() {
       );
       router.push(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
     } catch (error) {
+      if (
+        error instanceof AuthStateError &&
+        error.state === "email_verification_required" &&
+        storePendingEmailVerification({ ...error, flow: "signup", intent: "hotel" })
+      ) {
+        router.push("/verify-email");
+        return;
+      }
       setSubmitError(error instanceof Error ? error.message : t("auth.register.unexpectedError"));
     } finally {
       setIsSubmitting(false);
@@ -32,11 +44,12 @@ export default function SignupPage() {
   }
 
   return (
-    <SharedHotelSignupPage
+    <SharedSignupPage
       onSubmit={handleSignup}
       isSubmitting={isSubmitting}
       submitError={submitError}
       onErrorClear={() => setSubmitError("")}
+      onGoogleSignup={() => authService.startGoogleSignup("/dashboard")}
     />
   );
 }

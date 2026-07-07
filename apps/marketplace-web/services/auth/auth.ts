@@ -22,7 +22,6 @@ import {
 
 const TOKEN_KEY = "access_token";
 const EXPIRES_AT_KEY = "token_expires_at";
-const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 const AUTH_SURFACE = "marketplace-web";
 
 type CompatibilityTokenResponse = {
@@ -79,7 +78,7 @@ export type PendingEmailVerification = {
 const PENDING_EMAIL_VERIFICATION_KEY = "vayada_pending_email_verification";
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
+  const response = await fetch(`${authApiBaseUrl()}${endpoint}`, {
     ...options,
     credentials: "include",
     headers: {
@@ -104,6 +103,12 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
   }
 
   return body as T;
+}
+
+function authApiBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_AUTH_API_URL) return process.env.NEXT_PUBLIC_AUTH_API_URL;
+  if (typeof window === "undefined" || !window.location?.port) return "https://api.localhost";
+  return `${window.location.protocol}//api.localhost:${window.location.port}`;
 }
 
 function isAuthStateResponse(value: unknown): value is AuthStateResponse {
@@ -228,7 +233,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/login", window.location.origin);
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "login");
     url.searchParams.set("return_to", callbackUrl.toString());
@@ -245,7 +250,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/signup", window.location.origin);
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "signup");
     url.searchParams.set("return_to", callbackUrl.toString());

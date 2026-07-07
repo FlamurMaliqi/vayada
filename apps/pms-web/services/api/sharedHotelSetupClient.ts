@@ -1,4 +1,4 @@
-import { createSharedHotelSetupApi } from "@vayada/hotel-setup-wizard";
+import { createSharedHotelSetupApi } from "@vayada/product-onboarding";
 
 import { ApiClient } from "./client";
 

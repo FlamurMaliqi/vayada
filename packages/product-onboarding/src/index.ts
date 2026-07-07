@@ -20,10 +20,7 @@ export {
   type SharedHotelLoginFormProps,
   type SharedHotelLoginOrganization,
 } from "./SharedHotelLoginForm";
-export {
-  default as SharedHotelSignupPage,
-  type SharedHotelSignupPageProps,
-} from "./SharedHotelSignupPage";
+export { default as SharedSignupPage, type SharedSignupPageProps } from "./SharedSignupPage";
 export {
   createSharedHotelSetupApi,
   type SharedHotelSetupApi,

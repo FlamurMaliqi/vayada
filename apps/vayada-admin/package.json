@@ -16,7 +16,7 @@
   "dependencies": {
     "@heroicons/react": "^2.2.0",
     "@vayada/marketplace-shared": "*",
-    "@vayada/hotel-setup-wizard": "*",
+    "@vayada/product-onboarding": "*",
     "clsx": "^2.0.0",
     "next": "16.2.6",
     "react": "^18.2.0",

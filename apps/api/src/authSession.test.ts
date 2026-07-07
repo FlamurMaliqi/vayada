@@ -380,6 +380,156 @@ describe("AuthKit session routes", () => {
     expect(commands[0]?.payload).not.toHaveProperty("membership");
   });
 
+  it("signs up a hotel account through Google OAuth and provisions the hotel organization", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const auditEvents: ProductAuditEvent[] = [];
+    let state = "";
+    let signupOrganizationId = "";
+    const googleSession: AuthKitSession = {
+      ...session,
+      accessToken: "booking-google-signup-token",
+      sealedSession: "booking-google-signup-sealed-session",
+      organizationId: undefined,
+      user: {
+        ...session.user,
+        id: "user_workos_google_hotel",
+        email: "hotel-owner@example.test",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://admin.booking.localhost"],
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return `https://auth.workos.test/google?state=${encodeURIComponent(input.state)}`;
+        },
+        async authenticateWithCode() {
+          return googleSession;
+        },
+        async createSignupOrganization(input) {
+          expect(input.metadata).toMatchObject({
+            surface: "booking-admin",
+            signup_intent: "hotel",
+            organization_kind: "hotel_group",
+            role_key: "hotel_owner",
+          });
+          signupOrganizationId = "org_workos_google_hotel";
+          return { organizationId: signupOrganizationId };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          expect(input).toMatchObject({
+            workosUserId: "user_workos_google_hotel",
+            workosOrganizationId: signupOrganizationId,
+            roleKey: "hotel_owner",
+          });
+          return {
+            membershipId: "om_google_hotel_owner",
+            roleSlugs: ["hotel_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          expect(input.organizationId).toBe(signupOrganizationId);
+          return {
+            ...googleSession,
+            sealedSession: "booking-google-signup-selected-session",
+            organizationId: signupOrganizationId,
+          };
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_google_hotel",
+          workosOrgId: signupOrganizationId,
+          name: "Google Hotel Group",
+          kind: "hotel_group",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_google_hotel",
+          status: "active",
+          roleKey: "hotel_owner",
+          workosMembershipId: "om_google_hotel_owner",
+          workosRoleSlugs: ["hotel_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: "user_google_hotel",
+            events: [],
+          };
+        },
+      },
+      productAuditSink: {
+        async record(event) {
+          auditEvents.push(event);
+        },
+      },
+      surfacePolicies: {
+        "booking-admin": {
+          requiredOrganizationKind: "hotel_group",
+          requiredResourceLink: { product: "booking", resourceType: "booking_hotel" },
+        },
+      },
+    });
+
+    const start = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=booking-admin&flow=signup&type=hotel" +
+        "&return_to=https%3A%2F%2Fadmin.booking.localhost%2Flogin%3Fauth%3Dcallback%26returnTo%3D%252Fdashboard" +
+        "&error_return_to=https%3A%2F%2Fadmin.booking.localhost%2Fsignup",
+      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieHeader(start, "vayada_oauth_state") },
+    });
+
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe(
+      "https://admin.booking.localhost/login?auth=callback&returnTo=%2Fdashboard",
+    );
+    expect(callback.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=booking-google-signup-selected-session"),
+      ]),
+    );
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          legacyUserType: "hotel",
+          organization: expect.objectContaining({
+            kind: "hotel_group",
+            workosOrgId: signupOrganizationId,
+          }),
+          membership: expect.objectContaining({
+            roleKey: "hotel_owner",
+            permissionKeys: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+          }),
+        }),
+      }),
+    ]);
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        action: "auth.login",
+        authFlow: "signup",
+        organizationId: "org_google_hotel",
+        surface: "booking-admin",
+        signupIntent: "hotel",
+        workosOrgId: signupOrganizationId,
+      }),
+    ]);
+  });
+
   it.each([
     {
       name: "invalid credentials",
@@ -815,6 +965,146 @@ describe("AuthKit session routes", () => {
     expect(commands[0]?.payload).not.toHaveProperty("organization");
     expect(commands[0]?.payload).not.toHaveProperty("membership");
     expect(workosCalls).toEqual(["verify"]);
+  });
+
+  it("creates a hotel group after PMS signup email verification", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const workosCalls: string[] = [];
+    const verifiedSession: AuthKitSession = {
+      ...session,
+      organizationId: undefined,
+      sealedSession: "verified-pms-unselected-session",
+      user: {
+        id: "user_workos_verified_hotel",
+        email: "verified-hotel@example.test",
+        emailVerified: true,
+        name: "Verified Hotel",
+      },
+    };
+    const selectedSession: AuthKitSession = {
+      ...verifiedSession,
+      organizationId: "org_workos_signup_hotel",
+      sealedSession: "verified-pms-selected-session",
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://pms.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateWithEmailVerification() {
+          workosCalls.push("verify");
+          return verifiedSession;
+        },
+        async createSignupOrganization(input) {
+          workosCalls.push("create-org");
+          expect(input.metadata).toMatchObject({
+            surface: "pms-web",
+            signup_intent: "hotel",
+            organization_kind: "hotel_group",
+            role_key: "hotel_owner",
+          });
+          return { organizationId: "org_workos_signup_hotel" };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          workosCalls.push("member");
+          expect(input).toMatchObject({
+            workosUserId: "user_workos_verified_hotel",
+            workosOrganizationId: "org_workos_signup_hotel",
+            roleKey: "hotel_owner",
+          });
+          return {
+            membershipId: "om_signup_hotel_owner",
+            roleSlugs: ["hotel_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          workosCalls.push("select-org");
+          expect(input).toEqual({
+            sealedSession: "verified-pms-unselected-session",
+            organizationId: "org_workos_signup_hotel",
+          });
+          return selectedSession;
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => null,
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_hotel_group",
+          workosOrgId: "org_workos_signup_hotel",
+          name: "Verified Hotel Hotel Group",
+          kind: "hotel_group",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_hotel_owner",
+          status: "active",
+          roleKey: "hotel_owner",
+          workosMembershipId: "om_signup_hotel_owner",
+          workosRoleSlugs: ["hotel_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            userId: "user_verified_hotel",
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "pms-web": {
+          requiredOrganizationKind: "hotel_group",
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/confirm",
+      headers: {
+        origin: "https://pms.localhost",
+        "user-agent": "vitest",
+      },
+      payload: {
+        pendingAuthenticationToken: "pending-email-token",
+        code: "123456",
+        flow: "signup",
+        intent: "hotel",
+        surface: "pms-web",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      organizationId: "org_hotel_group",
+      workosOrganizationId: "org_workos_signup_hotel",
+      organizationKind: "hotel_group",
+      user: {
+        id: "user_verified_hotel",
+        email: "verified-hotel@example.test",
+        workosUserId: "user_workos_verified_hotel",
+      },
+    });
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.create",
+        payload: expect.objectContaining({
+          legacyUserType: "hotel",
+          organization: expect.objectContaining({
+            kind: "hotel_group",
+            workosOrgId: "org_workos_signup_hotel",
+          }),
+          membership: expect.objectContaining({
+            roleKey: "hotel_owner",
+            permissionKeys: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+          }),
+        }),
+      }),
+    ]);
+    expect(workosCalls).toEqual(["verify", "create-org", "member", "select-org"]);
   });
 
   it("returns a controlled error for invalid WorkOS verification state", async () => {
@@ -1267,9 +1557,9 @@ describe("AuthKit session routes", () => {
     expect(organizationCalled).toBe(false);
   });
 
-  it("returns verification-required state from custom signup without creating a Vayada organization", async () => {
+  it("returns verification-required state from custom signup without resending the WorkOS email", async () => {
     const commands: IdentityLifecycleCommand[] = [];
-    let emailVerificationId: string | undefined;
+    let resendCalled = false;
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
       authKitClient: createAuthKitClient({
@@ -1288,8 +1578,8 @@ describe("AuthKit session routes", () => {
             email_verification_id: "email_verification_signup",
           };
         },
-        async resendVerificationEmail(input) {
-          emailVerificationId = input.emailVerificationId;
+        async resendVerificationEmail() {
+          resendCalled = true;
           return { email: "unverified@example.test" };
         },
         async createSignupOrganization() {
@@ -1331,7 +1621,7 @@ describe("AuthKit session routes", () => {
       pendingAuthenticationToken: "pending_email",
       emailVerificationId: "email_verification_signup",
     });
-    expect(emailVerificationId).toBe("email_verification_signup");
+    expect(resendCalled).toBe(false);
     expect(commands).toEqual([]);
   });
 
@@ -1441,7 +1731,8 @@ describe("AuthKit session routes", () => {
       method: "POST",
       url: "/auth/onboarding",
       headers: {
-        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        cookie:
+          "vayada_workos_session=sealed-session; vayada_auth_csrf=stale-token; vayada_auth_csrf=csrf-token",
         origin: "https://marketplace.localhost",
         "x-vayada-csrf": "csrf-token",
       },

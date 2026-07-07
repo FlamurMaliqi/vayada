@@ -1,5 +1,6 @@
 "use client";
 
+import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { Button } from "@/components/ui";
 import { CheckCircleIcon, EnvelopeIcon, ClockIcon } from "@heroicons/react/24/outline";
 import type { ProfileCompletionScreenProps } from "./types";
@@ -10,18 +11,26 @@ export function ProfileCompletionScreen({
   onEditProfile,
 }: ProfileCompletionScreenProps) {
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-8 text-center">
+    <OnboardingShell
+      currentStep={3}
+      title={userType === "creator" ? "Start matching with hotels" : "Start matching with creators"}
+      description={
+        userType === "creator"
+          ? "Your profile is ready for review before you apply to properties."
+          : "Your listing is ready for review before creators can discover it."
+      }
+    >
+      <div className="w-full max-w-2xl">
+        <div className="rounded-lg border border-gray-100 bg-white p-8 text-center shadow-sm">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
             <CheckCircleIcon className="w-9 h-9" />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 leading-tight">
-            Congratulations, your profile is complete!
+          <h1 className="text-2xl font-bold leading-tight text-gray-900">
+            {userType === "creator" ? "Your profile is complete" : "Your listing is complete"}
           </h1>
-          <p className="text-gray-600 mt-3 text-sm leading-relaxed">
+          <p className="mt-3 text-sm leading-relaxed text-gray-600">
             Thank you for completing your vayada {userType === "creator" ? "creator" : "hotel"}{" "}
-            profile. We're excited to review your submission and connect you with{" "}
+            profile. We will review your submission and connect you with{" "}
             {userType === "creator" ? "high-quality hotels" : "talented creators"}.
           </p>
 
@@ -86,7 +95,7 @@ export function ProfileCompletionScreen({
               className="w-full justify-center font-semibold"
               onClick={onGoHome}
             >
-              Go to homepage <span className="ml-1">&rarr;</span>
+              Open marketplace
             </Button>
             <Button
               type="button"
@@ -107,6 +116,6 @@ export function ProfileCompletionScreen({
           </p>
         </div>
       </div>
-    </div>
+    </OnboardingShell>
   );
 }

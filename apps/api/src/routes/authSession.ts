@@ -295,7 +295,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
 
     const surfacePolicy = getSurfacePolicy(state.value.surface, options);
-    const selectedSession = session;
+    let selectedSession = session;
+    let signupContext: AuthSignupContext | undefined;
     if (state.value.flow === "signup") {
       const existingUser = await options.identityRepository.findUserByProviderUserId(
         "workos",
@@ -307,6 +308,42 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           state.value,
           "This email already has a Vayada account. Sign in instead.",
         );
+      }
+      if (state.value.intent) {
+        try {
+          const signupOrganization = await createSignupOrganizationContext(
+            options.authKitClient,
+            state.value.surface,
+            state.value.intent,
+            session.user.email,
+            session.user.id,
+          );
+          const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+            workosUserId: session.user.id,
+            workosOrganizationId: signupOrganization.workosOrganizationId,
+            roleKey: signupOrganization.roleKey,
+          });
+          signupContext = {
+            intent: state.value.intent,
+            organization: signupOrganization,
+            membership: {
+              workosMembershipId: membership.membershipId,
+              workosRoleSlugs: membership.roleSlugs,
+              status: membership.status,
+            },
+          };
+          selectedSession = await selectSignupOrganizationSession(
+            session,
+            signupOrganization,
+            options.authKitClient,
+          );
+        } catch (error) {
+          return redirectWithOAuthError(
+            reply,
+            state.value,
+            error instanceof Error ? error.message : "Google sign-up failed. Please try again.",
+          );
+        }
       }
     } else {
       const existingUser = await options.identityRepository.findUserByProviderUserId(
@@ -330,6 +367,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         options,
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
+        signupContext,
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
@@ -355,7 +393,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       actorUserId: resolution.user.userId,
       organizationId: resolution.organizationId,
       surface: state.value.surface,
-      signupIntent: undefined,
+      signupIntent: signupContext?.intent,
       workosUserId: selectedSession.user.id,
       workosOrgId: resolution.session.organizationId,
       workosSessionId: resolution.session.sessionId,
@@ -521,7 +559,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
     } catch (error) {
       const mapped = mapWorkOSAuthError(error);
-      await sendVerificationEmailForAuthState(options, request, mapped);
       return reply
         .code(mapped.state === "invalid_credentials" && !createdUser ? 401 : 403)
         .send(mapped);
@@ -656,20 +693,56 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(400).send(toEmailVerificationError(error));
     }
 
+    let signupContext: AuthSignupContext | undefined;
+    let selectedSession = verifiedSession;
+    if (parsed.flow === "signup" && parsed.intent) {
+      try {
+        const signupOrganization = await createSignupOrganizationContext(
+          options.authKitClient,
+          parsed.surface,
+          parsed.intent,
+          verifiedSession.user.email,
+          verifiedSession.user.id,
+        );
+        const membership = await options.authKitClient.ensureSignupOrganizationMembership({
+          workosUserId: verifiedSession.user.id,
+          workosOrganizationId: signupOrganization.workosOrganizationId,
+          roleKey: signupOrganization.roleKey,
+        });
+        signupContext = {
+          intent: parsed.intent,
+          organization: signupOrganization,
+          membership: {
+            workosMembershipId: membership.membershipId,
+            workosRoleSlugs: membership.roleSlugs,
+            status: membership.status,
+          },
+        };
+        selectedSession = await selectSignupOrganizationSession(
+          verifiedSession,
+          signupOrganization,
+          options.authKitClient,
+        );
+      } catch (error) {
+        return reply.code(403).send(toAuthError(error));
+      }
+    }
+
     let resolution: IdentityResolution;
     try {
       resolution = await resolveOrCreateIdentity(
-        verifiedSession,
+        selectedSession,
         request,
         options,
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
+        signupContext,
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
         return sendOrganizationSelectionSessionResponse(
           reply,
-          verifiedSession,
+          selectedSession,
           error,
           surfacePolicy,
           options,
@@ -684,7 +757,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       actorUserId: resolution.user.userId,
       organizationId: resolution.organizationId,
       surface: parsed.surface,
-      signupIntent: undefined,
+      signupIntent: signupContext?.intent,
       workosUserId: verifiedSession.user.id,
       workosOrgId: resolution.session.organizationId,
       workosSessionId: resolution.session.sessionId,
@@ -836,7 +909,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionResponse(reply, error, readCookie(request, CSRF_COOKIE));
+        return sendOrganizationSelectionResponse(reply, error, readCsrfToken(request));
       }
       return reply.code(403).send(toAuthError(error));
     }
@@ -862,7 +935,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       toSessionResponse(
         resolution.session,
         resolution.user,
-        readCookie(request, CSRF_COOKIE),
+        readCsrfToken(request),
         resolution.organizationId,
         resolution.organizationKind,
         resolution.resourceScope,
@@ -902,7 +975,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionResponse(reply, error, readCookie(request, CSRF_COOKIE));
+        return sendOrganizationSelectionResponse(reply, error, readCsrfToken(request));
       }
       return reply.code(403).send(toAuthError(error));
     }
@@ -920,7 +993,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         toSessionResponse(
           resolution.session,
           resolution.user,
-          readCookie(request, CSRF_COOKIE),
+          readCsrfToken(request),
           resolution.organizationId,
           resolution.organizationKind,
           resolution.resourceScope,
@@ -965,7 +1038,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         toSessionResponse(
           baseResolution.session,
           baseResolution.user,
-          readCookie(request, CSRF_COOKIE),
+          readCsrfToken(request),
           baseResolution.organizationId,
           baseResolution.organizationKind,
           baseResolution.resourceScope,
@@ -1041,7 +1114,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(403).send(toAuthError(error));
     }
 
-    const csrfToken = readCookie(request, CSRF_COOKIE) ?? randomBytes(24).toString("base64url");
+    const csrfToken = readCsrfToken(request) ?? randomBytes(24).toString("base64url");
     reply.header(
       "set-cookie",
       authSessionCookieHeaders(selectedSession, csrfToken, surfacePolicy, options),
@@ -1235,10 +1308,24 @@ function parseGoogleOAuthStartQuery(
   };
   const flow = query.flow === "signup" ? "signup" : "login";
   let surface: AuthSurface;
+  let intent: AuthSignupIntent | undefined;
   try {
     surface = parseSurface(typeof query.surface === "string" ? query.surface : undefined);
   } catch {
     return { ok: false, error: { error: "invalid_surface", message: "Unsupported auth surface." } };
+  }
+  if (flow === "signup") {
+    const rawIntent = typeof query.type === "string" ? query.type : query.intent;
+    try {
+      if (surface !== "marketplace-web" || typeof rawIntent === "string") {
+        intent = parseSignupIntent(surface, typeof rawIntent === "string" ? rawIntent : undefined);
+      }
+    } catch {
+      return {
+        ok: false,
+        error: { error: "invalid_signup", message: "Unsupported Google signup request." },
+      };
+    }
   }
   const returnTo = safeAllowedReturnTo(query.return_to, options);
   const errorReturnTo = safeAllowedReturnTo(query.error_return_to, options);
@@ -1252,7 +1339,7 @@ function parseGoogleOAuthStartQuery(
     ok: true,
     flow,
     surface,
-    intent: undefined,
+    intent,
     returnTo,
     errorReturnTo,
     loginHint: typeof query.login_hint === "string" ? query.login_hint : undefined,
@@ -1500,6 +1587,7 @@ function parseEmailVerificationConfirmBody(body: unknown):
       code: string;
       surface: AuthSurface;
       flow?: "login" | "signup";
+      intent?: AuthSignupIntent;
     }
   | {
       ok: false;
@@ -1516,6 +1604,7 @@ function parseEmailVerificationConfirmBody(body: unknown):
     code?: unknown;
     surface?: unknown;
     flow?: unknown;
+    intent?: unknown;
   };
   const pendingAuthenticationToken =
     typeof input.pendingAuthenticationToken === "string"
@@ -1534,12 +1623,17 @@ function parseEmailVerificationConfirmBody(body: unknown):
       typeof input.surface === "string" ? input.surface : "marketplace-web",
     );
     const flow = input.flow === "signup" ? "signup" : "login";
+    const intent =
+      flow === "signup" && typeof input.intent === "string"
+        ? parseSignupIntent(surface, input.intent)
+        : undefined;
     return {
       ok: true,
       pendingAuthenticationToken,
       code,
       surface,
       flow,
+      intent,
     };
   } catch {
     return {
@@ -1822,7 +1916,7 @@ function registerCompatibilityTokenRoute(
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionResponse(reply, error, readCookie(request, CSRF_COOKIE));
+        return sendOrganizationSelectionResponse(reply, error, readCsrfToken(request));
       }
       return reply.code(403).send(toAuthError(error));
     }
@@ -2518,7 +2612,15 @@ function passesCsrfCheck(request: FastifyRequest, options: AuthSessionRouteOptio
   if (origin && !options.allowedOrigins.includes(origin)) {
     return false;
   }
-  const csrfCookie = readCookie(request, CSRF_COOKIE);
+  const csrfHeader = readCsrfHeader(request);
+  return Boolean(csrfHeader && readCookies(request, CSRF_COOKIE).includes(csrfHeader));
+}
+
+function readCsrfToken(request: FastifyRequest): string | undefined {
+  return readCsrfHeader(request) ?? readCookie(request, CSRF_COOKIE);
+}
+
+function readCsrfHeader(request: FastifyRequest): string | undefined {
   const csrfHeader = request.headers["x-vayada-csrf"];
-  return typeof csrfHeader === "string" && csrfHeader.length > 0 && csrfHeader === csrfCookie;
+  return typeof csrfHeader === "string" && csrfHeader.length > 0 ? csrfHeader : undefined;
 }

@@ -1,8 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
+import {
+  ArrowRightIcon,
+  BuildingOfficeIcon,
+  CheckCircleIcon,
+  SparklesIcon,
+} from "@heroicons/react/24/outline";
+import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 
@@ -12,16 +18,22 @@ const options: Array<{
   type: AccountType;
   title: string;
   description: string;
+  outcome: string;
+  steps: string[];
 }> = [
   {
     type: "hotel",
-    title: "Hotel / property",
-    description: "Set up a property workspace for bookings and creator collaborations.",
+    title: "Hotel or property",
+    description: "Create a creator-ready property listing and collaboration offer.",
+    outcome: "Get discovered by creators who match your property.",
+    steps: ["Add property basics", "Set the offer", "Invite creators"],
   },
   {
     type: "creator",
     title: "Creator",
-    description: "Set up a creator workspace for hotel collaborations.",
+    description: "Build a profile hotels can review before collaborating with you.",
+    outcome: "Find properties looking for content partners.",
+    steps: ["Pick your niche", "Add your profile", "Apply to properties"],
   },
 ];
 
@@ -73,84 +85,104 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
-      <div className="flex min-h-screen w-full flex-col px-4 lg:w-[40%]">
-        <main className="flex flex-1 items-center justify-center py-10">
-          <div className="w-full max-w-sm">
-            <div className="mb-7 text-center">
-              <Image
-                src="/vayada-logo.png"
-                alt="vayada"
-                width={120}
-                height={40}
-                className="mx-auto mb-4 h-10 w-auto"
-                priority
-              />
-              <h1 className="text-xl font-bold text-gray-900">Set up your workspace</h1>
-              <p className="mt-1 text-[13px] text-gray-500">Tell us how you want to use vayada.</p>
-            </div>
+    <OnboardingShell
+      currentStep={1}
+      title="What do you want to create first?"
+      description="We will shape the next steps around the first thing that gets you value in vayada."
+    >
+      <div className="max-w-2xl">
+        <div className="mb-6">
+          <p className="mb-2 text-xs font-semibold text-primary-600">Start your setup</p>
+          <h2 className="text-3xl font-semibold leading-tight text-gray-950">Choose your path</h2>
+          <p className="mt-3 text-sm leading-6 text-gray-600">
+            Hotels create collaboration listings. Creators create profiles hotels can review.
+          </p>
+        </div>
 
-            {loading ? (
-              <p className="text-center text-sm text-gray-600">Loading...</p>
-            ) : (
-              <div className="space-y-5">
-                <div className="space-y-3">
-                  {options.map((option) => (
-                    <button
-                      key={option.type}
-                      type="button"
-                      aria-pressed={selectedType === option.type}
-                      onClick={() => {
-                        setError("");
-                        setSelectedType(option.type);
-                      }}
-                      className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
+        {loading ? (
+          <p className="text-sm text-gray-600">Loading...</p>
+        ) : (
+          <div className="space-y-4">
+            <div role="radiogroup" aria-label="Choose onboarding path" className="space-y-3">
+              {options.map((option) => (
+                <button
+                  key={option.type}
+                  type="button"
+                  role="radio"
+                  aria-checked={selectedType === option.type}
+                  onClick={() => {
+                    setError("");
+                    setSelectedType(option.type);
+                  }}
+                  className={`w-full rounded-lg border bg-white p-4 text-left transition-colors ${
+                    selectedType === option.type
+                      ? "border-primary-600 shadow-sm"
+                      : "border-gray-300 hover:border-gray-400"
+                  }`}
+                >
+                  <span className="flex items-start gap-3">
+                    <span
+                      className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
                         selectedType === option.type
-                          ? "border-primary-600 bg-primary-50"
-                          : "border-gray-300 bg-white hover:bg-gray-50"
+                          ? "bg-primary-600 text-white"
+                          : "bg-gray-100 text-gray-700"
                       }`}
                     >
-                      <span className="block text-sm font-semibold text-gray-900">
-                        {option.title}
+                      {option.type === "hotel" ? (
+                        <BuildingOfficeIcon className="h-5 w-5" />
+                      ) : (
+                        <SparklesIcon className="h-5 w-5" />
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-semibold text-gray-950">{option.title}</span>
+                        {selectedType === option.type && (
+                          <CheckCircleIcon className="h-5 w-5 shrink-0 text-primary-600" />
+                        )}
                       </span>
-                      <span className="mt-1 block text-xs leading-5 text-gray-500">
+                      <span className="mt-1 block text-sm leading-5 text-gray-600">
                         {option.description}
                       </span>
-                    </button>
-                  ))}
-                </div>
-
-                {error && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                    {error}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  onClick={handleContinue}
-                  disabled={submitting}
-                  className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {submitting ? "Continuing..." : "Continue"}
+                      <span className="mt-3 block text-xs font-medium text-gray-950">
+                        {option.outcome}
+                      </span>
+                      <span className="mt-3 grid gap-1.5">
+                        {option.steps.map((step) => (
+                          <span
+                            key={step}
+                            className="flex items-center gap-1.5 text-xs font-medium text-gray-600"
+                          >
+                            <CheckCircleIcon className="h-3.5 w-3.5 text-primary-600" />
+                            {step}
+                          </span>
+                        ))}
+                      </span>
+                    </span>
+                  </span>
                 </button>
+              ))}
+            </div>
+
+            {error && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {error}
               </div>
             )}
+
+            <button
+              type="button"
+              onClick={handleContinue}
+              disabled={submitting}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {submitting ? "Continuing..." : "Continue setup"}
+              {!submitting && <ArrowRightIcon className="h-4 w-4" />}
+            </button>
           </div>
-        </main>
+        )}
       </div>
-      <div className="relative hidden min-h-screen flex-1 overflow-hidden bg-gray-900 lg:block">
-        <Image
-          src="/hotel-hero.JPG"
-          alt=""
-          fill
-          sizes="50vw"
-          className="object-cover"
-          aria-hidden="true"
-        />
-        <div className="absolute inset-0 bg-gray-950/20" />
-      </div>
-    </div>
+    </OnboardingShell>
   );
 }
 

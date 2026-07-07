@@ -15,6 +15,7 @@ import {
   setAuthKitSession,
   setLegacyCompatibilityToken,
 } from "./sessionStore";
+import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
 
 const fetchMock = vi.fn();
 
@@ -72,6 +73,34 @@ describe("marketplace AuthKit compatibility token", () => {
     });
 
     expect(getAuthBearerToken()).toBe("new-workos-access-token");
+  });
+
+  it("uses the AuthKit token for shared hotel setup requests", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    setAuthKitSession({
+      accessToken: "hotel-workos-access-token",
+      csrfToken: "hotel-csrf-token",
+      organizationKind: "hotel_group",
+      user: { id: "user_hotel", email: "hotel@example.com", status: "active" },
+    });
+    setLegacyCompatibilityToken("legacy-marketplace-token", 900);
+    expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe(
+          "https://api.localhost/api/hotel-setup/status?entryProduct=marketplace",
+        );
+        expect((init?.headers as Record<string, string>)["Authorization"]).toBe(
+          "Bearer hotel-workos-access-token",
+        );
+        return jsonResponse({ contractVersion: "shared-hotel-setup-status.v1" });
+      }),
+    );
+
+    await sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -231,6 +260,38 @@ describe("authService", () => {
     expect(getAuthBearerToken()).toBe("signup-workos-access-token");
     expect(getAuthCsrfToken()).toBe("signup-csrf-token");
     expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
+  });
+
+  it("keeps the current portless fallback port for signup requests", async () => {
+    const localStorage = createStorageMock();
+    vi.stubGlobal("window", {
+      location: {
+        protocol: "https:",
+        port: "1355",
+      },
+      localStorage,
+    });
+    vi.stubGlobal("localStorage", localStorage);
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        accessToken: "signup-workos-access-token",
+        user: {
+          id: "user_creator",
+          email: "creator@example.test",
+          status: "active",
+        },
+      }),
+    );
+
+    await authService.signup({
+      email: "creator@example.test",
+      password: "correct-password",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost:1355/auth/password/signup",
+      expect.any(Object),
+    );
   });
 
   it("starts Google login through the AuthKit backend", () => {

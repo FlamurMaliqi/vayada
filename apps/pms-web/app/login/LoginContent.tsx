@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import SharedHotelLoginForm from "@vayada/hotel-setup-wizard/SharedHotelLoginForm";
+import SharedHotelLoginForm from "@vayada/product-onboarding/SharedHotelLoginForm";
 import { authService } from "@/services/auth";
 import {
   isAuthOrganizationSelectionResponse,
@@ -14,17 +14,19 @@ import { useTranslation } from "@/lib/i18n";
 type LoginContentProps = {
   returnTo?: string;
   resumeSession?: boolean;
+  authError?: string;
 };
 
 export function LoginContent({
   returnTo = "/dashboard",
   resumeSession = false,
+  authError,
 }: LoginContentProps) {
   const { t } = useTranslation();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [submitError, setSubmitError] = useState("");
+  const [submitError, setSubmitError] = useState(authError ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [organizationSelection, setOrganizationSelection] =
     useState<AuthOrganizationSelectionResponse | null>(null);
@@ -116,6 +118,9 @@ export function LoginContent({
         chooseOrganizationSubtitle: t("auth.login.chooseHotelGroupSubtitle"),
         emailLabel: t("auth.login.emailLabel"),
         passwordLabel: t("auth.login.passwordLabel"),
+        forgotPassword: t("auth.login.forgotPassword"),
+        googleLogin: "Continue with Google",
+        or: "or",
         submitLabel: t("auth.login.submitButton"),
         submittingLabel: t("auth.login.submitting"),
         noAccount: t("auth.login.noAccount"),
@@ -126,9 +131,11 @@ export function LoginContent({
       isSubmitting={isSubmitting}
       submitError={submitError}
       organizations={organizationSelection?.organizations ?? null}
+      forgotPasswordHref="/forgot-password"
       onEmailChange={setEmail}
       onPasswordChange={setPassword}
       onSubmit={handleLogin}
+      onGoogleLogin={() => authService.startGoogleLogin(returnTo)}
       onOrganizationSelect={handleOrganizationSelect}
     />
   );

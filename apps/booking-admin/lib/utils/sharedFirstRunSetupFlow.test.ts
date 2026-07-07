@@ -7,7 +7,7 @@ import {
   selectedProductsForProperty,
   type SharedHotelSetupStatus,
   type SharedSetupProperty,
-} from "@vayada/hotel-setup-wizard";
+} from "@vayada/product-onboarding";
 
 describe("resolveSharedFirstRunSetupView", () => {
   it("starts first-property users on the property profile form", () => {

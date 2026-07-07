@@ -9,7 +9,7 @@
   "auth.login.submitting": "Signing In...",
   "auth.login.submit": "Sign In",
   "auth.login.noAccount": "Don't have an account?",
-  "auth.login.signUp": "Sign up",
+  "auth.login.signUp": "Create an account",
   "auth.login.title": "Booking Engine",
   "auth.login.subtitle": "Sign in to the admin panel",
   "auth.login.errorInvalidCredentials": "Invalid email or password.",

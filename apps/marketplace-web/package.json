@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
-    "@vayada/hotel-setup-wizard": "*",
+    "@vayada/product-onboarding": "*",
     "@vayada/marketplace-shared": "*",
     "clsx": "^2.0.0",
     "countries-list": "^3.2.2",
