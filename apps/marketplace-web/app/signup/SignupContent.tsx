@@ -88,6 +88,8 @@ export function SignupContent({ authError }: SignupContentProps) {
               registerLabel="Sign in"
               registerPrompt="Already have an account?"
               passwordAutoComplete="new-password"
+              passwordHelpText="At least 10 characters. Avoid weak or breached passwords."
+              passwordMinLength={10}
               submitLabel="Create account"
               submittingLabel="Creating account..."
             />
