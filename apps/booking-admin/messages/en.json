@@ -12,6 +12,8 @@
   "auth.login.signUp": "Create an account",
   "auth.login.title": "Booking Engine",
   "auth.login.subtitle": "Sign in to the admin panel",
+  "auth.login.chooseHotelGroup": "Choose hotel group",
+  "auth.login.chooseHotelGroupSubtitle": "Select the hotel group you want to manage.",
   "auth.login.errorInvalidCredentials": "Invalid email or password.",
   "auth.login.errorSuspended": "Your account has been suspended. Please contact support.",
   "auth.login.errorValidation": "Validation error.",

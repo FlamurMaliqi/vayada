@@ -12,6 +12,8 @@
   "auth.login.signUp": "Registreren",
   "auth.login.title": "Boekingsmodule",
   "auth.login.subtitle": "Log in op het beheerpaneel",
+  "auth.login.chooseHotelGroup": "Kies hotelgroep",
+  "auth.login.chooseHotelGroupSubtitle": "Selecteer de hotelgroep die je wilt beheren.",
   "auth.login.errorInvalidCredentials": "Ongeldig e-mailadres of wachtwoord.",
   "auth.login.errorSuspended": "Je account is geblokkeerd. Neem contact op met de klantenservice.",
   "auth.login.errorValidation": "Validatiefout.",

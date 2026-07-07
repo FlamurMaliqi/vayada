@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 
 export type SharedSignupPageProps = {
@@ -16,6 +17,7 @@ export type SharedSignupPageProps = {
 
 const MARKETING_BASE_URL = process.env.NEXT_PUBLIC_MARKETING_URL || "https://vayada.com";
 const PASSWORD_MIN_LENGTH = 10;
+const PASSWORD_HELP_TEXT = `At least ${PASSWORD_MIN_LENGTH} characters. Avoid weak or breached passwords.`;
 
 export default function SharedSignupPage({
   isSubmitting,
@@ -61,7 +63,7 @@ export default function SharedSignupPage({
         <div className="flex flex-1 items-center justify-center py-10">
           <div className="w-full max-w-sm">
             <div className="mb-6 text-center">
-              <img
+              <Image
                 src="/vayada-logo.png"
                 alt="vayada"
                 width={120}
@@ -159,9 +161,7 @@ export default function SharedSignupPage({
                 </div>
                 {passwordError && <p className="mt-1 text-sm text-red-600">{passwordError}</p>}
                 {!passwordError && (
-                  <p className="mt-2 h-6 text-xs leading-5 text-gray-500">
-                    At least 10 characters. Avoid weak or breached passwords.
-                  </p>
+                  <p className="mt-2 h-6 text-xs leading-5 text-gray-500">{PASSWORD_HELP_TEXT}</p>
                 )}
               </div>
 

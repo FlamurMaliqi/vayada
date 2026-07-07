@@ -12,6 +12,8 @@
   "auth.login.signUp": "Daftar",
   "auth.login.title": "Booking Engine",
   "auth.login.subtitle": "Masuk ke panel admin",
+  "auth.login.chooseHotelGroup": "Pilih grup hotel",
+  "auth.login.chooseHotelGroupSubtitle": "Pilih grup hotel yang ingin Anda kelola.",
   "auth.login.errorInvalidCredentials": "Email atau kata sandi salah.",
   "auth.login.errorSuspended": "Akun Anda telah ditangguhkan. Silakan hubungi dukungan.",
   "auth.login.errorValidation": "Kesalahan validasi.",

@@ -261,7 +261,7 @@ export default function VerifyEmailPage() {
           src="/hotel-hero.JPG"
           alt=""
           fill
-          sizes="50vw"
+          sizes="60vw"
           className="object-cover"
           aria-hidden="true"
         />

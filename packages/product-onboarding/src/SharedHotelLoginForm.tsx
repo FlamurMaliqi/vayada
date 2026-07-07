@@ -18,10 +18,16 @@ export type SharedHotelLoginFormCopy = {
   forgotPassword?: string;
   googleLogin?: string;
   or?: string;
+  showPasswordLabel?: string;
+  hidePasswordLabel?: string;
   submitLabel: string;
   submittingLabel: string;
   noAccount: string;
   signUp: string;
+  legalPrefix?: string;
+  termsLabel?: string;
+  legalConnector?: string;
+  privacyLabel?: string;
 };
 
 export type SharedHotelLoginFormProps = {
@@ -187,7 +193,11 @@ export default function SharedHotelLoginForm({
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
                         className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                        aria-label={showPassword ? "Hide password" : "Show password"}
+                        aria-label={
+                          showPassword
+                            ? (copy.hidePasswordLabel ?? "Hide password")
+                            : (copy.showPasswordLabel ?? "Show password")
+                        }
                       >
                         {showPassword ? (
                           <EyeSlashIcon className="h-5 w-5" />
@@ -241,13 +251,13 @@ export default function SharedHotelLoginForm({
         </div>
         {!choosingOrganization && (
           <p className="pb-8 text-center text-xs leading-5 text-gray-500">
-            By continuing, you agree to our{" "}
+            {copy.legalPrefix ?? "By continuing, you agree to our"}{" "}
             <a href={termsUrl} className="font-medium text-primary-600 hover:text-primary-700">
-              Terms
+              {copy.termsLabel ?? "Terms"}
             </a>{" "}
-            and acknowledge our{" "}
+            {copy.legalConnector ?? "and acknowledge our"}{" "}
             <a href={privacyUrl} className="font-medium text-primary-600 hover:text-primary-700">
-              Privacy Policy
+              {copy.privacyLabel ?? "Privacy Policy"}
             </a>
             .
           </p>

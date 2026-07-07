@@ -107,8 +107,8 @@ function LoginContent() {
       copy={{
         title: "Sign in to vayada",
         subtitle: "Use your email and password to continue.",
-        chooseOrganizationTitle: "Choose hotel group",
-        chooseOrganizationSubtitle: "Select the hotel group you want to manage.",
+        chooseOrganizationTitle: t("auth.login.chooseHotelGroup"),
+        chooseOrganizationSubtitle: t("auth.login.chooseHotelGroupSubtitle"),
         emailLabel: t("auth.login.emailLabel"),
         passwordLabel: t("auth.login.passwordLabel"),
         forgotPassword: t("auth.login.forgotPassword"),
