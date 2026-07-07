@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { GoogleIcon } from "@/components/auth/GoogleIcon";
+import LoginForm from "@/components/auth/LoginForm";
 import { MARKETING_BASE_URL, ROUTES } from "@/lib/constants";
 import { AuthStateError, authService, storePendingEmailVerification } from "@/services/auth";
 
@@ -14,16 +15,13 @@ type SignupContentProps = {
 
 export function SignupContent({ authError }: SignupContentProps) {
   const router = useRouter();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [submitError, setSubmitError] = useState(authError ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const termsUrl = `${MARKETING_BASE_URL}${ROUTES.TERMS}`;
   const privacyUrl = `${MARKETING_BASE_URL}${ROUTES.PRIVACY}`;
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSubmit(email: string, password: string) {
     setSubmitError("");
     setIsSubmitting(true);
     try {
@@ -63,7 +61,7 @@ export function SignupContent({ authError }: SignupContentProps) {
               />
               <h1 className="text-xl font-bold text-gray-900">Create your vayada account</h1>
               <p className="mt-1 text-[13px] text-gray-500">
-                Use Google or your email and password to continue.
+                Use your email and password to continue.
               </p>
             </div>
 
@@ -77,68 +75,22 @@ export function SignupContent({ authError }: SignupContentProps) {
             </button>
             <div className="mb-5 flex items-center gap-3 text-xs text-gray-400">
               <span className="h-px flex-1 bg-gray-200" />
-              <span>or use email</span>
+              <span>or</span>
               <span className="h-px flex-1 bg-gray-200" />
             </div>
-            <form onSubmit={handleSubmit} className="space-y-5">
-              <div>
-                <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-gray-700">
-                  Email address
-                </label>
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  required
-                  autoComplete="email"
-                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="password"
-                  className="mb-1.5 block text-sm font-medium text-gray-700"
-                >
-                  Password
-                </label>
-                <input
-                  id="password"
-                  name="password"
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                  autoComplete="new-password"
-                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
-                />
-              </div>
-
-              {submitError && (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {submitError}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {isSubmitting ? "Creating account..." : "Create account"}
-              </button>
-            </form>
-
-            <p className="mt-5 text-center text-sm text-gray-600">
-              Already have an account?{" "}
-              <Link
-                href={ROUTES.LOGIN}
-                className="font-medium text-primary-600 hover:text-primary-700"
-              >
-                Sign in
-              </Link>
-            </p>
+            <LoginForm
+              onSubmit={handleSubmit}
+              isSubmitting={isSubmitting}
+              submitError={submitError}
+              onErrorClear={() => setSubmitError("")}
+              showForgotPassword={false}
+              registerHref={ROUTES.LOGIN}
+              registerLabel="Sign in"
+              registerPrompt="Already have an account?"
+              passwordAutoComplete="new-password"
+              submitLabel="Create account"
+              submittingLabel="Creating account..."
+            />
           </div>
         </div>
         <p className="pb-8 text-center text-xs leading-5 text-gray-500">
