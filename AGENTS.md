@@ -44,15 +44,15 @@ npm install -g portless                # requires Node 24+
 
 | What                                  | Command                                                                          |
 | ------------------------------------- | -------------------------------------------------------------------------------- |
-| Start AuthKit / next-stack local dev  | `npm run dev:workos-local` (starts support services, `apps/api`, and frontends)  |
-| Start transitional legacy local stack | `npm run dev:portless`                                                           |
+| Start AuthKit / next-stack local dev  | `npm run dev:workos-local` or `npm run dev:portless`                             |
+| Start transitional legacy local stack | `./scripts/dev-portless.sh --legacy`                                             |
 | Start one Next.js app                 | `cd apps/<name> && portless`                                                     |
 | Start `apps/api`                      | `cd apps/api && npm run dev`                                                     |
 | Start a FastAPI backend               | `cd apps/<api> && uvicorn app.main:app --reload --port <P>` (P from the App map) |
 
 The Next.js apps and `apps/api` register their portless names via a `"portless"` key in `apps/<name>/package.json`. The FastAPI apps run on their existing uvicorn ports (8000 / 8001 / 8002) and are reached at `https://api.<product>.localhost` thanks to the static aliases registered by `scripts/portless-setup.sh`.
 
-`npm run dev:workos-local` requires `apps/api/.env` with local WorkOS settings and wires AuthKit/target frontend calls to `https://api.localhost`. `npm run dev:portless` is the transitional path for legacy FastAPI-backed surfaces and does not provide WorkOS/AuthKit env wiring.
+`npm run dev:workos-local` requires `apps/api/.env` with local WorkOS settings and wires AuthKit/target frontend calls to `https://api.localhost`. `npm run dev:portless` delegates to that AuthKit-capable workflow so signup/login routes work by default. Use `./scripts/dev-portless.sh --legacy` only for the old FastAPI-backed surfaces without WorkOS/AuthKit env wiring.
 
 ### Worktrees
 

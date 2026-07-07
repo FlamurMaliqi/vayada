@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { authService } from "./index";
+import {
+  AuthStateError,
+  authService,
+  clearPendingEmailVerification,
+  getPendingEmailVerification,
+  storePendingEmailVerification,
+} from "./index";
 import { clearAuthData, getAuthBearerToken, setAuthKitSession } from "./sessionStore";
 
 describe("PMS AuthKit session refresh", () => {
@@ -44,6 +50,92 @@ describe("PMS AuthKit session refresh", () => {
     });
     expect(getAuthBearerToken()).toBe("authkit-token");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves verification-required auth state for the verification page", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(
+        {
+          state: "email_verification_required",
+          message: "Verify your email address to continue.",
+          pendingAuthenticationToken: "pending-email-token",
+          email: "hotel@example.com",
+          emailVerificationId: "email_verification_123",
+        },
+        403,
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    let thrown: unknown;
+    try {
+      await authService.signup({
+        email: "hotel@example.com",
+        password: "correct-password",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AuthStateError);
+    expect(thrown).toMatchObject({
+      state: "email_verification_required",
+      pendingAuthenticationToken: "pending-email-token",
+      emailVerificationId: "email_verification_123",
+    });
+  });
+
+  it("uses pending verification state to confirm email and store the PMS AuthKit session", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    mockBrowserStorage();
+    expect(
+      storePendingEmailVerification({
+        pendingAuthenticationToken: "pending-email-token",
+        email: "hotel@example.com",
+        emailVerificationId: "email_verification_123",
+        flow: "signup",
+        intent: "hotel",
+      }),
+    ).toBe(true);
+    expect(getPendingEmailVerification()).toMatchObject({
+      pendingAuthenticationToken: "pending-email-token",
+      flow: "signup",
+      intent: "hotel",
+    });
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        accessToken: "verified-workos-access-token",
+        csrfToken: "verified-csrf-token",
+        user: {
+          id: "user_hotel_admin",
+          email: "hotel@example.com",
+          status: "active",
+          workosUserId: "user_workos_hotel",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authService.confirmEmailVerification("123456")).resolves.toMatchObject({
+      accessToken: "verified-workos-access-token",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/email-verification/confirm",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({
+          pendingAuthenticationToken: "pending-email-token",
+          code: "123456",
+          flow: "signup",
+          intent: "hotel",
+          surface: "pms-web",
+        }),
+      }),
+    );
+    expect(getAuthBearerToken()).toBe("verified-workos-access-token");
+    expect(getPendingEmailVerification()).toBeNull();
   });
 
   it("clears the selected shared property when the AuthKit organization changes", () => {
@@ -99,7 +191,99 @@ describe("PMS AuthKit session refresh", () => {
     expect(localStorage.getItem("selectedHotelId")).toBe("property_a");
     expect(localStorage.getItem("selectedSharedPropertyOrganizationId")).toBe("org_hotel_a");
   });
+
+  it("starts Google login through the AuthKit backend", () => {
+    const location = {
+      href: "https://pms.localhost/login",
+      origin: "https://pms.localhost",
+    };
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.stubGlobal("window", { location, localStorage: storage });
+
+    authService.startGoogleLogin("/dashboard");
+
+    const url = new URL(location.href);
+    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(url.searchParams.get("surface")).toBe("pms-web");
+    expect(url.searchParams.get("flow")).toBe("login");
+    expect(url.searchParams.get("return_to")).toBe(
+      "https://pms.localhost/login?auth=callback&returnTo=%2Fdashboard",
+    );
+    expect(url.searchParams.get("error_return_to")).toBe("https://pms.localhost/login");
+  });
+
+  it("starts hotel Google signup through the AuthKit backend", () => {
+    const location = {
+      href: "https://pms.localhost/signup",
+      origin: "https://pms.localhost",
+    };
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.stubGlobal("window", { location, localStorage: storage });
+
+    authService.startGoogleSignup("/dashboard");
+
+    const url = new URL(location.href);
+    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(url.searchParams.get("surface")).toBe("pms-web");
+    expect(url.searchParams.get("flow")).toBe("signup");
+    expect(url.searchParams.get("type")).toBe("hotel");
+    expect(url.searchParams.get("return_to")).toBe(
+      "https://pms.localhost/login?auth=callback&returnTo=%2Fdashboard",
+    );
+    expect(url.searchParams.get("error_return_to")).toBe("https://pms.localhost/signup");
+  });
+
+  it("requests and confirms password resets through the AuthKit backend", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          message: "If an account with that email exists, a password reset link has been sent.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          message: "Password reset successful. Please sign in with your new password.",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authService.forgotPassword("owner@example.test")).resolves.toEqual({
+      message: "If an account with that email exists, a password reset link has been sent.",
+    });
+    await expect(authService.resetPassword("reset-token", "new-password")).resolves.toEqual({
+      message: "Password reset successful. Please sign in with your new password.",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.localhost/auth/password/reset/request",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({ email: "owner@example.test" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.localhost/auth/password/reset/confirm",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({ token: "reset-token", newPassword: "new-password" }),
+      }),
+    );
+  });
 });
+
+function mockBrowserStorage(): void {
+  const storage = memoryStorage();
+  vi.stubGlobal("localStorage", storage);
+  vi.stubGlobal("sessionStorage", storage);
+  vi.stubGlobal("window", { localStorage: storage, sessionStorage: storage });
+  clearPendingEmailVerification();
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

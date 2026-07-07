@@ -1,4 +1,4 @@
-import { firstSearchParam, safeRelativeReturnTo } from "@vayada/hotel-setup-wizard/returnTo";
+import { firstSearchParam, safeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 import { LoginContent } from "./LoginContent";
 
 type LoginPageProps = {

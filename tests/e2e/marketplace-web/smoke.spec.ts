@@ -7,7 +7,7 @@ test.describe("marketplace-web smoke", () => {
 
     await expect(page.getByRole("heading", { name: /sign in to vayada/i })).toBeVisible();
     await expect(page.getByLabel(/email/i)).toBeVisible();
-    await expect(page.getByLabel(/password/i)).toBeVisible();
+    await expect(page.getByLabel(/^password$/i)).toBeVisible();
   });
 
   test("@signup unified signup renders the custom form", async ({ page }) => {
@@ -16,7 +16,7 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByRole("heading", { name: /create your vayada account/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /continue with google/i })).toBeVisible();
     await expect(page.getByLabel(/email/i)).toBeVisible();
-    await expect(page.getByLabel(/password/i)).toBeVisible();
+    await expect(page.getByLabel(/^password$/i)).toBeVisible();
     await expect(page.getByText(/hotel \/ property/i)).toHaveCount(0);
     await expect(page.getByText(/^creator$/i)).toHaveCount(0);
   });
@@ -75,13 +75,13 @@ test.describe("marketplace-web smoke", () => {
 
     await page.goto("/onboarding");
 
-    await expect(page.getByRole("heading", { name: /set up your workspace/i })).toBeVisible();
-    const hotelOption = page.getByRole("button").filter({ hasText: /^Hotel \/ property/ });
-    const creatorOption = page.getByRole("button").filter({ hasText: /^Creator/ });
+    await expect(page.getByRole("heading", { name: /choose your path/i })).toBeVisible();
+    const hotelOption = page.getByRole("radio", { name: /hotel or property/i });
+    const creatorOption = page.getByRole("radio", { name: /^creator/i });
     await expect(hotelOption).toBeVisible();
     await expect(creatorOption).toBeVisible();
     await creatorOption.click();
-    await page.getByRole("button", { name: /^continue$/i }).click();
+    await page.getByRole("button", { name: /continue setup/i }).click();
     await expect(page).toHaveURL(/\/profile\/complete$/);
   });
 });

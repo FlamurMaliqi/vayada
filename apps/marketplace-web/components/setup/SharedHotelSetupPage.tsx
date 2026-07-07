@@ -9,7 +9,7 @@ import {
   safeSharedHotelSetupReturnTo,
   type SharedFirstRunProductContinueInput,
   type SharedHotelSetupEntryProduct,
-} from "@vayada/hotel-setup-wizard";
+} from "@vayada/product-onboarding";
 
 import { ROUTES } from "@/lib/constants";
 import { canOpenMarketplaceProfileTools } from "@/lib/utils/sharedSetupGuard";
@@ -19,9 +19,11 @@ import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 export function SharedHotelSetupPage({
   defaultEntryProduct,
   defaultReturnTo,
+  embedded = false,
 }: {
   defaultEntryProduct: SharedHotelSetupEntryProduct;
   defaultReturnTo: string;
+  embedded?: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -77,7 +79,13 @@ export function SharedHotelSetupPage({
 
   if (checkingAuth || !authorized) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+      <div
+        className={
+          embedded
+            ? "flex min-h-80 items-center justify-center"
+            : "flex min-h-screen items-center justify-center bg-gray-50"
+        }
+      >
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
       </div>
     );
@@ -89,6 +97,7 @@ export function SharedHotelSetupPage({
       entryProduct={entryProduct}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
+      embedded={embedded}
       onProductContinue={handleProductContinue}
     />
   );

@@ -12,6 +12,8 @@
   "auth.login.signUp": "注册",
   "auth.login.title": "Booking Engine",
   "auth.login.subtitle": "登录管理面板",
+  "auth.login.chooseHotelGroup": "选择酒店集团",
+  "auth.login.chooseHotelGroupSubtitle": "选择您要管理的酒店集团。",
   "auth.login.errorInvalidCredentials": "邮箱或密码错误。",
   "auth.login.errorSuspended": "您的账户已被暂停，请联系客服。",
   "auth.login.errorValidation": "验证错误。",

@@ -1,6 +1,6 @@
 # Monorepo-aware Dockerfile.
 # Build context is the repo root (workflow sets context: .).
-# Workspace package @vayada/hotel-setup-wizard is resolved from packages/.
+# Workspace package @vayada/product-onboarding is resolved from packages/.
 
 # Stage 1: Builder
 FROM node:20-alpine AS builder

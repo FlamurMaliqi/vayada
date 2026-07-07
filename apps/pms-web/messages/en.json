@@ -65,7 +65,7 @@
   "auth.login.submitButton": "Sign In",
   "auth.login.submitting": "Signing In...",
   "auth.login.noAccount": "Don't have an account?",
-  "auth.login.signUp": "Sign up",
+  "auth.login.signUp": "Create an account",
   "auth.login.sessionExpired": "Your session has expired. Please login again.",
   "auth.login.invalidEmail": "Please enter a valid email address",
   "auth.login.invalidCredentials": "Invalid email or password.",

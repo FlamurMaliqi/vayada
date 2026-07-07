@@ -72,7 +72,7 @@ import {
 import { apiClient } from "@/services/api/client";
 import { FeedbackAlert } from "@/components/ui";
 import { SettingsLayout, type SettingsNavSection } from "@/components/settings/layout";
-import { DEFAULT_LAST_MINUTE_TIERS } from "@vayada/hotel-setup-wizard";
+import { DEFAULT_LAST_MINUTE_TIERS } from "@vayada/product-onboarding";
 
 import RoomsTab from "@/components/booking-flow/RoomsTab";
 import AddonsTab, { type AddonItemFormValues } from "@/components/booking-flow/AddonsTab";

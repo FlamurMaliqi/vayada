@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Start the transitional portless stack with Docker support services.
+# Start the local Vayada stack. Defaults to WorkOS/AuthKit because the apps use
+# those routes for signup/login; pass --legacy for the old FastAPI-only stack.
 
 set -euo pipefail
 
@@ -19,6 +20,13 @@ BACKEND_SERVICES=(
 )
 
 cd "$ROOT_DIR"
+
+if [[ "${1:-}" != "--legacy" ]]; then
+  echo "==> dev:portless now starts the WorkOS/AuthKit-capable local stack"
+  echo "    Use ./scripts/dev-portless.sh --legacy for the old FastAPI-only stack."
+  exec "$ROOT_DIR/scripts/dev-workos-local.sh" "$@"
+fi
+shift
 
 if [[ "${1:-}" == "--stop" ]]; then
   docker compose "${COMPOSE_FILES[@]}" stop "${BACKEND_SERVICES[@]}"

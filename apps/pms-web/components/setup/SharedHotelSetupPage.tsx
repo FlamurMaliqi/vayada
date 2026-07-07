@@ -9,7 +9,7 @@ import {
   safeSharedHotelSetupReturnTo,
   type SharedFirstRunProductContinueInput,
   type SharedHotelSetupEntryProduct,
-} from "@vayada/hotel-setup-wizard";
+} from "@vayada/product-onboarding";
 
 import { authService } from "@/services/auth";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";

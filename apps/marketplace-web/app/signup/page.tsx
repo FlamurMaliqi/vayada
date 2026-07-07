@@ -1,4 +1,4 @@
-import { firstSearchParam } from "@vayada/hotel-setup-wizard/returnTo";
+import { firstSearchParam } from "@vayada/product-onboarding/returnTo";
 import { SignupContent } from "./SignupContent";
 
 type SignUpPageProps = {

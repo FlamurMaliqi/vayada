@@ -29,16 +29,58 @@ export interface LoginRequest {
 }
 
 export interface SignupRequest {
-  name: string;
+  name?: string;
   email: string;
   password: string;
 }
+
+export type AuthStateResponse = {
+  state:
+    | "invalid_credentials"
+    | "email_verification_required"
+    | "organization_selection_required"
+    | "mfa_required"
+    | "sso_required"
+    | "auth_failed";
+  message: string;
+  pendingAuthenticationToken?: string;
+  email?: string;
+  emailVerificationId?: string;
+};
+
+export class AuthStateError extends Error {
+  status: number;
+  state: AuthStateResponse["state"];
+  pendingAuthenticationToken?: string;
+  email?: string;
+  emailVerificationId?: string;
+
+  constructor(status: number, response: AuthStateResponse) {
+    super(response.message);
+    this.name = "AuthStateError";
+    this.status = status;
+    this.state = response.state;
+    this.pendingAuthenticationToken = response.pendingAuthenticationToken;
+    this.email = response.email;
+    this.emailVerificationId = response.emailVerificationId;
+  }
+}
+
+export type PendingEmailVerification = {
+  pendingAuthenticationToken: string;
+  email?: string;
+  emailVerificationId?: string;
+  flow?: "login" | "signup";
+  intent?: "hotel";
+};
 
 type CompatibilityTokenResponse = {
   accessToken: string;
   expiresIn: number;
   tokenType: "Bearer";
 };
+
+const PENDING_EMAIL_VERIFICATION_KEY = "vayada_pending_email_verification";
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
@@ -57,12 +99,74 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
       : null;
 
   if (!response.ok) {
+    if (isAuthStateResponse(body)) {
+      throw new AuthStateError(response.status, body);
+    }
     throw new ApiErrorResponse(response.status, {
       detail: body?.message ?? body?.error ?? "Authentication request failed",
     });
   }
 
   return body as T;
+}
+
+function isAuthStateResponse(value: unknown): value is AuthStateResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { state?: unknown }).state === "string" &&
+    typeof (value as { message?: unknown }).message === "string"
+  );
+}
+
+export function storePendingEmailVerification(
+  input: Omit<PendingEmailVerification, "pendingAuthenticationToken"> & {
+    pendingAuthenticationToken?: string;
+  },
+): boolean {
+  if (typeof window === "undefined" || !input.pendingAuthenticationToken) return false;
+  const pending: PendingEmailVerification = {
+    pendingAuthenticationToken: input.pendingAuthenticationToken,
+    email: input.email,
+    emailVerificationId: input.emailVerificationId,
+    flow: input.flow,
+    intent: input.intent,
+  };
+  try {
+    window.sessionStorage.setItem(PENDING_EMAIL_VERIFICATION_KEY, JSON.stringify(pending));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getPendingEmailVerification(): PendingEmailVerification | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_EMAIL_VERIFICATION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingEmailVerification>;
+    if (typeof parsed.pendingAuthenticationToken !== "string") return null;
+    return {
+      pendingAuthenticationToken: parsed.pendingAuthenticationToken,
+      email: typeof parsed.email === "string" ? parsed.email : undefined,
+      emailVerificationId:
+        typeof parsed.emailVerificationId === "string" ? parsed.emailVerificationId : undefined,
+      flow: parsed.flow === "signup" ? "signup" : "login",
+      intent: parsed.intent === "hotel" ? "hotel" : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingEmailVerification(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(PENDING_EMAIL_VERIFICATION_KEY);
+  } catch {
+    return;
+  }
 }
 
 async function attachPmsCompatibilityToken(): Promise<void> {
@@ -96,6 +200,41 @@ async function storeAuthSessionResponse(
 
 export const authService = {
   isAuthKitEnabled: isAuthKitLoginEnabled,
+
+  startGoogleLogin: (returnTo?: string): void => {
+    if (typeof window === "undefined") return;
+
+    const callbackUrl = new URL("/login", window.location.origin);
+    callbackUrl.searchParams.set("auth", "callback");
+    if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      callbackUrl.searchParams.set("returnTo", returnTo);
+    }
+    const errorUrl = new URL("/login", window.location.origin);
+    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    url.searchParams.set("surface", AUTH_SURFACE);
+    url.searchParams.set("flow", "login");
+    url.searchParams.set("return_to", callbackUrl.toString());
+    url.searchParams.set("error_return_to", errorUrl.toString());
+    window.location.href = url.toString();
+  },
+
+  startGoogleSignup: (returnTo: string): void => {
+    if (typeof window === "undefined") return;
+
+    const callbackUrl = new URL("/login", window.location.origin);
+    callbackUrl.searchParams.set("auth", "callback");
+    if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      callbackUrl.searchParams.set("returnTo", returnTo);
+    }
+    const errorUrl = new URL("/signup", window.location.origin);
+    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    url.searchParams.set("surface", AUTH_SURFACE);
+    url.searchParams.set("flow", "signup");
+    url.searchParams.set("type", "hotel");
+    url.searchParams.set("return_to", callbackUrl.toString());
+    url.searchParams.set("error_return_to", errorUrl.toString());
+    window.location.href = url.toString();
+  },
 
   refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
@@ -144,6 +283,43 @@ export const authService = {
     return storeAuthSessionResponse(response);
   },
 
+  confirmEmailVerification: async (code: string): Promise<AuthSessionResponse> => {
+    const pending = getPendingEmailVerification();
+    if (!pending) {
+      throw new Error("Verification has expired. Please sign in again.");
+    }
+
+    const response = await authFetch<AuthSessionResponse>("/auth/email-verification/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        pendingAuthenticationToken: pending.pendingAuthenticationToken,
+        code,
+        flow: pending.flow,
+        intent: pending.intent,
+        surface: AUTH_SURFACE,
+      }),
+    });
+    const stored = await storeAuthSessionResponse(response);
+    if (!isAuthOrganizationSelectionResponse(response)) {
+      clearPendingEmailVerification();
+    }
+    return stored;
+  },
+
+  resendEmailVerification: async (): Promise<{ message: string }> => {
+    const pending = getPendingEmailVerification();
+    if (!pending?.emailVerificationId) {
+      throw new Error("Please sign in again to request a new verification code.");
+    }
+
+    return authFetch<{ message: string }>("/auth/email-verification/resend", {
+      method: "POST",
+      body: JSON.stringify({
+        emailVerificationId: pending.emailVerificationId,
+      }),
+    });
+  },
+
   logout: async (): Promise<void> => {
     const csrfToken = getAuthCsrfToken();
     let logoutUrl = "/login";
@@ -178,5 +354,41 @@ export const authService = {
 
   getToken: (): string | null => {
     return getAuthBearerToken();
+  },
+
+  forgotPassword: async (email: string): Promise<{ message: string }> => {
+    try {
+      return await authFetch<{ message: string }>("/auth/password/reset/request", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+    } catch {
+      return {
+        message: "If an account with that email exists, a password reset link has been sent.",
+      };
+    }
+  },
+
+  resetPassword: async (token: string, newPassword: string): Promise<{ message: string }> => {
+    try {
+      if (!token.trim()) {
+        throw new Error("Invalid reset token. Please request a new password reset link.");
+      }
+      if (newPassword.length < 8) {
+        throw new Error("Password must be at least 8 characters long.");
+      }
+      return await authFetch<{ message: string }>("/auth/password/reset/confirm", {
+        method: "POST",
+        body: JSON.stringify({ token, newPassword }),
+      });
+    } catch (error) {
+      if (error instanceof AuthStateError || error instanceof ApiErrorResponse) {
+        throw new Error(error.message);
+      }
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error("Failed to reset password. Please try again.");
+    }
   },
 };

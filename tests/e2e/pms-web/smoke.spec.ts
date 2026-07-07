@@ -9,7 +9,7 @@ test.describe("pms-web smoke", () => {
 
     await page.goto("/login");
 
-    await expect(page.getByRole("heading", { name: /vayada PMS/i, level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /sign in to vayada/i, level: 1 })).toBeVisible();
     await expect(page.getByLabel(/email address/i)).toBeVisible();
     await expect(page.getByLabel(/^password$/i)).toBeVisible();
     await expect(page.getByRole("button", { name: /sign in/i })).toBeVisible();
@@ -22,11 +22,12 @@ test.describe("pms-web smoke", () => {
 
     await page.goto("/signup");
 
-    await expect(page.getByRole("heading", { name: /vayada PMS/i, level: 1 })).toBeVisible();
-    await expect(page.getByLabel(/full name/i)).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: /create your vayada account/i, level: 1 }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /continue with google/i })).toBeVisible();
     await expect(page.getByLabel(/email address/i)).toBeVisible();
     await expect(page.getByLabel(/^password$/i)).toBeVisible();
-    await expect(page.getByLabel(/confirm password/i)).toBeVisible();
     await expect(page.getByRole("button", { name: /create account/i })).toBeVisible();
 
     await assertHealthy();

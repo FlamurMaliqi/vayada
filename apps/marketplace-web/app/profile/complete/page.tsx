@@ -2,9 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
-import Link from "next/link";
-import { HotelBadgeIcon } from "@/components/ui";
+import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants/routes";
 import { STORAGE_KEYS } from "@/lib/constants";
 import { checkProfileStatus, isProfileComplete } from "@/lib/utils";
@@ -12,7 +10,6 @@ import type { UserType, CreatorProfileStatus, HotelProfileStatus, Creator } from
 import { creatorService } from "@/services/api/creators";
 import { hotelService } from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
-import { UserIcon, ArrowLeftIcon } from "@heroicons/react/24/outline";
 import { useCreatorProfileForm } from "@/hooks/useCreatorProfileForm";
 import { useHotelProfileForm } from "@/hooks/useHotelProfileForm";
 import { formatErrorDetail } from "@/hooks/useErrorModal";
@@ -486,13 +483,15 @@ export default function ProfileCompletePage() {
   if (userType !== "creator" && userType !== "hotel") return null;
   if (profileStatusLoadFailed) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 lg:px-8">
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error || "Failed to load profile status. Please refresh the page."}
-          </div>
+      <OnboardingShell
+        currentStep={2}
+        title={profileShellTitle(userType)}
+        description={profileShellDescription(userType)}
+      >
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error || "Failed to load profile status. Please refresh the page."}
         </div>
-      </div>
+      </OnboardingShell>
     );
   }
   const effectiveProfileStatus = profileStatus ?? emptyProfileStatus(userType);
@@ -501,7 +500,7 @@ export default function ProfileCompletePage() {
     return (
       <ProfileCompletionScreen
         userType={userType}
-        onGoHome={() => router.push(ROUTES.HOME)}
+        onGoHome={() => router.push(ROUTES.MARKETPLACE)}
         onEditProfile={() => router.push(ROUTES.PROFILE)}
       />
     );
@@ -516,55 +515,25 @@ export default function ProfileCompletePage() {
       : hotelForm.calculateProgress();
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <div className="border-b border-gray-200 bg-white px-4 py-3">
-        <div className="relative mx-auto flex max-w-5xl items-center justify-center">
-          <Link
-            href="/"
-            className="absolute left-0 -ml-2 rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-            title="Back to Home"
-          >
-            <ArrowLeftIcon className="w-5 h-5" />
-          </Link>
-          <div className="flex items-center gap-2">
-            <Image
-              src="/vayada-logo.png"
-              alt="vayada"
-              width={120}
-              height={48}
-              className="h-10 w-auto"
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 lg:px-8">
+    <OnboardingShell
+      currentStep={2}
+      title={profileShellTitle(userType)}
+      description={profileShellDescription(userType)}
+    >
+      <div className="space-y-4">
         <ProfileCompletionProgress percentage={completionPercentage} />
 
-        {/* Header Card with Steps */}
         <div className="mb-4 flex flex-col items-center justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm md:flex-row">
-          <div className="flex items-center gap-3 text-center md:text-left">
-            {userType === "creator" ? (
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-primary-600 shadow-sm">
-                <UserIcon className="w-5 h-5 text-white" />
-              </div>
-            ) : (
-              <HotelBadgeIcon active />
-            )}
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                Marketplace setup
-              </p>
-              <h1 className="text-lg font-semibold leading-tight text-gray-950">
-                Complete Your Profile
-              </h1>
-              <p className="text-xs text-gray-500 max-w-xs">
-                {userType === "creator"
-                  ? "Add info to connect with hotels"
-                  : "Update info to collaborate"}
-              </p>
-            </div>
+          <div className="text-center md:text-left">
+            <p className="text-xs font-semibold text-gray-500">Build profile</p>
+            <h2 className="text-lg font-semibold leading-tight text-gray-950">
+              {userType === "creator" ? "Creator profile" : "Collaboration listing"}
+            </h2>
+            <p className="max-w-xs text-xs text-gray-500">
+              {userType === "creator"
+                ? "Add enough context for hotels to review your fit."
+                : "Add enough property detail for creator matching."}
+            </p>
           </div>
           <StepIndicators steps={steps} currentStep={currentStep} />
         </div>
@@ -628,8 +597,18 @@ export default function ProfileCompletePage() {
           />
         )}
       </div>
-    </div>
+    </OnboardingShell>
   );
+}
+
+function profileShellTitle(userType: "creator" | "hotel"): string {
+  return userType === "creator" ? "Create your creator profile" : "Create your first listing";
+}
+
+function profileShellDescription(userType: "creator" | "hotel"): string {
+  return userType === "creator"
+    ? "Build the profile hotels use to decide whether to collaborate with you."
+    : "Build the property listing creators use to understand your offer.";
 }
 
 function emptyProfileStatus(

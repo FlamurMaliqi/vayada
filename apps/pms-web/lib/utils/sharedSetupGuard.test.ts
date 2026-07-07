@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SharedHotelSetupStatus } from "@vayada/hotel-setup-wizard";
+import type { SharedHotelSetupStatus } from "@vayada/product-onboarding";
 
 import { resolvePmsSetupGuard } from "./sharedSetupGuard";
 

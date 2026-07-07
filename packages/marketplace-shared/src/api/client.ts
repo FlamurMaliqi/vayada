@@ -58,15 +58,18 @@ export class ApiErrorResponse extends Error {
 
 export class ApiClient {
   private baseURL: string;
+  private tokenProvider?: () => string | null;
 
-  constructor(baseURL: string = API_BASE_URL) {
+  constructor(baseURL: string = API_BASE_URL, tokenProvider?: () => string | null) {
     this.baseURL = baseURL;
+    this.tokenProvider = tokenProvider;
   }
 
   /**
    * Get JWT token from localStorage if not expired
    */
   private getToken(): string | null {
+    if (this.tokenProvider) return this.tokenProvider();
     return getApiBearerToken();
   }
 

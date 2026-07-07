@@ -16,7 +16,7 @@
   "dependencies": {
     "@heroicons/react": "^2.2.0",
     "@vayada/feature-hub": "*",
-    "@vayada/hotel-setup-wizard": "*",
+    "@vayada/product-onboarding": "*",
     "clsx": "^2.0.0",
     "date-fns": "^4.1.0",
     "@vayada/locale-constants": "*",

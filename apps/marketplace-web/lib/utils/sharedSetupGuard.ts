@@ -4,7 +4,7 @@ import {
   resolveSharedHotelSetupGuard,
   type SharedHotelSetupApi,
   type SharedHotelSetupGuardDecision,
-} from "@vayada/hotel-setup-wizard";
+} from "@vayada/product-onboarding";
 
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 

@@ -16,6 +16,8 @@ interface LoginFormProps {
   registerPrompt?: string;
   sessionExpired?: boolean;
   passwordAutoComplete?: string;
+  passwordHelpText?: string;
+  passwordMinLength?: number;
   submitLabel?: string;
   submittingLabel?: string;
 }
@@ -33,6 +35,8 @@ export default function LoginForm({
   registerPrompt = "Don't have an account?",
   sessionExpired = false,
   passwordAutoComplete = "current-password",
+  passwordHelpText,
+  passwordMinLength,
   submitLabel = "Sign In",
   submittingLabel = "Signing In...",
 }: LoginFormProps) {
@@ -40,6 +44,17 @@ export default function LoginForm({
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [emailError, setEmailError] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const emailErrorId = "login-email-error";
+  const passwordErrorId = "login-password-error";
+  const passwordHelpId = "login-password-help";
+  const showPasswordHelp = Boolean(passwordHelpText && !showForgotPassword && !passwordError);
+  const passwordDescriptionIds = [
+    passwordError ? passwordErrorId : null,
+    showPasswordHelp ? passwordHelpId : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const validateEmail = (value: string): boolean => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -48,6 +63,7 @@ export default function LoginForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setEmailError("");
+    setPasswordError("");
     onErrorClear();
 
     if (!validateEmail(email)) {
@@ -55,11 +71,21 @@ export default function LoginForm({
       return;
     }
 
+    if (!password) {
+      setPasswordError("Password is required");
+      return;
+    }
+
+    if (passwordMinLength && password.length < passwordMinLength) {
+      setPasswordError(`Password must be at least ${passwordMinLength} characters`);
+      return;
+    }
+
     await onSubmit(email, password);
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} className="space-y-5" noValidate>
       {sessionExpired && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
           <p className="text-sm text-yellow-800 font-medium">
@@ -85,11 +111,17 @@ export default function LoginForm({
           required
           placeholder="admin@example.com"
           autoComplete="email"
+          aria-invalid={emailError ? true : undefined}
+          aria-describedby={emailError ? emailErrorId : undefined}
           className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm text-gray-900 ${
             emailError ? "border-red-300 ring-1 ring-red-300" : "border-gray-300"
           }`}
         />
-        {emailError && <p className="mt-1 text-sm text-red-600">{emailError}</p>}
+        {emailError && (
+          <p id={emailErrorId} role="alert" className="mt-1 text-sm text-red-600">
+            {emailError}
+          </p>
+        )}
       </div>
 
       {/* Password Field */}
@@ -103,11 +135,19 @@ export default function LoginForm({
             type={showPassword ? "text" : "password"}
             name="password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              if (passwordError) setPasswordError("");
+            }}
             required
+            minLength={passwordMinLength}
             placeholder="Enter your password"
             autoComplete={passwordAutoComplete}
-            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent pr-12 text-sm text-gray-900"
+            aria-invalid={passwordError ? true : undefined}
+            aria-describedby={passwordDescriptionIds || undefined}
+            className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent pr-12 text-sm text-gray-900 ${
+              passwordError ? "border-red-300 ring-1 ring-red-300" : "border-gray-300"
+            }`}
           />
           <button
             type="button"
@@ -117,6 +157,11 @@ export default function LoginForm({
             {showPassword ? <EyeSlashIcon className="w-5 h-5" /> : <EyeIcon className="w-5 h-5" />}
           </button>
         </div>
+        {passwordError && (
+          <p id={passwordErrorId} role="alert" className="mt-1 text-sm text-red-600">
+            {passwordError}
+          </p>
+        )}
         {showForgotPassword ? (
           <div className="mt-2 text-right">
             <a
@@ -126,6 +171,10 @@ export default function LoginForm({
               Forgot password?
             </a>
           </div>
+        ) : showPasswordHelp ? (
+          <p id={passwordHelpId} className="mt-2 h-6 text-xs leading-5 text-gray-500">
+            {passwordHelpText}
+          </p>
         ) : (
           <div className="mt-2 h-6" aria-hidden="true" />
         )}

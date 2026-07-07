@@ -15,6 +15,13 @@ export {
   type SharedFirstRunPropertySetupWizardProps,
 } from "./SharedFirstRunPropertySetupWizard";
 export {
+  default as SharedHotelLoginForm,
+  type SharedHotelLoginFormCopy,
+  type SharedHotelLoginFormProps,
+  type SharedHotelLoginOrganization,
+} from "./SharedHotelLoginForm";
+export { default as SharedSignupPage, type SharedSignupPageProps } from "./SharedSignupPage";
+export {
   createSharedHotelSetupApi,
   type SharedHotelSetupApi,
   type SharedHotelSetupHttpClient,

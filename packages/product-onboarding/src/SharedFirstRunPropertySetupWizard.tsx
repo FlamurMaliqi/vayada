@@ -41,6 +41,7 @@ export type SharedFirstRunPropertySetupWizardProps = {
   entryProduct: SharedHotelSetupEntryProduct;
   returnTo?: string | null;
   initialAddProperty?: boolean;
+  embedded?: boolean;
   productLabels?: Partial<ProductLabels>;
   onProductContinue: (input: SharedFirstRunProductContinueInput) => void;
 };
@@ -123,6 +124,7 @@ export default function SharedFirstRunPropertySetupWizard({
   entryProduct,
   returnTo = null,
   initialAddProperty = false,
+  embedded = false,
   productLabels,
   onProductContinue,
 }: SharedFirstRunPropertySetupWizardProps) {
@@ -299,7 +301,7 @@ export default function SharedFirstRunPropertySetupWizard({
   if (loading || !status) {
     if (!loading && error) {
       return (
-        <WizardShell title="Setup unavailable" view={view}>
+        <WizardShell title="Setup unavailable" view={view} embedded={embedded}>
           <div
             className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
             role="alert"
@@ -310,11 +312,11 @@ export default function SharedFirstRunPropertySetupWizard({
       );
     }
 
-    return <WizardShell title="Setting up your property" view={view} loading />;
+    return <WizardShell title="Setting up your property" view={view} loading embedded={embedded} />;
   }
 
   return (
-    <WizardShell title={view.title} view={view} status={status}>
+    <WizardShell title={view.title} view={view} status={status} embedded={embedded}>
       {error && !(view.screen === "property_profile" && profileLoadFailed) && (
         <div
           className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
@@ -391,12 +393,14 @@ function WizardShell({
   view,
   status,
   loading = false,
+  embedded = false,
 }: {
   children?: React.ReactNode;
   title: string;
   view: SharedFirstRunSetupViewModel;
   status?: SharedHotelSetupStatus;
   loading?: boolean;
+  embedded?: boolean;
 }) {
   const progress =
     view.screen === "product_selection"
@@ -406,6 +410,65 @@ function WizardShell({
         : 1;
   const currentStep = SETUP_STEPS[progress - 1];
   const nextStep = SETUP_STEPS.at(progress) ?? null;
+
+  if (embedded) {
+    return (
+      <section className="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+        <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
+          <p className="text-xs font-semibold text-primary-600">
+            {status?.hotelGroup.displayName ?? "Hotel setup"}
+          </p>
+          <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-950">{title}</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Step {progress} of {SETUP_STEPS.length}: {currentStep.description}
+              </p>
+            </div>
+            {nextStep && <p className="text-sm text-gray-500">Next: {nextStep.label}</p>}
+          </div>
+
+          <ol className="mt-4 grid gap-2 sm:grid-cols-3" aria-label="Property setup progress">
+            {SETUP_STEPS.map((step, index) => {
+              const stepNumber = index + 1;
+              const complete = stepNumber < progress;
+              const current = stepNumber === progress;
+              return (
+                <li
+                  key={step.label}
+                  aria-current={current ? "step" : undefined}
+                  className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${
+                    current ? "border-primary-200 bg-primary-50" : "border-gray-100"
+                  }`}
+                >
+                  <span
+                    className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-semibold ${
+                      complete || current
+                        ? "bg-primary-600 text-white"
+                        : "bg-gray-100 text-gray-500"
+                    }`}
+                  >
+                    {complete ? <CheckIcon className="h-4 w-4" aria-hidden="true" /> : stepNumber}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-gray-950">{step.label}</span>
+                    <span className="block text-xs text-gray-500">{step.description}</span>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+        {loading ? (
+          <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
+            <LoadingSpinner label="Loading setup" />
+          </div>
+        ) : (
+          <div className="p-5 sm:p-6">{children}</div>
+        )}
+      </section>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gray-50 px-4 py-6 text-gray-900 sm:px-6 lg:px-8">

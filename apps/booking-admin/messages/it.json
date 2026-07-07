@@ -12,6 +12,8 @@
   "auth.login.signUp": "Registrati",
   "auth.login.title": "Motore di prenotazione",
   "auth.login.subtitle": "Accedi al pannello di amministrazione",
+  "auth.login.chooseHotelGroup": "Scegli il gruppo hotel",
+  "auth.login.chooseHotelGroupSubtitle": "Seleziona il gruppo hotel che vuoi gestire.",
   "auth.login.errorInvalidCredentials": "Email o password non validi.",
   "auth.login.errorSuspended": "Il tuo account è stato sospeso. Contatta l'assistenza.",
   "auth.login.errorValidation": "Errore di validazione.",

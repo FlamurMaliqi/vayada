@@ -1,12 +1,17 @@
 "use client";
 
+import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
+
 export function LoadingScreen() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-primary-50 flex items-center justify-center">
-      <div className="relative">
-        <div className="animate-spin rounded-full h-16 w-16 border-4 border-primary-100"></div>
-        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-primary-600 absolute top-0 left-0"></div>
+    <OnboardingShell
+      currentStep={2}
+      title="Loading your setup"
+      description="We are checking your onboarding progress before continuing."
+    >
+      <div className="flex min-h-80 items-center justify-center rounded-lg border border-gray-200 bg-white shadow-sm">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
       </div>
-    </div>
+    </OnboardingShell>
   );
 }

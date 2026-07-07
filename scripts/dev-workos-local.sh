@@ -130,6 +130,14 @@ unset BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED
 export PORTLESS_PORT="${PORTLESS_PORT:-443}"
 export PORTLESS_SYNC_HOSTS="${PORTLESS_SYNC_HOSTS:-0}"
 
+echo "==> Starting portless proxy with wildcard routing"
+portless proxy start --wildcard
+
+PORTLESS_API_URL="$(portless get api 2>/dev/null || true)"
+if [[ "$PORTLESS_API_URL" =~ ^https?://api\.localhost:([0-9]+)$ ]]; then
+  export PORTLESS_PORT="${BASH_REMATCH[1]}"
+fi
+
 PORT_SUFFIX=""
 if [[ "$PORTLESS_PORT" != "443" ]]; then
   PORT_SUFFIX=":$PORTLESS_PORT"
@@ -183,12 +191,10 @@ echo "==> Applying target identity/API migrations to local target DB"
 npm --workspace @vayada/backend-migration run target:migrate -- --env local
 
 echo "==> Ensuring portless API aliases exist"
+portless alias api 8003
 portless alias api.marketplace 8000
 portless alias api.booking 8001
 portless alias api.pms 8002
-
-echo "==> Starting portless proxy with wildcard routing"
-portless proxy start --wildcard
 
 if [[ "${SKIP_SEED:-0}" != "1" ]]; then
   if [[ ! -x .venv/bin/python ]]; then
@@ -223,6 +229,14 @@ start_app() {
   children+=("$!")
 }
 
+start_api() {
+  (
+    cd apps/api
+    npm run dev
+  ) &
+  children+=("$!")
+}
+
 COMMON_FRONTEND_ENV=(
   "NEXT_PUBLIC_AUTH_API_URL=${API_ORIGIN}"
   "NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=${API_ORIGIN}"
@@ -242,7 +256,7 @@ echo "    Booking tenant: https://hotel-alpenrose.booking.localhost${PORT_SUFFIX
 echo "    Stop with Ctrl-C. Stop Docker services with: npm run dev:workos-local -- --stop"
 echo
 
-start_app apps/api 8003
+start_api
 start_app apps/marketplace-web 3000 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${MARKETPLACE_API_ORIGIN}"
 start_app apps/vayada-admin 3001 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
 start_app apps/booking-web 3002 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_BOOKING_WEB_API_URL=${API_ORIGIN}" "NEXT_PUBLIC_API_URL=${BOOKING_API_ORIGIN}"

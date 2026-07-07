@@ -12,6 +12,8 @@
   "auth.login.signUp": "S'inscrire",
   "auth.login.title": "Booking Engine",
   "auth.login.subtitle": "Connectez-vous au panneau d'administration",
+  "auth.login.chooseHotelGroup": "Choisissez un groupe hôtelier",
+  "auth.login.chooseHotelGroupSubtitle": "Sélectionnez le groupe hôtelier que vous souhaitez gérer.",
   "auth.login.errorInvalidCredentials": "E-mail ou mot de passe invalide.",
   "auth.login.errorSuspended": "Votre compte a été suspendu. Veuillez contacter le support.",
   "auth.login.errorValidation": "Erreur de validation.",

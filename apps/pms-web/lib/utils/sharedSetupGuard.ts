@@ -2,7 +2,7 @@ import {
   resolveSharedHotelSetupGuard,
   type SharedHotelSetupApi,
   type SharedHotelSetupGuardDecision,
-} from "@vayada/hotel-setup-wizard";
+} from "@vayada/product-onboarding";
 
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { SELECTED_SHARED_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";

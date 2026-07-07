@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   resolveSharedFirstRunSetupView,
   type SharedHotelSetupStatus,
-} from "@vayada/hotel-setup-wizard";
+} from "@vayada/product-onboarding";
 
 import { isMarketplaceActivationDecision, resolveMarketplaceSetupGuard } from "./sharedSetupGuard";
 
