@@ -3,9 +3,14 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import {
   ArrowRightIcon,
+  BuildingOffice2Icon,
   CheckIcon,
   ExclamationCircleIcon,
+  GlobeAltIcon,
   PlusIcon,
+  RocketLaunchIcon,
+  SparklesIcon,
+  Squares2X2Icon,
 } from "@heroicons/react/24/outline";
 
 import {
@@ -92,15 +97,21 @@ const MARKETPLACE_ACTIVATION_STEPS: Record<string, { title: string; description:
 };
 
 const SETUP_STEPS = [
-  { label: "Property", description: "Shared profile and location" },
-  { label: "Products", description: "Choose enabled products" },
-  { label: "Continue", description: "Open the selected product" },
+  { label: "Basics", description: "Profile, location, and hero image", icon: BuildingOffice2Icon },
+  { label: "Products", description: "Pick what this property uses", icon: Squares2X2Icon },
+  { label: "Launch", description: "Open the right workspace", icon: RocketLaunchIcon },
 ] as const;
 
 const PRODUCT_DESCRIPTIONS: Record<SharedHotelSetupProduct, string> = {
   booking: "Direct booking pages, checkout, and guest-facing availability.",
   pms: "Rooms, calendar, reservations, and daily property operations.",
   marketplace: "Creator discovery, collaboration offers, and listing tools.",
+};
+
+const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
+  booking: "Launch direct bookings",
+  pms: "Run daily operations",
+  marketplace: "Invite creator demand",
 };
 
 const EMPTY_DRAFT: ProfileDraft = {
@@ -303,7 +314,7 @@ export default function SharedFirstRunPropertySetupWizard({
       return (
         <WizardShell title="Setup unavailable" view={view} embedded={embedded}>
           <div
-            className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+            className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
             role="alert"
           >
             {error}
@@ -319,7 +330,7 @@ export default function SharedFirstRunPropertySetupWizard({
     <WizardShell title={view.title} view={view} status={status} embedded={embedded}>
       {error && !(view.screen === "property_profile" && profileLoadFailed) && (
         <div
-          className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+          className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
           role="alert"
         >
           {error}
@@ -410,134 +421,87 @@ function WizardShell({
         : 1;
   const currentStep = SETUP_STEPS[progress - 1];
   const nextStep = SETUP_STEPS.at(progress) ?? null;
+  const displayTitle = view.screen === "property_selection" ? title : "Set up your property";
+  const subtitle =
+    view.screen === "property_selection"
+      ? "Pick an existing property or add a new one to this hotel group."
+      : "Add the basics once. Vayada reuses them across PMS, Booking Engine, and Marketplace.";
 
   if (embedded) {
     return (
-      <section className="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
-          <p className="text-xs font-semibold text-primary-600">
+      <section className="min-w-0 overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]">
+        <div className="border-b border-gray-100 px-5 py-6 sm:px-7">
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
             {status?.hotelGroup.displayName ?? "Hotel setup"}
           </p>
-          <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-gray-950">{title}</h2>
-              <p className="mt-1 text-sm text-gray-500">
-                Step {progress} of {SETUP_STEPS.length}: {currentStep.description}
-              </p>
+              <h2 className="text-xl font-semibold text-gray-950">{displayTitle}</h2>
+              <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>
             </div>
-            {nextStep && <p className="text-sm text-gray-500">Next: {nextStep.label}</p>}
+            <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
+              Step {progress} of {SETUP_STEPS.length}
+            </span>
           </div>
-
-          <ol className="mt-4 grid gap-2 sm:grid-cols-3" aria-label="Property setup progress">
-            {SETUP_STEPS.map((step, index) => {
-              const stepNumber = index + 1;
-              const complete = stepNumber < progress;
-              const current = stepNumber === progress;
-              return (
-                <li
-                  key={step.label}
-                  aria-current={current ? "step" : undefined}
-                  className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${
-                    current ? "border-primary-200 bg-primary-50" : "border-gray-100"
-                  }`}
-                >
-                  <span
-                    className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-semibold ${
-                      complete || current
-                        ? "bg-primary-600 text-white"
-                        : "bg-gray-100 text-gray-500"
-                    }`}
-                  >
-                    {complete ? <CheckIcon className="h-4 w-4" aria-hidden="true" /> : stepNumber}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium text-gray-950">{step.label}</span>
-                    <span className="block text-xs text-gray-500">{step.description}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
+          <SetupProgress progress={progress} compact />
         </div>
         {loading ? (
           <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
             <LoadingSpinner label="Loading setup" />
           </div>
         ) : (
-          <div className="p-5 sm:p-6">{children}</div>
+          <div className="p-5 sm:p-7">{children}</div>
         )}
       </section>
     );
   }
 
   return (
-    <main className="min-h-screen bg-gray-50 px-4 py-6 text-gray-900 sm:px-6 lg:px-8">
-      <div className="mx-auto grid max-w-6xl gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="rounded-lg border border-gray-200 bg-white shadow-sm lg:self-start">
-          <div className="border-b border-gray-100 p-5">
+    <main className="min-h-screen bg-white px-4 py-8 text-gray-900 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-6xl">
+        <header className="mb-7 grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px] lg:items-end">
+          <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
               {status?.hotelGroup.displayName ?? "Hotel setup"}
             </p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-normal text-gray-950">{title}</h1>
-            <p className="mt-2 text-sm text-gray-500">
-              Step {progress} of {SETUP_STEPS.length}: {currentStep.description}
-            </p>
+            <h1 className="mt-3 max-w-3xl text-4xl font-semibold tracking-normal text-gray-950 sm:text-5xl">
+              {displayTitle}
+            </h1>
+            <p className="mt-3 max-w-2xl text-base text-gray-500">{subtitle}</p>
           </div>
-
-          <ol className="space-y-1 p-4" aria-label="Setup progress">
-            {SETUP_STEPS.map((step, index) => {
-              const stepNumber = index + 1;
-              const complete = stepNumber < progress;
-              const current = stepNumber === progress;
-              return (
-                <li
-                  key={step.label}
-                  aria-current={current ? "step" : undefined}
-                  className={`flex items-start gap-3 rounded-lg px-3 py-3 ${
-                    current ? "bg-primary-50" : ""
-                  }`}
-                >
-                  <span
-                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                      complete
-                        ? "bg-primary-600 text-white"
-                        : current
-                          ? "bg-gray-950 text-white"
-                          : "bg-gray-100 text-gray-500"
-                    }`}
-                  >
-                    {complete ? <CheckIcon className="h-4 w-4" aria-hidden="true" /> : stepNumber}
-                  </span>
-                  <span>
-                    <span
-                      className={`block text-sm font-medium ${
-                        current || complete ? "text-gray-950" : "text-gray-500"
-                      }`}
-                    >
-                      {step.label}
-                    </span>
-                    <span className="mt-0.5 block text-xs text-gray-500">{step.description}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-
           {status?.entry.entryProduct && (
-            <p className="mx-5 mb-5 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
-              Started from {DEFAULT_PRODUCT_LABELS[status.entry.entryProduct]}.
-            </p>
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5">
+              <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
+                Started from
+              </p>
+              <p className="mt-1 text-sm font-semibold text-gray-950">
+                {DEFAULT_PRODUCT_LABELS[status.entry.entryProduct]}
+              </p>
+              <p className="mt-2 text-xs text-gray-500">
+                Complete setup here, then continue into the selected workspace.
+              </p>
+            </div>
           )}
-        </aside>
+        </header>
 
-        <section className="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+        <SetupProgress progress={progress} />
+
+        <section className="mt-7 min-w-0 overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]">
           <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-              Current step
-            </p>
-            <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-              <h2 className="text-lg font-semibold text-gray-950">{currentStep.label}</h2>
-              {nextStep && <p className="text-sm text-gray-500">Next: {nextStep.label}</p>}
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  {currentStep.label}
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-gray-950">
+                  {currentStep.description}
+                </h2>
+              </div>
+              {nextStep && (
+                <p className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
+                  Next: {nextStep.label}
+                </p>
+              )}
             </div>
           </div>
           {loading ? (
@@ -550,6 +514,57 @@ function WizardShell({
         </section>
       </div>
     </main>
+  );
+}
+
+function SetupProgress({ progress, compact = false }: { progress: number; compact?: boolean }) {
+  return (
+    <ol
+      className={`grid gap-2 ${compact ? "mt-5 sm:grid-cols-3" : "sm:grid-cols-3"}`}
+      aria-label="Property setup progress"
+    >
+      {SETUP_STEPS.map((step, index) => {
+        const stepNumber = index + 1;
+        const complete = stepNumber < progress;
+        const current = stepNumber === progress;
+        const Icon = step.icon;
+        return (
+          <li
+            key={step.label}
+            aria-current={current ? "step" : undefined}
+            className={`rounded-2xl border px-3 py-3 ${
+              current
+                ? "border-primary-200 bg-primary-50/70"
+                : complete
+                  ? "border-primary-100 bg-white"
+                  : "border-gray-100 bg-white"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <span
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
+                  complete
+                    ? "bg-primary-600 text-white"
+                    : current
+                      ? "bg-primary-600 text-white"
+                      : "bg-gray-100 text-gray-500"
+                }`}
+              >
+                {complete ? (
+                  <CheckIcon className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Icon className="h-4 w-4" aria-hidden="true" />
+                )}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-gray-950">{step.label}</span>
+                <span className="mt-1 block text-xs text-gray-500">{step.description}</span>
+              </span>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -583,7 +598,7 @@ function PropertySelection({
         <button
           type="button"
           onClick={onAdd}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700"
         >
           <PlusIcon className="h-4 w-4" aria-hidden="true" />
           Add property
@@ -596,7 +611,7 @@ function PropertySelection({
             key={property.propertyId}
             type="button"
             onClick={() => onSelect(property.propertyId)}
-            className="rounded-lg border border-gray-200 p-4 text-left transition hover:border-gray-950 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-950"
+            className="rounded-3xl border border-gray-100 p-4 text-left transition hover:border-primary-200 hover:bg-primary-50/40 focus:outline-none focus:ring-2 focus:ring-primary-100"
           >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -620,7 +635,7 @@ function PropertySelection({
 
 function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
-    <div className="rounded-lg border border-red-200 bg-red-50 p-4" role="alert">
+    <div className="rounded-3xl border border-red-200 bg-red-50 p-5" role="alert">
       <div className="flex gap-3">
         <ExclamationCircleIcon
           className="mt-0.5 h-5 w-5 shrink-0 text-red-600"
@@ -636,7 +651,7 @@ function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => vo
       <button
         type="button"
         onClick={onRetry}
-        className="mt-4 rounded-lg bg-red-900 px-4 py-2 text-sm font-medium text-white hover:bg-red-800"
+        className="mt-4 rounded-full bg-red-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-red-800"
       >
         Retry
       </button>
@@ -679,6 +694,13 @@ function ProfileForm({
   const showRawLocation = Boolean(
     draft.rawMarketplaceLocation && !draft.city.trim() && !draft.countryCode.trim(),
   );
+  const hasAdvancedLocationErrors = Boolean(
+    fieldErrors["location.region"]?.[0] ||
+    fieldErrors["location.timezone"]?.[0] ||
+    fieldErrors["location.streetAddress"]?.[0] ||
+    fieldErrors["location.postalCode"]?.[0],
+  );
+  const hasAdvancedDescriptionErrors = Boolean(fieldErrors.longDescription?.[0]);
 
   return (
     <form
@@ -691,10 +713,9 @@ function ProfileForm({
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-950">Property details</h2>
+          <h2 className="text-lg font-semibold text-gray-950">Property basics</h2>
           <p className="mt-1 max-w-2xl text-sm text-gray-500">
-            Complete the shared information needed before products can open. Required fields are
-            marked.
+            Start with the details guests, staff, and creators will recognize.
           </p>
         </div>
         {selectedProperty && (
@@ -704,77 +725,85 @@ function ProfileForm({
         )}
       </div>
 
-      <div>
-        <h3 className="text-sm font-semibold text-gray-950">Identity</h3>
-        <p className="mt-1 text-sm text-gray-500">
-          These details are shared by PMS, Booking Engine, and Marketplace.
-        </p>
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <TextField
-            label="Property name"
-            value={draft.displayName}
-            placeholder="Alpenrose Munich"
-            helper="Use the name staff and guests recognize."
-            required
-            error={fieldErrors.displayName?.[0]}
-            onChange={(value) => setField("displayName", value)}
-          />
-          <TextField
-            label="Website"
-            type="url"
-            value={draft.website}
-            placeholder="https://alpenrose.example"
-            helper="Public website used by guest and creator-facing products."
-            required
-            error={fieldErrors.website?.[0]}
-            onChange={(value) => setField("website", value)}
-          />
-          <TextField
-            label="Phone"
-            value={draft.phone}
-            placeholder="+49 89 123456"
-            helper="Contact number shown where products need it."
-            required
-            error={fieldErrors.phone?.[0]}
-            onChange={(value) => setField("phone", value)}
-          />
-          <TextField
-            label="Photo URL"
-            type="url"
-            value={draft.mediaUrl}
-            placeholder="https://images.example/alpenrose.jpg"
-            helper="First image for shared product setup."
-            required
-            error={fieldErrors["media.0.url"]?.[0] ?? fieldErrors.media?.[0]}
-            onChange={(value) => setField("mediaUrl", value)}
+      <div className="grid gap-4 md:grid-cols-2">
+        <TextField
+          label="Property name"
+          value={draft.displayName}
+          placeholder="Alpenrose Munich"
+          helper="Use the name staff and guests recognize."
+          required
+          error={fieldErrors.displayName?.[0]}
+          onChange={(value) => setField("displayName", value)}
+        />
+        <TextField
+          label="Website"
+          type="url"
+          value={draft.website}
+          placeholder="https://alpenrose.example"
+          helper="Used by guest and creator-facing products."
+          required
+          error={fieldErrors.website?.[0]}
+          onChange={(value) => setField("website", value)}
+        />
+        <TextField
+          label="Phone"
+          value={draft.phone}
+          placeholder="+49 89 123456"
+          helper="Shown where products need a contact number."
+          required
+          error={fieldErrors.phone?.[0]}
+          onChange={(value) => setField("phone", value)}
+        />
+        <TextField
+          label="City"
+          value={draft.city}
+          placeholder="Munich"
+          helper="City or country code is enough to continue."
+          requirementLabel="One required"
+          error={fieldErrors["location.city"]?.[0]}
+          onChange={(value) => setField("city", value)}
+        />
+        <TextField
+          label="Country code"
+          value={draft.countryCode}
+          placeholder="DE"
+          helper="Two-letter ISO code."
+          requirementLabel="One required"
+          error={fieldErrors["location.countryCode"]?.[0]}
+          onChange={(value) => setField("countryCode", value.toUpperCase().slice(0, 2))}
+        />
+        <TextField
+          label="Hero photo URL"
+          type="url"
+          value={draft.mediaUrl}
+          placeholder="https://images.example/alpenrose.jpg"
+          helper="First image used for shared product setup."
+          required
+          error={fieldErrors["media.0.url"]?.[0] ?? fieldErrors.media?.[0]}
+          onChange={(value) => setField("mediaUrl", value)}
+        />
+        <div className="md:col-span-2">
+          <TextArea
+            label="Short intro"
+            value={draft.shortDescription}
+            placeholder="A city hotel close to the old town."
+            helper="One guest-facing description is required."
+            requirementLabel="Required"
+            error={fieldErrors.shortDescription?.[0]}
+            onChange={(value) => setField("shortDescription", value)}
           />
         </div>
       </div>
 
-      <div className="border-t border-gray-100 pt-6">
-        <h3 className="text-sm font-semibold text-gray-950">Location</h3>
-        <p className="mt-1 text-sm text-gray-500">
-          City or country code is required to continue; exact public map settings can be refined
-          later.
-        </p>
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <TextField
-            label="Country code"
-            value={draft.countryCode}
-            placeholder="DE"
-            helper="Two-letter ISO code."
-            requirementLabel="One required"
-            error={fieldErrors["location.countryCode"]?.[0]}
-            onChange={(value) => setField("countryCode", value.toUpperCase().slice(0, 2))}
-          />
-          <TextField
-            label="City"
-            value={draft.city}
-            placeholder="Munich"
-            requirementLabel="One required"
-            error={fieldErrors["location.city"]?.[0]}
-            onChange={(value) => setField("city", value)}
-          />
+      <details
+        className="rounded-3xl border border-gray-100 bg-gray-50/80"
+        open={hasAdvancedLocationErrors || undefined}
+      >
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-medium text-gray-950">
+          <span>Exact address and operations</span>
+          <span className="text-xs font-medium text-gray-500">Optional</span>
+        </summary>
+        <div className="grid gap-4 border-t border-gray-100 bg-white p-5 md:grid-cols-2">
           <TextField
             label="Region"
             value={draft.region}
@@ -790,17 +819,6 @@ function ProfileForm({
             error={fieldErrors["location.timezone"]?.[0]}
             onChange={(value) => setField("timezone", value)}
           />
-          {showRawLocation && (
-            <div className="md:col-span-2">
-              <TextField
-                label="Imported location"
-                value={draft.rawMarketplaceLocation}
-                readOnly
-                helper="Read-only location imported from the existing marketplace profile."
-                onChange={() => undefined}
-              />
-            </div>
-          )}
           <TextField
             label="Street address"
             value={draft.streetAddress}
@@ -815,42 +833,47 @@ function ProfileForm({
             error={fieldErrors["location.postalCode"]?.[0]}
             onChange={(value) => setField("postalCode", value)}
           />
+          {showRawLocation && (
+            <div className="md:col-span-2">
+              <TextField
+                label="Imported location"
+                value={draft.rawMarketplaceLocation}
+                readOnly
+                helper="Read-only location imported from the existing marketplace profile."
+                onChange={() => undefined}
+              />
+            </div>
+          )}
         </div>
-      </div>
+      </details>
 
-      <div className="border-t border-gray-100 pt-6">
-        <h3 className="text-sm font-semibold text-gray-950">Description</h3>
-        <p className="mt-1 text-sm text-gray-500">
-          Keep the short version scannable; use the long description for details.
-        </p>
-        <div className="mt-4 grid gap-4">
-          <TextArea
-            label="Short description"
-            value={draft.shortDescription}
-            placeholder="A city hotel close to the old town."
-            helper="One description is required. Use this for a scannable summary."
-            requirementLabel="One required"
-            error={fieldErrors.shortDescription?.[0]}
-            onChange={(value) => setField("shortDescription", value)}
-          />
+      <details
+        className="rounded-3xl border border-gray-100 bg-gray-50/80"
+        open={hasAdvancedDescriptionErrors || undefined}
+      >
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-medium text-gray-950">
+          <span>Long description</span>
+          <span className="text-xs font-medium text-gray-500">Optional</span>
+        </summary>
+        <div className="border-t border-gray-100 bg-white p-5">
           <TextArea
             label="Long description"
             value={draft.longDescription}
             placeholder="Add guest-facing details, amenities, and useful context."
-            helper="Use this instead of the short description if more context is needed."
-            requirementLabel="One required"
+            helper="Use this when the short intro needs more context."
             error={fieldErrors.longDescription?.[0]}
+            rows={5}
             onChange={(value) => setField("longDescription", value)}
           />
         </div>
-      </div>
+      </details>
 
       <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:justify-end">
         {onCancel && (
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             Back to properties
           </button>
@@ -858,7 +881,7 @@ function ProfileForm({
         <button
           type="submit"
           disabled={saving}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {saving && (
             <span
@@ -894,53 +917,74 @@ function ProductSelection({
   return (
     <div>
       <div className="mb-5">
-        <h2 className="text-lg font-semibold text-gray-950">Choose products</h2>
+        <h2 className="text-lg font-semibold text-gray-950">Choose your products</h2>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Select the products this property should use. Disabled products are not available for this
-          property.
+          Start with the surfaces this property needs now. You can add more after launch.
         </p>
         {selectedProperty?.displayName && (
           <p className="mt-2 text-sm font-medium text-gray-700">{selectedProperty.displayName}</p>
         )}
       </div>
 
-      <div className="grid gap-3">
+      <div className="grid gap-3 md:grid-cols-3">
         {SHARED_HOTEL_SETUP_PRODUCTS.map((product) => {
           const checked = selectedProducts.includes(product);
           const disabled = !isSharedHotelSetupProductSelectable(selectedProperty, product);
+          const Icon = productIcon(product);
           return (
             <label
               key={product}
-              className={`flex items-center justify-between rounded-lg border p-4 transition ${
+              className={`flex min-h-48 flex-col rounded-3xl border p-5 transition ${
                 disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
               } ${
                 checked
-                  ? "border-primary-600 bg-primary-50"
+                  ? "border-primary-500 bg-primary-50/70 shadow-[0_18px_50px_-38px_rgba(29,78,216,0.9)]"
                   : disabled
-                    ? "border-gray-200"
-                    : "border-gray-200 hover:border-gray-400"
+                    ? "border-gray-100"
+                    : "border-gray-100 hover:border-primary-200 hover:bg-primary-50/30"
               }`}
             >
-              <span className="min-w-0 pr-4">
-                <span className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium text-gray-950">{labels[product]}</span>
-                  <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
-                    {productStatusLabel(selectedProperty, product, checked)}
-                  </span>
+              <span className="flex items-start justify-between gap-3">
+                <span
+                  className={`flex h-10 w-10 items-center justify-center rounded-full ${
+                    checked ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
+                  }`}
+                >
+                  <Icon className="h-5 w-5" aria-hidden="true" />
                 </span>
-                <span className="mt-1 block text-xs text-gray-500">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
+                  checked={checked}
+                  disabled={disabled}
+                  onChange={() => {
+                    if (!disabled) onToggle(product);
+                  }}
+                />
+              </span>
+              <span className="mt-4 min-w-0">
+                <span className="block text-sm font-semibold text-gray-950">{labels[product]}</span>
+                <span className="mt-2 block text-sm text-gray-500">
                   {PRODUCT_DESCRIPTIONS[product]}
                 </span>
               </span>
-              <input
-                type="checkbox"
-                className="h-4 w-4 shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
-                checked={checked}
-                disabled={disabled}
-                onChange={() => {
-                  if (!disabled) onToggle(product);
-                }}
-              />
+              <span className="mt-auto pt-4">
+                <span className="block text-xs font-medium uppercase tracking-wide text-gray-400">
+                  Unlocks
+                </span>
+                <span className="mt-1 block text-sm font-medium text-gray-700">
+                  {PRODUCT_UNLOCKS[product]}
+                </span>
+                <span
+                  className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset ${
+                    checked
+                      ? "bg-white text-primary-700 ring-primary-200"
+                      : "bg-white text-gray-600 ring-gray-200"
+                  }`}
+                >
+                  {productStatusLabel(selectedProperty, product, checked)}
+                </span>
+              </span>
             </label>
           );
         })}
@@ -960,7 +1004,7 @@ function ProductSelection({
           type="button"
           disabled={saving || needsSelection}
           onClick={onSave}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {saving && (
             <span
@@ -974,6 +1018,12 @@ function ProductSelection({
       </div>
     </div>
   );
+}
+
+function productIcon(product: SharedHotelSetupProduct) {
+  if (product === "booking") return GlobeAltIcon;
+  if (product === "pms") return BuildingOffice2Icon;
+  return SparklesIcon;
 }
 
 function ProductContinue({
@@ -996,6 +1046,19 @@ function ProductContinue({
       productStatus: activation?.status ?? null,
       missingSteps,
     });
+  const launchTitle = isBlockedMarketplaceActivation
+    ? "Launch blocked"
+    : view.screen === "enter_product"
+      ? "Ready to open"
+      : "Product setup needed";
+  const launchDescription = isBlockedMarketplaceActivation
+    ? marketplaceBlockedActivationCopy(activation?.status)
+    : isMarketplaceActivation
+      ? "Finish the Marketplace-specific profile tools next."
+      : view.screen === "enter_product"
+        ? "Open the selected workspace for this property."
+        : "Continue into the selected product setup.";
+
   return (
     <div>
       <div className="mb-5">
@@ -1005,35 +1068,54 @@ function ProductContinue({
             : isMarketplaceActivation
               ? "Activate Creator Marketplace"
               : product
-                ? labels[product]
-                : "Product setup"}
+                ? `Launch ${labels[product]}`
+                : "Launch product"}
         </h2>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          {isMarketplaceActivation
-            ? `Set up Marketplace for ${view.selectedProperty?.displayName ?? "this property"}.`
-            : (view.selectedProperty?.displayName ?? "Selected property")}
+          Profile and product selection are saved for{" "}
+          {view.selectedProperty?.displayName ?? "this property"}.
         </p>
       </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <ReadinessItem
+          icon={BuildingOffice2Icon}
+          complete
+          title="Basics saved"
+          description="Name, location, contact, image, and description are ready."
+        />
+        <ReadinessItem
+          icon={Squares2X2Icon}
+          complete
+          title="Products selected"
+          description={
+            product ? `${labels[product]} is the next workspace.` : "A product is selected."
+          }
+        />
+        <ReadinessItem
+          icon={RocketLaunchIcon}
+          complete={!isBlockedMarketplaceActivation && Boolean(product)}
+          title={launchTitle}
+          description={launchDescription}
+        />
+      </div>
+
       <div
-        className={`rounded-lg border p-4 ${
-          isBlockedMarketplaceActivation ? "border-red-200 bg-red-50" : "border-gray-200 bg-gray-50"
+        className={`mt-5 rounded-3xl border p-5 ${
+          isBlockedMarketplaceActivation ? "border-red-200 bg-red-50" : "border-gray-100 bg-gray-50"
         }`}
       >
-        <p className="text-sm text-gray-700">
-          {isBlockedMarketplaceActivation
-            ? marketplaceBlockedActivationCopy(activation?.status)
-            : isMarketplaceActivation
-              ? "The shared property profile is ready. Finish the Marketplace-specific setup below; you do not need to re-enter hotel name, location, website, phone, or the shared property description."
-              : view.screen === "enter_product"
-                ? "This property is ready for the selected product."
-                : "The shared profile is ready. Continue into the selected product setup."}
-        </p>
+        {(isBlockedMarketplaceActivation ||
+          !isMarketplaceActivation ||
+          missingSteps.length === 0) && (
+          <p className="text-sm text-gray-700">{launchDescription}</p>
+        )}
         {isMarketplaceActivation && missingSteps.length > 0 && (
-          <div className="mt-4 grid gap-3">
+          <div className={isBlockedMarketplaceActivation ? "mt-4 grid gap-3" : "grid gap-3"}>
             {missingSteps.map((step) => {
               const item = marketplaceActivationStepCopy(step);
               return (
-                <div key={step} className="rounded-lg border border-gray-200 bg-white p-3">
+                <div key={step} className="rounded-2xl border border-gray-100 bg-white p-4">
                   <p className="text-sm font-medium text-gray-950">{item.title}</p>
                   <p className="mt-1 text-xs text-gray-500">{item.description}</p>
                 </div>
@@ -1047,7 +1129,7 @@ function ProductContinue({
           type="button"
           disabled={!product || isBlockedMarketplaceActivation}
           onClick={onContinue}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <span>
             {isBlockedMarketplaceActivation
@@ -1060,6 +1142,44 @@ function ProductContinue({
             <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
           )}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ReadinessItem({
+  icon: Icon,
+  complete,
+  title,
+  description,
+}: {
+  icon: typeof BuildingOffice2Icon;
+  complete: boolean;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div
+      className={`rounded-3xl border p-5 ${
+        complete ? "border-gray-100 bg-white" : "border-red-200 bg-red-50"
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+            complete ? "bg-primary-600 text-white" : "bg-red-100 text-red-700"
+          }`}
+        >
+          {complete ? (
+            <CheckIcon className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <Icon className="h-4 w-4" aria-hidden="true" />
+          )}
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold text-gray-950">{title}</span>
+          <span className="mt-1 block text-xs text-gray-500">{description}</span>
+        </span>
       </div>
     </div>
   );
@@ -1164,7 +1284,7 @@ function TextField({
         <span>{label}</span>
         <span
           aria-hidden="true"
-          className={required ? "text-xs font-medium text-red-600" : "text-xs text-gray-400"}
+          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
         >
           {requirementLabel ?? (required ? "Required" : "Optional")}
         </span>
@@ -1184,7 +1304,7 @@ function TextField({
         aria-describedby={describedBy}
         aria-required={required}
         onChange={(event) => onChange(event.target.value)}
-        className={`mt-2 w-full rounded-lg border px-3 py-2 text-sm outline-none transition focus:border-gray-950 focus:ring-2 focus:ring-gray-950 ${
+        className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         } ${readOnly ? "bg-gray-50 text-gray-600" : ""}`}
       />
@@ -1206,6 +1326,7 @@ function TextArea({
   requirementLabel,
   placeholder,
   required = false,
+  rows = 3,
 }: {
   label: string;
   value: string;
@@ -1215,6 +1336,7 @@ function TextArea({
   requirementLabel?: string;
   placeholder?: string;
   required?: boolean;
+  rows?: number;
 }) {
   const generatedId = useId();
   const inputId = `setup-${generatedId}`;
@@ -1231,7 +1353,7 @@ function TextArea({
         <span>{label}</span>
         <span
           aria-hidden="true"
-          className={required ? "text-xs font-medium text-red-600" : "text-xs text-gray-400"}
+          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
         >
           {requirementLabel ?? (required ? "Required" : "Optional")}
         </span>
@@ -1249,8 +1371,8 @@ function TextArea({
         aria-invalid={Boolean(error)}
         aria-describedby={describedBy}
         aria-required={required}
-        rows={3}
-        className={`mt-2 w-full rounded-lg border px-3 py-2 text-sm outline-none transition focus:border-gray-950 focus:ring-2 focus:ring-gray-950 ${
+        rows={rows}
+        className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         }`}
       />
