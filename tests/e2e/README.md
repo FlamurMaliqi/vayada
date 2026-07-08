@@ -160,13 +160,13 @@ E2E_BOOKING_ADMIN_PROD=1 E2E_BOOKING_ADMIN_BASE_URL=http://127.0.0.1:3013 \
 
 ## Debugging
 
-CI uploads `playwright-report/` and `test-results/` on every pilot run. Open the report locally with:
+Open the HTML report after a local run with:
 
 ```bash
 npm run e2e:report
 ```
 
-Traces are retained on failure locally and on first retry in CI.
+Traces are retained on failure.
 
 ## Agent Guidance
 
