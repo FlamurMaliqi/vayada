@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   ArrowRightIcon,
   BuildingOfficeIcon,
-  CheckCircleIcon,
+  CheckIcon,
   SparklesIcon,
 } from "@heroicons/react/24/outline";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
@@ -18,29 +19,28 @@ const options: Array<{
   type: AccountType;
   title: string;
   description: string;
-  outcome: string;
-  steps: string[];
+  image: string;
 }> = [
   {
     type: "hotel",
-    title: "Hotel or property",
-    description: "Create a creator-ready property listing and collaboration offer.",
-    outcome: "Get discovered by creators who match your property.",
-    steps: ["Add property basics", "Set the offer", "Invite creators"],
+    title: "List a property",
+    description: "Create a creator-ready listing for your hotel, stay, or venue.",
+    image: "/hotel-hero.JPG",
   },
   {
     type: "creator",
-    title: "Creator",
-    description: "Build a profile hotels can review before collaborating with you.",
-    outcome: "Find properties looking for content partners.",
-    steps: ["Pick your niche", "Add your profile", "Apply to properties"],
+    title: "Create a creator profile",
+    description: "Build a profile hotels can review before working with you.",
+    image: "/creator-hero.jpg",
   },
 ];
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [selectedType, setSelectedType] = useState<AccountType>("hotel");
   const [loading, setLoading] = useState(true);
+  const [introComplete, setIntroComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -71,6 +71,16 @@ export default function OnboardingPage() {
     };
   }, [router]);
 
+  useEffect(() => {
+    if (loading || error) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setIntroComplete(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setIntroComplete(true), 1200);
+    return () => window.clearTimeout(timer);
+  }, [error, loading]);
+
   async function handleContinue() {
     setError("");
     setSubmitting(true);
@@ -84,84 +94,122 @@ export default function OnboardingPage() {
     }
   }
 
+  function selectOptionAtIndex(index: number) {
+    const option = options[index];
+    if (!option) return;
+    setError("");
+    setSelectedType(option.type);
+    optionRefs.current[index]?.focus();
+  }
+
+  function handleOptionKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const nextKeys: Record<string, number> = {
+      ArrowRight: index + 1,
+      ArrowDown: index + 1,
+      ArrowLeft: index - 1,
+      ArrowUp: index - 1,
+      Home: 0,
+      End: options.length - 1,
+    };
+    const nextIndex = nextKeys[event.key];
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    selectOptionAtIndex((nextIndex + options.length) % options.length);
+  }
+
   return (
     <OnboardingShell
       currentStep={1}
-      title="What do you want to create first?"
-      description="We will shape the next steps around the first thing that gets you value in vayada."
+      title="Welcome to Vayada"
+      description="First things first, tell us a little bit about yourself."
     >
-      <div className="max-w-2xl">
-        <div className="mb-6">
-          <p className="mb-2 text-xs font-semibold text-primary-600">Start your setup</p>
-          <h2 className="text-3xl font-semibold leading-tight text-gray-950">Choose your path</h2>
-          <p className="mt-3 text-sm leading-6 text-gray-600">
-            Hotels create collaboration listings. Creators create profiles hotels can review.
-          </p>
-        </div>
-
+      <div className="mx-auto w-full max-w-3xl">
         {loading ? (
-          <p className="text-sm text-gray-600">Loading...</p>
+          <div className="flex min-h-72 items-center justify-center">
+            <p className="text-sm text-gray-600">Loading...</p>
+          </div>
+        ) : !introComplete && !error ? (
+          <WelcomeMoment />
         ) : (
-          <div className="space-y-4">
-            <div role="radiogroup" aria-label="Choose onboarding path" className="space-y-3">
-              {options.map((option) => (
-                <button
-                  key={option.type}
-                  type="button"
-                  role="radio"
-                  aria-checked={selectedType === option.type}
-                  onClick={() => {
-                    setError("");
-                    setSelectedType(option.type);
-                  }}
-                  className={`w-full rounded-lg border bg-white p-4 text-left transition-colors ${
-                    selectedType === option.type
-                      ? "border-primary-600 shadow-sm"
-                      : "border-gray-300 hover:border-gray-400"
-                  }`}
-                >
-                  <span className="flex items-start gap-3">
-                    <span
-                      className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-                        selectedType === option.type
-                          ? "bg-primary-600 text-white"
-                          : "bg-gray-100 text-gray-700"
-                      }`}
-                    >
-                      {option.type === "hotel" ? (
-                        <BuildingOfficeIcon className="h-5 w-5" />
-                      ) : (
-                        <SparklesIcon className="h-5 w-5" />
-                      )}
+          <div className="space-y-6 text-center">
+            <div
+              role="radiogroup"
+              aria-label="Choose onboarding path"
+              className="grid gap-5 sm:grid-cols-2"
+            >
+              {options.map((option, index) => {
+                const selected = selectedType === option.type;
+                const isHotel = option.type === "hotel";
+                const tiltClass = selected
+                  ? "sm:rotate-0"
+                  : isHotel
+                    ? "sm:-rotate-2"
+                    : "sm:rotate-2";
+
+                return (
+                  <button
+                    key={option.type}
+                    ref={(element) => {
+                      optionRefs.current[index] = element;
+                    }}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    tabIndex={selected ? 0 : -1}
+                    onClick={() => {
+                      setError("");
+                      setSelectedType(option.type);
+                    }}
+                    onKeyDown={(event) => handleOptionKeyDown(event, index)}
+                    className={`group relative rounded-3xl bg-white p-3 pb-5 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 sm:hover:-translate-y-1 ${tiltClass} ${
+                      selected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
+                    }`}
+                  >
+                    <span className="relative block aspect-[4/3] overflow-hidden rounded-2xl bg-gray-100">
+                      <Image
+                        src={option.image}
+                        alt=""
+                        fill
+                        sizes="(min-width: 640px) 360px, 100vw"
+                        className="object-cover transition duration-300 group-hover:scale-105"
+                      />
+                      <span className="absolute inset-0 bg-gradient-to-t from-gray-950/35 to-transparent" />
+                      <span className="absolute bottom-3 left-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm">
+                        {isHotel ? "For properties" : "For creators"}
+                      </span>
+                      <span
+                        className={`absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full ${
+                          selected ? "bg-primary-600 text-white" : "bg-white/85 text-transparent"
+                        }`}
+                      >
+                        <CheckIcon className="h-4 w-4" />
+                      </span>
                     </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center justify-between gap-3">
-                        <span className="text-sm font-semibold text-gray-950">{option.title}</span>
-                        {selectedType === option.type && (
-                          <CheckCircleIcon className="h-5 w-5 shrink-0 text-primary-600" />
+
+                    <span className="mt-4 flex items-start gap-3">
+                      <span
+                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                          selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {isHotel ? (
+                          <BuildingOfficeIcon className="h-5 w-5" />
+                        ) : (
+                          <SparklesIcon className="h-5 w-5" />
                         )}
                       </span>
-                      <span className="mt-1 block text-sm leading-5 text-gray-600">
-                        {option.description}
-                      </span>
-                      <span className="mt-3 block text-xs font-medium text-gray-950">
-                        {option.outcome}
-                      </span>
-                      <span className="mt-3 grid gap-1.5">
-                        {option.steps.map((step) => (
-                          <span
-                            key={step}
-                            className="flex items-center gap-1.5 text-xs font-medium text-gray-600"
-                          >
-                            <CheckCircleIcon className="h-3.5 w-3.5 text-primary-600" />
-                            {step}
-                          </span>
-                        ))}
+                      <span>
+                        <span className="block text-base font-semibold text-gray-950">
+                          {option.title}
+                        </span>
+                        <span className="mt-1 block text-sm leading-6 text-gray-600">
+                          {option.description}
+                        </span>
                       </span>
                     </span>
-                  </span>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
 
             {error && (
@@ -174,9 +222,12 @@ export default function OnboardingPage() {
               type="button"
               onClick={handleContinue}
               disabled={submitting}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={`Continue to ${
+                selectedType === "hotel" ? "property setup" : "creator profile"
+              }`}
+              className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             >
-              {submitting ? "Continuing..." : "Continue setup"}
+              {submitting ? "Continuing..." : "Continue"}
               {!submitting && <ArrowRightIcon className="h-4 w-4" />}
             </button>
           </div>
@@ -188,4 +239,26 @@ export default function OnboardingPage() {
 
 function nextPathForType(type: AccountType): string {
   return type === "hotel" ? ROUTES.SETUP : ROUTES.PROFILE_COMPLETE;
+}
+
+function WelcomeMoment() {
+  return (
+    <div className="flex min-h-72 flex-col items-center justify-center text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gray-950 text-white">
+        <SparklesIcon className="h-7 w-7" />
+      </div>
+      <div className="mt-6">
+        <p className="text-sm font-semibold text-primary-600">You are in</p>
+        <h2 className="mt-3 text-3xl font-semibold tracking-normal text-gray-950">
+          Thanks for choosing Vayada.
+        </h2>
+        <p className="mt-3 text-sm text-gray-600">Setting up your first step.</p>
+        <div className="mt-7 flex justify-center gap-2" aria-hidden="true">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-gray-950" />
+          <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400 [animation-delay:150ms]" />
+          <span className="h-2 w-2 animate-pulse rounded-full bg-gray-300 [animation-delay:300ms]" />
+        </div>
+      </div>
+    </div>
+  );
 }
