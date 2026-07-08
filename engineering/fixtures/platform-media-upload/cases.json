@@ -305,7 +305,7 @@
     },
     {
       "caseId": "pms-import-source-image-job",
-      "description": "PMS listing import source images queue a platform media import job instead of PMS-owned downloads.",
+      "description": "PMS external source images queue a platform media import job instead of PMS-owned downloads.",
       "request": {
         "path": "/api/media/imports",
         "method": "POST",

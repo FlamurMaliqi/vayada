@@ -18,16 +18,16 @@
     {
       "legacyPath": "POST /admin/import/images",
       "owner": "pms-api",
-      "disposition": "compatibility_command_replaced_side_effect",
-      "replacement": "POST /api/media/imports",
-      "purpose": "pms.import.source_image"
+      "disposition": "retired_with_listing_import",
+      "replacement": null,
+      "purpose": null
     },
     {
       "legacyPath": "PMS import confirm image background task",
       "owner": "pms-api",
-      "disposition": "replaced",
-      "replacement": "POST /api/media/imports",
-      "purpose": "pms.import.source_image"
+      "disposition": "retired_with_listing_import",
+      "replacement": null,
+      "purpose": null
     }
   ]
 }
