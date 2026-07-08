@@ -143,11 +143,11 @@ class Settings(BaseSettings):
     FINANCE_TARGET_BASE_URL: str = ""
     FINANCE_TARGET_TIMEOUT_SECONDS: float = 10.0
 
-    # Listing Import (Claude AI + Firecrawl)
+    # Deprecated no-op settings kept so stale PMS dotenv files do not break startup.
     ANTHROPIC_API_KEY: str = ""
     FIRECRAWL_API_KEY: str = ""
-    LISTING_IMPORT_MODEL: str = "claude-sonnet-4-20250514"
-    LISTING_IMPORT_MAX_CHARS: int = 180000
+    LISTING_IMPORT_MODEL: str = ""
+    LISTING_IMPORT_MAX_CHARS: int = 0
     PLATFORM_MEDIA_API_URL: str = "https://api.localhost"
 
     # Environment

@@ -8,14 +8,14 @@ and the public contact-form disposition from
 ## Purpose
 
 PL1 is the last Booking/PMS rewrite vertical because it touches cross-product
-admin reads, imports, Booking dashboard metrics, and public intake side effects.
+admin reads, Booking dashboard metrics, and public intake side effects.
 This contract narrows the first non-media slice so implementation can proceed
 without overlapping the platform media work in VAY-821/VAY-826.
 
 This slice does not migrate image uploads, media serving, media imports, or
-storage ownership. `POST /admin/import/images`, `POST /upload/images`, Booking
-design image upload, and marketplace `/upload/*` remain owned by the platform
-media track.
+storage ownership. `POST /upload/images`, Booking design image upload, and
+marketplace `/upload/*` remain owned by the platform media track. PMS listing
+import routes are retired with the listing import feature.
 
 Fixture cases live in:
 
@@ -130,20 +130,11 @@ The target route path remains a follow-up implementation decision so landing can
 cut over intentionally. The important contract is that the target route writes
 durable intake and email jobs instead of sending SMTP inline.
 
-## Non-Media Import Workflows
+## Retired PMS Import Workflows
 
-Legacy PMS import preview/confirm routes remain PMS adapter workflows:
-
-| Legacy route                 | Target disposition                                                     |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| `POST /admin/import/preview` | PMS import preview job/read model with validation report and no writes |
-| `POST /admin/import/confirm` | PMS import command that is idempotent and emits audit/jobs             |
-| `POST /admin/import/images`  | Out of scope for this slice; platform media import                     |
-
-Confirm commands must carry `commandId` and `idempotencyKey`, write import state
-through the PMS adapter boundary, and expose failure visibility through
-jobs/events. External image downloads and object storage writes are media work
-and must not be hidden inside the non-media import command.
+Legacy PMS listing import routes are retired with the listing import feature:
+`POST /admin/import/preview`, `POST /admin/import/confirm`, and
+`POST /admin/import/images`.
 
 ## First Slice Implementation
 

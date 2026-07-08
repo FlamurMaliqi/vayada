@@ -192,7 +192,7 @@ Candidate priority for implementation tickets:
 | Booking status change side effects     | `asyncio.create_task` in `apps/pms-api/app/routers/admin_bookings.py`    | `email.booking-status-changed`, `channex.push-availability`                  | High customer impact and duplicate-risk.    |
 | Room block availability sync           | `asyncio.create_task` in `apps/pms-api/app/routers/admin_room_blocks.py` | `channex.push-ari`                                                           | Clear idempotency window by room/date.      |
 | Affiliate registration notifications   | `asyncio.create_task` in `apps/pms-api/app/routers/affiliates.py`        | `email.affiliate-application-received`, `notification.affiliate-application` | Email fan-out currently has no retry/audit. |
-| Listing image import                   | FastAPI `BackgroundTasks` in `apps/pms-api/app/routers/admin_import.py`  | `media.import-listing-images`                                                | Long-running external download work.        |
+| Listing image import                   | Retired with PMS listing import                                          | None                                                                         | Route and background work no longer exist.  |
 | Payout/payment reconciliation          | Synchronous/manual provider polling routes                               | `finance.reconcile-payout`, `payment.reconcile-status`                       | Needs strict audit and idempotency.         |
 | Cancellation/change request follow-ups | Mixed inline updates and background notifications                        | `booking.cancellation-follow-up`, `booking.change-request-follow-up`         | Multi-step side effects need visibility.    |
 

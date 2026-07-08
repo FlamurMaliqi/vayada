@@ -5,12 +5,6 @@ const PLATFORM_MEDIA_API_BASE_URL =
 
 const platformMediaClient = new ApiClient(PLATFORM_MEDIA_API_BASE_URL);
 
-export function shouldUseLegacyMarketplaceImageUpload(): boolean {
-  return true;
-}
-
-export type PlatformMediaPurpose = "pms.room_type.media" | "pms.import.source_image";
-
 export type PlatformMediaResourceScope = {
   product: "pms";
   resourceType: "pms_hotel" | "pms_property";
@@ -28,14 +22,6 @@ export type PlatformMediaUploadResult = {
   widthPx?: number;
   heightPx?: number;
   originalFilename: string;
-};
-
-export type PlatformMediaImportJob = {
-  importJobId: string;
-  jobKey: string;
-  purpose: "pms.import.source_image";
-  status: "pending";
-  sourceImageCount: number;
 };
 
 type UploadTarget = {
@@ -62,10 +48,6 @@ type FinalizeResponse = {
     originalFilename: string;
     variants: Array<{ publicCdnUrl: string | null; storageKey: string }>;
   }>;
-};
-
-type ImportJobResponse = {
-  importJob: PlatformMediaImportJob;
 };
 
 export async function uploadPlatformMedia(input: {
@@ -139,20 +121,6 @@ export async function uploadPlatformMedia(input: {
     heightPx: mediaObject.heightPx,
     originalFilename: mediaObject.originalFilename,
   }));
-}
-
-export async function createPlatformMediaImport(input: {
-  resource: PlatformMediaResourceScope;
-  sourceImageUrls: string[];
-  idempotencyKey?: string;
-}): Promise<PlatformMediaImportJob> {
-  const response = await platformMediaClient.post<ImportJobResponse>("/api/media/imports", {
-    purpose: "pms.import.source_image",
-    resource: input.resource,
-    sourceImageUrls: input.sourceImageUrls,
-    idempotencyKey: input.idempotencyKey,
-  });
-  return response.importJob;
 }
 
 function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {

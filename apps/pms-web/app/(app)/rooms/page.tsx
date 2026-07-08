@@ -14,7 +14,6 @@ import {
 } from "@heroicons/react/24/outline";
 import { roomsService, individualRoomsService, RoomType, Room } from "@/services/rooms";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import ListingImportModal from "@/components/rooms/ListingImportModal";
 import { formatCurrency } from "@/lib/formatCurrency";
 import { useTranslation } from "@/lib/i18n";
 import { imageReferenceUrl } from "@/services/upload";
@@ -546,7 +545,6 @@ export default function RoomsPage() {
   const [individualRooms, setIndividualRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [showImportModal, setShowImportModal] = useState(false);
 
   const loadData = () => {
     Promise.all([roomsService.list(), individualRoomsService.list()])
@@ -590,26 +588,6 @@ export default function RoomsPage() {
           <p className="text-sm text-gray-500 mt-1">{t("rooms.subtitle")}</p>
         </div>
         <div className="flex items-center gap-2 md:gap-3 shrink-0">
-          <button
-            onClick={() => setShowImportModal(true)}
-            className="inline-flex items-center gap-1.5 px-3 md:px-4 py-2 border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-50 transition-colors"
-            title="Import Listing"
-          >
-            <svg
-              className="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span className="hidden md:inline">Import Listing</span>
-          </button>
           <Link
             href="/rooms/new"
             className="inline-flex items-center gap-1.5 px-3 md:px-4 py-2 bg-primary-600 text-white text-sm font-semibold rounded-lg hover:bg-primary-700 transition-colors"
@@ -685,8 +663,6 @@ export default function RoomsPage() {
           ))}
         </div>
       )}
-
-      {showImportModal && <ListingImportModal onClose={() => setShowImportModal(false)} />}
     </div>
   );
 }

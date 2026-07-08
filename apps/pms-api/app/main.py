@@ -14,7 +14,6 @@ from app.routers.admin_channex import router as admin_channex_router
 from app.routers.admin_checkin_checklist import router as admin_checkin_checklist_router
 from app.routers.admin_checkout import router as admin_checkout_router
 from app.routers.admin_financials import router as admin_financials_router
-from app.routers.admin_import import router as admin_import_router
 from app.routers.admin_messaging import router as admin_messaging_router
 from app.routers.admin_module_activations import router as admin_module_activations_router
 from app.routers.admin_payments import router as admin_payments_router
@@ -29,7 +28,11 @@ from app.routers.rooms import router as rooms_router
 from app.routers.super_admin_bookings import router as super_admin_bookings_router
 from app.routers.super_admin_payouts import router as super_admin_payouts_router
 from app.routers.webhooks import router as webhooks_router
-from app.services.scheduler import get_scheduler_health_status, get_scheduler_status, setup_scheduler
+from app.services.scheduler import (
+    get_scheduler_health_status,
+    get_scheduler_status,
+    setup_scheduler,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -147,7 +150,6 @@ app.include_router(admin_affiliates_router, dependencies=_admin_deps)
 app.include_router(admin_channex_router, dependencies=_admin_deps)
 app.include_router(admin_messaging_router, dependencies=_admin_deps)
 app.include_router(admin_module_activations_router, dependencies=_admin_deps)
-app.include_router(admin_import_router)
 app.include_router(affiliates_router)
 app.include_router(webhooks_router)
 app.include_router(affiliate_dashboard_router)

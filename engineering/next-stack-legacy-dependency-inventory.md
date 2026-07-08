@@ -42,7 +42,6 @@ The next-stack debt falls into four groups:
 ## Inventory
 
 1. **`next-api`: legacy source defaults and runtime envs**
-
    - **Old thing:** `apps/api/src/config.ts` still defaults multiple selectors
      to legacy or disabled modes and reads legacy runtime envs:
      `PUBLIC_HOTEL_PROFILE_SOURCE=legacy`, `BOOKING_*_SOURCE=legacy`,
@@ -61,7 +60,6 @@ The next-stack debt falls into four groups:
    - **Follow-up:** VAY-882 plus VAY-760 follow-ups.
 
 2. **`next-api`: auth compatibility bridge**
-
    - **Old thing:** `/auth/compat/*-token` routes mint short-lived legacy JWTs
      for platform admin, Booking Admin, PMS Web, and Affiliate Dashboard
      (`apps/api/src/routes/authSession.ts` lines 393-570), backed by
@@ -81,7 +79,6 @@ The next-stack debt falls into four groups:
    - **Follow-up:** VAY-878, VAY-883, VAY-886, WorkOS surface cutover tickets.
 
 3. **Cross-surface scope: `X-Hotel-Id`**
-
    - **Old thing:** `X-Hotel-Id` as routing scope
      (`apps/booking-admin/services/api/client.ts` lines 86-90;
      `apps/pms-web/services/api/client.ts` lines 81-85;
@@ -98,7 +95,6 @@ The next-stack debt falls into four groups:
    - **Follow-up:** VAY-878, VAY-883, VAY-885, VAY-881.
 
 4. **`next-pms`: direct PMS and marketplace legacy clients**
-
    - **Old thing:** direct PMS API client fallback
      `NEXT_PUBLIC_PMS_API_URL || "https://api.pms.localhost"` and handoff
      fallback `https://pms-api.vayada.com`
@@ -107,18 +103,17 @@ The next-stack debt falls into four groups:
      legacy admin route families for financials, import, messaging, rooms,
      room-types, module activations, Channex, bookings, calendar, settings,
      payment/Stripe, and room blocks (`apps/pms-web/services/financials/index.ts`
-     lines 116-143; `apps/pms-web/services/import/index.ts` lines 47-50;
-     `apps/pms-web/services/messaging/index.ts` lines 59-114;
+     lines 116-143; `apps/pms-web/services/messaging/index.ts` lines 59-114;
      `apps/pms-web/services/rooms/index.ts` lines 367-417). Image upload can
      still fall back to the legacy marketplace API
      `NEXT_PUBLIC_MARKETPLACE_API_URL || "https://api.vayada.com"` with
      `X-Hotel-Id` (`apps/pms-web/services/upload/index.ts` lines 6-7 and 105).
    - **Current consumer:** PMS Web setup, settings, calendar, bookings, channel
-     manager, rooms, financials, import, messaging, media upload, and handoff.
+     manager, rooms, financials, messaging, media upload, and handoff.
    - **Target replacement:** typed PMS operations routes for rooms/calendar/
      messaging/operational reservations; finance contracts for invoices,
      payments, payouts, payment settings, and Stripe/Xendit; platform media
-     upload/import contracts for images and listing imports; Channex target
+     upload contracts for images; Channex target
      intake/cutover contracts for channel connectivity.
    - **Owner domain:** PMS operations / finance / platform media / channel
      connectivity.
@@ -131,7 +126,6 @@ The next-stack debt falls into four groups:
      media/import; VAY-772 and VAY-785-VAY-794 for Channex/webhooks.
 
 5. **`next-api`: PMS legacy admin adapters**
-
    - **Old thing:** `registerPmsLegacyAdminRoutes` registers PMS-shaped
      `/admin/*` helpers and fake/no-op values for unread count, payment
      settings, Channex status/channels, and calendar settings
@@ -145,7 +139,6 @@ The next-stack debt falls into four groups:
    - **Follow-up:** VAY-879 after VAY-878.
 
 6. **`next-booking-admin`: backend helper facade**
-
    - **Old thing:** `bookingAdminCompat` registers Booking Admin `/admin/*`
      helpers with zeroed dashboards, empty modules/add-ons/promo codes, fake
      custom-domain status, and 501 writes
@@ -161,7 +154,6 @@ The next-stack debt falls into four groups:
    - **Follow-up:** VAY-883, then VAY-884.
 
 7. **`next-booking-admin`: settings and setup calls**
-
    - **Old thing:** Booking Admin service still calls old `/admin/hotels`,
      `/admin/superadmin/hotels`, `/admin/settings/property`,
      `/admin/settings/setup-status`, `/admin/addons`, `/admin/promo-codes`, and
@@ -181,7 +173,6 @@ The next-stack debt falls into four groups:
      tickets if VAY-883 cannot implement them.
 
 8. **`next-booking-admin`: direct PMS service client**
-
    - **Old thing:** Booking Admin has its own direct PMS service client
      `NEXT_PUBLIC_PMS_URL || "https://api.pms.localhost"`
      (`apps/booking-admin/services/api/pmsClient.ts` lines 1-8). It backs
@@ -208,7 +199,6 @@ The next-stack debt falls into four groups:
      affiliate-owned target routes.
 
 9. **`next-booking-admin`: Ask Intelligence scope header**
-
    - **Old thing:** Ask client sends `X-Hotel-Id` while also sending
      organization scope (`apps/booking-admin/services/api/askIntelligenceClient.ts`
      lines 71-85).
@@ -235,7 +225,6 @@ The next-stack debt falls into four groups:
 - **Follow-up:** VAY-881, VAY-882.
 
 11. **`next-api`: Booking Web public compatibility adapter**
-
     - **Old thing:** checkout/status/lookup/guest command routes still proxy to
       `PMS_PUBLIC_API_URL`; promo/domain still use `BOOKING_PUBLIC_API_URL`;
       writes require `BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED`
@@ -252,7 +241,6 @@ The next-stack debt falls into four groups:
     - **Follow-up:** VAY-760 follow-ups: VAY-764, VAY-767, VAY-768, VAY-771.
 
 12. **`next-admin`: direct legacy service clients**
-
     - **Old thing:** Platform Admin still has direct old service clients:
       `NEXT_PUBLIC_PMS_API_URL || "https://pms-api.vayada.com"`,
       `NEXT_PUBLIC_BOOKING_API_URL || "https://booking-api.vayada.com"`, and
@@ -270,7 +258,6 @@ The next-stack debt falls into four groups:
     - **Follow-up:** VAY-885.
 
 13. **`next-admin`: old admin route shapes**
-
     - **Old thing:** Platform Admin still calls Booking `/admin/superadmin/*`,
       `/admin/settings/*`, `/admin/addons`, `/admin/promo-codes`, PMS
       `/super-admin/affiliate-payouts`, and legacy marketplace profile writes
@@ -289,7 +276,6 @@ The next-stack debt falls into four groups:
     - **Follow-up:** VAY-885, VAY-795, marketplace admin vertical tickets.
 
 14. **`next-api`: marketplace admin superadmin fallback**
-
     - **Old thing:** Marketplace admin routes include opt-in
       `users.is_superadmin` fallback during platform org migration
       (`apps/api/src/routes/marketplaceAdmin.ts` lines 11-31 and 635-654).
@@ -304,7 +290,6 @@ The next-stack debt falls into four groups:
     - **Follow-up:** VAY-882; marketplace admin vertical tickets.
 
 15. **`next-affiliate`: PMS-owned dashboard API**
-
     - **Old thing:** Affiliate Dashboard API defaults to
       `https://api.pms.localhost`, types mirror the PMS backend, and auth mints
       `/auth/compat/affiliate-dashboard-token`
@@ -322,7 +307,6 @@ The next-stack debt falls into four groups:
     - **Follow-up:** VAY-886.
 
 16. **`next-marketplace`: compatibility methods and auth base**
-
     - **Old thing:** Marketplace Web still has legacy compatibility
       methods/comments for hotel CRUD and collaboration fallback; auth base
       defaults to `https://api.localhost`; PMS app switcher links default to
@@ -342,7 +326,6 @@ The next-stack debt falls into four groups:
       VAY-737/VAY-803/VAY-801.
 
 17. **Smoke/proof layer: broad admin mocks**
-
     - **Old thing:** shared Booking Admin mocks still fulfill broad
       `**/admin/**`, while focused tests assert only selected migrated routes
       (`tests/e2e/support/bookingAdminMocks.ts` lines 123-161).
