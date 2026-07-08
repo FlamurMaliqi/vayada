@@ -36,7 +36,10 @@ export function OnboardingShell({
   currentStep,
   children,
 }: OnboardingShellProps) {
-  const progressPercent = (currentStep / MARKETPLACE_ONBOARDING_STEPS.length) * 100;
+  const totalSteps = MARKETPLACE_ONBOARDING_STEPS.length;
+  const progressValue = Math.min(totalSteps, Math.max(0, currentStep));
+  const currentStepLabel = Math.min(totalSteps, Math.max(1, currentStep));
+  const progressPercent = (progressValue / totalSteps) * 100;
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#fbfbfa] text-gray-950">
@@ -50,11 +53,18 @@ export function OnboardingShell({
           priority
         />
         <p className="text-sm font-medium text-gray-500">
-          Step {currentStep} of {MARKETPLACE_ONBOARDING_STEPS.length}
+          Step {currentStepLabel} of {totalSteps}
         </p>
       </header>
 
-      <div className="relative z-10 h-px bg-gray-100">
+      <div
+        className="relative z-10 h-px overflow-hidden bg-gray-100"
+        role="progressbar"
+        aria-label="Onboarding progress"
+        aria-valuenow={progressValue}
+        aria-valuemin={0}
+        aria-valuemax={totalSteps}
+      >
         <div className="h-px bg-primary-600" style={{ width: `${progressPercent}%` }} />
       </div>
 
@@ -86,7 +96,9 @@ export function OnboardingShell({
                   isCurrent || isComplete ? "w-8 bg-gray-950" : "w-2 bg-gray-300"
                 }`}
               >
-                <span className="sr-only">{step.title}</span>
+                <span className="sr-only">
+                  {step.title}: {step.description}
+                </span>
               </li>
             );
           })}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
@@ -37,6 +37,7 @@ const options: Array<{
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [selectedType, setSelectedType] = useState<AccountType>("hotel");
   const [loading, setLoading] = useState(true);
   const [introComplete, setIntroComplete] = useState(false);
@@ -93,6 +94,29 @@ export default function OnboardingPage() {
     }
   }
 
+  function selectOptionAtIndex(index: number) {
+    const option = options[index];
+    if (!option) return;
+    setError("");
+    setSelectedType(option.type);
+    optionRefs.current[index]?.focus();
+  }
+
+  function handleOptionKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const nextKeys: Record<string, number> = {
+      ArrowRight: index + 1,
+      ArrowDown: index + 1,
+      ArrowLeft: index - 1,
+      ArrowUp: index - 1,
+      Home: 0,
+      End: options.length - 1,
+    };
+    const nextIndex = nextKeys[event.key];
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    selectOptionAtIndex((nextIndex + options.length) % options.length);
+  }
+
   return (
     <OnboardingShell
       currentStep={1}
@@ -113,7 +137,7 @@ export default function OnboardingPage() {
               aria-label="Choose onboarding path"
               className="grid gap-5 sm:grid-cols-2"
             >
-              {options.map((option) => {
+              {options.map((option, index) => {
                 const selected = selectedType === option.type;
                 const isHotel = option.type === "hotel";
                 const tiltClass = selected
@@ -125,13 +149,18 @@ export default function OnboardingPage() {
                 return (
                   <button
                     key={option.type}
+                    ref={(element) => {
+                      optionRefs.current[index] = element;
+                    }}
                     type="button"
                     role="radio"
                     aria-checked={selected}
+                    tabIndex={selected ? 0 : -1}
                     onClick={() => {
                       setError("");
                       setSelectedType(option.type);
                     }}
+                    onKeyDown={(event) => handleOptionKeyDown(event, index)}
                     className={`group relative rounded-3xl bg-white p-3 pb-5 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 sm:hover:-translate-y-1 ${tiltClass} ${
                       selected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
                     }`}
