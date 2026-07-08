@@ -98,9 +98,7 @@ When a deferred rule eventually graduates to enforced, it gets its own follow-up
 
 ## CI enforcement
 
-Currently the per-app GitHub Actions workflows run that app's own checks (typically `npm run build` for frontends and `pytest` for Python). There is **no** root-level "check everything" CI job — and that's intentional until VAY-458 lands pre-commit/pre-push hooks and ratchets baseline drift down.
-
-The separate `Playwright Pilot` workflow runs targeted Chromium smoke tests for the pilot surfaces and uploads reports/traces for PR debugging. Treat it as a focused pilot gate until the team decides to expand or require broader E2E coverage.
+Currently the PR workflow runs root frontend typecheck/lint/build plus the backend test matrix. Playwright smoke tests stay local/on-demand until the team decides the pilot is stable enough to gate PRs.
 
 When the baseline is clean enough to enforce globally, add a `.github/workflows/quality.yml` that runs:
 
