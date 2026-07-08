@@ -98,7 +98,7 @@ When a deferred rule eventually graduates to enforced, it gets its own follow-up
 
 ## CI enforcement
 
-Currently the PR workflow runs root frontend typecheck/lint/build plus the backend test matrix. Playwright smoke tests stay local/on-demand until the team decides the pilot is stable enough to gate PRs.
+Currently the PR workflow runs `npm run check:architecture-boundaries`, root frontend typecheck/lint/build, and the backend test matrix. Playwright smoke tests stay local/on-demand until the team decides the pilot is stable enough to gate PRs.
 
 When the baseline is clean enough to enforce globally, add a `.github/workflows/quality.yml` that runs:
 
