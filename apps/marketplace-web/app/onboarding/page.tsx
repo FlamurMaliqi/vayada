@@ -1,11 +1,12 @@
 "use client";
 
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type MutableRefObject, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   ArrowRightIcon,
   BuildingOfficeIcon,
+  CalendarDaysIcon,
   CheckIcon,
   SparklesIcon,
 } from "@heroicons/react/24/outline";
@@ -14,6 +15,8 @@ import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 
 type AccountType = "hotel" | "creator";
+type ProductChoice = "marketplace" | "pms" | "booking";
+type OnboardingStage = "path" | "product";
 
 const options: Array<{
   type: AccountType;
@@ -35,10 +38,38 @@ const options: Array<{
   },
 ];
 
+const productOptions: Array<{
+  type: ProductChoice;
+  title: string;
+  description: string;
+  Icon: typeof SparklesIcon;
+}> = [
+  {
+    type: "marketplace",
+    title: "Creator Marketplace",
+    description: "Find creators and launch collaboration listings.",
+    Icon: SparklesIcon,
+  },
+  {
+    type: "pms",
+    title: "PMS",
+    description: "Manage rooms, reservations, and daily operations.",
+    Icon: BuildingOfficeIcon,
+  },
+  {
+    type: "booking",
+    title: "Booking Admin",
+    description: "Set up direct booking pages and guest checkout.",
+    Icon: CalendarDaysIcon,
+  },
+];
+
 export default function OnboardingPage() {
   const router = useRouter();
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [stage, setStage] = useState<OnboardingStage>("path");
   const [selectedType, setSelectedType] = useState<AccountType>("hotel");
+  const [selectedProduct, setSelectedProduct] = useState<ProductChoice>("marketplace");
   const [loading, setLoading] = useState(true);
   const [introComplete, setIntroComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -83,10 +114,16 @@ export default function OnboardingPage() {
 
   async function handleContinue() {
     setError("");
+
+    if (selectedType === "hotel" && stage === "path") {
+      setStage("product");
+      return;
+    }
+
     setSubmitting(true);
     try {
       await authService.completeOnboarding(selectedType);
-      router.push(nextPathForType(selectedType));
+      router.push(nextPathForType(selectedType, selectedProduct));
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to continue onboarding.");
     } finally {
@@ -119,9 +156,13 @@ export default function OnboardingPage() {
 
   return (
     <OnboardingShell
-      currentStep={1}
-      title="Welcome to Vayada"
-      description="First things first, tell us a little bit about yourself."
+      currentStep={stage === "product" ? 2 : 1}
+      title={stage === "product" ? "Which product do you want to use?" : "Welcome to Vayada"}
+      description={
+        stage === "product"
+          ? "Start with one workspace. You can add the others later."
+          : "First things first, tell us a little bit about yourself."
+      }
     >
       <div className="mx-auto w-full max-w-3xl">
         {loading ? (
@@ -132,86 +173,25 @@ export default function OnboardingPage() {
           <WelcomeMoment />
         ) : (
           <div className="space-y-6 text-center">
-            <div
-              role="radiogroup"
-              aria-label="Choose onboarding path"
-              className="grid gap-5 sm:grid-cols-2"
-            >
-              {options.map((option, index) => {
-                const selected = selectedType === option.type;
-                const isHotel = option.type === "hotel";
-                const tiltClass = selected
-                  ? "sm:rotate-0"
-                  : isHotel
-                    ? "sm:-rotate-2"
-                    : "sm:rotate-2";
-
-                return (
-                  <button
-                    key={option.type}
-                    ref={(element) => {
-                      optionRefs.current[index] = element;
-                    }}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    tabIndex={selected ? 0 : -1}
-                    onClick={() => {
-                      setError("");
-                      setSelectedType(option.type);
-                    }}
-                    onKeyDown={(event) => handleOptionKeyDown(event, index)}
-                    className={`group relative rounded-3xl bg-white p-3 pb-5 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 sm:hover:-translate-y-1 ${tiltClass} ${
-                      selected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
-                    }`}
-                  >
-                    <span className="relative block aspect-[4/3] overflow-hidden rounded-2xl bg-gray-100">
-                      <Image
-                        src={option.image}
-                        alt=""
-                        fill
-                        priority={index < 2}
-                        sizes="(min-width: 640px) 360px, 100vw"
-                        className="object-cover transition duration-300 group-hover:scale-105"
-                      />
-                      <span className="absolute inset-0 bg-gradient-to-t from-gray-950/35 to-transparent" />
-                      <span className="absolute bottom-3 left-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm">
-                        {isHotel ? "For properties" : "For creators"}
-                      </span>
-                      <span
-                        className={`absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full ${
-                          selected ? "bg-primary-600 text-white" : "bg-white/85 text-transparent"
-                        }`}
-                      >
-                        <CheckIcon className="h-4 w-4" />
-                      </span>
-                    </span>
-
-                    <span className="mt-4 flex items-start gap-3">
-                      <span
-                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
-                          selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {isHotel ? (
-                          <BuildingOfficeIcon className="h-5 w-5" />
-                        ) : (
-                          <SparklesIcon className="h-5 w-5" />
-                        )}
-                      </span>
-                      <span>
-                        <span className="block text-base font-semibold text-gray-950">
-                          {option.title}
-                        </span>
-                        <span className="mt-1 block text-sm leading-6 text-gray-600">
-                          {option.description}
-                        </span>
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            {stage === "path" ? (
+              <PathChoice
+                selectedType={selectedType}
+                optionRefs={optionRefs}
+                onSelect={(type) => {
+                  setError("");
+                  setSelectedType(type);
+                }}
+                onKeyDown={handleOptionKeyDown}
+              />
+            ) : (
+              <ProductChoicePanel
+                selectedProduct={selectedProduct}
+                onSelect={(product) => {
+                  setError("");
+                  setSelectedProduct(product);
+                }}
+              />
+            )}
 
             {error && (
               <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -223,14 +203,32 @@ export default function OnboardingPage() {
               type="button"
               onClick={handleContinue}
               disabled={submitting}
-              aria-label={`Continue to ${
-                selectedType === "hotel" ? "property setup" : "creator profile"
-              }`}
+              aria-label={
+                stage === "product"
+                  ? `Continue with ${productLabel(selectedProduct)}`
+                  : `Continue to ${
+                      selectedType === "hotel" ? "product selection" : "creator profile"
+                    }`
+              }
               className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             >
-              {submitting ? "Continuing..." : "Continue"}
+              {submitting
+                ? "Continuing..."
+                : stage === "product"
+                  ? "Continue to setup"
+                  : "Continue"}
               {!submitting && <ArrowRightIcon className="h-4 w-4" />}
             </button>
+
+            {stage === "product" && (
+              <button
+                type="button"
+                onClick={() => setStage("path")}
+                className="block w-full text-sm font-medium text-gray-500 hover:text-gray-950"
+              >
+                Back
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -238,8 +236,151 @@ export default function OnboardingPage() {
   );
 }
 
-function nextPathForType(type: AccountType): string {
-  return type === "hotel" ? ROUTES.SETUP : ROUTES.PROFILE_COMPLETE;
+function PathChoice({
+  selectedType,
+  optionRefs,
+  onSelect,
+  onKeyDown,
+}: {
+  selectedType: AccountType;
+  optionRefs: MutableRefObject<Array<HTMLButtonElement | null>>;
+  onSelect: (type: AccountType) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, index: number) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Choose onboarding path"
+      className="grid gap-5 sm:grid-cols-2"
+    >
+      {options.map((option, index) => {
+        const selected = selectedType === option.type;
+        const isHotel = option.type === "hotel";
+        const tiltClass = selected ? "sm:rotate-0" : isHotel ? "sm:-rotate-2" : "sm:rotate-2";
+
+        return (
+          <button
+            key={option.type}
+            ref={(element) => {
+              optionRefs.current[index] = element;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onSelect(option.type)}
+            onKeyDown={(event) => onKeyDown(event, index)}
+            className={`group relative rounded-3xl bg-white p-3 pb-5 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 sm:hover:-translate-y-1 ${tiltClass} ${
+              selected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
+            }`}
+          >
+            <span className="relative block aspect-[4/3] overflow-hidden rounded-2xl bg-gray-100">
+              <Image
+                src={option.image}
+                alt=""
+                fill
+                priority={index < 2}
+                sizes="(min-width: 640px) 360px, 100vw"
+                className="object-cover transition duration-300 group-hover:scale-105"
+              />
+              <span className="absolute inset-0 bg-gradient-to-t from-gray-950/35 to-transparent" />
+              <span className="absolute bottom-3 left-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm">
+                {isHotel ? "For properties" : "For creators"}
+              </span>
+              <span
+                className={`absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full ${
+                  selected ? "bg-primary-600 text-white" : "bg-white/85 text-transparent"
+                }`}
+              >
+                <CheckIcon className="h-4 w-4" />
+              </span>
+            </span>
+
+            <span className="mt-4 flex items-start gap-3">
+              <span
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                  selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                {isHotel ? (
+                  <BuildingOfficeIcon className="h-5 w-5" />
+                ) : (
+                  <SparklesIcon className="h-5 w-5" />
+                )}
+              </span>
+              <span>
+                <span className="block text-base font-semibold text-gray-950">{option.title}</span>
+                <span className="mt-1 block text-sm leading-6 text-gray-600">
+                  {option.description}
+                </span>
+              </span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProductChoicePanel({
+  selectedProduct,
+  onSelect,
+}: {
+  selectedProduct: ProductChoice;
+  onSelect: (product: ProductChoice) => void;
+}) {
+  return (
+    <fieldset className="text-left">
+      <legend className="sr-only">Choose product</legend>
+      <div className="grid gap-4 sm:grid-cols-3">
+        {productOptions.map(({ type, title, description, Icon }) => {
+          const selected = selectedProduct === type;
+          return (
+            <label
+              key={type}
+              className={`relative flex min-h-48 cursor-pointer flex-col rounded-3xl bg-white p-5 shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 transition hover:-translate-y-1 focus-within:ring-2 focus-within:ring-gray-950 ${
+                selected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
+              }`}
+            >
+              <input
+                type="radio"
+                name="onboarding-product"
+                value={type}
+                checked={selected}
+                onChange={() => onSelect(type)}
+                className="sr-only"
+              />
+              <span
+                className={`flex h-11 w-11 items-center justify-center rounded-full ${
+                  selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                <Icon className="h-5 w-5" />
+              </span>
+              <span className="mt-6 block text-base font-semibold text-gray-950">{title}</span>
+              <span className="mt-2 block text-sm leading-6 text-gray-600">{description}</span>
+              <span
+                className={`absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full ${
+                  selected ? "bg-primary-600 text-white" : "bg-gray-100 text-transparent"
+                }`}
+              >
+                <CheckIcon className="h-4 w-4" />
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+function nextPathForType(type: AccountType, product: ProductChoice = "marketplace"): string {
+  if (type === "creator") return ROUTES.PROFILE_COMPLETE;
+  return `${ROUTES.SETUP}?entryProduct=${product}`;
+}
+
+function productLabel(product: ProductChoice): string {
+  return productOptions.find((option) => option.type === product)?.title ?? "setup";
 }
 
 function WelcomeMoment() {
