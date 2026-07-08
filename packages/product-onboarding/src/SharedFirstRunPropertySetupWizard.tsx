@@ -97,7 +97,8 @@ const MARKETPLACE_ACTIVATION_STEPS: Record<string, { title: string; description:
 };
 
 const SETUP_STEPS = [
-  { label: "Basics", description: "Profile, location, and hero image", icon: BuildingOffice2Icon },
+  { label: "Property", description: "Choose where setup applies", icon: BuildingOffice2Icon },
+  { label: "Basics", description: "Profile, location, and hero image", icon: SparklesIcon },
   { label: "Products", description: "Pick what this property uses", icon: Squares2X2Icon },
   { label: "Launch", description: "Open the right workspace", icon: RocketLaunchIcon },
 ] as const;
@@ -414,14 +415,13 @@ function WizardShell({
   embedded?: boolean;
 }) {
   const progress =
-    view.screen === "product_selection"
-      ? 2
-      : view.screen === "product_activation" || view.screen === "enter_product"
+    view.screen === "property_selection"
+      ? 1
+      : view.screen === "product_selection"
         ? 3
-        : 1;
-  const currentStep = SETUP_STEPS[progress - 1];
-  const nextStep = SETUP_STEPS.at(progress) ?? null;
-  const displayTitle = view.screen === "property_selection" ? title : "Set up your property";
+        : view.screen === "product_activation" || view.screen === "enter_product"
+          ? 4
+          : 2;
   const subtitle =
     view.screen === "property_selection"
       ? "Pick an existing property or add a new one to this hotel group."
@@ -436,7 +436,7 @@ function WizardShell({
           </p>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-gray-950">{displayTitle}</h2>
+              <h2 className="text-xl font-semibold text-gray-950">{title}</h2>
               <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>
             </div>
             <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
@@ -465,7 +465,7 @@ function WizardShell({
               {status?.hotelGroup.displayName ?? "Hotel setup"}
             </p>
             <h1 className="mt-3 max-w-3xl text-4xl font-semibold tracking-normal text-gray-950 sm:text-5xl">
-              {displayTitle}
+              {title}
             </h1>
             <p className="mt-3 max-w-2xl text-base text-gray-500">{subtitle}</p>
           </div>
@@ -487,23 +487,6 @@ function WizardShell({
         <SetupProgress progress={progress} />
 
         <section className="mt-7 min-w-0 overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]">
-          <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                  {currentStep.label}
-                </p>
-                <h2 className="mt-1 text-lg font-semibold text-gray-950">
-                  {currentStep.description}
-                </h2>
-              </div>
-              {nextStep && (
-                <p className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
-                  Next: {nextStep.label}
-                </p>
-              )}
-            </div>
-          </div>
           {loading ? (
             <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
               <LoadingSpinner label="Loading setup" />
@@ -520,7 +503,7 @@ function WizardShell({
 function SetupProgress({ progress, compact = false }: { progress: number; compact?: boolean }) {
   return (
     <ol
-      className={`grid gap-2 ${compact ? "mt-5 sm:grid-cols-3" : "sm:grid-cols-3"}`}
+      className={`grid gap-2 ${compact ? "mt-5 sm:grid-cols-4" : "sm:grid-cols-4"}`}
       aria-label="Property setup progress"
     >
       {SETUP_STEPS.map((step, index) => {
@@ -713,7 +696,7 @@ function ProfileForm({
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-950">Property basics</h2>
+          <h2 className="text-lg font-semibold text-gray-950">Property details</h2>
           <p className="mt-1 max-w-2xl text-sm text-gray-500">
             Start with the details guests, staff, and creators will recognize.
           </p>
@@ -789,10 +772,22 @@ function ProfileForm({
             placeholder="A city hotel close to the old town."
             helper="One guest-facing description is required."
             requirementLabel="Required"
+            required
             error={fieldErrors.shortDescription?.[0]}
             onChange={(value) => setField("shortDescription", value)}
           />
         </div>
+        {showRawLocation && (
+          <div className="md:col-span-2">
+            <TextField
+              label="Imported location"
+              value={draft.rawMarketplaceLocation}
+              readOnly
+              helper="Read-only location imported from the existing marketplace profile."
+              onChange={() => undefined}
+            />
+          </div>
+        )}
       </div>
 
       <details
@@ -833,17 +828,6 @@ function ProfileForm({
             error={fieldErrors["location.postalCode"]?.[0]}
             onChange={(value) => setField("postalCode", value)}
           />
-          {showRawLocation && (
-            <div className="md:col-span-2">
-              <TextField
-                label="Imported location"
-                value={draft.rawMarketplaceLocation}
-                readOnly
-                helper="Read-only location imported from the existing marketplace profile."
-                onChange={() => undefined}
-              />
-            </div>
-          )}
         </div>
       </details>
 

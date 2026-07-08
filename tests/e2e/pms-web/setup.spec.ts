@@ -55,11 +55,13 @@ test.describe("pms-web shared setup", () => {
     await page.getByLabel("City").fill("Munich");
     await page.getByLabel("Website").fill("https://alpenrose.example");
     await page.getByLabel("Phone").fill("+49 89 123456");
-    await page.getByLabel("Short description").fill("A city hotel close to the old town.");
+    await page.getByLabel("Short intro").fill("A city hotel close to the old town.");
     await page.getByLabel("Photo URL").fill("https://images.example/alpenrose.jpg");
     await page.getByRole("button", { name: "Save and continue" }).click();
 
-    await expect(page.getByRole("heading", { level: 2, name: "Choose products" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Choose your products" }),
+    ).toBeVisible();
     await expect(page.getByText("Alpenrose Munich")).toBeVisible();
     await expect(page.getByLabel("PMS")).toBeChecked();
     const pmsProductOption = page.getByLabel("PMS").locator("xpath=ancestor::label");

@@ -170,6 +170,7 @@ export default function OnboardingPage() {
                         src={option.image}
                         alt=""
                         fill
+                        priority={index < 2}
                         sizes="(min-width: 640px) 360px, 100vw"
                         className="object-cover transition duration-300 group-hover:scale-105"
                       />
