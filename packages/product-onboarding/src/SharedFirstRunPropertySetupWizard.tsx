@@ -503,7 +503,7 @@ function WizardShell({
 function SetupProgress({ progress, compact = false }: { progress: number; compact?: boolean }) {
   return (
     <ol
-      className={`grid gap-2 ${compact ? "mt-5 sm:grid-cols-3" : "sm:grid-cols-3"}`}
+      className={`grid gap-2 ${compact ? "mt-5 sm:grid-cols-4" : "sm:grid-cols-4"}`}
       aria-label="Property setup progress"
     >
       {SETUP_STEPS.map((step, index) => {
