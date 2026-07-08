@@ -57,7 +57,9 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(
       page.getByRole("heading", { name: "Marketplace activation unavailable" }),
     ).toBeVisible();
-    await expect(page.getByText("Marketplace access is currently suspended")).toBeVisible();
+    await expect(
+      page.locator("p", { hasText: "Marketplace access is currently suspended" }),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: "Marketplace unavailable" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Open Marketplace listing tools" })).toHaveCount(
       0,
