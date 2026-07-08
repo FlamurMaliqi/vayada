@@ -21,12 +21,12 @@ export const MARKETPLACE_ONBOARDING_STEPS: OnboardingStep[] = [
     description: "Choose what you want to launch first.",
   },
   {
-    title: "Create first profile",
-    description: "Create the first listing or creator profile people will review.",
+    title: "Choose product",
+    description: "Pick the Vayada workspace you want to start with.",
   },
   {
-    title: "Start matching",
-    description: "Enter the marketplace ready to invite or apply.",
+    title: "Create first profile",
+    description: "Create the first listing or profile people will review.",
   },
 ];
 

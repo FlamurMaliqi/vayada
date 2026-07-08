@@ -6,9 +6,9 @@ import { SharedHotelSetupPage } from "@/components/setup/SharedHotelSetupPage";
 export default function MarketplaceSetupPage() {
   return (
     <OnboardingShell
-      currentStep={2}
-      title="Create your first collaboration listing"
-      description="Add the property details creators need before they can evaluate your offer."
+      currentStep={3}
+      title="Set up your property"
+      description="Add the shared details Vayada needs before opening your selected workspace."
     >
       <Suspense fallback={<SetupLoading />}>
         <SharedHotelSetupPage
