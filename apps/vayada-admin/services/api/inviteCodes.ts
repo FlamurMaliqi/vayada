@@ -129,14 +129,14 @@ export interface InviteData {
 
 export const inviteCodesService = {
   async list(): Promise<InviteCode[]> {
-    return apiClient.get<InviteCode[]>("/api/marketplace/admin/invite-codes");
+    return apiClient.get<InviteCode[]>("/admin/invite-codes");
   },
 
   async create(data: InviteData): Promise<InviteCode> {
-    return apiClient.post<InviteCode>("/api/marketplace/admin/invite-codes", { data });
+    return apiClient.post<InviteCode>("/admin/invite-codes", { data });
   },
 
   async delete(id: string): Promise<void> {
-    return apiClient.delete(`/api/marketplace/admin/invite-codes/${id}`);
+    return apiClient.delete(`/admin/invite-codes/${id}`);
   },
 };

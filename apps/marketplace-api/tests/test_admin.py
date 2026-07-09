@@ -343,7 +343,7 @@ class TestUpdateUser:
     """Tests for PUT /admin/users/{user_id}"""
 
     async def test_update_user_status(self, client: AsyncClient, test_admin, test_creator):
-        """Legacy admin user status writes are blocked by identity ownership."""
+        """Test updating user status."""
         user_id = str(test_creator["user"]["id"])
 
         response = await client.put(
@@ -352,10 +352,12 @@ class TestUpdateUser:
             headers=get_auth_headers(test_admin["token"]),
         )
 
-        assert response.status_code == 409
+        assert response.status_code == 200
+        user = await AuthDatabase.fetchrow("SELECT status FROM users WHERE id = $1", user_id)
+        assert user["status"] == "verified"
 
     async def test_update_user_email(self, client: AsyncClient, test_admin, test_creator):
-        """Legacy admin user email writes are blocked by identity ownership."""
+        """Test updating user email."""
         user_id = str(test_creator["user"]["id"])
         new_email = generate_test_email("updated")
 
@@ -365,9 +367,9 @@ class TestUpdateUser:
             headers=get_auth_headers(test_admin["token"]),
         )
 
-        assert response.status_code == 409
+        assert response.status_code == 200
         user = await AuthDatabase.fetchrow("SELECT email FROM users WHERE id = $1", user_id)
-        assert user["email"] == test_creator["user"]["email"]
+        assert user["email"] == new_email
 
     async def test_update_user_not_found(self, client: AsyncClient, test_admin):
         """Test updating non-existent user."""
@@ -393,7 +395,7 @@ class TestUpdateUser:
 
 
 class TestCreatorApprovalNotification:
-    """Legacy admin status writes are blocked before creator approval side effects."""
+    """Creator approval notification side effects for legacy admin status writes."""
 
     @staticmethod
     async def _wait_for_emails(mock_send_email, expected_count: int, timeout: float = 1.0):
@@ -407,7 +409,7 @@ class TestCreatorApprovalNotification:
     async def test_pending_to_verified_creates_notification_and_email(
         self, client: AsyncClient, test_admin, cleanup_database, init_database, mock_send_email
     ):
-        """Pending creator approval is identity-owned on the new admin surface."""
+        """Pending creator approval creates one notification and one email."""
         creator = await create_test_creator(status="pending")
         user_id = str(creator["user"]["id"])
 
@@ -416,20 +418,22 @@ class TestCreatorApprovalNotification:
             json={"status": "verified"},
             headers=get_auth_headers(test_admin["token"]),
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
+        await self._wait_for_emails(mock_send_email, 1)
 
         notifs = await Database.fetch(
             "SELECT type, title, body, link_url FROM notifications WHERE user_id = $1",
             creator["user"]["id"],
         )
-        assert len(notifs) == 0
+        assert len(notifs) == 1
+        assert notifs[0]["type"] == "creator_approved"
         approval_emails = [e for e in mock_send_email if e["to"] == creator["user"]["email"]]
-        assert approval_emails == []
+        assert len(approval_emails) == 1
 
     async def test_already_verified_no_duplicate(
         self, client: AsyncClient, test_admin, cleanup_database, init_database, mock_send_email
     ):
-        """Legacy no-op status writes are still routed away from marketplace-api."""
+        """Already verified creators do not get duplicate approval notifications."""
         creator = await create_test_creator(status="verified")
         user_id = str(creator["user"]["id"])
 
@@ -438,7 +442,7 @@ class TestCreatorApprovalNotification:
             json={"status": "verified"},
             headers=get_auth_headers(test_admin["token"]),
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
 
         # Give any spurious background email a chance to land
         import asyncio
@@ -456,7 +460,7 @@ class TestCreatorApprovalNotification:
     async def test_revoke_then_reapprove_notifies_again(
         self, client: AsyncClient, test_admin, cleanup_database, init_database, mock_send_email
     ):
-        """Legacy revoke/reapprove writes do not fire marketplace approval side effects."""
+        """Re-approving after revoke creates one new approval notification."""
         creator = await create_test_creator(status="verified")
         user_id = str(creator["user"]["id"])
         headers = get_auth_headers(test_admin["token"])
@@ -464,25 +468,26 @@ class TestCreatorApprovalNotification:
         revoke = await client.put(
             f"/admin/users/{user_id}", json={"status": "suspended"}, headers=headers
         )
-        assert revoke.status_code == 409
+        assert revoke.status_code == 200
 
         reapprove = await client.put(
             f"/admin/users/{user_id}", json={"status": "verified"}, headers=headers
         )
-        assert reapprove.status_code == 409
+        assert reapprove.status_code == 200
+        await self._wait_for_emails(mock_send_email, 1)
 
         notifs = await Database.fetch(
             "SELECT id FROM notifications WHERE user_id = $1 AND type = 'creator_approved'",
             creator["user"]["id"],
         )
-        assert len(notifs) == 0
+        assert len(notifs) == 1
         approval_emails = [e for e in mock_send_email if e["to"] == creator["user"]["email"]]
-        assert approval_emails == []
+        assert len(approval_emails) == 1
 
     async def test_hotel_status_change_does_not_create_creator_notification(
         self, client: AsyncClient, test_admin, cleanup_database, init_database, mock_send_email
     ):
-        """Legacy hotel status writes are blocked before notification logic."""
+        """Hotel status updates do not create creator approval notifications."""
         hotel = await create_test_hotel(status="pending")
         user_id = str(hotel["user"]["id"])
 
@@ -491,7 +496,7 @@ class TestCreatorApprovalNotification:
             json={"status": "verified"},
             headers=get_auth_headers(test_admin["token"]),
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
 
         import asyncio
 
@@ -506,7 +511,7 @@ class TestCreatorApprovalNotification:
     async def test_rejected_does_not_notify(
         self, client: AsyncClient, test_admin, cleanup_database, init_database, mock_send_email
     ):
-        """Legacy rejection writes are blocked before notification logic."""
+        """Rejected creators do not get approval notifications."""
         creator = await create_test_creator(status="pending")
         user_id = str(creator["user"]["id"])
 
@@ -515,7 +520,7 @@ class TestCreatorApprovalNotification:
             json={"status": "rejected"},
             headers=get_auth_headers(test_admin["token"]),
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
 
         import asyncio
 
@@ -536,7 +541,7 @@ class TestDeleteUser:
     async def test_delete_user_success(
         self, client: AsyncClient, test_admin, cleanup_database, init_database
     ):
-        """Legacy user deletion is blocked by identity ownership."""
+        """Test deleting a user."""
         creator = await create_test_creator()
         user_id = str(creator["user"]["id"])
 
@@ -544,18 +549,17 @@ class TestDeleteUser:
             f"/admin/users/{user_id}", headers=get_auth_headers(test_admin["token"])
         )
 
-        assert response.status_code == 409
+        assert response.status_code == 200
 
-        # Verify user is not deleted.
         user = await AuthDatabase.fetchrow(
             "SELECT id FROM users WHERE id = $1", creator["user"]["id"]
         )
-        assert user is not None
+        assert user is None
 
     async def test_delete_user_cascade(
         self, client: AsyncClient, test_admin, cleanup_database, init_database
     ):
-        """Blocked legacy deletion does not cascade product profile data."""
+        """Legacy deletion cascades product profile data."""
         creator = await create_test_creator()
         await create_test_platform(creator_id=str(creator["creator"]["id"]))
         user_id = str(creator["user"]["id"])
@@ -564,13 +568,12 @@ class TestDeleteUser:
             f"/admin/users/{user_id}", headers=get_auth_headers(test_admin["token"])
         )
 
-        assert response.status_code == 409
+        assert response.status_code == 200
 
-        # Verify related data is retained.
         creator_profile = await Database.fetchrow(
             "SELECT id FROM creators WHERE user_id = $1", creator["user"]["id"]
         )
-        assert creator_profile is not None
+        assert creator_profile is None
 
     async def test_delete_user_not_found(self, client: AsyncClient, test_admin):
         """Test deleting non-existent user."""
@@ -1044,7 +1047,7 @@ class TestSetSuperadmin:
     async def test_admin_can_grant_superadmin(
         self, client: AsyncClient, test_admin, cleanup_database, init_database
     ):
-        """Legacy superadmin grants are blocked by identity platform access ownership."""
+        """Admin can grant legacy superadmin access."""
         target = await create_test_creator()
         user_id = str(target["user"]["id"])
 
@@ -1053,17 +1056,17 @@ class TestSetSuperadmin:
             json={"is_superadmin": True},
             headers=get_auth_headers(test_admin["token"]),
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
 
         row = await AuthDatabase.fetchrow(
             "SELECT is_superadmin FROM users WHERE id = $1", target["user"]["id"]
         )
-        assert row["is_superadmin"] is False
+        assert row["is_superadmin"] is True
 
     async def test_admin_can_revoke_superadmin(
         self, client: AsyncClient, test_admin, cleanup_database, init_database
     ):
-        """Legacy superadmin revokes are blocked by identity platform access ownership."""
+        """Admin can revoke legacy superadmin access."""
         target = await create_test_creator()
         await AuthDatabase.execute(
             "UPDATE users SET is_superadmin = true WHERE id = $1", target["user"]["id"]
@@ -1075,12 +1078,12 @@ class TestSetSuperadmin:
             json={"is_superadmin": False},
             headers=get_auth_headers(test_admin["token"]),
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
 
         row = await AuthDatabase.fetchrow(
             "SELECT is_superadmin FROM users WHERE id = $1", target["user"]["id"]
         )
-        assert row["is_superadmin"] is True
+        assert row["is_superadmin"] is False
 
     async def test_non_admin_cannot_set_superadmin(
         self, client: AsyncClient, test_creator, cleanup_database, init_database
@@ -1099,7 +1102,7 @@ class TestSetSuperadmin:
     async def test_superadmin_user_can_set_superadmin(
         self, client: AsyncClient, cleanup_database, init_database
     ):
-        """A superadmin-flagged non-admin user is authorized but still hits the ownership guard."""
+        """A superadmin-flagged non-admin user can update legacy superadmin access."""
         acting = await create_test_user(user_type="creator")
         await AuthDatabase.execute(
             "UPDATE users SET is_superadmin = true WHERE id = $1", acting["id"]
@@ -1116,7 +1119,7 @@ class TestSetSuperadmin:
             json={"is_superadmin": True},
             headers=get_auth_headers(acting_token),
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
 
     async def test_set_superadmin_user_not_found(self, client: AsyncClient, test_admin):
         """Returns 404 for a non-existent user."""
