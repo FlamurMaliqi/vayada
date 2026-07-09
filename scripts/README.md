@@ -85,6 +85,5 @@ npm run seed:test-data
 
 Default credentials after seeding:
 
-- Admin: `admin@vayada.com` / `Vayada123`
 - Hotels: `hotel[1-5]@mock.com` / `Test1234`
 - Creators: `creator[1-4]@mock.com` / `Test1234`
