@@ -232,16 +232,16 @@ export default function SharedFirstRunPropertySetupWizard({
 
   useEffect(() => {
     if (view.screen !== "product_selection" || !view.selectedPropertyId) return;
+    if (seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) return;
+
     const nextSelectedProducts = selectedProductsForProperty(view.selectedProperty, entryProduct);
-    if (!seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) {
-      seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
-      for (const product of initialSelectedProducts) {
-        if (
-          !nextSelectedProducts.includes(product) &&
-          isSharedHotelSetupProductSelectable(view.selectedProperty, product)
-        ) {
-          nextSelectedProducts.push(product);
-        }
+    seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
+    for (const product of initialSelectedProducts) {
+      if (
+        !nextSelectedProducts.includes(product) &&
+        isSharedHotelSetupProductSelectable(view.selectedProperty, product)
+      ) {
+        nextSelectedProducts.push(product);
       }
     }
     setSelectedProducts(nextSelectedProducts);
