@@ -11,12 +11,7 @@ import {
 } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import {
-  ArrowRightIcon,
-  CalendarDaysIcon,
-  CheckIcon,
-  SparklesIcon,
-} from "@heroicons/react/24/outline";
+import { ArrowRightIcon, CheckIcon, SparklesIcon, WindowIcon } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
@@ -57,7 +52,7 @@ const productOptions: Array<{
     type: "marketplace",
     title: "Creator Marketplace",
     description: "Find creators and launch collaboration listings.",
-    Icon: SparklesIcon,
+    Icon: PersonIcon,
   },
   {
     type: "pms",
@@ -69,9 +64,27 @@ const productOptions: Array<{
     type: "booking",
     title: "Booking Admin",
     description: "Set up direct booking pages and guest checkout.",
-    Icon: CalendarDaysIcon,
+    Icon: WindowIcon,
   },
 ];
+
+function PersonIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -173,7 +186,7 @@ export default function OnboardingPage() {
           : "First things first, tell us a little bit about yourself."
       }
     >
-      <div className="mx-auto w-full max-w-3xl">
+      <div className="mx-auto w-full max-w-4xl">
         {loading ? (
           <div className="flex min-h-72 items-center justify-center">
             <p className="text-sm text-gray-600">Loading...</p>
@@ -224,7 +237,7 @@ export default function OnboardingPage() {
                       selectedType === "hotel" ? "product selection" : "creator profile"
                     }`
               }
-              className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+              className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             >
               {submitting
                 ? "Continuing..."
@@ -342,14 +355,16 @@ function ProductChoicePanel({
   return (
     <fieldset className="text-left">
       <legend className="sr-only">Choose products</legend>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-5 sm:grid-cols-3">
         {productOptions.map(({ type, title, description, Icon }) => {
           const selected = selectedProducts.includes(type);
           return (
             <label
               key={type}
-              className={`relative flex min-h-48 cursor-pointer flex-col rounded-3xl bg-white p-5 shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 transition hover:-translate-y-1 focus-within:ring-2 focus-within:ring-gray-950 ${
-                selected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
+              className={`relative flex min-h-56 cursor-pointer flex-col rounded-3xl bg-white p-6 shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 transition hover:-translate-y-1 focus-within:ring-2 focus-within:ring-gray-950 ${
+                selected
+                  ? "bg-primary-50 ring-2 ring-primary-500"
+                  : "ring-gray-200 hover:ring-gray-300"
               }`}
             >
               <input
@@ -361,13 +376,13 @@ function ProductChoicePanel({
                 className="sr-only"
               />
               <span
-                className={`flex h-11 w-11 items-center justify-center rounded-full ${
-                  selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
+                className={`mb-8 flex h-14 w-14 items-center justify-center rounded-2xl ${
+                  selected ? "bg-primary-600 text-white" : "bg-primary-50 text-primary-600"
                 }`}
               >
-                <Icon className="h-5 w-5" />
+                <Icon className="h-7 w-7" />
               </span>
-              <span className="mt-6 block text-base font-semibold text-gray-950">{title}</span>
+              <span className="block text-base font-semibold text-gray-950">{title}</span>
               <span className="mt-2 block text-sm leading-6 text-gray-600">{description}</span>
               <span
                 className={`absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full ${
