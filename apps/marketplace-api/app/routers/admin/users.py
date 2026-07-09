@@ -47,6 +47,7 @@ from app.services.creator_profile import CreatorProfileService
 from app.services.hotel_profile import HotelProfileService
 from app.services.listings import ListingService
 from app.services.notifications import send_email_background
+from app.services.user_deletion import UserDeletionService
 
 logger = logging.getLogger(__name__)
 
@@ -515,7 +516,7 @@ async def update_creator_profile(
         if request.name is not None and request.name != user["name"]:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
-                detail="Name is identity-owned. Use /api/identity/admin/users/{user_id}.",
+                detail="Name is account-owned. Use /admin/users/{user_id}.",
             )
 
         creator = await CreatorRepository.get_by_user_id(user_id, columns="id, profile_complete")
@@ -618,7 +619,7 @@ async def update_hotel_profile(
         if request.email is not None and request.email != user["email"]:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
-                detail="Email is identity-owned. Use /api/identity/admin/users/{user_id}.",
+                detail="Email is account-owned. Use /admin/users/{user_id}.",
             )
 
         hotel = await HotelRepository.get_profile_by_user_id(
@@ -728,25 +729,6 @@ async def update_user(
 
         if not user:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="User not found")
-
-        identity_owned_fields = [
-            field
-            for field, value in {
-                "name": request.name,
-                "email": request.email,
-                "status": request.status,
-                "emailVerified": request.emailVerified,
-            }.items()
-            if value is not None
-        ]
-        if identity_owned_fields:
-            raise HTTPException(
-                status_code=http_status.HTTP_409_CONFLICT,
-                detail=(
-                    "Identity-owned user fields must be updated through "
-                    "/api/identity/admin/users/{user_id}."
-                ),
-            )
 
         if request.email is not None and request.email != user["email"]:
             existing_user = await AuthDatabase.fetchrow(
@@ -868,37 +850,52 @@ async def update_user(
 
 @router.delete("/users/{user_id}", status_code=http_status.HTTP_200_OK)
 async def delete_user(user_id: str, admin_id: str = Depends(get_admin_user)):
-    """Legacy user deletion is blocked; account lifecycle is identity-owned."""
+    """Delete a legacy user and owned marketplace data."""
     if user_id == admin_id:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account",
         )
 
-    user = await UserRepository.get_by_id(user_id, columns="id")
+    user = await UserRepository.get_by_id(
+        user_id,
+        columns="id, email, name, type, status, email_verified, avatar, created_at, updated_at",
+    )
     if not user:
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    raise HTTPException(
-        status_code=http_status.HTTP_409_CONFLICT,
-        detail="User deletion is identity-owned. Use /api/identity/admin/users/{user_id}.",
-    )
+    image_stats = await UserDeletionService.delete(user_id, user["type"])
+
+    return {
+        "message": "User deleted successfully",
+        "deleted_user": UserResponse(
+            id=str(user["id"]),
+            email=user["email"],
+            name=user["name"],
+            type=user["type"],
+            status=user["status"],
+            email_verified=user["email_verified"],
+            avatar=user["avatar"],
+            created_at=user["created_at"],
+            updated_at=user["updated_at"],
+        ),
+        "image_stats": image_stats,
+    }
 
 
 @router.patch("/users/{user_id}/superadmin", status_code=http_status.HTTP_200_OK)
 async def set_superadmin(
     user_id: str, request: SetSuperadminRequest, admin_id: str = Depends(get_admin_user)
 ):
-    """Legacy superadmin writes are blocked; platform access is identity-owned."""
-    _ = (request, admin_id)
+    """Set legacy platform-admin access."""
+    _ = admin_id
     user = await UserRepository.get_by_id(user_id, columns="id")
     if not user:
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    raise HTTPException(
-        status_code=http_status.HTTP_409_CONFLICT,
-        detail=(
-            "Superadmin access is identity-owned. Use "
-            "/api/identity/admin/users/{user_id}/platform-access."
-        ),
+    await AuthDatabase.execute(
+        "UPDATE users SET is_superadmin = $1, updated_at = now() WHERE id = $2",
+        request.is_superadmin,
+        user_id,
     )
+    return {"message": "Superadmin access updated", "is_superadmin": request.is_superadmin}

@@ -3,15 +3,6 @@
  */
 
 import { apiClient } from "./client";
-import {
-  createMarketplaceAdminHotelListing,
-  deleteMarketplaceAdminHotelListing,
-  updateMarketplaceAdminHotelListing,
-  type MarketplaceAdminCreateHotelListingRequest,
-  type MarketplaceAdminUpdateHotelListingRequest,
-  type MarketplaceHotelListingCreatorRequirementsWrite,
-  type MarketplaceHotelListingOfferingWrite,
-} from "@vayada/marketplace-shared/api/admin";
 import type { User, UserDetailResponse, CreateUserRequest } from "@/lib/types";
 
 export interface UsersListResponse {
@@ -69,7 +60,7 @@ export const usersService = {
     if (params?.search) queryParams.append("search", params.search);
 
     const queryString = queryParams.toString();
-    const endpoint = `/api/identity/admin/users${queryString ? `?${queryString}` : ""}`;
+    const endpoint = `/admin/users${queryString ? `?${queryString}` : ""}`;
 
     return apiClient.get<UsersListResponse>(endpoint);
   },
@@ -78,7 +69,7 @@ export const usersService = {
    * Get user by ID with full details (profile, platforms, listings)
    */
   getUserById: async (userId: string): Promise<UserDetailResponse> => {
-    const response = await apiClient.get<any>(`/api/identity/admin/users/${userId}`);
+    const response = await apiClient.get<any>(`/admin/users/${userId}`);
     // Transform snake_case to camelCase to match TypeScript interfaces
     return transformSnakeToCamel(response) as UserDetailResponse;
   },
@@ -88,23 +79,7 @@ export const usersService = {
    * by their owning target admin routes.
    */
   createUser: async (data: CreateUserRequest): Promise<User> => {
-    const response = await apiClient.post<IdentityCommandResponse>("/api/identity/admin/users", {
-      email: data.email,
-      name: data.name,
-      type: data.type,
-      status: data.status,
-      emailVerified: data.emailVerified,
-    });
-    return {
-      id: response.userId,
-      email: data.email,
-      name: data.name,
-      type: data.type,
-      status: data.status ?? "pending",
-      email_verified: data.emailVerified,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+    return apiClient.post<User>("/admin/users", data);
   },
 
   /**
@@ -119,7 +94,7 @@ export const usersService = {
       name?: string;
     },
   ): Promise<any> => {
-    const response = await apiClient.patch<any>(`/api/identity/admin/users/${userId}`, data);
+    const response = await apiClient.put<any>(`/admin/users/${userId}`, data);
     return transformSnakeToCamel(response);
   },
 
@@ -146,36 +121,15 @@ export const usersService = {
       }>;
     },
   ): Promise<any> => {
-    const response = await apiClient.put<any>(
-      `/api/marketplace/admin/users/${userId}/profile/creator`,
-      {
-        ...(data.name !== undefined ? { displayName: data.name } : {}),
-        ...(data.profilePicture !== undefined ? { profilePictureUrl: data.profilePicture } : {}),
-        ...(data.location !== undefined ? { locationText: data.location } : {}),
-        ...(data.shortDescription !== undefined ? { shortDescription: data.shortDescription } : {}),
-        ...(data.portfolioLink !== undefined ? { portfolioUrl: data.portfolioLink } : {}),
-        ...(data.phone !== undefined ? { phone: data.phone } : {}),
-        ...(data.platforms !== undefined
-          ? {
-              platforms: data.platforms.map((platform) => ({
-                platform: toMarketplacePlatform(platform.name),
-                handle: platform.handle,
-                followerCount: platform.followers,
-                engagementRate: platform.engagementRate,
-                audienceCountries: (platform.topCountries ?? []).map((country) => ({
-                  country: country.country,
-                  percentage: country.percentage ?? 0,
-                })),
-                audienceAgeGroups: (platform.topAgeGroups ?? []).map((ageGroup) => ({
-                  ageRange: ageGroup.ageRange,
-                  percentage: ageGroup.percentage ?? 0,
-                })),
-                audienceGenderSplit: platform.genderSplit ?? null,
-              })),
-            }
-          : {}),
-      },
-    );
+    const response = await apiClient.put<any>(`/admin/users/${userId}/profile/creator`, {
+      ...(data.name !== undefined ? { name: data.name } : {}),
+      ...(data.profilePicture !== undefined ? { profilePicture: data.profilePicture } : {}),
+      ...(data.location !== undefined ? { location: data.location } : {}),
+      ...(data.shortDescription !== undefined ? { shortDescription: data.shortDescription } : {}),
+      ...(data.portfolioLink !== undefined ? { portfolioLink: data.portfolioLink } : {}),
+      ...(data.phone !== undefined ? { phone: data.phone } : {}),
+      ...(data.platforms !== undefined ? { platforms: data.platforms } : {}),
+    });
     return transformSnakeToCamel(response);
   },
 
@@ -194,21 +148,15 @@ export const usersService = {
       picture?: string;
     },
   ): Promise<any> => {
-    const unsupportedFields = Object.entries(data)
-      .filter(([key, value]) => key !== "about" && value !== undefined)
-      .map(([key]) => key);
-    if (unsupportedFields.length > 0) {
-      throw new Error(
-        `Hotel profile target route only supports about. Unsupported fields: ${unsupportedFields.join(", ")}.`,
-      );
-    }
-    if (data.about === undefined) return {};
-    const response = await apiClient.put<any>(
-      `/api/marketplace/admin/users/${userId}/profile/hotel`,
-      {
-        hostSummary: data.about,
-      },
-    );
+    const response = await apiClient.put<any>(`/admin/users/${userId}/profile/hotel`, {
+      ...(data.name !== undefined ? { name: data.name } : {}),
+      ...(data.location !== undefined ? { location: data.location } : {}),
+      ...(data.email !== undefined ? { email: data.email } : {}),
+      ...(data.about !== undefined ? { about: data.about } : {}),
+      ...(data.website !== undefined ? { website: data.website } : {}),
+      ...(data.phone !== undefined ? { phone: data.phone } : {}),
+      ...(data.picture !== undefined ? { picture: data.picture } : {}),
+    });
     return transformSnakeToCamel(response);
   },
 
@@ -227,10 +175,7 @@ export const usersService = {
       creatorRequirements?: any;
     },
   ): Promise<any> => {
-    const response = await createMarketplaceAdminHotelListing(
-      hotelUserId,
-      toMarketplaceAdminCreateListingRequest(data),
-    );
+    const response = await apiClient.post<any>(`/admin/users/${hotelUserId}/listings`, data);
     return transformSnakeToCamel(response);
   },
 
@@ -250,10 +195,9 @@ export const usersService = {
       creatorRequirements?: any;
     },
   ): Promise<any> => {
-    const response = await updateMarketplaceAdminHotelListing(
-      hotelUserId,
-      listingId,
-      toMarketplaceAdminUpdateListingRequest(data),
+    const response = await apiClient.put<any>(
+      `/admin/users/${hotelUserId}/listings/${listingId}`,
+      data,
     );
     return transformSnakeToCamel(response);
   },
@@ -275,187 +219,32 @@ export const usersService = {
     imagesDeleted: number;
     imagesFailed: number;
   }> => {
-    const response = await deleteMarketplaceAdminHotelListing(hotelUserId, listingId);
+    const response = await apiClient.delete<{
+      message: string;
+      deleted_listing: { id: string; name: string };
+      images_deleted: number;
+      images_failed: number;
+    }>(`/admin/users/${hotelUserId}/listings/${listingId}`);
     return {
-      message: "Listing archived.",
+      message: response.message,
       deletedListing: {
-        id: response.deletedListing.listingId,
-        name: response.deletedListing.title,
+        id: response.deleted_listing.id,
+        name: response.deleted_listing.name,
       },
-      imagesDeleted: 0,
-      imagesFailed: 0,
+      imagesDeleted: response.images_deleted,
+      imagesFailed: response.images_failed,
     };
   },
 
   /**
-   * Soft-delete an identity user through the identity lifecycle command bus.
+   * Delete a legacy auth user.
    */
   deleteUser: async (userId: string): Promise<{ message: string; deleted_user: User }> => {
-    const response = await apiClient.delete<IdentityCommandResponse>(
-      `/api/identity/admin/users/${userId}`,
-    );
-    return {
-      message: "Identity user deletion command accepted.",
-      deleted_user: {
-        id: response.userId,
-        email: "",
-        name: "",
-        type: "admin",
-        status: "suspended",
-        created_at: "",
-        updated_at: "",
-      },
-    };
+    return apiClient.delete<{ message: string; deleted_user: User }>(`/admin/users/${userId}`);
   },
 
   setPlatformAccess: async (userId: string, enabled: boolean): Promise<IdentityCommandResponse> => {
-    return apiClient.put<IdentityCommandResponse>(
-      `/api/identity/admin/users/${userId}/platform-access`,
-      { enabled },
-    );
+    await apiClient.patch(`/admin/users/${userId}/superadmin`, { is_superadmin: enabled });
+    return { userId, status: "accepted", commands: [] };
   },
 };
-
-function toMarketplaceAdminCreateListingRequest(data: {
-  name: string;
-  location: string;
-  description: string;
-  accommodationType?: string;
-  images?: string[];
-  collaborationOfferings?: any[];
-  creatorRequirements?: any;
-}): MarketplaceAdminCreateHotelListingRequest {
-  return {
-    title: data.name,
-    listingSummary: data.description,
-    accommodationType: toMarketplaceAccommodationType(data.accommodationType),
-    rawLocationText: data.location,
-    imageUrls: data.images ?? [],
-    collaborationOfferings: toMarketplaceOfferings(data.collaborationOfferings),
-    creatorRequirements: toMarketplaceCreatorRequirements(data.creatorRequirements),
-  };
-}
-
-function toMarketplaceAdminUpdateListingRequest(data: {
-  name?: string;
-  location?: string;
-  description?: string;
-  accommodationType?: string;
-  images?: string[];
-  collaborationOfferings?: any[];
-  creatorRequirements?: any;
-}): MarketplaceAdminUpdateHotelListingRequest {
-  return {
-    ...(data.name !== undefined ? { title: data.name } : {}),
-    ...(data.description !== undefined ? { listingSummary: data.description } : {}),
-    ...(data.accommodationType !== undefined
-      ? { accommodationType: toMarketplaceAccommodationType(data.accommodationType) }
-      : {}),
-    ...(data.location !== undefined ? { rawLocationText: data.location } : {}),
-    ...(data.images !== undefined ? { imageUrls: data.images } : {}),
-    ...(data.collaborationOfferings !== undefined
-      ? { collaborationOfferings: toMarketplaceOfferings(data.collaborationOfferings) }
-      : {}),
-    ...(data.creatorRequirements !== undefined
-      ? { creatorRequirements: toMarketplaceCreatorRequirements(data.creatorRequirements) }
-      : {}),
-  };
-}
-
-function toMarketplaceOfferings(
-  offerings: any[] | undefined,
-): MarketplaceHotelListingOfferingWrite[] {
-  return (offerings ?? []).map((offering) => ({
-    collaborationType: toMarketplaceCollaborationType(offering.collaborationType),
-    availabilityMonths: offering.availabilityMonths ?? [],
-    platforms: (offering.platforms ?? []).map(toMarketplacePlatform),
-    freeStayMinNights: toNullableNumber(offering.freeStayMinNights),
-    freeStayMaxNights: toNullableNumber(offering.freeStayMaxNights),
-    paidMaxAmount:
-      offering.paidMaxAmount === null || offering.paidMaxAmount === undefined
-        ? null
-        : String(offering.paidMaxAmount),
-    discountPercentage: toNullableNumber(offering.discountPercentage),
-    commissionPercentage: toNullableNumber(offering.commissionPercentage),
-    minFollowers: toNullableNumber(offering.minFollowers),
-    currency: offering.currency ?? null,
-    termsSummary: offering.termsSummary ?? null,
-  }));
-}
-
-function toMarketplaceCreatorRequirements(
-  requirements: any,
-): MarketplaceHotelListingCreatorRequirementsWrite {
-  return {
-    platforms: (requirements?.platforms ?? []).map(toMarketplacePlatform),
-    targetCountries: requirements?.targetCountries ?? [],
-    targetAgeMin: toNullableNumber(requirements?.targetAgeMin),
-    targetAgeMax: toNullableNumber(requirements?.targetAgeMax),
-    targetAgeGroups: requirements?.targetAgeGroups ?? [],
-    creatorTypes: requirements?.creatorTypes ?? [],
-  };
-}
-
-function toMarketplaceCollaborationType(
-  value: string | undefined,
-): MarketplaceHotelListingOfferingWrite["collaborationType"] {
-  switch (value) {
-    case "Paid":
-      return "paid";
-    case "Discount":
-      return "discount";
-    case "Affiliate":
-      return "affiliate";
-    case "Free Stay":
-    default:
-      return "free_stay";
-  }
-}
-
-function toMarketplacePlatform(
-  value: string,
-): "instagram" | "tiktok" | "youtube" | "facebook" | "blog" | "x" | "other" {
-  switch (value) {
-    case "Instagram":
-      return "instagram";
-    case "TikTok":
-      return "tiktok";
-    case "YouTube":
-      return "youtube";
-    case "Facebook":
-      return "facebook";
-    case "Blog":
-      return "blog";
-    case "X":
-      return "x";
-    default:
-      return "other";
-  }
-}
-
-function toMarketplaceAccommodationType(
-  value: string | undefined,
-): "hotel" | "resort" | "boutique_hotel" | "lodge" | "apartment" | "villa" | "other" | null {
-  switch (value) {
-    case "Hotel":
-    case "City Hotel":
-    case "Luxury Hotel":
-      return "hotel";
-    case "Boutiques Hotel":
-      return "boutique_hotel";
-    case "Apartment":
-      return "apartment";
-    case "Villa":
-      return "villa";
-    case "Lodge":
-      return "lodge";
-    default:
-      return value ? "other" : null;
-  }
-}
-
-function toNullableNumber(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}

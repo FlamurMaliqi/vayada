@@ -488,18 +488,17 @@ All seed scripts use `asyncpg` and are idempotent (safe to run multiple times).
 
 After running `npm run seed:test-data`:
 
-| Email             | Password  | Type    | Notes                        |
-| ----------------- | --------- | ------- | ---------------------------- |
-| admin@vayada.com  | Vayada123 | admin   | Full admin access            |
-| creator1@mock.com | Test1234  | creator | Verified, with platforms     |
-| creator2@mock.com | Test1234  | creator | Verified                     |
-| creator3@mock.com | Test1234  | creator | Pending                      |
-| creator4@mock.com | Test1234  | creator | Verified                     |
-| hotel1@mock.com   | Test1234  | hotel   | Hotel Alpenrose (EUR)        |
-| hotel2@mock.com   | Test1234  | hotel   | Grand Hotel Riviera (USD)    |
-| hotel3@mock.com   | Test1234  | hotel   | The Birchwood Lodge (GBP)    |
-| hotel4@mock.com   | Test1234  | hotel   | City Center Hotel (minimal)  |
-| hotel5@mock.com   | Test1234  | hotel   | Seaside Retreat (no booking) |
+| Email             | Password | Type    | Notes                        |
+| ----------------- | -------- | ------- | ---------------------------- |
+| creator1@mock.com | Test1234 | creator | Verified, with platforms     |
+| creator2@mock.com | Test1234 | creator | Verified                     |
+| creator3@mock.com | Test1234 | creator | Pending                      |
+| creator4@mock.com | Test1234 | creator | Verified                     |
+| hotel1@mock.com   | Test1234 | hotel   | Hotel Alpenrose (EUR)        |
+| hotel2@mock.com   | Test1234 | hotel   | Grand Hotel Riviera (USD)    |
+| hotel3@mock.com   | Test1234 | hotel   | The Birchwood Lodge (GBP)    |
+| hotel4@mock.com   | Test1234 | hotel   | City Center Hotel (minimal)  |
+| hotel5@mock.com   | Test1234 | hotel   | Seaside Retreat (no booking) |
 
 ---
 

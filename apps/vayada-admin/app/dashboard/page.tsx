@@ -182,7 +182,7 @@ function DashboardContent() {
       if (err instanceof ApiErrorResponse) {
         if (err.status === 404) {
           setError(
-            "Backend endpoint /api/identity/admin/users not found. Please ensure the backend API is running and the endpoint is configured.",
+            "Backend endpoint /admin/users not found. Please ensure the legacy backend API is running and configured.",
           );
         } else if (err.status === 401) {
           setError("Authentication failed. Please login again.");

@@ -15,6 +15,7 @@ import {
   isCompatibilityTokenEnabled,
   setAuthKitSession,
   setLegacyCompatibilityToken,
+  setLegacyPasswordSession,
   type AuthKitSessionResponse,
 } from "./sessionStore";
 
@@ -26,6 +27,23 @@ type CompatibilityTokenResponse = {
   expiresIn: number;
   tokenType: "Bearer";
 };
+
+function setLegacySessionFromLoginResponse(response: LoginResponse): void {
+  if (response.access_token && response.expires_in && response.id && response.email) {
+    setLegacyPasswordSession({
+      token: response.access_token,
+      expiresIn: response.expires_in,
+      user: {
+        id: response.id,
+        email: response.email,
+        name: response.name ?? response.email,
+        type: response.type ?? "admin",
+        status: response.status ?? "verified",
+        is_superadmin: response.is_superadmin,
+      },
+    });
+  }
+}
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
@@ -116,6 +134,12 @@ export const authService = {
   },
 
   login: async (data: LoginRequest): Promise<LoginResponse> => {
+    if (!isAuthKitLoginEnabled()) {
+      const response = await apiClient.post<LoginResponse>("/auth/login", data);
+      setLegacySessionFromLoginResponse(response);
+      return response;
+    }
+
     const response = await authFetch<AuthKitSessionResponse>("/auth/password/login", {
       method: "POST",
       body: JSON.stringify({ ...data, surface: PLATFORM_AUTH_SURFACE }),
@@ -136,6 +160,15 @@ export const authService = {
       message: "Login successful",
       is_superadmin: true,
     };
+  },
+
+  verifyTotp: async (totpSession: string, code: string): Promise<LoginResponse> => {
+    const response = await apiClient.post<LoginResponse>("/auth/totp/verify", {
+      totp_session: totpSession,
+      code,
+    });
+    setLegacySessionFromLoginResponse(response);
+    return response;
   },
 
   /**

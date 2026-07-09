@@ -7,6 +7,8 @@ import {
 import { apiClient } from "./client";
 
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
+const MARKETPLACE_ADMIN_API_PREFIX =
+  process.env.NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED === "false" ? "/admin" : "/api/marketplace/admin";
 
 export type MarketplaceAdminContractVersion = typeof MARKETPLACE_ADMIN_CONTRACT_VERSION;
 
@@ -147,19 +149,19 @@ export type MarketplaceAdminDeleteHotelListingResponse = {
 
 export const marketplaceAdminEndpoints = {
   collaborations: (input: MarketplaceAdminCollaborationsInput = {}) =>
-    `/api/marketplace/admin/collaborations${toAdminCollaborationsQuery(input)}`,
+    `${MARKETPLACE_ADMIN_API_PREFIX}/collaborations${toAdminCollaborationsQuery(input)}`,
   respondAsHotel: (collaborationId: string) =>
-    `/api/marketplace/admin/collaborations/${encodeURIComponent(collaborationId)}/respond`,
+    `${MARKETPLACE_ADMIN_API_PREFIX}/collaborations/${encodeURIComponent(collaborationId)}/respond`,
   approveAsHotel: (collaborationId: string) =>
-    `/api/marketplace/admin/collaborations/${encodeURIComponent(collaborationId)}/approve`,
+    `${MARKETPLACE_ADMIN_API_PREFIX}/collaborations/${encodeURIComponent(collaborationId)}/approve`,
   createHotelListing: (hotelUserId: string) =>
-    `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/listings`,
+    `${MARKETPLACE_ADMIN_API_PREFIX}/users/${encodeURIComponent(hotelUserId)}/listings`,
   updateHotelListing: (hotelUserId: string, listingId: string) =>
-    `/api/marketplace/admin/users/${encodeURIComponent(
+    `${MARKETPLACE_ADMIN_API_PREFIX}/users/${encodeURIComponent(
       hotelUserId,
     )}/listings/${encodeURIComponent(listingId)}`,
   deleteHotelListing: (hotelUserId: string, listingId: string) =>
-    `/api/marketplace/admin/users/${encodeURIComponent(
+    `${MARKETPLACE_ADMIN_API_PREFIX}/users/${encodeURIComponent(
       hotelUserId,
     )}/listings/${encodeURIComponent(listingId)}`,
 } as const;

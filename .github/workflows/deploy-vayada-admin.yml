@@ -54,13 +54,13 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
-            NEXT_PUBLIC_API_URL=https://target-api.vayada.com
-            NEXT_PUBLIC_AUTH_API_URL=https://target-api.vayada.com
-            NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true
-            NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=false
+            NEXT_PUBLIC_API_URL=https://api.vayada.com
+            NEXT_PUBLIC_AUTH_API_URL=https://api.vayada.com
+            NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=false
+            NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=true
             NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true
-            NEXT_PUBLIC_BOOKING_API_URL=https://target-api.vayada.com
-            NEXT_PUBLIC_PMS_URL=https://target-api.vayada.com
+            NEXT_PUBLIC_BOOKING_API_URL=https://api.vayada.com
+            NEXT_PUBLIC_PMS_URL=https://api.vayada.com
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}

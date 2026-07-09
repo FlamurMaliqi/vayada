@@ -433,22 +433,6 @@ function UserDetailContent() {
       setSaveError("");
       setSaveSuccess("");
 
-      if (userDetail.type === "hotel" && userDetail.profile) {
-        const hotelProfile = userDetail.profile as HotelProfileDetail;
-        const unsupportedHotelProfileFields = [
-          editFormData.name !== hotelProfile.name ? "name" : null,
-          editFormData.location !== hotelProfile.location ? "location" : null,
-          editFormData.email !== hotelProfile.email ? "email" : null,
-          editFormData.website !== hotelProfile.website ? "website" : null,
-          editFormData.phone !== hotelProfile.phone ? "phone" : null,
-        ].filter((field): field is string => Boolean(field));
-        if (unsupportedHotelProfileFields.length > 0) {
-          throw new Error(
-            `Hotel profile target route only supports about. Unsupported fields: ${unsupportedHotelProfileFields.join(", ")}.`,
-          );
-        }
-      }
-
       // Update account fields (status, emailVerified, email, name) for all user types
       const accountUpdateData: any = {};
       if (editFormData.status !== userDetail.status) {
@@ -558,6 +542,21 @@ function UserDetailContent() {
 
         if (editFormData.about !== hotelProfile.about) {
           profileUpdateData.about = editFormData.about || null;
+        }
+        if (editFormData.name !== hotelProfile.name) {
+          profileUpdateData.name = editFormData.name || null;
+        }
+        if (editFormData.location !== hotelProfile.location) {
+          profileUpdateData.location = editFormData.location || null;
+        }
+        if (editFormData.email !== hotelProfile.email) {
+          profileUpdateData.email = editFormData.email || null;
+        }
+        if (editFormData.website !== hotelProfile.website) {
+          profileUpdateData.website = editFormData.website || null;
+        }
+        if (editFormData.phone !== hotelProfile.phone) {
+          profileUpdateData.phone = editFormData.phone || null;
         }
 
         await usersService.updateHotelProfile(userDetail.id, profileUpdateData);
