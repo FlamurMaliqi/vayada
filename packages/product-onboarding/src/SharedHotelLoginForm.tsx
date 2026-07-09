@@ -97,7 +97,7 @@ export default function SharedHotelLoginForm({
     <div className="flex min-h-screen bg-gray-50">
       <div className="flex min-h-screen w-full flex-col px-4 lg:w-[40%]">
         <div className="flex flex-1 items-center justify-center py-10">
-          <div className="w-full max-w-lg lg:scale-125">
+          <div className="w-full max-w-sm">
             <div className="mb-6 text-center">
               <img
                 src="/vayada-logo.png"
