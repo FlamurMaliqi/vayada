@@ -44,6 +44,7 @@ export type SharedFirstRunProductContinueInput = {
 export type SharedFirstRunPropertySetupWizardProps = {
   api: SharedHotelSetupApi;
   entryProduct: SharedHotelSetupEntryProduct;
+  initialSelectedProducts?: SharedHotelSetupProduct[];
   returnTo?: string | null;
   initialAddProperty?: boolean;
   embedded?: boolean;
@@ -115,6 +116,8 @@ const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
   marketplace: "Invite creator demand",
 };
 
+const EMPTY_SELECTED_PRODUCTS: SharedHotelSetupProduct[] = [];
+
 const EMPTY_DRAFT: ProfileDraft = {
   displayName: "",
   countryCode: "",
@@ -134,6 +137,7 @@ const EMPTY_DRAFT: ProfileDraft = {
 export default function SharedFirstRunPropertySetupWizard({
   api,
   entryProduct,
+  initialSelectedProducts = EMPTY_SELECTED_PRODUCTS,
   returnTo = null,
   initialAddProperty = false,
   embedded = false,
@@ -227,8 +231,17 @@ export default function SharedFirstRunPropertySetupWizard({
 
   useEffect(() => {
     if (view.screen !== "product_selection") return;
-    setSelectedProducts(selectedProductsForProperty(view.selectedProperty, entryProduct));
-  }, [entryProduct, view.screen, view.selectedProperty]);
+    const nextSelectedProducts = selectedProductsForProperty(view.selectedProperty, entryProduct);
+    for (const product of initialSelectedProducts) {
+      if (
+        !nextSelectedProducts.includes(product) &&
+        isSharedHotelSetupProductSelectable(view.selectedProperty, product)
+      ) {
+        nextSelectedProducts.push(product);
+      }
+    }
+    setSelectedProducts(nextSelectedProducts);
+  }, [entryProduct, initialSelectedProducts, view.screen, view.selectedProperty]);
 
   const reloadStatus = async (propertyId?: string | null) => {
     const nextStatus = await api.getStatus({ entryProduct, returnTo, propertyId });

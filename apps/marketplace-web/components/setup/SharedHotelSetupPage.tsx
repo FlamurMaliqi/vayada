@@ -9,6 +9,7 @@ import {
   safeSharedHotelSetupReturnTo,
   type SharedFirstRunProductContinueInput,
   type SharedHotelSetupEntryProduct,
+  type SharedHotelSetupProduct,
 } from "@vayada/product-onboarding";
 
 import { ROUTES } from "@/lib/constants";
@@ -58,6 +59,15 @@ export function SharedHotelSetupPage({
       parseSharedHotelSetupEntryProduct(searchParams.get("entryProduct")) ?? defaultEntryProduct,
     [defaultEntryProduct, searchParams],
   );
+  const selectedProductsParam = searchParams.getAll("selectedProducts").join(",");
+  const initialSelectedProducts = useMemo(
+    () =>
+      selectedProductsParam
+        .split(",")
+        .map(parseSharedHotelSetupEntryProduct)
+        .filter((product): product is SharedHotelSetupProduct => product !== null),
+    [selectedProductsParam],
+  );
   const returnTo = useMemo(
     () => safeSharedHotelSetupReturnTo(searchParams.get("returnTo"), defaultReturnTo),
     [defaultReturnTo, searchParams],
@@ -95,6 +105,7 @@ export function SharedHotelSetupPage({
     <SharedFirstRunPropertySetupWizard
       api={sharedHotelSetupApi}
       entryProduct={entryProduct}
+      initialSelectedProducts={initialSelectedProducts}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
       embedded={embedded}
