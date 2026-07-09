@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowRightIcon,
   BuildingOffice2Icon,
@@ -44,6 +44,7 @@ export type SharedFirstRunProductContinueInput = {
 export type SharedFirstRunPropertySetupWizardProps = {
   api: SharedHotelSetupApi;
   entryProduct: SharedHotelSetupEntryProduct;
+  initialSelectedProducts?: SharedHotelSetupProduct[];
   returnTo?: string | null;
   initialAddProperty?: boolean;
   embedded?: boolean;
@@ -115,6 +116,8 @@ const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
   marketplace: "Invite creator demand",
 };
 
+const EMPTY_SELECTED_PRODUCTS: SharedHotelSetupProduct[] = [];
+
 const EMPTY_DRAFT: ProfileDraft = {
   displayName: "",
   countryCode: "",
@@ -134,6 +137,7 @@ const EMPTY_DRAFT: ProfileDraft = {
 export default function SharedFirstRunPropertySetupWizard({
   api,
   entryProduct,
+  initialSelectedProducts = EMPTY_SELECTED_PRODUCTS,
   returnTo = null,
   initialAddProperty = false,
   embedded = false,
@@ -155,6 +159,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
+  const seededInitialSelectionPropertyIds = useRef<Set<string>>(new Set());
 
   const view = useMemo(
     () => resolveSharedFirstRunSetupView(status, { forceCreateProperty }),
@@ -226,9 +231,27 @@ export default function SharedFirstRunPropertySetupWizard({
   }, [api, profileReloadToken, view.profileMode, view.selectedPropertyId]);
 
   useEffect(() => {
-    if (view.screen !== "product_selection") return;
-    setSelectedProducts(selectedProductsForProperty(view.selectedProperty, entryProduct));
-  }, [entryProduct, view.screen, view.selectedProperty]);
+    if (view.screen !== "product_selection" || !view.selectedPropertyId) return;
+    const nextSelectedProducts = selectedProductsForProperty(view.selectedProperty, entryProduct);
+    if (!seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) {
+      seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
+      for (const product of initialSelectedProducts) {
+        if (
+          !nextSelectedProducts.includes(product) &&
+          isSharedHotelSetupProductSelectable(view.selectedProperty, product)
+        ) {
+          nextSelectedProducts.push(product);
+        }
+      }
+    }
+    setSelectedProducts(nextSelectedProducts);
+  }, [
+    entryProduct,
+    initialSelectedProducts,
+    view.screen,
+    view.selectedProperty,
+    view.selectedPropertyId,
+  ]);
 
   const reloadStatus = async (propertyId?: string | null) => {
     const nextStatus = await api.getStatus({ entryProduct, returnTo, propertyId });

@@ -69,7 +69,7 @@ export default function OnboardingPage() {
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [stage, setStage] = useState<OnboardingStage>("path");
   const [selectedType, setSelectedType] = useState<AccountType>("hotel");
-  const [selectedProduct, setSelectedProduct] = useState<ProductChoice>("marketplace");
+  const [selectedProducts, setSelectedProducts] = useState<ProductChoice[]>(["marketplace"]);
   const [loading, setLoading] = useState(true);
   const [introComplete, setIntroComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -123,7 +123,7 @@ export default function OnboardingPage() {
     setSubmitting(true);
     try {
       await authService.completeOnboarding(selectedType);
-      router.push(nextPathForType(selectedType, selectedProduct));
+      router.push(nextPathForType(selectedType, selectedProducts));
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to continue onboarding.");
     } finally {
@@ -157,10 +157,10 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell
       currentStep={stage === "product" ? 2 : 1}
-      title={stage === "product" ? "Which product do you want to use?" : "Welcome to Vayada"}
+      title={stage === "product" ? "Which products do you want to use?" : "Welcome to Vayada"}
       description={
         stage === "product"
-          ? "Start with one workspace. You can add the others later."
+          ? "Choose one or more workspaces. You can add the others later."
           : "First things first, tell us a little bit about yourself."
       }
     >
@@ -185,10 +185,15 @@ export default function OnboardingPage() {
               />
             ) : (
               <ProductChoicePanel
-                selectedProduct={selectedProduct}
-                onSelect={(product) => {
+                selectedProducts={selectedProducts}
+                onToggle={(product) => {
                   setError("");
-                  setSelectedProduct(product);
+                  setSelectedProducts((products) => {
+                    if (!products.includes(product)) return [...products, product];
+                    return products.length === 1
+                      ? products
+                      : products.filter((selected) => selected !== product);
+                  });
                 }}
               />
             )}
@@ -202,10 +207,10 @@ export default function OnboardingPage() {
             <button
               type="button"
               onClick={handleContinue}
-              disabled={submitting}
+              disabled={submitting || (stage === "product" && selectedProducts.length === 0)}
               aria-label={
                 stage === "product"
-                  ? `Continue with ${productLabel(selectedProduct)}`
+                  ? `Continue with ${productSelectionLabel(selectedProducts)}`
                   : `Continue to ${
                       selectedType === "hotel" ? "product selection" : "creator profile"
                     }`
@@ -323,18 +328,18 @@ function PathChoice({
 }
 
 function ProductChoicePanel({
-  selectedProduct,
-  onSelect,
+  selectedProducts,
+  onToggle,
 }: {
-  selectedProduct: ProductChoice;
-  onSelect: (product: ProductChoice) => void;
+  selectedProducts: ProductChoice[];
+  onToggle: (product: ProductChoice) => void;
 }) {
   return (
     <fieldset className="text-left">
-      <legend className="sr-only">Choose product</legend>
+      <legend className="sr-only">Choose products</legend>
       <div className="grid gap-4 sm:grid-cols-3">
         {productOptions.map(({ type, title, description, Icon }) => {
-          const selected = selectedProduct === type;
+          const selected = selectedProducts.includes(type);
           return (
             <label
               key={type}
@@ -343,11 +348,11 @@ function ProductChoicePanel({
               }`}
             >
               <input
-                type="radio"
-                name="onboarding-product"
+                type="checkbox"
+                name="onboarding-products"
                 value={type}
                 checked={selected}
-                onChange={() => onSelect(type)}
+                onChange={() => onToggle(type)}
                 className="sr-only"
               />
               <span
@@ -374,13 +379,20 @@ function ProductChoicePanel({
   );
 }
 
-function nextPathForType(type: AccountType, product: ProductChoice = "marketplace"): string {
+function nextPathForType(type: AccountType, products: ProductChoice[] = ["marketplace"]): string {
   if (type === "creator") return ROUTES.PROFILE_COMPLETE;
-  return `${ROUTES.SETUP}?entryProduct=${product}`;
+  const selectedProducts = products.length > 0 ? products : ["marketplace"];
+  const query = new URLSearchParams({ entryProduct: selectedProducts[0] });
+  selectedProducts.forEach((product) => query.append("selectedProducts", product));
+  return `${ROUTES.SETUP}?${query.toString()}`;
 }
 
 function productLabel(product: ProductChoice): string {
   return productOptions.find((option) => option.type === product)?.title ?? "setup";
+}
+
+function productSelectionLabel(products: ProductChoice[]): string {
+  return products.length > 0 ? products.map(productLabel).join(", ") : "at least one product";
 }
 
 function WelcomeMoment() {
