@@ -71,8 +71,8 @@ export function OnboardingShell({
           <ol className="flex items-center justify-center gap-2" aria-label="Onboarding progress">
             {MARKETPLACE_ONBOARDING_STEPS.map((step, index) => {
               const stepNumber = index + 1;
-              const isCurrent = stepNumber === currentStep;
-              const isComplete = stepNumber < currentStep;
+              const isCurrent = stepNumber === currentStepLabel;
+              const isComplete = stepNumber < currentStepLabel;
 
               return (
                 <li
