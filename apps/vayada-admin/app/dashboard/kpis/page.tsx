@@ -3,11 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowPathIcon,
-  BuildingOffice2Icon,
   ChartBarIcon,
   CursorArrowRaysIcon,
   PresentationChartLineIcon,
 } from "@heroicons/react/24/outline";
+import { HotelIcon } from "@vayada/product-onboarding";
 import { BarChart, LineChart } from "@/components/growth-dashboard/Chart";
 import { PropertySelector } from "@/components/growth-dashboard/PropertySelector";
 import { getGrowthDashboard, Granularity, GrowthDashboard } from "@/services/api/growthDashboard";
@@ -202,7 +202,7 @@ export default function KpiDashboardPage() {
             className="flex h-10 items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[13px] font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 sm:justify-start"
           >
             <span className="flex items-center gap-2">
-              <BuildingOffice2Icon className="h-4 w-4 text-gray-400" aria-hidden="true" />
+              <HotelIcon className="h-4 w-4 text-gray-400" aria-hidden="true" />
               Properties
             </span>
             <span className="text-gray-400">{selectedPropertiesLabel}</span>
@@ -321,7 +321,7 @@ export default function KpiDashboardPage() {
 
 function MetricIcon({ metricKey }: { metricKey: string }) {
   const className = "h-5 w-5 text-gray-400";
-  if (metricKey === "live_properties") return <BuildingOffice2Icon className={className} />;
+  if (metricKey === "live_properties") return <HotelIcon className={className} />;
   if (metricKey === "page_views") return <PresentationChartLineIcon className={className} />;
   if (metricKey === "booking_requests") return <ChartBarIcon className={className} />;
   return <ArrowPathIcon className={className} />;

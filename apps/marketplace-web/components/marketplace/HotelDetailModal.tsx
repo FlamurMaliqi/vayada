@@ -6,6 +6,7 @@ import { Hotel } from "@/lib/types";
 import { Button, PlatformIcon } from "@/components/ui";
 import { getMonthAbbr, sortMonths } from "@/lib/utils/months";
 import { formatFollowersCompact } from "@/lib/utils";
+import { HotelIcon } from "@vayada/product-onboarding";
 import {
   MapPinIcon,
   GlobeAltIcon,
@@ -14,7 +15,6 @@ import {
   UserGroupIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  BuildingOfficeIcon,
   SparklesIcon,
   CheckCircleIcon,
   CurrencyDollarIcon,
@@ -284,7 +284,7 @@ export function HotelDetailModal({
             </>
           ) : (
             <div className="w-full h-full bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center">
-              <BuildingOfficeIcon className="w-20 h-20 text-white/50" />
+              <HotelIcon className="w-20 h-20 text-white/50" />
             </div>
           )}
 
@@ -445,7 +445,7 @@ export function HotelDetailModal({
                   {hotel.boardType && (
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-lg bg-white flex items-center justify-center shadow-sm">
-                        <BuildingOfficeIcon className="w-5 h-5 text-primary-600" />
+                        <HotelIcon className="w-5 h-5 text-primary-600" />
                       </div>
                       <div>
                         <div className="text-sm font-medium text-gray-900">{hotel.boardType}</div>

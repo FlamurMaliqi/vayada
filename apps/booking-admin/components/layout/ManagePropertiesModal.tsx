@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { TrashIcon, XMarkIcon, PlusIcon, BuildingOfficeIcon } from "@heroicons/react/24/outline";
+import { TrashIcon, XMarkIcon, PlusIcon } from "@heroicons/react/24/outline";
+import { HotelIcon } from "@vayada/product-onboarding";
 import { settingsService, type HotelSummary, type HotelDeletionImpact } from "@/services/settings";
 import { Button, FeedbackAlert } from "@/components/ui";
 import { useTranslation } from "@/lib/i18n";
@@ -152,7 +153,7 @@ export default function ManagePropertiesModal({
                   }`}
                 >
                   <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
-                    <BuildingOfficeIcon className="w-5 h-5 text-gray-500" />
+                    <HotelIcon className="w-5 h-5 text-gray-500" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">

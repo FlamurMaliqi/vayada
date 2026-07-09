@@ -11,8 +11,8 @@ import {
 import { ApiErrorResponse } from "@/services/api/client";
 import { MarketplaceListingModal } from "@/components/marketplace/MarketplaceListingModal";
 import { MarketplaceCreatorModal } from "@/components/marketplace/MarketplaceCreatorModal";
+import { HotelIcon } from "@vayada/product-onboarding";
 import {
-  BuildingOfficeIcon,
   UserGroupIcon,
   MapPinIcon,
   MagnifyingGlassIcon,
@@ -157,7 +157,7 @@ export default function MarketplacePreviewPage() {
                 : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
             }`}
           >
-            <BuildingOfficeIcon className="w-4 h-4 inline-block mr-2" />
+            <HotelIcon className="w-4 h-4 inline-block mr-2" />
             Listings ({listings.length})
           </button>
           <button
@@ -206,7 +206,7 @@ export default function MarketplacePreviewPage() {
               </div>
             ) : filteredListings.length === 0 ? (
               <div className="text-center py-12 bg-white rounded-lg shadow">
-                <BuildingOfficeIcon className="mx-auto h-12 w-12 text-gray-400" />
+                <HotelIcon className="mx-auto h-12 w-12 text-gray-400" />
                 <h3 className="mt-2 text-sm font-medium text-gray-900">
                   {q ? "No matching listings" : "No listings"}
                 </h3>

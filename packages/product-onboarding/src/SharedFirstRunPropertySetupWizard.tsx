@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type ComponentType,
+  type SVGProps,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowRightIcon,
-  BuildingOffice2Icon,
   CheckIcon,
   ExclamationCircleIcon,
   GlobeAltIcon,
@@ -13,6 +20,7 @@ import {
   Squares2X2Icon,
 } from "@heroicons/react/24/outline";
 
+import { HotelIcon } from "./HotelIcon";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
   canOpenMarketplaceProfileTools,
@@ -31,6 +39,7 @@ import {
 import type { SharedHotelSetupApi } from "./sharedHotelSetupApi";
 
 type ProductLabels = Record<SharedHotelSetupProduct, string>;
+type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 
 export type SharedFirstRunProductContinueInput = {
   product: SharedHotelSetupProduct;
@@ -97,12 +106,16 @@ const MARKETPLACE_ACTIVATION_STEPS: Record<string, { title: string; description:
   },
 };
 
-const SETUP_STEPS = [
-  { label: "Property", description: "Choose where setup applies", icon: BuildingOffice2Icon },
+const SETUP_STEPS: ReadonlyArray<{
+  label: string;
+  description: string;
+  icon: IconComponent;
+}> = [
+  { label: "Property", description: "Choose where setup applies", icon: HotelIcon },
   { label: "Basics", description: "Profile, location, and hero image", icon: SparklesIcon },
   { label: "Products", description: "Pick what this property uses", icon: Squares2X2Icon },
   { label: "Launch", description: "Open the right workspace", icon: RocketLaunchIcon },
-] as const;
+];
 
 const PRODUCT_DESCRIPTIONS: Record<SharedHotelSetupProduct, string> = {
   booking: "Direct booking pages, checkout, and guest-facing availability.",
@@ -232,16 +245,16 @@ export default function SharedFirstRunPropertySetupWizard({
 
   useEffect(() => {
     if (view.screen !== "product_selection" || !view.selectedPropertyId) return;
+    if (seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) return;
+
     const nextSelectedProducts = selectedProductsForProperty(view.selectedProperty, entryProduct);
-    if (!seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) {
-      seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
-      for (const product of initialSelectedProducts) {
-        if (
-          !nextSelectedProducts.includes(product) &&
-          isSharedHotelSetupProductSelectable(view.selectedProperty, product)
-        ) {
-          nextSelectedProducts.push(product);
-        }
+    seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
+    for (const product of initialSelectedProducts) {
+      if (
+        !nextSelectedProducts.includes(product) &&
+        isSharedHotelSetupProductSelectable(view.selectedProperty, product)
+      ) {
+        nextSelectedProducts.push(product);
       }
     }
     setSelectedProducts(nextSelectedProducts);
@@ -1027,9 +1040,9 @@ function ProductSelection({
   );
 }
 
-function productIcon(product: SharedHotelSetupProduct) {
+function productIcon(product: SharedHotelSetupProduct): IconComponent {
   if (product === "booking") return GlobeAltIcon;
-  if (product === "pms") return BuildingOffice2Icon;
+  if (product === "pms") return HotelIcon;
   return SparklesIcon;
 }
 
@@ -1086,7 +1099,7 @@ function ProductContinue({
 
       <div className="grid gap-3 md:grid-cols-3">
         <ReadinessItem
-          icon={BuildingOffice2Icon}
+          icon={HotelIcon}
           complete
           title="Basics saved"
           description="Name, location, contact, image, and description are ready."
@@ -1160,7 +1173,7 @@ function ReadinessItem({
   title,
   description,
 }: {
-  icon: typeof BuildingOffice2Icon;
+  icon: IconComponent;
   complete: boolean;
   title: string;
   description: string;

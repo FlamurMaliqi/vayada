@@ -2,7 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { PencilIcon, PlusIcon } from "@heroicons/react/24/solid";
-import { BuildingOffice2Icon, InformationCircleIcon } from "@heroicons/react/24/outline";
+import { InformationCircleIcon } from "@heroicons/react/24/outline";
+import { HotelIcon } from "@vayada/product-onboarding";
 import { Button, ErrorModal } from "@/components/ui";
 import { ROUTES } from "@/lib/constants/routes";
 import { marketplaceSetupRedirectPath } from "@/lib/utils/sharedSetupGuard";
@@ -286,7 +287,7 @@ export function HotelProfile() {
             ) : (
               <div className="mt-6 text-center py-16">
                 <div className="w-20 h-20 mx-auto mb-4 rounded-xl bg-gray-100 flex items-center justify-center">
-                  <BuildingOffice2Icon className="w-10 h-10 text-gray-400" />
+                  <HotelIcon className="w-10 h-10 text-gray-400" />
                 </div>
                 <p className="text-lg font-semibold text-gray-900 mb-2">No listings added yet</p>
                 <p className="text-sm text-gray-600 mb-6">
