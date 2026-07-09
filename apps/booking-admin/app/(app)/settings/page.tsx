@@ -10,7 +10,6 @@ import {
   updateFinancePaymentSettings,
 } from "@/services/api/financePaymentSettingsClient";
 import {
-  BuildingOffice2Icon,
   CalendarDaysIcon,
   BellIcon,
   UserCircleIcon,
@@ -27,6 +26,7 @@ import {
   ArrowUpIcon,
   ArrowDownIcon,
 } from "@heroicons/react/24/outline";
+import { HotelIcon } from "@vayada/product-onboarding";
 import {
   settingsService,
   type PropertySettings,
@@ -650,7 +650,7 @@ export default function SettingsPage() {
   };
 
   const sections: SettingsNavSection[] = [
-    { id: "property", label: t("settings.tabs.property"), icon: BuildingOffice2Icon },
+    { id: "property", label: t("settings.tabs.property"), icon: HotelIcon },
     { id: "booking", label: t("settings.tabs.booking"), icon: CalendarDaysIcon },
     { id: "location", label: "Location map", icon: MapPinIcon },
     {

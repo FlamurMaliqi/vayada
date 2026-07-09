@@ -2,13 +2,13 @@
 
 import { useState, useEffect } from "react";
 import {
-  BuildingOffice2Icon,
   BoltIcon,
   CalendarDaysIcon,
   ClockIcon,
   ClipboardDocumentCheckIcon,
   GlobeAltIcon,
 } from "@heroicons/react/24/outline";
+import { HotelIcon } from "@vayada/product-onboarding";
 import { bookingsService } from "@/services/bookings";
 import { channexService } from "@/services/channex";
 import {
@@ -316,7 +316,7 @@ export default function SettingsPage() {
     {
       id: "property-details",
       label: "Property",
-      icon: BuildingOffice2Icon,
+      icon: HotelIcon,
     },
     { id: "booking-engine", label: "Booking Engine", icon: BoltIcon },
     { id: "calendar", label: "Calendar", icon: CalendarDaysIcon },

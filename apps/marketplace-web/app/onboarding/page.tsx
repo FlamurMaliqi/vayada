@@ -1,15 +1,23 @@
 "use client";
 
-import { type KeyboardEvent, type MutableRefObject, useEffect, useRef, useState } from "react";
+import {
+  type ComponentType,
+  type KeyboardEvent,
+  type MutableRefObject,
+  type SVGProps,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   ArrowRightIcon,
-  BuildingOfficeIcon,
   CalendarDaysIcon,
   CheckIcon,
   SparklesIcon,
 } from "@heroicons/react/24/outline";
+import { HotelIcon } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
@@ -17,6 +25,7 @@ import { authService } from "@/services/auth";
 type AccountType = "hotel" | "creator";
 type ProductChoice = "marketplace" | "pms" | "booking";
 type OnboardingStage = "path" | "product";
+type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 
 const options: Array<{
   type: AccountType;
@@ -42,7 +51,7 @@ const productOptions: Array<{
   type: ProductChoice;
   title: string;
   description: string;
-  Icon: typeof SparklesIcon;
+  Icon: IconComponent;
 }> = [
   {
     type: "marketplace",
@@ -54,7 +63,7 @@ const productOptions: Array<{
     type: "pms",
     title: "PMS",
     description: "Manage rooms, reservations, and daily operations.",
-    Icon: BuildingOfficeIcon,
+    Icon: HotelIcon,
   },
   {
     type: "booking",
@@ -307,11 +316,7 @@ function PathChoice({
                   selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
                 }`}
               >
-                {isHotel ? (
-                  <BuildingOfficeIcon className="h-5 w-5" />
-                ) : (
-                  <SparklesIcon className="h-5 w-5" />
-                )}
+                {isHotel ? <HotelIcon className="h-5 w-5" /> : <SparklesIcon className="h-5 w-5" />}
               </span>
               <span>
                 <span className="block text-base font-semibold text-gray-950">{option.title}</span>

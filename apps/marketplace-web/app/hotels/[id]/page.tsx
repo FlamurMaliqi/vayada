@@ -10,6 +10,7 @@ import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
 import type { Hotel } from "@/lib/types";
 import { hotelService } from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
+import { HotelIcon } from "@vayada/product-onboarding";
 import {
   MapPinIcon,
   CheckBadgeIcon,
@@ -18,7 +19,6 @@ import {
   EnvelopeIcon,
   GlobeAltIcon,
   SparklesIcon,
-  BuildingOfficeIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 
@@ -149,7 +149,7 @@ export default function HotelDetailPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 text-center">
           <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-2xl border border-gray-200/50 p-16">
             <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-primary-100 to-primary-200 rounded-full flex items-center justify-center">
-              <BuildingOfficeIcon className="w-12 h-12 text-primary-600" />
+              <HotelIcon className="w-12 h-12 text-primary-600" />
             </div>
             <h1 className="text-3xl font-extrabold text-gray-900 mb-4">Hotel not found</h1>
             <p className="text-gray-600 mb-8">

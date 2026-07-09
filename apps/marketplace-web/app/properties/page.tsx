@@ -9,10 +9,10 @@ import { Button } from "@/components/ui";
 import { ROUTES } from "@/lib/constants/routes";
 import type { Hotel } from "@/lib/types";
 import { hotelService } from "@/services/api/hotels";
+import { HotelIcon } from "@vayada/product-onboarding";
 import {
   CheckBadgeIcon,
   GlobeAltIcon,
-  BuildingOfficeIcon,
   SparklesIcon,
   LockClosedIcon,
   UserGroupIcon,
@@ -91,7 +91,7 @@ export default function PublicPropertiesPage() {
           <div className="grid grid-cols-3 gap-8">
             <div className="text-center">
               <div className="flex items-center justify-center gap-2 text-primary-600 mb-1">
-                <BuildingOfficeIcon className="w-5 h-5" />
+                <HotelIcon className="w-5 h-5" />
                 <span className="text-2xl md:text-3xl font-bold">{stats.totalHotels}</span>
               </div>
               <p className="text-sm text-gray-600">Open Listings</p>

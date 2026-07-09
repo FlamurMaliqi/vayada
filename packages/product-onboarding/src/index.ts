@@ -1,6 +1,7 @@
 export { default as AddonsStep, createEmptyAddon, type SetupAddon } from "./AddonsStep";
 export { default as BenefitsStep } from "./BenefitsStep";
 export { default as BrandMediaStep, type ColorPreset, type FontPairing } from "./BrandMediaStep";
+export { HotelIcon } from "./HotelIcon";
 export {
   default as LastMinuteStep,
   DEFAULT_LAST_MINUTE_TIERS,

@@ -1,12 +1,8 @@
 "use client";
 
 import { Input, Textarea, HotelBadgeIcon } from "@/components/ui";
-import {
-  BuildingOfficeIcon,
-  MapPinIcon,
-  GlobeAltIcon,
-  PhoneIcon,
-} from "@heroicons/react/24/outline";
+import { MapPinIcon, GlobeAltIcon, PhoneIcon } from "@heroicons/react/24/outline";
+import { HotelIcon } from "@vayada/product-onboarding";
 import type { HotelFormState } from "@/lib/types";
 
 interface HotelBasicInfoStepProps {
@@ -37,7 +33,7 @@ export function HotelBasicInfoStep({ form, onFormChange, error }: HotelBasicInfo
               onChange={(e) => onFormChange({ name: e.target.value })}
               required
               placeholder="Your hotel name"
-              leadingIcon={<BuildingOfficeIcon className="w-5 h-5" />}
+              leadingIcon={<HotelIcon className="w-5 h-5" />}
             />
 
             <Input
