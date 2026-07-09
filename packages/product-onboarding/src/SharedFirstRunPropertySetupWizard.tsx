@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowRightIcon,
   BuildingOffice2Icon,
@@ -159,6 +159,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
+  const seededInitialSelectionPropertyIds = useRef<Set<string>>(new Set());
 
   const view = useMemo(
     () => resolveSharedFirstRunSetupView(status, { forceCreateProperty }),
@@ -230,18 +231,27 @@ export default function SharedFirstRunPropertySetupWizard({
   }, [api, profileReloadToken, view.profileMode, view.selectedPropertyId]);
 
   useEffect(() => {
-    if (view.screen !== "product_selection") return;
+    if (view.screen !== "product_selection" || !view.selectedPropertyId) return;
     const nextSelectedProducts = selectedProductsForProperty(view.selectedProperty, entryProduct);
-    for (const product of initialSelectedProducts) {
-      if (
-        !nextSelectedProducts.includes(product) &&
-        isSharedHotelSetupProductSelectable(view.selectedProperty, product)
-      ) {
-        nextSelectedProducts.push(product);
+    if (!seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) {
+      seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
+      for (const product of initialSelectedProducts) {
+        if (
+          !nextSelectedProducts.includes(product) &&
+          isSharedHotelSetupProductSelectable(view.selectedProperty, product)
+        ) {
+          nextSelectedProducts.push(product);
+        }
       }
     }
     setSelectedProducts(nextSelectedProducts);
-  }, [entryProduct, initialSelectedProducts, view.screen, view.selectedProperty]);
+  }, [
+    entryProduct,
+    initialSelectedProducts,
+    view.screen,
+    view.selectedProperty,
+    view.selectedPropertyId,
+  ]);
 
   const reloadStatus = async (propertyId?: string | null) => {
     const nextStatus = await api.getStatus({ entryProduct, returnTo, propertyId });

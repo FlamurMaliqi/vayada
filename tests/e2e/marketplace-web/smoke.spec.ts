@@ -76,54 +76,35 @@ async function mockOnboardingAuth(page: Page) {
     organizationKind: "hotel_group",
   };
 
-  await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
-    if (route.request().method() === "OPTIONS") {
-      await fulfillCorsPreflight(route);
-      return;
-    }
-    await route.fulfill({ status: 200, headers: corsHeaders(route), json: guestSession });
-  });
-  await page.route(/\/auth\/onboarding$/, async (route) => {
-    if (route.request().method() === "OPTIONS") {
-      await fulfillCorsPreflight(route);
-      return;
-    }
-    await route.fulfill({ status: 200, headers: corsHeaders(route), json: hotelSession });
-  });
-  await page.route(/\/auth\/compat\/marketplace-web-token/, async (route) => {
-    if (route.request().method() === "OPTIONS") {
-      await fulfillCorsPreflight(route);
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      headers: corsHeaders(route),
-      json: { accessToken: "legacy-marketplace-token", expiresIn: 900 },
-    });
+  await routeJson(page, /\/auth\/session(?:\?|$)/, guestSession);
+  await routeJson(page, /\/auth\/onboarding$/, hotelSession);
+  await routeJson(page, /\/auth\/compat\/marketplace-web-token/, {
+    accessToken: "legacy-marketplace-token",
+    expiresIn: 900,
   });
 }
 
 async function mockSharedSetupStatus(page: Page) {
-  await page.route(/\/api\/hotel-setup\/status/, async (route) => {
+  await routeJson(page, /\/api\/hotel-setup\/status/, {
+    contractVersion: "shared-hotel-setup-status.v1",
+    entry: { entryProduct: "marketplace", returnTo: null },
+    hotelGroup: {
+      organizationId: "11111111-1111-4111-8111-111111111111",
+      displayName: "Test Hotel Group",
+    },
+    selection: { state: "no_property", selectedPropertyId: null },
+    properties: [],
+    nextAction: { action: "create_property", reasonCodes: ["no_property"] },
+    updatedAt: "2026-07-08T00:00:00.000Z",
+  });
+}
+
+async function routeJson(page: Page, pattern: RegExp, json: unknown) {
+  await page.route(pattern, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await fulfillCorsPreflight(route);
       return;
     }
-    await route.fulfill({
-      status: 200,
-      headers: corsHeaders(route),
-      json: {
-        contractVersion: "shared-hotel-setup-status.v1",
-        entry: { entryProduct: "marketplace", returnTo: null },
-        hotelGroup: {
-          organizationId: "11111111-1111-4111-8111-111111111111",
-          displayName: "Test Hotel Group",
-        },
-        selection: { state: "no_property", selectedPropertyId: null },
-        properties: [],
-        nextAction: { action: "create_property", reasonCodes: ["no_property"] },
-        updatedAt: "2026-07-08T00:00:00.000Z",
-      },
-    });
+    await route.fulfill({ status: 200, headers: corsHeaders(route), json });
   });
 }
