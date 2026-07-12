@@ -62,9 +62,6 @@ ALTER TABLE identity.organization_resource_links
     'affiliate',
     'payout_account'
   )) NOT VALID;
-ALTER TABLE identity.organization_resource_links
-  VALIDATE CONSTRAINT chk_organization_resource_links_resource_type;
-
 ALTER TABLE identity.product_entitlements
   ADD CONSTRAINT chk_product_entitlements_resource_type
   CHECK (
@@ -82,9 +79,6 @@ ALTER TABLE identity.product_entitlements
       'payout_account'
     )
   ) NOT VALID;
-ALTER TABLE identity.product_entitlements
-  VALIDATE CONSTRAINT chk_product_entitlements_resource_type;
-
 -- The offer is the hotel-authored collaboration brief.
 ALTER TABLE marketplace.marketplace_hotel_listings
   RENAME TO marketplace_offers;
@@ -252,8 +246,6 @@ ALTER TABLE marketplace.collaborations
     OR compensation_type IN ('free_stay', 'paid', 'discount', 'custom')
   ) NOT VALID;
 ALTER TABLE marketplace.collaborations
-  VALIDATE CONSTRAINT collaborations_compensation_type_check;
-ALTER TABLE marketplace.collaborations
   ADD CONSTRAINT chk_marketplace_collaborations_compensation_terms
   CHECK (
     (
@@ -280,15 +272,11 @@ ALTER TABLE marketplace.collaborations
     AND (initiator_type <> 'creator' OR creator_consent IS TRUE)
   ) NOT VALID;
 ALTER TABLE marketplace.collaborations
-  VALIDATE CONSTRAINT chk_marketplace_collaborations_compensation_terms;
-ALTER TABLE marketplace.collaborations
   ADD CONSTRAINT chk_marketplace_collaborations_affiliate_link
   CHECK (
     (affiliate_referral_code IS NULL AND affiliate_link IS NULL)
     OR affiliate_enabled = TRUE
   ) NOT VALID;
-ALTER TABLE marketplace.collaborations
-  VALIDATE CONSTRAINT chk_marketplace_collaborations_affiliate_link;
 ALTER TABLE marketplace.collaborations
   RENAME CONSTRAINT fk_marketplace_collaborations_listing_org
   TO fk_marketplace_collaborations_offer_org;

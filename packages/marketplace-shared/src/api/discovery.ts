@@ -1,9 +1,4 @@
-import { ApiErrorResponse } from "./client";
-
-const MARKETPLACE_DISCOVERY_API_BASE_URL =
-  process.env.NEXT_PUBLIC_AUTH_API_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  "https://api.localhost";
+import { ApiErrorResponse, VAYADA_API_BASE_URL } from "./client";
 
 export const marketplaceDiscoveryEndpoints = {
   offers: (input: MarketplaceDiscoveryPageInput = {}) =>
@@ -189,7 +184,7 @@ async function collectMarketplaceDiscoveryPages<T>(
 }
 
 async function requestMarketplaceDiscovery<T>(endpoint: string): Promise<T> {
-  const response = await fetch(`${MARKETPLACE_DISCOVERY_API_BASE_URL}${endpoint}`, {
+  const response = await fetch(`${VAYADA_API_BASE_URL}${endpoint}`, {
     method: "GET",
     headers: { Accept: "application/json" },
     credentials: "omit",
