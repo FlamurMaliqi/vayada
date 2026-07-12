@@ -45,13 +45,13 @@ export function HotelListingsStep({
         <HotelBadgeIcon active />
         <div className="flex-1">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-bold text-gray-900">Property Listings</h3>
+            <h3 className="text-lg font-bold text-gray-900">Collaboration Offers</h3>
             <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full text-xs font-semibold">
-              {listings.length} listing{listings.length !== 1 ? "s" : ""}
+              {listings.length} offer{listings.length !== 1 ? "s" : ""}
             </span>
           </div>
           <p className="text-xs text-gray-500">
-            Add at least one property listing{" "}
+            Add at least one collaboration offer{" "}
             <span className="font-semibold text-red-600">(required)</span>
           </p>
         </div>
@@ -62,9 +62,9 @@ export function HotelListingsStep({
           <div className="w-10 h-10 mx-auto mb-2 rounded-lg flex items-center justify-center">
             <HotelBadgeIcon />
           </div>
-          <p className="text-primary-800 font-semibold mb-1 text-sm">No listings added yet</p>
+          <p className="text-primary-800 font-semibold mb-1 text-sm">No offers added yet</p>
           <p className="text-xs text-gray-600">
-            Add at least one property listing to complete your profile.
+            Add at least one collaboration offer to complete your profile.
           </p>
         </div>
       )}
@@ -94,13 +94,13 @@ export function HotelListingsStep({
         className="w-full py-3 border-2 border-dashed border-primary-200 rounded-lg text-primary-700 hover:border-primary-400 hover:bg-primary-50 transition-all flex items-center justify-center gap-2 font-semibold text-sm group"
       >
         <PlusIcon className="w-4 h-4 group-hover:scale-110 transition-transform" />
-        Add Another Property Listing
+        Add Another Collaboration Offer
       </button>
 
       <div className="mt-3 flex items-center gap-3 rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-700">
         <InformationCircleIcon className="w-5 h-5 text-primary-600" />
         <p className="leading-snug">
-          All property information will be verified by our team before your listings go live.
+          All property information will be verified by our team before your offers go live.
         </p>
       </div>
     </div>

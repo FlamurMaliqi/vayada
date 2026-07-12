@@ -9,10 +9,10 @@
     "hotel_catalog.property_public_profile_read_model": 1,
     "marketplace.creator_profiles": 1,
     "marketplace.marketplace_hotel_profiles": 1,
-    "marketplace.marketplace_hotel_listings": 1,
+    "marketplace.marketplace_offers": 1,
     "marketplace.collaborations": 1,
     "marketplace.marketplace_chat_messages": 1,
-    "marketplace.marketplace_listing_read_model": 1,
+    "marketplace.marketplace_offer_read_model": 1,
     "pms.room_types": 1,
     "pms.message_threads": 1,
     "pms.messages": 1,
@@ -44,7 +44,7 @@
       "f8225000-0000-0000-0000-000000000002"
     ],
     "marketplace.creator_profiles": ["f8226000-0000-0000-0000-000000000001"],
-    "marketplace.marketplace_hotel_listings": ["f8226100-0000-0000-0000-000000000001"],
+    "marketplace.marketplace_offers": ["f8226100-0000-0000-0000-000000000001"],
     "marketplace.collaborations": ["f8226200-0000-0000-0000-000000000001"],
     "marketplace.marketplace_chat_messages": ["f8226300-0000-0000-0000-000000000001"],
     "pms.room_types": ["f8227000-0000-0000-0000-000000000001"],
@@ -99,7 +99,7 @@
       "property.hero_image",
       "property.gallery_image",
       "property.logo",
-      "marketplace.listing.gallery",
+      "marketplace.offer.media",
       "marketplace.creator.profile_image",
       "marketplace.collaboration_chat.attachment",
       "pms.room_type.media",
@@ -148,8 +148,8 @@
     "marketplace": {
       "creatorProfileId": "f8226000-0000-0000-0000-000000000001",
       "profilePictureUrl": "https://media.localhost/public-cdn/marketplace/creators/f8226000-0000-0000-0000-000000000001/f8224000-0000-0000-0000-000000000004/original_safe.webp",
-      "listingId": "f8226100-0000-0000-0000-000000000001",
-      "listingImageUrls": [
+      "offerId": "f8226100-0000-0000-0000-000000000001",
+      "offerImageUrls": [
         "https://media.localhost/public-cdn/marketplace/listings/f8226100-0000-0000-0000-000000000001/f8224000-0000-0000-0000-000000000003/original_safe.webp"
       ],
       "chatMessageId": "f8226300-0000-0000-0000-000000000001",

@@ -29,7 +29,7 @@ export function ListingImageGallery({
           <div className="relative group w-full h-48 rounded-xl overflow-hidden shadow-md">
             <img
               src={images[0]}
-              alt={`${listingName || "Listing"} - Main photo`}
+              alt={`${listingName || "Offer"} - Main photo`}
               className="w-full h-full object-cover"
               onError={(e) => {
                 e.currentTarget.style.display = "none";

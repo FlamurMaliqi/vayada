@@ -77,13 +77,13 @@ export function CollaborationDetailModal({
         setListingPopup({
           listing: null,
           notFound:
-            "This hotel listing is not currently visible on the marketplace (the hotel may be unverified or its profile is incomplete).",
+            "This collaboration offer is not currently visible on the marketplace (the hotel may be unverified or its profile is incomplete).",
         });
       }
     } catch {
       setListingPopup({
         listing: null,
-        notFound: "Failed to load hotel listing details.",
+        notFound: "Failed to load collaboration offer details.",
       });
     } finally {
       setLoadingMarketplace(null);
@@ -229,7 +229,7 @@ export function CollaborationDetailModal({
               onClick={() => openListingPopup(collaboration.listing_id)}
               disabled={loadingMarketplace === "listing"}
               className="flex items-center space-x-3 text-right rounded-lg p-1 -m-1 hover:bg-gray-100 transition-colors disabled:opacity-60"
-              title={`View ${collaboration.listing_name} marketplace listing`}
+              title={`View ${collaboration.listing_name} marketplace offer`}
             >
               <div>
                 <p className="text-sm font-bold text-gray-900 hover:underline">

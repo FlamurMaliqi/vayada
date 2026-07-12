@@ -41,9 +41,10 @@ export type SharedProductActivation<Product extends SharedHotelSetupProduct> = {
 
 export const MARKETPLACE_PROFILE_TOOL_STEPS = [
   "creatorPitch",
-  "collaborationOffer",
+  "marketplaceOffer",
+  "offerDeliverables",
+  "compensationOptions",
   "creatorRequirements",
-  "marketplaceListing",
 ] as const;
 
 const MARKETPLACE_PROFILE_TOOL_STEP_SET = new Set<string>(MARKETPLACE_PROFILE_TOOL_STEPS);

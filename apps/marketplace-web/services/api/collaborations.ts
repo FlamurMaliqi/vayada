@@ -25,8 +25,9 @@ import {
   type MarketplaceCollaborationSide,
   type MarketplaceCollaborationStatus,
   type MarketplaceCollaborationTermsInput,
-  type MarketplaceCollaborationType,
+  type MarketplaceCompensationType,
   type MarketplaceConversationSummary,
+  toLegacyCollaborationType,
 } from "@vayada/marketplace-shared/api/collaborations";
 
 // Platform deliverable types
@@ -351,7 +352,7 @@ export const collaborationService = {
     try {
       const response = await getMyMarketplaceCollaborations({
         side: "hotel",
-        listingId: params?.listing_id,
+        offerId: params?.listing_id,
         status: toTargetCollaborationStatus(params?.status),
         initiatedBy: toTargetSide(params?.initiated_by),
       });
@@ -720,7 +721,7 @@ function toTargetCreateCollaborationRequest(
 ) {
   return {
     idempotencyKey,
-    listingId: data.listing_id,
+    offerId: data.listing_id,
     creatorId: data.creator_id ?? undefined,
     initiatorSide: data.initiator_type,
     whyGreatFit: data.initiator_type === "creator" ? data.why_great_fit : undefined,
@@ -741,13 +742,17 @@ function toTargetUpdateTermsRequest(data: UpdateCollaborationTermsRequest, idemp
 
 function toTargetTerms(source: LegacyCollaborationTermsSource): MarketplaceCollaborationTermsInput {
   return {
-    collaborationType: toTargetCollaborationType(source.collaboration_type),
+    compensationType: toTargetCompensationType(source.collaboration_type),
     freeStayMinNights: source.free_stay_min_nights,
     freeStayMaxNights: source.free_stay_max_nights,
     paidAmount: toDecimalString(source.paid_amount),
     currency: source.currency,
     discountPercentage: source.discount_percentage,
-    creatorFee: toDecimalString(source.creator_fee),
+    affiliateEnabled:
+      source.collaboration_type === "Affiliate" ||
+      source.collaboration_type === "affiliate" ||
+      source.creator_fee != null,
+    affiliateCommissionPercentage: toDecimalString(source.creator_fee),
     travelDateFrom: source.travel_date_from,
     travelDateTo: source.travel_date_to,
     preferredDateFrom: source.preferred_date_from,
@@ -768,9 +773,9 @@ function toTargetDeliverables(items?: LegacyDeliverablesItem[]) {
   return deliverables?.length ? deliverables : undefined;
 }
 
-function toTargetCollaborationType(
+function toTargetCompensationType(
   value?: string | null,
-): MarketplaceCollaborationType | null | undefined {
+): MarketplaceCompensationType | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
   switch (value) {
@@ -785,7 +790,7 @@ function toTargetCollaborationType(
       return "discount";
     case "Affiliate":
     case "affiliate":
-      return "affiliate";
+      return null;
     default:
       return null;
   }
@@ -961,28 +966,18 @@ function toTargetCollaborationStatus(value?: string): MarketplaceCollaborationSt
   return undefined;
 }
 
-function toLegacyCollaborationType(
-  value: MarketplaceCollaborationType | null,
-): CollaborationResponse["collaboration_type"] {
-  switch (value) {
-    case "free_stay":
-      return "Free Stay";
-    case "paid":
-      return "Paid";
-    case "discount":
-      return "Discount";
-    case "affiliate":
-      return "Affiliate";
-    default:
-      return null;
-  }
-}
-
 function toLegacyCollaborationResponse(
   collaboration: MarketplaceCollaborationRead,
 ): CollaborationResponse {
   const paidAmount = collaboration.terms.paidAmount ? Number(collaboration.terms.paidAmount) : null;
-  const creatorFee = collaboration.terms.creatorFee ? Number(collaboration.terms.creatorFee) : null;
+  const creatorFee = collaboration.terms.affiliateCommissionPercentage
+    ? Number(collaboration.terms.affiliateCommissionPercentage)
+    : null;
+  const collaborationType = toLegacyCollaborationType(
+    collaboration.compensationType,
+    collaboration.terms.affiliateEnabled,
+    collaboration.terms.affiliateCommissionPercentage,
+  );
 
   return {
     id: collaboration.collaborationId,
@@ -998,11 +993,11 @@ function toLegacyCollaborationResponse(
     hotel_id: collaboration.hotelProfileId,
     hotel_name: collaboration.hotel.displayName,
     hotel_picture: collaboration.hotel.avatarUrl,
-    hotel_location: collaboration.listingLocation,
-    listing_id: collaboration.listingId,
-    listing_name: collaboration.listingName,
-    listing_location: collaboration.listingLocation ?? "",
-    collaboration_type: toLegacyCollaborationType(collaboration.collaborationType),
+    hotel_location: collaboration.hotelLocation,
+    listing_id: collaboration.offerId,
+    listing_name: collaboration.offerTitle,
+    listing_location: collaboration.hotelLocation ?? "",
+    collaboration_type: collaborationType === "Custom" ? null : collaborationType,
     free_stay_min_nights: collaboration.terms.freeStayMinNights,
     free_stay_max_nights: collaboration.terms.freeStayMaxNights,
     paid_amount: paidAmount,
@@ -1050,7 +1045,7 @@ function toLegacyConversationResponse(
     unread_count: conversation.unreadCount,
     collaboration_status: conversation.collaborationStatus,
     my_role: conversation.side,
-    listing_name: conversation.listingName,
+    listing_name: conversation.offerTitle,
   };
 }
 

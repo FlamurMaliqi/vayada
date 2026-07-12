@@ -4,7 +4,7 @@ import {
   type MarketplaceCollaborationTermsInput,
   type RespondToMarketplaceCollaborationLifecycleWriteRequest,
 } from "./collaborations";
-import { apiClient } from "./client";
+import { vayadaApiClient } from "./client";
 
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
 
@@ -53,15 +53,6 @@ export type MarketplaceAdminCollaborationLifecycleWriteResponse = {
   sideEffects: { type: string; idempotencyKey?: string }[];
 };
 
-export type MarketplaceAccommodationType =
-  | "hotel"
-  | "resort"
-  | "boutique_hotel"
-  | "lodge"
-  | "apartment"
-  | "villa"
-  | "other";
-
 export type MarketplacePlatformName =
   | "instagram"
   | "tiktok"
@@ -71,7 +62,7 @@ export type MarketplacePlatformName =
   | "x"
   | "other";
 
-export type MarketplaceHotelListingStatus =
+export type MarketplaceOfferStatus =
   | "draft"
   | "pending"
   | "verified"
@@ -79,8 +70,8 @@ export type MarketplaceHotelListingStatus =
   | "suspended"
   | "archived";
 
-export type MarketplaceHotelListingOfferingWrite = {
-  collaborationType: "free_stay" | "paid" | "discount" | "affiliate";
+export type MarketplaceOfferCompensationOptionWrite = {
+  compensationType: "free_stay" | "paid" | "discount" | "affiliate";
   availabilityMonths: string[];
   platforms: MarketplacePlatformName[];
   freeStayMinNights: number | null;
@@ -93,7 +84,7 @@ export type MarketplaceHotelListingOfferingWrite = {
   termsSummary: string | null;
 };
 
-export type MarketplaceHotelListingCreatorRequirementsWrite = {
+export type MarketplaceOfferCreatorRequirementsWrite = {
   platforms: MarketplacePlatformName[];
   targetCountries: string[];
   targetAgeMin: number | null;
@@ -102,45 +93,54 @@ export type MarketplaceHotelListingCreatorRequirementsWrite = {
   creatorTypes: ("lifestyle" | "travel" | "other")[];
 };
 
-export type MarketplaceAdminCreateHotelListingRequest = {
+export type MarketplaceOfferDeliverableWrite = {
+  platform: MarketplacePlatformName;
+  deliverableType: string;
+  quantity: number;
+  timingGuidance?: string | null;
+};
+
+export type MarketplaceAdminCreateOfferRequest = {
   title: string;
-  listingSummary?: string | null;
-  accommodationType?: MarketplaceAccommodationType | null;
-  rawLocationText?: string | null;
-  imageUrls?: string[];
-  collaborationOfferings: MarketplaceHotelListingOfferingWrite[];
-  creatorRequirements: MarketplaceHotelListingCreatorRequirementsWrite;
+  offerSummary?: string | null;
+  deliverables: MarketplaceOfferDeliverableWrite[];
+  compensationOptions: MarketplaceOfferCompensationOptionWrite[];
+  creatorRequirements: MarketplaceOfferCreatorRequirementsWrite;
 };
 
-export type MarketplaceAdminUpdateHotelListingRequest = Partial<
-  Omit<MarketplaceAdminCreateHotelListingRequest, "collaborationOfferings" | "creatorRequirements">
+export type MarketplaceAdminUpdateOfferRequest = Partial<
+  Omit<
+    MarketplaceAdminCreateOfferRequest,
+    "deliverables" | "compensationOptions" | "creatorRequirements"
+  >
 > & {
-  collaborationOfferings?: MarketplaceHotelListingOfferingWrite[];
-  creatorRequirements?: MarketplaceHotelListingCreatorRequirementsWrite | null;
+  deliverables?: MarketplaceOfferDeliverableWrite[];
+  compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
+  creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
 };
 
-export type MarketplaceAdminHotelListing = {
+export type MarketplaceAdminOffer = {
   contractVersion: MarketplaceAdminContractVersion;
   authorizationMode: MarketplaceAdminAuthorizationMode;
-  listingId: string;
+  offerId: string;
   propertyId: string;
-  listingStatus: MarketplaceHotelListingStatus;
+  offerStatus: MarketplaceOfferStatus;
   title: string;
-  listingSummary: string | null;
-  accommodationType: MarketplaceAccommodationType | null;
-  rawLocationText: string | null;
-  imageUrls: string[];
-  collaborationOfferings: (MarketplaceHotelListingOfferingWrite & { offeringId: string })[];
-  creatorRequirements: MarketplaceHotelListingCreatorRequirementsWrite | null;
+  offerSummary: string | null;
+  deliverables: (MarketplaceOfferDeliverableWrite & { deliverableId: string })[];
+  compensationOptions: (MarketplaceOfferCompensationOptionWrite & {
+    compensationOptionId: string;
+  })[];
+  creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
   createdAt: string;
   updatedAt: string;
 };
 
-export type MarketplaceAdminDeleteHotelListingResponse = {
+export type MarketplaceAdminDeleteOfferResponse = {
   contractVersion: MarketplaceAdminContractVersion;
   authorizationMode: MarketplaceAdminAuthorizationMode;
-  deletedListing: {
-    listingId: string;
+  deletedOffer: {
+    offerId: string;
     title: string;
   };
 };
@@ -152,22 +152,22 @@ export const marketplaceAdminEndpoints = {
     `/api/marketplace/admin/collaborations/${encodeURIComponent(collaborationId)}/respond`,
   approveAsHotel: (collaborationId: string) =>
     `/api/marketplace/admin/collaborations/${encodeURIComponent(collaborationId)}/approve`,
-  createHotelListing: (hotelUserId: string) =>
-    `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/listings`,
-  updateHotelListing: (hotelUserId: string, listingId: string) =>
+  createOffer: (hotelUserId: string) =>
+    `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/offers`,
+  updateOffer: (hotelUserId: string, offerId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(
       hotelUserId,
-    )}/listings/${encodeURIComponent(listingId)}`,
-  deleteHotelListing: (hotelUserId: string, listingId: string) =>
+    )}/offers/${encodeURIComponent(offerId)}`,
+  deleteOffer: (hotelUserId: string, offerId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(
       hotelUserId,
-    )}/listings/${encodeURIComponent(listingId)}`,
+    )}/offers/${encodeURIComponent(offerId)}`,
 } as const;
 
 export async function getMarketplaceAdminCollaborations(
   input: MarketplaceAdminCollaborationsInput = {},
 ): Promise<MarketplaceAdminCollaborationsResponse> {
-  return apiClient.get<MarketplaceAdminCollaborationsResponse>(
+  return vayadaApiClient.get<MarketplaceAdminCollaborationsResponse>(
     marketplaceAdminEndpoints.collaborations(input),
   );
 }
@@ -176,7 +176,7 @@ export async function respondToMarketplaceAdminCollaborationAsHotel(
   collaborationId: string,
   request: RespondToMarketplaceCollaborationLifecycleWriteRequest,
 ): Promise<MarketplaceAdminCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
     marketplaceAdminEndpoints.respondAsHotel(collaborationId),
     { ...request, side: "hotel" },
     toIdempotencyOptions(request.idempotencyKey),
@@ -187,40 +187,40 @@ export async function approveMarketplaceAdminCollaborationAsHotel(
   collaborationId: string,
   request: { idempotencyKey: string; acceptedTermsVersion?: string },
 ): Promise<MarketplaceAdminCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
     marketplaceAdminEndpoints.approveAsHotel(collaborationId),
     { ...request, side: "hotel" },
     toIdempotencyOptions(request.idempotencyKey),
   );
 }
 
-export async function createMarketplaceAdminHotelListing(
+export async function createMarketplaceAdminOffer(
   hotelUserId: string,
-  request: MarketplaceAdminCreateHotelListingRequest,
-): Promise<MarketplaceAdminHotelListing> {
-  return apiClient.post<MarketplaceAdminHotelListing>(
-    marketplaceAdminEndpoints.createHotelListing(hotelUserId),
+  request: MarketplaceAdminCreateOfferRequest,
+): Promise<MarketplaceAdminOffer> {
+  return vayadaApiClient.post<MarketplaceAdminOffer>(
+    marketplaceAdminEndpoints.createOffer(hotelUserId),
     request,
   );
 }
 
-export async function updateMarketplaceAdminHotelListing(
+export async function updateMarketplaceAdminOffer(
   hotelUserId: string,
-  listingId: string,
-  request: MarketplaceAdminUpdateHotelListingRequest,
-): Promise<MarketplaceAdminHotelListing> {
-  return apiClient.put<MarketplaceAdminHotelListing>(
-    marketplaceAdminEndpoints.updateHotelListing(hotelUserId, listingId),
+  offerId: string,
+  request: MarketplaceAdminUpdateOfferRequest,
+): Promise<MarketplaceAdminOffer> {
+  return vayadaApiClient.put<MarketplaceAdminOffer>(
+    marketplaceAdminEndpoints.updateOffer(hotelUserId, offerId),
     request,
   );
 }
 
-export async function deleteMarketplaceAdminHotelListing(
+export async function deleteMarketplaceAdminOffer(
   hotelUserId: string,
-  listingId: string,
-): Promise<MarketplaceAdminDeleteHotelListingResponse> {
-  return apiClient.delete<MarketplaceAdminDeleteHotelListingResponse>(
-    marketplaceAdminEndpoints.deleteHotelListing(hotelUserId, listingId),
+  offerId: string,
+): Promise<MarketplaceAdminDeleteOfferResponse> {
+  return vayadaApiClient.delete<MarketplaceAdminDeleteOfferResponse>(
+    marketplaceAdminEndpoints.deleteOffer(hotelUserId, offerId),
   );
 }
 

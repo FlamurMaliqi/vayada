@@ -48,14 +48,18 @@ const MARKETPLACE_SLICE_STRING_FIELDS = [
   "creatorOrganizationId",
   "creatorOwnerUserId",
   "creatorOwnerRoleKey",
-  "listingId",
+  "offerId",
   "commissionRuleId",
   "creatorPlatformId",
   "creatorRatingId",
-  "offeringFreeStayId",
-  "offeringAffiliateId",
+  "compensationOptionFreeStayId",
+  "compensationOptionAffiliateId",
+  "compensationOptionPaidId",
+  "compensationOptionDiscountId",
   "requirementId",
   "collaborationId",
+  "paidCollaborationId",
+  "discountCollaborationId",
   "deliverableApprovedId",
   "deliverableSubmittedId",
   "creatorChatMessageId",
@@ -70,15 +74,14 @@ const MARKETPLACE_SLICE_STRING_FIELDS = [
   "hotelNewsletterPreferenceId",
   "sourceCreatorId",
   "sourceHotelProfileId",
-  "sourceListingId",
+  "sourceOfferId",
   "sourceCollaborationId",
   "creatorDisplayName",
   "platform",
-  "listingPublicId",
-  "listingSlug",
+  "offerPublicId",
+  "offerSlug",
   "visibilityStatus",
   "lifecycleStatus",
-  "collaborationType",
   "affiliateReferralCode",
   "creatorChatBody",
   "hotelChatBody",
@@ -88,7 +91,7 @@ const MARKETPLACE_SLICE_STRING_FIELDS = [
   "redeemedInviteCode",
 ];
 const MARKETPLACE_SLICE_INTEGER_FIELDS = [
-  "offeringCount",
+  "compensationOptionCount",
   "deliverableCount",
   "chatMessageCount",
   "notificationCount",
@@ -115,6 +118,7 @@ const PLATFORM_MEDIA_INVENTORY_KEYS = new Set([
 ]);
 const MEDIA_URL_MIGRATION_CHECK_KEYS = new Set([
   "bookingPropertyMedia",
+  "propertyPublicProfiles",
   "marketplace",
   "pms",
   "forbiddenPublicReferenceValues",
@@ -752,7 +756,7 @@ export function validateExpectedTargetConfig(
       "expected-target.json.marketplaceChecks.slices",
       MARKETPLACE_SLICE_STRING_FIELDS,
       findings,
-      [],
+      ["compensationType"],
       MARKETPLACE_SLICE_INTEGER_FIELDS,
     );
     if (marketplaceChecks["forbiddenPublicReadModelValues"] !== undefined) {
@@ -912,6 +916,27 @@ export function validateExpectedTargetConfig(
         MEDIA_URL_BOOKING_PROPERTY_MEDIA_STRING_FIELDS,
         findings,
       );
+    }
+    if (mediaUrlMigrationChecks["propertyPublicProfiles"] !== undefined) {
+      const propertyPublicProfiles = mediaUrlMigrationChecks["propertyPublicProfiles"];
+      validateObjectArray(
+        propertyPublicProfiles,
+        "expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles",
+        ["propertyId"],
+        findings,
+      );
+      if (Array.isArray(propertyPublicProfiles)) {
+        propertyPublicProfiles.forEach((profile, index) => {
+          if (!isRecord(profile)) return;
+          for (const field of ["mediaObjectIds", "urls", "forbiddenUrls"]) {
+            validateStringArray(
+              profile[field],
+              `expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles[${index}].${field}`,
+              findings,
+            );
+          }
+        });
+      }
     }
     if (mediaUrlMigrationChecks["forbiddenPublicReferenceValues"] !== undefined) {
       validateStringArray(

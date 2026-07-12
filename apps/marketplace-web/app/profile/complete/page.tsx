@@ -37,7 +37,7 @@ export default function ProfileCompletePage() {
   const [currentStep, setCurrentStep] = useState<number>(1);
 
   const creatorSteps = ["Creator Type", "Basic Information", "Social Media Platforms"];
-  const hotelSteps = ["Basic Information", "Property Listings"];
+  const hotelSteps = ["Basic Information", "Collaboration Offers"];
 
   // Initialize hooks with error handler
   const creatorForm = useCreatorProfileForm({ onError: setError });
@@ -291,7 +291,7 @@ export default function ProfileCompletePage() {
         let imageMediaObjectIds = listing.imageMediaObjectIds ?? [];
 
         if (imageUrls.length === 0 && !listing.imageFiles?.length) {
-          setError(`Listing "${listing.name}": At least one image is required`);
+          setError(`Offer "${listing.name}": At least one image is required`);
           setSubmitting(false);
           return;
         }
@@ -325,15 +325,15 @@ export default function ProfileCompletePage() {
             });
           } catch (err) {
             await hotelService.deleteListing(createdListing.id).catch((deleteError) => {
-              console.error("Failed to clean up listing after media upload failure:", deleteError);
+              console.error("Failed to clean up offer after media upload failure:", deleteError);
             });
             if (err instanceof ApiErrorResponse) {
               setError(
                 formatErrorDetail(err.data.detail) ||
-                  `Failed to upload images for listing "${listing.name}"`,
+                  `Failed to upload images for offer "${listing.name}"`,
               );
             } else {
-              setError(`Failed to upload images for listing "${listing.name}". Please try again.`);
+              setError(`Failed to upload images for offer "${listing.name}". Please try again.`);
             }
             setSubmitting(false);
             return;
@@ -527,7 +527,7 @@ export default function ProfileCompletePage() {
           <div className="text-center md:text-left">
             <p className="text-xs font-semibold text-gray-500">Build profile</p>
             <h2 className="text-lg font-semibold leading-tight text-gray-950">
-              {userType === "creator" ? "Creator profile" : "Collaboration listing"}
+              {userType === "creator" ? "Creator profile" : "Collaboration offer"}
             </h2>
             <p className="max-w-xs text-xs text-gray-500">
               {userType === "creator"
@@ -602,13 +602,13 @@ export default function ProfileCompletePage() {
 }
 
 function profileShellTitle(userType: "creator" | "hotel"): string {
-  return userType === "creator" ? "Create your creator profile" : "Create your first listing";
+  return userType === "creator" ? "Create your creator profile" : "Create your first offer";
 }
 
 function profileShellDescription(userType: "creator" | "hotel"): string {
   return userType === "creator"
     ? "Build the profile hotels use to decide whether to collaborate with you."
-    : "Build the property listing creators use to understand your offer.";
+    : "Build the collaboration offer creators use to understand your offer.";
 }
 
 function emptyProfileStatus(
@@ -626,7 +626,7 @@ function emptyProfileStatus(
     profile_complete: false,
     missing_fields: [],
     has_defaults: { location: false },
-    missing_listings: true,
+    missing_offers: true,
     completion_steps: [],
   };
 }

@@ -43,7 +43,7 @@ export function ListingCard({
   onRemoveImage,
   onCountryInputChange,
 }: ListingCardProps) {
-  // Check if listing is complete (has all required basic fields)
+  // Check if offer is complete (has all required basic fields)
   const isComplete =
     listing.name.trim() &&
     listing.location.trim() &&
@@ -71,7 +71,7 @@ export function ListingCard({
           </div>
           <div className="flex-1">
             <h4 className="font-semibold text-gray-900 text-base">
-              {listing.name || `Property Listing ${index + 1}`}
+              {listing.name || `Collaboration Offer ${index + 1}`}
             </h4>
             {isCollapsed && listing.name && (
               <p className="text-xs text-gray-500 mt-0">
@@ -92,7 +92,8 @@ export function ListingCard({
               type="button"
               onClick={onRemove}
               className="p-1 rounded-md text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors"
-              title="Remove listing"
+              title="Remove offer"
+              aria-label="Remove offer"
             >
               <XMarkIcon className="w-3.5 h-3.5" />
             </button>
@@ -108,7 +109,7 @@ export function ListingCard({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <Input
-                label="Listing Name"
+                label="Offer title"
                 type="text"
                 value={listing.name}
                 onChange={(e) => onUpdateListing(index, "name", e.target.value)}

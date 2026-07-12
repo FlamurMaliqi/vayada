@@ -31,7 +31,7 @@ const options: Array<{
   {
     type: "hotel",
     title: "List a property",
-    description: "Create a creator-ready listing for your hotel, stay, or venue.",
+    description: "Create a creator-ready collaboration offer for your hotel or venue.",
     image: "/hotel-hero.JPG",
   },
   {
@@ -51,7 +51,7 @@ const productOptions: Array<{
   {
     type: "marketplace",
     title: "Creator Marketplace",
-    description: "Find creators and launch collaboration listings.",
+    description: "Find creators and launch collaboration offers.",
     Icon: PersonIcon,
   },
   {

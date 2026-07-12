@@ -450,7 +450,7 @@ export function CalendarEventModal({
                     onClose();
                   }}
                 >
-                  {userType === "creator" ? "Listing Page" : "View Profile"}
+                  {userType === "creator" ? "Offer Page" : "View Profile"}
                   <ArrowTopRightOnSquareIcon className="w-5 h-5 text-gray-400" />
                 </button>
               </div>

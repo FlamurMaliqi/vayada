@@ -73,7 +73,7 @@ export function ListingEditorForm({
           <div className="flex items-center gap-3">
             <HotelBadgeIcon active={false} />
             <h4 className="font-semibold text-gray-900 text-base">
-              {formData.name || `Property Listing ${listingIndex ?? 1}`}
+              {formData.name || `Collaboration Offer ${listingIndex ?? 1}`}
             </h4>
           </div>
           <button
@@ -96,7 +96,7 @@ export function ListingEditorForm({
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Input
-              label="Listing Name"
+              label="Offer title"
               value={formData.name}
               onChange={(e) => updateField("name", e.target.value)}
               required
@@ -298,7 +298,7 @@ export function ListingEditorForm({
           isLoading={isSaving}
           disabled={!formData.name || !formData.location || !formData.description}
         >
-          {isEditing ? "Save Changes" : "Create Listing"}
+          {isEditing ? "Save Changes" : "Create Offer"}
         </Button>
       </div>
     </div>

@@ -10,7 +10,7 @@ describe("getPostLoginProfileRedirect", () => {
         profile_complete: true,
         missing_fields: [],
         has_defaults: { location: false },
-        missing_listings: false,
+        missing_offers: false,
         completion_steps: [],
       }),
     ).toEqual({
@@ -25,7 +25,7 @@ describe("getPostLoginProfileRedirect", () => {
         profile_complete: false,
         missing_fields: ["profile"],
         has_defaults: { location: false },
-        missing_listings: true,
+        missing_offers: true,
         completion_steps: ["Complete your marketplace hotel profile"],
       }),
     ).toEqual({

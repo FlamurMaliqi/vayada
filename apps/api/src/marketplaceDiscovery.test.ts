@@ -14,15 +14,15 @@ import {
   type MarketplaceDiscoveryPageRequest,
   type MarketplaceDiscoveryReadPool,
   type MarketplaceDiscoveryReadRepository,
-  type MarketplaceListingPage,
-  type MarketplaceListingReadModel,
+  type MarketplaceOfferPage,
+  type MarketplaceOfferReadModel,
 } from "./routes/marketplaceDiscovery.js";
 
 // In-memory repository mirroring the projection semantics from
 // engineering/marketplace-discovery-contract.md: visibility/eligibility
 // filtering and the documented createdAt DESC, id ASC ordering live in the
 // repository layer, exactly as the pg implementation must behave.
-type ListingSeed = MarketplaceListingReadModel & {
+type OfferSeed = MarketplaceOfferReadModel & {
   visibilityStatus: "public" | "unlisted" | "private" | "disabled";
 };
 
@@ -34,21 +34,21 @@ type CreatorSeed = Omit<MarketplaceCreatorReadModel, "audienceSize" | "creatorTy
 };
 
 function createSeedRepository(seed: {
-  listings?: ListingSeed[];
+  offers?: OfferSeed[];
   creators?: CreatorSeed[];
 }): MarketplaceDiscoveryReadRepository {
   const byCreatedAtDesc = (a: { createdAt: string }, b: { createdAt: string }, tiebreak: number) =>
     b.createdAt.localeCompare(a.createdAt) || tiebreak;
 
   return {
-    async listPublicListings(page: MarketplaceDiscoveryPageRequest) {
-      const eligible = (seed.listings ?? [])
-        .filter((listing) => listing.visibilityStatus === "public")
-        .sort((a, b) => byCreatedAtDesc(a, b, a.listingId.localeCompare(b.listingId)))
+    async listPublicOffers(page: MarketplaceDiscoveryPageRequest) {
+      const eligible = (seed.offers ?? [])
+        .filter((offer) => offer.visibilityStatus === "public")
+        .sort((a, b) => byCreatedAtDesc(a, b, a.offerId.localeCompare(b.offerId)))
         .map((row) => {
-          const { visibilityStatus, ...listing } = row;
+          const { visibilityStatus, ...offer } = row;
           void visibilityStatus;
-          return listing;
+          return offer;
         });
       return {
         items: eligible.slice(page.offset, page.offset + page.limit),
@@ -82,28 +82,41 @@ function createSeedRepository(seed: {
   };
 }
 
-// Legacy UUIDs seeded as IDs per the contract's ID continuity clause.
-const LEGACY_LISTING_ID_A = "3f1c2b6a-8a44-4f1e-9a51-1aa001000001";
-const LEGACY_LISTING_ID_B = "3f1c2b6a-8a44-4f1e-9a51-1aa001000002";
+// Migrated offers keep their existing UUIDs per the ID continuity clause.
+const LEGACY_OFFER_ID_A = "3f1c2b6a-8a44-4f1e-9a51-1aa001000001";
+const LEGACY_OFFER_ID_B = "3f1c2b6a-8a44-4f1e-9a51-1aa001000002";
 const LEGACY_CREATOR_ID_A = "9d7e5c4b-1b23-4cde-8f00-2bb002000001";
 const LEGACY_CREATOR_ID_B = "9d7e5c4b-1b23-4cde-8f00-2bb002000002";
 
-function listingSeed(overrides: Partial<ListingSeed>): ListingSeed {
+function offerSeed(overrides: Partial<OfferSeed>): OfferSeed {
   return {
-    listingId: LEGACY_LISTING_ID_A,
-    publicId: "mlst_alpenrose",
-    canonicalSlug: "hotel-alpenrose",
-    displayName: "Hotel Alpenrose",
-    listingTitle: "Alpine getaway collaboration",
-    listingSummary: "Boutique alpine hotel.",
-    accommodationType: "Hotel",
-    location: { displayText: "Innsbruck, Austria", countryCode: "AT", city: "Innsbruck" },
-    coverImageUrl: "https://cdn.example.com/alpenrose/cover.jpg",
-    imageUrls: ["https://cdn.example.com/alpenrose/1.jpg"],
-    offerings: [
+    offerId: LEGACY_OFFER_ID_A,
+    offerPublicId: "mlst_alpenrose",
+    offerTitle: "Alpine getaway collaboration",
+    offerSummary: "Boutique alpine hotel.",
+    hotelName: "Hotel Alpenrose",
+    hotelSlug: "hotel-alpenrose",
+    hotelAccommodationType: "hotel",
+    hotelLocation: {
+      displayText: "Innsbruck, Austria",
+      countryCode: "AT",
+      city: "Innsbruck",
+    },
+    hotelCoverImageUrl: "https://cdn.example.com/alpenrose/cover.jpg",
+    hotelImageUrls: ["https://cdn.example.com/alpenrose/1.jpg"],
+    deliverables: [
       {
-        offeringId: "off-1",
-        collaborationType: "free_stay",
+        deliverableId: "deliverable-1",
+        platform: "instagram",
+        deliverableType: "post",
+        quantity: 2,
+        timingGuidance: "During the stay",
+      },
+    ],
+    compensationOptions: [
+      {
+        compensationOptionId: "off-1",
+        compensationType: "free_stay",
         availabilityMonths: ["June", "July"],
         platforms: ["instagram", "tiktok"],
         freeStayMinNights: 2,
@@ -113,6 +126,7 @@ function listingSeed(overrides: Partial<ListingSeed>): ListingSeed {
         discountPercentage: null,
         commissionPercentage: null,
         minFollowers: 10000,
+        termsSummary: "Two nights included",
       },
     ],
     creatorRequirements: {
@@ -121,6 +135,7 @@ function listingSeed(overrides: Partial<ListingSeed>): ListingSeed {
       targetAgeMin: 18,
       targetAgeMax: 45,
       targetAgeGroups: ["18-24", "25-34"],
+      creatorTypes: ["travel"],
     },
     createdAt: "2026-05-01T10:00:00.000Z",
     projectedAt: "2026-06-09T08:00:00.000Z",
@@ -175,7 +190,7 @@ function createFakePool(results: unknown[][]): MarketplaceDiscoveryReadPool & { 
 let app: FastifyInstance | undefined;
 
 async function buildDiscoveryApp(seed: {
-  listings?: ListingSeed[];
+  offers?: OfferSeed[];
   creators?: CreatorSeed[];
   allowedOrigins?: string[];
 }): Promise<FastifyInstance> {
@@ -193,23 +208,23 @@ afterEach(async () => {
   app = undefined;
 });
 
-describe("marketplace discovery listings route", () => {
-  it("returns public listings with contract fields and no private keys (listings-populated)", async () => {
+describe("marketplace discovery offers route", () => {
+  it("returns public offers with contract fields and no private keys (offers-populated)", async () => {
     const server = await buildDiscoveryApp({
-      listings: [
-        listingSeed({}),
-        listingSeed({
-          listingId: LEGACY_LISTING_ID_B,
-          publicId: "mlst_seehof",
-          canonicalSlug: "hotel-seehof",
+      offers: [
+        offerSeed({}),
+        offerSeed({
+          offerId: LEGACY_OFFER_ID_B,
+          offerPublicId: "mlst_seehof",
+          hotelSlug: "hotel-seehof",
           createdAt: "2026-05-10T10:00:00.000Z",
         }),
       ],
     });
 
-    const response = await injectJson<MarketplaceListingPage>(server, {
+    const response = await injectJson<MarketplaceOfferPage>(server, {
       method: "GET",
-      url: "/api/marketplace/listings",
+      url: "/api/marketplace/offers",
     });
 
     expect(response.statusCode).toBe(200);
@@ -217,11 +232,11 @@ describe("marketplace discovery listings route", () => {
     expect(response.body.pagination).toEqual({ limit: 100, offset: 0, total: 2 });
 
     for (const item of response.body.items) {
-      for (const offering of item.offerings) {
+      for (const compensationOption of item.compensationOptions) {
         expect(["free_stay", "paid", "discount", "affiliate"]).toContain(
-          offering.collaborationType,
+          compensationOption.compensationType,
         );
-        for (const platform of offering.platforms) {
+        for (const platform of compensationOption.platforms) {
           expect(["instagram", "tiktok", "youtube", "facebook", "blog", "x", "other"]).toContain(
             platform,
           );
@@ -230,20 +245,21 @@ describe("marketplace discovery listings route", () => {
     }
 
     const [first] = response.body.items;
-    expect(first.listingId).toBe(LEGACY_LISTING_ID_B);
-    expect(first.publicId).toBe("mlst_seehof");
-    expect(first.canonicalSlug).toBe("hotel-seehof");
-    expect(first.displayName).toBe("Hotel Alpenrose");
-    expect(first.listingTitle).toBe("Alpine getaway collaboration");
-    expect(first.location.displayText).toBe("Innsbruck, Austria");
-    expect(first.coverImageUrl).toContain("cover.jpg");
-    expect(first.imageUrls).toHaveLength(1);
-    expect(first.offerings[0].collaborationType).toBe("free_stay");
-    expect(first.offerings[0].platforms).toEqual(["instagram", "tiktok"]);
+    expect(first.offerId).toBe(LEGACY_OFFER_ID_B);
+    expect(first.offerPublicId).toBe("mlst_seehof");
+    expect(first.hotelSlug).toBe("hotel-seehof");
+    expect(first.hotelName).toBe("Hotel Alpenrose");
+    expect(first.offerTitle).toBe("Alpine getaway collaboration");
+    expect(first.hotelLocation.displayText).toBe("Innsbruck, Austria");
+    expect(first.hotelCoverImageUrl).toContain("cover.jpg");
+    expect(first.hotelImageUrls).toHaveLength(1);
+    expect(first.deliverables[0]).toMatchObject({ deliverableType: "post", quantity: 2 });
+    expect(first.compensationOptions[0].compensationType).toBe("free_stay");
+    expect(first.compensationOptions[0].platforms).toEqual(["instagram", "tiktok"]);
     expect(first.creatorRequirements?.platforms).toEqual(["instagram"]);
     expect(first.createdAt).toBe("2026-05-10T10:00:00.000Z");
     expect(first.projectedAt).toBeTruthy();
-    expect(response.body.items[1].listingId).toBe(LEGACY_LISTING_ID_A);
+    expect(response.body.items[1].offerId).toBe(LEGACY_OFFER_ID_A);
 
     expect(findForbiddenMarketplaceDiscoveryKeys(response.body)).toEqual([]);
     const raw = JSON.stringify(response.body);
@@ -259,33 +275,33 @@ describe("marketplace discovery listings route", () => {
     }
   });
 
-  it("excludes non-public listings (listings-excludes-non-public)", async () => {
+  it("excludes non-public offers (offers-excludes-non-public)", async () => {
     const server = await buildDiscoveryApp({
-      listings: [
-        listingSeed({}),
-        listingSeed({ listingId: "listing-private", visibilityStatus: "private" }),
-        listingSeed({ listingId: "listing-unlisted", visibilityStatus: "unlisted" }),
-        listingSeed({ listingId: "listing-disabled", visibilityStatus: "disabled" }),
+      offers: [
+        offerSeed({}),
+        offerSeed({ offerId: "offer-private", visibilityStatus: "private" }),
+        offerSeed({ offerId: "offer-unlisted", visibilityStatus: "unlisted" }),
+        offerSeed({ offerId: "offer-disabled", visibilityStatus: "disabled" }),
         // Incomplete-profile hotel projects to a non-public visibility status.
-        listingSeed({ listingId: "listing-incomplete-profile-hotel", visibilityStatus: "private" }),
+        offerSeed({ offerId: "offer-incomplete-profile-hotel", visibilityStatus: "private" }),
       ],
     });
 
-    const response = await injectJson<MarketplaceListingPage>(server, {
+    const response = await injectJson<MarketplaceOfferPage>(server, {
       method: "GET",
-      url: "/api/marketplace/listings",
+      url: "/api/marketplace/offers",
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.body.items.map((item) => item.listingId)).toEqual([LEGACY_LISTING_ID_A]);
+    expect(response.body.items.map((item) => item.offerId)).toEqual([LEGACY_OFFER_ID_A]);
   });
 
-  it("returns an empty page when no public listings exist (listings-empty)", async () => {
-    const server = await buildDiscoveryApp({ listings: [] });
+  it("returns an empty page when no public offers exist (offers-empty)", async () => {
+    const server = await buildDiscoveryApp({ offers: [] });
 
-    const response = await injectJson<MarketplaceListingPage>(server, {
+    const response = await injectJson<MarketplaceOfferPage>(server, {
       method: "GET",
-      url: "/api/marketplace/listings",
+      url: "/api/marketplace/offers",
     });
 
     expect(response.statusCode).toBe(200);
@@ -293,60 +309,60 @@ describe("marketplace discovery listings route", () => {
     expect(response.body.pagination.total).toBe(0);
   });
 
-  it("slices the documented ordering with limit/offset (listings-pagination)", async () => {
+  it("slices the documented ordering with limit/offset (offers-pagination)", async () => {
     const server = await buildDiscoveryApp({
-      listings: [
-        listingSeed({ listingId: "lst-a", createdAt: "2026-05-03T00:00:00.000Z" }),
-        // Same createdAt: listingId ASC is the documented tie-break.
-        listingSeed({ listingId: "lst-c", createdAt: "2026-05-02T00:00:00.000Z" }),
-        listingSeed({ listingId: "lst-b", createdAt: "2026-05-02T00:00:00.000Z" }),
+      offers: [
+        offerSeed({ offerId: "lst-a", createdAt: "2026-05-03T00:00:00.000Z" }),
+        // Same createdAt: offerId ASC is the documented tie-break.
+        offerSeed({ offerId: "lst-c", createdAt: "2026-05-02T00:00:00.000Z" }),
+        offerSeed({ offerId: "lst-b", createdAt: "2026-05-02T00:00:00.000Z" }),
       ],
     });
 
-    const response = await injectJson<MarketplaceListingPage>(server, {
+    const response = await injectJson<MarketplaceOfferPage>(server, {
       method: "GET",
-      url: "/api/marketplace/listings?limit=1&offset=1",
+      url: "/api/marketplace/offers?limit=1&offset=1",
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.body.items.map((item) => item.listingId)).toEqual(["lst-b"]);
+    expect(response.body.items.map((item) => item.offerId)).toEqual(["lst-b"]);
     expect(response.body.pagination).toEqual({ limit: 1, offset: 1, total: 3 });
   });
 
-  it("clamps out-of-range pagination values (listings-clamps-out-of-range)", async () => {
-    const server = await buildDiscoveryApp({ listings: [listingSeed({})] });
+  it("clamps out-of-range pagination values (offers-clamps-out-of-range)", async () => {
+    const server = await buildDiscoveryApp({ offers: [offerSeed({})] });
 
-    const overMax = await injectJson<MarketplaceListingPage>(server, {
+    const overMax = await injectJson<MarketplaceOfferPage>(server, {
       method: "GET",
-      url: "/api/marketplace/listings?limit=999&offset=-5",
+      url: "/api/marketplace/offers?limit=999&offset=-5",
     });
     expect(overMax.statusCode).toBe(200);
     expect(overMax.body.pagination.limit).toBe(200);
     expect(overMax.body.pagination.offset).toBe(0);
 
-    const underMin = await injectJson<MarketplaceListingPage>(server, {
+    const underMin = await injectJson<MarketplaceOfferPage>(server, {
       method: "GET",
-      url: "/api/marketplace/listings?limit=0",
+      url: "/api/marketplace/offers?limit=0",
     });
     expect(underMin.statusCode).toBe(200);
     expect(underMin.body.pagination.limit).toBe(1);
 
-    const emptyValue = await injectJson<MarketplaceListingPage>(server, {
+    const emptyValue = await injectJson<MarketplaceOfferPage>(server, {
       method: "GET",
-      url: "/api/marketplace/listings?limit=",
+      url: "/api/marketplace/offers?limit=",
     });
     expect(emptyValue.statusCode).toBe(200);
     expect(emptyValue.body.pagination.limit).toBe(100);
   });
 
-  it("rejects non-numeric and duplicated pagination values (listings-invalid-query)", async () => {
-    const server = await buildDiscoveryApp({ listings: [listingSeed({})] });
+  it("rejects non-numeric and duplicated pagination values (offers-invalid-query)", async () => {
+    const server = await buildDiscoveryApp({ offers: [offerSeed({})] });
 
     for (const url of [
-      "/api/marketplace/listings?limit=abc",
-      "/api/marketplace/listings?limit=1.5",
-      "/api/marketplace/listings?limit=1&limit=2",
-      "/api/marketplace/listings?offset=1&offset=2",
+      "/api/marketplace/offers?limit=abc",
+      "/api/marketplace/offers?limit=1.5",
+      "/api/marketplace/offers?limit=1&limit=2",
+      "/api/marketplace/offers?offset=1&offset=2",
     ]) {
       const response = await injectJson<MarketplaceDiscoveryError>(server, { method: "GET", url });
       expect(response.statusCode).toBe(400);
@@ -358,14 +374,14 @@ describe("marketplace discovery listings route", () => {
 
   it("reflects allowlisted origins, varies on Origin, and stays scoped (CORS)", async () => {
     const server = await buildDiscoveryApp({
-      listings: [listingSeed({})],
+      offers: [offerSeed({})],
       allowedOrigins: ["https://marketplace.localhost", "https://admin.localhost"],
     });
 
     for (const origin of ["https://marketplace.localhost", "https://admin.localhost"]) {
       const allowed = await server.inject({
         method: "GET",
-        url: "/api/marketplace/listings",
+        url: "/api/marketplace/offers",
         headers: { origin },
       });
       expect(allowed.headers["access-control-allow-origin"]).toBe(origin);
@@ -377,7 +393,7 @@ describe("marketplace discovery listings route", () => {
 
     const denied = await server.inject({
       method: "GET",
-      url: "/api/marketplace/listings",
+      url: "/api/marketplace/offers",
       headers: { origin: "https://evil.example.com" },
     });
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
@@ -523,7 +539,7 @@ describe("marketplace discovery creators route", () => {
     app = buildApp({
       logger: false,
       marketplaceDiscoveryRepository: {
-        async listPublicListings() {
+        async listPublicOffers() {
           throw new Error("boom");
         },
         async listPublicCreators() {
@@ -545,16 +561,16 @@ describe("marketplace discovery creators route", () => {
       message: "Failed to fetch marketplace creators.",
     });
 
-    const listings = await injectJson<MarketplaceDiscoveryError>(app, {
+    const offers = await injectJson<MarketplaceDiscoveryError>(app, {
       method: "GET",
-      url: "/api/marketplace/listings",
+      url: "/api/marketplace/offers",
     });
-    expect(listings.statusCode).toBe(500);
-    expect(listings.body).toEqual({
+    expect(offers.statusCode).toBe(500);
+    expect(offers.body).toEqual({
       statusCode: 500,
       code: "internal_error",
       category: "internal",
-      message: "Failed to fetch marketplace listings.",
+      message: "Failed to fetch marketplace offers.",
     });
   });
 });
@@ -577,11 +593,11 @@ describe("marketplace discovery public-safety guard", () => {
     app = buildApp({ logger: false });
     await app.ready();
 
-    const response = await app.inject({ method: "GET", url: "/api/marketplace/listings" });
+    const response = await app.inject({ method: "GET", url: "/api/marketplace/offers" });
     expect(response.statusCode).toBe(404);
   });
 
-  it("mounts listings and creators in target mode without the legacy marketplace DB", async () => {
+  it("mounts offers and creators in target mode without the legacy marketplace DB", async () => {
     const config = loadConfig({
       TARGET_DATABASE_URL: "postgresql://target-db",
       MARKETPLACE_DISCOVERY_SOURCE: "target",
@@ -591,17 +607,22 @@ describe("marketplace discovery public-safety guard", () => {
     const pool = createFakePool([
       [
         {
-          listingId: LEGACY_LISTING_ID_A,
-          publicId: "mlst_alpenrose",
-          canonicalSlug: "hotel-alpenrose",
-          displayName: "Hotel Alpenrose",
-          listingTitle: "Alpine getaway collaboration",
-          listingSummary: "Boutique alpine hotel.",
-          accommodationType: "boutique_hotel",
-          location: { display: "Innsbruck, Austria", countryCode: "AT", city: "Innsbruck" },
-          coverImageUrl: "https://cdn.example.com/cover.jpg",
-          imageUrls: ["https://cdn.example.com/listing.jpg"],
-          offerings: [],
+          offerId: LEGACY_OFFER_ID_A,
+          offerPublicId: "mlst_alpenrose",
+          offerTitle: "Alpine getaway collaboration",
+          offerSummary: "Boutique alpine hotel.",
+          hotelName: "Hotel Alpenrose",
+          hotelSlug: "hotel-alpenrose",
+          hotelAccommodationType: "hotel",
+          hotelLocation: {
+            display: "Innsbruck, Austria",
+            countryCode: "AT",
+            city: "Innsbruck",
+          },
+          hotelCoverImageUrl: "https://cdn.example.com/cover.jpg",
+          hotelImageUrls: ["https://cdn.example.com/offer.jpg"],
+          deliverables: [],
+          compensationOptions: [],
           creatorRequirements: null,
           createdAt: new Date("2026-05-01T10:00:00.000Z"),
           projectedAt: new Date("2026-06-01T10:00:00.000Z"),
@@ -633,52 +654,67 @@ describe("marketplace discovery public-safety guard", () => {
       }),
     });
 
-    const listings = await injectJson<MarketplaceListingPage>(app, {
+    const offers = await injectJson<MarketplaceOfferPage>(app, {
       method: "GET",
-      url: "/api/marketplace/listings",
+      url: "/api/marketplace/offers",
     });
     const creators = await injectJson<MarketplaceCreatorPage>(app, {
       method: "GET",
       url: "/api/marketplace/creators",
     });
 
-    expect(listings.statusCode).toBe(200);
-    expect(listings.body.items[0]?.listingId).toBe(LEGACY_LISTING_ID_A);
+    expect(offers.statusCode).toBe(200);
+    expect(offers.body.items[0]?.offerId).toBe(LEGACY_OFFER_ID_A);
     expect(creators.statusCode).toBe(200);
     expect(creators.body.items[0]?.creatorId).toBe(LEGACY_CREATOR_ID_A);
     const sql = pool.sql.join("\n");
-    expect(sql).toContain('listing.source_listing_id AS "listingId"');
-    expect(sql).toContain("listing.source_listing_id IS NOT NULL");
+    expect(sql).toContain('offer.id::text AS "offerId"');
+    expect(sql).toContain('property.property_type AS "hotelAccommodationType"');
+    expect(sql).toContain("marketplace.offer_deliverables");
     expect(sql).toContain('creator.source_creator_id AS "creatorId"');
     expect(sql).toContain("creator.source_creator_id IS NOT NULL");
-    expect(sql).not.toContain("COALESCE(listing.source_listing_id");
+    expect(sql).not.toContain("offer.source_offer_id");
     expect(sql).not.toContain("COALESCE(creator.source_creator_id");
   });
 });
 
 describe("pg marketplace discovery repository", () => {
-  it("maps public listing read-model rows with legacy IDs and total", async () => {
+  it("maps public offer read-model rows with legacy IDs and total", async () => {
     const pool = createFakePool([
       [
         {
-          listingId: LEGACY_LISTING_ID_A,
-          publicId: "mlst_alpenrose",
-          canonicalSlug: "hotel-alpenrose",
-          displayName: "Hotel Alpenrose",
-          listingTitle: "Alpine getaway collaboration",
-          listingSummary: "Boutique alpine hotel.",
-          accommodationType: "boutique_hotel",
-          location: { display: "Innsbruck, Austria", countryCode: "AT", city: "Innsbruck" },
-          coverImageUrl: "https://cdn.example.com/cover.jpg",
-          imageUrls: ["https://cdn.example.com/listing.jpg"],
-          offerings: [
+          offerId: LEGACY_OFFER_ID_A,
+          offerPublicId: "mlst_alpenrose",
+          offerTitle: "Alpine getaway collaboration",
+          offerSummary: "Boutique alpine hotel.",
+          hotelName: "Hotel Alpenrose",
+          hotelSlug: "hotel-alpenrose",
+          hotelAccommodationType: "hotel",
+          hotelLocation: {
+            display: "Innsbruck, Austria",
+            countryCode: "AT",
+            city: "Innsbruck",
+          },
+          hotelCoverImageUrl: "https://cdn.example.com/cover.jpg",
+          hotelImageUrls: ["https://cdn.example.com/offer.jpg"],
+          deliverables: [
             {
-              id: "offering-1",
+              deliverableId: "deliverable-1",
+              platform: "instagram",
+              deliverableType: "reel",
+              quantity: 1,
+              timingGuidance: null,
+            },
+          ],
+          compensationOptions: [
+            {
+              id: "compensationOption-1",
               type: "affiliate",
               months: ["June"],
               platforms: ["instagram"],
               commissionPercent: 12,
               minFollowers: 5000,
+              termsSummary: "Affiliate commission available",
             },
           ],
           creatorRequirements: {
@@ -687,6 +723,7 @@ describe("pg marketplace discovery repository", () => {
             targetAgeMin: 20,
             targetAgeMax: 40,
             ageGroups: ["25-34"],
+            creatorTypes: ["travel"],
           },
           createdAt: new Date("2026-05-01T10:00:00.000Z"),
           projectedAt: new Date("2026-06-01T10:00:00.000Z"),
@@ -699,24 +736,31 @@ describe("pg marketplace discovery repository", () => {
       pool,
     });
 
-    const result = await repository.listPublicListings({ limit: 1, offset: 2 });
+    const result = await repository.listPublicOffers({ limit: 1, offset: 2 });
 
     expect(result.total).toBe(3);
     expect(result.items[0]).toMatchObject({
-      listingId: LEGACY_LISTING_ID_A,
-      publicId: "mlst_alpenrose",
-      canonicalSlug: "hotel-alpenrose",
-      coverImageUrl: "https://cdn.example.com/cover.jpg",
-      location: { displayText: "Innsbruck, Austria", countryCode: "AT", city: "Innsbruck" },
-      imageUrls: ["https://cdn.example.com/listing.jpg"],
-      offerings: [
+      offerId: LEGACY_OFFER_ID_A,
+      offerPublicId: "mlst_alpenrose",
+      hotelSlug: "hotel-alpenrose",
+      hotelAccommodationType: "hotel",
+      hotelCoverImageUrl: "https://cdn.example.com/cover.jpg",
+      hotelLocation: {
+        displayText: "Innsbruck, Austria",
+        countryCode: "AT",
+        city: "Innsbruck",
+      },
+      hotelImageUrls: ["https://cdn.example.com/offer.jpg"],
+      deliverables: [{ deliverableId: "deliverable-1", deliverableType: "reel" }],
+      compensationOptions: [
         {
-          offeringId: "offering-1",
-          collaborationType: "affiliate",
+          compensationOptionId: "compensationOption-1",
+          compensationType: "affiliate",
           availabilityMonths: ["June"],
           platforms: ["instagram"],
           commissionPercentage: 12,
           minFollowers: 5000,
+          termsSummary: "Affiliate commission available",
         },
       ],
       creatorRequirements: {
@@ -725,13 +769,15 @@ describe("pg marketplace discovery repository", () => {
         targetAgeMin: 20,
         targetAgeMax: 40,
         targetAgeGroups: ["25-34"],
+        creatorTypes: ["travel"],
       },
       createdAt: "2026-05-01T10:00:00.000Z",
       projectedAt: "2026-06-01T10:00:00.000Z",
     });
     expect(pool.sql.join("\n")).toContain("read_model.visibility_status = 'public'");
-    expect(pool.sql.join("\n")).toContain('listing.source_listing_id AS "listingId"');
-    expect(pool.sql.join("\n")).toContain("listing.source_listing_id IS NOT NULL");
+    expect(pool.sql.join("\n")).toContain("offer.offer_status = 'verified'");
+    expect(pool.sql.join("\n")).toContain('offer.id::text AS "offerId"');
+    expect(pool.sql.join("\n")).toContain("marketplace.offer_compensation_options");
     expect(pool.sql.join("\n")).toContain("property_public_profile_read_model");
     expect(pool.sql.join("\n")).toContain("platformMediaObjectId");
     expect(pool.sql.join("\n")).not.toMatch(/\bauth\b|users/i);

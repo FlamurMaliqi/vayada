@@ -60,11 +60,13 @@ type SharedHotelSetupRow = {
   marketplaceProfileStatus: string | null;
   marketplaceProfileComplete: boolean | null;
   marketplaceProfileUpdatedAt: unknown;
-  marketplaceListingCount: number | string;
-  marketplaceVerifiedListingCount: number | string;
-  marketplaceListingUpdatedAt: unknown;
-  marketplaceOfferingCount: number | string;
-  marketplaceOfferingUpdatedAt: unknown;
+  marketplaceOfferCount: number | string;
+  marketplaceVerifiedOfferCount: number | string;
+  marketplaceOfferUpdatedAt: unknown;
+  marketplaceDeliverableCount: number | string;
+  marketplaceDeliverableUpdatedAt: unknown;
+  marketplaceCompensationCount: number | string;
+  marketplaceCompensationUpdatedAt: unknown;
   marketplaceRequirementCount: number | string;
   marketplaceRequirementUpdatedAt: unknown;
 };
@@ -554,15 +556,15 @@ function marketplaceActivation(row: SharedHotelSetupRow): SharedProductActivatio
   }
 
   const missingSteps: string[] = [];
-  const listingCount = toCount(row.marketplaceListingCount);
-  const verifiedListingCount = toCount(row.marketplaceVerifiedListingCount);
-  const offeringCount = toCount(row.marketplaceOfferingCount);
+  const offerCount = toCount(row.marketplaceOfferCount);
+  const verifiedOfferCount = toCount(row.marketplaceVerifiedOfferCount);
+  const deliverableCount = toCount(row.marketplaceDeliverableCount);
+  const compensationCount = toCount(row.marketplaceCompensationCount);
   if (!row.marketplaceEntitlementActive) missingSteps.push("productEntitlement");
   if (row.marketplaceProfileComplete !== true) missingSteps.push("creatorPitch");
-  if (listingCount === 0) missingSteps.push("marketplaceListing");
-  if (verifiedListingCount === 0 || offeringCount === 0) {
-    missingSteps.push("collaborationOffer");
-  }
+  if (offerCount === 0 || verifiedOfferCount === 0) missingSteps.push("marketplaceOffer");
+  if (deliverableCount === 0) missingSteps.push("offerDeliverables");
+  if (compensationCount === 0) missingSteps.push("compensationOptions");
   if (toCount(row.marketplaceRequirementCount) === 0) missingSteps.push("creatorRequirements");
 
   return missingSteps.length === 0 && row.marketplaceProfileStatus === "verified"
@@ -597,8 +599,9 @@ function marketplaceUpdatedAt(row: SharedHotelSetupRow): string | null {
     row.marketplaceSelectionUpdatedAt,
     row.marketplaceEntitlementUpdatedAt,
     row.marketplaceProfileUpdatedAt,
-    row.marketplaceListingUpdatedAt,
-    row.marketplaceOfferingUpdatedAt,
+    row.marketplaceOfferUpdatedAt,
+    row.marketplaceDeliverableUpdatedAt,
+    row.marketplaceCompensationUpdatedAt,
     row.marketplaceRequirementUpdatedAt,
   );
 }
@@ -704,19 +707,19 @@ function propertyProfileSql(): string {
       SELECT
         NULLIF(listing.title, '') AS display_name,
         NULLIF(listing.raw_location_text, '') AS raw_location_text,
-        NULLIF(listing.listing_summary, '') AS listing_summary,
+        NULLIF(listing.offer_summary, '') AS offer_summary,
         NULLIF(profile.host_summary, '') AS host_summary,
         listing.image_urls,
         latest.value AS updated_at
       FROM marketplace.marketplace_hotel_profiles profile
       LEFT JOIN LATERAL (
-        SELECT title, raw_location_text, listing_summary, image_urls, updated_at
-        FROM marketplace.marketplace_hotel_listings
+        SELECT title, raw_location_text, offer_summary, image_urls, updated_at
+        FROM marketplace.marketplace_offers
         WHERE property_id = property.id
           AND organization_id = $1::uuid
-          AND listing_status <> 'archived'
+          AND offer_status <> 'archived'
         ORDER BY
-          CASE listing_status WHEN 'verified' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+          CASE offer_status WHEN 'verified' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
           updated_at DESC,
           id
         LIMIT 1
@@ -793,7 +796,7 @@ function propertyProfileSql(): string {
           NULLIF(public_profile.descriptions ->> 'summary', ''),
           NULLIF(public_profile.descriptions -> property.default_locale ->> 'short', ''),
           NULLIF(public_profile.descriptions -> property.default_locale ->> 'summary', ''),
-          marketplace_prefill.listing_summary,
+          marketplace_prefill.offer_summary,
           marketplace_prefill.host_summary
         ) AS short_description,
         COALESCE(
@@ -1334,11 +1337,13 @@ function sharedHotelSetupStatusSql(): string {
       marketplace_profile.marketplace_profile_status AS "marketplaceProfileStatus",
       marketplace_profile.profile_complete AS "marketplaceProfileComplete",
       marketplace_profile.updated_at AS "marketplaceProfileUpdatedAt",
-      COALESCE(marketplace_listings.count, 0) AS "marketplaceListingCount",
-      COALESCE(marketplace_listings.verified_count, 0) AS "marketplaceVerifiedListingCount",
-      marketplace_listings.updated_at AS "marketplaceListingUpdatedAt",
-      COALESCE(marketplace_offerings.count, 0) AS "marketplaceOfferingCount",
-      marketplace_offerings.updated_at AS "marketplaceOfferingUpdatedAt",
+      COALESCE(marketplace_offers_state.count, 0) AS "marketplaceOfferCount",
+      COALESCE(marketplace_offers_state.verified_count, 0) AS "marketplaceVerifiedOfferCount",
+      marketplace_offers_state.updated_at AS "marketplaceOfferUpdatedAt",
+      COALESCE(marketplace_deliverables.count, 0) AS "marketplaceDeliverableCount",
+      marketplace_deliverables.updated_at AS "marketplaceDeliverableUpdatedAt",
+      COALESCE(marketplace_compensation.count, 0) AS "marketplaceCompensationCount",
+      marketplace_compensation.updated_at AS "marketplaceCompensationUpdatedAt",
       COALESCE(marketplace_requirements.count, 0) AS "marketplaceRequirementCount",
       marketplace_requirements.updated_at AS "marketplaceRequirementUpdatedAt"
     FROM unnest($2::uuid[]) AS scoped(property_id)
@@ -1350,19 +1355,19 @@ function sharedHotelSetupStatusSql(): string {
       SELECT
         NULLIF(listing.title, '') AS display_name,
         NULLIF(listing.raw_location_text, '') AS raw_location_text,
-        NULLIF(listing.listing_summary, '') AS listing_summary,
+        NULLIF(listing.offer_summary, '') AS offer_summary,
         NULLIF(profile.host_summary, '') AS host_summary,
         listing.image_urls,
         latest.value AS updated_at
       FROM marketplace.marketplace_hotel_profiles profile
       LEFT JOIN LATERAL (
-        SELECT title, raw_location_text, listing_summary, image_urls, updated_at
-        FROM marketplace.marketplace_hotel_listings
+        SELECT title, raw_location_text, offer_summary, image_urls, updated_at
+        FROM marketplace.marketplace_offers
         WHERE property_id = property.id
           AND organization_id = $1::uuid
-          AND listing_status <> 'archived'
+          AND offer_status <> 'archived'
         ORDER BY
-          CASE listing_status WHEN 'verified' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+          CASE offer_status WHEN 'verified' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
           updated_at DESC,
           id
         LIMIT 1
@@ -1479,7 +1484,7 @@ function sharedHotelSetupStatusSql(): string {
             NULLIF(public_profile.descriptions ->> 'summary', ''),
             NULLIF(public_profile.descriptions -> property.default_locale ->> 'short', ''),
             NULLIF(public_profile.descriptions -> property.default_locale ->> 'summary', ''),
-            marketplace_prefill.listing_summary,
+            marketplace_prefill.offer_summary,
             marketplace_prefill.host_summary
           ),
           'longDescription', COALESCE(
@@ -1724,7 +1729,7 @@ function sharedHotelSetupStatusSql(): string {
             resource_id = property.id::text
             AND (
               (resource_product = 'hotel_catalog' AND resource_type = 'property')
-              OR (resource_product = 'marketplace' AND resource_type IN ('hotel_profile', 'hotel_listing'))
+              OR (resource_product = 'marketplace' AND resource_type IN ('hotel_profile', 'marketplace_offer'))
             )
           )
         )
@@ -1753,34 +1758,45 @@ function sharedHotelSetupStatusSql(): string {
     LEFT JOIN LATERAL (
       SELECT
         count(*)::int AS count,
-        count(*) FILTER (WHERE listing_status = 'verified')::int AS verified_count,
+        count(*) FILTER (WHERE offer_status = 'verified')::int AS verified_count,
         max(updated_at) AS updated_at
-      FROM marketplace.marketplace_hotel_listings
+      FROM marketplace.marketplace_offers
       WHERE property_id = property.id
         AND organization_id = $1::uuid
-        AND listing_status <> 'archived'
-    ) marketplace_listings ON TRUE
+        AND offer_status <> 'archived'
+    ) marketplace_offers_state ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS count, max(deliverable.updated_at) AS updated_at
+      FROM marketplace.offer_deliverables deliverable
+      JOIN marketplace.marketplace_offers offer
+        ON offer.id = deliverable.offer_id
+       AND offer.property_id = deliverable.property_id
+       AND offer.organization_id = deliverable.organization_id
+      WHERE deliverable.property_id = property.id
+        AND deliverable.organization_id = $1::uuid
+        AND offer.offer_status <> 'archived'
+    ) marketplace_deliverables ON TRUE
     LEFT JOIN LATERAL (
       SELECT count(*)::int AS count, max(offering.updated_at) AS updated_at
-      FROM marketplace.listing_collaboration_offerings offering
-      JOIN marketplace.marketplace_hotel_listings listing
-        ON listing.id = offering.listing_id
+      FROM marketplace.offer_compensation_options offering
+      JOIN marketplace.marketplace_offers listing
+        ON listing.id = offering.offer_id
        AND listing.property_id = offering.property_id
        AND listing.organization_id = offering.organization_id
       WHERE offering.property_id = property.id
         AND offering.organization_id = $1::uuid
-        AND listing.listing_status <> 'archived'
-    ) marketplace_offerings ON TRUE
+        AND listing.offer_status <> 'archived'
+    ) marketplace_compensation ON TRUE
     LEFT JOIN LATERAL (
       SELECT count(*)::int AS count, max(requirement.updated_at) AS updated_at
-      FROM marketplace.listing_creator_requirements requirement
-      JOIN marketplace.marketplace_hotel_listings listing
-        ON listing.id = requirement.listing_id
+      FROM marketplace.offer_creator_requirements requirement
+      JOIN marketplace.marketplace_offers listing
+        ON listing.id = requirement.offer_id
        AND listing.property_id = requirement.property_id
        AND listing.organization_id = requirement.organization_id
       WHERE requirement.property_id = property.id
         AND requirement.organization_id = $1::uuid
-        AND listing.listing_status <> 'archived'
+        AND listing.offer_status <> 'archived'
     ) marketplace_requirements ON TRUE
     ORDER BY array_position($2::uuid[], property.id)
   `;

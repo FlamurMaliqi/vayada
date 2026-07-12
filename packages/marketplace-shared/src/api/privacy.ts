@@ -3,8 +3,7 @@ import { ApiErrorResponse, getApiBearerToken } from "./client";
 const IDENTITY_PRIVACY_API_BASE_URL =
   process.env.NEXT_PUBLIC_IDENTITY_API_URL ??
   process.env.NEXT_PUBLIC_AUTH_API_URL ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "https://api.marketplace.localhost";
+  "https://api.localhost";
 
 export const identityPrivacyEndpoints = {
   cookieConsent: (visitorId?: string) =>

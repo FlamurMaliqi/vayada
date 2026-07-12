@@ -24,7 +24,7 @@ export interface HotelProfileStatus {
   has_defaults: {
     location: boolean;
   };
-  missing_listings: boolean;
+  missing_offers: boolean;
   completion_steps: string[];
 }
 

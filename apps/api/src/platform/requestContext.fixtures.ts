@@ -53,8 +53,8 @@ const hotelOwnerContext: RequestContext = {
     },
     {
       product: "marketplace",
-      resourceType: "hotel_listing",
-      resourceId: "hotel_listing_alpenrose",
+      resourceType: "marketplace_offer",
+      resourceId: "marketplace_offer_alpenrose",
       relationship: "operator",
       status: "active",
     },
@@ -291,8 +291,8 @@ export const requestContextFixtureCases: RequestContextFixtureCase[] = [
       permission: "marketplace.collaboration.read",
       resource: {
         product: "marketplace",
-        resourceType: "hotel_listing",
-        resourceId: "hotel_listing_alpenrose",
+        resourceType: "marketplace_offer",
+        resourceId: "marketplace_offer_alpenrose",
         allowedRelationships: ["owner", "operator"],
       },
     },
@@ -308,8 +308,8 @@ export const requestContextFixtureCases: RequestContextFixtureCase[] = [
       permission: "marketplace.collaboration.review",
       resource: {
         product: "marketplace",
-        resourceType: "hotel_listing",
-        resourceId: "hotel_listing_alpenrose",
+        resourceType: "marketplace_offer",
+        resourceId: "marketplace_offer_alpenrose",
         allowedRelationships: ["owner"],
       },
     },

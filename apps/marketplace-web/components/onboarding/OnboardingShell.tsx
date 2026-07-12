@@ -26,7 +26,7 @@ export const MARKETPLACE_ONBOARDING_STEPS: OnboardingStep[] = [
   },
   {
     title: "Create first profile",
-    description: "Create the first listing or profile people will review.",
+    description: "Create the first offer or profile people will review.",
   },
 ];
 

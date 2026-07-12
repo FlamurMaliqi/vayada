@@ -4,6 +4,7 @@ import { requireAuthContext, type PermissionKey, type RequestContext } from "@va
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 
+import type { MarketplaceOfferIdentityAccessCommandPort } from "../platform/marketplaceOfferIdentityAccess.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
@@ -17,9 +18,9 @@ export const MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT = {
   doc: "engineering/marketplace-admin-contract.md",
 } as const;
 
-export const MARKETPLACE_ADMIN_HOTEL_LISTINGS_CONTRACT = {
+export const MARKETPLACE_ADMIN_OFFERS_CONTRACT = {
   methods: ["POST", "PUT", "DELETE"],
-  path: "/api/marketplace/admin/users/:hotelUserId/listings[/:listingId]",
+  path: "/api/marketplace/admin/users/:hotelUserId/offers[/:offerId]",
   owner: "marketplace",
   permission: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.permission,
   fallback: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.fallback,
@@ -59,16 +60,16 @@ export type MarketplaceCollaborationRead = {
   contractVersion: "marketplace-collaboration-reads.v1";
   authorizationMode: "hotel_group_resource_link" | "creator_workspace_resource_link";
   collaborationId: string;
-  listingId: string;
+  offerId: string;
   creatorId: string;
   hotelProfileId: string;
   side: MarketplaceCollaborationSide;
   initiatorSide: MarketplaceCollaborationSide;
   isInitiator: boolean;
   status: MarketplaceCollaborationStatus;
-  collaborationType: "free_stay" | "paid" | "discount" | "affiliate" | null;
-  listingName: string;
-  listingLocation: string | null;
+  compensationType: "free_stay" | "paid" | "discount" | "custom" | null;
+  offerTitle: string;
+  hotelLocation: string | null;
   creator: MarketplaceCollaborationParticipant;
   hotel: MarketplaceCollaborationParticipant;
   terms: {
@@ -77,7 +78,8 @@ export type MarketplaceCollaborationRead = {
     paidAmount: string | null;
     currency: string | null;
     discountPercentage: number | null;
-    creatorFee: string | null;
+    affiliateEnabled: boolean;
+    affiliateCommissionPercentage: string | null;
     travelDateFrom: string | null;
     travelDateTo: string | null;
     preferredDateFrom: string | null;
@@ -143,8 +145,8 @@ export type MarketplacePlatformName =
   | "x"
   | "other";
 
-export type MarketplaceHotelListingOfferingWrite = {
-  collaborationType: "free_stay" | "paid" | "discount" | "affiliate";
+export type MarketplaceOfferCompensationOptionWrite = {
+  compensationType: "free_stay" | "paid" | "discount" | "affiliate";
   availabilityMonths: string[];
   platforms: MarketplacePlatformName[];
   freeStayMinNights: number | null;
@@ -157,7 +159,7 @@ export type MarketplaceHotelListingOfferingWrite = {
   termsSummary: string | null;
 };
 
-export type MarketplaceHotelListingCreatorRequirementsWrite = {
+export type MarketplaceOfferCreatorRequirementsWrite = {
   platforms: MarketplacePlatformName[];
   targetCountries: string[];
   targetAgeMin: number | null;
@@ -166,29 +168,30 @@ export type MarketplaceHotelListingCreatorRequirementsWrite = {
   creatorTypes: ("lifestyle" | "travel" | "other")[];
 };
 
-export type MarketplaceAdminCreateHotelListingRequest = {
-  title: string;
-  listingSummary?: string | null;
-  accommodationType?:
-    | "hotel"
-    | "resort"
-    | "boutique_hotel"
-    | "lodge"
-    | "apartment"
-    | "villa"
-    | "other"
-    | null;
-  rawLocationText?: string | null;
-  imageUrls?: string[];
-  collaborationOfferings: MarketplaceHotelListingOfferingWrite[];
-  creatorRequirements: MarketplaceHotelListingCreatorRequirementsWrite;
+export type MarketplaceOfferDeliverableWrite = {
+  platform: MarketplacePlatformName;
+  deliverableType: string;
+  quantity: number;
+  timingGuidance?: string | null;
 };
 
-export type MarketplaceAdminUpdateHotelListingRequest = Partial<
-  Omit<MarketplaceAdminCreateHotelListingRequest, "collaborationOfferings" | "creatorRequirements">
+export type MarketplaceAdminCreateOfferRequest = {
+  title: string;
+  offerSummary?: string | null;
+  deliverables: MarketplaceOfferDeliverableWrite[];
+  compensationOptions: MarketplaceOfferCompensationOptionWrite[];
+  creatorRequirements: MarketplaceOfferCreatorRequirementsWrite;
+};
+
+export type MarketplaceAdminUpdateOfferRequest = Partial<
+  Omit<
+    MarketplaceAdminCreateOfferRequest,
+    "deliverables" | "compensationOptions" | "creatorRequirements"
+  >
 > & {
-  collaborationOfferings?: MarketplaceHotelListingOfferingWrite[];
-  creatorRequirements?: MarketplaceHotelListingCreatorRequirementsWrite | null;
+  deliverables?: MarketplaceOfferDeliverableWrite[];
+  compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
+  creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
 };
 
 export type MarketplaceAdminCreatorPlatformWrite = {
@@ -236,28 +239,28 @@ export type MarketplaceAdminInviteCode = {
   setup_data?: unknown;
 };
 
-export type MarketplaceAdminHotelListing = {
+export type MarketplaceAdminOffer = {
   contractVersion: typeof MARKETPLACE_ADMIN_CONTRACT_VERSION;
   authorizationMode: MarketplaceAdminAuthorizationMode;
-  listingId: string;
+  offerId: string;
   propertyId: string;
-  listingStatus: "draft" | "pending" | "verified" | "rejected" | "suspended" | "archived";
+  offerStatus: "draft" | "pending" | "verified" | "rejected" | "suspended" | "archived";
   title: string;
-  listingSummary: string | null;
-  accommodationType: MarketplaceAdminCreateHotelListingRequest["accommodationType"];
-  rawLocationText: string | null;
-  imageUrls: string[];
-  collaborationOfferings: (MarketplaceHotelListingOfferingWrite & { offeringId: string })[];
-  creatorRequirements: MarketplaceHotelListingCreatorRequirementsWrite | null;
+  offerSummary: string | null;
+  deliverables: (MarketplaceOfferDeliverableWrite & { deliverableId: string })[];
+  compensationOptions: (MarketplaceOfferCompensationOptionWrite & {
+    compensationOptionId: string;
+  })[];
+  creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
   createdAt: string;
   updatedAt: string;
 };
 
-export type MarketplaceAdminDeleteHotelListingResponse = {
+export type MarketplaceAdminDeleteOfferResponse = {
   contractVersion: typeof MARKETPLACE_ADMIN_CONTRACT_VERSION;
   authorizationMode: MarketplaceAdminAuthorizationMode;
-  deletedListing: {
-    listingId: string;
+  deletedOffer: {
+    offerId: string;
     title: string;
   };
 };
@@ -295,22 +298,22 @@ export type MarketplaceAdminRepository = {
     createdByUserId: string;
   }): Promise<MarketplaceAdminInviteCode>;
   revokeInviteCode(inviteCodeId: string): Promise<boolean>;
-  createHotelListingForUser(input: {
+  createOfferForUser(input: {
     hotelUserId: string;
-    request: MarketplaceAdminCreateHotelListingRequest;
+    request: MarketplaceAdminCreateOfferRequest;
     authorizationMode: MarketplaceAdminAuthorizationMode;
-  }): Promise<MarketplaceAdminHotelListing | null>;
-  updateHotelListingForUser(input: {
+  }): Promise<MarketplaceAdminOffer | null>;
+  updateOfferForUser(input: {
     hotelUserId: string;
-    listingId: string;
-    request: MarketplaceAdminUpdateHotelListingRequest;
+    offerId: string;
+    request: MarketplaceAdminUpdateOfferRequest;
     authorizationMode: MarketplaceAdminAuthorizationMode;
-  }): Promise<MarketplaceAdminHotelListing | null>;
-  deleteHotelListingForUser(input: {
+  }): Promise<MarketplaceAdminOffer | null>;
+  deleteOfferForUser(input: {
     hotelUserId: string;
-    listingId: string;
+    offerId: string;
     authorizationMode: MarketplaceAdminAuthorizationMode;
-  }): Promise<MarketplaceAdminDeleteHotelListingResponse | null>;
+  }): Promise<MarketplaceAdminDeleteOfferResponse | null>;
   isLegacySuperadmin?(userId: string): Promise<boolean>;
   close?(): Promise<void>;
 };
@@ -331,6 +334,7 @@ type MarketplaceAdminPool = {
 
 export function createPgMarketplaceAdminRepository(config: {
   connectionString: string;
+  identityAccess: MarketplaceOfferIdentityAccessCommandPort;
   max?: number;
   pool?: MarketplaceAdminPool;
 }): MarketplaceAdminRepository {
@@ -444,7 +448,7 @@ export function createPgMarketplaceAdminRepository(config: {
       });
     },
     async updateCreatorProfileForUser(input) {
-      return writeListing(pool, async (client) => {
+      return writeOffer(pool, async (client) => {
         const profile = await resolveAdminCreatorProfile(client, input.userId);
         if (!profile) return null;
         const result = await client.query<{ updatedAt: Date | string }>(
@@ -495,7 +499,7 @@ export function createPgMarketplaceAdminRepository(config: {
       });
     },
     async updateHotelProfileForUser(input) {
-      return writeListing(pool, async (client) => {
+      return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.userId);
         if (!profile) return null;
         const result = await client.query<{ updatedAt: Date | string }>(
@@ -571,107 +575,107 @@ export function createPgMarketplaceAdminRepository(config: {
       );
       return Boolean(result.rows[0]);
     },
-    async createHotelListingForUser(input) {
-      return writeListing(pool, async (client) => {
+    async createOfferForUser(input) {
+      return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
         if (!profile) return null;
-        const listing = await client.query<{ id: string }>(
-          `INSERT INTO marketplace.marketplace_hotel_listings (
+        const offer = await client.query<{ id: string }>(
+          `INSERT INTO marketplace.marketplace_offers (
              property_id,
              organization_id,
              source_system,
-             source_listing_id,
              title,
-             listing_summary,
-             accommodation_type,
-             listing_status,
-             raw_location_text,
-             image_urls
+             offer_summary,
+             offer_status
            )
-           VALUES ($1, $2, 'marketplace', gen_random_uuid()::text, $3, $4, $5, 'verified', $6, $7)
+           VALUES ($1, $2, 'marketplace', $3, $4, 'verified')
            RETURNING id`,
           [
             profile.propertyId,
             profile.organizationId,
             input.request.title,
-            input.request.listingSummary ?? null,
-            input.request.accommodationType ?? null,
-            input.request.rawLocationText ?? null,
-            input.request.imageUrls ?? [],
+            input.request.offerSummary ?? null,
           ],
         );
-        const listingId = listing.rows[0]?.id;
-        if (!listingId) return null;
-        await replaceListingChildren(client, {
-          listingId,
+        const offerId = offer.rows[0]?.id;
+        if (!offerId) return null;
+        await config.identityAccess.grantOperator({
+          transaction: client,
+          offerId,
+          organizationId: profile.organizationId,
+        });
+        await replaceOfferChildren(client, {
+          offerId,
           propertyId: profile.propertyId,
           organizationId: profile.organizationId,
-          offerings: input.request.collaborationOfferings,
+          deliverables: input.request.deliverables,
+          compensationOptions: input.request.compensationOptions,
           creatorRequirements: input.request.creatorRequirements,
         });
-        return readListing(client, listingId, input.authorizationMode);
+        await syncOfferReadModel(client, offerId, "initialize");
+        return readOffer(client, offerId, input.authorizationMode);
       });
     },
-    async updateHotelListingForUser(input) {
-      return writeListing(pool, async (client) => {
+    async updateOfferForUser(input) {
+      return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
         if (!profile) return null;
-        const target = await resolveListingForProfile(client, profile, input.listingId);
+        const target = await resolveOfferForProfile(client, profile, input.offerId);
         if (!target) return null;
         await client.query(
-          `UPDATE marketplace.marketplace_hotel_listings
+          `UPDATE marketplace.marketplace_offers
            SET title = COALESCE($2, title),
-               listing_summary = CASE WHEN $3::boolean THEN $4 ELSE listing_summary END,
-               accommodation_type = CASE WHEN $5::boolean THEN $6 ELSE accommodation_type END,
-               raw_location_text = CASE WHEN $7::boolean THEN $8 ELSE raw_location_text END,
-               image_urls = CASE WHEN $9::boolean THEN $10::text[] ELSE image_urls END,
+               offer_summary = CASE WHEN $3::boolean THEN $4 ELSE offer_summary END,
                updated_at = now()
            WHERE id = $1`,
           [
-            target.listingResourceId,
+            target.offerResourceId,
             input.request.title,
-            input.request.listingSummary !== undefined,
-            input.request.listingSummary ?? null,
-            input.request.accommodationType !== undefined,
-            input.request.accommodationType ?? null,
-            input.request.rawLocationText !== undefined,
-            input.request.rawLocationText ?? null,
-            input.request.imageUrls !== undefined,
-            input.request.imageUrls ?? [],
+            input.request.offerSummary !== undefined,
+            input.request.offerSummary ?? null,
           ],
         );
         if (
-          input.request.collaborationOfferings !== undefined ||
+          input.request.deliverables !== undefined ||
+          input.request.compensationOptions !== undefined ||
           input.request.creatorRequirements !== undefined
         ) {
-          await replaceListingChildren(client, {
-            listingId: target.listingResourceId,
+          await replaceOfferChildren(client, {
+            offerId: target.offerResourceId,
             propertyId: profile.propertyId,
             organizationId: profile.organizationId,
-            offerings: input.request.collaborationOfferings,
+            deliverables: input.request.deliverables,
+            compensationOptions: input.request.compensationOptions,
             creatorRequirements: input.request.creatorRequirements,
           });
         }
-        return readListing(client, target.listingResourceId, input.authorizationMode);
+        await syncOfferReadModel(client, target.offerResourceId, "preserve");
+        return readOffer(client, target.offerResourceId, input.authorizationMode);
       });
     },
-    async deleteHotelListingForUser(input) {
-      return writeListing(pool, async (client) => {
+    async deleteOfferForUser(input) {
+      return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
         if (!profile) return null;
-        const target = await resolveListingForProfile(client, profile, input.listingId);
+        const target = await resolveOfferForProfile(client, profile, input.offerId);
         if (!target) return null;
         await client.query(
-          `UPDATE marketplace.marketplace_hotel_listings
-           SET listing_status = 'archived', updated_at = now()
+          `UPDATE marketplace.marketplace_offers
+           SET offer_status = 'archived', updated_at = now()
            WHERE id = $1`,
-          [target.listingResourceId],
+          [target.offerResourceId],
         );
+        await syncOfferReadModel(client, target.offerResourceId, "disable");
+        await config.identityAccess.archiveOperator({
+          transaction: client,
+          offerId: target.offerResourceId,
+          organizationId: profile.organizationId,
+        });
         return {
           contractVersion: MARKETPLACE_ADMIN_CONTRACT_VERSION,
           authorizationMode: input.authorizationMode,
-          deletedListing: {
-            listingId: target.sourceListingId,
+          deletedOffer: {
+            offerId: target.offerResourceId,
             title: target.title,
           },
         };
@@ -837,13 +841,13 @@ export async function registerMarketplaceAdminRoutes(
     },
   );
 
-  app.post<{ Params: HotelUserParams; Body: MarketplaceAdminCreateHotelListingRequest }>(
-    "/admin/users/:hotelUserId/listings",
+  app.post<{ Params: HotelUserParams; Body: MarketplaceAdminCreateOfferRequest }>(
+    "/admin/users/:hotelUserId/offers",
     async (request, reply) => {
       const access = await requireMarketplaceAdminAccess(request, options);
-      const validation = validateCreateListingRequest(request.body);
+      const validation = validateCreateOfferRequest(request.body);
       if (validation) return sendAdminError(reply, 422, validation);
-      const result = await repository.createHotelListingForUser({
+      const result = await repository.createOfferForUser({
         hotelUserId: request.params.hotelUserId,
         request: request.body,
         authorizationMode: access.authorizationMode,
@@ -853,33 +857,33 @@ export async function registerMarketplaceAdminRoutes(
     },
   );
 
-  app.put<{ Params: ListingParams; Body: MarketplaceAdminUpdateHotelListingRequest }>(
-    "/admin/users/:hotelUserId/listings/:listingId",
+  app.put<{ Params: OfferParams; Body: MarketplaceAdminUpdateOfferRequest }>(
+    "/admin/users/:hotelUserId/offers/:offerId",
     async (request, reply) => {
       const access = await requireMarketplaceAdminAccess(request, options);
-      const validation = validateUpdateListingRequest(request.body);
+      const validation = validateUpdateOfferRequest(request.body);
       if (validation) return sendAdminError(reply, 422, validation);
-      const result = await repository.updateHotelListingForUser({
+      const result = await repository.updateOfferForUser({
         hotelUserId: request.params.hotelUserId,
-        listingId: request.params.listingId,
+        offerId: request.params.offerId,
         request: request.body,
         authorizationMode: access.authorizationMode,
       });
-      if (!result) return sendAdminError(reply, 404, "listing_not_found");
+      if (!result) return sendAdminError(reply, 404, "offer_not_found");
       return result;
     },
   );
 
-  app.delete<{ Params: ListingParams }>(
-    "/admin/users/:hotelUserId/listings/:listingId",
+  app.delete<{ Params: OfferParams }>(
+    "/admin/users/:hotelUserId/offers/:offerId",
     async (request, reply) => {
       const access = await requireMarketplaceAdminAccess(request, options);
-      const result = await repository.deleteHotelListingForUser({
+      const result = await repository.deleteOfferForUser({
         hotelUserId: request.params.hotelUserId,
-        listingId: request.params.listingId,
+        offerId: request.params.offerId,
         authorizationMode: access.authorizationMode,
       });
-      if (!result) return sendAdminError(reply, 404, "listing_not_found");
+      if (!result) return sendAdminError(reply, 404, "offer_not_found");
       return result;
     },
   );
@@ -918,57 +922,70 @@ function readIdempotencyKey(request: FastifyRequest): string | null {
   return readNonEmptyString(headerValue) ?? readNonEmptyString(bodyValue);
 }
 
-function validateCreateListingRequest(
-  body: MarketplaceAdminCreateHotelListingRequest | undefined,
+function validateCreateOfferRequest(
+  body: MarketplaceAdminCreateOfferRequest | undefined,
 ): string | null {
   if (!body || !readNonEmptyString(body.title)) return "title_required";
-  if (!Array.isArray(body.collaborationOfferings) || body.collaborationOfferings.length === 0) {
-    return "collaboration_offerings_required";
+  if (!Array.isArray(body.deliverables) || body.deliverables.length === 0) {
+    return "deliverables_required";
+  }
+  if (!Array.isArray(body.compensationOptions) || body.compensationOptions.length === 0) {
+    return "compensation_options_required";
   }
   if (!body.creatorRequirements) return "creator_requirements_required";
-  return validateListingChildren(body.collaborationOfferings, body.creatorRequirements);
+  return validateOfferChildren(
+    body.deliverables,
+    body.compensationOptions,
+    body.creatorRequirements,
+  );
 }
 
-function validateUpdateListingRequest(
-  body: MarketplaceAdminUpdateHotelListingRequest | undefined,
+function validateUpdateOfferRequest(
+  body: MarketplaceAdminUpdateOfferRequest | undefined,
 ): string | null {
   if (!body) return "body_required";
   if (body.title !== undefined && !readNonEmptyString(body.title)) return "title_required";
-  if (body.collaborationOfferings?.length === 0) return "collaboration_offerings_required";
-  return validateListingChildren(body.collaborationOfferings, body.creatorRequirements);
+  if (body.deliverables?.length === 0) return "deliverables_required";
+  if (body.compensationOptions?.length === 0) return "compensation_options_required";
+  return validateOfferChildren(
+    body.deliverables,
+    body.compensationOptions,
+    body.creatorRequirements,
+  );
 }
 
-function validateListingChildren(
-  offerings?: MarketplaceHotelListingOfferingWrite[],
-  requirements?: MarketplaceHotelListingCreatorRequirementsWrite | null,
+function validateOfferChildren(
+  deliverables?: MarketplaceOfferDeliverableWrite[],
+  compensationOptions?: MarketplaceOfferCompensationOptionWrite[],
+  requirements?: MarketplaceOfferCreatorRequirementsWrite | null,
 ): string | null {
-  if (offerings) {
-    for (const offering of offerings) {
-      if (!["free_stay", "paid", "discount", "affiliate"].includes(offering.collaborationType)) {
-        return "invalid_collaboration_type";
+  if (deliverables) {
+    for (const deliverable of deliverables) {
+      if (!readNonEmptyString(deliverable.deliverableType)) return "invalid_deliverable";
+      if (!isPositiveInteger(deliverable.quantity)) return "invalid_deliverable";
+    }
+  }
+  if (compensationOptions) {
+    for (const option of compensationOptions) {
+      if (!["free_stay", "paid", "discount", "affiliate"].includes(option.compensationType)) {
+        return "invalid_compensation_type";
       }
-      if (offering.collaborationType === "free_stay") {
+      if (option.compensationType === "free_stay") {
         if (
-          !isPositiveInteger(offering.freeStayMinNights) ||
-          !isPositiveInteger(offering.freeStayMaxNights) ||
-          offering.freeStayMinNights > offering.freeStayMaxNights
+          !isPositiveInteger(option.freeStayMinNights) ||
+          !isPositiveInteger(option.freeStayMaxNights) ||
+          option.freeStayMinNights > option.freeStayMaxNights
         ) {
           return "invalid_free_stay";
         }
       }
-      if (
-        offering.collaborationType === "paid" &&
-        !isPositiveDecimalString(offering.paidMaxAmount)
-      ) {
+      if (option.compensationType === "paid" && !isPositiveDecimalString(option.paidMaxAmount)) {
         return "invalid_paid_amount";
       }
-      if (offering.collaborationType === "discount" && !isPercentage(offering.discountPercentage)) {
+      if (option.compensationType === "discount" && !isPercentage(option.discountPercentage)) {
         return "invalid_discount";
       }
-      if (
-        offering.collaborationType === "affiliate" &&
-        !isPercentage(offering.commissionPercentage)
-      ) {
+      if (option.compensationType === "affiliate" && !isPercentage(option.commissionPercentage)) {
         return "invalid_commission";
       }
     }
@@ -1070,7 +1087,7 @@ function sendAdminError(reply: FastifyReply, statusCode: 404 | 422, code: string
   });
 }
 
-async function writeListing<T>(
+async function writeOffer<T>(
   pool: MarketplaceAdminPool,
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
@@ -1335,16 +1352,31 @@ async function readLifecycleWrite(
   );
   const collaboration = row.rows[0];
   if (!collaboration) throw new Error("Updated collaboration was not found.");
+  const mapped = mapCollaborationRow(collaboration);
+  const sideEffects: MarketplaceCollaborationLifecycleWriteResponse["sideEffects"] =
+    mapped.status === "accepted"
+      ? [
+          { type: "marketplace.collaboration.accepted" },
+          ...(mapped.terms.affiliateEnabled
+            ? [
+                {
+                  type: "marketplace.affiliate.provision.command_requested",
+                  idempotencyKey: `marketplace.affiliate.provision:collaboration:${collaboration.sourceCollaborationId}:v1`,
+                },
+              ]
+            : []),
+        ]
+      : [
+          {
+            type: "marketplace.collaboration.system_message_requested",
+            idempotencyKey: command.idempotencyKey,
+          },
+        ];
   return {
     contractVersion: "marketplace-collaboration-lifecycle-writes.v1",
     command,
-    collaboration: mapCollaborationRow(collaboration),
-    sideEffects: [
-      {
-        type: "marketplace.collaboration.system_message_requested",
-        idempotencyKey: command.idempotencyKey,
-      },
-    ],
+    collaboration: mapped,
+    sideEffects,
   };
 }
 
@@ -1451,53 +1483,80 @@ async function replaceCreatorPlatforms(
   }
 }
 
-async function resolveListingForProfile(
+async function resolveOfferForProfile(
   client: Pick<MarketplaceAdminPool, "query">,
   profile: AdminHotelProfile,
-  listingId: string,
-): Promise<{ listingResourceId: string; sourceListingId: string; title: string } | null> {
+  offerId: string,
+): Promise<{ offerResourceId: string; title: string } | null> {
   const result = await client.query<{
-    listingResourceId: string;
-    sourceListingId: string;
+    offerResourceId: string;
     title: string;
   }>(
     `SELECT
-       id::text AS "listingResourceId",
-       COALESCE(source_listing_id, id::text) AS "sourceListingId",
+       id::text AS "offerResourceId",
        title
-     FROM marketplace.marketplace_hotel_listings
+     FROM marketplace.marketplace_offers
      WHERE property_id::text = $1
        AND organization_id::text = $2
-       AND (source_listing_id = $3 OR id::text = $3)
-       AND listing_status <> 'archived'
+       AND id::text = $3
+       AND offer_status <> 'archived'
      LIMIT 1`,
-    [profile.propertyId, profile.organizationId, listingId],
+    [profile.propertyId, profile.organizationId, offerId],
   );
   return result.rows[0] ?? null;
 }
 
-async function replaceListingChildren(
+async function replaceOfferChildren(
   client: Pick<MarketplaceAdminPool, "query">,
   input: {
-    listingId: string;
+    offerId: string;
     propertyId: string;
     organizationId: string;
-    offerings?: MarketplaceHotelListingOfferingWrite[];
-    creatorRequirements?: MarketplaceHotelListingCreatorRequirementsWrite | null;
+    deliverables?: MarketplaceOfferDeliverableWrite[];
+    compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
+    creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
   },
 ): Promise<void> {
-  if (input.offerings !== undefined) {
-    await client.query(
-      `DELETE FROM marketplace.listing_collaboration_offerings WHERE listing_id = $1`,
-      [input.listingId],
-    );
-    for (const offering of input.offerings) {
+  if (input.deliverables !== undefined) {
+    await client.query(`DELETE FROM marketplace.offer_deliverables WHERE offer_id = $1`, [
+      input.offerId,
+    ]);
+    for (const deliverable of input.deliverables) {
       await client.query(
-        `INSERT INTO marketplace.listing_collaboration_offerings (
-           listing_id,
+        `INSERT INTO marketplace.offer_deliverables (
+           offer_id,
            property_id,
            organization_id,
-           collaboration_type,
+           platform,
+           deliverable_type,
+           quantity,
+           timing_guidance
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          input.offerId,
+          input.propertyId,
+          input.organizationId,
+          deliverable.platform,
+          deliverable.deliverableType,
+          deliverable.quantity,
+          deliverable.timingGuidance ?? null,
+        ],
+      );
+    }
+  }
+
+  if (input.compensationOptions !== undefined) {
+    await client.query(`DELETE FROM marketplace.offer_compensation_options WHERE offer_id = $1`, [
+      input.offerId,
+    ]);
+    for (const option of input.compensationOptions) {
+      await client.query(
+        `INSERT INTO marketplace.offer_compensation_options (
+           offer_id,
+           property_id,
+           organization_id,
+           compensation_type,
            availability_months,
            platforms,
            free_stay_min_nights,
@@ -1511,34 +1570,33 @@ async function replaceListingChildren(
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric, $10, $11::numeric, $12, $13, $14)`,
         [
-          input.listingId,
+          input.offerId,
           input.propertyId,
           input.organizationId,
-          offering.collaborationType,
-          offering.availabilityMonths,
-          offering.platforms,
-          offering.freeStayMinNights,
-          offering.freeStayMaxNights,
-          offering.paidMaxAmount,
-          offering.discountPercentage,
-          offering.commissionPercentage,
-          offering.minFollowers,
-          offering.currency ?? "USD",
-          offering.termsSummary,
+          option.compensationType,
+          option.availabilityMonths,
+          option.platforms,
+          option.freeStayMinNights,
+          option.freeStayMaxNights,
+          option.paidMaxAmount,
+          option.discountPercentage,
+          option.commissionPercentage,
+          option.minFollowers,
+          option.currency ?? "USD",
+          option.termsSummary,
         ],
       );
     }
   }
 
   if (input.creatorRequirements !== undefined) {
-    await client.query(
-      `DELETE FROM marketplace.listing_creator_requirements WHERE listing_id = $1`,
-      [input.listingId],
-    );
+    await client.query(`DELETE FROM marketplace.offer_creator_requirements WHERE offer_id = $1`, [
+      input.offerId,
+    ]);
     if (input.creatorRequirements) {
       await client.query(
-        `INSERT INTO marketplace.listing_creator_requirements (
-           listing_id,
+        `INSERT INTO marketplace.offer_creator_requirements (
+           offer_id,
            property_id,
            organization_id,
            platforms,
@@ -1550,7 +1608,7 @@ async function replaceListingChildren(
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
-          input.listingId,
+          input.offerId,
           input.propertyId,
           input.organizationId,
           input.creatorRequirements.platforms,
@@ -1565,19 +1623,135 @@ async function replaceListingChildren(
   }
 }
 
-async function readListing(
+async function syncOfferReadModel(
   client: Pick<MarketplaceAdminPool, "query">,
-  listingResourceId: string,
+  offerId: string,
+  visibilityMode: "initialize" | "preserve" | "disable",
+): Promise<void> {
+  await client.query(
+    `INSERT INTO marketplace.marketplace_offer_read_model (
+       offer_id,
+       property_id,
+       public_id,
+       canonical_slug,
+       display_name,
+       offer_title,
+       offer_summary,
+       accommodation_type,
+       visibility_status,
+       location,
+       image_urls,
+       public_compensation_summary,
+       public_creator_requirements,
+       source_freshness,
+       projected_at
+     )
+     SELECT
+       offer.id,
+       offer.property_id,
+       COALESCE(offer.source_offer_id, offer.id::text),
+       COALESCE(public_profile.canonical_slug, active_slug.slug, property.public_id),
+       COALESCE(public_profile.display_name, property.display_name),
+       offer.title,
+       offer.offer_summary,
+       offer.accommodation_type,
+       CASE
+         WHEN $2 = 'disable' THEN 'disabled'
+         WHEN $2 = 'preserve' AND current_projection.visibility_status IS NOT NULL
+           THEN current_projection.visibility_status
+         WHEN offer.offer_status = 'verified'
+          AND COALESCE(public_profile.profile_status, property.profile_status) = 'complete'
+           THEN 'public'
+         ELSE 'private'
+       END,
+       COALESCE(public_profile.location, '{}'::jsonb),
+       '{}'::text[],
+       COALESCE(compensation.items, '[]'::jsonb),
+       COALESCE(requirements.item, '{}'::jsonb),
+       jsonb_build_object('source', 'marketplace_admin'),
+       now()
+     FROM marketplace.marketplace_offers offer
+     JOIN hotel_catalog.properties property ON property.id = offer.property_id
+     LEFT JOIN marketplace.marketplace_offer_read_model current_projection
+       ON current_projection.offer_id = offer.id
+     LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
+       ON public_profile.property_id = offer.property_id
+     LEFT JOIN LATERAL (
+       SELECT slug.slug
+       FROM hotel_catalog.property_slugs slug
+       WHERE slug.property_id = offer.property_id
+         AND slug.status = 'active'
+       ORDER BY CASE slug.purpose WHEN 'canonical' THEN 0 WHEN 'marketplace_overlay' THEN 1 ELSE 2 END,
+                slug.created_at,
+                slug.id
+       LIMIT 1
+     ) active_slug ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT jsonb_agg(
+         jsonb_strip_nulls(jsonb_build_object(
+           'type', option.compensation_type,
+           'months', option.availability_months,
+           'platforms', option.platforms,
+           'freeStayMinNights', option.free_stay_min_nights,
+           'freeStayMaxNights', option.free_stay_max_nights,
+           'paidMaxAmount', option.paid_max_amount,
+           'discountPercentage', option.discount_percentage,
+           'commissionPercentage', option.commission_percentage,
+           'minFollowers', option.min_followers,
+           'currency', option.currency,
+           'termsSummary', option.terms_summary
+         )) ORDER BY option.created_at, option.id
+       ) AS items
+       FROM marketplace.offer_compensation_options option
+       WHERE option.offer_id = offer.id
+         AND option.property_id = offer.property_id
+         AND option.organization_id = offer.organization_id
+     ) compensation ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT jsonb_build_object(
+         'platforms', requirement.platforms,
+         'countries', requirement.target_countries,
+         'ageGroups', requirement.target_age_groups,
+         'creatorTypes', requirement.creator_types
+       ) AS item
+       FROM marketplace.offer_creator_requirements requirement
+       WHERE requirement.offer_id = offer.id
+         AND requirement.property_id = offer.property_id
+         AND requirement.organization_id = offer.organization_id
+     ) requirements ON TRUE
+     WHERE offer.id = $1::uuid
+     ON CONFLICT (offer_id) DO UPDATE
+     SET property_id = EXCLUDED.property_id,
+         public_id = EXCLUDED.public_id,
+         canonical_slug = EXCLUDED.canonical_slug,
+         display_name = EXCLUDED.display_name,
+         offer_title = EXCLUDED.offer_title,
+         offer_summary = EXCLUDED.offer_summary,
+         accommodation_type = EXCLUDED.accommodation_type,
+         visibility_status = EXCLUDED.visibility_status,
+         location = EXCLUDED.location,
+         image_urls = EXCLUDED.image_urls,
+         public_compensation_summary = EXCLUDED.public_compensation_summary,
+         public_creator_requirements = EXCLUDED.public_creator_requirements,
+         source_freshness = EXCLUDED.source_freshness,
+         projected_at = EXCLUDED.projected_at`,
+    [offerId, visibilityMode],
+  );
+}
+
+async function readOffer(
+  client: Pick<MarketplaceAdminPool, "query">,
+  offerResourceId: string,
   authorizationMode: MarketplaceAdminAuthorizationMode,
-): Promise<MarketplaceAdminHotelListing | null> {
-  const result = await client.query<ListingRow>(
-    `${LISTING_SELECT_SQL}
-     WHERE listing.id::text = $1
+): Promise<MarketplaceAdminOffer | null> {
+  const result = await client.query<OfferRow>(
+    `${OFFER_SELECT_SQL}
+     WHERE offer.id::text = $1
      LIMIT 1`,
-    [listingResourceId],
+    [offerResourceId],
   );
   const row = result.rows[0];
-  return row ? mapListingRow(row, authorizationMode) : null;
+  return row ? mapOfferRow(row, authorizationMode) : null;
 }
 
 function buildCollaborationFilters(
@@ -1596,8 +1770,8 @@ function buildCollaborationFilters(
     params.push(`%${input.search.trim()}%`);
     filters.push(`(
       creator.display_name ILIKE $${params.length}
-      OR listing.title ILIKE $${params.length}
-      OR read_model.display_name ILIKE $${params.length}
+      OR offer.title ILIKE $${params.length}
+      OR public_profile.display_name ILIKE $${params.length}
     )`);
   }
   return filters.length ? `WHERE ${filters.join(" AND ")}` : "";
@@ -1609,16 +1783,16 @@ function mapCollaborationRow(row: CollaborationRow): MarketplaceCollaborationRea
     contractVersion: "marketplace-collaboration-reads.v1",
     authorizationMode: "hotel_group_resource_link",
     collaborationId: row.collaborationId,
-    listingId: row.listingId,
+    offerId: row.offerId,
     creatorId: row.creatorId,
     hotelProfileId: row.hotelProfileId,
     side: "hotel",
     initiatorSide: row.initiatorSide === "hotel" ? "hotel" : "creator",
     isInitiator: row.initiatorSide === "hotel",
     status,
-    collaborationType: toCollaborationType(row.collaborationType),
-    listingName: row.listingName,
-    listingLocation: row.listingLocation,
+    compensationType: toCollaborationCompensationType(row.compensationType),
+    offerTitle: row.offerTitle,
+    hotelLocation: row.hotelLocation,
     creator: {
       side: "creator",
       organizationId: row.creatorOrganizationId,
@@ -1639,7 +1813,8 @@ function mapCollaborationRow(row: CollaborationRow): MarketplaceCollaborationRea
       paidAmount: toNullableDecimal(row.paidAmount),
       currency: row.currency ?? null,
       discountPercentage: toNullableNumber(row.discountPercentage),
-      creatorFee: toNullableDecimal(row.creatorFee),
+      affiliateEnabled: row.affiliateEnabled,
+      affiliateCommissionPercentage: toNullableDecimal(row.affiliateCommissionPercentage),
       travelDateFrom: toDateString(row.travelDateFrom),
       travelDateTo: toDateString(row.travelDateTo),
       preferredDateFrom: toDateString(row.preferredDateFrom),
@@ -1658,22 +1833,20 @@ function mapCollaborationRow(row: CollaborationRow): MarketplaceCollaborationRea
   };
 }
 
-function mapListingRow(
-  row: ListingRow,
+function mapOfferRow(
+  row: OfferRow,
   authorizationMode: MarketplaceAdminAuthorizationMode,
-): MarketplaceAdminHotelListing {
+): MarketplaceAdminOffer {
   return {
     contractVersion: MARKETPLACE_ADMIN_CONTRACT_VERSION,
     authorizationMode,
-    listingId: row.listingId,
+    offerId: row.offerId,
     propertyId: row.propertyId,
-    listingStatus: row.listingStatus,
+    offerStatus: row.offerStatus,
     title: row.title,
-    listingSummary: row.listingSummary,
-    accommodationType: row.accommodationType,
-    rawLocationText: row.rawLocationText,
-    imageUrls: row.imageUrls ?? [],
-    collaborationOfferings: toOfferings(row.offerings),
+    offerSummary: row.offerSummary,
+    deliverables: toOfferDeliverables(row.deliverables),
+    compensationOptions: toCompensationOptions(row.compensationOptions),
     creatorRequirements: toCreatorRequirements(row.creatorRequirements),
     createdAt: toIsoString(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
@@ -1695,11 +1868,11 @@ function toInviteCode(row: InviteCodeRow): MarketplaceAdminInviteCode {
   };
 }
 
-function toOfferings(value: unknown): MarketplaceAdminHotelListing["collaborationOfferings"] {
+function toCompensationOptions(value: unknown): MarketplaceAdminOffer["compensationOptions"] {
   if (!Array.isArray(value)) return [];
   return value.filter(isRecord).map((row) => ({
-    offeringId: readString(row.offeringId) ?? "",
-    collaborationType: toCollaborationType(row.collaborationType) ?? "free_stay",
+    compensationOptionId: readString(row.compensationOptionId) ?? "",
+    compensationType: toOfferCompensationType(row.compensationType) ?? "free_stay",
     availabilityMonths: toStringArray(row.availabilityMonths),
     platforms: toPlatformArray(row.platforms),
     freeStayMinNights: toNullableNumber(row.freeStayMinNights),
@@ -1713,9 +1886,18 @@ function toOfferings(value: unknown): MarketplaceAdminHotelListing["collaboratio
   }));
 }
 
-function toCreatorRequirements(
-  value: unknown,
-): MarketplaceHotelListingCreatorRequirementsWrite | null {
+function toOfferDeliverables(value: unknown): MarketplaceAdminOffer["deliverables"] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((row) => ({
+    deliverableId: readString(row.deliverableId) ?? "",
+    platform: toPlatformName(row.platform) ?? "other",
+    deliverableType: readString(row.deliverableType) ?? "post",
+    quantity: toNullableNumber(row.quantity) ?? 1,
+    timingGuidance: readString(row.timingGuidance),
+  }));
+}
+
+function toCreatorRequirements(value: unknown): MarketplaceOfferCreatorRequirementsWrite | null {
   if (!isRecord(value) || Object.keys(value).length === 0) return null;
   return {
     platforms: toPlatformArray(value.platforms),
@@ -1757,14 +1939,28 @@ function toCollaborationStatus(value: unknown): MarketplaceCollaborationStatus |
   }
 }
 
-function toCollaborationType(
+function toOfferCompensationType(
   value: unknown,
-): MarketplaceHotelListingOfferingWrite["collaborationType"] | null {
+): MarketplaceOfferCompensationOptionWrite["compensationType"] | null {
   switch (value) {
     case "free_stay":
     case "paid":
     case "discount":
     case "affiliate":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function toCollaborationCompensationType(
+  value: unknown,
+): MarketplaceCollaborationRead["compensationType"] {
+  switch (value) {
+    case "free_stay":
+    case "paid":
+    case "discount":
+    case "custom":
       return value;
     default:
       return null;
@@ -1941,8 +2137,8 @@ type UserProfileParams = {
   profileType: string;
 };
 
-type ListingParams = HotelUserParams & {
-  listingId: string;
+type OfferParams = HotelUserParams & {
+  offerId: string;
 };
 
 type RespondBody = {
@@ -1970,7 +2166,8 @@ type InviteCodeRow = {
 type CollaborationRow = {
   id: string;
   collaborationId: string;
-  listingId: string;
+  sourceCollaborationId: string;
+  offerId: string;
   creatorId: string;
   hotelProfileId: string;
   creatorProfileId: string;
@@ -1978,9 +2175,9 @@ type CollaborationRow = {
   hotelOrganizationId: string;
   initiatorSide: string;
   status: string;
-  collaborationType: string | null;
-  listingName: string;
-  listingLocation: string | null;
+  compensationType: string | null;
+  offerTitle: string;
+  hotelLocation: string | null;
   creatorName: string | null;
   creatorAvatarUrl: string | null;
   hotelName: string | null;
@@ -1989,7 +2186,8 @@ type CollaborationRow = {
   paidAmount: number | string | null;
   currency: string | null;
   discountPercentage: number | string | null;
-  creatorFee: number | string | null;
+  affiliateEnabled: boolean;
+  affiliateCommissionPercentage: number | string | null;
   travelDateFrom: Date | string | null;
   travelDateTo: Date | string | null;
   preferredDateFrom: Date | string | null;
@@ -2006,16 +2204,14 @@ type CollaborationRow = {
   updatedAt: Date | string;
 };
 
-type ListingRow = {
-  listingId: string;
+type OfferRow = {
+  offerId: string;
   propertyId: string;
-  listingStatus: MarketplaceAdminHotelListing["listingStatus"];
+  offerStatus: MarketplaceAdminOffer["offerStatus"];
   title: string;
-  listingSummary: string | null;
-  accommodationType: MarketplaceAdminCreateHotelListingRequest["accommodationType"];
-  rawLocationText: string | null;
-  imageUrls: string[] | null;
-  offerings: unknown;
+  offerSummary: string | null;
+  deliverables: unknown;
+  compensationOptions: unknown;
   creatorRequirements: unknown;
   createdAt: Date | string;
   updatedAt: Date | string;
@@ -2046,33 +2242,42 @@ const INVITE_CODE_SELECT_SQL = `
 const COLLABORATION_SELECT_SQL = `
   SELECT
     collaboration.id::text AS id,
-    COALESCE(collaboration.source_collaboration_id, collaboration.id::text) AS "collaborationId",
-    COALESCE(listing.source_listing_id, listing.id::text) AS "listingId",
-    COALESCE(creator.source_creator_id, creator.id::text) AS "creatorId",
-    COALESCE(profile.source_hotel_profile_id, profile.property_id::text) AS "hotelProfileId",
+    collaboration.id::text AS "collaborationId",
+    COALESCE(collaboration.source_collaboration_id, collaboration.id::text) AS "sourceCollaborationId",
+    offer.id::text AS "offerId",
+    creator.id::text AS "creatorId",
+    profile.property_id::text AS "hotelProfileId",
     creator.id::text AS "creatorProfileId",
     creator.organization_id::text AS "creatorOrganizationId",
-    listing.organization_id::text AS "hotelOrganizationId",
+    offer.organization_id::text AS "hotelOrganizationId",
     collaboration.initiator_type AS "initiatorSide",
     collaboration.lifecycle_status AS status,
-    collaboration.collaboration_type AS "collaborationType",
-    listing.title AS "listingName",
-    listing.raw_location_text AS "listingLocation",
+    collaboration.compensation_type AS "compensationType",
+    offer.title AS "offerTitle",
+    COALESCE(
+      NULLIF(public_profile.location->>'rawMarketplaceLocation', ''),
+      NULLIF(concat_ws(
+        ', ',
+        NULLIF(public_profile.location->>'city', ''),
+        NULLIF(public_profile.location->>'countryCode', '')
+      ), '')
+    ) AS "hotelLocation",
     creator.display_name AS "creatorName",
     creator.profile_picture_url AS "creatorAvatarUrl",
-    read_model.display_name AS "hotelName",
+    COALESCE(public_profile.display_name, property.display_name) AS "hotelName",
     collaboration.free_stay_min_nights AS "freeStayMinNights",
     collaboration.free_stay_max_nights AS "freeStayMaxNights",
     collaboration.paid_amount AS "paidAmount",
     collaboration.currency AS currency,
     collaboration.discount_percentage AS "discountPercentage",
-    collaboration.creator_fee AS "creatorFee",
+    collaboration.affiliate_enabled AS "affiliateEnabled",
+    collaboration.affiliate_commission_percentage AS "affiliateCommissionPercentage",
     collaboration.travel_date_from AS "travelDateFrom",
     collaboration.travel_date_to AS "travelDateTo",
     collaboration.preferred_date_from AS "preferredDateFrom",
     collaboration.preferred_date_to AS "preferredDateTo",
     collaboration.preferred_months AS "preferredMonths",
-    collaboration.platform_deliverables AS deliverables,
+    COALESCE(deliverables.items, '[]'::jsonb) AS deliverables,
     messages.last_message_at AS "lastMessageAt",
     collaboration.application_message AS "applicationMessage",
     collaboration.hotel_agreed_at AS "hotelAgreedAt",
@@ -2085,16 +2290,31 @@ const COLLABORATION_SELECT_SQL = `
   JOIN marketplace.creator_profiles creator
     ON creator.id = collaboration.creator_profile_id
    AND creator.organization_id = collaboration.creator_organization_id
-  JOIN marketplace.marketplace_hotel_listings listing
-    ON listing.id = collaboration.listing_id
-   AND listing.property_id = collaboration.property_id
-   AND listing.organization_id = collaboration.hotel_organization_id
+  JOIN marketplace.marketplace_offers offer
+    ON offer.id = collaboration.offer_id
+   AND offer.property_id = collaboration.property_id
+   AND offer.organization_id = collaboration.hotel_organization_id
   JOIN marketplace.marketplace_hotel_profiles profile
-    ON profile.property_id = listing.property_id
-   AND profile.organization_id = listing.organization_id
-  LEFT JOIN marketplace.marketplace_listing_read_model read_model
-    ON read_model.listing_id = listing.id
-   AND read_model.property_id = listing.property_id
+    ON profile.property_id = offer.property_id
+   AND profile.organization_id = offer.organization_id
+  JOIN hotel_catalog.properties property ON property.id = offer.property_id
+  LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
+    ON public_profile.property_id = offer.property_id
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+      jsonb_build_object(
+        'deliverableId', deliverable.id::text,
+        'platform', deliverable.platform,
+        'type', deliverable.deliverable_type,
+        'quantity', deliverable.quantity,
+        'status', deliverable.deliverable_status,
+        'completedAt', deliverable.completed_at
+      ) ORDER BY deliverable.created_at, deliverable.id
+    ) AS items
+    FROM marketplace.collaboration_deliverables deliverable
+    WHERE deliverable.collaboration_id = collaboration.id
+      AND deliverable.property_id = collaboration.property_id
+  ) deliverables ON TRUE
   LEFT JOIN LATERAL (
     SELECT max(created_at) AS last_message_at
     FROM marketplace.marketplace_chat_messages message
@@ -2112,42 +2332,57 @@ const COLLABORATION_MUTATION_CTE = `
   )
 `;
 
-const LISTING_SELECT_SQL = `
+const OFFER_SELECT_SQL = `
   SELECT
-    COALESCE(listing.source_listing_id, listing.id::text) AS "listingId",
-    listing.property_id::text AS "propertyId",
-    listing.listing_status AS "listingStatus",
-    listing.title,
-    listing.listing_summary AS "listingSummary",
-    listing.accommodation_type AS "accommodationType",
-    listing.raw_location_text AS "rawLocationText",
-    listing.image_urls AS "imageUrls",
-    COALESCE(offerings.items, '[]'::jsonb) AS offerings,
+    offer.id::text AS "offerId",
+    offer.property_id::text AS "propertyId",
+    offer.offer_status AS "offerStatus",
+    offer.title,
+    offer.offer_summary AS "offerSummary",
+    COALESCE(deliverables.items, '[]'::jsonb) AS deliverables,
+    COALESCE(compensation.items, '[]'::jsonb) AS "compensationOptions",
     COALESCE(requirements.item, '{}'::jsonb) AS "creatorRequirements",
-    listing.created_at AS "createdAt",
-    listing.updated_at AS "updatedAt"
-  FROM marketplace.marketplace_hotel_listings listing
+    offer.created_at AS "createdAt",
+    offer.updated_at AS "updatedAt"
+  FROM marketplace.marketplace_offers offer
   LEFT JOIN LATERAL (
     SELECT jsonb_agg(
       jsonb_build_object(
-        'offeringId', offering.id::text,
-        'collaborationType', offering.collaboration_type,
-        'availabilityMonths', offering.availability_months,
-        'platforms', offering.platforms,
-        'freeStayMinNights', offering.free_stay_min_nights,
-        'freeStayMaxNights', offering.free_stay_max_nights,
-        'paidMaxAmount', offering.paid_max_amount,
-        'discountPercentage', offering.discount_percentage,
-        'commissionPercentage', offering.commission_percentage,
-        'minFollowers', offering.min_followers,
-        'currency', offering.currency,
-        'termsSummary', offering.terms_summary
-      )
-      ORDER BY offering.created_at ASC, offering.id ASC
+        'deliverableId', deliverable.id::text,
+        'platform', deliverable.platform,
+        'deliverableType', deliverable.deliverable_type,
+        'quantity', deliverable.quantity,
+        'timingGuidance', deliverable.timing_guidance
+      ) ORDER BY deliverable.created_at, deliverable.id
     ) AS items
-    FROM marketplace.listing_collaboration_offerings offering
-    WHERE offering.listing_id = listing.id
-  ) offerings ON TRUE
+    FROM marketplace.offer_deliverables deliverable
+    WHERE deliverable.offer_id = offer.id
+      AND deliverable.property_id = offer.property_id
+      AND deliverable.organization_id = offer.organization_id
+  ) deliverables ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+      jsonb_build_object(
+        'compensationOptionId', option.id::text,
+        'compensationType', option.compensation_type,
+        'availabilityMonths', option.availability_months,
+        'platforms', option.platforms,
+        'freeStayMinNights', option.free_stay_min_nights,
+        'freeStayMaxNights', option.free_stay_max_nights,
+        'paidMaxAmount', option.paid_max_amount,
+        'discountPercentage', option.discount_percentage,
+        'commissionPercentage', option.commission_percentage,
+        'minFollowers', option.min_followers,
+        'currency', option.currency,
+        'termsSummary', option.terms_summary
+      )
+      ORDER BY option.created_at ASC, option.id ASC
+    ) AS items
+    FROM marketplace.offer_compensation_options option
+    WHERE option.offer_id = offer.id
+      AND option.property_id = offer.property_id
+      AND option.organization_id = offer.organization_id
+  ) compensation ON TRUE
   LEFT JOIN LATERAL (
     SELECT jsonb_build_object(
       'platforms', requirement.platforms,
@@ -2157,8 +2392,10 @@ const LISTING_SELECT_SQL = `
       'targetAgeGroups', requirement.target_age_groups,
       'creatorTypes', requirement.creator_types
     ) AS item
-    FROM marketplace.listing_creator_requirements requirement
-    WHERE requirement.listing_id = listing.id
+    FROM marketplace.offer_creator_requirements requirement
+    WHERE requirement.offer_id = offer.id
+      AND requirement.property_id = offer.property_id
+      AND requirement.organization_id = offer.organization_id
     LIMIT 1
   ) requirements ON TRUE
 `;

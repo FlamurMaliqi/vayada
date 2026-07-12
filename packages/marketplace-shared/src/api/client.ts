@@ -3,6 +3,10 @@
  */
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.marketplace.localhost";
+export const VAYADA_API_BASE_URL =
+  process.env.NEXT_PUBLIC_AUTH_API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://api.localhost";
 let bearerTokenProvider: (() => string | null) | null = null;
 
 export function setApiBearerTokenProvider(provider: (() => string | null) | null): void {
@@ -256,3 +260,4 @@ export class ApiClient {
 }
 
 export const apiClient = new ApiClient();
+export const vayadaApiClient = new ApiClient(VAYADA_API_BASE_URL);

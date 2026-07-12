@@ -148,7 +148,7 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
 
       // Validate total count
       if (currentListing.images.length + fileArray.length > maxImages) {
-        onError?.(`Maximum ${maxImages} images allowed per listing`);
+        onError?.(`Maximum ${maxImages} images allowed per offer`);
         if (listingImageInputRefs.current[listingIndex]) {
           listingImageInputRefs.current[listingIndex]!.value = "";
         }
@@ -254,7 +254,7 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
     }
 
     if (listings.length === 0) {
-      onError?.("At least one property listing is required. Please add a listing.");
+      onError?.("At least one collaboration offer is required. Please add an offer.");
       return false;
     }
 
@@ -262,54 +262,54 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
     for (let i = 0; i < listings.length; i++) {
       const listing = listings[i];
       if (!listing.name.trim()) {
-        onError?.(`Listing ${i + 1}: Property name is required`);
+        onError?.(`Offer ${i + 1}: Property name is required`);
         return false;
       }
       if (!listing.location.trim()) {
-        onError?.(`Listing ${i + 1}: Property location is required`);
+        onError?.(`Offer ${i + 1}: Property location is required`);
         return false;
       }
       if (!listing.accommodation_type.trim()) {
-        onError?.(`Listing ${i + 1}: Accommodation type is required`);
+        onError?.(`Offer ${i + 1}: Accommodation type is required`);
         return false;
       }
       if (!listing.description.trim()) {
-        onError?.(`Listing ${i + 1}: Property description is required`);
+        onError?.(`Offer ${i + 1}: Property description is required`);
         return false;
       }
       if (listing.description.trim().length < 10) {
-        onError?.(`Listing ${i + 1}: Property description must be at least 10 characters`);
+        onError?.(`Offer ${i + 1}: Property description must be at least 10 characters`);
         return false;
       }
       if (listing.collaborationTypes.length === 0) {
-        onError?.(`Listing ${i + 1}: At least one collaboration type is required`);
+        onError?.(`Offer ${i + 1}: At least one collaboration type is required`);
         return false;
       }
       if (listing.availability.length === 0) {
-        onError?.(`Listing ${i + 1}: At least one availability month is required`);
+        onError?.(`Offer ${i + 1}: At least one availability month is required`);
         return false;
       }
       if (listing.platforms.length === 0) {
-        onError?.(`Listing ${i + 1}: At least one platform is required`);
+        onError?.(`Offer ${i + 1}: At least one platform is required`);
         return false;
       }
       if (listing.lookingForPlatforms.length === 0) {
-        onError?.(`Listing ${i + 1}: At least one platform in "Looking For" is required`);
+        onError?.(`Offer ${i + 1}: At least one platform in "Looking For" is required`);
         return false;
       }
       if (listing.collaborationTypes.includes("Free Stay")) {
         if (!listing.freeStayMinNights || listing.freeStayMinNights <= 0) {
-          onError?.(`Listing ${i + 1}: Free Stay requires minimum nights greater than 0`);
+          onError?.(`Offer ${i + 1}: Free Stay requires minimum nights greater than 0`);
           return false;
         }
         if (!listing.freeStayMaxNights || listing.freeStayMaxNights < listing.freeStayMinNights) {
-          onError?.(`Listing ${i + 1}: Free Stay max nights must be greater than min nights`);
+          onError?.(`Offer ${i + 1}: Free Stay max nights must be greater than min nights`);
           return false;
         }
       }
       if (listing.collaborationTypes.includes("Paid")) {
         if (!listing.paidMaxAmount || listing.paidMaxAmount <= 0) {
-          onError?.(`Listing ${i + 1}: Paid collaboration requires max amount greater than 0`);
+          onError?.(`Offer ${i + 1}: Paid collaboration requires max amount greater than 0`);
           return false;
         }
       }
@@ -319,7 +319,7 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
           listing.discountPercentage <= 0 ||
           listing.discountPercentage > 100
         ) {
-          onError?.(`Listing ${i + 1}: Discount percentage must be between 1 and 100`);
+          onError?.(`Offer ${i + 1}: Discount percentage must be between 1 and 100`);
           return false;
         }
       }
@@ -341,7 +341,7 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
     // Step 2: Listings (50% total)
     if (listings.length > 0) {
       progress += 20;
-      // check first listing for details
+      // check first offer for details
       const firstListing = listings[0];
       if (firstListing.name) progress += 5;
       if (firstListing.location) progress += 5;

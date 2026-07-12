@@ -17,7 +17,7 @@ export function ProfileCompletionScreen({
       description={
         userType === "creator"
           ? "Your profile is ready for review before you apply to properties."
-          : "Your listing is ready for review before creators can discover it."
+          : "Your offer is ready for review before creators can discover it."
       }
     >
       <div className="w-full max-w-2xl">
@@ -26,7 +26,7 @@ export function ProfileCompletionScreen({
             <CheckCircleIcon className="w-9 h-9" />
           </div>
           <h1 className="text-2xl font-bold leading-tight text-gray-900">
-            {userType === "creator" ? "Your profile is complete" : "Your listing is complete"}
+            {userType === "creator" ? "Your profile is complete" : "Your offer is complete"}
           </h1>
           <p className="mt-3 text-sm leading-relaxed text-gray-600">
             Thank you for completing your vayada {userType === "creator" ? "creator" : "hotel"}{" "}
@@ -74,7 +74,7 @@ export function ProfileCompletionScreen({
                 You will receive an email notification once your profile has been accepted and{" "}
                 {userType === "creator"
                   ? "you can start connecting with hotels"
-                  : "your listings are live for creator matching"}
+                  : "your offers are live for creator matching"}
                 .
               </p>
             </div>

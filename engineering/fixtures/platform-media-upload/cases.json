@@ -337,18 +337,18 @@
       }
     },
     {
-      "caseId": "marketplace-listing-gallery-upload-session",
-      "description": "Marketplace listing galleries batch through platform media and return one media object per file.",
+      "caseId": "marketplace-offer-media-upload-session",
+      "description": "Marketplace offer media batches through platform media and returns one media object per file.",
       "request": {
         "path": "/api/media/upload-sessions",
         "method": "POST",
         "body": {
-          "purpose": "marketplace.listing.gallery",
+          "purpose": "marketplace.offer.media",
           "visibility": "public",
           "resource": {
             "product": "marketplace",
-            "resourceType": "hotel_listing",
-            "resourceId": "listing_alpenrose"
+            "resourceType": "marketplace_offer",
+            "resourceId": "offer_alpenrose"
           },
           "files": [
             {
@@ -389,10 +389,10 @@
         "finalizeStatus": 200,
         "mediaObjectCount": 2,
         "mediaObject": {
-          "purpose": "marketplace.listing.gallery",
+          "purpose": "marketplace.offer.media",
           "resourceProduct": "marketplace",
-          "resourceType": "hotel_listing",
-          "resourceId": "listing_alpenrose",
+          "resourceType": "marketplace_offer",
+          "resourceId": "offer_alpenrose",
           "approvalStatus": "pending_domain_approval",
           "lifecycleStatus": "staged"
         },

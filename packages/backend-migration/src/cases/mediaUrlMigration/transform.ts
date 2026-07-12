@@ -90,17 +90,17 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
   `);
 
   await client.query(`
-    INSERT INTO marketplace.marketplace_hotel_listings
+    INSERT INTO marketplace.marketplace_offers
       (
         id,
         property_id,
         organization_id,
         source_system,
-        source_listing_id,
+        source_offer_id,
         title,
-        listing_summary,
+        offer_summary,
         accommodation_type,
-        listing_status,
+        offer_status,
         image_urls
       )
     SELECT
@@ -125,12 +125,12 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
         creator_organization_id,
         property_id,
         hotel_organization_id,
-        listing_id,
+        offer_id,
         source_system,
         source_collaboration_id,
         initiator_type,
         lifecycle_status,
-        collaboration_type,
+        compensation_type,
         free_stay_min_nights,
         free_stay_max_nights,
         currency,
@@ -182,15 +182,15 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
   `);
 
   await client.query(`
-    INSERT INTO marketplace.marketplace_listing_read_model
+    INSERT INTO marketplace.marketplace_offer_read_model
       (
-        listing_id,
+        offer_id,
         property_id,
         public_id,
         canonical_slug,
         display_name,
-        listing_title,
-        listing_summary,
+        offer_title,
+        offer_summary,
         accommodation_type,
         visibility_status,
         image_urls,
@@ -372,11 +372,18 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
       CASE WHEN storage_kind = 'vayada_managed' THEN target_storage_key ELSE NULL END,
       storage_kind,
       visibility,
-      purpose,
+      CASE
+        WHEN purpose = 'marketplace.listing.gallery' THEN 'marketplace.offer.media'
+        ELSE purpose
+      END,
       owner_organization_id,
       property_id,
       resource_product,
-      resource_type,
+      CASE
+        WHEN resource_product = 'marketplace' AND resource_type = 'hotel_listing'
+          THEN 'marketplace_offer'
+        ELSE resource_type
+      END,
       resource_id,
       CASE WHEN storage_kind = 'external_reference' THEN 'external_reference' ELSE 'active' END,
       content_type,
@@ -533,17 +540,17 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
   `);
 
   await client.query(`
-    UPDATE marketplace.marketplace_hotel_listings listing
+    UPDATE marketplace.marketplace_offers offer
     SET image_urls = source.target_image_urls
     FROM migration_source_media.marketplace_listing_image_references source
-    WHERE listing.id = source.listing_id
+    WHERE offer.id = source.listing_id
   `);
 
   await client.query(`
-    UPDATE marketplace.marketplace_listing_read_model read_model
+    UPDATE marketplace.marketplace_offer_read_model read_model
     SET image_urls = source.target_image_urls
     FROM migration_source_media.marketplace_listing_image_references source
-    WHERE read_model.listing_id = source.listing_id
+    WHERE read_model.offer_id = source.listing_id
   `);
 
   await client.query(`

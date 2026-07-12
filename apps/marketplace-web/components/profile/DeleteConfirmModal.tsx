@@ -17,9 +17,9 @@ export function DeleteConfirmModal({
   isOpen,
   onClose,
   onConfirm,
-  title = "Delete Listing?",
+  title = "Delete Offer?",
   itemName,
-  itemType = "listing",
+  itemType = "offer",
   message = "This action cannot be undone. All data associated with this {itemType} will be permanently deleted.",
 }: DeleteConfirmModalProps) {
   if (!isOpen) return null;

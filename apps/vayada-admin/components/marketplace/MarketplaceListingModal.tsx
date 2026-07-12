@@ -65,7 +65,7 @@ export function MarketplaceListingModal({
 
   if (notFoundMessage) {
     return (
-      <Modal isOpen={isOpen} onClose={onClose} title="Hotel Listing" size="md">
+      <Modal isOpen={isOpen} onClose={onClose} title="Collaboration Offer" size="md">
         <p className="text-sm text-gray-600">{notFoundMessage}</p>
       </Modal>
     );
@@ -80,7 +80,7 @@ export function MarketplaceListingModal({
           <button
             type="button"
             disabled
-            title="Public discovery listings no longer include owner user IDs. Use the authenticated admin user lookup when that vertical is available."
+            title="Public discovery offers no longer include owner user IDs. Use the authenticated admin user lookup when that vertical is available."
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-primary-700 bg-primary-50 border border-primary-200 rounded-md hover:bg-primary-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-primary-50"
           >
             <PencilSquareIcon className="w-4 h-4" />

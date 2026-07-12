@@ -29,7 +29,7 @@ export type MarketplaceCollaborationListFilters = {
   side: MarketplaceCollaborationAuthorizationSide;
   status?: CollaborationStatus;
   initiatedBy?: MarketplaceCollaborationAuthorizationSide;
-  listingId?: string;
+  offerId?: string;
 };
 
 export type MarketplaceCollaborationMessageFilters = {
@@ -86,15 +86,15 @@ export type MarketplaceCollaborationRoutesOptions = {
 type MarketplaceCollaborationRow = {
   collaborationId: string;
   authorizationMode: MarketplaceCollaborationAuthorizationMode;
-  listingId: string;
+  offerId: string;
   creatorId: string;
   hotelProfileId: string;
   side: MarketplaceCollaborationAuthorizationSide;
   initiatorSide: string;
   status: string;
-  collaborationType: string | null;
-  listingName: string;
-  listingLocation: string | null;
+  compensationType: string | null;
+  offerTitle: string;
+  hotelLocation: string | null;
   creatorProfileId: string;
   creatorOrganizationId: string;
   creatorDisplayName: string | null;
@@ -108,7 +108,8 @@ type MarketplaceCollaborationRow = {
   paidAmount: string | null;
   currency: string | null;
   discountPercentage: number | null;
-  creatorFee: string | null;
+  affiliateEnabled: boolean;
+  affiliateCommissionPercentage: string | null;
   travelDateFrom: Date | string | null;
   travelDateTo: Date | string | null;
   preferredDateFrom: Date | string | null;
@@ -125,7 +126,7 @@ type MarketplaceConversationRow = {
   side: MarketplaceCollaborationAuthorizationSide;
   partnerName: string | null;
   partnerAvatarUrl: string | null;
-  listingName: string | null;
+  offerTitle: string | null;
   collaborationStatus: string;
   lastMessageContent: string | null;
   lastMessageAt: Date | string | null;
@@ -148,7 +149,7 @@ type CollaborationListQuery = {
   side?: string;
   status?: string;
   initiatedBy?: string;
-  listingId?: string;
+  offerId?: string;
 };
 
 type CollaborationSideQuery = {
@@ -274,7 +275,7 @@ export function registerMarketplaceCollaborationRoutes(
         side: side.value,
         status: status.value,
         initiatedBy: initiatedBy.value,
-        listingId: normalizeOptionalString(request.query.listingId),
+        offerId: normalizeOptionalString(request.query.offerId),
       },
     });
   });
@@ -538,7 +539,7 @@ export function createPgMarketplaceCollaborationReadRepository(config: {
       const rows = await queryCollaborationRows(pool, context, filters.side, {
         status: filters.status,
         initiatedBy: filters.initiatedBy,
-        listingId: filters.listingId,
+        offerId: filters.offerId,
       });
       return toMarketplaceCollaborationListResponse({
         authorizationMode: authorizationModeForSide(filters.side),
@@ -647,7 +648,8 @@ type CollaborationMutationRow = {
   lifecycleStatus: string;
   initiatorSide: string;
   sourceCollaborationId: string;
-  collaborationType: string | null;
+  compensationType: string | null;
+  affiliateEnabled: boolean;
   creatorProfileId: string;
   creatorOrganizationId: string;
   hotelOrganizationId: string;
@@ -842,20 +844,16 @@ async function createPgCollaboration(
   client: PoolClient,
   input: MarketplaceCollaborationLifecycleWriteInput,
 ): Promise<MarketplaceCollaborationLifecycleMutationResult | null> {
-  const listingId = readString(input.payload.listingId);
-  if (!listingId) {
-    throw new MarketplaceCollaborationWriteError(
-      400,
-      "invalid_query",
-      "create requires listingId.",
-    );
+  const offerId = readString(input.payload.offerId);
+  if (!offerId) {
+    throw new MarketplaceCollaborationWriteError(400, "invalid_query", "create requires offerId.");
   }
   const initiatorSide = readCollaborationSide(input.payload.initiatorSide) ?? input.side;
   const creator = await resolveCreatorProfileForCreate(client, input);
   if (!creator) return null;
 
-  const listing = await resolveListingForCreate(client, input.context, input.side, listingId);
-  if (!listing) return null;
+  const offer = await resolveOfferForCreate(client, input.context, input.side, offerId);
+  if (!offer) return null;
 
   const terms = readTermsInput(input.payload);
   const newId = await client.query<{ id: string }>(`SELECT gen_random_uuid()::text AS id`);
@@ -871,19 +869,20 @@ async function createPgCollaboration(
        creator_organization_id,
        property_id,
        hotel_organization_id,
-       listing_id,
+       offer_id,
        source_system,
        source_collaboration_id,
        initiator_type,
        lifecycle_status,
-       collaboration_type,
+       compensation_type,
        application_message,
        free_stay_min_nights,
        free_stay_max_nights,
        paid_amount,
        currency,
        discount_percentage,
-       creator_fee,
+       affiliate_enabled,
+       affiliate_commission_percentage,
        travel_date_from,
        travel_date_to,
        preferred_date_from,
@@ -895,31 +894,32 @@ async function createPgCollaboration(
      VALUES (
        $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid,
        'marketplace', $1, $7, 'pending', $8, $9, $10, $11, $12, $13, $14, $15,
-       $16, $17, $18, $19, $20::text[], $21,
-       jsonb_build_object('whyGreatFit', $22::text)
+       $16, $17, $18, $19, $20, $21::text[], $22,
+       jsonb_build_object('whyGreatFit', $23::text)
      )
      RETURNING id::text AS id`,
     [
       collaborationId,
       creator.id,
       creator.organizationId,
-      listing.propertyId,
-      listing.organizationId,
-      listing.id,
+      offer.propertyId,
+      offer.organizationId,
+      offer.id,
       initiatorSide,
-      terms.collaborationType,
+      terms.compensationType,
       readString(input.payload.message) ?? readString(input.payload.whyGreatFit),
       terms.freeStayMinNights,
       terms.freeStayMaxNights,
       terms.paidAmount,
       terms.currency ?? "USD",
       terms.discountPercentage,
-      terms.creatorFee,
+      terms.affiliateEnabled ?? false,
+      terms.affiliateCommissionPercentage,
       terms.travelDateFrom,
       terms.travelDateTo,
       terms.preferredDateFrom,
       terms.preferredDateTo,
-      terms.preferredMonths,
+      terms.preferredMonths ?? [],
       input.side === "creator" ? true : readBoolean(input.payload.consent),
       readString(input.payload.whyGreatFit) ?? "",
     ],
@@ -930,7 +930,7 @@ async function createPgCollaboration(
   await replacePgDeliverables(
     client,
     insertedId,
-    listing.propertyId,
+    offer.propertyId,
     readDeliverables(input.payload),
   );
 
@@ -1023,32 +1023,37 @@ async function updatePgCollaborationTerms(
   await client.query(
     `UPDATE marketplace.collaborations
      SET lifecycle_status = 'negotiating',
-         collaboration_type = COALESCE($2, collaboration_type),
+         compensation_type = COALESCE($2, compensation_type),
          free_stay_min_nights = COALESCE($3, free_stay_min_nights),
          free_stay_max_nights = COALESCE($4, free_stay_max_nights),
          paid_amount = COALESCE($5, paid_amount),
          currency = COALESCE($6, currency),
          discount_percentage = COALESCE($7, discount_percentage),
-         creator_fee = COALESCE($8, creator_fee),
-         travel_date_from = COALESCE($9, travel_date_from),
-         travel_date_to = COALESCE($10, travel_date_to),
-         preferred_date_from = COALESCE($11, preferred_date_from),
-         preferred_date_to = COALESCE($12, preferred_date_to),
-         preferred_months = CASE WHEN $13::text[] IS NULL THEN preferred_months ELSE $13::text[] END,
+         affiliate_enabled = COALESCE($8, affiliate_enabled),
+         affiliate_commission_percentage = CASE
+           WHEN $8 = FALSE THEN NULL
+           ELSE COALESCE($9, affiliate_commission_percentage)
+         END,
+         travel_date_from = COALESCE($10, travel_date_from),
+         travel_date_to = COALESCE($11, travel_date_to),
+         preferred_date_from = COALESCE($12, preferred_date_from),
+         preferred_date_to = COALESCE($13, preferred_date_to),
+         preferred_months = CASE WHEN $14::text[] IS NULL THEN preferred_months ELSE $14::text[] END,
          term_last_updated_at = now(),
-         creator_agreed_at = CASE WHEN $14 = 'creator' THEN now() ELSE NULL END,
-         hotel_agreed_at = CASE WHEN $14 = 'hotel' THEN now() ELSE NULL END,
+         creator_agreed_at = CASE WHEN $15 = 'creator' THEN now() ELSE NULL END,
+         hotel_agreed_at = CASE WHEN $15 = 'hotel' THEN now() ELSE NULL END,
          updated_at = now()
      WHERE id = $1::uuid`,
     [
       collaboration.id,
-      terms.collaborationType,
+      terms.compensationType,
       terms.freeStayMinNights,
       terms.freeStayMaxNights,
       terms.paidAmount,
       terms.currency,
       terms.discountPercentage,
-      terms.creatorFee,
+      terms.affiliateEnabled,
+      terms.affiliateCommissionPercentage,
       terms.travelDateFrom,
       terms.travelDateTo,
       terms.preferredDateFrom,
@@ -1102,15 +1107,19 @@ async function approvePgCollaborationTerms(
     [collaboration.id, input.side, nextStatus],
   );
   const sideEffects: MarketplaceCollaborationLifecycleSideEffect[] =
-    nextStatus === "accepted"
-      ? [
+    nextStatus !== "accepted"
+      ? [{ type: "marketplace.collaboration.system_message_requested" }]
+      : [
           { type: "marketplace.collaboration.accepted" },
-          {
-            type: "marketplace.affiliate.provision.command_requested",
-            idempotencyKey: `marketplace.affiliate.provision:collaboration:${collaboration.sourceCollaborationId}:v1`,
-          },
-        ]
-      : [{ type: "marketplace.collaboration.system_message_requested" }];
+          ...(collaboration.affiliateEnabled
+            ? [
+                {
+                  type: "marketplace.affiliate.provision.command_requested" as const,
+                  idempotencyKey: `marketplace.affiliate.provision:collaboration:${collaboration.sourceCollaborationId}:v1`,
+                },
+              ]
+            : []),
+        ];
   return {
     collaborationResourceId: collaboration.id,
     command: { action: "approve_terms", idempotencyKey: input.idempotencyKey, acceptedAt },
@@ -1256,7 +1265,8 @@ async function findPgCollaborationForSide(
        collaboration.lifecycle_status AS "lifecycleStatus",
        collaboration.initiator_type AS "initiatorSide",
        collaboration.source_collaboration_id AS "sourceCollaborationId",
-       collaboration.collaboration_type AS "collaborationType",
+       collaboration.compensation_type AS "compensationType",
+       collaboration.affiliate_enabled AS "affiliateEnabled",
        collaboration.creator_profile_id::text AS "creatorProfileId",
        collaboration.creator_organization_id::text AS "creatorOrganizationId",
        collaboration.hotel_organization_id::text AS "hotelOrganizationId",
@@ -1299,23 +1309,23 @@ async function resolveCreatorProfileForCreate(
   return result.rows[0] ?? null;
 }
 
-async function resolveListingForCreate(
+async function resolveOfferForCreate(
   client: MarketplaceCollaborationQueryable,
   context: RequestContext,
   side: MarketplaceCollaborationAuthorizationSide,
-  listingId: string,
+  offerId: string,
 ): Promise<{ id: string; propertyId: string; organizationId: string } | null> {
-  const values: unknown[] = [listingId];
-  const clauses = ["source_listing_id = $1", "listing_status IN ('pending', 'verified')"];
+  const values: unknown[] = [offerId];
+  const clauses = ["id::text = $1", "offer_status IN ('pending', 'verified')"];
   if (side === "hotel") {
-    values.push(activeResourceIds(context, "hotel_listing", "operator"));
+    values.push(activeResourceIds(context, "marketplace_offer", "operator"));
     clauses.push(`id::text = ANY($${values.length}::text[])`);
   }
   const result = await client.query<{ id: string; propertyId: string; organizationId: string }>(
     `SELECT id::text AS id,
             property_id::text AS "propertyId",
             organization_id::text AS "organizationId"
-     FROM marketplace.marketplace_hotel_listings
+     FROM marketplace.marketplace_offers
      WHERE ${clauses.join(" AND ")}
      LIMIT 1`,
     values,
@@ -1534,14 +1544,17 @@ async function rollbackQuietly(client: PoolClient): Promise<void> {
 
 function readTermsInput(payload: Record<string, unknown>): MarketplaceCollaborationTermsInput {
   const terms = isRecord(payload.terms) ? payload.terms : payload;
+  const affiliateCommissionPercentage = readString(terms.affiliateCommissionPercentage);
   return {
-    collaborationType: readCollaborationType(terms.collaborationType),
+    compensationType: readCompensationType(terms.compensationType),
     freeStayMinNights: readInteger(terms.freeStayMinNights),
     freeStayMaxNights: readInteger(terms.freeStayMaxNights),
     paidAmount: readString(terms.paidAmount),
     currency: readCurrency(terms.currency),
     discountPercentage: readInteger(terms.discountPercentage),
-    creatorFee: readString(terms.creatorFee),
+    affiliateEnabled:
+      readBoolean(terms.affiliateEnabled) ?? (affiliateCommissionPercentage !== null ? true : null),
+    affiliateCommissionPercentage,
     travelDateFrom: readDateString(terms.travelDateFrom),
     travelDateTo: readDateString(terms.travelDateTo),
     preferredDateFrom: readDateString(terms.preferredDateFrom),
@@ -1551,13 +1564,14 @@ function readTermsInput(payload: Record<string, unknown>): MarketplaceCollaborat
 }
 
 type MarketplaceCollaborationTermsInput = {
-  collaborationType: MarketplaceCollaborationRead["collaborationType"];
+  compensationType: MarketplaceCollaborationRead["compensationType"];
   freeStayMinNights: number | null;
   freeStayMaxNights: number | null;
   paidAmount: string | null;
   currency: string | null;
   discountPercentage: number | null;
-  creatorFee: string | null;
+  affiliateEnabled: boolean | null;
+  affiliateCommissionPercentage: string | null;
   travelDateFrom: string | null;
   travelDateTo: string | null;
   preferredDateFrom: string | null;
@@ -1590,12 +1604,12 @@ function readDeliverables(
 function createCollaborationCorrelationId(
   input: MarketplaceCollaborationLifecycleWriteInput,
 ): string {
-  const listingId = readString(input.payload.listingId) ?? "unknown_listing";
+  const offerId = readString(input.payload.offerId) ?? "unknown_offer";
   const creatorId =
     readString(input.payload.creatorId) ??
     activeResourceIds(input.context, "creator_profile", "owner")[0] ??
     "unknown_creator";
-  return `${listingId}:${creatorId}`;
+  return `${offerId}:${creatorId}`;
 }
 
 async function queryCollaborationRows(
@@ -1606,7 +1620,7 @@ async function queryCollaborationRows(
     collaborationId?: string;
     status?: CollaborationStatus;
     initiatedBy?: MarketplaceCollaborationAuthorizationSide;
-    listingId?: string;
+    offerId?: string;
   },
 ): Promise<MarketplaceCollaborationRow[]> {
   const values: unknown[] = collaborationAccessValues(context, side);
@@ -1626,9 +1640,9 @@ async function queryCollaborationRows(
     values.push(filters.initiatedBy);
     clauses.push(`collaboration.initiator_type = $${values.length}`);
   }
-  if (filters.listingId) {
-    values.push(filters.listingId);
-    clauses.push(`listing.source_listing_id = $${values.length}`);
+  if (filters.offerId) {
+    values.push(filters.offerId);
+    clauses.push(`offer.id::text = $${values.length}`);
   }
 
   const result = await pool.query<MarketplaceCollaborationRow>(
@@ -1650,10 +1664,10 @@ function collaborationFromSql(
           JOIN marketplace.creator_profiles creator
             ON creator.id = collaboration.creator_profile_id
            AND creator.organization_id = collaboration.creator_organization_id
-          JOIN marketplace.marketplace_hotel_listings listing
-            ON listing.id = collaboration.listing_id
-           AND listing.property_id = collaboration.property_id
-           AND listing.organization_id = collaboration.hotel_organization_id
+          JOIN marketplace.marketplace_offers offer
+            ON offer.id = collaboration.offer_id
+           AND offer.property_id = collaboration.property_id
+           AND offer.organization_id = collaboration.hotel_organization_id
           JOIN marketplace.marketplace_hotel_profiles hotel_profile
             ON hotel_profile.property_id = collaboration.property_id
            AND hotel_profile.organization_id = collaboration.hotel_organization_id
@@ -1691,15 +1705,22 @@ function collaborationFromSql(
 function collaborationSelectSql(side: MarketplaceCollaborationAuthorizationSide): string {
   return `collaboration.source_collaboration_id AS "collaborationId",
           '${authorizationModeForSide(side)}'::text AS "authorizationMode",
-          listing.source_listing_id AS "listingId",
+          offer.id::text AS "offerId",
           creator.source_creator_id AS "creatorId",
           hotel_profile.source_hotel_profile_id AS "hotelProfileId",
           '${side}'::text AS side,
           collaboration.initiator_type AS "initiatorSide",
           collaboration.lifecycle_status AS status,
-          collaboration.collaboration_type AS "collaborationType",
-          listing.title AS "listingName",
-          listing.raw_location_text AS "listingLocation",
+          collaboration.compensation_type AS "compensationType",
+          offer.title AS "offerTitle",
+          COALESCE(
+            NULLIF(public_profile.location->>'rawMarketplaceLocation', ''),
+            NULLIF(concat_ws(
+              ', ',
+              NULLIF(public_profile.location->>'city', ''),
+              NULLIF(public_profile.location->>'countryCode', '')
+            ), '')
+          ) AS "hotelLocation",
           creator.id::text AS "creatorProfileId",
           creator.organization_id::text AS "creatorOrganizationId",
           creator.display_name AS "creatorDisplayName",
@@ -1713,7 +1734,8 @@ function collaborationSelectSql(side: MarketplaceCollaborationAuthorizationSide)
           collaboration.paid_amount::text AS "paidAmount",
           collaboration.currency AS currency,
           collaboration.discount_percentage AS "discountPercentage",
-          collaboration.creator_fee::text AS "creatorFee",
+          collaboration.affiliate_enabled AS "affiliateEnabled",
+          collaboration.affiliate_commission_percentage::text AS "affiliateCommissionPercentage",
           collaboration.travel_date_from AS "travelDateFrom",
           collaboration.travel_date_to AS "travelDateTo",
           collaboration.preferred_date_from AS "preferredDateFrom",
@@ -1735,7 +1757,7 @@ function conversationSelectSql(side: MarketplaceCollaborationAuthorizationSide):
           '${side}'::text AS side,
           ${partnerName} AS "partnerName",
           ${partnerAvatar} AS "partnerAvatarUrl",
-          listing.title AS "listingName",
+          offer.title AS "offerTitle",
           collaboration.lifecycle_status AS "collaborationStatus",
           last_message."lastMessageContent",
           last_message."lastMessageAt",
@@ -1749,19 +1771,19 @@ function collaborationAccessValues(
   if (side === "creator") {
     return [activeResourceIds(context, "creator_profile", "owner")];
   }
-  return [activeResourceIds(context, "hotel_listing", "operator")];
+  return [activeResourceIds(context, "marketplace_offer", "operator")];
 }
 
 function collaborationAccessWhereSql(side: MarketplaceCollaborationAuthorizationSide): string {
   if (side === "creator") {
     return "creator.id::text = ANY($1::text[])";
   }
-  return "listing.id::text = ANY($1::text[])";
+  return "offer.id::text = ANY($1::text[])";
 }
 
 function activeResourceIds(
   context: RequestContext,
-  resourceType: "creator_profile" | "hotel_listing",
+  resourceType: "creator_profile" | "marketplace_offer",
   relationship: "owner" | "operator",
 ): string[] {
   return context.linkedResources
@@ -1783,16 +1805,16 @@ function mapCollaborationRow(
     contractVersion: MARKETPLACE_COLLABORATION_READS_CONTRACT_VERSION,
     authorizationMode: authorizationModeForSide(side),
     collaborationId: row.collaborationId,
-    listingId: row.listingId,
+    offerId: row.offerId,
     creatorId: row.creatorId,
     hotelProfileId: row.hotelProfileId,
     side,
     initiatorSide: toCollaborationSide(row.initiatorSide),
     isInitiator: toCollaborationSide(row.initiatorSide) === side,
     status: toCollaborationStatus(row.status),
-    collaborationType: toCollaborationType(row.collaborationType),
-    listingName: row.listingName,
-    listingLocation: row.listingLocation,
+    compensationType: toCompensationType(row.compensationType),
+    offerTitle: row.offerTitle,
+    hotelLocation: row.hotelLocation,
     creator: {
       side: "creator",
       organizationId: row.creatorOrganizationId,
@@ -1813,7 +1835,8 @@ function mapCollaborationRow(
       paidAmount: row.paidAmount,
       currency: row.currency,
       discountPercentage: row.discountPercentage,
-      creatorFee: row.creatorFee,
+      affiliateEnabled: row.affiliateEnabled,
+      affiliateCommissionPercentage: row.affiliateCommissionPercentage,
       travelDateFrom: toDateString(row.travelDateFrom),
       travelDateTo: toDateString(row.travelDateTo),
       preferredDateFrom: toDateString(row.preferredDateFrom),
@@ -1834,7 +1857,7 @@ function mapConversationRow(row: MarketplaceConversationRow): MarketplaceConvers
     side: row.side,
     partnerName: row.partnerName ?? "Marketplace participant",
     partnerAvatarUrl: row.partnerAvatarUrl,
-    listingName: row.listingName,
+    offerTitle: row.offerTitle,
     collaborationStatus: toCollaborationStatus(row.collaborationStatus),
     lastMessageContent: row.lastMessageContent,
     lastMessageAt: toIsoStringOrNull(row.lastMessageAt),
@@ -1886,10 +1909,10 @@ function toCollaborationSide(value: string): MarketplaceCollaborationAuthorizati
   return value === "hotel" ? "hotel" : "creator";
 }
 
-function toCollaborationType(
+function toCompensationType(
   value: string | null,
-): MarketplaceCollaborationRead["collaborationType"] {
-  return value === "free_stay" || value === "paid" || value === "discount" || value === "affiliate"
+): MarketplaceCollaborationRead["compensationType"] {
+  return value === "free_stay" || value === "paid" || value === "discount" || value === "custom"
     ? value
     : null;
 }
@@ -1955,8 +1978,8 @@ function readCollaborationSide(value: unknown): MarketplaceCollaborationAuthoriz
   return typeof value === "string" && isCollaborationSide(value) ? value : null;
 }
 
-function readCollaborationType(value: unknown): MarketplaceCollaborationRead["collaborationType"] {
-  return typeof value === "string" ? toCollaborationType(value) : null;
+function readCompensationType(value: unknown): MarketplaceCollaborationRead["compensationType"] {
+  return typeof value === "string" ? toCompensationType(value) : null;
 }
 
 function sha256(value: string): string {

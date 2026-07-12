@@ -160,7 +160,7 @@ export function useListingManagement(
             });
           } catch (error) {
             await hotelService.deleteListing(createdListing.id).catch((deleteError) => {
-              console.error("Failed to clean up listing after media upload failure:", deleteError);
+              console.error("Failed to clean up offer after media upload failure:", deleteError);
             });
             throw error;
           }
@@ -173,12 +173,12 @@ export function useListingManagement(
     } catch (error: unknown) {
       const detail = error instanceof ApiErrorResponse ? error.data.detail : null;
       const logError = error instanceof Error ? error : new Error(String(error));
-      console.error("Failed to save listing:", logError);
+      console.error("Failed to save offer:", logError);
 
       if (detail) {
-        showError("Failed to Save Listing", formatErrorForModal(detail));
+        showError("Failed to Save Offer", formatErrorForModal(detail));
       } else {
-        showError("Failed to Save Listing", "Failed to save listing. Please try again.");
+        showError("Failed to Save Offer", "Failed to save offer. Please try again.");
       }
       setIsSavingListing(false);
     }
@@ -198,8 +198,8 @@ export function useListingManagement(
   const openDeleteConfirmModal = (listingId: string, listingName: string) => {
     if (!hotelProfile || hotelProfile.listings.length <= 1) {
       showError(
-        "Cannot Delete Listing",
-        "You must have at least one listing. Please add another listing before deleting this one.",
+        "Cannot Delete Offer",
+        "You must have at least one offer. Add another offer before deleting this one.",
       );
       return;
     }
@@ -224,8 +224,8 @@ export function useListingManagement(
           ? detail
           : Array.isArray(detail) && detail[0]?.msg
             ? detail[0].msg
-            : "Failed to delete listing";
-      showError("Failed to Delete Listing", formatErrorForModal(detail || message));
+            : "Failed to delete offer";
+      showError("Failed to Delete Offer", formatErrorForModal(detail || message));
       setDeleteConfirmModal({ isOpen: false, listingId: null, listingName: "" });
     }
   };
@@ -251,7 +251,7 @@ export function useListingManagement(
     }
 
     if (listingFormData.images.length + fileList.length > 10) {
-      showError("Too Many Images", "Maximum 10 images allowed per listing");
+      showError("Too Many Images", "Maximum 10 images allowed per offer");
       return;
     }
 

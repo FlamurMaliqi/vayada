@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { vayadaApiClient } from "./client";
 
 export const MARKETPLACE_COLLABORATION_READS_CONTRACT_VERSION =
   "marketplace-collaboration-reads.v1" as const;
@@ -18,7 +18,28 @@ export type MarketplaceCollaborationStatus =
   | "rejected"
   | "declined";
 
-export type MarketplaceCollaborationType = "free_stay" | "paid" | "discount" | "affiliate";
+export type MarketplaceCompensationType = "free_stay" | "paid" | "discount" | "custom";
+
+export type LegacyCollaborationType = "Free Stay" | "Paid" | "Discount" | "Custom" | "Affiliate";
+
+export function toLegacyCollaborationType(
+  value: MarketplaceCompensationType | null,
+  affiliateEnabled = false,
+  affiliateCommissionPercentage: string | null = null,
+): LegacyCollaborationType | null {
+  switch (value) {
+    case "free_stay":
+      return "Free Stay";
+    case "paid":
+      return "Paid";
+    case "discount":
+      return "Discount";
+    case "custom":
+      return "Custom";
+    default:
+      return affiliateEnabled && affiliateCommissionPercentage !== null ? "Affiliate" : null;
+  }
+}
 
 export type MarketplaceCollaborationAuthorizationMode =
   | "creator_workspace_resource_link"
@@ -45,16 +66,16 @@ export type MarketplaceCollaborationRead = {
   contractVersion: MarketplaceCollaborationReadsContractVersion;
   authorizationMode: MarketplaceCollaborationAuthorizationMode;
   collaborationId: string;
-  listingId: string;
+  offerId: string;
   creatorId: string;
   hotelProfileId: string;
   side: MarketplaceCollaborationSide;
   initiatorSide: MarketplaceCollaborationSide;
   isInitiator: boolean;
   status: MarketplaceCollaborationStatus;
-  collaborationType: MarketplaceCollaborationType | null;
-  listingName: string;
-  listingLocation: string | null;
+  compensationType: MarketplaceCompensationType | null;
+  offerTitle: string;
+  hotelLocation: string | null;
   creator: MarketplaceCollaborationParticipant;
   hotel: MarketplaceCollaborationParticipant;
   terms: {
@@ -63,7 +84,8 @@ export type MarketplaceCollaborationRead = {
     paidAmount: string | null;
     currency: string | null;
     discountPercentage: number | null;
-    creatorFee: string | null;
+    affiliateEnabled: boolean;
+    affiliateCommissionPercentage: string | null;
     travelDateFrom: string | null;
     travelDateTo: string | null;
     preferredDateFrom: string | null;
@@ -80,7 +102,7 @@ export type MarketplaceCollaborationListInput = {
   side: MarketplaceCollaborationSide;
   status?: MarketplaceCollaborationStatus;
   initiatedBy?: MarketplaceCollaborationSide;
-  listingId?: string;
+  offerId?: string;
 };
 
 export type MarketplaceCollaborationListResponse = {
@@ -95,7 +117,7 @@ export type MarketplaceConversationSummary = {
   side: MarketplaceCollaborationSide;
   partnerName: string;
   partnerAvatarUrl: string | null;
-  listingName: string | null;
+  offerTitle: string | null;
   collaborationStatus: MarketplaceCollaborationStatus;
   lastMessageContent: string | null;
   lastMessageAt: string | null;
@@ -183,13 +205,14 @@ export type MarketplaceCollaborationLifecycleWriteBaseRequest = {
 };
 
 export type MarketplaceCollaborationTermsInput = {
-  collaborationType?: MarketplaceCollaborationType | null;
+  compensationType?: MarketplaceCompensationType | null;
   freeStayMinNights?: number | null;
   freeStayMaxNights?: number | null;
   paidAmount?: string | null;
   currency?: string | null;
   discountPercentage?: number | null;
-  creatorFee?: string | null;
+  affiliateEnabled?: boolean | null;
+  affiliateCommissionPercentage?: string | null;
   travelDateFrom?: string | null;
   travelDateTo?: string | null;
   preferredDateFrom?: string | null;
@@ -206,7 +229,7 @@ export type MarketplaceCollaborationDeliverableInput = {
 
 export type CreateMarketplaceCollaborationLifecycleWriteRequest =
   MarketplaceCollaborationLifecycleWriteBaseRequest & {
-    listingId: string;
+    offerId: string;
     creatorId?: string;
     initiatorSide: MarketplaceCollaborationSide;
     whyGreatFit?: string;
@@ -279,7 +302,7 @@ export const marketplaceCollaborationEndpoints = {
 export async function getMyMarketplaceCollaborations(
   input: MarketplaceCollaborationListInput,
 ): Promise<MarketplaceCollaborationListResponse> {
-  return apiClient.get<MarketplaceCollaborationListResponse>(
+  return vayadaApiClient.get<MarketplaceCollaborationListResponse>(
     marketplaceCollaborationEndpoints.myCollaborations(input),
   );
 }
@@ -288,7 +311,7 @@ export async function getMarketplaceCollaboration(
   collaborationId: string,
   side: MarketplaceCollaborationSide,
 ): Promise<MarketplaceCollaborationRead> {
-  return apiClient.get<MarketplaceCollaborationRead>(
+  return vayadaApiClient.get<MarketplaceCollaborationRead>(
     marketplaceCollaborationEndpoints.collaboration(collaborationId, side),
   );
 }
@@ -296,7 +319,7 @@ export async function getMarketplaceCollaboration(
 export async function getMarketplaceConversations(
   side?: MarketplaceCollaborationSide,
 ): Promise<MarketplaceConversationSummary[]> {
-  return apiClient.get<MarketplaceConversationSummary[]>(
+  return vayadaApiClient.get<MarketplaceConversationSummary[]>(
     marketplaceCollaborationEndpoints.conversations(side),
   );
 }
@@ -305,7 +328,7 @@ export async function getMarketplaceMessages(
   collaborationId: string,
   input: { side?: MarketplaceCollaborationSide; before?: string } = {},
 ): Promise<MarketplaceCollaborationMessagesResponse> {
-  return apiClient.get<MarketplaceCollaborationMessagesResponse>(
+  return vayadaApiClient.get<MarketplaceCollaborationMessagesResponse>(
     marketplaceCollaborationEndpoints.messages(collaborationId, input),
   );
 }
@@ -313,7 +336,7 @@ export async function getMarketplaceMessages(
 export async function createMarketplaceCollaboration(
   request: CreateMarketplaceCollaborationLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
     marketplaceCollaborationEndpoints.create(),
     request,
     toIdempotencyOptions(request.idempotencyKey),
@@ -324,7 +347,7 @@ export async function respondToMarketplaceCollaboration(
   collaborationId: string,
   request: RespondToMarketplaceCollaborationLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
     marketplaceCollaborationEndpoints.respond(collaborationId),
     request,
     toIdempotencyOptions(request.idempotencyKey),
@@ -335,7 +358,7 @@ export async function updateMarketplaceCollaborationTerms(
   collaborationId: string,
   request: UpdateMarketplaceCollaborationTermsLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
-  return apiClient.put<MarketplaceCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.put<MarketplaceCollaborationLifecycleWriteResponse>(
     marketplaceCollaborationEndpoints.updateTerms(collaborationId),
     request,
     toIdempotencyOptions(request.idempotencyKey),
@@ -346,7 +369,7 @@ export async function approveMarketplaceCollaborationTerms(
   collaborationId: string,
   request: ApproveMarketplaceCollaborationTermsLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
     marketplaceCollaborationEndpoints.approveTerms(collaborationId),
     request,
     toIdempotencyOptions(request.idempotencyKey),
@@ -357,7 +380,7 @@ export async function cancelMarketplaceCollaboration(
   collaborationId: string,
   request: CancelMarketplaceCollaborationLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
     marketplaceCollaborationEndpoints.cancel(collaborationId),
     request,
     toIdempotencyOptions(request.idempotencyKey),
@@ -369,7 +392,7 @@ export async function toggleMarketplaceCollaborationDeliverable(
   deliverableId: string,
   request: ToggleMarketplaceCollaborationDeliverableLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
     marketplaceCollaborationEndpoints.toggleDeliverable(collaborationId, deliverableId),
     request,
     toIdempotencyOptions(request.idempotencyKey),
@@ -380,7 +403,7 @@ export async function rateMarketplaceCollaborationCreator(
   collaborationId: string,
   request: RateMarketplaceCollaborationCreatorLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
-  return apiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceCollaborationLifecycleWriteResponse>(
     marketplaceCollaborationEndpoints.rateCreator(collaborationId),
     request,
     toIdempotencyOptions(request.idempotencyKey),
@@ -401,7 +424,7 @@ function toCollaborationQuery(input: MarketplaceCollaborationListInput): string 
   const params = new URLSearchParams({ side: input.side });
   if (input.status) params.set("status", input.status);
   if (input.initiatedBy) params.set("initiatedBy", input.initiatedBy);
-  if (input.listingId) params.set("listingId", input.listingId);
+  if (input.offerId) params.set("offerId", input.offerId);
   return `?${params.toString()}`;
 }
 

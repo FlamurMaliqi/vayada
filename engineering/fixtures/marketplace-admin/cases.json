@@ -53,20 +53,25 @@
       }
     },
     {
-      "caseId": "admin-listing-write-reuses-v2-shape",
-      "description": "Admin listing writes use the V2 marketplace hotel listing request shape and return the marketplace-admin contract envelope.",
+      "caseId": "admin-offer-write-uses-canonical-shape",
+      "description": "Admin offer writes accept only Marketplace-owned fields and return the marketplace-admin contract envelope.",
       "request": {
         "method": "POST",
-        "path": "/api/marketplace/admin/users/user_hotel/listings",
+        "path": "/api/marketplace/admin/users/user_hotel/offers",
         "body": {
           "title": "Creator suite",
-          "listingSummary": "A suite for creator stays.",
-          "accommodationType": "hotel",
-          "rawLocationText": "Innsbruck, Austria",
-          "imageUrls": ["https://cdn.example.com/listing.jpg"],
-          "collaborationOfferings": [
+          "offerSummary": "A suite for creator stays.",
+          "deliverables": [
             {
-              "collaborationType": "free_stay",
+              "platform": "instagram",
+              "deliverableType": "reel",
+              "quantity": 1,
+              "timingGuidance": "During the stay"
+            }
+          ],
+          "compensationOptions": [
+            {
+              "compensationType": "free_stay",
               "availabilityMonths": ["June"],
               "platforms": ["instagram"],
               "freeStayMinNights": 2,
@@ -92,7 +97,11 @@
       "expected": {
         "status": 201,
         "authorizationMode": "platform_organization_membership",
-        "mustInclude": ["listingId", "collaborationOfferings[0].collaborationType"]
+        "mustInclude": [
+          "offerId",
+          "deliverables[0].deliverableType",
+          "compensationOptions[0].compensationType"
+        ]
       }
     }
   ]

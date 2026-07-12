@@ -24,7 +24,7 @@ describe("getMarketplacePostLoginRedirect", () => {
       profile_complete: false,
       missing_fields: ["profile"],
       has_defaults: { location: false },
-      missing_listings: false,
+      missing_offers: false,
       completion_steps: [],
     });
     const storage = memoryStorage({ [STORAGE_KEYS.USER_TYPE]: "creator" });

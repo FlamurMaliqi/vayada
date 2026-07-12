@@ -221,10 +221,10 @@ export function HotelInvitationModal({
 
         {/* Modal Content */}
         <div className="p-6 space-y-8">
-          {/* Listing Selection */}
+          {/* Offer Selection */}
           <div>
             <label className="block text-base font-medium text-gray-900 mb-2">
-              Listing Selection <span className="text-red-500">*</span>
+              Offer Selection <span className="text-red-500">*</span>
             </label>
             <select
               value={listingId}
@@ -232,7 +232,7 @@ export function HotelInvitationModal({
               className="w-full px-4 py-3 rounded-lg border border-gray-300 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               required
             >
-              <option value="">Select a listing</option>
+              <option value="">Select an offer</option>
               {listings.map((listing) => (
                 <option key={listing.id} value={listing.id}>
                   {listing.name} - {listing.location}

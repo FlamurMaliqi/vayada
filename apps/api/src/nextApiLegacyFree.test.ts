@@ -143,7 +143,7 @@ describe("next-api legacy-free runtime check", () => {
       "/api/booking-web/hotels/hotel-alpenrose",
       "/api/booking-web/hotels/hotel-alpenrose/offers?check_in=2026-09-12&check_out=2026-09-15&adults=2",
       "/api/booking-web/hotels/hotel-alpenrose/calendar?start=2026-09-12&end=2026-09-15",
-      "/api/marketplace/listings",
+      "/api/marketplace/offers",
       "/api/marketplace/creators",
     ];
 

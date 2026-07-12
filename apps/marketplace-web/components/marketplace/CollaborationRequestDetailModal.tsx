@@ -171,7 +171,7 @@ export function CollaborationRequestDetailModal({
                   <div key={idx} className="flex-none w-full snap-center relative">
                     <Image
                       src={img}
-                      alt={`Listing ${idx + 1}`}
+                      alt={`Offer ${idx + 1}`}
                       fill
                       className="object-cover"
                       unoptimized

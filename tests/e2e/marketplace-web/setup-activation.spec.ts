@@ -20,8 +20,9 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("heading", { name: "Activate Creator Marketplace" })).toBeVisible();
     await expect(page.getByText("Creator-facing pitch")).toBeVisible();
     await expect(page.getByText("Collaboration offer")).toBeVisible();
+    await expect(page.getByText("Requested content")).toBeVisible();
+    await expect(page.getByText("Compensation options")).toBeVisible();
     await expect(page.getByText("Creator requirements")).toBeVisible();
-    await expect(page.getByText("Marketplace listing setup")).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Hotel Name" })).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Website" })).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Phone" })).toHaveCount(0);
@@ -37,7 +38,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await mockMarketplaceProfileApis(page);
 
     await page.goto(setupUrl(baseURL));
-    await page.getByRole("button", { name: "Open Marketplace listing tools" }).click();
+    await page.getByRole("button", { name: "Open Marketplace offer tools" }).click();
 
     await expect(page).toHaveURL(/\/profile$/);
     await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible();
@@ -61,9 +62,7 @@ test.describe("marketplace-web shared setup activation", () => {
       page.locator("p", { hasText: "Marketplace access is currently suspended" }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Marketplace unavailable" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Open Marketplace listing tools" })).toHaveCount(
-      0,
-    );
+    await expect(page.getByRole("button", { name: "Open Marketplace offer tools" })).toHaveCount(0);
   });
 });
 
@@ -153,7 +152,7 @@ async function mockMarketplaceProfileApis(page: Page) {
         profile_complete: false,
         missing_fields: ["profile"],
         has_defaults: { location: false },
-        missing_listings: false,
+        missing_offers: false,
         completion_steps: ["Complete your marketplace hotel profile"],
       },
     });
@@ -185,9 +184,10 @@ async function mockMarketplaceProfileApis(page: Page) {
 function sharedSetupStatus(
   missingSteps = [
     "creatorPitch",
-    "collaborationOffer",
+    "marketplaceOffer",
+    "offerDeliverables",
+    "compensationOptions",
     "creatorRequirements",
-    "marketplaceListing",
   ],
   marketplaceStatus = "selected_incomplete",
 ) {

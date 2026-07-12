@@ -18,9 +18,10 @@ describe("resolveMarketplaceSetupGuard", () => {
             product: "marketplace",
             missingSteps: [
               "creatorPitch",
-              "collaborationOffer",
+              "marketplaceOffer",
+              "offerDeliverables",
+              "compensationOptions",
               "creatorRequirements",
-              "marketplaceListing",
             ],
             reasonCodes: ["product_activation_incomplete"],
           },
@@ -45,9 +46,10 @@ describe("resolveMarketplaceSetupGuard", () => {
       productStatus: "selected_incomplete",
       missingSteps: [
         "creatorPitch",
-        "collaborationOffer",
+        "marketplaceOffer",
+        "offerDeliverables",
+        "compensationOptions",
         "creatorRequirements",
-        "marketplaceListing",
       ],
     });
     expect(isMarketplaceActivationDecision(decision)).toBe(true);
@@ -146,9 +148,10 @@ describe("resolveMarketplaceSetupGuard", () => {
         product: "marketplace",
         missingSteps: [
           "creatorPitch",
-          "collaborationOffer",
+          "marketplaceOffer",
+          "offerDeliverables",
+          "compensationOptions",
           "creatorRequirements",
-          "marketplaceListing",
         ],
         reasonCodes: ["entry_product_activation_incomplete"],
       },
@@ -194,9 +197,10 @@ function marketplaceActivationProperty(
     | "unavailable" = "selected_incomplete",
   missingSteps: string[] = [
     "creatorPitch",
-    "collaborationOffer",
+    "marketplaceOffer",
+    "offerDeliverables",
+    "compensationOptions",
     "creatorRequirements",
-    "marketplaceListing",
   ],
 ): SharedHotelSetupStatus["properties"][number] {
   return {

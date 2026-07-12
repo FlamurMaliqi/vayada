@@ -9,7 +9,7 @@ export type HotelProfileStatusResponse = {
   has_defaults: {
     location: boolean;
   };
-  missing_listings: boolean;
+  missing_offers: boolean;
   completion_steps: string[];
 };
 
@@ -35,7 +35,7 @@ type MarketplaceHotelProfileStatusPool = {
 
 type HotelProfileStatusRow = {
   profileComplete: boolean;
-  hasListings: boolean;
+  hasOffers: boolean;
 };
 
 type HotelProfileStatusAccess = {
@@ -63,7 +63,7 @@ export async function registerMarketplaceHotelProfileStatusRoutes(
         profile_complete: false,
         missing_fields: ["profile"],
         has_defaults: { location: false },
-        missing_listings: true,
+        missing_offers: true,
         completion_steps: ["Complete your marketplace hotel profile"],
       }
     );
@@ -95,11 +95,11 @@ export function createPgMarketplaceHotelProfileStatusRepository(config: {
            profile.profile_complete AS "profileComplete",
            EXISTS (
              SELECT 1
-             FROM marketplace.marketplace_hotel_listings listing
-             WHERE listing.property_id = profile.property_id
-               AND listing.organization_id = profile.organization_id
-               AND listing.listing_status <> 'archived'
-           ) AS "hasListings"
+             FROM marketplace.marketplace_offers offer
+             WHERE offer.property_id = profile.property_id
+               AND offer.organization_id = profile.organization_id
+               AND offer.offer_status <> 'archived'
+           ) AS "hasOffers"
          FROM marketplace.marketplace_hotel_profiles profile
          WHERE profile.organization_id::text = $1
            AND (
@@ -117,13 +117,13 @@ export function createPgMarketplaceHotelProfileStatusRepository(config: {
       const missingFields = row.profileComplete ? [] : ["profile"];
       const completionSteps: string[] = [];
       if (!row.profileComplete) completionSteps.push("Complete your marketplace hotel profile");
-      if (!row.hasListings) completionSteps.push("Add at least one property listing");
+      if (!row.hasOffers) completionSteps.push("Add at least one collaboration offer");
 
       return {
-        profile_complete: row.profileComplete && row.hasListings,
+        profile_complete: row.profileComplete && row.hasOffers,
         missing_fields: missingFields,
         has_defaults: { location: false },
-        missing_listings: !row.hasListings,
+        missing_offers: !row.hasOffers,
         completion_steps: completionSteps,
       };
     },

@@ -76,7 +76,7 @@ root path.
   "has_defaults": {
     "location": boolean
   },
-  "missing_listings": boolean,
+  "missing_offers": boolean,
   "completion_steps": string[]
 }
 ```
@@ -86,7 +86,7 @@ root path.
 - `profile_complete` (boolean): Indicates whether the hotel profile is fully complete
 - `missing_fields` (string[]): Array of field names that are missing or incomplete (e.g., `["name", "about", "website"]`)
 - `has_defaults.location` (boolean): Indicates whether the location field contains a default/placeholder value
-- `missing_listings` (boolean): Indicates whether the hotel has no active marketplace listings
+- `missing_offers` (boolean): Indicates whether the hotel has no active marketplace listings
 - `completion_steps` (string[]): Array of human-readable steps needed to complete the profile (e.g., `["Update your hotel name", "Add a description", "Set a custom location"]`)
 
 **Example Response:**
@@ -98,13 +98,13 @@ root path.
   "has_defaults": {
     "location": true
   },
-  "missing_listings": true,
+  "missing_offers": true,
   "completion_steps": [
     "Update your hotel name",
     "Add a description about your hotel",
     "Set a custom location (currently using default)",
     "Add your website URL",
-    "Add at least one property listing"
+    "Add at least one collaboration offer"
   ]
 }
 ```

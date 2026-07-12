@@ -41,7 +41,7 @@ export function ListingCardHeader({
         <HotelBadgeIcon active={isComplete} />
         <div className="flex-1">
           <h4 className="font-semibold text-gray-900 text-base">
-            {listing.name || `Property Listing ${index + 1}`}
+            {listing.name || `Collaboration Offer ${index + 1}`}
           </h4>
         </div>
         <div className="flex items-center gap-2">
@@ -52,7 +52,7 @@ export function ListingCardHeader({
               onEdit();
             }}
             className="p-1 rounded-md text-gray-600 hover:text-gray-700 hover:bg-gray-50 transition-colors"
-            title="Edit listing"
+            title="Edit offer"
           >
             <PencilIcon className="w-3.5 h-3.5" />
           </button>
@@ -64,7 +64,7 @@ export function ListingCardHeader({
                 onDelete();
               }}
               className="p-1 rounded-md text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors"
-              title="Remove listing"
+              title="Remove offer"
             >
               <XMarkIcon className="w-3.5 h-3.5" />
             </button>
