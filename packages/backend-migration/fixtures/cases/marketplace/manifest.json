@@ -1,6 +1,6 @@
 {
   "caseId": "marketplace",
-  "description": "Source-to-target marketplace fixture covering creator profiles, creator platforms and ratings, marketplace hotel profiles/listings, collaboration offerings and requirements, collaborations, deliverables, chat, trips, external collaborations, notifications, invite codes, newsletter preferences, and the public-safe marketplace listing read model.",
+  "description": "Source-to-target marketplace fixture covering creator profiles, creator platforms and ratings, hotel profiles and offers, compensation options and requirements, collaborations, deliverables, chat, trips, external collaborations, notifications, invite codes, newsletter preferences, and the public-safe Marketplace offer read model.",
   "sourceDatabases": ["marketplace"],
   "expectedOwners": {
     "identity.users": 3,
@@ -16,9 +16,10 @@
     "marketplace.creator_platforms": 1,
     "marketplace.creator_ratings": 1,
     "marketplace.marketplace_hotel_profiles": 1,
-    "marketplace.marketplace_hotel_listings": 1,
-    "marketplace.listing_collaboration_offerings": 2,
-    "marketplace.listing_creator_requirements": 1,
+    "marketplace.marketplace_offers": 1,
+    "marketplace.offer_compensation_options": 2,
+    "marketplace.offer_creator_requirements": 1,
+    "marketplace.offer_deliverables": 0,
     "marketplace.collaborations": 1,
     "marketplace.collaboration_deliverables": 2,
     "marketplace.marketplace_chat_messages": 2,
@@ -27,14 +28,14 @@
     "marketplace.marketplace_notifications": 2,
     "marketplace.invite_codes": 2,
     "marketplace.newsletter_preferences": 2,
-    "marketplace.marketplace_listing_read_model": 1
+    "marketplace.marketplace_offer_read_model": 1
   },
   "expectedFailures": [],
   "publicExposureAllowlist": [
-    "marketplace.marketplace_listing_read_model.public_id",
-    "marketplace.marketplace_listing_read_model.canonical_slug",
-    "marketplace.marketplace_listing_read_model.location",
-    "marketplace.marketplace_listing_read_model.public_offering_summary",
-    "marketplace.marketplace_listing_read_model.public_creator_requirements"
+    "marketplace.marketplace_offer_read_model.public_id",
+    "marketplace.marketplace_offer_read_model.canonical_slug",
+    "marketplace.marketplace_offer_read_model.location",
+    "marketplace.marketplace_offer_read_model.public_compensation_summary",
+    "marketplace.marketplace_offer_read_model.public_creator_requirements"
   ]
 }

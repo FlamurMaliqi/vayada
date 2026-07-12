@@ -18,8 +18,8 @@ type MediaUrlMigrationChecks = {
   marketplace?: {
     creatorProfileId: string;
     profilePictureUrl: string;
-    listingId: string;
-    listingImageUrls: string[];
+    offerId: string;
+    offerImageUrls: string[];
     chatMessageId: string;
     chatMediaObjectId: string;
   };
@@ -158,28 +158,28 @@ export async function checkMediaUrlMigrationParity({
   if (config.marketplace) {
     const { rows } = await client.query<{
       profile_picture_url: string | null;
-      listing_image_urls: string[];
+      offer_image_urls: string[];
       read_model_image_urls: string[];
       chat_media_object_id: string | null;
     }>(
       `
         SELECT
           creator.profile_picture_url,
-          listing.image_urls AS listing_image_urls,
+          offer.image_urls AS offer_image_urls,
           read_model.image_urls AS read_model_image_urls,
           chat.message_metadata ->> 'mediaObjectId' AS chat_media_object_id
         FROM marketplace.creator_profiles creator
-        CROSS JOIN marketplace.marketplace_hotel_listings listing
-        JOIN marketplace.marketplace_listing_read_model read_model
-          ON read_model.listing_id = listing.id
+        CROSS JOIN marketplace.marketplace_offers offer
+        JOIN marketplace.marketplace_offer_read_model read_model
+          ON read_model.offer_id = offer.id
         CROSS JOIN marketplace.marketplace_chat_messages chat
         WHERE creator.id = $1
-          AND listing.id = $2
+          AND offer.id = $2
           AND chat.id = $3
       `,
       [
         config.marketplace.creatorProfileId,
-        config.marketplace.listingId,
+        config.marketplace.offerId,
         config.marketplace.chatMessageId,
       ],
     );
@@ -187,18 +187,18 @@ export async function checkMediaUrlMigrationParity({
     if (
       !actual ||
       actual.profile_picture_url !== config.marketplace.profilePictureUrl ||
-      !sameStringArray(actual.listing_image_urls, config.marketplace.listingImageUrls) ||
-      !sameStringArray(actual.read_model_image_urls, config.marketplace.listingImageUrls) ||
+      !sameStringArray(actual.offer_image_urls, config.marketplace.offerImageUrls) ||
+      !sameStringArray(actual.read_model_image_urls, config.marketplace.offerImageUrls) ||
       actual.chat_media_object_id !== config.marketplace.chatMediaObjectId
     ) {
       addMediaUrlFinding(
         findings,
         "MEDIA_URL_MARKETPLACE_REFERENCE_MISMATCH",
         "marketplace media references",
-        "Marketplace listing/profile/chat URLs did not migrate to the expected target references",
+        "Marketplace offer/profile/chat URLs did not migrate to the expected target references",
         JSON.stringify(config.marketplace),
         JSON.stringify(actual ?? null),
-        "Check creator profile, listing gallery, listing read model, and chat attachment mapping.",
+        "Check creator profile, offer gallery, offer read model, and chat attachment mapping.",
       );
     }
   }
@@ -280,11 +280,11 @@ export async function checkMediaUrlMigrationParity({
           WHERE COALESCE(profile_picture_url, '') LIKE '%' || $1 || '%'
           UNION ALL
           SELECT 1
-          FROM marketplace.marketplace_hotel_listings
+          FROM marketplace.marketplace_offers
           WHERE array_to_string(image_urls, ' ') LIKE '%' || $1 || '%'
           UNION ALL
           SELECT 1
-          FROM marketplace.marketplace_listing_read_model
+          FROM marketplace.marketplace_offer_read_model
           WHERE array_to_string(image_urls, ' ') LIKE '%' || $1 || '%'
           UNION ALL
           SELECT 1

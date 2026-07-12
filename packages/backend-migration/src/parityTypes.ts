@@ -230,12 +230,12 @@ export type ExpectedTarget = {
       creatorOrganizationId: string;
       creatorOwnerUserId: string;
       creatorOwnerRoleKey: string;
-      listingId: string;
+      offerId: string;
       commissionRuleId: string;
       creatorPlatformId: string;
       creatorRatingId: string;
-      offeringFreeStayId: string;
-      offeringAffiliateId: string;
+      compensationOptionFreeStayId: string;
+      compensationOptionAffiliateId: string;
       requirementId: string;
       collaborationId: string;
       deliverableApprovedId: string;
@@ -252,15 +252,15 @@ export type ExpectedTarget = {
       hotelNewsletterPreferenceId: string;
       sourceCreatorId: string;
       sourceHotelProfileId: string;
-      sourceListingId: string;
+      sourceOfferId: string;
       sourceCollaborationId: string;
       creatorDisplayName: string;
       platform: string;
-      listingPublicId: string;
-      listingSlug: string;
+      offerPublicId: string;
+      offerSlug: string;
       visibilityStatus: string;
       lifecycleStatus: string;
-      collaborationType: string;
+      compensationType: string | null;
       affiliateReferralCode: string;
       creatorChatBody: string;
       hotelChatBody: string;
@@ -268,7 +268,7 @@ export type ExpectedTarget = {
       externalCollaborationTitle: string;
       pendingInviteCode: string;
       redeemedInviteCode: string;
-      offeringCount: number;
+      compensationOptionCount: number;
       deliverableCount: number;
       chatMessageCount: number;
       notificationCount: number;
@@ -394,8 +394,8 @@ export type ExpectedTarget = {
     marketplace?: {
       creatorProfileId: string;
       profilePictureUrl: string;
-      listingId: string;
-      listingImageUrls: string[];
+      offerId: string;
+      offerImageUrls: string[];
       chatMessageId: string;
       chatMediaObjectId: string;
     };

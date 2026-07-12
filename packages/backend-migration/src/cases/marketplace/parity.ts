@@ -46,9 +46,9 @@ async function checkMarketplaceCoreSlice(
     source_hotel_profile_id: string | null;
     marketplace_profile_status: string;
     hotel_profile_complete: boolean;
-    listing_id: string;
-    source_listing_id: string | null;
-    listing_status: string;
+    offer_id: string;
+    source_offer_id: string | null;
+    offer_status: string;
     accommodation_type: string | null;
     requirement_id: string;
     requirement_platforms: string[];
@@ -56,11 +56,12 @@ async function checkMarketplaceCoreSlice(
     collaboration_id: string;
     source_collaboration_id: string | null;
     lifecycle_status: string;
-    collaboration_type: string | null;
+    compensation_type: string | null;
+    affiliate_enabled: boolean;
     affiliate_referral_code: string | null;
     creator_consent: boolean | null;
     collaboration_commission_rule_id: string | null;
-    creator_fee: string | null;
+    affiliate_commission_percentage: string | null;
     creator_rating_id: string;
     rating: number;
     commission_rule_id: string;
@@ -68,8 +69,8 @@ async function checkMarketplaceCoreSlice(
     commission_product: string;
     commission_status: string;
     commission_rate: string | null;
-    read_model_listing_id: string;
-    listing_public_id: string;
+    read_model_offer_id: string;
+    offer_public_id: string;
     canonical_slug: string;
     visibility_status: string;
     property_public_id: string;
@@ -91,21 +92,22 @@ async function checkMarketplaceCoreSlice(
        hotel_profile.source_hotel_profile_id,
        hotel_profile.marketplace_profile_status,
        hotel_profile.profile_complete AS hotel_profile_complete,
-       listing.id::text AS listing_id,
-       listing.source_listing_id,
-       listing.listing_status,
-       listing.accommodation_type,
+       offer.id::text AS offer_id,
+       offer.source_offer_id,
+       offer.offer_status,
+       offer.accommodation_type,
        requirement.id::text AS requirement_id,
        requirement.platforms AS requirement_platforms,
        requirement.target_countries AS requirement_countries,
        collaboration.id::text AS collaboration_id,
        collaboration.source_collaboration_id,
        collaboration.lifecycle_status,
-       collaboration.collaboration_type,
+       collaboration.compensation_type,
+       collaboration.affiliate_enabled,
        collaboration.affiliate_referral_code,
        collaboration.creator_consent,
        collaboration.commission_rule_id::text AS collaboration_commission_rule_id,
-       collaboration.creator_fee::text AS creator_fee,
+       collaboration.affiliate_commission_percentage::text AS affiliate_commission_percentage,
        rating.id::text AS creator_rating_id,
        rating.rating,
        commission_rule.id::text AS commission_rule_id,
@@ -113,8 +115,8 @@ async function checkMarketplaceCoreSlice(
        commission_rule.product AS commission_product,
        commission_rule.status AS commission_status,
        commission_rule.percentage_rate::text AS commission_rate,
-       read_model.listing_id::text AS read_model_listing_id,
-       read_model.public_id AS listing_public_id,
+       read_model.offer_id::text AS read_model_offer_id,
+       read_model.public_id AS offer_public_id,
        read_model.canonical_slug,
        read_model.visibility_status,
        property.public_id AS property_public_id,
@@ -127,38 +129,38 @@ async function checkMarketplaceCoreSlice(
      JOIN marketplace.marketplace_hotel_profiles hotel_profile
        ON hotel_profile.property_id = $3
       AND hotel_profile.organization_id = $4
-     JOIN marketplace.marketplace_hotel_listings listing
-       ON listing.id = $5
-      AND listing.property_id = hotel_profile.property_id
-      AND listing.organization_id = hotel_profile.organization_id
-     JOIN marketplace.listing_creator_requirements requirement
+     JOIN marketplace.marketplace_offers offer
+       ON offer.id = $5
+      AND offer.property_id = hotel_profile.property_id
+      AND offer.organization_id = hotel_profile.organization_id
+     JOIN marketplace.offer_creator_requirements requirement
        ON requirement.id = $6
-      AND requirement.listing_id = listing.id
-      AND requirement.property_id = listing.property_id
-      AND requirement.organization_id = listing.organization_id
+      AND requirement.offer_id = offer.id
+      AND requirement.property_id = offer.property_id
+      AND requirement.organization_id = offer.organization_id
      JOIN marketplace.collaborations collaboration
        ON collaboration.id = $7
       AND collaboration.creator_profile_id = creator.id
       AND collaboration.creator_organization_id = creator.organization_id
-      AND collaboration.property_id = listing.property_id
-      AND collaboration.hotel_organization_id = listing.organization_id
-      AND collaboration.listing_id = listing.id
+      AND collaboration.property_id = offer.property_id
+      AND collaboration.hotel_organization_id = offer.organization_id
+      AND collaboration.offer_id = offer.id
      JOIN marketplace.creator_ratings rating
        ON rating.id = $8
       AND rating.creator_profile_id = creator.id
       AND rating.creator_organization_id = creator.organization_id
-      AND rating.property_id = listing.property_id
-      AND rating.hotel_organization_id = listing.organization_id
+      AND rating.property_id = offer.property_id
+      AND rating.hotel_organization_id = offer.organization_id
       AND rating.collaboration_id = collaboration.id
      JOIN finance.commission_rules commission_rule
        ON commission_rule.id = $9
       AND commission_rule.id = collaboration.commission_rule_id
       AND commission_rule.organization_id = collaboration.hotel_organization_id
-     JOIN marketplace.marketplace_listing_read_model read_model
-       ON read_model.listing_id = listing.id
-      AND read_model.property_id = listing.property_id
+     JOIN marketplace.marketplace_offer_read_model read_model
+       ON read_model.offer_id = offer.id
+      AND read_model.property_id = offer.property_id
      JOIN hotel_catalog.properties property
-       ON property.id = listing.property_id
+       ON property.id = offer.property_id
      LEFT JOIN hotel_catalog.property_slugs slug
        ON slug.property_id = property.id
       AND slug.slug = $10
@@ -169,12 +171,12 @@ async function checkMarketplaceCoreSlice(
       check.creatorPlatformId,
       check.propertyId,
       check.hotelOrganizationId,
-      check.listingId,
+      check.offerId,
       check.requirementId,
       check.collaborationId,
       check.creatorRatingId,
       check.commissionRuleId,
-      check.listingSlug,
+      check.offerSlug,
     ],
   );
 
@@ -196,9 +198,9 @@ async function checkMarketplaceCoreSlice(
         sourceHotelProfileId: row.source_hotel_profile_id,
         marketplaceProfileStatus: row.marketplace_profile_status,
         hotelProfileComplete: row.hotel_profile_complete,
-        listingId: row.listing_id,
-        sourceListingId: row.source_listing_id,
-        listingStatus: row.listing_status,
+        offerId: row.offer_id,
+        sourceOfferId: row.source_offer_id,
+        offerStatus: row.offer_status,
         accommodationType: row.accommodation_type,
         requirementId: row.requirement_id,
         requirementPlatforms: row.requirement_platforms,
@@ -206,11 +208,12 @@ async function checkMarketplaceCoreSlice(
         collaborationId: row.collaboration_id,
         sourceCollaborationId: row.source_collaboration_id,
         lifecycleStatus: row.lifecycle_status,
-        collaborationType: row.collaboration_type,
+        compensationType: row.compensation_type,
+        affiliateEnabled: row.affiliate_enabled,
         affiliateReferralCode: row.affiliate_referral_code,
         creatorConsent: row.creator_consent,
         collaborationCommissionRuleId: row.collaboration_commission_rule_id,
-        creatorFee: row.creator_fee,
+        affiliateCommissionPercentage: row.affiliate_commission_percentage,
         creatorRatingId: row.creator_rating_id,
         rating: row.rating,
         commissionRuleId: row.commission_rule_id,
@@ -218,9 +221,9 @@ async function checkMarketplaceCoreSlice(
         commissionProduct: row.commission_product,
         commissionStatus: row.commission_status,
         commissionRate: row.commission_rate,
-        readModelListingId: row.read_model_listing_id,
-        listingPublicId: row.listing_public_id,
-        listingSlug: row.canonical_slug,
+        readModelOfferId: row.read_model_offer_id,
+        offerPublicId: row.offer_public_id,
+        offerSlug: row.canonical_slug,
         visibilityStatus: row.visibility_status,
         propertyPublicId: row.property_public_id,
         propertySlug: row.property_slug,
@@ -244,9 +247,9 @@ async function checkMarketplaceCoreSlice(
     actual.sourceHotelProfileId === check.sourceHotelProfileId &&
     actual.marketplaceProfileStatus === "verified" &&
     actual.hotelProfileComplete === true &&
-    actual.listingId === check.listingId &&
-    actual.sourceListingId === check.sourceListingId &&
-    actual.listingStatus === "verified" &&
+    actual.offerId === check.offerId &&
+    actual.sourceOfferId === check.sourceOfferId &&
+    actual.offerStatus === "verified" &&
     actual.accommodationType === "boutique_hotel" &&
     actual.requirementId === check.requirementId &&
     actual.requirementPlatforms.includes(check.platform) &&
@@ -254,11 +257,12 @@ async function checkMarketplaceCoreSlice(
     actual.collaborationId === check.collaborationId &&
     actual.sourceCollaborationId === check.sourceCollaborationId &&
     actual.lifecycleStatus === check.lifecycleStatus &&
-    actual.collaborationType === check.collaborationType &&
+    actual.compensationType === check.compensationType &&
+    actual.affiliateEnabled === true &&
     actual.affiliateReferralCode === check.affiliateReferralCode &&
     actual.creatorConsent === true &&
     actual.collaborationCommissionRuleId === check.commissionRuleId &&
-    actual.creatorFee === "10.0000" &&
+    actual.affiliateCommissionPercentage === "10.0000" &&
     actual.creatorRatingId === check.creatorRatingId &&
     actual.rating === check.rating &&
     actual.commissionRuleId === check.commissionRuleId &&
@@ -266,19 +270,19 @@ async function checkMarketplaceCoreSlice(
     actual.commissionProduct === "marketplace" &&
     actual.commissionStatus === "active" &&
     actual.commissionRate === "10.0000" &&
-    actual.readModelListingId === check.listingId &&
-    actual.listingPublicId === check.listingPublicId &&
-    actual.listingSlug === check.listingSlug &&
+    actual.readModelOfferId === check.offerId &&
+    actual.offerPublicId === check.offerPublicId &&
+    actual.offerSlug === check.offerSlug &&
     actual.visibilityStatus === check.visibilityStatus &&
-    actual.propertySlug === check.listingSlug;
+    actual.propertySlug === check.offerSlug;
 
   if (!matches) {
     addMarketplaceFinding(
       findings,
       "MARKETPLACE_CORE_SLICE_MISMATCH",
       "marketplace.collaborations",
-      `Expected marketplace creator/listing/collaboration slice ${check.collaborationId} was not found`,
-      "Creator profile/platform, hotel profile/listing, requirement, collaboration, rating, commission rule, and public listing read model linked with stable IDs",
+      `Expected marketplace creator/offer/collaboration slice ${check.collaborationId} was not found`,
+      "Creator profile/platform, hotel profile/offer, requirement, collaboration, rating, commission rule, and public offer read model linked with stable IDs",
       actual ? JSON.stringify(actual) : "row missing",
       "Check marketplace fixture IDs, target foreign keys, and source ID preservation across the core marketplace tables.",
     );
@@ -294,10 +298,10 @@ async function checkMarketplaceOwnershipLinks(
     has_hotel_owner_membership: boolean;
     has_creator_owner_membership: boolean;
     has_hotel_profile_link: boolean;
-    has_hotel_listing_link: boolean;
+    has_marketplace_offer_link: boolean;
     has_creator_profile_link: boolean;
     has_hotel_profile_entitlement: boolean;
-    has_hotel_listing_entitlement: boolean;
+    has_marketplace_offer_entitlement: boolean;
     has_creator_profile_entitlement: boolean;
     has_hotel_profile_source: boolean;
     has_listing_source: boolean;
@@ -336,11 +340,11 @@ async function checkMarketplaceOwnershipLinks(
          FROM identity.organization_resource_links link
          WHERE link.organization_id = $1
            AND link.product = 'marketplace'
-           AND link.resource_type = 'hotel_listing'
+           AND link.resource_type = 'marketplace_offer'
            AND link.resource_id = $3
            AND link.relationship = 'owner'
            AND link.status = 'active'
-       ) AS has_hotel_listing_link,
+       ) AS has_marketplace_offer_link,
        EXISTS(
          SELECT 1
          FROM identity.organization_resource_links link
@@ -367,12 +371,12 @@ async function checkMarketplaceOwnershipLinks(
          FROM identity.product_entitlements entitlement
          WHERE entitlement.organization_id = $1
            AND entitlement.product = 'marketplace'
-           AND entitlement.entitlement_key = 'marketplace-hotel-listing'
+           AND entitlement.entitlement_key = 'marketplace-offer'
            AND entitlement.status = 'active'
            AND entitlement.resource_product = 'marketplace'
-           AND entitlement.resource_type = 'hotel_listing'
+           AND entitlement.resource_type = 'marketplace_offer'
            AND entitlement.resource_id = $3
-       ) AS has_hotel_listing_entitlement,
+       ) AS has_marketplace_offer_entitlement,
        EXISTS(
          SELECT 1
          FROM identity.product_entitlements entitlement
@@ -407,11 +411,11 @@ async function checkMarketplaceOwnershipLinks(
     [
       check.hotelOrganizationId,
       check.propertyId,
-      check.listingId,
+      check.offerId,
       check.creatorOrganizationId,
       check.creatorProfileId,
       check.sourceHotelProfileId,
-      check.sourceListingId,
+      check.sourceOfferId,
       check.hotelOwnerUserId,
       check.hotelOwnerRoleKey,
       check.creatorOwnerUserId,
@@ -424,10 +428,10 @@ async function checkMarketplaceOwnershipLinks(
     row.has_hotel_owner_membership &&
     row.has_creator_owner_membership &&
     row.has_hotel_profile_link &&
-    row.has_hotel_listing_link &&
+    row.has_marketplace_offer_link &&
     row.has_creator_profile_link &&
     row.has_hotel_profile_entitlement &&
-    row.has_hotel_listing_entitlement &&
+    row.has_marketplace_offer_entitlement &&
     row.has_creator_profile_entitlement &&
     row.has_hotel_profile_source &&
     row.has_listing_source;
@@ -437,10 +441,10 @@ async function checkMarketplaceOwnershipLinks(
       findings,
       "MARKETPLACE_OWNERSHIP_LINK_MISMATCH",
       "identity.organization_resource_links",
-      `Expected marketplace ownership/resource links for listing ${check.listingId} were not found`,
-      "Active marketplace owner memberships, hotel profile, hotel listing, and creator profile resource links plus scoped marketplace entitlements and catalog source links",
+      `Expected marketplace ownership/resource links for offer ${check.offerId} were not found`,
+      "Active marketplace owner memberships, hotel profile, offer, and creator profile resource links plus scoped marketplace entitlements and catalog source links",
       JSON.stringify(row),
-      "Check marketplace ownership backfill rows before accepting creator, hotel profile, or listing target rows.",
+      "Check marketplace ownership backfill rows before accepting creator, hotel profile, or offer target rows.",
     );
   }
 }
@@ -451,9 +455,9 @@ async function checkMarketplaceRelatedRows(
   findings: ParityFinding[],
 ): Promise<void> {
   const result = await client.query<{
-    offering_count: string;
-    has_free_stay_offering: boolean;
-    has_affiliate_offering: boolean;
+    compensation_option_count: string;
+    has_free_stay_option: boolean;
+    has_affiliate_option: boolean;
     deliverable_count: string;
     has_approved_deliverable: boolean;
     has_submitted_deliverable: boolean;
@@ -473,30 +477,30 @@ async function checkMarketplaceRelatedRows(
     `SELECT
        (
          SELECT count(*)::text
-         FROM marketplace.listing_collaboration_offerings offering
-         WHERE offering.listing_id = $1
-           AND offering.property_id = $2
-           AND offering.organization_id = $3
-       ) AS offering_count,
+         FROM marketplace.offer_compensation_options option
+         WHERE option.offer_id = $1
+           AND option.property_id = $2
+           AND option.organization_id = $3
+       ) AS compensation_option_count,
        EXISTS(
          SELECT 1
-         FROM marketplace.listing_collaboration_offerings offering
-         WHERE offering.id = $4
-           AND offering.listing_id = $1
-           AND offering.collaboration_type = 'free_stay'
-           AND offering.free_stay_min_nights = 2
-           AND offering.free_stay_max_nights = 4
-           AND $5 = ANY(offering.platforms)
-       ) AS has_free_stay_offering,
+         FROM marketplace.offer_compensation_options option
+         WHERE option.id = $4
+           AND option.offer_id = $1
+           AND option.compensation_type = 'free_stay'
+           AND option.free_stay_min_nights = 2
+           AND option.free_stay_max_nights = 4
+           AND $5 = ANY(option.platforms)
+       ) AS has_free_stay_option,
        EXISTS(
          SELECT 1
-         FROM marketplace.listing_collaboration_offerings offering
-         WHERE offering.id = $6
-           AND offering.listing_id = $1
-           AND offering.collaboration_type = 'affiliate'
-           AND offering.commission_percentage::text = '10.0000'
-           AND offering.min_followers = 50000
-       ) AS has_affiliate_offering,
+         FROM marketplace.offer_compensation_options option
+         WHERE option.id = $6
+           AND option.offer_id = $1
+           AND option.compensation_type = 'affiliate'
+           AND option.commission_percentage::text = '10.0000'
+           AND option.min_followers = 50000
+       ) AS has_affiliate_option,
        (
          SELECT count(*)::text
          FROM marketplace.collaboration_deliverables deliverable
@@ -614,12 +618,12 @@ async function checkMarketplaceRelatedRows(
            AND preference.enabled = FALSE
        ) AS has_hotel_newsletter`,
     [
-      check.listingId,
+      check.offerId,
       check.propertyId,
       check.hotelOrganizationId,
-      check.offeringFreeStayId,
+      check.compensationOptionFreeStayId,
       check.platform,
-      check.offeringAffiliateId,
+      check.compensationOptionAffiliateId,
       check.collaborationId,
       check.deliverableApprovedId,
       check.deliverableSubmittedId,
@@ -642,9 +646,9 @@ async function checkMarketplaceRelatedRows(
 
   const row = result.rows[0];
   const actual = {
-    offeringCount: parseInt(row.offering_count, 10),
-    hasFreeStayOffering: row.has_free_stay_offering,
-    hasAffiliateOffering: row.has_affiliate_offering,
+    compensationOptionCount: parseInt(row.compensation_option_count, 10),
+    hasFreeStayOption: row.has_free_stay_option,
+    hasAffiliateOption: row.has_affiliate_option,
     deliverableCount: parseInt(row.deliverable_count, 10),
     hasApprovedDeliverable: row.has_approved_deliverable,
     hasSubmittedDeliverable: row.has_submitted_deliverable,
@@ -663,9 +667,9 @@ async function checkMarketplaceRelatedRows(
   };
 
   const matches =
-    actual.offeringCount === check.offeringCount &&
-    actual.hasFreeStayOffering &&
-    actual.hasAffiliateOffering &&
+    actual.compensationOptionCount === check.compensationOptionCount &&
+    actual.hasFreeStayOption &&
+    actual.hasAffiliateOption &&
     actual.deliverableCount === check.deliverableCount &&
     actual.hasApprovedDeliverable &&
     actual.hasSubmittedDeliverable &&
@@ -686,11 +690,11 @@ async function checkMarketplaceRelatedRows(
     addMarketplaceFinding(
       findings,
       "MARKETPLACE_RELATED_ROW_MISMATCH",
-      "marketplace.listing_collaboration_offerings",
-      `Expected marketplace related rows for listing ${check.listingId} were not found`,
-      "Offering, deliverable, chat, notification, invite-code, and newsletter preference counts plus representative row state",
+      "marketplace.offer_compensation_options",
+      `Expected marketplace related rows for offer ${check.offerId} were not found`,
+      "Compensation option, deliverable, chat, notification, invite-code, and newsletter preference counts plus representative row state",
       JSON.stringify(actual),
-      "Check related marketplace fixture rows and relationship preservation around the collaboration/listing slice.",
+      "Check related marketplace fixture rows and relationship preservation around the collaboration/offer slice.",
     );
   }
 }
@@ -769,11 +773,11 @@ async function checkMarketplaceReadModelSafety(
   expected: ExpectedTarget,
   findings: ParityFinding[],
 ): Promise<void> {
-  const forbiddenKeyResult = await client.query<{ listing_id: string }>(
-    `SELECT listing_id::text
-     FROM marketplace.marketplace_listing_read_model
+  const forbiddenKeyResult = await client.query<{ offer_id: string }>(
+    `SELECT offer_id::text
+     FROM marketplace.marketplace_offer_read_model
      WHERE marketplace.jsonb_has_marketplace_private_key(location)
-        OR marketplace.jsonb_has_marketplace_private_key(public_offering_summary)
+        OR marketplace.jsonb_has_marketplace_private_key(public_compensation_summary)
         OR marketplace.jsonb_has_marketplace_private_key(public_creator_requirements)
         OR marketplace.jsonb_has_marketplace_private_key(source_freshness)`,
   );
@@ -782,34 +786,34 @@ async function checkMarketplaceReadModelSafety(
     addMarketplaceFinding(
       findings,
       "MARKETPLACE_PUBLIC_READ_MODEL_PRIVATE_KEY",
-      "marketplace.marketplace_listing_read_model",
-      `Marketplace listing read model ${row.listing_id} contains a private JSON key`,
+      "marketplace.marketplace_offer_read_model",
+      `Marketplace offer read model ${row.offer_id} contains a private JSON key`,
       "No private marketplace, PII, ownership, chat, collaboration, invite, or affiliate tracking keys in public JSON",
-      row.listing_id,
-      "Filter private fields before projecting marketplace listing read models.",
+      row.offer_id,
+      "Filter private fields before projecting marketplace offer read models.",
     );
   }
 
   const forbiddenValues = expected.marketplaceChecks?.forbiddenPublicReadModelValues ?? [];
   if (forbiddenValues.length === 0) return;
 
-  const publicRows = await client.query<{ listing_id: string; public_surface: string }>(
-    `SELECT listing_id::text,
+  const publicRows = await client.query<{ offer_id: string; public_surface: string }>(
+    `SELECT offer_id::text,
             concat_ws(
               ' ',
               public_id,
               canonical_slug,
               display_name,
-              listing_title,
-              listing_summary,
+              offer_title,
+              offer_summary,
               accommodation_type,
               location::text,
               array_to_string(image_urls, ' '),
-              public_offering_summary::text,
+              public_compensation_summary::text,
               public_creator_requirements::text,
               source_freshness::text
             ) AS public_surface
-     FROM marketplace.marketplace_listing_read_model`,
+     FROM marketplace.marketplace_offer_read_model`,
   );
 
   for (const row of publicRows.rows) {
@@ -819,11 +823,11 @@ async function checkMarketplaceReadModelSafety(
     addMarketplaceFinding(
       findings,
       "MARKETPLACE_PUBLIC_READ_MODEL_PRIVATE_VALUE",
-      "marketplace.marketplace_listing_read_model",
-      `Marketplace listing read model ${row.listing_id} contains private value ${matchedValue}`,
-      "No private chat text, creator PII, invite codes, affiliate tracking refs, or negotiated terms in public listing read models",
+      "marketplace.marketplace_offer_read_model",
+      `Marketplace offer read model ${row.offer_id} contains private value ${matchedValue}`,
+      "No private chat text, creator PII, invite codes, affiliate tracking refs, or negotiated terms in public offer read models",
       matchedValue,
-      "Keep private marketplace state in marketplace tables and project only public-safe listing fields.",
+      "Keep private marketplace state in marketplace tables and project only public-safe offer fields.",
     );
   }
 }

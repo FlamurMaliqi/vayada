@@ -4,7 +4,7 @@ const REQUIRED_PURPOSES = [
   "property.hero_image",
   "property.gallery_image",
   "property.logo",
-  "marketplace.listing.gallery",
+  "marketplace.offer.media",
   "marketplace.creator.profile_image",
   "marketplace.collaboration_chat.attachment",
   "pms.room_type.media",
@@ -141,7 +141,7 @@ export async function checkPlatformMediaParity({
           'property.hero_image',
           'property.gallery_image',
           'property.logo',
-          'marketplace.listing.gallery',
+          'marketplace.offer.media',
           'marketplace.creator.profile_image',
           'pms.room_type.media'
         )

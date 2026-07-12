@@ -87,22 +87,22 @@ export async function backfillCanonicalPropertyResourceLinks(client: pg.Client):
 
       SELECT
         link.organization_id,
-        listing.property_id,
+        offer.property_id,
         link.relationship
       FROM identity.organization_resource_links link
       JOIN identity.organizations organization
         ON organization.id = link.organization_id
-      JOIN marketplace.marketplace_hotel_listings listing
-        ON listing.organization_id = link.organization_id
+      JOIN marketplace.marketplace_offers offer
+        ON offer.organization_id = link.organization_id
        AND (
-         listing.id::text = link.resource_id
-         OR listing.source_listing_id = link.resource_id
+         offer.id::text = link.resource_id
+         OR offer.source_offer_id = link.resource_id
        )
       WHERE organization.kind = 'hotel_group'
         AND organization.status = 'active'
         AND link.status = 'active'
         AND link.product = 'marketplace'
-        AND link.resource_type = 'hotel_listing'
+        AND link.resource_type = 'marketplace_offer'
         AND link.relationship IN ('owner', 'operator')
     ),
     canonical_property_links AS (

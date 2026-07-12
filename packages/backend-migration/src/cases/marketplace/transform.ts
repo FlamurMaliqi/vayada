@@ -31,7 +31,14 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
   await client.query(`
     INSERT INTO identity.organization_resource_links
       (id, organization_id, product, resource_type, resource_id, relationship, status)
-    SELECT id, organization_id, product, resource_type, resource_id, relationship, status
+    SELECT
+      id,
+      organization_id,
+      product,
+      CASE WHEN resource_type = 'hotel_listing' THEN 'marketplace_offer' ELSE resource_type END,
+      resource_id,
+      relationship,
+      status
     FROM migration_source_marketplace.organization_resource_links
   `);
 
@@ -53,10 +60,13 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
       id,
       organization_id,
       product,
-      entitlement_key,
+      CASE
+        WHEN entitlement_key = 'marketplace-hotel-listing' THEN 'marketplace-offer'
+        ELSE entitlement_key
+      END,
       status,
       resource_product,
-      resource_type,
+      CASE WHEN resource_type = 'hotel_listing' THEN 'marketplace_offer' ELSE resource_type END,
       resource_id,
       starts_at,
       metadata
@@ -260,20 +270,20 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
   `);
 
   await client.query(`
-    INSERT INTO marketplace.marketplace_hotel_listings
+    INSERT INTO marketplace.marketplace_offers
       (
         id,
         property_id,
         organization_id,
         source_system,
-        source_listing_id,
+        source_offer_id,
         title,
-        listing_summary,
+        offer_summary,
         accommodation_type,
-        listing_status,
+        offer_status,
         raw_location_text,
         image_urls,
-        listing_metadata,
+        offer_metadata,
         created_at,
         updated_at
       )
@@ -298,15 +308,15 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
   `);
 
   await client.query(`
-    INSERT INTO marketplace.listing_collaboration_offerings
+    INSERT INTO marketplace.offer_compensation_options
       (
         id,
-        listing_id,
+        offer_id,
         property_id,
         organization_id,
         source_system,
-        source_offering_id,
-        collaboration_type,
+        source_compensation_option_id,
+        compensation_type,
         availability_months,
         platforms,
         free_stay_min_nights,
@@ -315,7 +325,7 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
         min_followers,
         currency,
         terms_summary,
-        offering_metadata,
+        compensation_metadata,
         created_at,
         updated_at
       )
@@ -346,10 +356,10 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
   `);
 
   await client.query(`
-    INSERT INTO marketplace.listing_creator_requirements
+    INSERT INTO marketplace.offer_creator_requirements
       (
         id,
-        listing_id,
+        offer_id,
         property_id,
         organization_id,
         source_system,
@@ -395,13 +405,13 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
         creator_organization_id,
         property_id,
         hotel_organization_id,
-        listing_id,
+        offer_id,
         commission_rule_id,
         source_system,
         source_collaboration_id,
         initiator_type,
         lifecycle_status,
-        collaboration_type,
+        compensation_type,
         application_message,
         negotiated_terms,
         platform_deliverables,
@@ -410,7 +420,8 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
         travel_date_to,
         free_stay_min_nights,
         free_stay_max_nights,
-        creator_fee,
+        affiliate_commission_percentage,
+        affiliate_enabled,
         currency,
         affiliate_referral_code,
         affiliate_link,
@@ -435,7 +446,10 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
       collaboration.source_collaboration_id,
       collaboration.initiator_type,
       collaboration.lifecycle_status,
-      collaboration.collaboration_type,
+      CASE
+        WHEN collaboration.collaboration_type = 'affiliate' THEN NULL
+        ELSE collaboration.collaboration_type
+      END,
       collaboration.application_message,
       collaboration.negotiated_terms,
       collaboration.platform_deliverables,
@@ -445,6 +459,12 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
       collaboration.free_stay_min_nights,
       collaboration.free_stay_max_nights,
       collaboration.creator_fee,
+      (
+        collaboration.collaboration_type = 'affiliate'
+        OR collaboration.source_commission_rule_id IS NOT NULL
+        OR collaboration.affiliate_referral_code IS NOT NULL
+        OR collaboration.affiliate_link IS NOT NULL
+      ),
       collaboration.currency,
       collaboration.affiliate_referral_code,
       collaboration.affiliate_link,
@@ -765,20 +785,20 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
   `);
 
   await client.query(`
-    INSERT INTO marketplace.marketplace_listing_read_model
+    INSERT INTO marketplace.marketplace_offer_read_model
       (
-        listing_id,
+        offer_id,
         property_id,
         public_id,
         canonical_slug,
         display_name,
-        listing_title,
-        listing_summary,
+        offer_title,
+        offer_summary,
         accommodation_type,
         visibility_status,
         location,
         image_urls,
-        public_offering_summary,
+        public_compensation_summary,
         public_creator_requirements,
         source_freshness,
         projected_at
@@ -795,13 +815,13 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
       listing.visibility_status,
       listing.public_location,
       listing.image_urls,
-      offering_summary.public_offering_summary,
+      compensation_summary.public_compensation_summary,
       jsonb_build_object(
         'platforms', to_jsonb(requirement.platforms),
         'countries', to_jsonb(requirement.target_countries),
         'ageGroups', to_jsonb(requirement.target_age_groups),
         'creatorTypes', to_jsonb(requirement.creator_types),
-        'minFollowers', offering_summary.minimum_followers
+        'minFollowers', compensation_summary.minimum_followers
       ),
       listing.source_freshness,
       listing.projected_at
@@ -842,10 +862,10 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
             )
           END
           ORDER BY offering.public_sort_order
-        ) AS public_offering_summary,
+        ) AS public_compensation_summary,
         max(offering.min_followers) AS minimum_followers
       FROM migration_source_marketplace.listing_collaboration_offerings offering
       WHERE offering.source_listing_id = listing.source_listing_id
-    ) offering_summary ON TRUE
+    ) compensation_summary ON TRUE
   `);
 }
