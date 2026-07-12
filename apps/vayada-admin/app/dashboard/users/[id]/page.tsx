@@ -2833,7 +2833,7 @@ function UserDetailContent() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Listing Name
+                      Offer Title
                     </label>
                     {editingListingId === selectedListing.id || editingListingId === "new" ? (
                       <Input
@@ -3685,7 +3685,7 @@ function UserDetailContent() {
                       Hotel profile and all collaboration offers with compensation and requirements
                     </li>
                   )}
-                  <li>All associated S3 images (profile pictures, offer media, thumbnails)</li>
+                  <li>All associated S3 images (profile pictures, media, thumbnails)</li>
                   <li>All related records</li>
                 </ul>
               </div>
@@ -3740,7 +3740,7 @@ function UserDetailContent() {
 
               <div>
                 <p className="text-sm text-gray-700 mb-2">
-                  Are you sure you want to delete this listing? This will permanently delete:
+                  Are you sure you want to delete this offer? This will permanently delete:
                 </p>
                 <ul className="list-disc list-inside text-sm text-gray-600 space-y-1 ml-4">
                   <li>

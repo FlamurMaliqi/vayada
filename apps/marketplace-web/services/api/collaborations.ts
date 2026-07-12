@@ -27,6 +27,7 @@ import {
   type MarketplaceCollaborationTermsInput,
   type MarketplaceCompensationType,
   type MarketplaceConversationSummary,
+  toLegacyCollaborationType,
 } from "@vayada/marketplace-shared/api/collaborations";
 
 // Platform deliverable types
@@ -965,22 +966,6 @@ function toTargetCollaborationStatus(value?: string): MarketplaceCollaborationSt
   return undefined;
 }
 
-function toLegacyCollaborationType(
-  value: MarketplaceCompensationType | null,
-  affiliateEnabled = false,
-): CollaborationResponse["collaboration_type"] {
-  switch (value) {
-    case "free_stay":
-      return "Free Stay";
-    case "paid":
-      return "Paid";
-    case "discount":
-      return "Discount";
-    default:
-      return affiliateEnabled ? "Affiliate" : null;
-  }
-}
-
 function toLegacyCollaborationResponse(
   collaboration: MarketplaceCollaborationRead,
 ): CollaborationResponse {
@@ -988,6 +973,11 @@ function toLegacyCollaborationResponse(
   const creatorFee = collaboration.terms.affiliateCommissionPercentage
     ? Number(collaboration.terms.affiliateCommissionPercentage)
     : null;
+  const collaborationType = toLegacyCollaborationType(
+    collaboration.compensationType,
+    collaboration.terms.affiliateEnabled,
+    collaboration.terms.affiliateCommissionPercentage,
+  );
 
   return {
     id: collaboration.collaborationId,
@@ -1007,10 +997,7 @@ function toLegacyCollaborationResponse(
     listing_id: collaboration.offerId,
     listing_name: collaboration.offerTitle,
     listing_location: collaboration.hotelLocation ?? "",
-    collaboration_type: toLegacyCollaborationType(
-      collaboration.compensationType,
-      collaboration.terms.affiliateEnabled,
-    ),
+    collaboration_type: collaborationType === "Custom" ? null : collaborationType,
     free_stay_min_nights: collaboration.terms.freeStayMinNights,
     free_stay_max_nights: collaboration.terms.freeStayMaxNights,
     paid_amount: paidAmount,

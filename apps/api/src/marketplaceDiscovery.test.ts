@@ -96,6 +96,7 @@ function offerSeed(overrides: Partial<OfferSeed>): OfferSeed {
     offerSummary: "Boutique alpine hotel.",
     hotelName: "Hotel Alpenrose",
     hotelSlug: "hotel-alpenrose",
+    hotelAccommodationType: "hotel",
     hotelLocation: {
       displayText: "Innsbruck, Austria",
       countryCode: "AT",
@@ -612,6 +613,7 @@ describe("marketplace discovery public-safety guard", () => {
           offerSummary: "Boutique alpine hotel.",
           hotelName: "Hotel Alpenrose",
           hotelSlug: "hotel-alpenrose",
+          hotelAccommodationType: "hotel",
           hotelLocation: {
             display: "Innsbruck, Austria",
             countryCode: "AT",
@@ -667,6 +669,7 @@ describe("marketplace discovery public-safety guard", () => {
     expect(creators.body.items[0]?.creatorId).toBe(LEGACY_CREATOR_ID_A);
     const sql = pool.sql.join("\n");
     expect(sql).toContain('offer.id::text AS "offerId"');
+    expect(sql).toContain('property.property_type AS "hotelAccommodationType"');
     expect(sql).toContain("marketplace.offer_deliverables");
     expect(sql).toContain('creator.source_creator_id AS "creatorId"');
     expect(sql).toContain("creator.source_creator_id IS NOT NULL");
@@ -686,6 +689,7 @@ describe("pg marketplace discovery repository", () => {
           offerSummary: "Boutique alpine hotel.",
           hotelName: "Hotel Alpenrose",
           hotelSlug: "hotel-alpenrose",
+          hotelAccommodationType: "hotel",
           hotelLocation: {
             display: "Innsbruck, Austria",
             countryCode: "AT",
@@ -739,6 +743,7 @@ describe("pg marketplace discovery repository", () => {
       offerId: LEGACY_OFFER_ID_A,
       offerPublicId: "mlst_alpenrose",
       hotelSlug: "hotel-alpenrose",
+      hotelAccommodationType: "hotel",
       hotelCoverImageUrl: "https://cdn.example.com/cover.jpg",
       hotelLocation: {
         displayText: "Innsbruck, Austria",

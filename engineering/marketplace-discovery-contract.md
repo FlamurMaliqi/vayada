@@ -24,6 +24,7 @@ type MarketplaceOfferReadModel = {
   offerSummary: string | null;
   hotelName: string;
   hotelSlug: string;
+  hotelAccommodationType: string | null;
   hotelLocation: {
     displayText: string;
     countryCode?: string;
@@ -39,11 +40,11 @@ type MarketplaceOfferReadModel = {
 };
 ```
 
-Offer identity, title, summary, status, deliverables, compensation options, and
+Offer identity, title, summary, deliverables, compensation options, and
 creator requirements come from Marketplace-owned tables. Hotel name, slug,
-location, and media come from
-`hotel_catalog.property_public_profile_read_model`; they are never copied from
-the offer row.
+location, and media come from `hotel_catalog.property_public_profile_read_model`;
+accommodation type comes from `hotel_catalog.properties`. These hotel facts are
+never copied from the offer row.
 
 `offerId` is the target `marketplace.marketplace_offers.id`. Source migration
 IDs remain migration provenance and are not the public API identity.

@@ -3,7 +3,7 @@
  */
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.marketplace.localhost";
-const TARGET_API_BASE_URL =
+const VAYADA_API_BASE_URL =
   process.env.NEXT_PUBLIC_AUTH_API_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
   "https://api.localhost";
@@ -260,4 +260,4 @@ export class ApiClient {
 }
 
 export const apiClient = new ApiClient();
-export const targetApiClient = new ApiClient(TARGET_API_BASE_URL);
+export const vayadaApiClient = new ApiClient(VAYADA_API_BASE_URL);

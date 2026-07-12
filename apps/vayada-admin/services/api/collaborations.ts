@@ -6,6 +6,7 @@ import {
   type MarketplaceAdminCollaboration,
   type MarketplaceAdminCollaborationsInput,
 } from "@vayada/marketplace-shared/api/admin";
+import { toLegacyCollaborationType } from "@vayada/marketplace-shared/api/collaborations";
 import { AdminCollaborationsResponse, Collaboration } from "@/lib/types/collaboration";
 
 export const collaborationsService = {
@@ -83,10 +84,12 @@ function toLegacyCollaboration(collaboration: MarketplaceAdminCollaboration): Co
         : collaboration.status === "active"
           ? "accepted"
           : collaboration.status,
-    collaboration_type: toLegacyCollaborationType(
-      collaboration.compensationType,
-      collaboration.terms.affiliateEnabled,
-    ),
+    collaboration_type:
+      toLegacyCollaborationType(
+        collaboration.compensationType,
+        collaboration.terms.affiliateEnabled,
+        collaboration.terms.affiliateCommissionPercentage,
+      ) ?? undefined,
     paid_amount:
       collaboration.terms.paidAmount === null ? undefined : Number(collaboration.terms.paidAmount),
     currency: collaboration.terms.currency ?? undefined,
@@ -112,24 +115,6 @@ function toLegacyCollaboration(collaboration: MarketplaceAdminCollaboration): Co
     hotel_agreed_at: collaboration.hotelAgreedAt ?? undefined,
     creator_agreed_at: collaboration.creatorAgreedAt ?? undefined,
   };
-}
-
-function toLegacyCollaborationType(
-  type: MarketplaceAdminCollaboration["compensationType"],
-  affiliateEnabled: boolean,
-): Collaboration["collaboration_type"] {
-  switch (type) {
-    case "paid":
-      return "Paid";
-    case "discount":
-      return "Discount";
-    case "custom":
-      return "Custom";
-    case "free_stay":
-      return "Free Stay";
-    default:
-      return affiliateEnabled ? "Affiliate" : undefined;
-  }
 }
 
 function toLegacyDeliverableGroups(

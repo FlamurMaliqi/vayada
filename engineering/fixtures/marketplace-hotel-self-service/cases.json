@@ -27,7 +27,7 @@
         "status": 200,
         "profile_complete": false,
         "missing_offers": true,
-        "completionStep": "Add at least one collaboration offer"
+        "completion_steps": ["Add at least one collaboration offer"]
       }
     },
     {

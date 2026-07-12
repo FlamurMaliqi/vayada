@@ -93,6 +93,7 @@ export function ListingCard({
               onClick={onRemove}
               className="p-1 rounded-md text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors"
               title="Remove offer"
+              aria-label="Remove offer"
             >
               <XMarkIcon className="w-3.5 h-3.5" />
             </button>

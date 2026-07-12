@@ -4,7 +4,7 @@ import {
   type MarketplaceCollaborationTermsInput,
   type RespondToMarketplaceCollaborationLifecycleWriteRequest,
 } from "./collaborations";
-import { targetApiClient } from "./client";
+import { vayadaApiClient } from "./client";
 
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
 
@@ -167,7 +167,7 @@ export const marketplaceAdminEndpoints = {
 export async function getMarketplaceAdminCollaborations(
   input: MarketplaceAdminCollaborationsInput = {},
 ): Promise<MarketplaceAdminCollaborationsResponse> {
-  return targetApiClient.get<MarketplaceAdminCollaborationsResponse>(
+  return vayadaApiClient.get<MarketplaceAdminCollaborationsResponse>(
     marketplaceAdminEndpoints.collaborations(input),
   );
 }
@@ -176,7 +176,7 @@ export async function respondToMarketplaceAdminCollaborationAsHotel(
   collaborationId: string,
   request: RespondToMarketplaceCollaborationLifecycleWriteRequest,
 ): Promise<MarketplaceAdminCollaborationLifecycleWriteResponse> {
-  return targetApiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
     marketplaceAdminEndpoints.respondAsHotel(collaborationId),
     { ...request, side: "hotel" },
     toIdempotencyOptions(request.idempotencyKey),
@@ -187,7 +187,7 @@ export async function approveMarketplaceAdminCollaborationAsHotel(
   collaborationId: string,
   request: { idempotencyKey: string; acceptedTermsVersion?: string },
 ): Promise<MarketplaceAdminCollaborationLifecycleWriteResponse> {
-  return targetApiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
+  return vayadaApiClient.post<MarketplaceAdminCollaborationLifecycleWriteResponse>(
     marketplaceAdminEndpoints.approveAsHotel(collaborationId),
     { ...request, side: "hotel" },
     toIdempotencyOptions(request.idempotencyKey),
@@ -198,7 +198,7 @@ export async function createMarketplaceAdminOffer(
   hotelUserId: string,
   request: MarketplaceAdminCreateOfferRequest,
 ): Promise<MarketplaceAdminOffer> {
-  return targetApiClient.post<MarketplaceAdminOffer>(
+  return vayadaApiClient.post<MarketplaceAdminOffer>(
     marketplaceAdminEndpoints.createOffer(hotelUserId),
     request,
   );
@@ -209,7 +209,7 @@ export async function updateMarketplaceAdminOffer(
   offerId: string,
   request: MarketplaceAdminUpdateOfferRequest,
 ): Promise<MarketplaceAdminOffer> {
-  return targetApiClient.put<MarketplaceAdminOffer>(
+  return vayadaApiClient.put<MarketplaceAdminOffer>(
     marketplaceAdminEndpoints.updateOffer(hotelUserId, offerId),
     request,
   );
@@ -219,7 +219,7 @@ export async function deleteMarketplaceAdminOffer(
   hotelUserId: string,
   offerId: string,
 ): Promise<MarketplaceAdminDeleteOfferResponse> {
-  return targetApiClient.delete<MarketplaceAdminDeleteOfferResponse>(
+  return vayadaApiClient.delete<MarketplaceAdminDeleteOfferResponse>(
     marketplaceAdminEndpoints.deleteOffer(hotelUserId, offerId),
   );
 }

@@ -86,6 +86,16 @@ describe("runParityChecks fixture config validation", () => {
             requiredPublicVariants: [1],
             forbiddenPublicValues: [1],
           },
+          mediaUrlMigrationChecks: {
+            propertyPublicProfiles: [
+              {
+                propertyId: 1,
+                mediaObjectIds: "invalid",
+                urls: [1],
+                forbiddenUrls: null,
+              },
+            ],
+          },
         }),
       );
 
@@ -97,7 +107,7 @@ describe("runParityChecks fixture config validation", () => {
       });
 
       expect(report.status).toBe("failed");
-      expect(report.summary.failures).toBe(20);
+      expect(report.summary.failures).toBe(24);
       expect(report.findings).toEqual([
         expect.objectContaining({
           code: "INVALID_FIXTURE_CONFIG",
@@ -179,6 +189,26 @@ describe("runParityChecks fixture config validation", () => {
         expect.objectContaining({
           code: "INVALID_FIXTURE_CONFIG",
           targetObject: "expected-target.json.platformMediaChecks.forbiddenPublicValues",
+        }),
+        expect.objectContaining({
+          code: "INVALID_FIXTURE_CONFIG",
+          targetObject:
+            "expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles[0].propertyId",
+        }),
+        expect.objectContaining({
+          code: "INVALID_FIXTURE_CONFIG",
+          targetObject:
+            "expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles[0].mediaObjectIds",
+        }),
+        expect.objectContaining({
+          code: "INVALID_FIXTURE_CONFIG",
+          targetObject:
+            "expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles[0].urls",
+        }),
+        expect.objectContaining({
+          code: "INVALID_FIXTURE_CONFIG",
+          targetObject:
+            "expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles[0].forbiddenUrls",
         }),
       ]);
     } finally {

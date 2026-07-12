@@ -917,6 +917,27 @@ export function validateExpectedTargetConfig(
         findings,
       );
     }
+    if (mediaUrlMigrationChecks["propertyPublicProfiles"] !== undefined) {
+      const propertyPublicProfiles = mediaUrlMigrationChecks["propertyPublicProfiles"];
+      validateObjectArray(
+        propertyPublicProfiles,
+        "expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles",
+        ["propertyId"],
+        findings,
+      );
+      if (Array.isArray(propertyPublicProfiles)) {
+        propertyPublicProfiles.forEach((profile, index) => {
+          if (!isRecord(profile)) return;
+          for (const field of ["mediaObjectIds", "urls", "forbiddenUrls"]) {
+            validateStringArray(
+              profile[field],
+              `expected-target.json.mediaUrlMigrationChecks.propertyPublicProfiles[${index}].${field}`,
+              findings,
+            );
+          }
+        });
+      }
+    }
     if (mediaUrlMigrationChecks["forbiddenPublicReferenceValues"] !== undefined) {
       validateStringArray(
         mediaUrlMigrationChecks["forbiddenPublicReferenceValues"],

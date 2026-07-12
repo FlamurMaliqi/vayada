@@ -73,6 +73,7 @@ test.describe("vayada-admin smoke", () => {
               offerSummary: "A next-api Marketplace offer.",
               hotelName: "Target Inn",
               hotelSlug: "target-inn",
+              hotelAccommodationType: "hotel",
               hotelLocation: { displayText: "Luxembourg" },
               hotelCoverImageUrl: null,
               hotelImageUrls: [],

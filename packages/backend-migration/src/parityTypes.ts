@@ -395,6 +395,12 @@ export type ExpectedTarget = {
       sourceSystem: string;
       publicApproved: boolean;
     }>;
+    propertyPublicProfiles?: Array<{
+      propertyId: string;
+      mediaObjectIds: string[];
+      urls: string[];
+      forbiddenUrls: string[];
+    }>;
     marketplace?: {
       creatorProfileId: string;
       profilePictureUrl: string;

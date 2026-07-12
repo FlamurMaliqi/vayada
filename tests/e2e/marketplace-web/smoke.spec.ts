@@ -42,6 +42,7 @@ test.describe("marketplace-web smoke", () => {
           offerSummary: "Create a winter city guide for our hotel.",
           hotelName: "Marketplace Alpenrose",
           hotelSlug: "marketplace-alpenrose",
+          hotelAccommodationType: "hotel",
           hotelLocation: { displayText: "Innsbruck, Austria", countryCode: "AT" },
           hotelCoverImageUrl: null,
           hotelImageUrls: [],

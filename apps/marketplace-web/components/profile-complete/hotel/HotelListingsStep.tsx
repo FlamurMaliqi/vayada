@@ -47,7 +47,7 @@ export function HotelListingsStep({
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-bold text-gray-900">Collaboration Offers</h3>
             <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full text-xs font-semibold">
-              {listings.length} listing{listings.length !== 1 ? "s" : ""}
+              {listings.length} offer{listings.length !== 1 ? "s" : ""}
             </span>
           </div>
           <p className="text-xs text-gray-500">

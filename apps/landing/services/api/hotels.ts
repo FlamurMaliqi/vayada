@@ -297,7 +297,7 @@ function toLegacyListingMarketplaceResponse(
     name: offer.offerTitle,
     location: offer.hotelLocation.displayText,
     description: offer.offerSummary ?? "",
-    accommodation_type: null,
+    accommodation_type: offer.hotelAccommodationType,
     images: offer.hotelImageUrls,
     status: "verified",
     collaboration_offerings: offer.compensationOptions.map((option) =>

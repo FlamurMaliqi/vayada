@@ -603,7 +603,7 @@ function DashboardContent() {
                       Hotel profile and all collaboration offers with compensation and requirements
                     </li>
                   )}
-                  <li>All associated S3 images (profile pictures, offer media, thumbnails)</li>
+                  <li>All associated S3 images (profile pictures, media, thumbnails)</li>
                   <li>All related records</li>
                 </ul>
               </div>

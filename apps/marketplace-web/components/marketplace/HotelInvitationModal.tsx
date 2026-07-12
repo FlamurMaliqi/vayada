@@ -221,10 +221,10 @@ export function HotelInvitationModal({
 
         {/* Modal Content */}
         <div className="p-6 space-y-8">
-          {/* Listing Selection */}
+          {/* Offer Selection */}
           <div>
             <label className="block text-base font-medium text-gray-900 mb-2">
-              Listing Selection <span className="text-red-500">*</span>
+              Offer Selection <span className="text-red-500">*</span>
             </label>
             <select
               value={listingId}

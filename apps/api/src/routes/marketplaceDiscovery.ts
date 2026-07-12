@@ -65,6 +65,7 @@ export type MarketplaceOfferReadModel = {
   offerSummary: string | null;
   hotelName: string;
   hotelSlug: string;
+  hotelAccommodationType: string | null;
   hotelLocation: { displayText: string; countryCode?: string; city?: string };
   hotelCoverImageUrl: string | null;
   hotelImageUrls: string[];
@@ -162,6 +163,7 @@ type MarketplaceOfferRow = {
   offerSummary: string | null;
   hotelName: string;
   hotelSlug: string;
+  hotelAccommodationType: string | null;
   hotelLocation: unknown;
   hotelCoverImageUrl: string | null;
   hotelImageUrls: string[] | null;
@@ -213,6 +215,7 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
              read_model.offer_summary AS "offerSummary",
              property_profile.display_name AS "hotelName",
              property_profile.canonical_slug AS "hotelSlug",
+             property.property_type AS "hotelAccommodationType",
              property_profile.location AS "hotelLocation",
              media.cover_image_url AS "hotelCoverImageUrl",
              COALESCE(media.image_urls, '{}') AS "hotelImageUrls",
@@ -225,6 +228,8 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
            JOIN marketplace.marketplace_offers offer
              ON offer.id = read_model.offer_id
             AND offer.property_id = read_model.property_id
+           JOIN hotel_catalog.properties property
+             ON property.id = read_model.property_id
            JOIN hotel_catalog.property_public_profile_read_model property_profile
              ON property_profile.property_id = read_model.property_id
            LEFT JOIN LATERAL (
@@ -395,6 +400,7 @@ function mapMarketplaceOfferRow(row: MarketplaceOfferRow): MarketplaceOfferReadM
     offerSummary: row.offerSummary,
     hotelName: row.hotelName,
     hotelSlug: row.hotelSlug,
+    hotelAccommodationType: row.hotelAccommodationType,
     hotelLocation: toMarketplaceLocation(row.hotelLocation),
     hotelCoverImageUrl: row.hotelCoverImageUrl,
     hotelImageUrls: Array.isArray(row.hotelImageUrls) ? row.hotelImageUrls : [],
@@ -756,6 +762,7 @@ export function serializeMarketplaceOffer(
     offerSummary: offer.offerSummary ?? null,
     hotelName: offer.hotelName,
     hotelSlug: offer.hotelSlug,
+    hotelAccommodationType: offer.hotelAccommodationType ?? null,
     hotelLocation: {
       displayText: offer.hotelLocation.displayText,
       ...(offer.hotelLocation.countryCode ? { countryCode: offer.hotelLocation.countryCode } : {}),

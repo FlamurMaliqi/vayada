@@ -779,6 +779,8 @@ export default function CreateUserPage() {
 
       // Step 2 & 3: Handle collaboration offers (if any)
       if (userType === "hotel" && listings.length > 0) {
+        const failedOfferNames: string[] = [];
+
         // Process each listing with its original index
         for (let listingIndex = 0; listingIndex < listings.length; listingIndex++) {
           const listing = listings[listingIndex];
@@ -878,8 +880,18 @@ export default function CreateUserPage() {
             await usersService.createOffer(createdUser.id, listingData);
           } catch (listingError) {
             console.error("Failed to create offer:", listingError);
-            // Continue with other listings even if one fails
+            failedOfferNames.push(listing.name);
           }
+        }
+
+        if (failedOfferNames.length > 0) {
+          setLoading(false);
+          setError(
+            "User created, but these offers failed: " +
+              failedOfferNames.join(", ") +
+              ". Open the user from the dashboard to retry them.",
+          );
+          return;
         }
       }
 
