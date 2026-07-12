@@ -7,7 +7,7 @@ export type CollaborationStatus =
   | "completed"; // All deliverables finished (Historical)
 
 // The type of compensation/agreement
-export type CollaborationType = "Free Stay" | "Paid" | "Discount" | "Affiliate";
+export type CollaborationType = "Free Stay" | "Paid" | "Discount" | "Custom" | "Affiliate";
 
 // Individual deliverable item (e.g., 1 Instagram Post)
 export interface DeliverableItem {
@@ -47,6 +47,8 @@ export interface Collaboration {
   paid_amount?: number; // Only if type is 'Paid'
   currency?: string; // ISO 4217 code, only meaningful if type is 'Paid'
   discount_percentage?: number; // Only if type is 'Discount'
+  affiliate_enabled?: boolean;
+  affiliate_commission_percentage?: number;
   free_stay_min_nights?: number; // Only if type is 'Free Stay'
   free_stay_max_nights?: number; // Only if type is 'Free Stay'
   stay_nights?: number; // Final agreed nights

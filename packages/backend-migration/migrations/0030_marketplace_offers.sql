@@ -15,6 +15,30 @@ UPDATE identity.organization_resource_links
 SET resource_type = 'marketplace_offer'
 WHERE resource_type = 'hotel_listing';
 
+-- Hotel groups retain the migrated owner link and receive the operator link
+-- used by collaboration workflows.
+INSERT INTO identity.organization_resource_links (
+  organization_id,
+  product,
+  resource_type,
+  resource_id,
+  relationship,
+  status
+)
+SELECT
+  link.organization_id,
+  link.product,
+  link.resource_type,
+  link.resource_id,
+  'operator',
+  link.status
+FROM identity.organization_resource_links link
+WHERE link.product = 'marketplace'
+  AND link.resource_type = 'marketplace_offer'
+  AND link.relationship = 'owner'
+ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
+DO UPDATE SET status = EXCLUDED.status, updated_at = now();
+
 UPDATE identity.product_entitlements
 SET resource_type = 'marketplace_offer',
     entitlement_key = CASE

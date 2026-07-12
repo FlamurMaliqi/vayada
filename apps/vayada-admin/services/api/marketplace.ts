@@ -1,12 +1,14 @@
 /**
  * Marketplace API service - fetches public marketplace data
  */
-import { ApiErrorResponse } from "./client";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ||
-  process.env.NEXT_PUBLIC_AUTH_API_URL ||
-  "https://api.localhost";
+import {
+  getAllMarketplaceCreators,
+  getAllMarketplaceOffers,
+  type MarketplaceCompensationOptionSummary,
+  type MarketplaceCreatorReadModel,
+  type MarketplaceOfferReadModel,
+  type MarketplacePlatformName,
+} from "@vayada/marketplace-shared/api/discovery";
 
 export interface MarketplaceListing {
   id: string;
@@ -25,81 +27,6 @@ export interface MarketplaceListing {
   creator_requirements: CreatorRequirements | null;
   created_at: string;
 }
-
-type MarketplacePlatformName =
-  | "instagram"
-  | "tiktok"
-  | "youtube"
-  | "facebook"
-  | "blog"
-  | "x"
-  | "other";
-
-type MarketplaceOfferingSummary = {
-  offeringId: string;
-  collaborationType: "free_stay" | "paid" | "discount" | "affiliate";
-  availabilityMonths: string[];
-  platforms: MarketplacePlatformName[];
-  freeStayMinNights: number | null;
-  freeStayMaxNights: number | null;
-  paidMaxAmount: string | null;
-  currency: string | null;
-  discountPercentage: number | null;
-  commissionPercentage: number | null;
-  minFollowers: number | null;
-};
-
-type MarketplaceListingReadModel = {
-  listingId: string;
-  publicId: string;
-  canonicalSlug: string;
-  displayName: string;
-  listingTitle: string;
-  listingSummary: string | null;
-  accommodationType: string | null;
-  location: { displayText: string; countryCode?: string; city?: string };
-  coverImageUrl: string | null;
-  imageUrls: string[];
-  offerings: MarketplaceOfferingSummary[];
-  creatorRequirements: {
-    platforms: MarketplacePlatformName[];
-    targetCountries: string[];
-    targetAgeMin: number | null;
-    targetAgeMax: number | null;
-    targetAgeGroups: string[] | null;
-  } | null;
-  createdAt: string;
-  projectedAt: string;
-};
-
-type MarketplaceCreatorReadModel = {
-  creatorId: string;
-  displayName: string;
-  locationText: string | null;
-  shortDescription: string | null;
-  portfolioUrl: string | null;
-  profilePictureUrl: string | null;
-  creatorType: "lifestyle" | "travel" | "other";
-  platforms: {
-    platformId: string;
-    platform: MarketplacePlatformName;
-    handle: string;
-    followerCount: number;
-    engagementRate: number;
-    audienceCountries: { country: string; percentage: number }[];
-    audienceAgeGroups: { ageRange: string; percentage: number }[];
-    audienceGenderSplit: { male: number; female: number; other?: number } | null;
-  }[];
-  audienceSize: number;
-  averageRating: number;
-  totalReviews: number;
-  createdAt: string;
-};
-
-type MarketplaceDiscoveryPage<T> = {
-  items: T[];
-  pagination: { limit: number; offset: number; total: number };
-};
 
 export interface CollaborationOffering {
   id: string;
@@ -157,113 +84,64 @@ export interface CreatorPlatform {
 
 export const marketplaceService = {
   /**
-   * Get all marketplace listings (public endpoint)
+   * Get all marketplace offers (public endpoint)
    */
   getListings: async (): Promise<MarketplaceListing[]> => {
-    const listings = await getAllMarketplaceDiscoveryItems<MarketplaceListingReadModel>(
-      "/api/marketplace/listings",
-    );
-    return listings.map(toMarketplaceListing);
+    return (await getAllMarketplaceOffers()).map(toMarketplaceListing);
   },
 
   /**
    * Get all marketplace creators (public endpoint)
    */
   getCreators: async (): Promise<MarketplaceCreator[]> => {
-    const creators = await getAllMarketplaceDiscoveryItems<MarketplaceCreatorReadModel>(
-      "/api/marketplace/creators",
-    );
-    return creators.map(toMarketplaceCreator);
+    return (await getAllMarketplaceCreators()).map(toMarketplaceCreator);
   },
 };
 
-async function getAllMarketplaceDiscoveryItems<T>(path: string): Promise<T[]> {
-  const items: T[] = [];
-  let offset = 0;
-  let total = Number.POSITIVE_INFINITY;
-  const limit = 200;
-
-  while (offset < total) {
-    const separator = path.includes("?") ? "&" : "?";
-    const page = await requestMarketplaceDiscovery<MarketplaceDiscoveryPage<T>>(
-      `${path}${separator}limit=${limit}&offset=${offset}`,
-    );
-    items.push(...page.items);
-    total = page.pagination.total;
-    offset += page.pagination.limit;
-    if (page.items.length === 0) break;
-  }
-
-  return items;
-}
-
-async function requestMarketplaceDiscovery<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-    credentials: "omit",
-  });
-
-  const contentType = response.headers.get("content-type");
-  const body = contentType?.includes("application/json")
-    ? await response.json()
-    : await response.text();
-
-  if (!response.ok) {
-    const message =
-      body && typeof body === "object" && "message" in body
-        ? String(body.message)
-        : `Marketplace discovery request failed: ${response.status}`;
-    throw new ApiErrorResponse(response.status, { detail: message });
-  }
-
-  return body as T;
-}
-
-function toMarketplaceListing(listing: MarketplaceListingReadModel): MarketplaceListing {
+function toMarketplaceListing(offer: MarketplaceOfferReadModel): MarketplaceListing {
   return {
-    id: listing.listingId,
-    hotel_profile_id: listing.publicId,
-    hotel_name: listing.displayName,
-    hotel_picture: listing.coverImageUrl,
+    id: offer.offerId,
+    hotel_profile_id: offer.offerPublicId,
+    hotel_name: offer.hotelName,
+    hotel_picture: offer.hotelCoverImageUrl,
     owner_email: null,
     owner_user_id: null,
-    name: listing.listingTitle,
-    location: listing.location.displayText,
-    description: listing.listingSummary ?? "",
-    accommodation_type: listing.accommodationType,
-    images: listing.imageUrls,
+    name: offer.offerTitle,
+    location: offer.hotelLocation.displayText,
+    description: offer.offerSummary ?? "",
+    accommodation_type: null,
+    images: offer.hotelImageUrls,
     status: "verified",
-    collaboration_offerings: listing.offerings.map((offering) => ({
-      id: offering.offeringId,
-      listing_id: listing.listingId,
-      collaboration_type: toLegacyCollaborationType(offering.collaborationType),
-      availability_months: offering.availabilityMonths,
-      platforms: offering.platforms.map(toLegacyPlatformName),
-      free_stay_min_nights: offering.freeStayMinNights,
-      free_stay_max_nights: offering.freeStayMaxNights,
-      paid_max_amount: offering.paidMaxAmount === null ? null : Number(offering.paidMaxAmount),
-      currency: offering.currency,
-      discount_percentage: offering.discountPercentage,
-      commission_percentage: offering.commissionPercentage,
-      min_followers: offering.minFollowers,
-      created_at: listing.createdAt,
-      updated_at: listing.projectedAt,
+    collaboration_offerings: offer.compensationOptions.map((option) => ({
+      id: option.compensationOptionId,
+      listing_id: offer.offerId,
+      collaboration_type: toLegacyCompensationType(option.compensationType),
+      availability_months: option.availabilityMonths,
+      platforms: option.platforms.map(toLegacyPlatformName),
+      free_stay_min_nights: option.freeStayMinNights,
+      free_stay_max_nights: option.freeStayMaxNights,
+      paid_max_amount: option.paidMaxAmount === null ? null : Number(option.paidMaxAmount),
+      currency: option.currency,
+      discount_percentage: option.discountPercentage,
+      commission_percentage: option.commissionPercentage,
+      min_followers: option.minFollowers,
+      created_at: offer.createdAt,
+      updated_at: offer.projectedAt,
     })),
-    creator_requirements: listing.creatorRequirements
+    creator_requirements: offer.creatorRequirements
       ? {
-          id: `${listing.listingId}:requirements`,
-          listing_id: listing.listingId,
-          platforms: listing.creatorRequirements.platforms.map(toLegacyPlatformName),
-          target_countries: listing.creatorRequirements.targetCountries,
-          target_age_min: listing.creatorRequirements.targetAgeMin,
-          target_age_max: listing.creatorRequirements.targetAgeMax,
-          target_age_groups: listing.creatorRequirements.targetAgeGroups,
-          created_at: listing.createdAt,
-          updated_at: listing.projectedAt,
+          id: `${offer.offerId}:requirements`,
+          listing_id: offer.offerId,
+          platforms: offer.creatorRequirements.platforms.map(toLegacyPlatformName),
+          target_countries: offer.creatorRequirements.targetCountries,
+          target_age_min: offer.creatorRequirements.targetAgeMin,
+          target_age_max: offer.creatorRequirements.targetAgeMax,
+          target_age_groups: offer.creatorRequirements.targetAgeGroups,
+          created_at: offer.createdAt,
+          updated_at: offer.projectedAt,
         }
       : null,
-    created_at: listing.createdAt,
+    created_at: offer.createdAt,
   };
 }
 
@@ -292,8 +170,8 @@ function toMarketplaceCreator(creator: MarketplaceCreatorReadModel): Marketplace
   };
 }
 
-function toLegacyCollaborationType(
-  type: MarketplaceOfferingSummary["collaborationType"],
+function toLegacyCompensationType(
+  type: MarketplaceCompensationOptionSummary["compensationType"],
 ): "Free Stay" | "Paid" | "Discount" | "Affiliate" {
   switch (type) {
     case "paid":

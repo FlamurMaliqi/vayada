@@ -1,11 +1,13 @@
 import { ApiErrorResponse } from "./client";
 
 const MARKETPLACE_DISCOVERY_API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "https://api.marketplace.localhost";
+  process.env.NEXT_PUBLIC_AUTH_API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://api.localhost";
 
 export const marketplaceDiscoveryEndpoints = {
-  listings: (input: MarketplaceDiscoveryPageInput = {}) =>
-    `/api/marketplace/listings${toPageQuery(input)}`,
+  offers: (input: MarketplaceDiscoveryPageInput = {}) =>
+    `/api/marketplace/offers${toPageQuery(input)}`,
   creators: (input: MarketplaceDiscoveryPageInput = {}) =>
     `/api/marketplace/creators${toPageQuery(input)}`,
 } as const;
@@ -19,9 +21,9 @@ export type MarketplacePlatformName =
   | "x"
   | "other";
 
-export type MarketplaceOfferingSummary = {
-  offeringId: string;
-  collaborationType: "free_stay" | "paid" | "discount" | "affiliate";
+export type MarketplaceCompensationOptionSummary = {
+  compensationOptionId: string;
+  compensationType: "free_stay" | "paid" | "discount" | "affiliate";
   availabilityMonths: string[];
   platforms: MarketplacePlatformName[];
   freeStayMinNights: number | null;
@@ -31,6 +33,7 @@ export type MarketplaceOfferingSummary = {
   discountPercentage: number | null;
   commissionPercentage: number | null;
   minFollowers: number | null;
+  termsSummary: string | null;
 };
 
 export type MarketplaceCreatorRequirements = {
@@ -39,20 +42,29 @@ export type MarketplaceCreatorRequirements = {
   targetAgeMin: number | null;
   targetAgeMax: number | null;
   targetAgeGroups: string[] | null;
+  creatorTypes: ("lifestyle" | "travel" | "other")[];
 };
 
-export type MarketplaceListingReadModel = {
-  listingId: string;
-  publicId: string;
-  canonicalSlug: string;
-  displayName: string;
-  listingTitle: string;
-  listingSummary: string | null;
-  accommodationType: string | null;
-  location: { displayText: string; countryCode?: string; city?: string };
-  coverImageUrl: string | null;
-  imageUrls: string[];
-  offerings: MarketplaceOfferingSummary[];
+export type MarketplaceOfferDeliverable = {
+  deliverableId: string;
+  platform: MarketplacePlatformName;
+  deliverableType: string;
+  quantity: number;
+  timingGuidance: string | null;
+};
+
+export type MarketplaceOfferReadModel = {
+  offerId: string;
+  offerPublicId: string;
+  offerTitle: string;
+  offerSummary: string | null;
+  hotelName: string;
+  hotelSlug: string;
+  hotelLocation: { displayText: string; countryCode?: string; city?: string };
+  hotelCoverImageUrl: string | null;
+  hotelImageUrls: string[];
+  deliverables: MarketplaceOfferDeliverable[];
+  compensationOptions: MarketplaceCompensationOptionSummary[];
   creatorRequirements: MarketplaceCreatorRequirements | null;
   createdAt: string;
   projectedAt: string;
@@ -90,8 +102,8 @@ export type MarketplaceDiscoveryPagination = {
   total: number;
 };
 
-export type MarketplaceListingPage = {
-  items: MarketplaceListingReadModel[];
+export type MarketplaceOfferPage = {
+  items: MarketplaceOfferReadModel[];
   pagination: MarketplaceDiscoveryPagination;
 };
 
@@ -124,11 +136,11 @@ export class MarketplaceDiscoveryClientError extends Error {
   }
 }
 
-export async function getMarketplaceListings(
+export async function getMarketplaceOffers(
   input: MarketplaceDiscoveryPageInput = {},
-): Promise<MarketplaceListingPage> {
-  return requestMarketplaceDiscovery<MarketplaceListingPage>(
-    marketplaceDiscoveryEndpoints.listings(input),
+): Promise<MarketplaceOfferPage> {
+  return requestMarketplaceDiscovery<MarketplaceOfferPage>(
+    marketplaceDiscoveryEndpoints.offers(input),
   );
 }
 
@@ -140,10 +152,10 @@ export async function getMarketplaceCreators(
   );
 }
 
-export async function getAllMarketplaceListings(
+export async function getAllMarketplaceOffers(
   input: { pageSize?: number } = {},
-): Promise<MarketplaceListingReadModel[]> {
-  return collectMarketplaceDiscoveryPages(input.pageSize, getMarketplaceListings);
+): Promise<MarketplaceOfferReadModel[]> {
+  return collectMarketplaceDiscoveryPages(input.pageSize, getMarketplaceOffers);
 }
 
 export async function getAllMarketplaceCreators(

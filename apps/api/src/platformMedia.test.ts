@@ -69,7 +69,7 @@ const propertyHeroPdfCase = contractCase("property-hero-rejects-pdf");
 const pmsRoomTypeMediaCase = contractCase("pms-room-type-media-upload-session");
 const pmsImportSourceImageCase = contractCase("pms-import-source-image-job");
 const marketplaceCreatorProfileCase = contractCase("marketplace-creator-profile-upload-session");
-const marketplaceListingGalleryCase = contractCase("marketplace-listing-gallery-upload-session");
+const marketplaceOfferMediaCase = contractCase("marketplace-offer-media-upload-session");
 
 type MediaCreateResponse = {
   contractVersion: string;
@@ -525,12 +525,12 @@ describe("platform media upload routes", () => {
       ],
     },
     {
-      contractCase: marketplaceListingGalleryCase,
+      contractCase: marketplaceOfferMediaCase,
       resources: [
         {
           product: "marketplace" as const,
-          resourceType: "hotel_listing" as const,
-          resourceId: "listing_alpenrose",
+          resourceType: "marketplace_offer" as const,
+          resourceId: "offer_alpenrose",
           relationship: "owner" as const,
         },
       ],

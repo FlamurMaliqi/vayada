@@ -3,7 +3,7 @@
     "identity.users": 3,
     "identity.organizations": 2,
     "identity.organization_memberships": 2,
-    "identity.organization_resource_links": 4,
+    "identity.organization_resource_links": 5,
     "identity.product_entitlements": 3,
     "hotel_catalog.properties": 1,
     "hotel_catalog.property_source_links": 2,
@@ -14,10 +14,10 @@
     "marketplace.creator_ratings": 1,
     "marketplace.marketplace_hotel_profiles": 1,
     "marketplace.marketplace_offers": 1,
-    "marketplace.offer_compensation_options": 2,
+    "marketplace.offer_compensation_options": 4,
     "marketplace.offer_creator_requirements": 1,
     "marketplace.offer_deliverables": 0,
-    "marketplace.collaborations": 1,
+    "marketplace.collaborations": 3,
     "marketplace.collaboration_deliverables": 2,
     "marketplace.marketplace_chat_messages": 2,
     "marketplace.trips": 1,
@@ -64,10 +64,16 @@
     "marketplace.marketplace_offers": ["f6885000-0000-0000-0000-000000000001"],
     "marketplace.offer_compensation_options": [
       "f6885100-0000-0000-0000-000000000001",
-      "f6885100-0000-0000-0000-000000000002"
+      "f6885100-0000-0000-0000-000000000002",
+      "f6885100-0000-0000-0000-000000000003",
+      "f6885100-0000-0000-0000-000000000004"
     ],
     "marketplace.offer_creator_requirements": ["f6885200-0000-0000-0000-000000000001"],
-    "marketplace.collaborations": ["f6886000-0000-0000-0000-000000000001"],
+    "marketplace.collaborations": [
+      "f6886000-0000-0000-0000-000000000001",
+      "f6886000-0000-0000-0000-000000000002",
+      "f6886000-0000-0000-0000-000000000003"
+    ],
     "marketplace.collaboration_deliverables": [
       "f6886100-0000-0000-0000-000000000001",
       "f6886100-0000-0000-0000-000000000002"
@@ -109,8 +115,12 @@
         "creatorRatingId": "f6886200-0000-0000-0000-000000000001",
         "compensationOptionFreeStayId": "f6885100-0000-0000-0000-000000000001",
         "compensationOptionAffiliateId": "f6885100-0000-0000-0000-000000000002",
+        "compensationOptionPaidId": "f6885100-0000-0000-0000-000000000003",
+        "compensationOptionDiscountId": "f6885100-0000-0000-0000-000000000004",
         "requirementId": "f6885200-0000-0000-0000-000000000001",
         "collaborationId": "f6886000-0000-0000-0000-000000000001",
+        "paidCollaborationId": "f6886000-0000-0000-0000-000000000002",
+        "discountCollaborationId": "f6886000-0000-0000-0000-000000000003",
         "deliverableApprovedId": "f6886100-0000-0000-0000-000000000001",
         "deliverableSubmittedId": "f6886100-0000-0000-0000-000000000002",
         "creatorChatMessageId": "f6886300-0000-0000-0000-000000000001",
@@ -141,7 +151,7 @@
         "externalCollaborationTitle": "External Vienna Campaign",
         "pendingInviteCode": "MARKET-688-CREATOR",
         "redeemedInviteCode": "MARKET-688-REDEEMED",
-        "compensationOptionCount": 2,
+        "compensationOptionCount": 4,
         "deliverableCount": 2,
         "chatMessageCount": 2,
         "notificationCount": 2,

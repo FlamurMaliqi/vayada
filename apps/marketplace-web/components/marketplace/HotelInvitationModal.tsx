@@ -232,7 +232,7 @@ export function HotelInvitationModal({
               className="w-full px-4 py-3 rounded-lg border border-gray-300 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               required
             >
-              <option value="">Select a listing</option>
+              <option value="">Select an offer</option>
               {listings.map((listing) => (
                 <option key={listing.id} value={listing.id}>
                   {listing.name} - {listing.location}

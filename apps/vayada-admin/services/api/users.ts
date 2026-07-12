@@ -4,13 +4,13 @@
 
 import { apiClient } from "./client";
 import {
-  createMarketplaceAdminHotelListing,
-  deleteMarketplaceAdminHotelListing,
-  updateMarketplaceAdminHotelListing,
-  type MarketplaceAdminCreateHotelListingRequest,
-  type MarketplaceAdminUpdateHotelListingRequest,
-  type MarketplaceHotelListingCreatorRequirementsWrite,
-  type MarketplaceHotelListingOfferingWrite,
+  createMarketplaceAdminOffer,
+  deleteMarketplaceAdminOffer,
+  updateMarketplaceAdminOffer,
+  type MarketplaceAdminCreateOfferRequest,
+  type MarketplaceAdminUpdateOfferRequest,
+  type MarketplaceOfferCreatorRequirementsWrite,
+  type MarketplaceOfferCompensationOptionWrite,
 } from "@vayada/marketplace-shared/api/admin";
 import type { User, UserDetailResponse, CreateUserRequest } from "@/lib/types";
 
@@ -215,7 +215,7 @@ export const usersService = {
   /**
    * Create a listing for a hotel user
    */
-  createListing: async (
+  createOffer: async (
     hotelUserId: string,
     data: {
       name: string;
@@ -227,9 +227,9 @@ export const usersService = {
       creatorRequirements?: any;
     },
   ): Promise<any> => {
-    const response = await createMarketplaceAdminHotelListing(
+    const response = await createMarketplaceAdminOffer(
       hotelUserId,
-      toMarketplaceAdminCreateListingRequest(data),
+      toMarketplaceAdminCreateOfferRequest(data),
     );
     return transformSnakeToCamel(response);
   },
@@ -237,7 +237,7 @@ export const usersService = {
   /**
    * Update a listing
    */
-  updateListing: async (
+  updateOffer: async (
     hotelUserId: string,
     listingId: string,
     data: {
@@ -250,10 +250,10 @@ export const usersService = {
       creatorRequirements?: any;
     },
   ): Promise<any> => {
-    const response = await updateMarketplaceAdminHotelListing(
+    const response = await updateMarketplaceAdminOffer(
       hotelUserId,
       listingId,
-      toMarketplaceAdminUpdateListingRequest(data),
+      toMarketplaceAdminUpdateOfferRequest(data),
     );
     return transformSnakeToCamel(response);
   },
@@ -263,24 +263,24 @@ export const usersService = {
    * ⚠️ Warning: This action cannot be undone!
    * Permanently removes the listing, all collaboration offerings, creator requirements, and all images from S3.
    */
-  deleteListing: async (
+  deleteOffer: async (
     hotelUserId: string,
     listingId: string,
   ): Promise<{
     message: string;
-    deletedListing: {
+    deletedOffer: {
       id: string;
       name: string;
     };
     imagesDeleted: number;
     imagesFailed: number;
   }> => {
-    const response = await deleteMarketplaceAdminHotelListing(hotelUserId, listingId);
+    const response = await deleteMarketplaceAdminOffer(hotelUserId, listingId);
     return {
-      message: "Listing archived.",
-      deletedListing: {
-        id: response.deletedListing.listingId,
-        name: response.deletedListing.title,
+      message: "Offer archived.",
+      deletedOffer: {
+        id: response.deletedOffer.offerId,
+        name: response.deletedOffer.title,
       },
       imagesDeleted: 0,
       imagesFailed: 0,
@@ -316,7 +316,7 @@ export const usersService = {
   },
 };
 
-function toMarketplaceAdminCreateListingRequest(data: {
+function toMarketplaceAdminCreateOfferRequest(data: {
   name: string;
   location: string;
   description: string;
@@ -324,19 +324,18 @@ function toMarketplaceAdminCreateListingRequest(data: {
   images?: string[];
   collaborationOfferings?: any[];
   creatorRequirements?: any;
-}): MarketplaceAdminCreateHotelListingRequest {
+}): MarketplaceAdminCreateOfferRequest {
+  const compensationOptions = toMarketplaceCompensationOptions(data.collaborationOfferings);
   return {
     title: data.name,
-    listingSummary: data.description,
-    accommodationType: toMarketplaceAccommodationType(data.accommodationType),
-    rawLocationText: data.location,
-    imageUrls: data.images ?? [],
-    collaborationOfferings: toMarketplaceOfferings(data.collaborationOfferings),
+    offerSummary: data.description,
+    deliverables: toMarketplaceOfferDeliverables(compensationOptions),
+    compensationOptions,
     creatorRequirements: toMarketplaceCreatorRequirements(data.creatorRequirements),
   };
 }
 
-function toMarketplaceAdminUpdateListingRequest(data: {
+function toMarketplaceAdminUpdateOfferRequest(data: {
   name?: string;
   location?: string;
   description?: string;
@@ -344,17 +343,19 @@ function toMarketplaceAdminUpdateListingRequest(data: {
   images?: string[];
   collaborationOfferings?: any[];
   creatorRequirements?: any;
-}): MarketplaceAdminUpdateHotelListingRequest {
+}): MarketplaceAdminUpdateOfferRequest {
+  const compensationOptions =
+    data.collaborationOfferings === undefined
+      ? undefined
+      : toMarketplaceCompensationOptions(data.collaborationOfferings);
   return {
     ...(data.name !== undefined ? { title: data.name } : {}),
-    ...(data.description !== undefined ? { listingSummary: data.description } : {}),
-    ...(data.accommodationType !== undefined
-      ? { accommodationType: toMarketplaceAccommodationType(data.accommodationType) }
-      : {}),
-    ...(data.location !== undefined ? { rawLocationText: data.location } : {}),
-    ...(data.images !== undefined ? { imageUrls: data.images } : {}),
-    ...(data.collaborationOfferings !== undefined
-      ? { collaborationOfferings: toMarketplaceOfferings(data.collaborationOfferings) }
+    ...(data.description !== undefined ? { offerSummary: data.description } : {}),
+    ...(compensationOptions !== undefined
+      ? {
+          deliverables: toMarketplaceOfferDeliverables(compensationOptions),
+          compensationOptions,
+        }
       : {}),
     ...(data.creatorRequirements !== undefined
       ? { creatorRequirements: toMarketplaceCreatorRequirements(data.creatorRequirements) }
@@ -362,11 +363,11 @@ function toMarketplaceAdminUpdateListingRequest(data: {
   };
 }
 
-function toMarketplaceOfferings(
+function toMarketplaceCompensationOptions(
   offerings: any[] | undefined,
-): MarketplaceHotelListingOfferingWrite[] {
+): MarketplaceOfferCompensationOptionWrite[] {
   return (offerings ?? []).map((offering) => ({
-    collaborationType: toMarketplaceCollaborationType(offering.collaborationType),
+    compensationType: toMarketplaceCompensationType(offering.collaborationType),
     availabilityMonths: offering.availabilityMonths ?? [],
     platforms: (offering.platforms ?? []).map(toMarketplacePlatform),
     freeStayMinNights: toNullableNumber(offering.freeStayMinNights),
@@ -383,9 +384,22 @@ function toMarketplaceOfferings(
   }));
 }
 
+function toMarketplaceOfferDeliverables(
+  compensationOptions: MarketplaceOfferCompensationOptionWrite[],
+): MarketplaceAdminCreateOfferRequest["deliverables"] {
+  return Array.from(new Set(compensationOptions.flatMap((option) => option.platforms))).map(
+    (platform) => ({
+      platform,
+      deliverableType: "post",
+      quantity: 1,
+      timingGuidance: null,
+    }),
+  );
+}
+
 function toMarketplaceCreatorRequirements(
   requirements: any,
-): MarketplaceHotelListingCreatorRequirementsWrite {
+): MarketplaceOfferCreatorRequirementsWrite {
   return {
     platforms: (requirements?.platforms ?? []).map(toMarketplacePlatform),
     targetCountries: requirements?.targetCountries ?? [],
@@ -396,9 +410,9 @@ function toMarketplaceCreatorRequirements(
   };
 }
 
-function toMarketplaceCollaborationType(
+function toMarketplaceCompensationType(
   value: string | undefined,
-): MarketplaceHotelListingOfferingWrite["collaborationType"] {
+): MarketplaceOfferCompensationOptionWrite["compensationType"] {
   switch (value) {
     case "Paid":
       return "paid";
@@ -430,27 +444,6 @@ function toMarketplacePlatform(
       return "x";
     default:
       return "other";
-  }
-}
-
-function toMarketplaceAccommodationType(
-  value: string | undefined,
-): "hotel" | "resort" | "boutique_hotel" | "lodge" | "apartment" | "villa" | "other" | null {
-  switch (value) {
-    case "Hotel":
-    case "City Hotel":
-    case "Luxury Hotel":
-      return "hotel";
-    case "Boutiques Hotel":
-      return "boutique_hotel";
-    case "Apartment":
-      return "apartment";
-    case "Villa":
-      return "villa";
-    case "Lodge":
-      return "lodge";
-    default:
-      return value ? "other" : null;
   }
 }
 

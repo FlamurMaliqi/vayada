@@ -27,11 +27,13 @@
         "authorizationMode": "creator_workspace_resource_link",
         "mustInclude": [
           "items[0].collaborationId",
-          "items[0].listingId",
+          "items[0].offerId",
           "items[0].creatorId",
           "items[0].hotelProfileId",
           "items[0].creator.organizationId",
           "items[0].hotel.organizationId",
+          "items[0].compensationType",
+          "items[0].terms.affiliateEnabled",
           "items[0].terms.preferredMonths",
           "items[0].deliverables[0].deliverableId"
         ],
@@ -51,7 +53,7 @@
     },
     {
       "caseId": "hotel-conversations-linked-resources",
-      "description": "A hotel-group organization can read conversation summaries only for collaborations attached to its linked hotel profile or listing.",
+      "description": "A hotel-group organization can read conversation summaries only for collaborations attached to its linked hotel profile or offer.",
       "request": {
         "method": "GET",
         "path": "/api/marketplace/collaborations/conversations?side=hotel",
@@ -69,8 +71,8 @@
             },
             {
               "product": "marketplace",
-              "resourceType": "hotel_listing",
-              "resourceId": "hotel_listing_alpenrose_spa",
+              "resourceType": "marketplace_offer",
+              "resourceId": "marketplace_offer_alpenrose_spa",
               "relationship": "operator"
             }
           ]
@@ -82,7 +84,7 @@
         "mustInclude": [
           "items[0].collaborationId",
           "items[0].partnerName",
-          "items[0].listingName",
+          "items[0].offerTitle",
           "items[0].lastMessageContent",
           "items[0].unreadCount"
         ],
@@ -149,8 +151,8 @@
       }
     },
     {
-      "caseId": "messages-deny-missing-hotel-listing-link",
-      "description": "A hotel-group organization with a hotel-profile link but no link to the addressed collaboration listing is denied.",
+      "caseId": "messages-deny-missing-hotel-offer-link",
+      "description": "A hotel-group organization with a hotel-profile link but no link to the addressed collaboration offer is denied.",
       "request": {
         "method": "GET",
         "path": "/api/marketplace/collaborations/collab_688/messages?side=hotel",
@@ -194,8 +196,8 @@
             },
             {
               "product": "marketplace",
-              "resourceType": "hotel_listing",
-              "resourceId": "hotel_listing_alpenrose_spa",
+              "resourceType": "marketplace_offer",
+              "resourceId": "marketplace_offer_alpenrose_spa",
               "relationship": "operator"
             }
           ]

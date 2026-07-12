@@ -14,12 +14,12 @@ const platformMediaApiClient = new ApiClient(PLATFORM_MEDIA_API_BASE_URL);
 
 export type PlatformMediaPurpose =
   | "property.hero_image"
-  | "marketplace.listing.gallery"
+  | "marketplace.offer.media"
   | "marketplace.creator.profile_image";
 
 export type PlatformMediaResourceScope = {
   product: "booking" | "marketplace";
-  resourceType: "booking_hotel" | "hotel_profile" | "hotel_listing" | "creator_profile";
+  resourceType: "booking_hotel" | "hotel_profile" | "marketplace_offer" | "creator_profile";
   resourceId: string;
   propertyId?: string;
   targetResourceId?: string;
@@ -227,7 +227,7 @@ function legacyEndpointForPurpose(purpose: PlatformMediaPurpose): {
       return { kind: "single", path: "/upload/image/hotel-profile" };
     case "marketplace.creator.profile_image":
       return { kind: "single", path: "/upload/image/creator-profile" };
-    case "marketplace.listing.gallery":
+    case "marketplace.offer.media":
       return { kind: "multiple", path: "/upload/images/listing" };
   }
 }

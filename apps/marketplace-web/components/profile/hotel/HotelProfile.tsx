@@ -124,7 +124,7 @@ export function HotelProfile() {
                 : "text-gray-500 hover:text-gray-900"
             }`}
           >
-            Listings
+            Offers
           </button>
         </div>
         {activeHotelTab === "overview" && (
@@ -207,15 +207,15 @@ export function HotelProfile() {
                 </div>
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">
-                    <h2 className="text-base font-semibold text-gray-950">Property Listings</h2>
+                    <h2 className="text-base font-semibold text-gray-950">Collaboration Offers</h2>
                     {hotelProfile.listings && hotelProfile.listings.length > 0 && (
                       <span className="px-2 py-0.5 bg-gray-200 text-gray-700 rounded-full text-xs font-semibold">
-                        {hotelProfile.listings.length} listing
+                        {hotelProfile.listings.length} offer
                         {hotelProfile.listings.length !== 1 ? "s" : ""}
                       </span>
                     )}
                   </div>
-                  <p className="text-sm text-gray-500">Add and manage your property listings</p>
+                  <p className="text-sm text-gray-500">Add and manage your collaboration offers</p>
                 </div>
               </div>
               <div className="mt-2">
@@ -276,7 +276,7 @@ export function HotelProfile() {
                       onDelete={() =>
                         listing.openDeleteConfirmModal(
                           listingItem.id,
-                          listingItem.name || `Property Listing ${index + 1}`,
+                          listingItem.name || `Collaboration Offer ${index + 1}`,
                         )
                       }
                       canDelete={hotelProfile.listings.length > 1}
@@ -289,9 +289,9 @@ export function HotelProfile() {
                 <div className="w-20 h-20 mx-auto mb-4 rounded-xl bg-gray-100 flex items-center justify-center">
                   <HotelIcon className="w-10 h-10 text-gray-400" />
                 </div>
-                <p className="text-lg font-semibold text-gray-900 mb-2">No listings added yet</p>
+                <p className="text-lg font-semibold text-gray-900 mb-2">No offers added yet</p>
                 <p className="text-sm text-gray-600 mb-6">
-                  Add property listings to complete your profile.
+                  Add collaboration offers to complete your profile.
                 </p>
                 <Button
                   variant="outline"
@@ -299,7 +299,7 @@ export function HotelProfile() {
                   className="border-2 border-dashed border-gray-300 hover:border-primary-400 hover:bg-primary-50"
                 >
                   <PlusIcon className="w-5 h-5 mr-2" />
-                  Add Property Listing
+                  Add Collaboration Offer
                 </Button>
               </div>
             )}
@@ -325,7 +325,7 @@ export function HotelProfile() {
               </div>
             )}
 
-            {/* Add Property Listing Button */}
+            {/* Add Collaboration Offer Button */}
             {hotelProfile.listings && hotelProfile.listings.length > 0 && (
               <button
                 type="button"
@@ -333,7 +333,7 @@ export function HotelProfile() {
                 className="w-full mt-3 py-3 border-2 border-dashed border-primary-200 rounded-lg text-primary-700 hover:border-primary-400 hover:bg-primary-50 transition-all flex items-center justify-center gap-2 font-semibold text-sm group"
               >
                 <PlusIcon className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                Add Property Listing
+                Add Collaboration Offer
               </button>
             )}
 
@@ -388,7 +388,7 @@ export function HotelProfile() {
         }
         onConfirm={listing.handleDeleteListing}
         itemName={listing.deleteConfirmModal.listingName}
-        itemType="listing"
+        itemType="offer"
       />
 
       {/* Manage Photos Modal */}

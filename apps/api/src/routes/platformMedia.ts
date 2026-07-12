@@ -18,7 +18,7 @@ export type PlatformMediaPurpose =
   | "property.hero_image"
   | "property.gallery_image"
   | "property.logo"
-  | "marketplace.listing.gallery"
+  | "marketplace.offer.media"
   | "marketplace.creator.profile_image"
   | "marketplace.collaboration_chat.attachment"
   | "pms.room_type.media"
@@ -371,11 +371,11 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
     targetResourceType: "property",
     requiredVariants: publicImageVariants,
   },
-  "marketplace.listing.gallery": {
-    purpose: "marketplace.listing.gallery",
+  "marketplace.offer.media": {
+    purpose: "marketplace.offer.media",
     permission: "marketplace.profile.manage",
     allowedRelationships: ["owner", "operator"],
-    allowedResources: [{ product: "marketplace", resourceType: "hotel_listing" }],
+    allowedResources: [{ product: "marketplace", resourceType: "marketplace_offer" }],
     allowedContentTypes: imageContentTypes,
     allowedExtensions: imageExtensions,
     maxFileSizeBytes: 10 * 1024 * 1024,
@@ -383,7 +383,7 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
     maxImagePixels: defaultMaxImagePixels,
     privateOnly: false,
     targetResourceProduct: "marketplace",
-    targetResourceType: "hotel_listing",
+    targetResourceType: "marketplace_offer",
     requiredVariants: publicImageVariants,
   },
   "marketplace.creator.profile_image": {
@@ -406,7 +406,7 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
     permission: "marketplace.collaboration.review",
     allowedRelationships: ["owner", "operator"],
     allowedResources: [
-      { product: "marketplace", resourceType: "hotel_listing" },
+      { product: "marketplace", resourceType: "marketplace_offer" },
       { product: "marketplace", resourceType: "creator_profile" },
     ],
     allowedContentTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"],

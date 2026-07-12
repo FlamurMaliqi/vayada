@@ -47,7 +47,7 @@ export const uploadService = {
   ): Promise<UploadListingImagesResponse> => {
     void files;
     void targetUserId;
-    throw new Error("Listing uploads require Platform/Admin media publication. See VAY-984.");
+    throw new Error("Offer uploads require Platform/Admin media publication. See VAY-984.");
   },
 
   /**

@@ -20,7 +20,7 @@
       "permission": "marketplace.collaboration.write",
       "linkedResources": [
         "marketplace:hotel_profile:hotel_profile_alpenrose:owner",
-        "marketplace:hotel_listing:hotel_listing_alpenrose_spa:operator"
+        "marketplace:marketplace_offer:marketplace_offer_alpenrose_spa:operator"
       ]
     },
     "hotelProfileOnly": {
@@ -39,9 +39,9 @@
         "action": "create",
         "side": "creator",
         "authRef": "creatorLinked",
-        "idempotencyKey": "marketplace.collaboration.create:legacy_listing_688:nonce_creator:v1",
+        "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator:v1",
         "body": {
-          "listingId": "legacy_listing_688",
+          "offerId": "legacy_offer_688",
           "creatorId": "legacy_creator_lina",
           "initiatorSide": "creator"
         }
@@ -50,21 +50,21 @@
         "status": 201,
         "authorizationMode": "creator_workspace_resource_link",
         "collaborationStatus": "pending",
-        "mustInclude": ["collaboration.listingId", "collaboration.creatorId"],
+        "mustInclude": ["collaboration.offerId", "collaboration.creatorId"],
         "mustNotWrite": ["pms.*", "finance.*", "affiliate.*"]
       }
     },
     {
-      "caseId": "hotel-create-invitation-linked-listing-resource",
+      "caseId": "hotel-create-invitation-linked-offer-resource",
       "request": {
         "method": "POST",
         "path": "/api/marketplace/collaborations",
         "action": "create",
         "side": "hotel",
         "authRef": "hotelLinked",
-        "idempotencyKey": "marketplace.collaboration.create:legacy_listing_688:nonce_hotel:v1",
+        "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_hotel:v1",
         "body": {
-          "listingId": "legacy_listing_688",
+          "offerId": "legacy_offer_688",
           "creatorId": "legacy_creator_lina",
           "initiatorSide": "hotel"
         }
@@ -83,9 +83,9 @@
         "action": "create",
         "side": "creator",
         "authRef": "creatorUnlinked",
-        "idempotencyKey": "marketplace.collaboration.create:legacy_listing_688:nonce_creator_missing_link:v1",
+        "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator_missing_link:v1",
         "body": {
-          "listingId": "legacy_listing_688",
+          "offerId": "legacy_offer_688",
           "creatorId": "legacy_creator_lina",
           "initiatorSide": "creator"
         }
@@ -100,9 +100,9 @@
         "action": "create",
         "side": "creator",
         "authRef": "creatorLinked",
-        "idempotencyKey": "marketplace.collaboration.create:legacy_listing_688:nonce_creator:v1",
+        "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator:v1",
         "body": {
-          "listingId": "legacy_listing_688",
+          "offerId": "legacy_offer_688",
           "creatorId": "legacy_creator_lina",
           "initiatorSide": "creator"
         }
@@ -122,9 +122,9 @@
         "action": "create",
         "side": "creator",
         "authRef": "creatorLinked",
-        "idempotencyKey": "marketplace.collaboration.create:legacy_listing_688:nonce_creator:v1",
+        "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator:v1",
         "body": {
-          "listingId": "legacy_listing_999",
+          "offerId": "legacy_offer_999",
           "creatorId": "legacy_creator_lina",
           "initiatorSide": "creator"
         }
@@ -317,7 +317,7 @@
       }
     },
     {
-      "caseId": "approve-deny-missing-hotel-listing-link",
+      "caseId": "approve-deny-missing-hotel-offer-link",
       "request": {
         "method": "POST",
         "path": "/api/marketplace/collaborations/collab_688/approve",

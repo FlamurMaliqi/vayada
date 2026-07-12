@@ -13,6 +13,7 @@ import { createPgBookingWebEventSink } from "./platform/bookingWebEvents.js";
 import { createTargetBookingDashboardMetricsReadPort } from "./platform/bookingDashboard.js";
 import { createTargetBookingGuestPiiPort } from "./platform/bookingGuestPii.js";
 import { createPgIdentityLifecycleCommandBus } from "./platform/identityLifecycle.js";
+import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
 import { createPgProductAuditSink } from "./platform/productAudit.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
 import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
@@ -397,6 +398,7 @@ const app = buildApp({
     config.marketplaceAdminSource === "target"
       ? createPgMarketplaceAdminRepository({
           connectionString: config.targetDatabaseUrl!,
+          identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
         })
       : undefined,
   marketplaceAdminLegacySuperadminFallbackEnabled:

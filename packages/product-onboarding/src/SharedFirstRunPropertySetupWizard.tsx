@@ -92,17 +92,21 @@ const MARKETPLACE_ACTIVATION_STEPS: Record<string, { title: string; description:
     title: "Creator-facing pitch",
     description: "Add the message creators should see when evaluating this property.",
   },
-  collaborationOffer: {
+  marketplaceOffer: {
     title: "Collaboration offer",
-    description: "Define what you offer creators, including availability and terms.",
+    description: "Create the offer creators can review and apply to.",
+  },
+  offerDeliverables: {
+    title: "Requested content",
+    description: "Describe the posts, photos, or videos you want from creators.",
+  },
+  compensationOptions: {
+    title: "Compensation options",
+    description: "Choose the collaboration terms you are open to considering.",
   },
   creatorRequirements: {
     title: "Creator requirements",
     description: "Set the platforms, audience, and creator profile you want to work with.",
-  },
-  marketplaceListing: {
-    title: "Marketplace listing setup",
-    description: "Add the listing details and photos creators use for discovery.",
   },
 };
 
@@ -120,7 +124,7 @@ const SETUP_STEPS: ReadonlyArray<{
 const PRODUCT_DESCRIPTIONS: Record<SharedHotelSetupProduct, string> = {
   booking: "Direct booking pages, checkout, and guest-facing availability.",
   pms: "Rooms, calendar, reservations, and daily property operations.",
-  marketplace: "Creator discovery, collaboration offers, and listing tools.",
+  marketplace: "Creator discovery and collaboration offer tools.",
 };
 
 const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
@@ -1155,7 +1159,7 @@ function ProductContinue({
             {isBlockedMarketplaceActivation
               ? "Marketplace unavailable"
               : isMarketplaceActivation
-                ? "Open Marketplace listing tools"
+                ? "Open Marketplace offer tools"
                 : "Continue"}
           </span>
           {!isBlockedMarketplaceActivation && (

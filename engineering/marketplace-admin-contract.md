@@ -8,14 +8,14 @@ Contract version: `marketplace-admin.v1`.
 
 ## Routes
 
-| Surface                    | Method   | Path                                                              |
-| -------------------------- | -------- | ----------------------------------------------------------------- |
-| Admin collaboration list   | `GET`    | `/api/marketplace/admin/collaborations`                           |
-| Respond as hotel           | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/respond` |
-| Approve as hotel           | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/approve` |
-| Create hotel-user listing  | `POST`   | `/api/marketplace/admin/users/{hotelUserId}/listings`             |
-| Update hotel-user listing  | `PUT`    | `/api/marketplace/admin/users/{hotelUserId}/listings/{listingId}` |
-| Archive hotel-user listing | `DELETE` | `/api/marketplace/admin/users/{hotelUserId}/listings/{listingId}` |
+| Surface                  | Method   | Path                                                              |
+| ------------------------ | -------- | ----------------------------------------------------------------- |
+| Admin collaboration list | `GET`    | `/api/marketplace/admin/collaborations`                           |
+| Respond as hotel         | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/respond` |
+| Approve as hotel         | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/approve` |
+| Create hotel-user offer  | `POST`   | `/api/marketplace/admin/users/{hotelUserId}/offers`               |
+| Update hotel-user offer  | `PUT`    | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
+| Archive hotel-user offer | `DELETE` | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
 
 ## Authorization
 
@@ -38,7 +38,7 @@ primitive.
 This contract only covers marketplace-owned resources:
 
 - collaboration review actions that act as the hotel side;
-- hotel listing create/update/archive for a hotel user.
+- collaboration-offer create/update/archive for a hotel user.
 
 Identity user CRUD remains out of scope and stays on the identity admin command
 surface. Do not port legacy `admin/users.py` user CRUD as part of V7.
@@ -49,9 +49,25 @@ Collaboration responses reuse the V4 collaboration read/lifecycle shapes and add
 admin lifecycle timestamps (`hotelAgreedAt`, `creatorAgreedAt`, `completedAt`,
 `cancelledAt`) needed by `vayada-admin`.
 
-Listing writes reuse the V2 hotel listing request shape:
-`title`, `listingSummary`, `accommodationType`, `rawLocationText`, `imageUrls`,
-`collaborationOfferings`, and `creatorRequirements`.
+Offer writes accept only Marketplace-owned fields: `title`, `offerSummary`,
+`deliverables`, `compensationOptions`, and `creatorRequirements`. Hotel name,
+classification, location, contacts, descriptions, and media remain in the
+shared hotel catalog and are not accepted by these routes.
+
+`offerId` is the target `marketplace.marketplace_offers.id`. Archive is a soft
+delete that sets `offerStatus = archived`.
+
+Create, update, and archive keep the public offer projection in the same
+database transaction as the canonical write. Create also provisions the hotel
+organization's `marketplace_offer` operator link through the identity-owned
+access command port. Archive disables the projection and archives that link so
+discovery and hotel-side authorization cannot drift. Product entitlement stays
+account-scoped and is not duplicated for each offer.
+
+Admin lifecycle actions use the same accepted-collaboration side effects as the
+hotel workflow. In particular, accepting an affiliate-enabled collaboration
+requests creator-specific affiliate provisioning with the stable collaboration
+idempotency key.
 
 ## Fixtures
 

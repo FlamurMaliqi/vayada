@@ -61,56 +61,62 @@ test.describe("vayada-admin smoke", () => {
       );
     });
 
-    await page.route("https://api.localhost/api/marketplace/listings**", async (route) => {
-      await fulfillJson(route, pageOrigin, {
-        items: [
-          {
-            listingId: "listing_target_885",
-            publicId: "hotel_profile_target_885",
-            canonicalSlug: "target-inn",
-            displayName: "Target Inn",
-            listingTitle: "Target creator stay",
-            listingSummary: "A next-api marketplace listing.",
-            accommodationType: "hotel",
-            location: { displayText: "Luxembourg" },
-            coverImageUrl: null,
-            imageUrls: [],
-            offerings: [],
-            creatorRequirements: null,
-            createdAt: "2026-06-24T10:00:00.000Z",
-            projectedAt: "2026-06-24T10:00:00.000Z",
-          },
-        ],
-        pagination: { limit: 200, offset: 0, total: 1 },
-      });
-    });
+    await page.route(
+      /https:\/\/api\.localhost(?::\d+)?\/api\/marketplace\/offers(?:\?|$)/,
+      async (route) => {
+        await fulfillJson(route, pageOrigin, {
+          items: [
+            {
+              offerId: "offer_target_885",
+              offerPublicId: "offer-public-target-885",
+              offerTitle: "Target creator stay",
+              offerSummary: "A next-api Marketplace offer.",
+              hotelName: "Target Inn",
+              hotelSlug: "target-inn",
+              hotelLocation: { displayText: "Luxembourg" },
+              hotelCoverImageUrl: null,
+              hotelImageUrls: [],
+              deliverables: [],
+              compensationOptions: [],
+              creatorRequirements: null,
+              createdAt: "2026-06-24T10:00:00.000Z",
+              projectedAt: "2026-06-24T10:00:00.000Z",
+            },
+          ],
+          pagination: { limit: 200, offset: 0, total: 1 },
+        });
+      },
+    );
 
-    await page.route("https://api.localhost/api/marketplace/creators**", async (route) => {
-      await fulfillJson(route, pageOrigin, {
-        items: [
-          {
-            creatorId: "creator_target_885",
-            displayName: "Target Creator",
-            locationText: "Luxembourg",
-            shortDescription: "Next-api creator profile.",
-            portfolioUrl: null,
-            profilePictureUrl: null,
-            creatorType: "travel",
-            platforms: [],
-            audienceSize: 1200,
-            averageRating: 5,
-            totalReviews: 3,
-            createdAt: "2026-06-24T10:00:00.000Z",
-          },
-        ],
-        pagination: { limit: 200, offset: 0, total: 1 },
-      });
-    });
+    await page.route(
+      /https:\/\/api\.localhost(?::\d+)?\/api\/marketplace\/creators(?:\?|$)/,
+      async (route) => {
+        await fulfillJson(route, pageOrigin, {
+          items: [
+            {
+              creatorId: "creator_target_885",
+              displayName: "Target Creator",
+              locationText: "Luxembourg",
+              shortDescription: "Next-api creator profile.",
+              portfolioUrl: null,
+              profilePictureUrl: null,
+              creatorType: "travel",
+              platforms: [],
+              audienceSize: 1200,
+              averageRating: 5,
+              totalReviews: 3,
+              createdAt: "2026-06-24T10:00:00.000Z",
+            },
+          ],
+          pagination: { limit: 200, offset: 0, total: 1 },
+        });
+      },
+    );
 
     await page.goto(new URL("/dashboard/marketplace", marketplaceBaseURL).toString());
 
     await expect(page.getByRole("heading", { name: "Marketplace", level: 1 })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Listings \(1\)/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Offers \(1\)/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /Creators \(1\)/ })).toBeVisible();
     await expect(page.getByText("Target creator stay")).toBeVisible();
 

@@ -21,13 +21,13 @@ import {
   MARKETPLACE_COLLABORATION_READ_ENDPOINTS,
   MARKETPLACE_COLLABORATION_READ_ERROR_CODES,
   MARKETPLACE_COLLABORATION_READ_PRIVATE_KEYS,
-  MARKETPLACE_ACCOMMODATION_TYPES,
   MARKETPLACE_AFFILIATE_CONTRACT_VERSION,
-  MARKETPLACE_COLLABORATION_TYPES,
+  MARKETPLACE_COMPENSATION_TYPES,
+  MARKETPLACE_OFFER_COMPENSATION_TYPES,
   MARKETPLACE_CREATOR_SELF_SERVICE_CONTRACT_VERSION,
   MARKETPLACE_CREATOR_SELF_SERVICE_ENDPOINTS,
   MARKETPLACE_HOTEL_AUTHORIZATION_MODES,
-  MARKETPLACE_HOTEL_LISTING_STATUSES,
+  MARKETPLACE_OFFER_STATUSES,
   MARKETPLACE_HOTEL_MISSING_FIELDS,
   MARKETPLACE_HOTEL_PROFILE_STATUSES,
   MARKETPLACE_HOTEL_SELF_SERVICE_CONTRACT_VERSION,
@@ -39,7 +39,7 @@ import {
   type AffiliateProvisioningResult,
   type CollaborationAcceptedEvent,
   type CollaborationAffiliatePort,
-  type CreateMarketplaceHotelListingRequest,
+  type CreateMarketplaceOfferRequest,
   type CreatorProfileDocument,
   type CreatorProfileStatusResult,
   type CreatorProfileUpdatedEvent,
@@ -47,7 +47,7 @@ import {
   type MarketplaceCollaborationListResponse,
   type MarketplaceCollaborationMessagesResponse,
   type MarketplaceConversationSummary,
-  type MarketplaceHotelListingAuthorizationTarget,
+  type MarketplaceOfferAuthorizationTarget,
   type MarketplaceHotelProfileResponse,
   type MarketplaceHotelProfileStatusResponse,
   type ProvisionCollaborationAffiliateCommand,
@@ -209,9 +209,9 @@ describe("@vayada/domain-marketplace", () => {
     expect(MARKETPLACE_HOTEL_AUTHORIZATION_MODES).toContain("organization_resource_link");
     expect(MARKETPLACE_HOTEL_AUTHORIZATION_MODES).toContain("legacy_user_id_fallback");
     expect(MARKETPLACE_HOTEL_PROFILE_STATUSES).toContain("verified");
-    expect(MARKETPLACE_HOTEL_LISTING_STATUSES).toContain("archived");
-    expect(MARKETPLACE_ACCOMMODATION_TYPES).toContain("boutique_hotel");
-    expect(MARKETPLACE_COLLABORATION_TYPES).toContain("free_stay");
+    expect(MARKETPLACE_OFFER_STATUSES).toContain("archived");
+    expect(MARKETPLACE_OFFER_COMPENSATION_TYPES).toContain("free_stay");
+    expect(MARKETPLACE_COMPENSATION_TYPES).toContain("custom");
     expect(MARKETPLACE_PLATFORM_NAMES).toContain("instagram");
     expect(MARKETPLACE_HOTEL_MISSING_FIELDS).toContain("hostSummary");
     expect(MARKETPLACE_HOTEL_SELF_SERVICE_ERROR_CODES).toContain("canonical_property_read_only");
@@ -224,10 +224,10 @@ describe("@vayada/domain-marketplace", () => {
       authorizationMode: "organization_resource_link",
       propertyId: "property_alpenrose",
       profileComplete: false,
-      missingFields: ["hostSummary", "listing"],
+      missingFields: ["hostSummary", "offer"],
       hasDefaults: { location: false },
-      missingListings: true,
-      completionSteps: ["Add a marketplace host summary", "Add at least one listing"],
+      missingOffers: true,
+      completionSteps: ["Add a marketplace host summary", "Add at least one offer"],
     };
 
     expect(status.propertyId).toBe("property_alpenrose");
@@ -267,20 +267,26 @@ describe("@vayada/domain-marketplace", () => {
         createdAt: "2026-06-12T08:00:00.000Z",
         updatedAt: "2026-06-12T08:01:00.000Z",
       },
-      listings: [
+      offers: [
         {
-          listingId: "legacy_listing_alpenrose",
+          offerId: "legacy_offer_alpenrose",
           propertyId: "property_alpenrose",
-          listingStatus: "verified",
+          offerStatus: "verified",
           title: "Alpine spa creator stay",
-          listingSummary: "Two-night hosted stay for wellness creators.",
-          accommodationType: "boutique_hotel",
-          rawLocationText: "Zermatt, Switzerland",
-          imageUrls: ["https://cdn.example.com/listing/spa.jpg"],
-          collaborationOfferings: [
+          offerSummary: "Two-night hosted stay for wellness creators.",
+          deliverables: [
             {
-              offeringId: "offering_alpenrose_free_stay",
-              collaborationType: "free_stay",
+              deliverableId: "deliverable_alpenrose_reel",
+              platform: "instagram",
+              deliverableType: "reel",
+              quantity: 1,
+              timingGuidance: "Publish during the stay.",
+            },
+          ],
+          compensationOptions: [
+            {
+              compensationOptionId: "compensation_option_alpenrose_free_stay",
+              compensationType: "free_stay",
               availabilityMonths: ["2026-09"],
               platforms: ["instagram", "tiktok"],
               freeStayMinNights: 2,
@@ -309,10 +315,10 @@ describe("@vayada/domain-marketplace", () => {
 
     expect(profile.property.displayName).toBe("Hotel Alpenrose");
     expect(profile.marketplaceProfile.hostSummary).toContain("alpine wellness");
-    expect(profile.listings[0].listingId).toBe("legacy_listing_alpenrose");
+    expect(profile.offers[0].offerId).toBe("legacy_offer_alpenrose");
     expect(profile).not.toHaveProperty("userId");
-    expect(profile.listings[0]).not.toHaveProperty("targetListingId");
-    expect(profile.listings[0]).not.toHaveProperty("listingResourceId");
+    expect(profile.offers[0]).not.toHaveProperty("offerResourceId");
+    expect(profile.offers[0]).not.toHaveProperty("rawLocationText");
   });
 
   it("profile update accepts only marketplace-owned fields", () => {
@@ -331,17 +337,21 @@ describe("@vayada/domain-marketplace", () => {
     void _withCatalogName;
   });
 
-  it("listing create requires stable external listing fields and target-schema enums", () => {
-    const createListing: CreateMarketplaceHotelListingRequest = {
+  it("offer create requires stable external offer fields and target-schema enums", () => {
+    const createOffer: CreateMarketplaceOfferRequest = {
       title: "Alpine spa creator stay",
-      listingSummary: "Two-night hosted stay for wellness creators.",
-      accommodationType: "boutique_hotel",
-      rawLocationText: "Zermatt, Switzerland",
-      imageUrls: ["https://cdn.example.com/listing/spa.jpg"],
-      imageMediaObjectIds: ["media_listing_spa"],
-      collaborationOfferings: [
+      offerSummary: "Two-night hosted stay for wellness creators.",
+      deliverables: [
         {
-          collaborationType: "paid",
+          platform: "instagram",
+          deliverableType: "reel",
+          quantity: 1,
+          timingGuidance: null,
+        },
+      ],
+      compensationOptions: [
+        {
+          compensationType: "paid",
           availabilityMonths: ["2026-09"],
           platforms: ["instagram"],
           freeStayMinNights: null,
@@ -364,22 +374,21 @@ describe("@vayada/domain-marketplace", () => {
       },
     };
 
-    expect(createListing.accommodationType).toBe("boutique_hotel");
-    expect(createListing.imageMediaObjectIds).toEqual(["media_listing_spa"]);
-    expect(createListing.collaborationOfferings[0].paidMaxAmount).toBe("1200.00");
-    expect(createListing.creatorRequirements.creatorTypes).toEqual(["travel"]);
+    expect(createOffer.deliverables[0].deliverableType).toBe("reel");
+    expect(createOffer.compensationOptions[0].paidMaxAmount).toBe("1200.00");
+    expect(createOffer.creatorRequirements.creatorTypes).toEqual(["travel"]);
   });
 
-  it("separates public listing IDs from internal listing authorization resource IDs", () => {
-    const target: MarketplaceHotelListingAuthorizationTarget = {
-      listingId: "legacy_listing_alpenrose",
-      listingResourceId: "f7969000-0000-0000-0000-000000000111",
+  it("separates public offer IDs from internal offer authorization resource IDs", () => {
+    const target: MarketplaceOfferAuthorizationTarget = {
+      offerId: "legacy_offer_alpenrose",
+      offerResourceId: "f7969000-0000-0000-0000-000000000111",
       propertyId: "property_alpenrose",
       organizationId: "org_hotel_group_alpenrose",
     };
 
-    expect(target.listingId).toBe("legacy_listing_alpenrose");
-    expect(target.listingResourceId).not.toBe(target.listingId);
+    expect(target.offerId).toBe("legacy_offer_alpenrose");
+    expect(target.offerResourceId).not.toBe(target.offerId);
   });
 
   it("exports the affiliate contract version", () => {
@@ -437,7 +446,7 @@ describe("@vayada/domain-marketplace", () => {
         },
         {
           product: "marketplace",
-          resourceType: "hotel_listing",
+          resourceType: "marketplace_offer",
           relationship: "operator",
         },
       ],
@@ -453,16 +462,16 @@ describe("@vayada/domain-marketplace", () => {
           contractVersion: MARKETPLACE_COLLABORATION_READS_CONTRACT_VERSION,
           authorizationMode: "creator_workspace_resource_link",
           collaborationId: "collab_688",
-          listingId: "legacy_listing_688",
+          offerId: "legacy_offer_688",
           creatorId: "legacy_creator_lina",
           hotelProfileId: "hotel_profile_alpenrose",
           side: "creator",
           initiatorSide: "creator",
           isInitiator: true,
           status: "accepted",
-          collaborationType: "affiliate",
-          listingName: "Alpine creator stay",
-          listingLocation: "Innsbruck, Austria",
+          compensationType: null,
+          offerTitle: "Alpine creator stay",
+          hotelLocation: "Innsbruck, Austria",
           creator: {
             side: "creator",
             organizationId: "org_creator_lina",
@@ -483,7 +492,8 @@ describe("@vayada/domain-marketplace", () => {
             paidAmount: null,
             currency: "EUR",
             discountPercentage: null,
-            creatorFee: null,
+            affiliateEnabled: true,
+            affiliateCommissionPercentage: null,
             travelDateFrom: "2026-09-10",
             travelDateTo: "2026-09-12",
             preferredDateFrom: null,
@@ -513,7 +523,7 @@ describe("@vayada/domain-marketplace", () => {
         side: "creator",
         partnerName: "Hotel Alpenrose",
         partnerAvatarUrl: null,
-        listingName: "Alpine creator stay",
+        offerTitle: "Alpine creator stay",
         collaborationStatus: "accepted",
         lastMessageContent: "We confirmed the September dates.",
         lastMessageAt: "2026-06-12T09:15:00.000Z",
@@ -540,7 +550,7 @@ describe("@vayada/domain-marketplace", () => {
       ],
     };
 
-    expect(list.items[0].listingId).toBe("legacy_listing_688");
+    expect(list.items[0].offerId).toBe("legacy_offer_688");
     expect(conversations[0].partnerName).toBe("Hotel Alpenrose");
     expect(messages.items[0].contentType).toBe("text");
     const serialized = JSON.stringify({ list, conversations, messages });
@@ -573,7 +583,7 @@ describe("@vayada/domain-marketplace", () => {
         "creator-collaborations-linked-resource",
         "hotel-conversations-linked-resources",
         "messages-deny-missing-creator-link",
-        "messages-deny-missing-hotel-listing-link",
+        "messages-deny-missing-hotel-offer-link",
         "collaboration-deny-wrong-side-org",
       ]),
     );
@@ -645,7 +655,7 @@ describe("@vayada/domain-marketplace", () => {
     expect(MARKETPLACE_COLLABORATION_HOTEL_WRITE_POLICY.requiredResources).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ resourceType: "hotel_profile", relationship: "owner" }),
-        expect.objectContaining({ resourceType: "hotel_listing", relationship: "operator" }),
+        expect.objectContaining({ resourceType: "marketplace_offer", relationship: "operator" }),
       ]),
     );
   });
@@ -737,7 +747,7 @@ describe("@vayada/domain-marketplace", () => {
       );
     }
     expect(caseIds).toContain("creator-create-collaboration-linked-resource");
-    expect(caseIds).toContain("hotel-create-invitation-linked-listing-resource");
+    expect(caseIds).toContain("hotel-create-invitation-linked-offer-resource");
     expect(caseIds).toContain("approve-accepted-emits-affiliate-provisioning-command");
     expect(caseIds).toContain("approve-deny-invalid-transition");
     expect(fixture.cases.every((entry) => entry.request.idempotencyKey?.endsWith(":v1"))).toBe(

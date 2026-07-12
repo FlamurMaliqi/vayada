@@ -599,9 +599,11 @@ function DashboardContent() {
                     <li>Creator profile and all social media platforms</li>
                   )}
                   {deleteConfirmUser.type === "hotel" && (
-                    <li>Hotel profile and all listings with their offerings and requirements</li>
+                    <li>
+                      Hotel profile and all collaboration offers with compensation and requirements
+                    </li>
                   )}
-                  <li>All associated S3 images (profile pictures, listing images, thumbnails)</li>
+                  <li>All associated S3 images (profile pictures, offer media, thumbnails)</li>
                   <li>All related records</li>
                 </ul>
               </div>

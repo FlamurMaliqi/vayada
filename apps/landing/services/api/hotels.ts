@@ -11,9 +11,9 @@ import type {
 } from "@/lib/types";
 import { transformHotelListingToHotel, transformListingMarketplaceResponse } from "@/lib/utils";
 import {
-  getAllMarketplaceListings,
-  type MarketplaceListingReadModel,
-  type MarketplaceOfferingSummary,
+  getAllMarketplaceOffers,
+  type MarketplaceOfferReadModel,
+  type MarketplaceCompensationOptionSummary,
   type MarketplacePlatformName,
 } from "@vayada/marketplace-shared/api/discovery";
 import { apiClient } from "./client";
@@ -114,7 +114,7 @@ export const hotelService = {
    * Get all hotel listings (public marketplace endpoint - returns direct array)
    */
   getAll: async (params?: { page?: number; limit?: number }): Promise<PaginatedResponse<Hotel>> => {
-    const response = (await getAllMarketplaceListings()).map(toLegacyListingMarketplaceResponse);
+    const response = (await getAllMarketplaceOffers()).map(toLegacyListingMarketplaceResponse);
 
     // Transform API response to frontend format
     const hotels = response.map(transformListingMarketplaceResponse);
@@ -287,63 +287,63 @@ export const hotelService = {
 };
 
 function toLegacyListingMarketplaceResponse(
-  listing: MarketplaceListingReadModel,
+  offer: MarketplaceOfferReadModel,
 ): ListingMarketplaceResponse {
   return {
-    id: listing.listingId,
-    hotel_profile_id: listing.publicId,
-    hotel_name: listing.displayName,
-    hotel_picture: listing.coverImageUrl,
-    name: listing.listingTitle,
-    location: listing.location.displayText,
-    description: listing.listingSummary ?? "",
-    accommodation_type: listing.accommodationType,
-    images: listing.imageUrls,
+    id: offer.offerId,
+    hotel_profile_id: offer.offerPublicId,
+    hotel_name: offer.hotelName,
+    hotel_picture: offer.hotelCoverImageUrl,
+    name: offer.offerTitle,
+    location: offer.hotelLocation.displayText,
+    description: offer.offerSummary ?? "",
+    accommodation_type: null,
+    images: offer.hotelImageUrls,
     status: "verified",
-    collaboration_offerings: listing.offerings.map((offering) =>
-      toLegacyCollaborationOffering(offering, listing),
+    collaboration_offerings: offer.compensationOptions.map((option) =>
+      toLegacyCompensationOption(option, offer),
     ),
-    creator_requirements: listing.creatorRequirements
+    creator_requirements: offer.creatorRequirements
       ? {
-          id: `${listing.listingId}:requirements`,
-          listing_id: listing.listingId,
-          platforms: listing.creatorRequirements.platforms.map(toLegacyPlatformName),
-          target_countries: listing.creatorRequirements.targetCountries,
-          target_age_min: listing.creatorRequirements.targetAgeMin,
-          target_age_max: listing.creatorRequirements.targetAgeMax,
-          target_age_groups: listing.creatorRequirements.targetAgeGroups,
-          created_at: listing.createdAt,
-          updated_at: listing.projectedAt,
+          id: `${offer.offerId}:requirements`,
+          listing_id: offer.offerId,
+          platforms: offer.creatorRequirements.platforms.map(toLegacyPlatformName),
+          target_countries: offer.creatorRequirements.targetCountries,
+          target_age_min: offer.creatorRequirements.targetAgeMin,
+          target_age_max: offer.creatorRequirements.targetAgeMax,
+          target_age_groups: offer.creatorRequirements.targetAgeGroups,
+          created_at: offer.createdAt,
+          updated_at: offer.projectedAt,
         }
       : undefined,
-    created_at: listing.createdAt,
+    created_at: offer.createdAt,
   };
 }
 
-function toLegacyCollaborationOffering(
-  offering: MarketplaceOfferingSummary,
-  listing: MarketplaceListingReadModel,
+function toLegacyCompensationOption(
+  option: MarketplaceCompensationOptionSummary,
+  offer: MarketplaceOfferReadModel,
 ): ListingMarketplaceResponse["collaboration_offerings"][number] {
   return {
-    id: offering.offeringId,
-    listing_id: listing.listingId,
-    collaboration_type: toLegacyCollaborationType(offering.collaborationType),
-    availability_months: offering.availabilityMonths,
-    platforms: offering.platforms.map(toLegacyPlatformName),
-    free_stay_min_nights: offering.freeStayMinNights,
-    free_stay_max_nights: offering.freeStayMaxNights,
-    paid_max_amount: offering.paidMaxAmount,
-    currency: offering.currency,
-    discount_percentage: offering.discountPercentage,
-    commission_percentage: offering.commissionPercentage,
-    min_followers: offering.minFollowers,
-    created_at: listing.createdAt,
-    updated_at: listing.projectedAt,
+    id: option.compensationOptionId,
+    listing_id: offer.offerId,
+    collaboration_type: toLegacyCompensationType(option.compensationType),
+    availability_months: option.availabilityMonths,
+    platforms: option.platforms.map(toLegacyPlatformName),
+    free_stay_min_nights: option.freeStayMinNights,
+    free_stay_max_nights: option.freeStayMaxNights,
+    paid_max_amount: option.paidMaxAmount,
+    currency: option.currency,
+    discount_percentage: option.discountPercentage,
+    commission_percentage: option.commissionPercentage,
+    min_followers: option.minFollowers,
+    created_at: offer.createdAt,
+    updated_at: offer.projectedAt,
   };
 }
 
-function toLegacyCollaborationType(
-  type: MarketplaceOfferingSummary["collaborationType"],
+function toLegacyCompensationType(
+  type: MarketplaceCompensationOptionSummary["compensationType"],
 ): "Free Stay" | "Paid" | "Discount" | "Affiliate" {
   switch (type) {
     case "paid":

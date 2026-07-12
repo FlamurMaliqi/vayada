@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
-export const MARKETPLACE_LISTINGS_CONTRACT = {
+export const MARKETPLACE_OFFERS_CONTRACT = {
   method: "GET",
-  path: "/api/marketplace/listings",
+  path: "/api/marketplace/offers",
   doc: "engineering/marketplace-discovery-contract.md",
 } as const;
 
@@ -26,9 +26,9 @@ export type MarketplacePlatformName =
   | "x"
   | "other";
 
-export type MarketplaceOfferingSummary = {
-  offeringId: string;
-  collaborationType: "free_stay" | "paid" | "discount" | "affiliate";
+export type MarketplaceCompensationOptionSummary = {
+  compensationOptionId: string;
+  compensationType: "free_stay" | "paid" | "discount" | "affiliate";
   availabilityMonths: string[];
   platforms: MarketplacePlatformName[];
   freeStayMinNights: number | null;
@@ -38,6 +38,7 @@ export type MarketplaceOfferingSummary = {
   discountPercentage: number | null;
   commissionPercentage: number | null;
   minFollowers: number | null;
+  termsSummary: string | null;
 };
 
 export type MarketplaceCreatorRequirements = {
@@ -46,20 +47,29 @@ export type MarketplaceCreatorRequirements = {
   targetAgeMin: number | null;
   targetAgeMax: number | null;
   targetAgeGroups: string[] | null;
+  creatorTypes: ("lifestyle" | "travel" | "other")[];
 };
 
-export type MarketplaceListingReadModel = {
-  listingId: string;
-  publicId: string;
-  canonicalSlug: string;
-  displayName: string;
-  listingTitle: string;
-  listingSummary: string | null;
-  accommodationType: string | null;
-  location: { displayText: string; countryCode?: string; city?: string };
-  coverImageUrl: string | null;
-  imageUrls: string[];
-  offerings: MarketplaceOfferingSummary[];
+export type MarketplaceOfferDeliverable = {
+  deliverableId: string;
+  platform: MarketplacePlatformName;
+  deliverableType: string;
+  quantity: number;
+  timingGuidance: string | null;
+};
+
+export type MarketplaceOfferReadModel = {
+  offerId: string;
+  offerPublicId: string;
+  offerTitle: string;
+  offerSummary: string | null;
+  hotelName: string;
+  hotelSlug: string;
+  hotelLocation: { displayText: string; countryCode?: string; city?: string };
+  hotelCoverImageUrl: string | null;
+  hotelImageUrls: string[];
+  deliverables: MarketplaceOfferDeliverable[];
+  compensationOptions: MarketplaceCompensationOptionSummary[];
   creatorRequirements: MarketplaceCreatorRequirements | null;
   createdAt: string;
   projectedAt: string;
@@ -97,8 +107,8 @@ export type MarketplaceDiscoveryPagination = {
   total: number;
 };
 
-export type MarketplaceListingPage = {
-  items: MarketplaceListingReadModel[];
+export type MarketplaceOfferPage = {
+  items: MarketplaceOfferReadModel[];
   pagination: MarketplaceDiscoveryPagination;
 };
 
@@ -120,17 +130,17 @@ export type MarketplaceDiscoveryPageRequest = {
 };
 
 // Repository obligations (engineering/marketplace-discovery-contract.md):
-// - listings: only visibility_status = 'public' rows, ordered
-//   createdAt DESC, listingId ASC; total counts the full eligible set.
+// - offers: only visibility_status = 'public' rows, ordered
+//   createdAt DESC, offerId ASC; total counts the full eligible set.
 // - creators: only profile_complete, profile_status = 'active', non-null
 //   display_name rows, ordered createdAt DESC, creatorId ASC;
 //   averageRating rounded to 2 decimals over creator_ratings rows.
 // - IDs are the LEGACY marketplace UUIDs (ID continuity clause), not
 //   target-schema primary keys.
 export type MarketplaceDiscoveryReadRepository = {
-  listPublicListings(
+  listPublicOffers(
     page: MarketplaceDiscoveryPageRequest,
-  ): Promise<{ items: MarketplaceListingReadModel[]; total: number }>;
+  ): Promise<{ items: MarketplaceOfferReadModel[]; total: number }>;
   listPublicCreators(
     page: MarketplaceDiscoveryPageRequest,
   ): Promise<{ items: Omit<MarketplaceCreatorReadModel, "audienceSize">[]; total: number }>;
@@ -145,18 +155,18 @@ export type MarketplaceDiscoveryReadPool = {
   end(): Promise<void>;
 };
 
-type MarketplaceListingRow = {
-  listingId: string;
-  publicId: string;
-  canonicalSlug: string;
-  displayName: string;
-  listingTitle: string;
-  listingSummary: string | null;
-  accommodationType: string | null;
-  location: unknown;
-  coverImageUrl: string | null;
-  imageUrls: string[] | null;
-  offerings: unknown;
+type MarketplaceOfferRow = {
+  offerId: string;
+  offerPublicId: string;
+  offerTitle: string;
+  offerSummary: string | null;
+  hotelName: string;
+  hotelSlug: string;
+  hotelLocation: unknown;
+  hotelCoverImageUrl: string | null;
+  hotelImageUrls: string[] | null;
+  deliverables: unknown;
+  compensationOptions: unknown;
   creatorRequirements: unknown;
   createdAt: Date | string;
   projectedAt: Date | string;
@@ -193,58 +203,117 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
     });
 
   return {
-    async listPublicListings(page) {
-      const [listingResult, countResult] = await Promise.all([
-        pool.query<MarketplaceListingRow>(
+    async listPublicOffers(page) {
+      const [offerResult, countResult] = await Promise.all([
+        pool.query<MarketplaceOfferRow>(
           `SELECT
-             listing.source_listing_id AS "listingId",
-             read_model.public_id AS "publicId",
-             read_model.canonical_slug AS "canonicalSlug",
-             read_model.display_name AS "displayName",
-             read_model.listing_title AS "listingTitle",
-             read_model.listing_summary AS "listingSummary",
-             read_model.accommodation_type AS "accommodationType",
-             read_model.location,
-             media.cover_image_url AS "coverImageUrl",
-             read_model.image_urls AS "imageUrls",
-             read_model.public_offering_summary AS offerings,
-             read_model.public_creator_requirements AS "creatorRequirements",
-             listing.created_at AS "createdAt",
+             offer.id::text AS "offerId",
+             read_model.public_id AS "offerPublicId",
+             read_model.offer_title AS "offerTitle",
+             read_model.offer_summary AS "offerSummary",
+             property_profile.display_name AS "hotelName",
+             property_profile.canonical_slug AS "hotelSlug",
+             property_profile.location AS "hotelLocation",
+             media.cover_image_url AS "hotelCoverImageUrl",
+             COALESCE(media.image_urls, '{}') AS "hotelImageUrls",
+             COALESCE(deliverables.items, '[]'::jsonb) AS deliverables,
+             COALESCE(compensation.items, '[]'::jsonb) AS "compensationOptions",
+             requirements.item AS "creatorRequirements",
+             offer.created_at AS "createdAt",
              read_model.projected_at AS "projectedAt"
-           FROM marketplace.marketplace_listing_read_model read_model
-           JOIN marketplace.marketplace_hotel_listings listing
-             ON listing.id = read_model.listing_id
-            AND listing.property_id = read_model.property_id
-           LEFT JOIN hotel_catalog.property_public_profile_read_model property_profile
+           FROM marketplace.marketplace_offer_read_model read_model
+           JOIN marketplace.marketplace_offers offer
+             ON offer.id = read_model.offer_id
+            AND offer.property_id = read_model.property_id
+           JOIN hotel_catalog.property_public_profile_read_model property_profile
              ON property_profile.property_id = read_model.property_id
            LEFT JOIN LATERAL (
-             SELECT media_entry->>'url' AS cover_image_url
+             SELECT
+               (array_agg(
+                 media_entry->>'url'
+                 ORDER BY CASE WHEN media_entry->>'type' = 'hero_image' THEN 0 ELSE 1 END
+               ))[1] AS cover_image_url,
+               array_agg(
+                 media_entry->>'url'
+                 ORDER BY CASE WHEN media_entry->>'type' = 'hero_image' THEN 0 ELSE 1 END
+               ) AS image_urls
              FROM jsonb_array_elements(COALESCE(property_profile.media, '[]'::jsonb)) media_entry
              WHERE media_entry->>'type' IN ('hero_image', 'gallery_image')
                AND media_entry ? 'platformMediaObjectId'
                AND media_entry->>'url' LIKE 'https://%'
-             ORDER BY CASE WHEN media_entry->>'type' = 'hero_image' THEN 0 ELSE 1 END
-             LIMIT 1
            ) media ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT jsonb_agg(
+               jsonb_build_object(
+                 'deliverableId', deliverable.id::text,
+                 'platform', deliverable.platform,
+                 'deliverableType', deliverable.deliverable_type,
+                 'quantity', deliverable.quantity,
+                 'timingGuidance', deliverable.timing_guidance
+               ) ORDER BY deliverable.created_at, deliverable.id
+             ) AS items
+             FROM marketplace.offer_deliverables deliverable
+             WHERE deliverable.offer_id = offer.id
+               AND deliverable.property_id = offer.property_id
+               AND deliverable.organization_id = offer.organization_id
+           ) deliverables ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT jsonb_agg(
+               jsonb_build_object(
+                 'compensationOptionId', option.id::text,
+                 'compensationType', option.compensation_type,
+                 'availabilityMonths', option.availability_months,
+                 'platforms', option.platforms,
+                 'freeStayMinNights', option.free_stay_min_nights,
+                 'freeStayMaxNights', option.free_stay_max_nights,
+                 'paidMaxAmount', option.paid_max_amount::text,
+                 'currency', option.currency,
+                 'discountPercentage', option.discount_percentage,
+                 'commissionPercentage', option.commission_percentage,
+                 'minFollowers', option.min_followers,
+                 'termsSummary', option.terms_summary
+               ) ORDER BY option.created_at, option.id
+             ) AS items
+             FROM marketplace.offer_compensation_options option
+             WHERE option.offer_id = offer.id
+               AND option.property_id = offer.property_id
+               AND option.organization_id = offer.organization_id
+           ) compensation ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT jsonb_build_object(
+               'platforms', requirement.platforms,
+               'targetCountries', requirement.target_countries,
+               'targetAgeMin', requirement.target_age_min,
+               'targetAgeMax', requirement.target_age_max,
+               'targetAgeGroups', requirement.target_age_groups,
+               'creatorTypes', requirement.creator_types
+             ) AS item
+             FROM marketplace.offer_creator_requirements requirement
+             WHERE requirement.offer_id = offer.id
+               AND requirement.property_id = offer.property_id
+               AND requirement.organization_id = offer.organization_id
+           ) requirements ON TRUE
            WHERE read_model.visibility_status = 'public'
-             AND listing.source_listing_id IS NOT NULL
-           ORDER BY listing.created_at DESC, listing.source_listing_id ASC
+             AND offer.offer_status = 'verified'
+           ORDER BY offer.created_at DESC, offer.id ASC
            LIMIT $1 OFFSET $2`,
           [page.limit, page.offset],
         ),
         pool.query<{ total: string }>(
           `SELECT COUNT(*)::text AS total
-           FROM marketplace.marketplace_listing_read_model read_model
-           JOIN marketplace.marketplace_hotel_listings listing
-             ON listing.id = read_model.listing_id
-            AND listing.property_id = read_model.property_id
+           FROM marketplace.marketplace_offer_read_model read_model
+           JOIN marketplace.marketplace_offers offer
+             ON offer.id = read_model.offer_id
+            AND offer.property_id = read_model.property_id
+           JOIN hotel_catalog.property_public_profile_read_model property_profile
+             ON property_profile.property_id = read_model.property_id
            WHERE read_model.visibility_status = 'public'
-             AND listing.source_listing_id IS NOT NULL`,
+             AND offer.offer_status = 'verified'`,
         ),
       ]);
 
       return {
-        items: listingResult.rows.map(mapMarketplaceListingRow),
+        items: offerResult.rows.map(mapMarketplaceOfferRow),
         total: parseCount(countResult.rows[0]?.total),
       };
     },
@@ -318,19 +387,19 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
   };
 }
 
-function mapMarketplaceListingRow(row: MarketplaceListingRow): MarketplaceListingReadModel {
+function mapMarketplaceOfferRow(row: MarketplaceOfferRow): MarketplaceOfferReadModel {
   return {
-    listingId: row.listingId,
-    publicId: row.publicId,
-    canonicalSlug: row.canonicalSlug,
-    displayName: row.displayName,
-    listingTitle: row.listingTitle,
-    listingSummary: row.listingSummary,
-    accommodationType: row.accommodationType,
-    location: toMarketplaceLocation(row.location),
-    coverImageUrl: row.coverImageUrl,
-    imageUrls: Array.isArray(row.imageUrls) ? row.imageUrls : [],
-    offerings: toMarketplaceOfferings(row.offerings),
+    offerId: row.offerId,
+    offerPublicId: row.offerPublicId,
+    offerTitle: row.offerTitle,
+    offerSummary: row.offerSummary,
+    hotelName: row.hotelName,
+    hotelSlug: row.hotelSlug,
+    hotelLocation: toMarketplaceLocation(row.hotelLocation),
+    hotelCoverImageUrl: row.hotelCoverImageUrl,
+    hotelImageUrls: Array.isArray(row.hotelImageUrls) ? row.hotelImageUrls : [],
+    deliverables: toMarketplaceOfferDeliverables(row.deliverables),
+    compensationOptions: toMarketplaceCompensationOptions(row.compensationOptions),
     creatorRequirements: toMarketplaceCreatorRequirements(row.creatorRequirements),
     createdAt: toIsoString(row.createdAt),
     projectedAt: toIsoString(row.projectedAt),
@@ -355,7 +424,7 @@ function mapMarketplaceCreatorRow(
   };
 }
 
-function toMarketplaceLocation(value: unknown): MarketplaceListingReadModel["location"] {
+function toMarketplaceLocation(value: unknown): MarketplaceOfferReadModel["hotelLocation"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { displayText: "" };
   }
@@ -370,15 +439,15 @@ function toMarketplaceLocation(value: unknown): MarketplaceListingReadModel["loc
   };
 }
 
-function toMarketplaceOfferings(value: unknown): MarketplaceOfferingSummary[] {
+function toMarketplaceCompensationOptions(value: unknown): MarketplaceCompensationOptionSummary[] {
   if (!Array.isArray(value)) return [];
-  return value.map((offering) => {
-    const row = isRecord(offering) ? offering : {};
+  return value.map((compensationOption) => {
+    const row = isRecord(compensationOption) ? compensationOption : {};
     const nights = isRecord(row.nights) ? row.nights : {};
-    const collaborationType = readString(row.collaborationType) ?? readString(row.type);
+    const compensationType = readString(row.compensationType) ?? readString(row.type);
     return {
-      offeringId: readString(row.offeringId) ?? readString(row.id) ?? "",
-      collaborationType: toCollaborationType(collaborationType),
+      compensationOptionId: readString(row.compensationOptionId) ?? readString(row.id) ?? "",
+      compensationType: toCompensationType(compensationType),
       availabilityMonths: toStringArray(row.availabilityMonths ?? row.months),
       platforms: toPlatformArray(row.platforms),
       freeStayMinNights: toNullableNumber(row.freeStayMinNights ?? nights.min),
@@ -388,8 +457,20 @@ function toMarketplaceOfferings(value: unknown): MarketplaceOfferingSummary[] {
       discountPercentage: toNullableNumber(row.discountPercentage),
       commissionPercentage: toNullableNumber(row.commissionPercentage ?? row.commissionPercent),
       minFollowers: toNullableNumber(row.minFollowers),
+      termsSummary: readString(row.termsSummary),
     };
   });
+}
+
+function toMarketplaceOfferDeliverables(value: unknown): MarketplaceOfferDeliverable[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((row) => ({
+    deliverableId: readString(row.deliverableId) ?? "",
+    platform: toPlatformName(readString(row.platform)),
+    deliverableType: readString(row.deliverableType) ?? "other",
+    quantity: Math.max(1, toNumber(row.quantity)),
+    timingGuidance: readString(row.timingGuidance),
+  }));
 }
 
 function toMarketplaceCreatorRequirements(value: unknown): MarketplaceCreatorRequirements | null {
@@ -403,7 +484,14 @@ function toMarketplaceCreatorRequirements(value: unknown): MarketplaceCreatorReq
       value.targetAgeGroups === null
         ? null
         : toStringArray(value.targetAgeGroups ?? value.ageGroups),
+    creatorTypes: toCreatorTypeArray(value.creatorTypes),
   };
+}
+
+function toCreatorTypeArray(value: unknown): ("lifestyle" | "travel" | "other")[] {
+  return toStringArray(value).map((entry) =>
+    entry === "lifestyle" || entry === "travel" ? entry : "other",
+  );
 }
 
 function toMarketplaceCreatorPlatforms(value: unknown): MarketplaceCreatorPlatform[] {
@@ -505,9 +593,9 @@ function toPlatformName(value: string | null | undefined): MarketplacePlatformNa
   }
 }
 
-function toCollaborationType(
+function toCompensationType(
   value: string | null | undefined,
-): MarketplaceOfferingSummary["collaborationType"] {
+): MarketplaceCompensationOptionSummary["compensationType"] {
   switch (value) {
     case "paid":
     case "discount":
@@ -563,24 +651,24 @@ export async function registerMarketplaceDiscoveryRoutes(
     }
   });
 
-  app.get<{ Querystring: DiscoveryQuery }>("/listings", async (request, reply) => {
+  app.get<{ Querystring: DiscoveryQuery }>("/offers", async (request, reply) => {
     const page = parsePageQuery(request.query);
     if ("error" in page) {
       return sendDiscoveryError(reply, page.error);
     }
 
     try {
-      const { items, total } = await repository.listPublicListings(page);
-      const response: MarketplaceListingPage = {
-        items: items.map(serializeMarketplaceListing),
+      const { items, total } = await repository.listPublicOffers(page);
+      const response: MarketplaceOfferPage = {
+        items: items.map(serializeMarketplaceOffer),
         pagination: { limit: page.limit, offset: page.offset, total },
       };
       assertMarketplaceDiscoveryPublicSafe(response);
       reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
       return response;
     } catch (error) {
-      request.log.error({ err: error }, "marketplace discovery listings read failed");
-      return sendDiscoveryError(reply, internalError("Failed to fetch marketplace listings."));
+      request.log.error({ err: error }, "marketplace discovery offers read failed");
+      return sendDiscoveryError(reply, internalError("Failed to fetch marketplace offers."));
     }
   });
 
@@ -658,30 +746,30 @@ function sendDiscoveryError(
   return error;
 }
 
-export function serializeMarketplaceListing(
-  listing: MarketplaceListingReadModel,
-): MarketplaceListingReadModel {
+export function serializeMarketplaceOffer(
+  offer: MarketplaceOfferReadModel,
+): MarketplaceOfferReadModel {
   return {
-    listingId: listing.listingId,
-    publicId: listing.publicId,
-    canonicalSlug: listing.canonicalSlug,
-    displayName: listing.displayName,
-    listingTitle: listing.listingTitle,
-    listingSummary: listing.listingSummary ?? null,
-    accommodationType: listing.accommodationType ?? null,
-    location: {
-      displayText: listing.location.displayText,
-      ...(listing.location.countryCode ? { countryCode: listing.location.countryCode } : {}),
-      ...(listing.location.city ? { city: listing.location.city } : {}),
+    offerId: offer.offerId,
+    offerPublicId: offer.offerPublicId,
+    offerTitle: offer.offerTitle,
+    offerSummary: offer.offerSummary ?? null,
+    hotelName: offer.hotelName,
+    hotelSlug: offer.hotelSlug,
+    hotelLocation: {
+      displayText: offer.hotelLocation.displayText,
+      ...(offer.hotelLocation.countryCode ? { countryCode: offer.hotelLocation.countryCode } : {}),
+      ...(offer.hotelLocation.city ? { city: offer.hotelLocation.city } : {}),
     },
-    coverImageUrl: listing.coverImageUrl ?? null,
-    imageUrls: listing.imageUrls.map((url) => url),
-    offerings: listing.offerings.map(serializeOffering),
-    creatorRequirements: listing.creatorRequirements
-      ? serializeCreatorRequirements(listing.creatorRequirements)
+    hotelCoverImageUrl: offer.hotelCoverImageUrl ?? null,
+    hotelImageUrls: offer.hotelImageUrls.map((url) => url),
+    deliverables: offer.deliverables.map((deliverable) => ({ ...deliverable })),
+    compensationOptions: offer.compensationOptions.map(serializeCompensationOption),
+    creatorRequirements: offer.creatorRequirements
+      ? serializeCreatorRequirements(offer.creatorRequirements)
       : null,
-    createdAt: listing.createdAt,
-    projectedAt: listing.projectedAt,
+    createdAt: offer.createdAt,
+    projectedAt: offer.projectedAt,
   };
 }
 
@@ -740,19 +828,22 @@ function serializeCreatorPlatform(
   };
 }
 
-function serializeOffering(offering: MarketplaceOfferingSummary): MarketplaceOfferingSummary {
+function serializeCompensationOption(
+  compensationOption: MarketplaceCompensationOptionSummary,
+): MarketplaceCompensationOptionSummary {
   return {
-    offeringId: offering.offeringId,
-    collaborationType: offering.collaborationType,
-    availabilityMonths: offering.availabilityMonths.map((month) => month),
-    platforms: offering.platforms.map((platform) => platform),
-    freeStayMinNights: offering.freeStayMinNights ?? null,
-    freeStayMaxNights: offering.freeStayMaxNights ?? null,
-    paidMaxAmount: offering.paidMaxAmount ?? null,
-    currency: offering.currency ?? null,
-    discountPercentage: offering.discountPercentage ?? null,
-    commissionPercentage: offering.commissionPercentage ?? null,
-    minFollowers: offering.minFollowers ?? null,
+    compensationOptionId: compensationOption.compensationOptionId,
+    compensationType: compensationOption.compensationType,
+    availabilityMonths: compensationOption.availabilityMonths.map((month) => month),
+    platforms: compensationOption.platforms.map((platform) => platform),
+    freeStayMinNights: compensationOption.freeStayMinNights ?? null,
+    freeStayMaxNights: compensationOption.freeStayMaxNights ?? null,
+    paidMaxAmount: compensationOption.paidMaxAmount ?? null,
+    currency: compensationOption.currency ?? null,
+    discountPercentage: compensationOption.discountPercentage ?? null,
+    commissionPercentage: compensationOption.commissionPercentage ?? null,
+    minFollowers: compensationOption.minFollowers ?? null,
+    termsSummary: compensationOption.termsSummary ?? null,
   };
 }
 
@@ -765,6 +856,7 @@ function serializeCreatorRequirements(
     targetAgeMin: requirements.targetAgeMin ?? null,
     targetAgeMax: requirements.targetAgeMax ?? null,
     targetAgeGroups: requirements.targetAgeGroups?.map((group) => group) ?? null,
+    creatorTypes: requirements.creatorTypes.map((type) => type),
   };
 }
 

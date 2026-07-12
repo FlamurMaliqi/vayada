@@ -299,6 +299,7 @@ async function checkMarketplaceOwnershipLinks(
     has_creator_owner_membership: boolean;
     has_hotel_profile_link: boolean;
     has_marketplace_offer_link: boolean;
+    has_marketplace_offer_operator_link: boolean;
     has_creator_profile_link: boolean;
     has_hotel_profile_entitlement: boolean;
     has_marketplace_offer_entitlement: boolean;
@@ -345,6 +346,16 @@ async function checkMarketplaceOwnershipLinks(
            AND link.relationship = 'owner'
            AND link.status = 'active'
        ) AS has_marketplace_offer_link,
+       EXISTS(
+         SELECT 1
+         FROM identity.organization_resource_links link
+         WHERE link.organization_id = $1
+           AND link.product = 'marketplace'
+           AND link.resource_type = 'marketplace_offer'
+           AND link.resource_id = $3
+           AND link.relationship = 'operator'
+           AND link.status = 'active'
+       ) AS has_marketplace_offer_operator_link,
        EXISTS(
          SELECT 1
          FROM identity.organization_resource_links link
@@ -429,6 +440,7 @@ async function checkMarketplaceOwnershipLinks(
     row.has_creator_owner_membership &&
     row.has_hotel_profile_link &&
     row.has_marketplace_offer_link &&
+    row.has_marketplace_offer_operator_link &&
     row.has_creator_profile_link &&
     row.has_hotel_profile_entitlement &&
     row.has_marketplace_offer_entitlement &&
@@ -458,6 +470,10 @@ async function checkMarketplaceRelatedRows(
     compensation_option_count: string;
     has_free_stay_option: boolean;
     has_affiliate_option: boolean;
+    has_paid_option: boolean;
+    has_discount_option: boolean;
+    has_paid_collaboration: boolean;
+    has_discount_collaboration: boolean;
     deliverable_count: string;
     has_approved_deliverable: boolean;
     has_submitted_deliverable: boolean;
@@ -501,6 +517,45 @@ async function checkMarketplaceRelatedRows(
            AND option.commission_percentage::text = '10.0000'
            AND option.min_followers = 50000
        ) AS has_affiliate_option,
+       EXISTS(
+         SELECT 1
+         FROM marketplace.offer_compensation_options option
+         WHERE option.id = $24
+           AND option.offer_id = $1
+           AND option.compensation_type = 'paid'
+           AND option.paid_max_amount::text = '750.00'
+           AND option.currency = 'EUR'
+       ) AS has_paid_option,
+       EXISTS(
+         SELECT 1
+         FROM marketplace.offer_compensation_options option
+         WHERE option.id = $25
+           AND option.offer_id = $1
+           AND option.compensation_type = 'discount'
+           AND option.discount_percentage = 25
+       ) AS has_discount_option,
+       EXISTS(
+         SELECT 1
+         FROM marketplace.collaborations collaboration
+         WHERE collaboration.id = $26
+           AND collaboration.offer_id = $1
+           AND collaboration.compensation_type = 'paid'
+           AND collaboration.paid_amount::text = '625.00'
+           AND collaboration.preferred_date_from = DATE '2026-10-09'
+           AND collaboration.preferred_date_to = DATE '2026-10-13'
+           AND collaboration.completed_at = TIMESTAMPTZ '2026-10-13T12:00:00Z'
+       ) AS has_paid_collaboration,
+       EXISTS(
+         SELECT 1
+         FROM marketplace.collaborations collaboration
+         WHERE collaboration.id = $27
+           AND collaboration.offer_id = $1
+           AND collaboration.compensation_type = 'discount'
+           AND collaboration.discount_percentage = 30
+           AND collaboration.preferred_date_from = DATE '2026-11-09'
+           AND collaboration.preferred_date_to = DATE '2026-11-14'
+           AND collaboration.cancelled_at = TIMESTAMPTZ '2026-10-03T08:00:00Z'
+       ) AS has_discount_collaboration,
        (
          SELECT count(*)::text
          FROM marketplace.collaboration_deliverables deliverable
@@ -641,6 +696,10 @@ async function checkMarketplaceRelatedRows(
       check.redeemedInviteCode,
       check.creatorNewsletterPreferenceId,
       check.hotelNewsletterPreferenceId,
+      check.compensationOptionPaidId,
+      check.compensationOptionDiscountId,
+      check.paidCollaborationId,
+      check.discountCollaborationId,
     ],
   );
 
@@ -649,6 +708,10 @@ async function checkMarketplaceRelatedRows(
     compensationOptionCount: parseInt(row.compensation_option_count, 10),
     hasFreeStayOption: row.has_free_stay_option,
     hasAffiliateOption: row.has_affiliate_option,
+    hasPaidOption: row.has_paid_option,
+    hasDiscountOption: row.has_discount_option,
+    hasPaidCollaboration: row.has_paid_collaboration,
+    hasDiscountCollaboration: row.has_discount_collaboration,
     deliverableCount: parseInt(row.deliverable_count, 10),
     hasApprovedDeliverable: row.has_approved_deliverable,
     hasSubmittedDeliverable: row.has_submitted_deliverable,
@@ -670,6 +733,10 @@ async function checkMarketplaceRelatedRows(
     actual.compensationOptionCount === check.compensationOptionCount &&
     actual.hasFreeStayOption &&
     actual.hasAffiliateOption &&
+    actual.hasPaidOption &&
+    actual.hasDiscountOption &&
+    actual.hasPaidCollaboration &&
+    actual.hasDiscountCollaboration &&
     actual.deliverableCount === check.deliverableCount &&
     actual.hasApprovedDeliverable &&
     actual.hasSubmittedDeliverable &&

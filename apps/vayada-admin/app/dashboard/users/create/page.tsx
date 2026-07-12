@@ -777,7 +777,7 @@ export default function CreateUserPage() {
         }
       }
 
-      // Step 2 & 3: Handle hotel listings (if any)
+      // Step 2 & 3: Handle collaboration offers (if any)
       if (userType === "hotel" && listings.length > 0) {
         // Process each listing with its original index
         for (let listingIndex = 0; listingIndex < listings.length; listingIndex++) {
@@ -796,7 +796,7 @@ export default function CreateUserPage() {
           try {
             let imageUrls: string[] = [];
 
-            // Step 2: Upload listing images if there are any files
+            // Step 2: Upload offer media if there are any files
             const imageFiles = listingImageFiles[listingIndex] || [];
 
             if (imageFiles.length > 0) {
@@ -807,7 +807,7 @@ export default function CreateUserPage() {
                 );
                 imageUrls = uploadResponse.images.map((img) => img.url);
               } catch (uploadError) {
-                console.error("Failed to upload listing images:", uploadError);
+                console.error("Failed to upload offer media:", uploadError);
                 // Continue without images - user can add them later
               }
             }
@@ -875,9 +875,9 @@ export default function CreateUserPage() {
               },
             };
 
-            await usersService.createListing(createdUser.id, listingData);
+            await usersService.createOffer(createdUser.id, listingData);
           } catch (listingError) {
-            console.error("Failed to create listing:", listingError);
+            console.error("Failed to create offer:", listingError);
             // Continue with other listings even if one fails
           }
         }
@@ -1516,19 +1516,19 @@ export default function CreateUserPage() {
                     </div>
                   </div>
 
-                  {/* Listings Section */}
+                  {/* Offers Section */}
                   <div className="border-t pt-6">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold text-gray-900">Listings (Optional)</h3>
+                      <h3 className="text-lg font-semibold text-gray-900">Offers (Optional)</h3>
                       <Button type="button" variant="outline" size="sm" onClick={handleAddListing}>
                         <PlusIcon className="w-4 h-4 mr-1" />
-                        Add Listing
+                        Add Offer
                       </Button>
                     </div>
 
                     {listings.length === 0 ? (
                       <p className="text-sm text-gray-500">
-                        No listings added. Click "Add Listing" to add one.
+                        No offers added. Click "Add Offer" to add one.
                       </p>
                     ) : (
                       <div className="space-y-6">
@@ -1536,7 +1536,7 @@ export default function CreateUserPage() {
                           <div key={listingIndex} className="border rounded-lg p-6 bg-gray-50">
                             <div className="flex items-center justify-between mb-4">
                               <h4 className="font-medium text-gray-900">
-                                Listing {listingIndex + 1}
+                                Offer {listingIndex + 1}
                               </h4>
                               <button
                                 type="button"
@@ -1547,10 +1547,10 @@ export default function CreateUserPage() {
                               </button>
                             </div>
 
-                            {/* Basic Listing Info */}
+                            {/* Basic Offer Info */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                               <Input
-                                label="Name"
+                                label="Offer title"
                                 value={listing.name}
                                 onChange={(e) =>
                                   handleListingChange(listingIndex, "name", e.target.value)
@@ -1598,7 +1598,7 @@ export default function CreateUserPage() {
                                     handleListingChange(listingIndex, "description", e.target.value)
                                   }
                                   rows={3}
-                                  placeholder="Detailed description of the listing (min 10 characters)"
+                                  placeholder="Describe the collaboration offer (min 10 characters)"
                                   required
                                 />
                               </div>

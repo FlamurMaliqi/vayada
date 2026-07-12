@@ -52,7 +52,7 @@ export function useHotelProfile(
     setLoading(true);
     try {
       const status = (await checkProfileStatus("hotel")) as HotelProfileStatus | null;
-      if (status?.missing_listings) {
+      if (status?.missing_offers) {
         setActiveHotelTab("listings");
       }
 

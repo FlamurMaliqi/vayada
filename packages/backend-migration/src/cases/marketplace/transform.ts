@@ -43,6 +43,24 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
   `);
 
   await client.query(`
+    INSERT INTO identity.organization_resource_links
+      (organization_id, product, resource_type, resource_id, relationship, status)
+    SELECT
+      link.organization_id,
+      link.product,
+      link.resource_type,
+      link.resource_id,
+      'operator',
+      link.status
+    FROM identity.organization_resource_links link
+    WHERE link.product = 'marketplace'
+      AND link.resource_type = 'marketplace_offer'
+      AND link.relationship = 'owner'
+    ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
+    DO UPDATE SET status = EXCLUDED.status, updated_at = now()
+  `);
+
+  await client.query(`
     INSERT INTO identity.product_entitlements
       (
         id,
@@ -321,6 +339,8 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
         platforms,
         free_stay_min_nights,
         free_stay_max_nights,
+        paid_max_amount,
+        discount_percentage,
         commission_percentage,
         min_followers,
         currency,
@@ -341,6 +361,8 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
       offering.platforms,
       offering.free_stay_min_nights,
       offering.free_stay_max_nights,
+      offering.paid_max_amount,
+      offering.discount_percentage,
       offering.commission_percentage,
       offering.min_followers,
       offering.currency,
@@ -418,8 +440,12 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
         preferred_months,
         travel_date_from,
         travel_date_to,
+        preferred_date_from,
+        preferred_date_to,
         free_stay_min_nights,
         free_stay_max_nights,
+        paid_amount,
+        discount_percentage,
         affiliate_commission_percentage,
         affiliate_enabled,
         currency,
@@ -430,6 +456,8 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
         creator_agreed_at,
         term_last_updated_at,
         responded_at,
+        cancelled_at,
+        completed_at,
         collaboration_metadata,
         created_at,
         updated_at
@@ -456,8 +484,12 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
       collaboration.preferred_months,
       collaboration.travel_date_from,
       collaboration.travel_date_to,
+      collaboration.preferred_date_from,
+      collaboration.preferred_date_to,
       collaboration.free_stay_min_nights,
       collaboration.free_stay_max_nights,
+      collaboration.paid_amount,
+      collaboration.discount_percentage,
       collaboration.creator_fee,
       (
         collaboration.collaboration_type = 'affiliate'
@@ -473,6 +505,8 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
       collaboration.creator_agreed_at,
       collaboration.term_last_updated_at,
       collaboration.responded_at,
+      collaboration.cancelled_at,
+      collaboration.completed_at,
       collaboration.collaboration_metadata,
       collaboration.created_at,
       collaboration.updated_at

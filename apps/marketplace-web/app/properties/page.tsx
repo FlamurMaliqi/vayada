@@ -94,7 +94,7 @@ export default function PublicPropertiesPage() {
                 <HotelIcon className="w-5 h-5" />
                 <span className="text-2xl md:text-3xl font-bold">{stats.totalHotels}</span>
               </div>
-              <p className="text-sm text-gray-600">Open Listings</p>
+              <p className="text-sm text-gray-600">Open Offers</p>
             </div>
             <div className="text-center">
               <div className="flex items-center justify-center gap-2 text-primary-600 mb-1">
@@ -209,7 +209,7 @@ export default function PublicPropertiesPage() {
                 icon: CheckBadgeIcon,
                 title: "Verified Hotels",
                 description:
-                  "All properties are verified. No scams, no fake listings, only real opportunities.",
+                  "All properties are verified. No scams, no fake offers, only real opportunities.",
               },
               {
                 icon: UserGroupIcon,
@@ -244,7 +244,7 @@ export default function PublicPropertiesPage() {
           </h2>
           <p className="text-primary-100 text-lg mb-8 max-w-2xl mx-auto">
             Join vayada for free and get instant access to all {stats.totalHotels} open hotel
-            listings.
+            offers.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link href={ROUTES.SIGNUP}>

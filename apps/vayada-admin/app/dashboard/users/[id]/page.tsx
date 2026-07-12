@@ -723,7 +723,7 @@ function UserDetailContent() {
 
       // Validate required fields
       if (!editListingData.name.trim()) {
-        setListingSaveError("Listing name is required");
+        setListingSaveError("Offer title is required");
         setSavingListing(false);
         return;
       }
@@ -829,7 +829,7 @@ function UserDetailContent() {
         }
       }
 
-      await usersService.createListing(userDetail.id, createData);
+      await usersService.createOffer(userDetail.id, createData);
 
       // Reload user details to get new listing
       const updatedUserDetail = await usersService.getUserById(userDetail.id);
@@ -841,14 +841,14 @@ function UserDetailContent() {
       setListingExistingImages([]);
       setListingImageFiles([]);
       setListingImagePreviews([]);
-      setListingSaveSuccess("Listing created successfully!");
+      setListingSaveSuccess("Offer created successfully!");
 
       setTimeout(() => setListingSaveSuccess(""), 5000);
     } catch (err) {
       if (err instanceof ApiErrorResponse) {
-        setListingSaveError((err.data.detail as string) || "Failed to create listing");
+        setListingSaveError((err.data.detail as string) || "Failed to create offer");
       } else {
-        setListingSaveError("Failed to create listing. Please try again.");
+        setListingSaveError("Failed to create offer. Please try again.");
       }
     } finally {
       setSavingListing(false);
@@ -862,7 +862,7 @@ function UserDetailContent() {
       setDeletingListing(true);
       setListingDeleteError("");
 
-      const response = await usersService.deleteListing(userDetail.id, listingToDelete.id);
+      const response = await usersService.deleteOffer(userDetail.id, listingToDelete.id);
 
       // Reload user details to get updated listings
       const updatedUserDetail = await usersService.getUserById(userDetail.id);
@@ -873,7 +873,7 @@ function UserDetailContent() {
       setSelectedListing(null);
 
       // Show success message with details
-      let successMessage = `Listing "${listingToDelete.name}" has been deleted successfully.`;
+      let successMessage = `Offer "${listingToDelete.name}" has been deleted successfully.`;
       if (response.imagesDeleted !== undefined) {
         successMessage += ` ${response.imagesDeleted} image(s) deleted.`;
         if (response.imagesFailed && response.imagesFailed > 0) {
@@ -885,16 +885,16 @@ function UserDetailContent() {
     } catch (err) {
       if (err instanceof ApiErrorResponse) {
         if (err.status === 404) {
-          setListingDeleteError("Listing not found.");
+          setListingDeleteError("Offer not found.");
         } else if (err.status === 400) {
           setListingDeleteError("User is not a hotel.");
         } else if (err.status === 403) {
           setListingDeleteError("Access denied. Admin privileges required.");
         } else {
-          setListingDeleteError((err.data.detail as string) || "Failed to delete listing.");
+          setListingDeleteError((err.data.detail as string) || "Failed to delete offer.");
         }
       } else {
-        setListingDeleteError("Failed to delete listing. Please try again.");
+        setListingDeleteError("Failed to delete offer. Please try again.");
       }
     } finally {
       setDeletingListing(false);
@@ -1030,7 +1030,7 @@ function UserDetailContent() {
         }
       }
 
-      await usersService.updateListing(userDetail.id, editingListingId, updateData);
+      await usersService.updateOffer(userDetail.id, editingListingId, updateData);
 
       // Reload user details to get updated listing
       const updatedUserDetail = await usersService.getUserById(userDetail.id);
@@ -1050,21 +1050,21 @@ function UserDetailContent() {
       setListingExistingImages([]);
       setListingImageFiles([]);
       setListingImagePreviews([]);
-      setListingSaveSuccess("Listing updated successfully!");
+      setListingSaveSuccess("Offer updated successfully!");
       setTimeout(() => setListingSaveSuccess(""), 5000);
     } catch (err) {
       if (err instanceof ApiErrorResponse) {
         if (err.status === 400) {
           setListingSaveError((err.data.detail as string) || "Validation error");
         } else if (err.status === 404) {
-          setListingSaveError("Listing not found");
+          setListingSaveError("Offer not found");
         } else if (err.status === 403) {
           setListingSaveError("Access denied. Admin privileges required.");
         } else {
-          setListingSaveError((err.data.detail as string) || "Failed to update listing");
+          setListingSaveError((err.data.detail as string) || "Failed to update offer");
         }
       } else {
-        setListingSaveError("Failed to update listing. Please try again.");
+        setListingSaveError("Failed to update offer. Please try again.");
       }
     } finally {
       setSavingListing(false);
@@ -1637,7 +1637,7 @@ function UserDetailContent() {
                     }
                   `}
                 >
-                  Listings{" "}
+                  Offers{" "}
                   {profile && (profile as HotelProfileDetail).listings
                     ? `(${(profile as HotelProfileDetail).listings.length})`
                     : ""}
@@ -2582,7 +2582,7 @@ function UserDetailContent() {
               </div>
             )}
 
-            {/* Listings Tab */}
+            {/* Offers Tab */}
             {activeTab === "listings" && isHotel && profile && (
               <div className="space-y-4">
                 <div className="flex justify-end">
@@ -2592,7 +2592,7 @@ function UserDetailContent() {
                     className="flex items-center gap-2"
                   >
                     <PlusIcon className="w-5 h-5" />
-                    Create New Listing
+                    Create New Offer
                   </Button>
                 </div>
                 {(profile as HotelProfileDetail).listings &&
@@ -2646,7 +2646,7 @@ function UserDetailContent() {
                             setListingToDelete(listing);
                           }}
                           className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-2 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                          title="Delete listing"
+                          title="Delete offer"
                         >
                           <TrashIcon className="w-4 h-4" />
                         </button>
@@ -2655,7 +2655,7 @@ function UserDetailContent() {
                   </div>
                 ) : (
                   <div className="text-center py-12">
-                    <p className="text-gray-500">No listings found</p>
+                    <p className="text-gray-500">No offers found</p>
                   </div>
                 )}
               </div>
@@ -2675,7 +2675,7 @@ function UserDetailContent() {
           )}
         </div>
 
-        {/* Listing Detail Modal */}
+        {/* Offer Detail Modal */}
         {selectedListing && (
           <Modal
             isOpen={!!selectedListing}
@@ -2683,7 +2683,7 @@ function UserDetailContent() {
               setSelectedListing(null);
               handleCancelEditListing();
             }}
-            title={editingListingId === "new" ? "Create New Listing" : "Listing Details"}
+            title={editingListingId === "new" ? "Create New Offer" : "Offer Details"}
             size="xl"
           >
             <div className="space-y-6">
@@ -2697,7 +2697,7 @@ function UserDetailContent() {
                     className="flex items-center gap-2"
                   >
                     <PencilIcon className="w-5 h-5" />
-                    Edit Listing
+                    Edit Offer
                   </Button>
                 </div>
               )}
@@ -2712,7 +2712,7 @@ function UserDetailContent() {
                   <p className="text-sm text-green-800">{listingSaveSuccess}</p>
                 </div>
               )}
-              {/* Listing Images */}
+              {/* Offer media */}
               <div className="border-t pt-6">
                 <label className="block text-sm font-medium text-gray-700 mb-4">
                   Property Photos
@@ -2841,7 +2841,7 @@ function UserDetailContent() {
                         onChange={(e) =>
                           setEditListingData((prev) => ({ ...prev, name: e.target.value }))
                         }
-                        placeholder="Listing name"
+                        placeholder="Offer title"
                       />
                     ) : (
                       <p className="mt-1 text-sm text-gray-900">{selectedListing.name}</p>
@@ -3631,7 +3631,7 @@ function UserDetailContent() {
                             ? "Creating..."
                             : "Saving..."
                           : editingListingId === "new"
-                            ? "Create Listing"
+                            ? "Create Offer"
                             : "Save Changes"}
                     </Button>
                   </>
@@ -3681,9 +3681,11 @@ function UserDetailContent() {
                     <li>Creator profile and all social media platforms</li>
                   )}
                   {userDetail.type === "hotel" && (
-                    <li>Hotel profile and all listings with their offerings and requirements</li>
+                    <li>
+                      Hotel profile and all collaboration offers with compensation and requirements
+                    </li>
                   )}
-                  <li>All associated S3 images (profile pictures, listing images, thumbnails)</li>
+                  <li>All associated S3 images (profile pictures, offer media, thumbnails)</li>
                   <li>All related records</li>
                 </ul>
               </div>
@@ -3718,7 +3720,7 @@ function UserDetailContent() {
           </Modal>
         )}
 
-        {/* Delete Listing Confirmation Modal */}
+        {/* Delete Offer Confirmation Modal */}
         {listingToDelete && (
           <Modal
             isOpen={!!listingToDelete}
@@ -3726,7 +3728,7 @@ function UserDetailContent() {
               setListingToDelete(null);
               setListingDeleteError("");
             }}
-            title="Delete Listing"
+            title="Delete Offer"
             size="md"
           >
             <div className="space-y-4">
@@ -3742,7 +3744,7 @@ function UserDetailContent() {
                 </p>
                 <ul className="list-disc list-inside text-sm text-gray-600 space-y-1 ml-4">
                   <li>
-                    Listing: <strong>{listingToDelete.name}</strong>
+                    Offer: <strong>{listingToDelete.name}</strong>
                   </li>
                   <li>All collaboration offerings and creator requirements</li>
                   <li>All associated images</li>
@@ -3773,7 +3775,7 @@ function UserDetailContent() {
                   disabled={deletingListing}
                   className="bg-red-600 hover:bg-red-700"
                 >
-                  {deletingListing ? "Deleting..." : "Delete Listing"}
+                  {deletingListing ? "Deleting..." : "Delete Offer"}
                 </Button>
               </div>
             </div>

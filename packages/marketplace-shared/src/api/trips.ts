@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { targetApiClient } from "./client";
 
 export const MARKETPLACE_TRIPS_CONTRACT_VERSION = "marketplace-trips-external.v1" as const;
 
@@ -100,32 +100,32 @@ export const marketplaceTripEndpoints = {
 } as const;
 
 export async function listMarketplaceTrips(): Promise<MarketplaceTripListResponse> {
-  return apiClient.get<MarketplaceTripListResponse>(marketplaceTripEndpoints.trips());
+  return targetApiClient.get<MarketplaceTripListResponse>(marketplaceTripEndpoints.trips());
 }
 
 export async function getMarketplaceTrip(tripId: string): Promise<MarketplaceTrip> {
-  return apiClient.get<MarketplaceTrip>(marketplaceTripEndpoints.trip(tripId));
+  return targetApiClient.get<MarketplaceTrip>(marketplaceTripEndpoints.trip(tripId));
 }
 
 export async function createMarketplaceTrip(
   request: CreateMarketplaceTripRequest,
 ): Promise<MarketplaceTrip> {
-  return apiClient.post<MarketplaceTrip>(marketplaceTripEndpoints.trips(), request);
+  return targetApiClient.post<MarketplaceTrip>(marketplaceTripEndpoints.trips(), request);
 }
 
 export async function updateMarketplaceTrip(
   tripId: string,
   request: UpdateMarketplaceTripRequest,
 ): Promise<MarketplaceTrip> {
-  return apiClient.put<MarketplaceTrip>(marketplaceTripEndpoints.trip(tripId), request);
+  return targetApiClient.put<MarketplaceTrip>(marketplaceTripEndpoints.trip(tripId), request);
 }
 
 export async function deleteMarketplaceTrip(tripId: string): Promise<void> {
-  return apiClient.delete<void>(marketplaceTripEndpoints.trip(tripId));
+  return targetApiClient.delete<void>(marketplaceTripEndpoints.trip(tripId));
 }
 
 export async function listMarketplaceExternalCollaborations(): Promise<MarketplaceExternalCollaborationListResponse> {
-  return apiClient.get<MarketplaceExternalCollaborationListResponse>(
+  return targetApiClient.get<MarketplaceExternalCollaborationListResponse>(
     marketplaceTripEndpoints.externalCollaborations(),
   );
 }
@@ -133,7 +133,7 @@ export async function listMarketplaceExternalCollaborations(): Promise<Marketpla
 export async function createMarketplaceExternalCollaboration(
   request: CreateMarketplaceExternalCollaborationRequest,
 ): Promise<MarketplaceExternalCollaboration> {
-  return apiClient.post<MarketplaceExternalCollaboration>(
+  return targetApiClient.post<MarketplaceExternalCollaboration>(
     marketplaceTripEndpoints.externalCollaborations(),
     request,
   );
@@ -143,7 +143,7 @@ export async function updateMarketplaceExternalCollaboration(
   externalCollaborationId: string,
   request: UpdateMarketplaceExternalCollaborationRequest,
 ): Promise<MarketplaceExternalCollaboration> {
-  return apiClient.put<MarketplaceExternalCollaboration>(
+  return targetApiClient.put<MarketplaceExternalCollaboration>(
     marketplaceTripEndpoints.externalCollaboration(externalCollaborationId),
     request,
   );
@@ -152,7 +152,7 @@ export async function updateMarketplaceExternalCollaboration(
 export async function deleteMarketplaceExternalCollaboration(
   externalCollaborationId: string,
 ): Promise<void> {
-  return apiClient.delete<void>(
+  return targetApiClient.delete<void>(
     marketplaceTripEndpoints.externalCollaboration(externalCollaborationId),
   );
 }

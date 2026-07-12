@@ -84,7 +84,7 @@ export function ListingViewCard({
           <HotelBadgeIcon active={isComplete} />
           <div className="flex-1">
             <h4 className="font-semibold text-gray-900 text-base">
-              {listing.name || `Property Listing ${index + 1}`}
+              {listing.name || `Collaboration Offer ${index + 1}`}
             </h4>
           </div>
           <div className="flex items-center gap-2">
@@ -95,7 +95,7 @@ export function ListingViewCard({
                 onEdit();
               }}
               className="p-1 rounded-md text-gray-600 hover:text-gray-700 hover:bg-gray-50 transition-colors"
-              title="Edit listing"
+              title="Edit offer"
             >
               <PencilIcon className="w-3.5 h-3.5" />
             </button>
@@ -107,7 +107,7 @@ export function ListingViewCard({
                   onDelete();
                 }}
                 className="p-1 rounded-md text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors"
-                title="Remove listing"
+                title="Remove offer"
               >
                 <XMarkIcon className="w-3.5 h-3.5" />
               </button>
@@ -134,7 +134,7 @@ export function ListingViewCard({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-base font-medium text-gray-900 mb-2">
-                      Listing Name
+                      Offer title
                     </label>
                     <div className="w-full px-4 py-3 rounded-lg border border-gray-200 bg-gray-50 text-base text-gray-900">
                       {listing.name || "-"}

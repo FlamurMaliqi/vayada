@@ -55,7 +55,7 @@ describe("marketplace collaboration read routes", () => {
         side: "creator",
         status: "pending",
         initiatedBy: "creator",
-        listingId: "listing_legacy_001",
+        offerId: "offer_001",
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -71,7 +71,7 @@ describe("marketplace collaboration read routes", () => {
         side: "creator",
         status: "pending",
         initiatedBy: "creator",
-        listingId: "listing_legacy_001",
+        offerId: "offer_001",
       },
     ]);
   });
@@ -161,7 +161,7 @@ describe("marketplace collaboration read routes", () => {
     });
   });
 
-  it("allows hotel-side collaboration reads with hotel profile and listing links", async () => {
+  it("allows hotel-side collaboration reads with hotel profile and offer links", async () => {
     const calls: string[] = [];
     const repository = createCollaborationRepository({
       async listConversations({ side }) {
@@ -181,8 +181,8 @@ describe("marketplace collaboration read routes", () => {
         },
         {
           product: "marketplace",
-          resourceType: "hotel_listing",
-          resourceId: "listing_legacy_001",
+          resourceType: "marketplace_offer",
+          resourceId: "offer_001",
           relationship: "operator",
         },
       ],
@@ -333,8 +333,8 @@ describe("marketplace collaboration read routes", () => {
       resources: [
         {
           product: "marketplace",
-          resourceType: "hotel_listing",
-          resourceId: "hotel_listing_001",
+          resourceType: "marketplace_offer",
+          resourceId: "offer_001",
           relationship: "operator",
         },
       ],
@@ -463,16 +463,16 @@ function collaborationRead(): MarketplaceCollaborationRead {
     contractVersion: MARKETPLACE_COLLABORATION_READS_CONTRACT_VERSION,
     authorizationMode: "creator_workspace_resource_link",
     collaborationId: "collab_001",
-    listingId: "listing_legacy_001",
+    offerId: "offer_001",
     creatorId: "creator_legacy_001",
     hotelProfileId: "hotel_profile_001",
     side: "creator",
     initiatorSide: "creator",
     isInitiator: true,
     status: "pending",
-    collaborationType: "affiliate",
-    listingName: "Alpenrose launch",
-    listingLocation: "Tyrol, Austria",
+    compensationType: "free_stay",
+    offerTitle: "Alpenrose launch",
+    hotelLocation: "Tyrol, Austria",
     creator: {
       side: "creator",
       organizationId: "org_creator",
@@ -493,7 +493,8 @@ function collaborationRead(): MarketplaceCollaborationRead {
       paidAmount: null,
       currency: "EUR",
       discountPercentage: null,
-      creatorFee: "12.00",
+      affiliateEnabled: true,
+      affiliateCommissionPercentage: "12.00",
       travelDateFrom: null,
       travelDateTo: null,
       preferredDateFrom: null,

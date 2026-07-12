@@ -32,7 +32,7 @@ export type ResourceType =
   | "pms_hotel"
   | "pms_property"
   | "hotel_profile"
-  | "hotel_listing"
+  | "marketplace_offer"
   | "creator_profile"
   | "affiliate"
   | "payout_account";

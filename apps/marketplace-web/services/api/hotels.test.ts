@@ -13,7 +13,7 @@ vi.mock("./client", () => ({
 }));
 
 vi.mock("@vayada/marketplace-shared/api/discovery", () => ({
-  getAllMarketplaceListings: vi.fn(),
+  getAllMarketplaceOffers: vi.fn(),
 }));
 
 vi.mock("@vayada/marketplace-shared/api/platformMedia", () => ({
@@ -32,7 +32,7 @@ describe("hotelService.getProfileStatus", () => {
       profile_complete: true,
       missing_fields: [],
       has_defaults: { location: false },
-      missing_listings: false,
+      missing_offers: false,
       completion_steps: [],
     };
     mocks.get.mockResolvedValue(profileStatus);

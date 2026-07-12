@@ -291,8 +291,8 @@ describe("marketplace trips dark routes", () => {
       linkedResources: [
         {
           product: "marketplace",
-          resourceType: "hotel_listing",
-          resourceId: "hotel_listing_alpenrose",
+          resourceType: "marketplace_offer",
+          resourceId: "offer_alpenrose",
           relationship: "owner",
           status: "active",
         },

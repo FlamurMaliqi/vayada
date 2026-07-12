@@ -74,20 +74,28 @@ function toLegacyCollaboration(collaboration: MarketplaceAdminCollaboration): Co
     creator_profile_picture: collaboration.creator.avatarUrl ?? undefined,
     hotel_id: collaboration.hotelProfileId,
     hotel_name: collaboration.hotel.displayName,
-    listing_id: collaboration.listingId,
-    listing_name: collaboration.listingName,
-    listing_location: collaboration.listingLocation ?? "",
+    listing_id: collaboration.offerId,
+    listing_name: collaboration.offerTitle,
+    listing_location: collaboration.hotelLocation ?? "",
     status:
       collaboration.status === "rejected"
         ? "declined"
         : collaboration.status === "active"
           ? "accepted"
           : collaboration.status,
-    collaboration_type: toLegacyCollaborationType(collaboration.collaborationType),
+    collaboration_type: toLegacyCollaborationType(
+      collaboration.compensationType,
+      collaboration.terms.affiliateEnabled,
+    ),
     paid_amount:
       collaboration.terms.paidAmount === null ? undefined : Number(collaboration.terms.paidAmount),
     currency: collaboration.terms.currency ?? undefined,
     discount_percentage: collaboration.terms.discountPercentage ?? undefined,
+    affiliate_enabled: collaboration.terms.affiliateEnabled,
+    affiliate_commission_percentage:
+      collaboration.terms.affiliateCommissionPercentage === null
+        ? undefined
+        : Number(collaboration.terms.affiliateCommissionPercentage),
     free_stay_min_nights: collaboration.terms.freeStayMinNights ?? undefined,
     free_stay_max_nights: collaboration.terms.freeStayMaxNights ?? undefined,
     travel_date_from: collaboration.terms.travelDateFrom ?? undefined,
@@ -107,18 +115,20 @@ function toLegacyCollaboration(collaboration: MarketplaceAdminCollaboration): Co
 }
 
 function toLegacyCollaborationType(
-  type: MarketplaceAdminCollaboration["collaborationType"],
+  type: MarketplaceAdminCollaboration["compensationType"],
+  affiliateEnabled: boolean,
 ): Collaboration["collaboration_type"] {
   switch (type) {
     case "paid":
       return "Paid";
     case "discount":
       return "Discount";
-    case "affiliate":
-      return "Affiliate";
+    case "custom":
+      return "Custom";
     case "free_stay":
-    default:
       return "Free Stay";
+    default:
+      return affiliateEnabled ? "Affiliate" : undefined;
   }
 }
 

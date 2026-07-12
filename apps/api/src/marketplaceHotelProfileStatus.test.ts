@@ -45,7 +45,7 @@ describe("marketplace hotel profile status route", () => {
             profile_complete: true,
             missing_fields: [],
             has_defaults: { location: false },
-            missing_listings: false,
+            missing_offers: false,
             completion_steps: [],
           };
         },
@@ -60,7 +60,7 @@ describe("marketplace hotel profile status route", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body.profile_complete).toBe(true);
-    expect(response.body.missing_listings).toBe(false);
+    expect(response.body.missing_offers).toBe(false);
     expect(calls).toEqual([`org_hotel_group:${hotelProfileResourceId}`]);
   });
 
@@ -83,7 +83,7 @@ describe("marketplace hotel profile status route", () => {
     expect(response.body).toMatchObject({
       profile_complete: false,
       missing_fields: ["profile"],
-      missing_listings: true,
+      missing_offers: true,
     });
   });
 
@@ -157,7 +157,7 @@ describe("marketplace hotel profile status route", () => {
             profile_complete: true,
             missing_fields: [],
             has_defaults: { location: false },
-            missing_listings: false,
+            missing_offers: false,
             completion_steps: [],
           };
         },
@@ -176,7 +176,7 @@ describe("marketplace hotel profile status route", () => {
 
   it("queries profile status inside the authorized profile resource scope", async () => {
     const query = vi.fn(async (_text: string, _values?: readonly unknown[]) => ({
-      rows: [{ profileComplete: true, hasListings: true }],
+      rows: [{ profileComplete: true, hasOffers: true }],
     }));
     const pool = {
       query: async <T extends QueryResultRow = QueryResultRow>(
@@ -200,7 +200,7 @@ describe("marketplace hotel profile status route", () => {
       }),
     ).resolves.toMatchObject({
       profile_complete: true,
-      missing_listings: false,
+      missing_offers: false,
     });
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining("profile.property_id::text"), [

@@ -2,22 +2,23 @@
   "contractVersion": "marketplace-discovery.v1",
   "cases": [
     {
-      "caseId": "listings-populated",
-      "description": "Two public listings with offerings and creator requirements.",
-      "request": { "path": "/api/marketplace/listings", "query": {} },
+      "caseId": "offers-populated",
+      "description": "Two public offers with deliverables, compensation options, creator requirements, and canonical hotel facts.",
+      "request": { "path": "/api/marketplace/offers", "query": {} },
       "expected": {
         "status": 200,
         "itemCount": 2,
         "mustInclude": [
-          "items[0].listingId",
-          "items[0].publicId",
-          "items[0].canonicalSlug",
-          "items[0].displayName",
-          "items[0].listingTitle",
-          "items[0].location.displayText",
-          "items[0].coverImageUrl",
-          "items[0].imageUrls",
-          "items[0].offerings[0].collaborationType",
+          "items[0].offerId",
+          "items[0].offerPublicId",
+          "items[0].offerTitle",
+          "items[0].hotelName",
+          "items[0].hotelSlug",
+          "items[0].hotelLocation.displayText",
+          "items[0].hotelCoverImageUrl",
+          "items[0].hotelImageUrls",
+          "items[0].deliverables[0].deliverableType",
+          "items[0].compensationOptions[0].compensationType",
           "items[0].creatorRequirements.platforms",
           "items[0].createdAt",
           "items[0].projectedAt",
@@ -31,10 +32,15 @@
           "hotel_profile_id",
           "status"
         ],
-        "idContinuity": "items[].listingId equals the legacy hotel_listings.id seeded in the fixture",
+        "idContinuity": "items[].offerId equals marketplace.marketplace_offers.id",
         "enums": {
-          "items[].offerings[].collaborationType": ["free_stay", "paid", "discount", "affiliate"],
-          "items[].offerings[].platforms[]": [
+          "items[].compensationOptions[].compensationType": [
+            "free_stay",
+            "paid",
+            "discount",
+            "affiliate"
+          ],
+          "items[].compensationOptions[].platforms[]": [
             "instagram",
             "tiktok",
             "youtube",
@@ -47,25 +53,25 @@
       }
     },
     {
-      "caseId": "listings-excludes-non-public",
-      "description": "Non-public visibility rows and an incomplete-profile hotel's listing are absent.",
-      "request": { "path": "/api/marketplace/listings", "query": {} },
-      "fixtureNotes": "Seed one row per non-public visibility_status plus one listing whose hotel profile is incomplete (projects to non-public), alongside public rows.",
+      "caseId": "offers-excludes-non-public",
+      "description": "Non-public offer rows and offers for incomplete hotel profiles are absent.",
+      "request": { "path": "/api/marketplace/offers", "query": {} },
+      "fixtureNotes": "Seed one row per non-public visibility_status plus one offer whose hotel profile is incomplete, alongside public rows.",
       "expected": {
         "status": 200,
         "onlyVisibilityStatus": "public",
-        "absentListingFixtures": [
-          "listing-private",
-          "listing-unlisted",
-          "listing-disabled",
-          "listing-incomplete-profile-hotel"
+        "absentOfferFixtures": [
+          "offer-private",
+          "offer-unlisted",
+          "offer-disabled",
+          "offer-incomplete-profile-hotel"
         ]
       }
     },
     {
-      "caseId": "listings-empty",
-      "description": "No public listings exist.",
-      "request": { "path": "/api/marketplace/listings", "query": {} },
+      "caseId": "offers-empty",
+      "description": "No public offers exist.",
+      "request": { "path": "/api/marketplace/offers", "query": {} },
       "expected": {
         "status": 200,
         "itemCount": 0,
@@ -73,25 +79,25 @@
       }
     },
     {
-      "caseId": "listings-pagination",
+      "caseId": "offers-pagination",
       "description": "limit/offset slice the documented ordering and total reflects the full count.",
       "request": {
-        "path": "/api/marketplace/listings",
+        "path": "/api/marketplace/offers",
         "query": { "limit": 1, "offset": 1 }
       },
-      "fixtureNotes": "Seed three public listings with distinct created_at values.",
+      "fixtureNotes": "Seed three public offers with distinct created_at values.",
       "expected": {
         "status": 200,
         "itemCount": 1,
         "pagination": { "limit": 1, "offset": 1, "total": 3 },
-        "stableOrdering": "createdAt DESC, listingId ASC"
+        "stableOrdering": "createdAt DESC, offerId ASC"
       }
     },
     {
-      "caseId": "listings-clamps-out-of-range",
+      "caseId": "offers-clamps-out-of-range",
       "description": "Out-of-range numeric pagination values are clamped, not rejected.",
       "request": {
-        "path": "/api/marketplace/listings",
+        "path": "/api/marketplace/offers",
         "query": { "limit": 999, "offset": -5 }
       },
       "expected": {
@@ -101,10 +107,10 @@
       }
     },
     {
-      "caseId": "listings-invalid-query",
+      "caseId": "offers-invalid-query",
       "description": "Non-numeric, non-integer, and duplicated pagination parameters are rejected; empty values are treated as absent.",
       "request": {
-        "path": "/api/marketplace/listings",
+        "path": "/api/marketplace/offers",
         "query": { "limit": "abc" }
       },
       "alsoRejects": ["limit=1.5", "limit=1&limit=2", "offset=1&offset=2"],

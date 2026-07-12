@@ -93,7 +93,7 @@ export function HotelProfileForm({
           <HotelBasicInfoStep form={form} onFormChange={onFormChange} error={error} />
         )}
 
-        {/* Step 2: Property Listings Section */}
+        {/* Step 2: Collaboration Offers Section */}
         {currentStep === 2 && (
           <HotelListingsStep
             listings={listings}

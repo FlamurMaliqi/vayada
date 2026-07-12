@@ -20,6 +20,11 @@ const legacyLocalHosts = new Set([
 const legacyLocalPorts = new Set(["8000", "8001", "8002"]);
 
 const surfaceRules = {
+  "marketplace-web-offer-discovery": [
+    legacyProductionHostRule(),
+    legacyLocalServiceRule(),
+    pathRule("/api/marketplace/listings", "retired Marketplace listings route"),
+  ],
   "vayada-admin-marketplace-preview": [
     legacyProductionHostRule(),
     legacyLocalServiceRule(),

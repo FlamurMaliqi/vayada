@@ -236,8 +236,12 @@ export type ExpectedTarget = {
       creatorRatingId: string;
       compensationOptionFreeStayId: string;
       compensationOptionAffiliateId: string;
+      compensationOptionPaidId: string;
+      compensationOptionDiscountId: string;
       requirementId: string;
       collaborationId: string;
+      paidCollaborationId: string;
+      discountCollaborationId: string;
       deliverableApprovedId: string;
       deliverableSubmittedId: string;
       creatorChatMessageId: string;
