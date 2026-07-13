@@ -48,64 +48,60 @@ export function CreatorPlatformsStep({
 }: CreatorPlatformsStepProps) {
   return (
     <div className="space-y-6">
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-11 h-11 bg-primary-50 rounded-xl flex items-center justify-center shadow-sm">
-            <LinkIcon className="w-5 h-5 text-primary-600" />
-          </div>
-          <div className="flex-1">
-            <h3 className="text-xl font-bold text-gray-900">Connect Your Platforms</h3>
-            <p className="text-sm text-gray-600">
-              Link your accounts and define your audience per platform
-            </p>
-          </div>
+      <div className="flex items-start gap-4">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
+          <LinkIcon className="h-5 w-5" aria-hidden="true" />
         </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
+            Audience & platforms
+          </p>
+          <h2 className="mt-2 text-2xl font-semibold text-gray-950">Show hotels your reach</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-600">
+            Add at least one active account. Audience details help hotels understand whether your
+            community fits their guests.
+          </p>
+        </div>
+      </div>
 
-        <p className="text-sm text-gray-700">
-          Add at least one platform with audience demographics to help match you with the right
-          properties.
+      <div className="space-y-3">
+        {PLATFORM_OPTIONS.map((platformName) => (
+          <PlatformCard
+            key={platformName}
+            platformName={platformName}
+            platforms={platforms}
+            allPlatforms={platforms}
+            expandedPlatforms={expandedPlatforms}
+            platformCountryInputs={platformCountryInputs}
+            onAddPlatform={onAddPlatform}
+            onRemovePlatform={onRemovePlatform}
+            onUpdatePlatform={onUpdatePlatform}
+            onTogglePlatformExpanded={onTogglePlatformExpanded}
+            onCountryInputChange={onCountryInputChange}
+            onAddCountry={onAddCountry}
+            onRemoveCountry={onRemoveCountry}
+            onUpdateCountryPercentage={onUpdateCountryPercentage}
+            onToggleAgeGroup={onToggleAgeGroup}
+            onUpdateGenderSplit={onUpdateGenderSplit}
+            getAvailableCountries={getAvailableCountries}
+          />
+        ))}
+      </div>
+
+      {platforms.length === 0 && (
+        <p
+          role="status"
+          className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800"
+        >
+          Add at least one platform to complete your profile.
         </p>
+      )}
 
-        {/* Platform Cards Grid */}
-        <div className="space-y-3 mt-4">
-          {PLATFORM_OPTIONS.map((platformName) => (
-            <PlatformCard
-              key={platformName}
-              platformName={platformName}
-              platforms={platforms}
-              allPlatforms={platforms}
-              expandedPlatforms={expandedPlatforms}
-              platformCountryInputs={platformCountryInputs}
-              onAddPlatform={onAddPlatform}
-              onRemovePlatform={onRemovePlatform}
-              onUpdatePlatform={onUpdatePlatform}
-              onTogglePlatformExpanded={onTogglePlatformExpanded}
-              onCountryInputChange={onCountryInputChange}
-              onAddCountry={onAddCountry}
-              onRemoveCountry={onRemoveCountry}
-              onUpdateCountryPercentage={onUpdateCountryPercentage}
-              onToggleAgeGroup={onToggleAgeGroup}
-              onUpdateGenderSplit={onUpdateGenderSplit}
-              getAvailableCountries={getAvailableCountries}
-            />
-          ))}
-        </div>
-
-        {/* Error Message */}
-        {platforms.length === 0 && (
-          <p className="text-center text-orange-700 font-medium text-sm mt-4">
-            Connect at least one platform to complete your profile
-          </p>
-        )}
-
-        {/* Info Box */}
-        <div className="mt-6 flex items-center gap-3 rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-700">
-          <InformationCircleIcon className="w-5 h-5 text-primary-600" />
-          <p className="leading-snug">
-            All data should be verifiable via platform insights (e.g., Instagram Insights, YouTube
-            Analytics).
-          </p>
-        </div>
+      <div className="flex items-start gap-3 rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+        <InformationCircleIcon className="mt-0.5 h-5 w-5 shrink-0 text-primary-600" />
+        <p className="leading-6">
+          Use numbers you can verify in tools such as Instagram Insights or YouTube Analytics.
+        </p>
       </div>
     </div>
   );

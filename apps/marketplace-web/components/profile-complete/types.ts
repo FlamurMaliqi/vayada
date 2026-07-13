@@ -23,7 +23,6 @@ export interface ProfileCompleteContextProps {
 export interface StepIndicatorProps {
   steps: string[];
   currentStep: number;
-  onStepClick?: (step: number) => void;
 }
 
 export interface FormNavigationButtonsProps {
@@ -32,7 +31,6 @@ export interface FormNavigationButtonsProps {
   submitting: boolean;
   canProceed: boolean;
   onPrevious: () => void;
-  onNext: () => void;
   submitLabel?: string;
 }
 
@@ -44,10 +42,6 @@ export interface ProfileCompletionScreenProps {
   userType: UserType;
   onGoHome: () => void;
   onEditProfile: () => void;
-}
-
-export interface LoadingScreenProps {
-  // No props needed for now
 }
 
 // Re-export types for convenience

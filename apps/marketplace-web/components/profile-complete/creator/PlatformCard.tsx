@@ -1,7 +1,6 @@
 "use client";
 
 import { Input } from "@/components/ui";
-import { PLATFORM_OPTIONS } from "@/lib/constants";
 import type { PlatformFormData } from "@/lib/types";
 import { PlatformDemographics } from "./PlatformDemographics";
 
@@ -91,19 +90,19 @@ export function PlatformCard({
   const hasPlatforms = platformsOfThisType.length > 0;
 
   return (
-    <div className="border border-gray-200 rounded-2xl overflow-hidden bg-white shadow-[0_4px_14px_rgba(0,0,0,0.04)]">
+    <div className="overflow-hidden rounded-3xl border border-gray-100 bg-white transition-colors hover:border-gray-200">
       {/* Platform Header */}
-      <div className="flex items-center justify-between gap-4 p-4">
+      <div className="flex items-center justify-between gap-4 p-4 sm:p-5">
         <div className="flex items-center gap-3">
           <div
-            className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-sm text-white bg-gradient-to-br ${platformColors[platformName] || "from-gray-500 to-gray-400"}`}
+            className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br text-white ${platformColors[platformName] || "from-gray-500 to-gray-400"}`}
           >
             <PlatformIcon name={platformName} />
           </div>
           <div>
-            <p className="font-bold text-gray-900 text-lg">{platformName}</p>
+            <p className="text-base font-semibold text-gray-950">{platformName}</p>
             {hasPlatforms && (
-              <p className="text-xs text-gray-500 mt-0.5">
+              <p className="mt-0.5 text-xs text-gray-500">
                 {platformsOfThisType.length}{" "}
                 {platformsOfThisType.length === 1 ? "account" : "accounts"} added
               </p>
@@ -114,15 +113,16 @@ export function PlatformCard({
         <button
           type="button"
           onClick={() => onAddPlatform(platformName)}
-          className="px-4 py-2 border border-primary-200 text-primary-600 rounded-lg hover:bg-primary-50 transition-colors text-sm font-medium"
+          aria-label={`Add ${platformName} account`}
+          className="rounded-full border border-primary-200 px-4 py-2 text-sm font-semibold text-primary-700 transition-colors hover:bg-primary-50"
         >
-          Add Account
+          Add account
         </button>
       </div>
 
       {/* Show all platforms of this type */}
       {platformsOfThisType.length > 0 && (
-        <div className="border-t border-gray-100 divide-y divide-gray-100">
+        <div className="divide-y divide-gray-100 border-t border-gray-100 bg-gray-50/50">
           {platformsOfThisType.map((platform, idx) => {
             // Find the actual index in allPlatforms
             const allIndices = allPlatforms
@@ -131,15 +131,15 @@ export function PlatformCard({
             const actualIndex = allIndices[idx];
 
             return (
-              <div key={`${platformName}-${idx}`} className="px-4 md:px-6 pb-5 pt-4">
+              <div key={`${platformName}-${idx}`} className="px-4 pb-5 pt-4 md:px-6">
                 {/* Account Header */}
-                <div className="flex items-center justify-between mb-4">
+                <div className="mb-4 flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-semibold text-gray-700">
+                    <p className="text-sm font-semibold text-gray-900">
                       {platform.handle || `Account ${idx + 1}`}
                     </p>
                     {platform.handle && platform.followers && (
-                      <p className="text-xs text-gray-500 mt-0.5">{platform.followers} followers</p>
+                      <p className="mt-0.5 text-xs text-gray-500">{platform.followers} followers</p>
                     )}
                   </div>
                   <button
@@ -154,14 +154,15 @@ export function PlatformCard({
                         onRemovePlatform(platformToRemove.index);
                       }
                     }}
-                    className="px-3 py-1.5 border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors text-sm font-medium"
+                    aria-label={`Remove ${platform.handle || `account ${idx + 1}`} from ${platformName}`}
+                    className="rounded-full border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700 transition-colors hover:bg-red-50"
                   >
                     Remove
                   </button>
                 </div>
 
                 {/* Account Form */}
-                <div className="space-y-3 mb-4">
+                <div className="mb-4 space-y-3">
                   <Input
                     label="Username"
                     type="text"
@@ -169,9 +170,9 @@ export function PlatformCard({
                     onChange={(e) => onUpdatePlatform(actualIndex, "handle", e.target.value)}
                     placeholder="@ username"
                     required
-                    className="bg-gray-50"
+                    className="rounded-xl border-gray-200 bg-white"
                   />
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                     <Input
                       label="Followers"
                       type="number"
@@ -186,7 +187,7 @@ export function PlatformCard({
                       required
                       placeholder="0"
                       min={1}
-                      className="bg-gray-50"
+                      className="rounded-xl border-gray-200 bg-white"
                     />
                     <Input
                       label="Engagement Rate (%)"
@@ -205,14 +206,13 @@ export function PlatformCard({
                       min={0.01}
                       max={100}
                       step="0.01"
-                      className="bg-gray-50"
+                      className="rounded-xl border-gray-200 bg-white"
                     />
                   </div>
                 </div>
 
                 <PlatformDemographics
                   platform={allPlatforms[actualIndex]}
-                  platformIndex={actualIndex}
                   isExpanded={expandedPlatforms.has(actualIndex)}
                   onToggleExpanded={() => onTogglePlatformExpanded(actualIndex)}
                   countryInput={platformCountryInputs[actualIndex] || ""}
