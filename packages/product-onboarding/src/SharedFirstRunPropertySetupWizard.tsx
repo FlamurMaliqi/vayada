@@ -26,7 +26,6 @@ import {
   canOpenMarketplaceProfileTools,
   isSharedHotelSetupProductSelectable,
   resolveSharedFirstRunSetupView,
-  selectedProductsForProperty,
   type SharedFirstRunSetupViewModel,
   type SharedHotelSetupEntryProduct,
   type SharedHotelSetupProduct,
@@ -54,9 +53,11 @@ export type SharedFirstRunPropertySetupWizardProps = {
   api: SharedHotelSetupApi;
   entryProduct: SharedHotelSetupEntryProduct;
   initialSelectedProducts?: SharedHotelSetupProduct[];
+  initialPropertyId?: string | null;
   returnTo?: string | null;
   initialAddProperty?: boolean;
   embedded?: boolean;
+  autoContinueToProduct?: boolean;
   productLabels?: Partial<ProductLabels>;
   onProductContinue: (input: SharedFirstRunProductContinueInput) => void;
 };
@@ -116,8 +117,8 @@ const SETUP_STEPS: ReadonlyArray<{
   icon: IconComponent;
 }> = [
   { label: "Property", description: "Choose where setup applies", icon: HotelIcon },
-  { label: "Basics", description: "Profile, location, and hero image", icon: SparklesIcon },
-  { label: "Products", description: "Pick what this property uses", icon: Squares2X2Icon },
+  { label: "Basics", description: "Profile and location", icon: SparklesIcon },
+  { label: "Systems", description: "Pick account systems", icon: Squares2X2Icon },
   { label: "Launch", description: "Open the right workspace", icon: RocketLaunchIcon },
 ];
 
@@ -155,9 +156,11 @@ export default function SharedFirstRunPropertySetupWizard({
   api,
   entryProduct,
   initialSelectedProducts = EMPTY_SELECTED_PRODUCTS,
+  initialPropertyId = null,
   returnTo = null,
   initialAddProperty = false,
   embedded = false,
+  autoContinueToProduct = false,
   productLabels,
   onProductContinue,
 }: SharedFirstRunPropertySetupWizardProps) {
@@ -170,22 +173,33 @@ export default function SharedFirstRunPropertySetupWizard({
   const [profileReloadToken, setProfileReloadToken] = useState(0);
   const [loadedProfile, setLoadedProfile] = useState<SharedPropertyProfile | null>(null);
   const [draft, setDraft] = useState<ProfileDraft>(EMPTY_DRAFT);
-  const [selectedProducts, setSelectedProducts] = useState<SharedHotelSetupProduct[]>([
-    entryProduct,
-  ]);
+  const [selectedProducts, setSelectedProducts] = useState<SharedHotelSetupProduct[]>(() =>
+    uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const seededInitialSelectionPropertyIds = useRef<Set<string>>(new Set());
+  const automaticContinueKey = useRef<string | null>(null);
 
   const view = useMemo(
     () => resolveSharedFirstRunSetupView(status, { forceCreateProperty }),
     [forceCreateProperty, status],
   );
+  const productContinueInput = useMemo(
+    () => buildProductContinueInput(view, status?.entry.returnTo ?? returnTo),
+    [returnTo, status?.entry.returnTo, view],
+  );
+  const productContinueBlocked = isProductContinueBlocked(view);
 
   useEffect(() => {
     setForceCreateProperty(initialAddProperty);
   }, [initialAddProperty]);
+
+  useEffect(() => {
+    setSelectedProducts(uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]));
+    seededInitialSelectionPropertyIds.current.clear();
+  }, [entryProduct, initialSelectedProducts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,7 +207,7 @@ export default function SharedFirstRunPropertySetupWizard({
     setError("");
 
     api
-      .getStatus({ entryProduct, returnTo })
+      .getStatus({ entryProduct, returnTo, propertyId: initialPropertyId })
       .then((nextStatus) => {
         if (cancelled) return;
         setStatus(nextStatus);
@@ -209,7 +223,7 @@ export default function SharedFirstRunPropertySetupWizard({
     return () => {
       cancelled = true;
     };
-  }, [api, entryProduct, returnTo]);
+  }, [api, entryProduct, initialPropertyId, returnTo]);
 
   useEffect(() => {
     const propertyId = view.profileMode === "update" ? view.selectedPropertyId : null;
@@ -245,15 +259,15 @@ export default function SharedFirstRunPropertySetupWizard({
     return () => {
       cancelled = true;
     };
-  }, [api, profileReloadToken, view.profileMode, view.selectedPropertyId]);
+  }, [api, profileReloadToken, status, view.profileMode, view.selectedPropertyId]);
 
   useEffect(() => {
-    if (view.screen !== "product_selection" || !view.selectedPropertyId) return;
+    if (!status || view.screen !== "product_selection" || !view.selectedPropertyId) return;
     if (seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) return;
 
-    const nextSelectedProducts = selectedProductsForProperty(view.selectedProperty, entryProduct);
+    const nextSelectedProducts = [...status.hotelGroup.selectedProducts];
     seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
-    for (const product of initialSelectedProducts) {
+    for (const product of [entryProduct, ...initialSelectedProducts]) {
       if (
         !nextSelectedProducts.includes(product) &&
         isSharedHotelSetupProductSelectable(view.selectedProperty, product)
@@ -265,10 +279,19 @@ export default function SharedFirstRunPropertySetupWizard({
   }, [
     entryProduct,
     initialSelectedProducts,
+    status?.hotelGroup.selectedProducts,
     view.screen,
     view.selectedProperty,
     view.selectedPropertyId,
   ]);
+
+  useEffect(() => {
+    if (!autoContinueToProduct || !productContinueInput || productContinueBlocked) return;
+    const key = `${productContinueInput.action}:${productContinueInput.product}:${productContinueInput.propertyId}`;
+    if (automaticContinueKey.current === key) return;
+    automaticContinueKey.current = key;
+    onProductContinue(productContinueInput);
+  }, [autoContinueToProduct, onProductContinue, productContinueBlocked, productContinueInput]);
 
   const reloadStatus = async (propertyId?: string | null) => {
     const nextStatus = await api.getStatus({ entryProduct, returnTo, propertyId });
@@ -325,10 +348,7 @@ export default function SharedFirstRunPropertySetupWizard({
     setError("");
     setSaving(true);
     try {
-      const selectableProducts = selectedProducts.filter((product) =>
-        isSharedHotelSetupProductSelectable(view.selectedProperty, product),
-      );
-      await api.saveProductSelection(view.selectedPropertyId, selectableProducts);
+      await api.saveAccountProductSelection(selectedProducts);
       await reloadStatus(view.selectedPropertyId);
     } catch (err) {
       setError(errorMessage(err));
@@ -338,16 +358,7 @@ export default function SharedFirstRunPropertySetupWizard({
   };
 
   const handleContinueProduct = () => {
-    if (!view.selectedPropertyId || !view.product) return;
-    const activation = view.selectedProperty?.products[view.product] ?? null;
-    onProductContinue({
-      product: view.product,
-      productStatus: activation?.status ?? null,
-      propertyId: view.selectedPropertyId,
-      missingSteps: activation?.missingSteps ?? [],
-      returnTo: status?.entry.returnTo ?? returnTo,
-      action: view.screen === "enter_product" ? "enter_product" : "complete_product_activation",
-    });
+    if (productContinueInput) onProductContinue(productContinueInput);
   };
 
   if (loading || !status) {
@@ -403,7 +414,6 @@ export default function SharedFirstRunPropertySetupWizard({
           mode={view.profileMode ?? "create"}
           loading={profileLoading}
           saving={saving}
-          selectedProperty={view.selectedProperty}
           fieldErrors={fieldErrors}
           onChange={setDraft}
           onCancel={
@@ -433,7 +443,13 @@ export default function SharedFirstRunPropertySetupWizard({
       )}
 
       {(view.screen === "product_activation" || view.screen === "enter_product") && (
-        <ProductContinue labels={labels} view={view} onContinue={handleContinueProduct} />
+        <>
+          {autoContinueToProduct && productContinueInput && !productContinueBlocked ? (
+            <ProductRedirecting labels={labels} product={productContinueInput.product} />
+          ) : (
+            <ProductContinue labels={labels} view={view} onContinue={handleContinueProduct} />
+          )}
+        </>
       )}
     </WizardShell>
   );
@@ -469,28 +485,29 @@ function WizardShell({
 
   if (embedded) {
     return (
-      <section className="min-w-0 overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]">
-        <div className="border-b border-gray-100 px-5 py-6 sm:px-7">
+      <section className="min-w-0">
+        <div className="mb-4 px-1 sm:px-2">
           <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
             {status?.hotelGroup.displayName ?? "Hotel setup"}
           </p>
-          <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-gray-950">{title}</h2>
+              <h2 className="text-lg font-semibold text-gray-950">{title}</h2>
               <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>
             </div>
             <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
               Step {progress} of {SETUP_STEPS.length}
             </span>
           </div>
-          <SetupProgress progress={progress} compact />
         </div>
         {loading ? (
-          <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
-            <LoadingSpinner label="Loading setup" />
+          <div className="overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]">
+            <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
+              <LoadingSpinner label="Loading setup" />
+            </div>
           </div>
         ) : (
-          <div className="p-5 sm:p-7">{children}</div>
+          <div className="min-w-0">{children}</div>
         )}
       </section>
     );
@@ -540,12 +557,9 @@ function WizardShell({
   );
 }
 
-function SetupProgress({ progress, compact = false }: { progress: number; compact?: boolean }) {
+function SetupProgress({ progress }: { progress: number }) {
   return (
-    <ol
-      className={`grid gap-2 ${compact ? "mt-5 sm:grid-cols-4" : "sm:grid-cols-4"}`}
-      aria-label="Property setup progress"
-    >
+    <ol className="grid gap-2 sm:grid-cols-4" aria-label="Property setup progress">
       {SETUP_STEPS.map((step, index) => {
         const stepNumber = index + 1;
         const complete = stepNumber < progress;
@@ -687,7 +701,6 @@ function ProfileForm({
   mode,
   loading,
   saving,
-  selectedProperty,
   fieldErrors,
   onChange,
   onCancel,
@@ -697,7 +710,6 @@ function ProfileForm({
   mode: "create" | "update";
   loading: boolean;
   saving: boolean;
-  selectedProperty: SharedSetupProperty | null;
   fieldErrors: Record<string, string[]>;
   onChange: (draft: ProfileDraft) => void;
   onCancel?: () => void;
@@ -717,13 +729,6 @@ function ProfileForm({
   const showRawLocation = Boolean(
     draft.rawMarketplaceLocation && !draft.city.trim() && !draft.countryCode.trim(),
   );
-  const hasAdvancedLocationErrors = Boolean(
-    fieldErrors["location.region"]?.[0] ||
-    fieldErrors["location.timezone"]?.[0] ||
-    fieldErrors["location.streetAddress"]?.[0] ||
-    fieldErrors["location.postalCode"]?.[0],
-  );
-  const hasAdvancedDescriptionErrors = Boolean(fieldErrors.longDescription?.[0]);
 
   return (
     <form
@@ -732,93 +737,50 @@ function ProfileForm({
         event.preventDefault();
         onSave();
       }}
-      className="space-y-6"
+      className="mx-auto max-w-2xl space-y-4"
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-950">Property details</h2>
-          <p className="mt-1 max-w-2xl text-sm text-gray-500">
-            Start with the details guests, staff, and creators will recognize.
+      <section className="rounded-2xl bg-white p-5 text-left shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 ring-gray-200 sm:p-6">
+        <div className="mb-4">
+          <h3 className="text-base font-semibold text-gray-950">
+            {mode === "create" ? "Hotel basics" : "Complete hotel basics"}
+          </h3>
+          <p className="mt-1 text-sm text-gray-500">
+            This identifies the hotel across every enabled Vayada system.
           </p>
         </div>
-        {selectedProperty && (
-          <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
-            {selectedProperty.sharedProfile.completionPercent}% complete
-          </span>
-        )}
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <TextField
-          label="Property name"
-          value={draft.displayName}
-          placeholder="Alpenrose Munich"
-          helper="Use the name staff and guests recognize."
-          required
-          error={fieldErrors.displayName?.[0]}
-          onChange={(value) => setField("displayName", value)}
-        />
-        <TextField
-          label="Website"
-          type="url"
-          value={draft.website}
-          placeholder="https://alpenrose.example"
-          helper="Used by guest and creator-facing products."
-          required
-          error={fieldErrors.website?.[0]}
-          onChange={(value) => setField("website", value)}
-        />
-        <TextField
-          label="Phone"
-          value={draft.phone}
-          placeholder="+49 89 123456"
-          helper="Shown where products need a contact number."
-          required
-          error={fieldErrors.phone?.[0]}
-          onChange={(value) => setField("phone", value)}
-        />
-        <TextField
-          label="City"
-          value={draft.city}
-          placeholder="Munich"
-          helper="City or country code is enough to continue."
-          requirementLabel="One required"
-          error={fieldErrors["location.city"]?.[0]}
-          onChange={(value) => setField("city", value)}
-        />
-        <TextField
-          label="Country code"
-          value={draft.countryCode}
-          placeholder="DE"
-          helper="Two-letter ISO code."
-          requirementLabel="One required"
-          error={fieldErrors["location.countryCode"]?.[0]}
-          onChange={(value) => setField("countryCode", value.toUpperCase().slice(0, 2))}
-        />
-        <TextField
-          label="Hero photo URL"
-          type="url"
-          value={draft.mediaUrl}
-          placeholder="https://images.example/alpenrose.jpg"
-          helper="First image used for shared product setup."
-          required
-          error={fieldErrors["media.0.url"]?.[0] ?? fieldErrors.media?.[0]}
-          onChange={(value) => setField("mediaUrl", value)}
-        />
-        <div className="md:col-span-2">
-          <TextArea
-            label="Short intro"
-            value={draft.shortDescription}
-            placeholder="A city hotel close to the old town."
-            helper="One guest-facing description is required."
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <TextField
+              label="Hotel name"
+              value={draft.displayName}
+              placeholder="Hotel Alpenrose"
+              helper="Use the name guests and staff recognize."
+              requirementLabel="Required"
+              required
+              error={fieldErrors.displayName?.[0]}
+              onChange={(value) => setField("displayName", value)}
+            />
+          </div>
+          <TextField
+            label="City"
+            value={draft.city}
+            placeholder="Munich"
             requirementLabel="Required"
             required
-            error={fieldErrors.shortDescription?.[0]}
-            onChange={(value) => setField("shortDescription", value)}
+            error={fieldErrors["location.city"]?.[0]}
+            onChange={(value) => setField("city", value)}
           />
-        </div>
-        {showRawLocation && (
-          <div className="md:col-span-2">
+          <TextField
+            label="Country code"
+            value={draft.countryCode}
+            placeholder="DE"
+            helper="Two-letter ISO code."
+            requirementLabel="Required"
+            required
+            error={fieldErrors["location.countryCode"]?.[0]}
+            onChange={(value) => setField("countryCode", value.toUpperCase().slice(0, 2))}
+          />
+          {showRawLocation && (
             <TextField
               label="Imported location"
               value={draft.rawMarketplaceLocation}
@@ -826,73 +788,11 @@ function ProfileForm({
               helper="Read-only location imported from the existing marketplace profile."
               onChange={() => undefined}
             />
-          </div>
-        )}
-      </div>
-
-      <details
-        className="rounded-3xl border border-gray-100 bg-gray-50/80"
-        open={hasAdvancedLocationErrors || undefined}
-      >
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-medium text-gray-950">
-          <span>Exact address and operations</span>
-          <span className="text-xs font-medium text-gray-500">Optional</span>
-        </summary>
-        <div className="grid gap-4 border-t border-gray-100 bg-white p-5 md:grid-cols-2">
-          <TextField
-            label="Region"
-            value={draft.region}
-            placeholder="Bavaria"
-            error={fieldErrors["location.region"]?.[0]}
-            onChange={(value) => setField("region", value)}
-          />
-          <TextField
-            label="Timezone"
-            value={draft.timezone}
-            placeholder="Europe/Berlin"
-            helper="IANA timezone used for calendars and operations."
-            error={fieldErrors["location.timezone"]?.[0]}
-            onChange={(value) => setField("timezone", value)}
-          />
-          <TextField
-            label="Street address"
-            value={draft.streetAddress}
-            placeholder="Marienplatz 1"
-            error={fieldErrors["location.streetAddress"]?.[0]}
-            onChange={(value) => setField("streetAddress", value)}
-          />
-          <TextField
-            label="Postal code"
-            value={draft.postalCode}
-            placeholder="80331"
-            error={fieldErrors["location.postalCode"]?.[0]}
-            onChange={(value) => setField("postalCode", value)}
-          />
+          )}
         </div>
-      </details>
+      </section>
 
-      <details
-        className="rounded-3xl border border-gray-100 bg-gray-50/80"
-        open={hasAdvancedDescriptionErrors || undefined}
-      >
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-medium text-gray-950">
-          <span>Long description</span>
-          <span className="text-xs font-medium text-gray-500">Optional</span>
-        </summary>
-        <div className="border-t border-gray-100 bg-white p-5">
-          <TextArea
-            label="Long description"
-            value={draft.longDescription}
-            placeholder="Add guest-facing details, amenities, and useful context."
-            helper="Use this when the short intro needs more context."
-            error={fieldErrors.longDescription?.[0]}
-            rows={5}
-            onChange={(value) => setField("longDescription", value)}
-          />
-        </div>
-      </details>
-
-      <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-3 pt-1 sm:flex-row sm:justify-end">
         {onCancel && (
           <button
             type="button"
@@ -941,9 +841,9 @@ function ProductSelection({
   return (
     <div>
       <div className="mb-5">
-        <h2 className="text-lg font-semibold text-gray-950">Choose your products</h2>
+        <h2 className="text-lg font-semibold text-gray-950">Choose account systems</h2>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Start with the surfaces this property needs now. You can add more after launch.
+          These systems apply to every property and listing in this hotel group.
         </p>
         {selectedProperty?.displayName && (
           <p className="mt-2 text-sm font-medium text-gray-700">{selectedProperty.displayName}</p>
@@ -1022,7 +922,7 @@ function ProductSelection({
 
       <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-gray-500">
-          {selectedProducts.length} product{selectedProducts.length === 1 ? "" : "s"} selected
+          {selectedProducts.length} system{selectedProducts.length === 1 ? "" : "s"} selected
         </p>
         <button
           type="button"
@@ -1036,7 +936,7 @@ function ProductSelection({
               aria-hidden="true"
             />
           )}
-          <span>{saving ? "Saving..." : "Save products"}</span>
+          <span>{saving ? "Saving..." : "Save systems"}</span>
           {!saving && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
         </button>
       </div>
@@ -1063,20 +963,15 @@ function ProductContinue({
   const isMarketplaceActivation = view.screen === "product_activation" && product === "marketplace";
   const activation = product ? (view.selectedProperty?.products[product] ?? null) : null;
   const missingSteps = activation?.missingSteps ?? [];
-  const isBlockedMarketplaceActivation =
-    isMarketplaceActivation &&
-    !canOpenMarketplaceProfileTools({
-      product,
-      productStatus: activation?.status ?? null,
-      missingSteps,
-    });
-  const launchTitle = isBlockedMarketplaceActivation
+  const isBlockedMarketplaceActivation = isMarketplaceActivation && isProductContinueBlocked(view);
+  const isBlockedActivation = isProductContinueBlocked(view);
+  const launchTitle = isBlockedActivation
     ? "Launch blocked"
     : view.screen === "enter_product"
       ? "Ready to open"
       : "Product setup needed";
-  const launchDescription = isBlockedMarketplaceActivation
-    ? marketplaceBlockedActivationCopy(activation?.status)
+  const launchDescription = isBlockedActivation
+    ? blockedActivationCopy(product, activation?.status)
     : isMarketplaceActivation
       ? "Finish the Marketplace-specific profile tools next."
       : view.screen === "enter_product"
@@ -1106,7 +1001,7 @@ function ProductContinue({
           icon={HotelIcon}
           complete
           title="Basics saved"
-          description="Name, location, contact, image, and description are ready."
+          description="Hotel name and location are saved."
         />
         <ReadinessItem
           icon={Squares2X2Icon}
@@ -1118,7 +1013,7 @@ function ProductContinue({
         />
         <ReadinessItem
           icon={RocketLaunchIcon}
-          complete={!isBlockedMarketplaceActivation && Boolean(product)}
+          complete={!isBlockedActivation && Boolean(product)}
           title={launchTitle}
           description={launchDescription}
         />
@@ -1126,16 +1021,14 @@ function ProductContinue({
 
       <div
         className={`mt-5 rounded-3xl border p-5 ${
-          isBlockedMarketplaceActivation ? "border-red-200 bg-red-50" : "border-gray-100 bg-gray-50"
+          isBlockedActivation ? "border-red-200 bg-red-50" : "border-gray-100 bg-gray-50"
         }`}
       >
-        {(isBlockedMarketplaceActivation ||
-          !isMarketplaceActivation ||
-          missingSteps.length === 0) && (
+        {(isBlockedActivation || !isMarketplaceActivation || missingSteps.length === 0) && (
           <p className="text-sm text-gray-700">{launchDescription}</p>
         )}
         {isMarketplaceActivation && missingSteps.length > 0 && (
-          <div className={isBlockedMarketplaceActivation ? "mt-4 grid gap-3" : "grid gap-3"}>
+          <div className={isBlockedActivation ? "mt-4 grid gap-3" : "grid gap-3"}>
             {missingSteps.map((step) => {
               const item = marketplaceActivationStepCopy(step);
               return (
@@ -1151,23 +1044,69 @@ function ProductContinue({
       <div className="mt-5 flex justify-end border-t border-gray-100 pt-5">
         <button
           type="button"
-          disabled={!product || isBlockedMarketplaceActivation}
+          disabled={!product || isBlockedActivation}
           onClick={onContinue}
           className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <span>
-            {isBlockedMarketplaceActivation
-              ? "Marketplace unavailable"
+            {isBlockedActivation
+              ? `${product ? labels[product] : "Product"} unavailable`
               : isMarketplaceActivation
                 ? "Open Marketplace offer tools"
                 : "Continue"}
           </span>
-          {!isBlockedMarketplaceActivation && (
-            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
-          )}
+          {!isBlockedActivation && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
         </button>
       </div>
     </div>
+  );
+}
+
+function ProductRedirecting({
+  labels,
+  product,
+}: {
+  labels: ProductLabels;
+  product: SharedHotelSetupProduct;
+}) {
+  return (
+    <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-center">
+      <LoadingSpinner label={`Opening ${labels[product]}`} />
+      <p className="text-sm text-gray-500">Opening {labels[product]}...</p>
+    </div>
+  );
+}
+
+function buildProductContinueInput(
+  view: SharedFirstRunSetupViewModel,
+  returnTo: string | null,
+): SharedFirstRunProductContinueInput | null {
+  if (!view.selectedPropertyId || !view.product) return null;
+  if (view.screen !== "product_activation" && view.screen !== "enter_product") return null;
+  const activation = view.selectedProperty?.products[view.product] ?? null;
+  return {
+    product: view.product,
+    productStatus: activation?.status ?? null,
+    propertyId: view.selectedPropertyId,
+    missingSteps: activation?.missingSteps ?? [],
+    returnTo,
+    action: view.screen === "enter_product" ? "enter_product" : "complete_product_activation",
+  };
+}
+
+function isProductContinueBlocked(view: SharedFirstRunSetupViewModel): boolean {
+  const product = view.product;
+  if (!product) return true;
+  const activation = view.selectedProperty?.products[product] ?? null;
+  if (activation?.status === "suspended" || activation?.status === "unavailable") return true;
+  return (
+    view.screen === "product_activation" &&
+    product === "marketplace" &&
+    !canOpenMarketplaceProfileTools({
+      product,
+      productStatus: activation?.status ?? null,
+      missingSteps: activation?.missingSteps ?? [],
+    })
   );
 }
 
@@ -1209,16 +1148,18 @@ function ReadinessItem({
   );
 }
 
-function marketplaceBlockedActivationCopy(
-  status: SharedProductActivation<"marketplace">["status"] | undefined,
+function blockedActivationCopy(
+  product: SharedHotelSetupProduct | null,
+  status: SharedProductActivation<SharedHotelSetupProduct>["status"] | undefined,
 ): string {
+  const productName = product ? DEFAULT_PRODUCT_LABELS[product] : "This product";
   if (status === "suspended") {
-    return "Marketplace access is currently suspended for this property. Contact support before continuing setup.";
+    return `${productName} access is currently suspended for this account. Contact support before continuing setup.`;
   }
   if (status === "unavailable") {
-    return "Marketplace activation is not available for this property. Contact support if this looks wrong.";
+    return `${productName} is not available for this hotel. Contact support if this looks wrong.`;
   }
-  return "Marketplace activation is not ready for this property yet.";
+  return `${productName} is not ready for this hotel yet.`;
 }
 
 function marketplaceActivationStepCopy(step: string): { title: string; description: string } {
@@ -1232,42 +1173,21 @@ function marketplaceActivationStepCopy(step: string): { title: string; descripti
 
 function validateProfileDraft(draft: ProfileDraft): Record<string, string[]> {
   const errors: Record<string, string[]> = {};
-  const hasLocation = Boolean(
-    draft.city.trim() || draft.countryCode.trim() || draft.rawMarketplaceLocation.trim(),
-  );
-  const hasDescription = Boolean(draft.shortDescription.trim() || draft.longDescription.trim());
 
-  if (!draft.displayName.trim()) errors.displayName = ["Property name is required."];
-  if (!hasLocation) {
-    errors["location.countryCode"] = ["Enter a country code or city to continue."];
-    errors["location.city"] = ["Enter a city or country code to continue."];
+  if (!draft.displayName.trim()) errors.displayName = ["Hotel name is required."];
+  if (!draft.city.trim()) {
+    errors["location.city"] = ["City is required."];
   }
-  if (!draft.website.trim()) {
-    errors.website = ["Website is required to complete setup."];
-  } else if (!isHttpUrl(draft.website)) {
-    errors.website = ["Enter a valid website URL."];
-  }
-  if (!draft.phone.trim()) errors.phone = ["Phone is required to complete setup."];
-  if (!hasDescription) {
-    errors.shortDescription = ["Add a short or long description to continue."];
-    errors.longDescription = ["Add a long or short description to continue."];
-  }
-  if (!draft.mediaUrl.trim()) {
-    errors["media.0.url"] = ["Photo URL is required to complete setup."];
-  } else if (!isHttpUrl(draft.mediaUrl)) {
-    errors["media.0.url"] = ["Enter a valid photo URL."];
+  if (!draft.countryCode.trim()) {
+    errors["location.countryCode"] = ["Country code is required."];
   }
 
   return errors;
 }
 
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
+function uniqueSelectedProducts(products: SharedHotelSetupProduct[]): SharedHotelSetupProduct[] {
+  const selected = new Set(products);
+  return SHARED_HOTEL_SETUP_PRODUCTS.filter((product) => selected.has(product));
 }
 
 function TextField({
@@ -1303,7 +1223,7 @@ function TextField({
     <div>
       <label
         htmlFor={inputId}
-        className="flex items-center gap-2 text-sm font-medium text-gray-700"
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
       >
         <span>{label}</span>
         <span
@@ -1328,77 +1248,9 @@ function TextField({
         aria-describedby={describedBy}
         aria-required={required}
         onChange={(event) => onChange(event.target.value)}
-        className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
+        className={`mt-2 w-full rounded-lg border px-4 py-2.5 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         } ${readOnly ? "bg-gray-50 text-gray-600" : ""}`}
-      />
-      {error && (
-        <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function TextArea({
-  label,
-  value,
-  onChange,
-  error,
-  helper,
-  requirementLabel,
-  placeholder,
-  required = false,
-  rows = 3,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  error?: string;
-  helper?: string;
-  requirementLabel?: string;
-  placeholder?: string;
-  required?: boolean;
-  rows?: number;
-}) {
-  const generatedId = useId();
-  const inputId = `setup-${generatedId}`;
-  const helperId = helper ? `${inputId}-helper` : undefined;
-  const errorId = error ? `${inputId}-error` : undefined;
-  const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
-
-  return (
-    <div>
-      <label
-        htmlFor={inputId}
-        className="flex items-center gap-2 text-sm font-medium text-gray-700"
-      >
-        <span>{label}</span>
-        <span
-          aria-hidden="true"
-          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
-        >
-          {requirementLabel ?? (required ? "Required" : "Optional")}
-        </span>
-      </label>
-      {helper && (
-        <p id={helperId} className="mt-1 text-xs text-gray-500">
-          {helper}
-        </p>
-      )}
-      <textarea
-        id={inputId}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-        aria-invalid={Boolean(error)}
-        aria-describedby={describedBy}
-        aria-required={required}
-        rows={rows}
-        className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
-          error ? "border-red-300 bg-red-50" : "border-gray-200"
-        }`}
       />
       {error && (
         <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">

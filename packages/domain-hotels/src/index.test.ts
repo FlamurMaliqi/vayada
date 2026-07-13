@@ -6,6 +6,7 @@ import {
   SHARED_HOTEL_SETUP_NEXT_ACTIONS,
   SHARED_HOTEL_SETUP_PRODUCTS,
   SHARED_HOTEL_SETUP_READ_PERMISSION,
+  SHARED_HOTEL_PRODUCTS_MANAGE_PERMISSION,
   SHARED_HOTEL_SETUP_STATUS_CONTRACT_VERSION,
   SHARED_PRODUCT_ACTIVATION_STATUSES,
   SHARED_PROPERTY_ACCESS_RELATIONSHIPS,
@@ -86,6 +87,7 @@ describe("@vayada/domain-hotels", () => {
 
   it("models direct canonical property access for shared setup", () => {
     expect(SHARED_HOTEL_SETUP_READ_PERMISSION).toBe("hotel_catalog.setup.read");
+    expect(SHARED_HOTEL_PRODUCTS_MANAGE_PERMISSION).toBe("hotel_catalog.products.manage");
     expect(SHARED_PROPERTY_ACCESS_RESOURCE).toEqual({
       product: "hotel_catalog",
       resourceType: "property",
@@ -100,6 +102,8 @@ describe("@vayada/domain-hotels", () => {
       hotelGroup: {
         organizationId: "org_123",
         displayName: "Bali Hospitality Group",
+        websiteUrl: null,
+        selectedProducts: ["marketplace"],
       },
       selection: {
         state: "single_property",

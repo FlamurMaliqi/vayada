@@ -13,6 +13,7 @@ import {
 import { HotelIcon, ProfileIcon, CalendarIcon, MessageIcon } from "@/components/ui";
 import { ArrowRightOnRectangleIcon, ViewColumnsIcon } from "@heroicons/react/24/outline";
 import { AppSwitcher } from "./AppSwitcher";
+import { HotelSelector } from "./HotelSelector";
 import type { UserType } from "@/lib/types";
 
 // Context for sidebar collapsed state
@@ -236,7 +237,8 @@ export default function AuthenticatedNavigation() {
             >
               <ViewColumnsIcon className="w-5 h-5" />
             </button>
-            <div className="hidden sm:block">
+            {userType === "hotel" && <HotelSelector />}
+            <div className="hidden border-l border-gray-200 pl-3 lg:block">
               <p className="text-sm font-semibold leading-tight text-gray-950">Marketplace</p>
               <p className="text-[11px] leading-tight text-gray-500">Creator collaborations</p>
             </div>

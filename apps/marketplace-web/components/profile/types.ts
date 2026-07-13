@@ -136,10 +136,12 @@ export interface ListingOffering {
 // Hotel listing for profile management
 export interface ProfileHotelListing {
   id: string;
+  mediaResourceId?: string;
   name: string;
   location: string;
   description: string;
   images: string[];
+  imageMediaObjectIds?: string[];
   accommodationType?: string;
   offerings: ListingOffering[];
   // Legacy aggregated fields, kept for read paths that haven't migrated yet
@@ -244,6 +246,24 @@ export function createEmptyListingFormData(): ListingFormData {
     targetGroupAgeMax: undefined,
     targetGroupAgeGroups: [],
     lookingForCreatorTypes: [],
+  };
+}
+
+export function createListingFormDataForEdit(listing: ProfileHotelListing): ListingFormData {
+  return {
+    name: listing.name,
+    location: listing.location,
+    description: listing.description,
+    images: listing.images || [],
+    imageMediaObjectIds: listing.imageMediaObjectIds ?? [],
+    accommodationType: listing.accommodationType || "",
+    offerings: listing.offerings.map((offering) => ({ ...offering })),
+    lookingForPlatforms: listing.lookingForPlatforms || [],
+    targetGroupCountries: listing.targetGroupCountries || [],
+    targetGroupAgeMin: listing.targetGroupAgeMin,
+    targetGroupAgeMax: listing.targetGroupAgeMax,
+    targetGroupAgeGroups: listing.targetGroupAgeGroups || [],
+    lookingForCreatorTypes: listing.lookingForCreatorTypes || [],
   };
 }
 

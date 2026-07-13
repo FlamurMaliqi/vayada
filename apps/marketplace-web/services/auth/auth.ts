@@ -10,6 +10,7 @@ import {
   currentUserType,
   getAuthBearerToken,
   getAuthCsrfToken,
+  getAuthSessionUser,
   hasAuthenticatedSession,
   isAuthOrganizationSelectionResponse,
   isAuthKitLoginEnabled,
@@ -19,6 +20,7 @@ import {
   setPendingOrganizationSelection,
   type AuthSessionResponse,
 } from "./sessionStore";
+import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 
 const TOKEN_KEY = "access_token";
 const EXPIRES_AT_KEY = "token_expires_at";
@@ -229,7 +231,7 @@ export const authService = {
 
     const callbackUrl = new URL("/login", window.location.origin);
     callbackUrl.searchParams.set("auth", "callback");
-    if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    if (isSafeRelativeReturnTo(returnTo)) {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/login", window.location.origin);
@@ -246,7 +248,7 @@ export const authService = {
 
     const callbackUrl = new URL("/login", window.location.origin);
     callbackUrl.searchParams.set("auth", "callback");
-    if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    if (isSafeRelativeReturnTo(returnTo)) {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/signup", window.location.origin);
@@ -412,6 +414,8 @@ export const authService = {
   },
 
   getUserType: () => currentUserType(),
+
+  getSessionUser: () => getAuthSessionUser(),
 
   /**
    * Request password reset

@@ -135,12 +135,14 @@ export interface CreatorRequirements {
 // Hotel Listing with full details
 export interface HotelListing {
   id: string;
+  media_resource_id?: string;
   hotel_profile_id: string;
   name: string;
   location: string;
   description: string;
   accommodation_type?: string | null;
   images: string[];
+  image_media_object_ids?: string[];
   status: "pending" | "verified" | "rejected";
   created_at: string;
   updated_at: string;

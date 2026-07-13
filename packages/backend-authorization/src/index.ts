@@ -72,6 +72,17 @@ function resourceScopeKey(
   return `${product}:${resourceType}:${resourceId}`;
 }
 
+function canonicalEntitlementKey(product: Product, key: string): string {
+  if (product === "booking" && key === "account_access") return "booking-engine";
+  if (product === "pms" && (key === "account_access" || key === "pms-core")) {
+    return "property-management";
+  }
+  if (product === "marketplace" && key === "account_access") {
+    return "marketplace-hotel-profile";
+  }
+  return key;
+}
+
 export class AuthorizationError extends Error {
   readonly statusCode = 403;
 
@@ -129,7 +140,7 @@ export function createPgEntitlementRepository(
            product,
            entitlement_key,
            CASE
-             WHEN status = 'active' AND expires_at IS NOT NULL AND expires_at <= now()
+             WHEN expires_at IS NOT NULL AND expires_at <= now()
                THEN 'expired'
              ELSE status
            END AS status,
@@ -155,6 +166,7 @@ export function createPgEntitlementRepository(
         .filter(
           (row) =>
             row.resource_product === null ||
+            row.status === "suspended" ||
             (row.resource_type !== null &&
               row.resource_id !== null &&
               activeLinkedResourceKeys.has(
@@ -165,14 +177,14 @@ export function createPgEntitlementRepository(
           if (row.resource_product === null) {
             return {
               product: row.product,
-              key: row.entitlement_key,
+              key: canonicalEntitlementKey(row.product, row.entitlement_key),
               status: row.status,
             };
           }
 
           return {
             product: row.product,
-            key: row.entitlement_key,
+            key: canonicalEntitlementKey(row.product, row.entitlement_key),
             status: row.status,
             resource: {
               product: row.resource_product,
@@ -240,11 +252,28 @@ export function hasActiveEntitlement(
   context: RequestContext,
   requirement: EntitlementRequirement,
 ): boolean {
+  const requiredKey = canonicalEntitlementKey(requirement.product, requirement.key);
+  if (
+    context.entitlements.some(
+      (entitlement) =>
+        entitlement.status === "suspended" &&
+        entitlement.product === requirement.product &&
+        canonicalEntitlementKey(entitlement.product, entitlement.key) === requiredKey &&
+        (entitlement.resource === undefined ||
+          (requirement.resource !== undefined &&
+            entitlement.resource.product === requirement.resource.product &&
+            entitlement.resource.resourceType === requirement.resource.resourceType &&
+            entitlement.resource.resourceId === requirement.resource.resourceId)),
+    )
+  ) {
+    return false;
+  }
+
   return context.entitlements.some((entitlement) => {
     if (
       entitlement.status !== "active" ||
       entitlement.product !== requirement.product ||
-      entitlement.key !== requirement.key
+      canonicalEntitlementKey(entitlement.product, entitlement.key) !== requiredKey
     ) {
       return false;
     }

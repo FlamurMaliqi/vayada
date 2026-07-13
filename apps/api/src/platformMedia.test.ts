@@ -866,6 +866,69 @@ describe("platform media upload routes", () => {
     expect((response.body as ErrorResponse).code).toBe("unsupported_media_type");
   });
 
+  it("allows a hotel account contact to upload only their own profile image", async () => {
+    const app = buildMediaApp({ permissions: ["hotel_catalog.setup.manage"], resources: [] });
+    const payload = {
+      purpose: "identity.user.profile_image",
+      visibility: "public",
+      resource: {
+        product: "platform",
+        resourceType: "user_profile",
+        resourceId: "user_media",
+      },
+      files: [
+        {
+          filename: "owner.webp",
+          contentType: "image/webp",
+          sizeBytes: 1024,
+        },
+      ],
+    };
+
+    const allowed = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+
+    expect(allowed.statusCode).toBe(201);
+    expect((allowed.body as MediaCreateResponse).uploadSession).toMatchObject({
+      purpose: "identity.user.profile_image",
+    });
+
+    const forbidden = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        ...payload,
+        resource: { ...payload.resource, resourceId: "user_someone_else" },
+      },
+    });
+
+    expect(forbidden.statusCode).toBe(403);
+    expect((forbidden.body as ErrorResponse).code).toBe("media_resource_forbidden");
+
+    for (const override of [
+      { targetResourceId: "user_someone_else" },
+      { propertyId: "property_someone_else" },
+    ]) {
+      const overridden = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          ...payload,
+          resource: { ...payload.resource, ...override },
+        },
+      });
+
+      expect(overridden.statusCode).toBe(400);
+      expect((overridden.body as ErrorResponse).code).toBe("invalid_resource_scope");
+    }
+  });
+
   const denialCases: Array<{
     name: string;
     auth?: string;

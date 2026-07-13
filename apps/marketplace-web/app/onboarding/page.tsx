@@ -1,26 +1,17 @@
 "use client";
 
-import {
-  type ComponentType,
-  type KeyboardEvent,
-  type MutableRefObject,
-  type SVGProps,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type KeyboardEvent, type MutableRefObject, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { ArrowRightIcon, CheckIcon, SparklesIcon, WindowIcon } from "@heroicons/react/24/outline";
+import { ArrowRightIcon, CheckIcon, UserIcon } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 
 type AccountType = "hotel" | "creator";
-type ProductChoice = "marketplace" | "pms" | "booking";
-type OnboardingStage = "path" | "product";
-type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
+
+const SIGNUP_WELCOME_DURATION_MS = 1800;
 
 const options: Array<{
   type: AccountType;
@@ -30,8 +21,8 @@ const options: Array<{
 }> = [
   {
     type: "hotel",
-    title: "List a property",
-    description: "Create a creator-ready collaboration offer for your hotel or venue.",
+    title: "Manage a hotel",
+    description: "Set up one hotel or manage several from the same account.",
     image: "/hotel-hero.JPG",
   },
   {
@@ -42,56 +33,10 @@ const options: Array<{
   },
 ];
 
-const productOptions: Array<{
-  type: ProductChoice;
-  title: string;
-  description: string;
-  Icon: IconComponent;
-}> = [
-  {
-    type: "marketplace",
-    title: "Creator Marketplace",
-    description: "Find creators and launch collaboration offers.",
-    Icon: PersonIcon,
-  },
-  {
-    type: "pms",
-    title: "PMS",
-    description: "Manage rooms, reservations, and daily operations.",
-    Icon: HotelIcon,
-  },
-  {
-    type: "booking",
-    title: "Booking Admin",
-    description: "Set up direct booking pages and guest checkout.",
-    Icon: WindowIcon,
-  },
-];
-
-function PersonIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      {...props}
-    >
-      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  );
-}
-
 export default function OnboardingPage() {
   const router = useRouter();
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const [stage, setStage] = useState<OnboardingStage>("path");
   const [selectedType, setSelectedType] = useState<AccountType>("hotel");
-  const [selectedProducts, setSelectedProducts] = useState<ProductChoice[]>(["marketplace"]);
   const [loading, setLoading] = useState(true);
   const [introComplete, setIntroComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -126,26 +71,64 @@ export default function OnboardingPage() {
 
   useEffect(() => {
     if (loading || error) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+
+    const user = authService.getSessionUser();
+    const storageKey = `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
+    let storedState: string | null = null;
+
+    try {
+      storedState = window.sessionStorage.getItem(storageKey);
+    } catch {
+      // The transition still works when browser storage is unavailable.
+    }
+
+    const finishIntro = () => {
+      try {
+        window.sessionStorage.setItem(storageKey, "complete");
+      } catch {
+        // The in-memory state is enough for the current page.
+      }
       setIntroComplete(true);
+    };
+
+    if (
+      storedState === "complete" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      finishIntro();
       return;
     }
-    const timer = window.setTimeout(() => setIntroComplete(true), 1200);
+
+    const storedDeadline = Number(storedState);
+    const deadline =
+      Number.isFinite(storedDeadline) && storedDeadline > 0
+        ? storedDeadline
+        : Date.now() + SIGNUP_WELCOME_DURATION_MS;
+
+    if (storedState === null || !Number.isFinite(storedDeadline) || storedDeadline <= 0) {
+      try {
+        window.sessionStorage.setItem(storageKey, String(deadline));
+      } catch {
+        // The timer below remains the fallback.
+      }
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      finishIntro();
+      return;
+    }
+
+    const timer = window.setTimeout(finishIntro, remaining);
     return () => window.clearTimeout(timer);
   }, [error, loading]);
 
   async function handleContinue() {
     setError("");
-
-    if (selectedType === "hotel" && stage === "path") {
-      setStage("product");
-      return;
-    }
-
     setSubmitting(true);
     try {
       await authService.completeOnboarding(selectedType);
-      router.push(nextPathForType(selectedType, selectedProducts));
+      router.push(nextPathForType(selectedType));
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to continue onboarding.");
     } finally {
@@ -176,49 +159,37 @@ export default function OnboardingPage() {
     selectOptionAtIndex((nextIndex + options.length) % options.length);
   }
 
+  const showSignupWelcome = !introComplete && !error;
+
   return (
     <OnboardingShell
-      currentStep={stage === "product" ? 2 : 1}
-      title={stage === "product" ? "Which products do you want to use?" : "Welcome to Vayada"}
+      currentStep={1}
+      title={showSignupWelcome ? "Thank you for signing up to Vayada" : "Welcome to Vayada"}
       description={
-        stage === "product"
-          ? "Choose one or more workspaces. You can add the others later."
-          : "First things first, tell us a little bit about yourself."
+        showSignupWelcome
+          ? "Let's set up your profile in a little more detail."
+          : "Choose how you want to use Vayada."
       }
+      showProgress={false}
     >
       <div className="mx-auto w-full max-w-4xl">
         {loading ? (
           <div className="flex min-h-72 items-center justify-center">
             <p className="text-sm text-gray-600">Loading...</p>
           </div>
-        ) : !introComplete && !error ? (
-          <WelcomeMoment />
+        ) : showSignupWelcome ? (
+          <SignupWelcomeMoment />
         ) : (
           <div className="space-y-6 text-center">
-            {stage === "path" ? (
-              <PathChoice
-                selectedType={selectedType}
-                optionRefs={optionRefs}
-                onSelect={(type) => {
-                  setError("");
-                  setSelectedType(type);
-                }}
-                onKeyDown={handleOptionKeyDown}
-              />
-            ) : (
-              <ProductChoicePanel
-                selectedProducts={selectedProducts}
-                onToggle={(product) => {
-                  setError("");
-                  setSelectedProducts((products) => {
-                    if (!products.includes(product)) return [...products, product];
-                    return products.length === 1
-                      ? products
-                      : products.filter((selected) => selected !== product);
-                  });
-                }}
-              />
-            )}
+            <PathChoice
+              selectedType={selectedType}
+              optionRefs={optionRefs}
+              onSelect={(type) => {
+                setError("");
+                setSelectedType(type);
+              }}
+              onKeyDown={handleOptionKeyDown}
+            />
 
             {error && (
               <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -229,33 +200,15 @@ export default function OnboardingPage() {
             <button
               type="button"
               onClick={handleContinue}
-              disabled={submitting || (stage === "product" && selectedProducts.length === 0)}
+              disabled={submitting}
               aria-label={
-                stage === "product"
-                  ? `Continue with ${productSelectionLabel(selectedProducts)}`
-                  : `Continue to ${
-                      selectedType === "hotel" ? "product selection" : "creator profile"
-                    }`
+                selectedType === "hotel" ? "Continue to hotel setup" : "Continue to creator profile"
               }
               className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             >
-              {submitting
-                ? "Continuing..."
-                : stage === "product"
-                  ? "Continue to setup"
-                  : "Continue"}
+              {submitting ? "Continuing..." : "Continue"}
               {!submitting && <ArrowRightIcon className="h-4 w-4" />}
             </button>
-
-            {stage === "product" && (
-              <button
-                type="button"
-                onClick={() => setStage("path")}
-                className="block w-full text-sm font-medium text-gray-500 hover:text-gray-950"
-              >
-                Back
-              </button>
-            )}
           </div>
         )}
       </div>
@@ -312,7 +265,7 @@ function PathChoice({
               />
               <span className="absolute inset-0 bg-gradient-to-t from-gray-950/35 to-transparent" />
               <span className="absolute bottom-3 left-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm">
-                {isHotel ? "For properties" : "For creators"}
+                {isHotel ? "For hotels" : "For creators"}
               </span>
               <span
                 className={`absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full ${
@@ -329,7 +282,7 @@ function PathChoice({
                   selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
                 }`}
               >
-                {isHotel ? <HotelIcon className="h-5 w-5" /> : <SparklesIcon className="h-5 w-5" />}
+                {isHotel ? <HotelIcon className="h-5 w-5" /> : <UserIcon className="h-5 w-5" />}
               </span>
               <span>
                 <span className="block text-base font-semibold text-gray-950">{option.title}</span>
@@ -345,93 +298,22 @@ function PathChoice({
   );
 }
 
-function ProductChoicePanel({
-  selectedProducts,
-  onToggle,
-}: {
-  selectedProducts: ProductChoice[];
-  onToggle: (product: ProductChoice) => void;
-}) {
+function nextPathForType(type: AccountType): string {
+  return type === "creator" ? ROUTES.PROFILE_COMPLETE : `${ROUTES.SETUP}?entryProduct=marketplace`;
+}
+
+function SignupWelcomeMoment() {
   return (
-    <fieldset className="text-left">
-      <legend className="sr-only">Choose products</legend>
-      <div className="grid gap-5 sm:grid-cols-3">
-        {productOptions.map(({ type, title, description, Icon }) => {
-          const selected = selectedProducts.includes(type);
-          return (
-            <label
-              key={type}
-              className={`relative flex min-h-56 cursor-pointer flex-col rounded-3xl bg-white p-6 shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 transition hover:-translate-y-1 focus-within:ring-2 focus-within:ring-gray-950 ${
-                selected
-                  ? "bg-primary-50 ring-2 ring-primary-500"
-                  : "ring-gray-200 hover:ring-gray-300"
-              }`}
-            >
-              <input
-                type="checkbox"
-                name="onboarding-products"
-                value={type}
-                checked={selected}
-                onChange={() => onToggle(type)}
-                className="sr-only"
-              />
-              <span
-                className={`mb-8 flex h-14 w-14 items-center justify-center rounded-2xl ${
-                  selected ? "bg-primary-600 text-white" : "bg-primary-50 text-primary-600"
-                }`}
-              >
-                <Icon className="h-7 w-7" />
-              </span>
-              <span className="block text-base font-semibold text-gray-950">{title}</span>
-              <span className="mt-2 block text-sm leading-6 text-gray-600">{description}</span>
-              <span
-                className={`absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full ${
-                  selected ? "bg-primary-600 text-white" : "bg-gray-100 text-transparent"
-                }`}
-              >
-                <CheckIcon className="h-4 w-4" />
-              </span>
-            </label>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
-}
-
-function nextPathForType(type: AccountType, products: ProductChoice[] = ["marketplace"]): string {
-  if (type === "creator") return ROUTES.PROFILE_COMPLETE;
-  const selectedProducts = products.length > 0 ? products : ["marketplace"];
-  const query = new URLSearchParams({ entryProduct: selectedProducts[0] });
-  selectedProducts.forEach((product) => query.append("selectedProducts", product));
-  return `${ROUTES.SETUP}?${query.toString()}`;
-}
-
-function productLabel(product: ProductChoice): string {
-  return productOptions.find((option) => option.type === product)?.title ?? "setup";
-}
-
-function productSelectionLabel(products: ProductChoice[]): string {
-  return products.length > 0 ? products.map(productLabel).join(", ") : "at least one product";
-}
-
-function WelcomeMoment() {
-  return (
-    <div className="flex min-h-72 flex-col items-center justify-center text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gray-950 text-white">
-        <SparklesIcon className="h-7 w-7" />
-      </div>
-      <div className="mt-6">
-        <p className="text-sm font-semibold text-primary-600">You are in</p>
-        <h2 className="mt-3 text-3xl font-semibold tracking-normal text-gray-950">
-          Thanks for choosing Vayada.
-        </h2>
-        <p className="mt-3 text-sm text-gray-600">Setting up your first step.</p>
-        <div className="mt-7 flex justify-center gap-2" aria-hidden="true">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-gray-950" />
-          <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400 [animation-delay:150ms]" />
-          <span className="h-2 w-2 animate-pulse rounded-full bg-gray-300 [animation-delay:300ms]" />
-        </div>
+    <div className="mx-auto flex min-h-56 w-full max-w-md flex-col items-center justify-center rounded-3xl bg-white px-8 py-10 text-center shadow-[0_22px_55px_-32px_rgba(15,23,42,0.45)] ring-1 ring-gray-200">
+      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary-600 text-white">
+        <CheckIcon className="h-7 w-7" />
+      </span>
+      <p className="mt-5 text-base font-semibold text-gray-950">Your account is ready</p>
+      <p className="mt-2 text-sm text-gray-600">Preparing your setup...</p>
+      <div className="mt-5 flex justify-center gap-2" aria-hidden="true">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-primary-600" />
+        <span className="h-2 w-2 animate-pulse rounded-full bg-primary-300 [animation-delay:150ms]" />
+        <span className="h-2 w-2 animate-pulse rounded-full bg-primary-200 [animation-delay:300ms]" />
       </div>
     </div>
   );

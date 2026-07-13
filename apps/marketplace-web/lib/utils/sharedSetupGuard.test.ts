@@ -40,7 +40,8 @@ describe("resolveMarketplaceSetupGuard", () => {
     expect(decision).toEqual({
       action: "redirect_to_setup",
       propertyId: "property-1",
-      redirectPath: "/setup?entryProduct=marketplace&returnTo=%2Fmarketplace%3Ftab%3Dcreators",
+      redirectPath:
+        "/setup?entryProduct=marketplace&returnTo=%2Fmarketplace%3Ftab%3Dcreators&propertyId=property-1",
       setupAction: "complete_product_activation",
       product: "marketplace",
       productStatus: "selected_incomplete",
@@ -78,6 +79,44 @@ describe("resolveMarketplaceSetupGuard", () => {
       propertyId: "property-2",
       redirectPath: null,
     });
+    expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
+  });
+
+  it("clears a stale property selection and retries with the authorized hotel list", async () => {
+    const api = {
+      getStatus: vi
+        .fn()
+        .mockRejectedValueOnce({
+          status: 403,
+          data: { code: "missing_property_resource_link" },
+        })
+        .mockResolvedValueOnce(
+          status({
+            nextAction: {
+              action: "enter_product",
+              propertyId: "property-2",
+              product: "marketplace",
+              returnTo: "/marketplace",
+              reasonCodes: ["ready"],
+            },
+          }),
+        ),
+    };
+    const storage = memoryStorage({ selectedSharedPropertyId: "stale-property" });
+
+    const decision = await resolveMarketplaceSetupGuard("/marketplace", api, storage);
+
+    expect(api.getStatus).toHaveBeenNthCalledWith(1, {
+      entryProduct: "marketplace",
+      returnTo: "/marketplace",
+      propertyId: "stale-property",
+    });
+    expect(api.getStatus).toHaveBeenNthCalledWith(2, {
+      entryProduct: "marketplace",
+      returnTo: "/marketplace",
+      propertyId: null,
+    });
+    expect(decision).toMatchObject({ action: "enter_product", propertyId: "property-2" });
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
   });
 
@@ -179,7 +218,12 @@ function status(input: {
   return {
     contractVersion: "shared-hotel-setup-status.v1",
     entry: { entryProduct: "marketplace", returnTo: "/marketplace" },
-    hotelGroup: { organizationId: "org-1", displayName: "Alpenrose Hotel Group" },
+    hotelGroup: {
+      organizationId: "org-1",
+      displayName: "Alpenrose Hotel Group",
+      websiteUrl: null,
+      selectedProducts: ["marketplace"],
+    },
     selection: { state: "single_property", selectedPropertyId: "property-1" },
     properties: input.properties ?? [],
     nextAction: input.nextAction,
@@ -242,6 +286,9 @@ function memoryStorage(initial: Record<string, string> = {}) {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => {
       values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
     },
   };
 }

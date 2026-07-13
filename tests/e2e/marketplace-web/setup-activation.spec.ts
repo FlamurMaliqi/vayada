@@ -4,7 +4,7 @@ import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 test.describe("marketplace-web shared setup activation", () => {
-  test("shows Marketplace-specific activation for a complete shared property profile", async ({
+  test("shows the shared launch step before opening Marketplace tools", async ({
     page,
     baseURL,
   }) => {
@@ -14,9 +14,6 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(
-      page.getByRole("heading", { name: "Set up Marketplace for Alpenrose Munich" }),
-    ).toBeVisible();
     await expect(page.getByRole("heading", { name: "Activate Creator Marketplace" })).toBeVisible();
     await expect(page.getByText("Creator-facing pitch")).toBeVisible();
     await expect(page.getByText("Collaboration offer")).toBeVisible();
@@ -41,8 +38,6 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("button", { name: "Open Marketplace offer tools" }).click();
 
     await expect(page).toHaveURL(/\/profile$/);
-    await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Basic Information" })).toBeVisible();
   });
 
   test("blocks suspended Marketplace activation instead of opening profile tools", async ({
@@ -180,7 +175,6 @@ async function mockMarketplaceProfileApis(page: Page) {
     });
   });
 }
-
 function sharedSetupStatus(
   missingSteps = [
     "creatorPitch",
@@ -197,6 +191,8 @@ function sharedSetupStatus(
     hotelGroup: {
       organizationId: "11111111-1111-4111-8111-111111111111",
       displayName: "Alpenrose Hotel Group",
+      websiteUrl: null,
+      selectedProducts: ["marketplace"],
     },
     selection: { state: "single_property", selectedPropertyId: propertyId },
     properties: [

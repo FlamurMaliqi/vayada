@@ -3,6 +3,7 @@ import type {
   CreateIdentityUserCommand,
   DeleteIdentityUserCommand,
   GrantIdentityAccessCommand,
+  GrantIdentityResourceLinksCommand,
   IdentityLifecycleCommand,
   IdentityLifecycleCommandBus,
   IdentityLifecycleCommandResult,
@@ -47,6 +48,8 @@ export function createPgIdentityLifecycleCommandBus(
           return grantIdentityAccess(pool, command);
         case "identity.access.revoke":
           return revokeIdentityAccess(pool, command);
+        case "identity.resource_links.grant":
+          return grantIdentityResourceLinks(pool, command);
         default:
           throw new Error(`Unsupported identity lifecycle command: ${command.commandType}`);
       }
@@ -199,9 +202,19 @@ async function updateIdentityUserProfile(
 ): Promise<IdentityLifecycleCommandResult> {
   await pool.query(
     `UPDATE identity.users
-     SET name = COALESCE($2, name), updated_at = now()
+     SET name = COALESCE($2, name),
+         phone = COALESCE($3, phone),
+         profile_picture_url = COALESCE($4, profile_picture_url),
+         profile_picture_media_object_id = COALESCE($5, profile_picture_media_object_id),
+         updated_at = now()
      WHERE id = $1`,
-    [command.payload.userId, command.payload.name ?? null],
+    [
+      command.payload.userId,
+      command.payload.name ?? null,
+      command.payload.phone ?? null,
+      command.payload.profilePictureUrl ?? null,
+      command.payload.profilePictureMediaObjectId ?? null,
+    ],
   );
   return accepted(command, command.payload.userId, "identity.user.profile.updated");
 }
@@ -372,6 +385,14 @@ async function grantIdentityAccessWithClient(
   payload: GrantIdentityAccessCommand["payload"],
 ): Promise<string> {
   const organizationId = await upsertOrganization(client, payload.organization);
+  if (payload.organization.websiteUrl !== undefined) {
+    await client.query(
+      `UPDATE identity.organizations
+       SET website_url = $2, updated_at = now()
+       WHERE id = $1`,
+      [organizationId, payload.organization.websiteUrl],
+    );
+  }
   await client.query(
     `INSERT INTO identity.organization_memberships
        (organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs, invited_at)
@@ -443,21 +464,91 @@ async function revokeIdentityAccess(
   pool: pg.Pool,
   command: RevokeIdentityAccessCommand,
 ): Promise<IdentityLifecycleCommandResult> {
-  const membershipStatus = command.payload.membershipStatus ?? "inactive";
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query(
-      `UPDATE identity.organization_memberships
-       SET status = $3, updated_at = now()
-       WHERE organization_id = $1 AND user_id = $2`,
-      [command.payload.organizationId, command.payload.userId, membershipStatus],
-    );
+    if (command.payload.membershipStatus) {
+      await client.query(
+        `UPDATE identity.organization_memberships
+         SET status = $3, updated_at = now()
+         WHERE organization_id = $1 AND user_id = $2`,
+        [command.payload.organizationId, command.payload.userId, command.payload.membershipStatus],
+      );
+    }
     for (const link of command.payload.resourceLinks ?? []) {
       await client.query(
         `UPDATE identity.organization_resource_links
-         SET status = 'suspended', updated_at = now()
+         SET status = $6, updated_at = now()
          WHERE organization_id = $1
+           AND product = $2
+           AND resource_type = $3
+           AND resource_id = $4
+           AND relationship = $5`,
+        [
+          command.payload.organizationId,
+          link.product,
+          link.resourceType,
+          link.resourceId,
+          link.relationship,
+          link.status ?? "suspended",
+        ],
+      );
+    }
+    await client.query("COMMIT");
+    return accepted(
+      command,
+      command.payload.userId,
+      "identity.access.revoked",
+      command.payload.organizationId,
+    );
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function grantIdentityResourceLinks(
+  pool: pg.Pool,
+  command: GrantIdentityResourceLinksCommand,
+): Promise<IdentityLifecycleCommandResult> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const organization = await client.query<{ id: string }>(
+      `SELECT id::text AS id
+       FROM identity.organizations
+       WHERE id = $1::uuid AND status = 'active'
+       FOR SHARE`,
+      [command.payload.organizationId],
+    );
+    if (!organization.rows[0]) {
+      throw new Error("Cannot grant a resource link to an inactive organization");
+    }
+
+    for (const link of command.payload.resourceLinks) {
+      const inserted = await client.query<{ status: string }>(
+        `INSERT INTO identity.organization_resource_links
+           (organization_id, product, resource_type, resource_id, relationship, status)
+         VALUES ($1::uuid, $2, $3, $4, $5, 'active')
+         ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
+         DO NOTHING
+         RETURNING status`,
+        [
+          command.payload.organizationId,
+          link.product,
+          link.resourceType,
+          link.resourceId,
+          link.relationship,
+        ],
+      );
+      if (inserted.rows[0]) continue;
+
+      const existing = await client.query<{ status: string }>(
+        `SELECT status
+         FROM identity.organization_resource_links
+         WHERE organization_id = $1::uuid
            AND product = $2
            AND resource_type = $3
            AND resource_id = $4
@@ -470,12 +561,16 @@ async function revokeIdentityAccess(
           link.relationship,
         ],
       );
+      if (existing.rows[0]?.status !== "active") {
+        throw new Error("An existing resource-link suspension cannot be overwritten");
+      }
     }
+
     await client.query("COMMIT");
     return accepted(
       command,
-      command.payload.userId,
-      "identity.access.revoked",
+      undefined,
+      "identity.resource_links.granted",
       command.payload.organizationId,
     );
   } catch (error) {

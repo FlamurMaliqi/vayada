@@ -29,6 +29,7 @@ should depend on the command bus contract, not on raw Auth DB tables.
 | `identity.user.delete`             | Soft-delete or privacy-erase identity state while preserving required audit and provider reconciliation records.               |
 | `identity.access.grant`            | Grant or upsert an existing user's organization membership, resource links, and role permission grants.                        |
 | `identity.access.revoke`           | Revoke or suspend an existing user's organization membership, resource links, and role permission grants.                      |
+| `identity.resource_links.grant`    | Add exact resource links to an existing active organization without changing organization, membership, or permission state.    |
 | `identity.recovery.flow.create`    | Start recovery, password reset, email verification, or email change through identity/provider flows, not product token tables. |
 | `identity.invite.affiliate.create` | Invite or link an affiliate user through an affiliate-partner organization, membership, resource link, and permission grants.  |
 | `identity.invite.customer.create`  | Invite a customer account without granting hotel ownership or staff membership. Guest booking data remains booking-owned.      |
@@ -87,10 +88,14 @@ identity ownership primitives:
 - `role_permission_grants` or membership permission intent for product
   permissions such as `booking.settings.manage` or `affiliate.payout.manage`.
 - `organization_resource_links` for booking hotels, PMS hotels, marketplace
-  hotel profiles/listings, creator profiles, affiliates, and payout accounts.
+  hotel profiles/offers, creator profiles, affiliates, and payout accounts.
   Revoking a resource link must include the relationship so identity can
   distinguish, for example, `owner`, `operator`, and `billing_account` links to
   the same resource.
+
+Product-created child resources use `identity.resource_links.grant`. The
+broader `identity.access.grant` is reserved for flows that intentionally create
+or reconcile organization membership and permissions.
 
 Product tables may still keep legacy `user_id` columns as migration inputs or
 compatibility fields until cutover, but target TypeScript routes and domain

@@ -15,6 +15,7 @@ export const PLATFORM_MEDIA_UPLOAD_CONTRACT_VERSION = "platform-media-upload.v1"
 export const PLATFORM_MEDIA_IMPORT_CONTRACT_VERSION = "platform-media-import.v1" as const;
 
 export type PlatformMediaPurpose =
+  | "identity.user.profile_image"
   | "property.hero_image"
   | "property.gallery_image"
   | "property.logo"
@@ -293,6 +294,7 @@ export type PlatformMediaRoutesOptions = {
 export type PlatformMediaPurposePolicy = {
   purpose: PlatformMediaPurpose;
   permission: PermissionKey;
+  actorOwned?: boolean;
   allowedRelationships: readonly ResourceRelationship[];
   allowedResources: ReadonlyArray<Pick<LinkedResource, "product" | "resourceType">>;
   allowedContentTypes: readonly string[];
@@ -323,6 +325,22 @@ const publicImageVariantMaxDimensions: Record<
 };
 
 const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> = {
+  "identity.user.profile_image": {
+    purpose: "identity.user.profile_image",
+    permission: "hotel_catalog.setup.manage",
+    actorOwned: true,
+    allowedRelationships: [],
+    allowedResources: [{ product: "platform", resourceType: "user_profile" }],
+    allowedContentTypes: imageContentTypes,
+    allowedExtensions: imageExtensions,
+    maxFileSizeBytes: 5 * 1024 * 1024,
+    maxFileCount: 1,
+    maxImagePixels: defaultMaxImagePixels,
+    privateOnly: false,
+    targetResourceProduct: "platform",
+    targetResourceType: "user_profile",
+    requiredVariants: publicImageVariants,
+  },
   "property.hero_image": {
     purpose: "property.hero_image",
     permission: "booking.settings.manage",
@@ -520,13 +538,37 @@ export async function registerPlatformMediaRoutes(
 
       const context = enforceRoutePolicy(request, {
         permission: permissionForResource(policy, request.body.resource),
-        resource: {
-          product: request.body.resource.product,
-          resourceType: request.body.resource.resourceType,
-          resourceId: request.body.resource.resourceId,
-          allowedRelationships: policy.allowedRelationships,
-        },
+        ...(policy.actorOwned
+          ? {}
+          : {
+              resource: {
+                product: request.body.resource.product,
+                resourceType: request.body.resource.resourceType,
+                resourceId: request.body.resource.resourceId,
+                allowedRelationships: policy.allowedRelationships,
+              },
+            }),
       });
+      if (policy.actorOwned && request.body.resource.resourceId !== context.actor.internalUserId) {
+        return sendMediaError(
+          reply,
+          403,
+          "media_resource_forbidden",
+          "Profile images can only be uploaded for the signed-in user.",
+        );
+      }
+      if (
+        policy.actorOwned &&
+        (request.body.resource.targetResourceId !== undefined ||
+          request.body.resource.propertyId !== undefined)
+      ) {
+        return sendMediaError(
+          reply,
+          400,
+          "invalid_resource_scope",
+          "Profile image targets cannot be overridden.",
+        );
+      }
 
       const requestedVisibility = request.body.visibility ?? "private";
       if (policy.privateOnly && requestedVisibility !== "private") {
@@ -641,13 +683,25 @@ export async function registerPlatformMediaRoutes(
       const policy = purposePolicies[session.purpose];
       const context = enforceRoutePolicy(request, {
         permission: permissionForResource(policy, session.resource),
-        resource: {
-          product: session.resource.product,
-          resourceType: session.resource.resourceType,
-          resourceId: session.resource.resourceId,
-          allowedRelationships: policy.allowedRelationships,
-        },
+        ...(policy.actorOwned
+          ? {}
+          : {
+              resource: {
+                product: session.resource.product,
+                resourceType: session.resource.resourceType,
+                resourceId: session.resource.resourceId,
+                allowedRelationships: policy.allowedRelationships,
+              },
+            }),
       });
+      if (policy.actorOwned && session.resource.resourceId !== context.actor.internalUserId) {
+        return sendMediaError(
+          reply,
+          403,
+          "media_resource_forbidden",
+          "Profile images can only be finalized by the signed-in user.",
+        );
+      }
       if (
         context.actor.internalUserId !== session.actorUserId ||
         context.selectedOrganization.organizationId !== session.ownerOrganizationId

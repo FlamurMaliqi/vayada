@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SharedHotelSetupStatus } from "@vayada/product-onboarding";
 
-import { resolvePmsSetupGuard } from "./sharedSetupGuard";
+import { isPmsRoomSetupDecision, resolvePmsSetupGuard } from "./sharedSetupGuard";
 
 describe("resolvePmsSetupGuard", () => {
   it("redirects incomplete setup to the shared wizard with the PMS entry product", async () => {
@@ -28,7 +28,8 @@ describe("resolvePmsSetupGuard", () => {
     expect(decision).toEqual({
       action: "redirect_to_setup",
       propertyId: "property-1",
-      redirectPath: "/setup?entryProduct=pms&returnTo=%2Fdashboard%3Fview%3Drooms",
+      redirectPath:
+        "/setup?entryProduct=pms&returnTo=%2Fdashboard%3Fview%3Drooms&propertyId=property-1",
       setupAction: "select_products",
       product: null,
       productStatus: null,
@@ -61,6 +62,42 @@ describe("resolvePmsSetupGuard", () => {
     });
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
   });
+
+  it("allows the rooms area to own PMS room activation steps only", () => {
+    expect(
+      isPmsRoomSetupDecision({
+        action: "redirect_to_setup",
+        propertyId: "property-1",
+        redirectPath: "/setup?entryProduct=pms",
+        setupAction: "complete_product_activation",
+        product: "pms",
+        productStatus: "selected_incomplete",
+        missingSteps: ["roomTypes", "rooms", "ratePlans"],
+      }),
+    ).toBe(true);
+    expect(
+      isPmsRoomSetupDecision({
+        action: "redirect_to_setup",
+        propertyId: "property-1",
+        redirectPath: "/setup?entryProduct=pms",
+        setupAction: "complete_product_activation",
+        product: "pms",
+        productStatus: "selected_incomplete",
+        missingSteps: ["productEntitlement", "rooms"],
+      }),
+    ).toBe(false);
+    expect(
+      isPmsRoomSetupDecision({
+        action: "redirect_to_setup",
+        propertyId: "property-1",
+        redirectPath: "/setup?entryProduct=pms&propertyId=property-1",
+        setupAction: "complete_product_activation",
+        product: "pms",
+        productStatus: "unavailable",
+        missingSteps: ["roomTypes", "rooms", "ratePlans"],
+      }),
+    ).toBe(false);
+  });
 });
 
 function status(input: {
@@ -69,7 +106,12 @@ function status(input: {
   return {
     contractVersion: "shared-hotel-setup-status.v1",
     entry: { entryProduct: "pms", returnTo: "/dashboard" },
-    hotelGroup: { organizationId: "org-1", displayName: "Alpenrose Hotel Group" },
+    hotelGroup: {
+      organizationId: "org-1",
+      displayName: "Alpenrose Hotel Group",
+      websiteUrl: null,
+      selectedProducts: ["pms"],
+    },
     selection: { state: "single_property", selectedPropertyId: "property-1" },
     properties: [],
     nextAction: input.nextAction,
@@ -83,6 +125,9 @@ function memoryStorage(initial: Record<string, string> = {}) {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => {
       values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
     },
   };
 }

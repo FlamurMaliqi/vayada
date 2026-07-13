@@ -1625,7 +1625,7 @@ describe("AuthKit session routes", () => {
     expect(commands).toEqual([]);
   });
 
-  it("creates the selected creator workspace during onboarding", async () => {
+  it("creates a hotel account from account type alone", async () => {
     const commands: IdentityLifecycleCommand[] = [];
     const workosCalls: string[] = [];
     const noOrgSession: AuthKitSession = {
@@ -1638,11 +1638,11 @@ describe("AuthKit session routes", () => {
         email: "account-signup@example.test",
       },
     };
-    const creatorSession: AuthKitSession = {
+    const hotelSession: AuthKitSession = {
       ...noOrgSession,
-      accessToken: "creator-workos-access-token",
-      organizationId: "org_workos_onboarding_creator",
-      sealedSession: "creator-selected-session",
+      accessToken: "hotel-workos-access-token",
+      organizationId: "org_workos_onboarding_hotel",
+      sealedSession: "hotel-selected-session",
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
@@ -1653,27 +1653,28 @@ describe("AuthKit session routes", () => {
         async createSignupOrganization(input) {
           workosCalls.push("organization");
           expect(input).toMatchObject({
-            externalId: "vayada-signup:marketplace-web:creator:user_workos_account_signup",
+            name: "Account Signup Hotel Group",
+            externalId: "vayada-signup:marketplace-web:hotel:user_workos_account_signup",
             metadata: {
               auth_flow: "signup",
               surface: "marketplace-web",
-              signup_intent: "creator",
-              organization_kind: "creator_workspace",
-              role_key: "creator_owner",
+              signup_intent: "hotel",
+              organization_kind: "hotel_group",
+              role_key: "hotel_owner",
             },
           });
-          return { organizationId: "org_workos_onboarding_creator" };
+          return { organizationId: "org_workos_onboarding_hotel" };
         },
         async ensureSignupOrganizationMembership(input) {
           workosCalls.push("membership");
           expect(input).toEqual({
             workosUserId: "user_workos_account_signup",
-            workosOrganizationId: "org_workos_onboarding_creator",
-            roleKey: "creator_owner",
+            workosOrganizationId: "org_workos_onboarding_hotel",
+            roleKey: "hotel_owner",
           });
           return {
-            membershipId: "om_onboarding_creator",
-            roleSlugs: ["creator_owner"],
+            membershipId: "om_onboarding_hotel",
+            roleSlugs: ["hotel_owner"],
             status: "active",
           };
         },
@@ -1681,9 +1682,9 @@ describe("AuthKit session routes", () => {
           workosCalls.push("refresh");
           expect(input).toEqual({
             sealedSession: "sealed-account-session",
-            organizationId: "org_workos_onboarding_creator",
+            organizationId: "org_workos_onboarding_hotel",
           });
-          return creatorSession;
+          return hotelSession;
         },
       }),
       tokenVerifier: createTokenVerifier(noOrgSession),
@@ -1694,18 +1695,18 @@ describe("AuthKit session routes", () => {
           status: "active",
         }),
         organizationByWorkosOrgId: async () => ({
-          organizationId: "org_onboarding_creator",
-          workosOrgId: "org_workos_onboarding_creator",
-          name: "Account Signup Workspace",
-          kind: "creator_workspace",
+          organizationId: "org_onboarding_hotel",
+          workosOrgId: "org_workos_onboarding_hotel",
+          name: "Account Signup Hotel Group",
+          kind: "hotel_group",
           status: "active",
         }),
         activeMembership: async () => ({
-          membershipId: "membership_onboarding_creator",
+          membershipId: "membership_onboarding_hotel",
           status: "active",
-          roleKey: "creator_owner",
-          workosMembershipId: "om_onboarding_creator",
-          workosRoleSlugs: ["creator_owner"],
+          roleKey: "hotel_owner",
+          workosMembershipId: "om_onboarding_hotel",
+          workosRoleSlugs: ["hotel_owner"],
         }),
       }),
       lifecycleCommandBus: {
@@ -1737,7 +1738,7 @@ describe("AuthKit session routes", () => {
         "x-vayada-csrf": "csrf-token",
       },
       payload: {
-        type: "creator",
+        type: "hotel",
         surface: "marketplace-web",
       },
     });
@@ -1745,15 +1746,15 @@ describe("AuthKit session routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("vayada_workos_session=creator-selected-session"),
+        expect.stringContaining("vayada_workos_session=hotel-selected-session"),
       ]),
     );
     expect(response.json()).toMatchObject({
-      accessToken: "creator-workos-access-token",
+      accessToken: "hotel-workos-access-token",
       csrfToken: "csrf-token",
-      organizationId: "org_onboarding_creator",
-      workosOrganizationId: "org_workos_onboarding_creator",
-      organizationKind: "creator_workspace",
+      organizationId: "org_onboarding_hotel",
+      workosOrganizationId: "org_workos_onboarding_hotel",
+      organizationKind: "hotel_group",
       user: {
         id: "user_signup",
         email: "account-signup@example.test",
@@ -1762,21 +1763,125 @@ describe("AuthKit session routes", () => {
     expect(commands).toEqual([
       expect.objectContaining({
         commandType: "identity.access.grant",
-        idempotencyKey: "workos-onboarding:user_signup:creator",
+        idempotencyKey: "workos-onboarding:user_signup:hotel",
         payload: expect.objectContaining({
           userId: "user_signup",
           organization: expect.objectContaining({
-            kind: "creator_workspace",
-            workosOrgId: "org_workos_onboarding_creator",
+            kind: "hotel_group",
+            name: "Account Signup Hotel Group",
+            workosOrgId: "org_workos_onboarding_hotel",
           }),
           membership: expect.objectContaining({
-            roleKey: "creator_owner",
-            workosMembershipId: "om_onboarding_creator",
+            roleKey: "hotel_owner",
+            workosMembershipId: "om_onboarding_hotel",
           }),
         }),
       }),
     ]);
     expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
+  });
+
+  it("attaches an uploaded profile picture only to the signed-in user", async () => {
+    const commands: IdentityLifecycleCommand[] = [];
+    const hotelSession: AuthKitSession = {
+      ...session,
+      organizationId: "org_workos_hotel_group",
+      user: {
+        ...session.user,
+        id: "user_workos_hotel",
+        email: "owner@alpenrose.example",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return hotelSession;
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_hotel_owner",
+          email: "owner@alpenrose.example",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_hotel_group",
+          workosOrgId: "org_workos_hotel_group",
+          name: "Alpenrose Hotel Group",
+          kind: "hotel_group",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_hotel_owner",
+          status: "active",
+          roleKey: "hotel_owner",
+          workosMembershipId: "om_hotel_owner",
+          workosRoleSlugs: ["hotel_owner"],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            events: [],
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/profile",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: {
+        surface: "marketplace-web",
+        profilePictureUrl: "http://localhost:9000/vayada/users/profile.webp",
+        profilePictureMediaObjectId: "media_profile_1",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.user.profile.update",
+        payload: expect.objectContaining({
+          userId: "user_hotel_owner",
+          profilePictureUrl: "http://localhost:9000/vayada/users/profile.webp",
+          profilePictureMediaObjectId: "media_profile_1",
+        }),
+      }),
+    ]);
+
+    const forged = await app.inject({
+      method: "POST",
+      url: "/auth/profile",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: {
+        surface: "marketplace-web",
+        userId: "user_someone_else",
+        profilePictureUrl: "https://media.example/other.webp",
+      },
+    });
+
+    expect(forged.statusCode).toBe(400);
+    expect(commands).toHaveLength(1);
   });
 
   it("auto-selects a single PMS hotel-group organization without showing a selector", async () => {

@@ -54,4 +54,16 @@ export const targetApiClient = {
       body: JSON.stringify(data),
     });
   },
+
+  post<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+    return targetRequest<T>(endpoint, {
+      ...options,
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  delete<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    return targetRequest<T>(endpoint, { ...options, method: "DELETE" });
+  },
 };

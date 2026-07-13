@@ -37,13 +37,12 @@ export {
   parseSharedHotelSetupEntryProduct,
   resolveSharedFirstRunSetupView,
   safeSharedHotelSetupReturnTo,
-  selectedProductsForProperty,
   type SharedFirstRunSetupScreen,
   type SharedFirstRunSetupViewModel,
   type SharedHotelSetupEntryProduct,
+  type SharedHotelSetupAccountProductSelection,
   type SharedHotelSetupNextAction,
   type SharedHotelSetupProduct,
-  type SharedHotelSetupProductSelection,
   type SharedHotelSetupProductStatus,
   type SharedHotelSetupStatus,
   type SharedProductActivation,
@@ -61,7 +60,12 @@ export {
   resolveSharedHotelSetupGuardDecision,
   type SharedHotelSetupGuardDecision,
 } from "./sharedHotelSetupGuard";
-export { firstSearchParam, safeRelativeReturnTo, type ReturnToParam } from "./returnTo";
+export {
+  firstSearchParam,
+  isSafeRelativeReturnTo,
+  safeRelativeReturnTo,
+  type ReturnToParam,
+} from "./returnTo";
 export {
   default as PropertyStep,
   type CountryOption,

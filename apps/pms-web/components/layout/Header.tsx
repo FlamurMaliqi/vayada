@@ -21,22 +21,6 @@ import { useTranslation, SUPPORTED_LANGUAGES } from "@/lib/i18n";
 import { CURRENCY_OPTIONS } from "@/lib/constants/options";
 import SearchModal from "./SearchModal";
 
-const BOOKING_ADMIN_URL =
-  process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
-
-function buildHandoffUrl(baseUrl: string, path: string = ""): string {
-  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-  const expiresAt = typeof window !== "undefined" ? localStorage.getItem("token_expires_at") : null;
-  const user = typeof window !== "undefined" ? localStorage.getItem("user") : null;
-  if (!token || !expiresAt) return `${baseUrl}${path}`;
-  const params = new URLSearchParams({
-    token,
-    expires_at: expiresAt,
-    ...(user ? { user: encodeURIComponent(user) } : {}),
-  });
-  return `${baseUrl}/handoff${path ? `?redirect=${encodeURIComponent(path)}` : ""}#${params.toString()}`;
-}
-
 interface DayStats {
   arrivals: number;
   remainingArrivals: number;
@@ -244,15 +228,11 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                   );
                 })}
               </div>
-              {/* Add Property — ?mode=add tells the booking-admin setup
-                  page to skip the "setup_complete → /dashboard" guard,
-                  which would otherwise instantly redirect a user who
-                  already has one hotel back to the dashboard. */}
               <div className="border-t border-gray-100 mt-1 pt-1 px-1.5">
                 <button
                   onClick={() => {
                     setPropertyOpen(false);
-                    window.location.href = buildHandoffUrl(BOOKING_ADMIN_URL, "/setup?mode=add");
+                    router.push("/setup?mode=add&entryProduct=pms");
                   }}
                   className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] text-primary-600 hover:bg-primary-50 transition-colors"
                 >

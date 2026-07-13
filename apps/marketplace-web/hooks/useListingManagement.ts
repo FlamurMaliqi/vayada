@@ -2,7 +2,10 @@ import { useState, useRef } from "react";
 import { hotelService } from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
 import { transformListingToApi } from "@/components/profile/transforms";
-import { createEmptyListingFormData } from "@/components/profile/types";
+import {
+  createEmptyListingFormData,
+  createListingFormDataForEdit,
+} from "@/components/profile/types";
 import { formatErrorForModal } from "./useErrorModal";
 import type {
   ProfileHotelListing,
@@ -30,6 +33,9 @@ export function useListingManagement(
     listingName: "",
   });
   const listingImageInputRef = useRef<HTMLInputElement | null>(null);
+  const editingListingMediaResourceId = hotelProfile?.listings.find(
+    (listing) => listing.id === editingListingId,
+  )?.mediaResourceId;
 
   const openAddListingModal = () => {
     setListingFormData(createEmptyListingFormData());
@@ -40,20 +46,7 @@ export function useListingManagement(
   };
 
   const openEditListingModal = (listing: ProfileHotelListing) => {
-    setListingFormData({
-      name: listing.name,
-      location: listing.location,
-      description: listing.description,
-      images: listing.images || [],
-      accommodationType: listing.accommodationType || "",
-      offerings: listing.offerings.map((o) => ({ ...o })),
-      lookingForPlatforms: listing.lookingForPlatforms || [],
-      targetGroupCountries: listing.targetGroupCountries || [],
-      targetGroupAgeMin: listing.targetGroupAgeMin,
-      targetGroupAgeMax: listing.targetGroupAgeMax,
-      targetGroupAgeGroups: listing.targetGroupAgeGroups || [],
-      lookingForCreatorTypes: listing.lookingForCreatorTypes || [],
-    });
+    setListingFormData(createListingFormDataForEdit(listing));
     setEditingListingId(listing.id);
     setListingImagePreview(null);
     setListingCountryInput("");
@@ -110,9 +103,12 @@ export function useListingManagement(
           }
 
           if (editingListingId) {
+            if (!editingListingMediaResourceId) {
+              throw new Error("The listing media resource is unavailable");
+            }
             const uploadResponse = await hotelService.uploadListingImages(
               base64Files,
-              editingListingId,
+              editingListingMediaResourceId,
             );
             const newImageUrls = uploadResponse.images.map((img) => img.url);
             const newMediaObjectIds = uploadResponse.images.map((img) => img.mediaObjectId);
@@ -145,9 +141,12 @@ export function useListingManagement(
         const createdListing = await hotelService.createListing(apiListingData);
         if (base64Files.length > 0) {
           try {
+            if (!createdListing.media_resource_id) {
+              throw new Error("The listing media resource is unavailable");
+            }
             const uploadResponse = await hotelService.uploadListingImages(
               base64Files,
-              createdListing.id,
+              createdListing.media_resource_id,
             );
             imageUrls = [...imageUrls, ...uploadResponse.images.map((img) => img.url)];
             imageMediaObjectIds = [
@@ -275,7 +274,13 @@ export function useListingManagement(
         return;
       }
 
-      const uploadResponse = await hotelService.uploadListingImages(fileList, editingListingId);
+      if (!editingListingMediaResourceId) {
+        throw new Error("The listing media resource is unavailable");
+      }
+      const uploadResponse = await hotelService.uploadListingImages(
+        fileList,
+        editingListingMediaResourceId,
+      );
       const newImageUrls = uploadResponse.images.map((img) => img.url);
       const newMediaObjectIds = uploadResponse.images.map((img) => img.mediaObjectId);
 

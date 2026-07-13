@@ -2,12 +2,14 @@ import {
   SELECTED_PMS_PROPERTY_ID_KEY,
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/pmsPropertySelectionKeys";
+import type { SharedHotelSetupProductStatus } from "@vayada/product-onboarding";
 
-import { assertPmsOperationsReadModelEnabled } from "./pmsOperationsClient";
+import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { unsupportedPmsNextStackFeature } from "./unsupported";
 
 export interface PmsPropertySummary {
   id: string;
+  pmsStatus: SharedHotelSetupProductStatus;
   name: string;
   slug: string;
   location: string;
@@ -35,12 +37,19 @@ export interface PmsCalendarSettings {
 }
 
 export async function listPmsProperties(): Promise<PmsPropertySummary[]> {
-  assertPmsOperationsReadModelEnabled();
-  const selectedPropertyId = getStoredPmsPropertyId();
-  if (selectedPropertyId) {
-    return [selectedPropertySummary(selectedPropertyId)];
-  }
-  return unsupportedPmsNextStackFeature("PMS property list");
+  const status = await sharedHotelSetupApi.getStatus({ entryProduct: "pms" });
+  return status.properties.map((property) => ({
+    id: property.propertyId,
+    pmsStatus: property.products.pms.status,
+    name: property.displayName ?? "Unnamed hotel",
+    slug: property.publicId,
+    location: property.locationSummary ?? "",
+    country: "",
+  }));
+}
+
+export function isPmsPropertyReady(property: PmsPropertySummary): boolean {
+  return property.pmsStatus === "active";
 }
 
 export async function resolveSelectedPmsPropertyId(action = "loading PMS data"): Promise<string> {
@@ -105,16 +114,6 @@ export function clearStoredPmsPropertyId(): void {
   const storage = browserStorage();
   storage?.removeItem(SELECTED_PMS_PROPERTY_ID_KEY);
   storage?.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY);
-}
-
-function selectedPropertySummary(propertyId: string): PmsPropertySummary {
-  return {
-    id: propertyId,
-    name: "Selected PMS property",
-    slug: propertyId,
-    location: "",
-    country: "",
-  };
 }
 
 function browserStorage(): Storage | null {

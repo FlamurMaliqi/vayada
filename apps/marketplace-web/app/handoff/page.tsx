@@ -2,6 +2,9 @@
 
 import { useEffect } from "react";
 import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
+import { authService } from "@/services/auth";
+import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 
 // Cross-app auth handoff landing page.
 //
@@ -23,20 +26,25 @@ export default function HandoffPage() {
     const token = hashParams.get("token");
     const expiresAt = hashParams.get("expires_at");
     const userData = hashParams.get("user");
+    const handoffHotelId = hashParams.get("hotel_id");
+    const propertyId = hashParams.get("property_id");
 
     // Optional `?redirect=...` — honored only if it's a same-origin
     // relative path, so another app can hand off onto a specific page.
     const queryParams = new URLSearchParams(window.location.search);
     const redirectParam = queryParams.get("redirect");
-    const safeRedirect =
-      redirectParam && redirectParam.startsWith("/") && !redirectParam.startsWith("//")
-        ? redirectParam
-        : null;
+    const safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
 
-    if (token && expiresAt) {
-      localStorage.setItem("access_token", token);
-      localStorage.setItem("token_expires_at", expiresAt);
-      if (userData) {
+    void (async () => {
+      if (token && expiresAt) {
+        localStorage.setItem("access_token", token);
+        localStorage.setItem("token_expires_at", expiresAt);
+      } else if (!(await authService.ensureSession())) {
+        window.location.href = ROUTES.LOGIN;
+        return;
+      }
+
+      if (token && expiresAt && userData) {
         try {
           const user = JSON.parse(decodeURIComponent(userData));
           localStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
@@ -50,10 +58,29 @@ export default function HandoffPage() {
           /* ignore — malformed user payload, token alone still signs them in */
         }
       }
+
+      const status = await sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" });
+      const storedPropertyId = localStorage.getItem("selectedSharedPropertyId")?.trim();
+      const requestedPropertyId = propertyId?.trim() || handoffHotelId?.trim() || storedPropertyId;
+      let selectedProperty = requestedPropertyId
+        ? (status.properties.find((property) => property.propertyId === requestedPropertyId) ??
+          null)
+        : null;
+
+      if (requestedPropertyId && !selectedProperty) {
+        localStorage.removeItem("selectedSharedPropertyId");
+      }
+      if (!selectedProperty && status.properties.length === 1) {
+        selectedProperty = status.properties[0]!;
+      }
+      if (selectedProperty) {
+        localStorage.setItem("selectedSharedPropertyId", selectedProperty.propertyId);
+      }
+
       window.location.href = safeRedirect || ROUTES.MARKETPLACE;
-    } else {
+    })().catch(() => {
       window.location.href = ROUTES.LOGIN;
-    }
+    });
   }, []);
 
   return (

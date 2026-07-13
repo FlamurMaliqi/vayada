@@ -309,9 +309,12 @@ export default function ProfileCompletePage() {
 
         if (listing.imageFiles?.length) {
           try {
+            if (!createdListing.media_resource_id) {
+              throw new Error("The listing media resource is unavailable");
+            }
             const uploadResponse = await hotelService.uploadListingImages(
               listing.imageFiles,
-              createdListing.id,
+              createdListing.media_resource_id,
             );
             imageUrls = [...imageUrls, ...uploadResponse.images.map((img) => img.url)];
             imageMediaObjectIds = [

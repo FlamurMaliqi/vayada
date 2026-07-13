@@ -6,16 +6,32 @@ export function firstSearchParam(value: ReturnToParam): string | undefined {
   return Array.isArray(value) ? value[0] : (value ?? undefined);
 }
 
+export function isSafeRelativeReturnTo(value: string | null | undefined): value is string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return false;
+
+  let decoded = value;
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+  } catch {
+    return false;
+  }
+
+  if (!decoded.startsWith("/") || decoded.startsWith("//") || decoded.includes("\\")) {
+    return false;
+  }
+
+  try {
+    return new URL(decoded, SAME_ORIGIN_RETURN_TO_BASE).origin === SAME_ORIGIN_RETURN_TO_BASE;
+  } catch {
+    return false;
+  }
+}
+
 export function safeRelativeReturnTo(value: ReturnToParam, fallback: string): string {
   const raw = firstSearchParam(value);
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) {
-    return fallback;
-  }
-  try {
-    return new URL(raw, SAME_ORIGIN_RETURN_TO_BASE).origin === SAME_ORIGIN_RETURN_TO_BASE
-      ? raw
-      : fallback;
-  } catch {
-    return fallback;
-  }
+  return isSafeRelativeReturnTo(raw) ? raw : fallback;
 }

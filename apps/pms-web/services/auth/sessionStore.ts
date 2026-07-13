@@ -217,10 +217,17 @@ function clearSharedPropertySelectionIfOrganizationChanged(organizationId?: stri
 }
 
 function persistPmsResourceSelection(session: AuthKitSessionResponse): void {
-  const propertyId = session.resources?.[PMS_PROPERTY_RESOURCE_KEY]?.find((id) => id.trim());
+  const propertyIds = (session.resources?.[PMS_PROPERTY_RESOURCE_KEY] ?? [])
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const storedPropertyId = [
+    localStorage.getItem(SELECTED_PMS_PROPERTY_ID_KEY),
+    localStorage.getItem(SELECTED_SHARED_PROPERTY_ID_KEY),
+  ].find((id): id is string => Boolean(id && propertyIds.includes(id)));
+  const propertyId = storedPropertyId ?? propertyIds[0];
   if (!propertyId) return;
-  localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, propertyId.trim());
-  localStorage.setItem(SELECTED_PMS_PROPERTY_ID_KEY, propertyId.trim());
+  localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, propertyId);
+  localStorage.setItem(SELECTED_PMS_PROPERTY_ID_KEY, propertyId);
   if (session.organizationId) {
     localStorage.setItem(SELECTED_SHARED_PROPERTY_ORG_ID_KEY, session.organizationId);
   }

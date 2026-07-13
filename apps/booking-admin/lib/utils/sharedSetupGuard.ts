@@ -6,9 +6,14 @@ import {
 
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
-type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem">;
+type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
+const BOOKING_DEFERRED_READINESS_STEPS = new Set([
+  "publicBookability",
+  "bookabilityFreshness",
+  "paymentReadiness",
+]);
 
 export async function resolveBookingSetupGuard(
   returnTo: string,
@@ -19,9 +24,31 @@ export async function resolveBookingSetupGuard(
     entryProduct: "booking",
     returnTo,
     propertyId: readSelectedSharedPropertyId(storage),
+    onInvalidPropertyId: () => storage?.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY),
   });
-  persistEnteredSharedProperty(decision, storage);
-  return decision;
+  const resolvedDecision = isBookingDeferredReadinessDecision(decision)
+    ? {
+        action: "enter_product" as const,
+        propertyId: decision.propertyId!,
+        redirectPath: null,
+      }
+    : decision;
+  persistEnteredSharedProperty(resolvedDecision, storage);
+  return resolvedDecision;
+}
+
+export function isBookingDeferredReadinessDecision(
+  decision: SharedHotelSetupGuardDecision,
+): boolean {
+  return (
+    decision.action === "redirect_to_setup" &&
+    decision.setupAction === "complete_product_activation" &&
+    decision.product === "booking" &&
+    decision.productStatus === "selected_incomplete" &&
+    decision.propertyId !== null &&
+    decision.missingSteps.length > 0 &&
+    decision.missingSteps.every((step) => BOOKING_DEFERRED_READINESS_STEPS.has(step))
+  );
 }
 
 export function persistEnteredSharedProperty(

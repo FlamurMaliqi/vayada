@@ -40,10 +40,10 @@ interface PropertyStepProps {
   setInstagram: (v: string) => void;
   facebook: string;
   setFacebook: (v: string) => void;
-  tiktok: string;
-  setTiktok: (v: string) => void;
-  youtube: string;
-  setYoutube: (v: string) => void;
+  tiktok?: string;
+  setTiktok?: (v: string) => void;
+  youtube?: string;
+  setYoutube?: (v: string) => void;
   currency: string;
   setCurrency: (v: string) => void;
   defaultLanguage: string;
@@ -592,30 +592,34 @@ export default function PropertyStep({
                 placeholder="https://facebook.com/yourhotel"
               />
             </div>
-            <div>
-              <label className="block text-[12px] text-gray-800 mb-1">
-                <span className="font-semibold">TikTok</span>
-              </label>
-              <input
-                type="text"
-                value={tiktok}
-                onChange={(e) => setTiktok(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                placeholder="https://www.tiktok.com/@yourhotel"
-              />
-            </div>
-            <div>
-              <label className="block text-[12px] text-gray-800 mb-1">
-                <span className="font-semibold">YouTube</span>
-              </label>
-              <input
-                type="text"
-                value={youtube}
-                onChange={(e) => setYoutube(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                placeholder="https://youtube.com/@yourhotel"
-              />
-            </div>
+            {tiktok !== undefined && setTiktok && (
+              <div>
+                <label className="block text-[12px] text-gray-800 mb-1">
+                  <span className="font-semibold">TikTok</span>
+                </label>
+                <input
+                  type="text"
+                  value={tiktok}
+                  onChange={(e) => setTiktok(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
+                  placeholder="https://www.tiktok.com/@yourhotel"
+                />
+              </div>
+            )}
+            {youtube !== undefined && setYoutube && (
+              <div>
+                <label className="block text-[12px] text-gray-800 mb-1">
+                  <span className="font-semibold">YouTube</span>
+                </label>
+                <input
+                  type="text"
+                  value={youtube}
+                  onChange={(e) => setYoutube(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
+                  placeholder="https://youtube.com/@yourhotel"
+                />
+              </div>
+            )}
           </div>
         </div>
 

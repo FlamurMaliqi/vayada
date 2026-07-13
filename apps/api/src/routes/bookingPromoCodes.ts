@@ -214,13 +214,24 @@ export function createPgTargetBookingPromoCodesRepository(config: {
 
   async function resolvePropertyId(hotelId: string): Promise<string | null> {
     const result = await pool.query<{ propertyId: string }>(
-      `SELECT property_id::text AS "propertyId"
-       FROM hotel_catalog.property_source_links
-       WHERE source_system = 'booking'
-         AND source_table = 'booking_hotels'
-         AND source_id = $1
-         AND relationship = 'canonical_input'
-         AND status = 'active'`,
+      `WITH direct_property AS (
+         SELECT property.id::text AS "propertyId"
+         FROM hotel_catalog.properties property
+         WHERE property.id::text = $1
+       ),
+       property_candidates AS (
+         SELECT "propertyId" FROM direct_property
+         UNION ALL
+         SELECT property_id::text AS "propertyId"
+         FROM hotel_catalog.property_source_links
+         WHERE source_system = 'booking'
+           AND source_table = 'booking_hotels'
+           AND source_id = $1
+           AND relationship = 'canonical_input'
+           AND status = 'active'
+           AND NOT EXISTS (SELECT 1 FROM direct_property)
+       )
+       SELECT "propertyId" FROM property_candidates`,
       [hotelId],
     );
     if (result.rows.length > 1) {

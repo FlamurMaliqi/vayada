@@ -65,6 +65,12 @@ export function transformListingToApi(listingData: ListingFormData) {
     accommodation_type: listingData.accommodationType || undefined,
     images: listingData.images.filter((img) => !img.startsWith("data:")),
     image_media_object_ids: listingData.imageMediaObjectIds || [],
+    deliverables: listingData.lookingForPlatforms.map((platform) => ({
+      platform,
+      deliverable_type: "content",
+      quantity: 1,
+      timing_guidance: null,
+    })),
     collaboration_offerings: offerings,
     creator_requirements: {
       platforms: listingData.lookingForPlatforms,
@@ -289,10 +295,12 @@ export function transformHotelProfile(apiProfile: ApiHotelProfile): ProfileHotel
 
       return {
         id: apiListing.id,
+        mediaResourceId: apiListing.media_resource_id,
         name: apiListing.name,
         location: apiListing.location,
         description: apiListing.description,
         images: apiListing.images || [],
+        imageMediaObjectIds: apiListing.image_media_object_ids || [],
         accommodationType: apiListing.accommodation_type || undefined,
         offerings,
         collaborationTypes,

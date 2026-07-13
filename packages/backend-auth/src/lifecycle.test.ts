@@ -10,6 +10,7 @@ import {
   type CreateIdentityRecoveryFlowPayload,
   type CreateIdentityUserCommand,
   type GrantIdentityAccessCommand,
+  type GrantIdentityResourceLinksCommand,
   type IdentityCommandAudit,
   type IdentityLifecycleEvent,
   type RevokeIdentityAccessCommand,
@@ -38,6 +39,7 @@ describe("identity lifecycle command contract", () => {
       "identity.user.delete",
       "identity.access.grant",
       "identity.access.revoke",
+      "identity.resource_links.grant",
       "identity.recovery.flow.create",
       "identity.invite.affiliate.create",
       "identity.invite.customer.create",
@@ -57,6 +59,7 @@ describe("identity lifecycle command contract", () => {
       "identity.user.deleted",
       "identity.access.granted",
       "identity.access.revoked",
+      "identity.resource_links.granted",
       "identity.recovery.flow.created",
       "identity.invite.affiliate.created",
       "identity.invite.customer.created",
@@ -227,6 +230,7 @@ describe("identity lifecycle command contract", () => {
             resourceType: "platform",
             resourceId: "platform",
             relationship: "operator",
+            status: "archived",
           },
         ],
         permissionGrants: [
@@ -240,6 +244,39 @@ describe("identity lifecycle command contract", () => {
     };
 
     expect(command.payload.resourceLinks?.[0].relationship).toBe("operator");
+    expect(command.payload.resourceLinks?.[0].status).toBe("archived");
+  });
+
+  it("models resource-link grants without organization or membership mutation inputs", () => {
+    const command: GrantIdentityResourceLinksCommand = {
+      commandType: "identity.resource_links.grant",
+      commandId: "cmd_resource_link_grant_001",
+      idempotencyKey: "marketplace:offer_001:owner",
+      audit,
+      payload: {
+        organizationId: "hotel_org_001",
+        resourceLinks: [
+          {
+            product: "marketplace",
+            resourceType: "marketplace_offer",
+            resourceId: "offer_001",
+            relationship: "owner",
+          },
+        ],
+      },
+    };
+
+    expect(command.payload).toEqual({
+      organizationId: "hotel_org_001",
+      resourceLinks: [
+        {
+          product: "marketplace",
+          resourceType: "marketplace_offer",
+          resourceId: "offer_001",
+          relationship: "owner",
+        },
+      ],
+    });
   });
 
   it("keeps customer invites separate from product resource ownership", () => {

@@ -522,6 +522,7 @@ function adminOfferRow(offerId: string, propertyId: string) {
     offerStatus: "verified",
     title: "Creator suite",
     offerSummary: "A suite for creator stays.",
+    media: [],
     deliverables: [],
     compensationOptions: [],
     creatorRequirements: {},
@@ -821,6 +822,7 @@ function offerResponse(
     offerStatus: "verified",
     title,
     offerSummary: "A suite for creator stays.",
+    media: [],
     deliverables: [
       {
         deliverableId: "deliverable_801",

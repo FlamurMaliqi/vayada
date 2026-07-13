@@ -20,6 +20,7 @@ export const identityLifecycleCommandTypes = [
   "identity.user.delete",
   "identity.access.grant",
   "identity.access.revoke",
+  "identity.resource_links.grant",
   "identity.recovery.flow.create",
   "identity.invite.affiliate.create",
   "identity.invite.customer.create",
@@ -41,6 +42,7 @@ export const identityLifecycleEventTypes = [
   "identity.user.deleted",
   "identity.access.granted",
   "identity.access.revoked",
+  "identity.resource_links.granted",
   "identity.recovery.flow.created",
   "identity.invite.affiliate.created",
   "identity.invite.customer.created",
@@ -81,6 +83,7 @@ export type OrganizationCommandInput = {
   organizationId?: string;
   kind: OrganizationKind;
   name: string;
+  websiteUrl?: string | null;
   slug?: string;
   status?: OrganizationStatus;
   workosOrgId?: string;
@@ -115,6 +118,7 @@ export type ProductResourceReference = {
 
 export type ResourceLinkCommandTarget = ProductResourceReference & {
   relationship: ResourceRelationship;
+  status?: "suspended" | "archived";
 };
 
 export type PermissionGrantCommandInput = {
@@ -153,6 +157,9 @@ export type CreateIdentityUserPayload = {
 export type UpdateIdentityUserProfilePayload = {
   userId: string;
   name?: string;
+  phone?: string;
+  profilePictureUrl?: string;
+  profilePictureMediaObjectId?: string;
 };
 
 export type UpdateIdentityUserEmailPayload = {
@@ -193,6 +200,13 @@ export type RevokeIdentityAccessPayload = {
   membershipStatus?: Extract<MembershipStatus, "inactive" | "suspended">;
   resourceLinks?: readonly ResourceLinkCommandTarget[];
   permissionGrants?: readonly PermissionGrantCommandInput[];
+};
+
+export type GrantIdentityResourceLinksPayload = {
+  organizationId: string;
+  resourceLinks: readonly (Omit<ResourceLinkCommandInput, "organizationId" | "status"> & {
+    status?: "active";
+  })[];
 };
 
 export type RecoveryFlowKind =
@@ -331,6 +345,11 @@ export type RevokeIdentityAccessCommand = IdentityLifecycleCommandBase<
   RevokeIdentityAccessPayload
 >;
 
+export type GrantIdentityResourceLinksCommand = IdentityLifecycleCommandBase<
+  "identity.resource_links.grant",
+  GrantIdentityResourceLinksPayload
+>;
+
 export type CreateIdentityRecoveryFlowCommand = IdentityLifecycleCommandBase<
   "identity.recovery.flow.create",
   CreateIdentityRecoveryFlowPayload
@@ -380,6 +399,7 @@ export type IdentityLifecycleCommand =
   | DeleteIdentityUserCommand
   | GrantIdentityAccessCommand
   | RevokeIdentityAccessCommand
+  | GrantIdentityResourceLinksCommand
   | CreateIdentityRecoveryFlowCommand
   | CreateAffiliateInviteCommand
   | CreateCustomerInviteCommand
@@ -411,6 +431,7 @@ export type IdentityLifecycleEvent =
   | IdentityLifecycleEventBase<"identity.user.deleted", DeleteIdentityUserPayload>
   | IdentityLifecycleEventBase<"identity.access.granted", GrantIdentityAccessPayload>
   | IdentityLifecycleEventBase<"identity.access.revoked", RevokeIdentityAccessPayload>
+  | IdentityLifecycleEventBase<"identity.resource_links.granted", GrantIdentityResourceLinksPayload>
   | IdentityLifecycleEventBase<"identity.recovery.flow.created", CreateIdentityRecoveryFlowPayload>
   | IdentityLifecycleEventBase<"identity.invite.affiliate.created", CreateAffiliateInvitePayload>
   | IdentityLifecycleEventBase<"identity.invite.customer.created", CreateCustomerInvitePayload>

@@ -2,20 +2,27 @@ import { describe, expect, it } from "vitest";
 
 import {
   createSharedHotelSetupApi,
+  isSafeSharedHotelSetupReturnTo,
   isSharedHotelSetupProductSelectable,
   resolveSharedFirstRunSetupView,
-  selectedProductsForProperty,
   type SharedHotelSetupStatus,
   type SharedSetupProperty,
 } from "@vayada/product-onboarding";
 
 describe("resolveSharedFirstRunSetupView", () => {
+  it("rejects encoded backslash redirects that browsers normalize cross-origin", () => {
+    expect(isSafeSharedHotelSetupReturnTo("/dashboard?tab=rooms")).toBe(true);
+    expect(isSafeSharedHotelSetupReturnTo("/%5Cattacker.example")).toBe(false);
+    expect(isSafeSharedHotelSetupReturnTo("/%255Cattacker.example")).toBe(false);
+    expect(isSafeSharedHotelSetupReturnTo("//attacker.example")).toBe(false);
+  });
+
   it("starts first-property users on the property profile form", () => {
     expect(resolveSharedFirstRunSetupView(status({ properties: [] }))).toMatchObject({
       screen: "property_profile",
       profileMode: "create",
       selectedPropertyId: null,
-      title: "Add property",
+      title: "Add your first hotel",
     });
   });
 
@@ -70,26 +77,18 @@ describe("resolveSharedFirstRunSetupView", () => {
       screen: "property_profile",
       profileMode: "create",
       selectedPropertyId: null,
-      title: "Add property",
+      title: "Add hotel",
     });
   });
 
-  it("preselects the entry product when the shared profile reaches product selection", () => {
-    const setupProperty = property("property-1");
-    setupProperty.products.booking.status = "active";
-
-    expect(selectedProductsForProperty(setupProperty, "pms")).toEqual(["pms", "booking"]);
-  });
-
-  it("excludes unavailable and suspended products from selected products", () => {
+  it("allows account selection despite one unavailable hotel but blocks suspended access", () => {
     const setupProperty = property("property-1");
     setupProperty.products.booking.status = "active";
     setupProperty.products.pms.status = "unavailable";
     setupProperty.products.marketplace.status = "suspended";
 
-    expect(selectedProductsForProperty(setupProperty, "pms")).toEqual(["booking"]);
     expect(isSharedHotelSetupProductSelectable(setupProperty, "booking")).toBe(true);
-    expect(isSharedHotelSetupProductSelectable(setupProperty, "pms")).toBe(false);
+    expect(isSharedHotelSetupProductSelectable(setupProperty, "pms")).toBe(true);
     expect(isSharedHotelSetupProductSelectable(setupProperty, "marketplace")).toBe(false);
   });
 
@@ -128,7 +127,12 @@ function status(input: {
   return {
     contractVersion: "shared-hotel-setup-status.v1",
     entry: { entryProduct: "booking", returnTo: "/dashboard" },
-    hotelGroup: { organizationId: "org_1", displayName: "Alpenrose Hotel Group" },
+    hotelGroup: {
+      organizationId: "org_1",
+      displayName: "Alpenrose Hotel Group",
+      websiteUrl: null,
+      selectedProducts: ["booking"],
+    },
     selection: {
       state:
         input.properties.length === 0

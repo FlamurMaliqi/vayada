@@ -192,6 +192,31 @@ describe("PMS AuthKit session refresh", () => {
     expect(localStorage.getItem("selectedSharedPropertyOrganizationId")).toBe("org_hotel_a");
   });
 
+  it("preserves a valid non-first PMS property selection", () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.stubGlobal("window", { localStorage: storage });
+    localStorage.setItem("selectedSharedPropertyOrganizationId", "org_hotel_a");
+    localStorage.setItem("selectedSharedPropertyId", "property_b");
+    localStorage.setItem("selectedHotelId", "property_b");
+
+    setAuthKitSession({
+      accessToken: "authkit-token",
+      organizationId: "org_hotel_a",
+      resources: {
+        "pms:pms_property": ["property_a", "property_b"],
+      },
+      user: {
+        id: "user_hotel_admin",
+        email: "hotel@example.com",
+        status: "active",
+      },
+    });
+
+    expect(localStorage.getItem("selectedSharedPropertyId")).toBe("property_b");
+    expect(localStorage.getItem("selectedHotelId")).toBe("property_b");
+  });
+
   it("starts Google login through the AuthKit backend", () => {
     const location = {
       href: "https://pms.localhost/login",

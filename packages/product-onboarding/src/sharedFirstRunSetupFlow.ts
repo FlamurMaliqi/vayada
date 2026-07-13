@@ -1,3 +1,5 @@
+import { isSafeRelativeReturnTo } from "./returnTo";
+
 export const SHARED_HOTEL_SETUP_PRODUCTS = ["booking", "pms", "marketplace"] as const;
 
 export type SharedHotelSetupProduct = (typeof SHARED_HOTEL_SETUP_PRODUCTS)[number];
@@ -12,7 +14,7 @@ export function parseSharedHotelSetupEntryProduct(
 }
 
 export function isSafeSharedHotelSetupReturnTo(value: string | null | undefined): value is string {
-  return Boolean(value && value.startsWith("/") && !value.startsWith("//"));
+  return isSafeRelativeReturnTo(value);
 }
 
 export function safeSharedHotelSetupReturnTo(
@@ -114,6 +116,8 @@ export type SharedHotelSetupStatus = {
   hotelGroup: {
     organizationId: string;
     displayName: string;
+    websiteUrl: string | null;
+    selectedProducts: SharedHotelSetupProduct[];
   };
   selection: {
     state: "no_property" | "single_property" | "multiple_properties";
@@ -162,8 +166,8 @@ export type SharedPropertyProfile = SharedPropertyProfileInput & {
   updatedAt: string;
 };
 
-export type SharedHotelSetupProductSelection = {
-  propertyId: string;
+export type SharedHotelSetupAccountProductSelection = {
+  organizationId: string;
   selectedProducts: SharedHotelSetupProduct[];
   updatedAt: string;
 };
@@ -210,7 +214,7 @@ export function resolveSharedFirstRunSetupView(
       selectedPropertyId: null,
       selectedProperty: null,
       product: null,
-      title: "Add property",
+      title: status.properties.length === 0 ? "Add your first hotel" : "Add hotel",
     };
   }
 
@@ -233,7 +237,7 @@ export function resolveSharedFirstRunSetupView(
       selectedPropertyId: status.nextAction.propertyId,
       selectedProperty,
       product: null,
-      title: selectedProperty?.displayName ?? "Complete property profile",
+      title: selectedProperty?.displayName ?? "Complete hotel basics",
     };
   }
 
@@ -241,7 +245,7 @@ export function resolveSharedFirstRunSetupView(
     return propertyActionView(status, status.nextAction.propertyId, {
       screen: "product_selection",
       product: null,
-      title: "Choose products",
+      title: "Choose account systems",
     });
   }
 
@@ -264,35 +268,12 @@ export function resolveSharedFirstRunSetupView(
   });
 }
 
-export function selectedProductsForProperty(
-  property: SharedSetupProperty | null,
-  entryProduct: SharedHotelSetupEntryProduct | null,
-): SharedHotelSetupProduct[] {
-  const selected = SHARED_HOTEL_SETUP_PRODUCTS.filter((product) =>
-    isSelectedSharedHotelSetupProductStatus(property?.products[product].status),
-  );
-  if (
-    entryProduct &&
-    !selected.includes(entryProduct) &&
-    isSharedHotelSetupProductSelectable(property, entryProduct)
-  ) {
-    selected.unshift(entryProduct);
-  }
-  return selected;
-}
-
 export function isSharedHotelSetupProductSelectable(
   property: SharedSetupProperty | null,
   product: SharedHotelSetupProduct,
 ): boolean {
   const status = property?.products[product].status;
-  return status !== "suspended" && status !== "unavailable";
-}
-
-function isSelectedSharedHotelSetupProductStatus(
-  status: SharedHotelSetupProductStatus | undefined,
-): boolean {
-  return status === "active" || status === "selected_incomplete";
+  return status !== "suspended";
 }
 
 function propertyActionView(

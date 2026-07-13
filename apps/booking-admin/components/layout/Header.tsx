@@ -23,6 +23,10 @@ function storeSelectedHotelId(hotelId: string): void {
   window.dispatchEvent(new Event(SELECTED_HOTEL_CHANGED_EVENT));
 }
 
+function storeSelectedSharedPropertyId(propertyId: string | undefined): void {
+  if (propertyId) localStorage.setItem("selectedSharedPropertyId", propertyId);
+}
+
 export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) {
   const router = useRouter();
   const { t, locale, setLocale } = useTranslation();
@@ -72,10 +76,14 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         setHotels(list);
         if (list.length > 0) {
           const savedId = localStorage.getItem("selectedHotelId");
-          const saved = list.find((h) => h.id === savedId);
+          const savedPropertyId = localStorage.getItem("selectedSharedPropertyId");
+          const saved = list.find(
+            (hotel) => hotel.id === savedId || hotel.propertyId === savedPropertyId,
+          );
           const selected = saved || list[0];
           setSelectedHotel(selected);
-          storeSelectedHotelId(selected.id);
+          storeSelectedSharedPropertyId(selected.propertyId);
+          if (selected.productReady !== false) storeSelectedHotelId(selected.id);
         }
       })
       .catch(() => {});
@@ -176,6 +184,15 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                       key={hotel.id}
                       onClick={() => {
                         if (!isSelected) {
+                          storeSelectedSharedPropertyId(hotel.propertyId);
+                          if (hotel.productReady === false) {
+                            localStorage.removeItem("selectedHotelId");
+                            setDropdownOpen(false);
+                            router.push(
+                              `/setup?entryProduct=booking&propertyId=${encodeURIComponent(hotel.propertyId ?? hotel.id)}`,
+                            );
+                            return;
+                          }
                           storeSelectedHotelId(hotel.id);
                           window.location.reload();
                         }
@@ -211,7 +228,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                   className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] text-primary-600 hover:bg-primary-50 transition-colors"
                 >
                   <PlusIcon className="w-4 h-4" />
-                  {t("layout.header.addProperty")}
+                  Add hotel
                 </button>
               </div>
             </div>

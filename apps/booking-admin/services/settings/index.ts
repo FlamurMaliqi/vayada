@@ -1,5 +1,7 @@
 import { apiClient, omitHotelContext } from "../api/client";
 import { getSelectedBookingHotelId, listScopedBookingHotelIds } from "../api/bookingHotelScope";
+import { getBookingHotelPropertyLink } from "../api/bookingPropertyLinkClient";
+import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
 import {
   getBookingRoomFilterSettings,
   updateBookingRoomFilterSettings,
@@ -13,9 +15,11 @@ import {
 } from "../api/bookingCustomDomainClient";
 
 export interface PropertySettings {
-  // booking_hotels.id. Used to set selectedHotelId and resolve the
-  // canonical property link for target Booking/PMS/Finance routes.
+  // Route-safe Booking identifier. It is the native booking hotel id when one
+  // exists and otherwise the canonical property id.
   id?: string;
+  property_id?: string;
+  booking_hotel_id?: string | null;
   slug: string;
   property_name: string;
   reservation_email: string;
@@ -138,7 +142,7 @@ function unsupportedDesignUpdateKeys(data: DesignSettingsUpdate): string[] {
   );
 }
 
-function listScopedBookingHotels(): HotelSummary[] {
+function legacyScopedBookingHotels(): HotelSummary[] {
   return listScopedBookingHotelIds().map((id, index) => ({
     id,
     name: index === 0 ? "My Property" : `Property ${index + 1}`,
@@ -146,6 +150,51 @@ function listScopedBookingHotels(): HotelSummary[] {
     location: "",
     country: "",
   }));
+}
+
+async function listScopedBookingHotels(): Promise<HotelSummary[]> {
+  const bookingHotelIds = listScopedBookingHotelIds();
+  try {
+    const [status, propertyLinks] = await Promise.all([
+      sharedHotelSetupApi.getStatus({ entryProduct: "booking" }),
+      Promise.all(
+        bookingHotelIds.map(async (hotelId) => {
+          try {
+            const link = await getBookingHotelPropertyLink({ hotelId });
+            return [link.propertyId, hotelId] as const;
+          } catch {
+            return null;
+          }
+        }),
+      ),
+    ]);
+    const bookingHotelIdByPropertyId = new Map<string, string>();
+    for (const link of propertyLinks) {
+      if (!link) continue;
+      const [propertyId, hotelId] = link;
+      if (hotelId === propertyId) continue;
+      const existing = bookingHotelIdByPropertyId.get(propertyId);
+      if (!existing || hotelId.localeCompare(existing) < 0) {
+        bookingHotelIdByPropertyId.set(propertyId, hotelId);
+      }
+    }
+
+    return status.properties.map((property) => {
+      const bookingHotelId = bookingHotelIdByPropertyId.get(property.propertyId);
+      return {
+        id: bookingHotelId ?? property.propertyId,
+        propertyId: property.propertyId,
+        bookingHotelId,
+        productReady: true,
+        name: property.displayName ?? "Unnamed hotel",
+        slug: property.publicId,
+        location: property.locationSummary ?? "",
+        country: "",
+      };
+    });
+  } catch {
+    return legacyScopedBookingHotels();
+  }
 }
 
 async function resolveBookingHotelId(): Promise<string> {
@@ -189,6 +238,9 @@ export interface SetupStatusResponse {
 
 export interface HotelSummary {
   id: string;
+  propertyId?: string;
+  bookingHotelId?: string;
+  productReady?: boolean;
   name: string;
   slug: string;
   location: string;
@@ -264,7 +316,7 @@ export interface HotelDeletionImpact {
 }
 
 export const settingsService = {
-  listHotels: async () => listScopedBookingHotels(),
+  listHotels: () => listScopedBookingHotels(),
 
   listAllHotels: () => unavailableTargetRoute<SuperAdminHotel[]>("Platform hotel list"),
 
@@ -345,7 +397,7 @@ export const settingsService = {
     deleteBookingCustomDomain({ hotelId: await resolveBookingHotelId() }),
 
   getSetupStatus: async () => {
-    const hotels = listScopedBookingHotels();
+    const hotels = await listScopedBookingHotels();
     return {
       setup_complete: hotels.length > 0,
       missing_fields: hotels.length > 0 ? [] : ["property"],
