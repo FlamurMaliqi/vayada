@@ -909,6 +909,24 @@ describe("platform media upload routes", () => {
 
     expect(forbidden.statusCode).toBe(403);
     expect((forbidden.body as ErrorResponse).code).toBe("media_resource_forbidden");
+
+    for (const override of [
+      { targetResourceId: "user_someone_else" },
+      { propertyId: "property_someone_else" },
+    ]) {
+      const overridden = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          ...payload,
+          resource: { ...payload.resource, ...override },
+        },
+      });
+
+      expect(overridden.statusCode).toBe(400);
+      expect((overridden.body as ErrorResponse).code).toBe("invalid_resource_scope");
+    }
   });
 
   const denialCases: Array<{

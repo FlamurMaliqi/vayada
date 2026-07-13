@@ -237,7 +237,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                   className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] text-primary-600 hover:bg-primary-50 transition-colors"
                 >
                   <PlusIcon className="w-4 h-4" />
-                  Add hotel
+                  {t("layout.header.addProperty")}
                 </button>
               </div>
             </div>

@@ -249,6 +249,24 @@ export function createEmptyListingFormData(): ListingFormData {
   };
 }
 
+export function createListingFormDataForEdit(listing: ProfileHotelListing): ListingFormData {
+  return {
+    name: listing.name,
+    location: listing.location,
+    description: listing.description,
+    images: listing.images || [],
+    imageMediaObjectIds: listing.imageMediaObjectIds ?? [],
+    accommodationType: listing.accommodationType || "",
+    offerings: listing.offerings.map((offering) => ({ ...offering })),
+    lookingForPlatforms: listing.lookingForPlatforms || [],
+    targetGroupCountries: listing.targetGroupCountries || [],
+    targetGroupAgeMin: listing.targetGroupAgeMin,
+    targetGroupAgeMax: listing.targetGroupAgeMax,
+    targetGroupAgeGroups: listing.targetGroupAgeGroups || [],
+    lookingForCreatorTypes: listing.lookingForCreatorTypes || [],
+  };
+}
+
 export function createEmptyOffering(type: CollaborationKind = "Free Stay"): ListingOffering {
   return {
     type,

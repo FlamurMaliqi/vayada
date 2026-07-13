@@ -557,6 +557,18 @@ export async function registerPlatformMediaRoutes(
           "Profile images can only be uploaded for the signed-in user.",
         );
       }
+      if (
+        policy.actorOwned &&
+        (request.body.resource.targetResourceId !== undefined ||
+          request.body.resource.propertyId !== undefined)
+      ) {
+        return sendMediaError(
+          reply,
+          400,
+          "invalid_resource_scope",
+          "Profile image targets cannot be overridden.",
+        );
+      }
 
       const requestedVisibility = request.body.visibility ?? "private";
       if (policy.privateOnly && requestedVisibility !== "private") {

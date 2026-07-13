@@ -12,17 +12,17 @@ ALTER TABLE identity.users
   CHECK (
     phone IS NULL
     OR char_length(btrim(phone)) BETWEEN 5 AND 64
-  ),
+  ) NOT VALID,
   ADD CONSTRAINT chk_identity_users_profile_picture_url
   CHECK (
     profile_picture_url IS NULL
     OR char_length(profile_picture_url) <= 2048
-  ),
+  ) NOT VALID,
   ADD CONSTRAINT chk_identity_users_profile_picture_media_object_id
   CHECK (
     profile_picture_media_object_id IS NULL
     OR char_length(profile_picture_media_object_id) <= 2048
-  );
+  ) NOT VALID;
 
 CREATE OR REPLACE FUNCTION platform.valid_media_purpose_visibility(
   media_purpose TEXT,

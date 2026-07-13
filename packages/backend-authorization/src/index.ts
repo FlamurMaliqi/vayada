@@ -258,7 +258,12 @@ export function hasActiveEntitlement(
       (entitlement) =>
         entitlement.status === "suspended" &&
         entitlement.product === requirement.product &&
-        canonicalEntitlementKey(entitlement.product, entitlement.key) === requiredKey,
+        canonicalEntitlementKey(entitlement.product, entitlement.key) === requiredKey &&
+        (entitlement.resource === undefined ||
+          (requirement.resource !== undefined &&
+            entitlement.resource.product === requirement.resource.product &&
+            entitlement.resource.resourceType === requirement.resource.resourceType &&
+            entitlement.resource.resourceId === requirement.resource.resourceId)),
     )
   ) {
     return false;

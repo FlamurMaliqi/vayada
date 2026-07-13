@@ -50,8 +50,15 @@ export function HotelSelector() {
         setOpen(false);
       }
     }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, []);
 
   const selectedProperty =
@@ -60,8 +67,12 @@ export function HotelSelector() {
   return (
     <div className="relative" ref={rootRef}>
       <button
+        id="hotel-selector-trigger"
         type="button"
         onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-controls="hotel-selector-listbox"
         className="flex max-w-[180px] items-center gap-1 text-[13px] text-gray-700 transition-colors hover:text-gray-950 sm:max-w-[240px]"
         title={selectedProperty?.displayName ?? undefined}
       >
@@ -77,13 +88,20 @@ export function HotelSelector() {
       {open && (
         <div className="absolute left-0 top-full z-50 mt-2 w-64 rounded-lg border border-gray-200 bg-white py-1.5 shadow-lg">
           <p className="px-3 py-1.5 text-xs text-gray-500">Switch hotel</p>
-          <div className="max-h-64 overflow-y-auto px-1.5">
+          <div
+            id="hotel-selector-listbox"
+            role="listbox"
+            aria-labelledby="hotel-selector-trigger"
+            className="max-h-64 overflow-y-auto px-1.5"
+          >
             {properties.map((property) => {
               const selected = property.propertyId === selectedPropertyId;
               return (
                 <button
                   key={property.propertyId}
                   type="button"
+                  role="option"
+                  aria-selected={selected}
                   onClick={() => {
                     localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, property.propertyId);
                     setSelectedPropertyId(property.propertyId);

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import {
   clearStoredPmsPropertyId,
   getStoredPmsPropertyId,
+  isPmsPropertyReady,
   listPmsProperties,
   storeSelectedPmsPropertyId,
   type PmsPropertySummary,
@@ -80,7 +81,7 @@ export default function HandoffPage() {
         storeSelectedPmsPropertyId(selected.id);
       }
 
-      if (safeRedirect) {
+      if (isExplicitSetupRedirect(safeRedirect)) {
         window.location.href = safeRedirect;
         return;
       }
@@ -92,6 +93,15 @@ export default function HandoffPage() {
       if (!selected && properties.length > 1) {
         localStorage.setItem("pmsSetupComplete", "true");
         window.location.href = "/choose-property";
+        return;
+      }
+      if (selected && !isPmsPropertyReady(selected)) {
+        localStorage.setItem("pmsSetupComplete", "false");
+        window.location.href = `/setup?entryProduct=pms&propertyId=${encodeURIComponent(selected.id)}`;
+        return;
+      }
+      if (safeRedirect) {
+        window.location.href = safeRedirect;
         return;
       }
 
@@ -108,4 +118,8 @@ export default function HandoffPage() {
       <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
     </div>
   );
+}
+
+function isExplicitSetupRedirect(path: string | null): path is string {
+  return path === "/setup" || path?.startsWith("/setup?") === true;
 }

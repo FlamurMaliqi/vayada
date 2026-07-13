@@ -2,12 +2,14 @@ import {
   SELECTED_PMS_PROPERTY_ID_KEY,
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/pmsPropertySelectionKeys";
+import type { SharedHotelSetupProductStatus } from "@vayada/product-onboarding";
 
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { unsupportedPmsNextStackFeature } from "./unsupported";
 
 export interface PmsPropertySummary {
   id: string;
+  pmsStatus: SharedHotelSetupProductStatus;
   name: string;
   slug: string;
   location: string;
@@ -38,11 +40,16 @@ export async function listPmsProperties(): Promise<PmsPropertySummary[]> {
   const status = await sharedHotelSetupApi.getStatus({ entryProduct: "pms" });
   return status.properties.map((property) => ({
     id: property.propertyId,
+    pmsStatus: property.products.pms.status,
     name: property.displayName ?? "Unnamed hotel",
     slug: property.publicId,
     location: property.locationSummary ?? "",
     country: "",
   }));
+}
+
+export function isPmsPropertyReady(property: PmsPropertySummary): boolean {
+  return property.pmsStatus === "active";
 }
 
 export async function resolveSelectedPmsPropertyId(action = "loading PMS data"): Promise<string> {

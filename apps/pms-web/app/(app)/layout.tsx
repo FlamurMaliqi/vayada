@@ -16,6 +16,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    setIsAuthorized(false);
+    setSetupGuardError(false);
     async function authorize() {
       let authorized = false;
       try {

@@ -552,7 +552,7 @@ describe("entitlement helpers", () => {
       true,
     ],
     [
-      "lets any primary-product resource suspension override account access",
+      "ignores a suspension for a different resource",
       contextFor({
         entitlements: [
           entitlement("active"),
@@ -560,6 +560,29 @@ describe("entitlement helpers", () => {
             product: "booking",
             resourceType: "booking_hotel",
             resourceId: "booking_hotel_legacy_alias",
+          }),
+        ],
+      }),
+      {
+        product: "booking",
+        key: "booking-engine",
+        resource: {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+        },
+      },
+      true,
+    ],
+    [
+      "denies a suspension for the requested resource",
+      contextFor({
+        entitlements: [
+          entitlement("active"),
+          entitlement("suspended", {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_alpenrose",
           }),
         ],
       }),
@@ -622,7 +645,7 @@ describe("entitlement helpers", () => {
     expect(hasActiveEntitlement(context, entitlementRequirement)).toBe(expected);
   });
 
-  it("normalizes a legacy PMS entitlement key before applying a suspension", () => {
+  it("normalizes a legacy PMS entitlement key without widening its resource scope", () => {
     const context = contextFor({
       entitlements: [
         { product: "pms", key: "property-management", status: "active" },
@@ -649,7 +672,7 @@ describe("entitlement helpers", () => {
           resourceId: "canonical-property",
         },
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("throws authorization errors for missing active entitlement", () => {

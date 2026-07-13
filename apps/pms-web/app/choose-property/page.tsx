@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import {
   clearStoredPmsPropertyId,
   getStoredPmsPropertyId,
+  isPmsPropertyReady,
   storeSelectedPmsPropertyId,
+  type PmsPropertySummary,
 } from "@/services/api/pmsPropertyClient";
 import { authService } from "@/services/auth";
-import { pmsSettingsService, type HotelSummary } from "@/services/settings";
+import { pmsSettingsService } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
 
 const BOOKING_ADMIN_URL =
@@ -43,7 +45,7 @@ function buildHandoffUrl(baseUrl: string, path: string): string {
 export default function PmsChoosePropertyPage() {
   const { t } = useTranslation();
   const router = useRouter();
-  const [hotels, setHotels] = useState<HotelSummary[] | null>(null);
+  const [hotels, setHotels] = useState<PmsPropertySummary[] | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -66,6 +68,11 @@ export default function PmsChoosePropertyPage() {
         }
         if (list.length === 1) {
           storeSelectedPmsPropertyId(list[0].id);
+          if (!isPmsPropertyReady(list[0])) {
+            localStorage.setItem("pmsSetupComplete", "false");
+            router.replace(`/setup?entryProduct=pms&propertyId=${encodeURIComponent(list[0].id)}`);
+            return;
+          }
           router.replace("/dashboard");
           return;
         }
@@ -87,8 +94,13 @@ export default function PmsChoosePropertyPage() {
     };
   }, [router, t]);
 
-  const selectHotel = (hotel: HotelSummary) => {
+  const selectHotel = (hotel: PmsPropertySummary) => {
     storeSelectedPmsPropertyId(hotel.id);
+    if (!isPmsPropertyReady(hotel)) {
+      localStorage.setItem("pmsSetupComplete", "false");
+      router.replace(`/setup?entryProduct=pms&propertyId=${encodeURIComponent(hotel.id)}`);
+      return;
+    }
     localStorage.setItem("pmsSetupComplete", "true");
     router.replace("/dashboard");
   };

@@ -10,4 +10,4 @@ ALTER TABLE identity.organizations
   CHECK (
     website_url IS NULL
     OR website_url ~ '^https?://[^[:space:]]+$'
-  );
+  ) NOT VALID;

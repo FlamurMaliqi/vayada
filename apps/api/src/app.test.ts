@@ -6946,17 +6946,21 @@ describe("vayada-api", () => {
     expect(queries[0]?.text).not.toMatch(/\bFROM\s+booking_hotels\b/i);
   });
 
-  it("serves target booking add-on items by canonical property id", async () => {
+  it.each([
+    ["canonical property id", "d3000000-0000-0000-0000-000000000682"],
+    ["legacy booking-hotel id", "booking_hotel_alpenrose"],
+  ])("serves and updates target booking add-on items by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
+    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
     const pool: BookingAddonItemsPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
         text: string,
         values?: unknown[],
       ): Promise<Pick<QueryResult<T>, "rows">> {
         queries.push({ text, values });
-        if (text.includes("hotel_catalog.property_source_links")) {
+        if (text.includes("WITH direct_property AS")) {
           return {
-            rows: [{ propertyId: "d3000000-0000-0000-0000-000000000682" }] as unknown as T[],
+            rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
           };
         }
         return {
@@ -6986,13 +6990,12 @@ describe("vayada-api", () => {
       pool,
     });
 
-    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
-    const items = await repository.listAddonItemsByHotelId(canonicalPropertyId);
+    const items = await repository.listAddonItemsByHotelId(hotelId);
 
     expect(items).toEqual([
       {
         addonItemId: "0f840001-0000-4000-8000-000000000001",
-        hotelId: canonicalPropertyId,
+        hotelId,
         propertyId: "d3000000-0000-0000-0000-000000000682",
         name: "Migrated add-on",
         description: "",
@@ -7009,18 +7012,27 @@ describe("vayada-api", () => {
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
     ]);
-    await repository.updateAddonItemByHotelId(canonicalPropertyId, "not-a-uuid", {
+    const updated = await repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
       name: "Updated",
     });
 
+    expect(updated?.hotelId).toBe(hotelId);
     expect(queries[1]?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
     expect(queries[1]?.text).toContain("addon_definitions.status <> 'retired'");
     expect(queries[0]?.text).toContain("property.id::text = $1");
+    expect(queries[0]?.text).toContain("UNION ALL");
+    expect(queries[0]?.text).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");
+    expect(queries[0]?.values).toEqual([hotelId]);
+    expect(queries[2]?.values).toEqual([hotelId]);
     expect(queries.map((query) => query.text).join("\n")).not.toContain("$2::uuid");
   });
 
-  it("serves target booking promo codes by canonical property id", async () => {
+  it.each([
+    ["canonical property id", "d3000000-0000-0000-0000-000000000682"],
+    ["legacy booking-hotel id", "booking_hotel_alpenrose"],
+  ])("serves target booking promo codes by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
+    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
     const pool: BookingPromoCodesPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
         text: string,
@@ -7029,7 +7041,7 @@ describe("vayada-api", () => {
         queries.push({ text, values });
         if (text.includes("hotel_catalog.property_source_links")) {
           return {
-            rows: [{ propertyId: "d3000000-0000-0000-0000-000000000682" }] as unknown as T[],
+            rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
           };
         }
         if (text.includes("RETURNING id::text AS id")) {
@@ -7062,9 +7074,8 @@ describe("vayada-api", () => {
       pool,
     });
 
-    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
-    const items = await repository.listPromoCodesByHotelId(canonicalPropertyId);
-    const created = await repository.createPromoCodeByHotelId(canonicalPropertyId, {
+    const items = await repository.listPromoCodesByHotelId(hotelId);
+    const created = await repository.createPromoCodeByHotelId(hotelId, {
       code: "SUMMER20",
       discountType: "percentage",
       discountValue: "20.00",
@@ -7075,14 +7086,14 @@ describe("vayada-api", () => {
       maxUses: 50,
     });
     const retired = await repository.retirePromoCodeByHotelId(
-      canonicalPropertyId,
+      hotelId,
       "0f850001-0000-4000-8000-000000000001",
     );
 
     expect(items).toEqual([
       {
         promoCodeId: "0f850001-0000-4000-8000-000000000001",
-        hotelId: canonicalPropertyId,
+        hotelId,
         propertyId: "d3000000-0000-0000-0000-000000000682",
         code: "SUMMER20",
         discountType: "percentage",
@@ -7103,7 +7114,14 @@ describe("vayada-api", () => {
     expect(sql).toContain("booking.promo_definitions");
     expect(sql).toContain("promo_definitions.status <> 'retired'");
     expect(sql).toContain("property.id::text = $1");
+    expect(sql).toContain("UNION ALL");
+    expect(sql).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");
     expect(sql).not.toContain("promo_applications");
+    expect(
+      queries
+        .filter((query) => query.text.includes("WITH direct_property AS"))
+        .map((query) => query.values),
+    ).toEqual([[hotelId], [hotelId], [hotelId]]);
   });
 
   it("defaults missing booking addon settings fields to the legacy response defaults", async () => {

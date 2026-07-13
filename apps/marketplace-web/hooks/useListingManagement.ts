@@ -2,7 +2,10 @@ import { useState, useRef } from "react";
 import { hotelService } from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
 import { transformListingToApi } from "@/components/profile/transforms";
-import { createEmptyListingFormData } from "@/components/profile/types";
+import {
+  createEmptyListingFormData,
+  createListingFormDataForEdit,
+} from "@/components/profile/types";
 import { formatErrorForModal } from "./useErrorModal";
 import type {
   ProfileHotelListing,
@@ -43,20 +46,7 @@ export function useListingManagement(
   };
 
   const openEditListingModal = (listing: ProfileHotelListing) => {
-    setListingFormData({
-      name: listing.name,
-      location: listing.location,
-      description: listing.description,
-      images: listing.images || [],
-      accommodationType: listing.accommodationType || "",
-      offerings: listing.offerings.map((o) => ({ ...o })),
-      lookingForPlatforms: listing.lookingForPlatforms || [],
-      targetGroupCountries: listing.targetGroupCountries || [],
-      targetGroupAgeMin: listing.targetGroupAgeMin,
-      targetGroupAgeMax: listing.targetGroupAgeMax,
-      targetGroupAgeGroups: listing.targetGroupAgeGroups || [],
-      lookingForCreatorTypes: listing.lookingForCreatorTypes || [],
-    });
+    setListingFormData(createListingFormDataForEdit(listing));
     setEditingListingId(listing.id);
     setListingImagePreview(null);
     setListingCountryInput("");

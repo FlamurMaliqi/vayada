@@ -109,6 +109,9 @@ function BookingProductSetupPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const productActivationMode = searchParams.get("legacy") === "booking";
+  const activationPropertyId = productActivationMode
+    ? readString(searchParams.get("propertyId"))
+    : null;
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
@@ -246,6 +249,22 @@ function BookingProductSetupPage() {
         return;
       }
 
+      if (productActivationMode) {
+        const hotels = await settingsService.listHotels();
+        if (
+          !activationPropertyId ||
+          !hotels.some(
+            (hotel) =>
+              hotel.propertyId === activationPropertyId || hotel.id === activationPropertyId,
+          )
+        ) {
+          localStorage.removeItem("selectedHotelId");
+          router.replace("/setup?entryProduct=booking");
+          return;
+        }
+        localStorage.setItem("selectedHotelId", activationPropertyId);
+      }
+
       // Multi-hotel "Add Property" flow: the header's Add Property
       // button routes to /setup?mode=add for users who already have
       // >= 1 hotel. Skip the setup_complete redirect in that case
@@ -339,7 +358,7 @@ function BookingProductSetupPage() {
       setLoading(false);
     }
     checkAuth();
-  }, [productActivationMode, router]);
+  }, [activationPropertyId, productActivationMode, router]);
 
   const canProceed = (): boolean => {
     if (step === 1) {
@@ -359,9 +378,11 @@ function BookingProductSetupPage() {
     setError("");
     setSaving(true);
     try {
-      const selectedSharedPropertyId = localStorage.getItem("selectedSharedPropertyId");
-      if (productActivationMode && selectedSharedPropertyId) {
-        localStorage.setItem("selectedHotelId", selectedSharedPropertyId);
+      if (productActivationMode) {
+        if (!activationPropertyId) {
+          throw new Error("Select a property before activating Booking.");
+        }
+        localStorage.setItem("selectedHotelId", activationPropertyId);
       } else {
         localStorage.removeItem("selectedHotelId");
       }
@@ -483,23 +504,21 @@ function BookingProductSetupPage() {
       }
 
       // 8. Save benefits
-      if (benefits.length > 0) {
+      if (benefits.length > 0 && createdHotelId) {
         try {
-          if (savedSettings.id) {
-            await updateBookingBenefitsSettings({
-              hotelId: savedSettings.id,
-              body: { benefits },
-            });
-          }
+          await updateBookingBenefitsSettings({
+            hotelId: createdHotelId,
+            body: { benefits },
+          });
         } catch {
           // Non-fatal: benefits can be added later from Settings
         }
       }
 
-      if (savedSettings.id && lastMinuteConfig.enabled) {
+      if (createdHotelId && lastMinuteConfig.enabled) {
         try {
           await updateBookingLastMinuteSettings({
-            hotelId: savedSettings.id,
+            hotelId: createdHotelId,
             body: lastMinuteConfig,
           });
         } catch {
