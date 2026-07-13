@@ -1,6 +1,7 @@
 "use client";
 
 import { RefObject } from "react";
+import Image from "next/image";
 import { Input, Textarea } from "@/components/ui";
 import {
   UserIcon,
@@ -8,6 +9,7 @@ import {
   LinkIcon,
   PhoneIcon,
   EnvelopeIcon,
+  CameraIcon,
 } from "@heroicons/react/24/outline";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { CreatorFormState } from "@/lib/types";
@@ -30,17 +32,20 @@ export function CreatorBasicInfoStep({
   const profilePictureError =
     !!error && error.toLowerCase().includes("profile picture") && !form.profile_image;
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between border-b border-gray-100 pb-2">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900">Basic Information</h3>
-          <p className="text-xs text-gray-500">Your creator profile details</p>
-        </div>
+    <div className="space-y-7">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
+          Profile details
+        </p>
+        <h2 className="mt-2 text-2xl font-semibold text-gray-950">Introduce yourself to hotels</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-600">
+          Add a clear photo, a short introduction, and the contact details hotels can use after a
+          collaboration is accepted.
+        </p>
       </div>
 
-      <div className="flex flex-col-reverse md:flex-row gap-5">
-        {/* Left Column: Name & Location */}
-        <div className="flex-1 space-y-3">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_240px]">
+        <div className="grid content-start gap-4 sm:grid-cols-2">
           <Input
             label="Name"
             type="text"
@@ -49,7 +54,8 @@ export function CreatorBasicInfoStep({
             required
             placeholder="Your full name"
             error={error && error.includes("Name") ? error : undefined}
-            leadingIcon={<UserIcon className="w-5 h-5 text-gray-400" />}
+            leadingIcon={<UserIcon className="h-5 w-5 text-gray-400" />}
+            className="rounded-xl border-gray-200 bg-gray-50"
           />
 
           <Input
@@ -58,64 +64,79 @@ export function CreatorBasicInfoStep({
             value={form.location}
             onChange={(e) => onFormChange({ location: e.target.value })}
             required
-            placeholder="e.g., New York, USA"
+            placeholder="e.g. Berlin, Germany"
             error={error && error.includes("Location") ? error : undefined}
-            leadingIcon={<MapPinIcon className="w-5 h-5 text-gray-400" />}
+            leadingIcon={<MapPinIcon className="h-5 w-5 text-gray-400" />}
+            className="rounded-xl border-gray-200 bg-gray-50"
           />
+
+          <div className="space-y-1 sm:col-span-2">
+            <Textarea
+              label="Creator bio"
+              value={form.short_description}
+              onChange={(e) => onFormChange({ short_description: e.target.value })}
+              required
+              placeholder="Tell hotels about your content, audience, and point of view."
+              rows={5}
+              maxLength={500}
+              error={error && error.includes("description") ? error : undefined}
+              className="rounded-xl border-gray-200 bg-gray-50"
+            />
+            <p
+              className={`mt-1 text-xs ${
+                form.short_description.trim().length >= 10
+                  ? "text-emerald-600"
+                  : form.short_description.trim().length > 0
+                    ? "text-red-500"
+                    : "text-gray-500"
+              }`}
+            >
+              {form.short_description.length}/500 characters
+              {form.short_description.trim().length > 0 &&
+                form.short_description.trim().length < 10 && <span> · minimum 10 characters</span>}
+            </p>
+          </div>
         </div>
 
-        {/* Right Column: Profile Picture */}
-        <div className="w-full md:w-auto flex flex-col items-center gap-2">
-          <span className="text-xs font-semibold text-gray-700">
-            Profile Picture <span className="text-red-500">*</span>
+        <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4">
+          <span className="block text-sm font-medium text-gray-700">
+            Profile picture <span className="text-red-500">*</span>
           </span>
-          <div
-            className={`relative w-40 h-40 rounded-full border-2 border-dashed flex flex-col items-center justify-center cursor-pointer hover:border-primary-500 transition-all overflow-hidden group ${
+          <button
+            type="button"
+            className={`group relative mx-auto mt-4 flex aspect-square w-full max-w-44 cursor-pointer flex-col items-center justify-center overflow-hidden rounded-full border-2 border-dashed transition focus:outline-none focus:ring-2 focus:ring-primary-200 ${
               profilePictureError
                 ? "border-red-500 bg-red-50 hover:bg-red-50"
-                : "border-gray-300 bg-gray-50 hover:bg-gray-50"
+                : "border-gray-300 bg-white hover:border-primary-300"
             }`}
             onClick={() => imageInputRef.current?.click()}
           >
             {form.profile_image ? (
               <>
-                <img
+                <Image
                   src={form.profile_image}
-                  alt="Profile"
-                  className="w-full h-full object-cover"
+                  alt={form.name ? `${form.name} profile preview` : "Creator profile preview"}
+                  fill
+                  unoptimized
+                  sizes="176px"
+                  className="object-cover"
                 />
-                <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                  <span className="text-white text-[10px] font-medium">Change</span>
-                </div>
+                <span className="absolute inset-0 flex items-center justify-center bg-gray-950/45 text-sm font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
+                  Change photo
+                </span>
               </>
             ) : (
               <>
-                <div className="w-6 h-6 text-gray-400 mb-1 group-hover:text-primary-500 transition-colors">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={1.5}
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z"
-                    />
-                  </svg>
-                </div>
-                <span className="text-[10px] text-gray-500 font-medium group-hover:text-primary-600">
-                  Upload
+                <span className="flex h-11 w-11 items-center justify-center rounded-full bg-primary-50 text-primary-600">
+                  <CameraIcon className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <span className="mt-3 text-sm font-semibold text-gray-950">Upload a photo</span>
+                <span className="mt-1 px-4 text-center text-xs leading-5 text-gray-500">
+                  JPG, PNG, or WebP
                 </span>
               </>
             )}
-          </div>
+          </button>
           <input
             type="file"
             ref={imageInputRef}
@@ -124,59 +145,37 @@ export function CreatorBasicInfoStep({
             className="hidden"
           />
           {profilePictureError && (
-            <p className="text-xs text-red-500 font-medium">Profile picture is required</p>
+            <p className="mt-2 text-center text-xs font-medium text-red-500">
+              Profile picture is required
+            </p>
           )}
         </div>
       </div>
 
-      <div className="space-y-1">
-        <Textarea
-          label="Creator Biography"
-          value={form.short_description}
-          onChange={(e) => onFormChange({ short_description: e.target.value })}
-          required
-          placeholder="Tell us about yourself as a travel creator"
-          rows={3}
-          maxLength={500}
-          error={error && error.includes("description") ? error : undefined}
-        />
-        <p
-          className={`text-xs mt-1 ${
-            form.short_description.trim().length >= 10
-              ? "text-green-600"
-              : form.short_description.trim().length > 0
-                ? "text-red-500"
-                : "text-gray-500"
-          }`}
-        >
-          {form.short_description.length}/500 characters
-          {form.short_description.trim().length > 0 &&
-            form.short_description.trim().length < 10 && <span> (minimum 10 characters)</span>}
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <h4 className="text-sm font-bold text-gray-700">Portfolio Link</h4>
+      <div className="border-t border-gray-100 pt-7">
+        <h3 className="text-lg font-semibold text-gray-950">Portfolio</h3>
+        <p className="mt-1 text-sm text-gray-500">Share one strong example of your work.</p>
         <Input
-          label=""
+          label="Portfolio link"
           type="url"
           value={form.portfolio_link}
           onChange={(e) => onFormChange({ portfolio_link: e.target.value })}
           placeholder="https://your-portfolio.com"
-          helperText="Optional - Your website, media kit, or best-performing content URL"
-          leadingIcon={<LinkIcon className="w-5 h-5 text-gray-400" />}
+          helperText="Optional · your website, media kit, or best-performing content"
+          leadingIcon={<LinkIcon className="h-5 w-5 text-gray-400" />}
+          className="mt-4 rounded-xl border-gray-200 bg-gray-50"
         />
       </div>
 
-      <div className="space-y-4 pt-2">
+      <div className="space-y-4 border-t border-gray-100 pt-7">
         <div>
-          <h4 className="text-base font-bold text-gray-900">Contact Information</h4>
-          <p className="text-sm text-gray-500 mt-1">
-            Your email & phone number for direct communication with properties after both accept a
-            collaboration
+          <h3 className="text-lg font-semibold text-gray-950">Contact details</h3>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-gray-500">
+            Hotels only use these details for direct communication after both sides accept a
+            collaboration.
           </p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Input
             label="Email"
             type="email"
@@ -187,8 +186,8 @@ export function CreatorBasicInfoStep({
             }
             disabled
             required
-            leadingIcon={<EnvelopeIcon className="w-5 h-5 text-gray-400" />}
-            className="bg-gray-50 text-gray-500"
+            leadingIcon={<EnvelopeIcon className="h-5 w-5 text-gray-400" />}
+            className="rounded-xl border-gray-200 bg-gray-50 text-gray-500"
           />
           <Input
             label="Phone"
@@ -196,8 +195,9 @@ export function CreatorBasicInfoStep({
             required
             value={form.phone}
             onChange={(e) => onFormChange({ phone: e.target.value })}
-            placeholder="+1-555-123-4567"
-            leadingIcon={<PhoneIcon className="w-5 h-5 text-gray-400" />}
+            placeholder="+49 123 456 789"
+            leadingIcon={<PhoneIcon className="h-5 w-5 text-gray-400" />}
+            className="rounded-xl border-gray-200 bg-gray-50"
           />
         </div>
       </div>

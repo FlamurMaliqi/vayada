@@ -7,7 +7,6 @@ import type { PlatformFormData } from "@/lib/types";
 
 interface PlatformDemographicsProps {
   platform: PlatformFormData;
-  platformIndex: number;
   isExpanded: boolean;
   onToggleExpanded: () => void;
   countryInput: string;
@@ -22,7 +21,6 @@ interface PlatformDemographicsProps {
 
 export function PlatformDemographics({
   platform,
-  platformIndex,
   isExpanded,
   onToggleExpanded,
   countryInput,
@@ -35,14 +33,17 @@ export function PlatformDemographics({
   onUpdateGenderSplit,
 }: PlatformDemographicsProps) {
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-3">
+    <div className="rounded-2xl border border-gray-100 bg-white p-4">
       <button
         type="button"
         onClick={onToggleExpanded}
-        className="flex items-center justify-between w-full text-left"
+        className="flex w-full items-center justify-between text-left"
       >
-        <span className="text-sm font-semibold text-gray-800">
-          Audience Demographics (Optional)
+        <span>
+          <span className="block text-sm font-semibold text-gray-900">Audience demographics</span>
+          <span className="mt-0.5 block text-xs text-gray-500">
+            Optional, but useful for matching
+          </span>
         </span>
         {isExpanded ? (
           <ChevronUpIcon className="w-5 h-5 text-gray-500" />
@@ -52,7 +53,7 @@ export function PlatformDemographics({
       </button>
 
       {isExpanded && (
-        <div className="mt-4 space-y-4">
+        <div className="mt-5 space-y-5 border-t border-gray-100 pt-5">
           {/* Top Countries */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -76,11 +77,11 @@ export function PlatformDemographics({
                     }
                   }}
                   placeholder="Search countries..."
-                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 outline-none focus:border-primary-300 focus:ring-2 focus:ring-primary-200"
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-primary-300 focus:ring-2 focus:ring-primary-200"
                 />
                 {/* Dropdown suggestions */}
                 {availableCountries.length > 0 && (
-                  <div className="max-h-40 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-sm">
+                  <div className="max-h-40 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm">
                     {availableCountries.map((country) => (
                       <button
                         key={country}
@@ -100,7 +101,7 @@ export function PlatformDemographics({
                   {platform.top_countries.map((country, countryIndex) => (
                     <div
                       key={`${country.country}-${countryIndex}`}
-                      className="flex items-center gap-3 rounded-lg border border-gray-200 bg-primary-50/60 px-3 py-2"
+                      className="flex items-center gap-3 rounded-xl border border-primary-100 bg-primary-50/60 px-3 py-2"
                     >
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-gray-800 truncate">
@@ -109,7 +110,7 @@ export function PlatformDemographics({
                         <p className="text-xs text-gray-500">Audience percentage</p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1">
+                        <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1">
                           <input
                             type="text"
                             inputMode="decimal"
@@ -196,7 +197,7 @@ export function PlatformDemographics({
                 min={0}
                 max={100}
                 step="0.1"
-                className="bg-gray-50"
+                className="rounded-xl border-gray-200 bg-gray-50"
               />
               <Input
                 label="Female %"
@@ -215,7 +216,7 @@ export function PlatformDemographics({
                 min={0}
                 max={100}
                 step="0.1"
-                className="bg-gray-50"
+                className="rounded-xl border-gray-200 bg-gray-50"
               />
             </div>
             {platform.gender_split &&

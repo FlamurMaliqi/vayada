@@ -36,7 +36,7 @@ export default function ProfileCompletePage() {
   const [profileCompleted, setProfileCompleted] = useState(false);
   const [currentStep, setCurrentStep] = useState<number>(1);
 
-  const creatorSteps = ["Creator Type", "Basic Information", "Social Media Platforms"];
+  const creatorSteps = ["Creator category", "Profile details", "Audience & platforms"];
   const hotelSteps = ["Basic Information", "Collaboration Offers"];
 
   // Initialize hooks with error handler
@@ -490,6 +490,7 @@ export default function ProfileCompletePage() {
         currentStep={2}
         title={profileShellTitle(userType)}
         description={profileShellDescription(userType)}
+        showProgress={false}
       >
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error || "Failed to load profile status. Please refresh the page."}
@@ -516,89 +517,89 @@ export default function ProfileCompletePage() {
     : userType === "creator"
       ? creatorForm.calculateProgress()
       : hotelForm.calculateProgress();
+  const isCreatorCategoryStep = userType === "creator" && currentStep === 1;
 
   return (
     <OnboardingShell
       currentStep={2}
       title={profileShellTitle(userType)}
       description={profileShellDescription(userType)}
+      compact
+      showProgress={false}
     >
-      <div className="space-y-4">
-        <ProfileCompletionProgress percentage={completionPercentage} />
+      <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-4xl" : "space-y-2"}>
+        {!isCreatorCategoryStep && <StepIndicators steps={steps} currentStep={currentStep} />}
 
-        <div className="mb-4 flex flex-col items-center justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm md:flex-row">
-          <div className="text-center md:text-left">
-            <p className="text-xs font-semibold text-gray-500">Build profile</p>
-            <h2 className="text-lg font-semibold leading-tight text-gray-950">
-              {userType === "creator" ? "Creator profile" : "Collaboration offer"}
-            </h2>
-            <p className="max-w-xs text-xs text-gray-500">
-              {userType === "creator"
-                ? "Add enough context for hotels to review your fit."
-                : "Add enough property detail for creator matching."}
-            </p>
-          </div>
-          <StepIndicators steps={steps} currentStep={currentStep} />
+        <div
+          className={
+            isCreatorCategoryStep
+              ? ""
+              : "overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]"
+          }
+        >
+          {!isCreatorCategoryStep && (
+            <ProfileCompletionProgress percentage={completionPercentage} />
+          )}
+
+          {/* Forms */}
+          {userType === "creator" && (
+            <CreatorProfileForm
+              form={creatorForm.form}
+              platforms={creatorForm.platforms}
+              currentStep={currentStep}
+              totalSteps={totalSteps}
+              error={error}
+              submitting={submitting}
+              canProceed={canProceedToNextStep()}
+              expandedPlatforms={creatorForm.expandedPlatforms}
+              platformCountryInputs={creatorForm.platformCountryInputs}
+              imageInputRef={creatorForm.imageInputRef}
+              onFormChange={creatorForm.handleFormChange}
+              onImageChange={creatorForm.handleImageChange}
+              onAddPlatform={creatorForm.addPlatform}
+              onRemovePlatform={creatorForm.removePlatform}
+              onUpdatePlatform={creatorForm.updatePlatform}
+              onTogglePlatformExpanded={creatorForm.togglePlatformExpanded}
+              onCountryInputChange={creatorForm.handleCountryInputChange}
+              onAddCountry={creatorForm.addCountryFromInput}
+              onRemoveCountry={creatorForm.removeCountry}
+              onUpdateCountryPercentage={creatorForm.updateCountryPercentage}
+              getAvailableCountries={creatorForm.getAvailableCountries}
+              onToggleAgeGroup={creatorForm.toggleAgeGroup}
+              onUpdateGenderSplit={creatorForm.updateGenderSplit}
+              onPrevStep={prevStep}
+              onNextStep={nextStep}
+              onSubmit={handleCreatorSubmit}
+            />
+          )}
+
+          {userType === "hotel" && (
+            <HotelProfileForm
+              form={hotelForm.form}
+              listings={hotelForm.listings}
+              currentStep={currentStep}
+              totalSteps={totalSteps}
+              error={error}
+              submitting={submitting}
+              canProceed={canProceedToNextStep()}
+              collapsedCards={hotelForm.collapsedCards}
+              countryInputs={hotelForm.countryInputs}
+              countries={hotelForm.countries}
+              imageInputRefs={hotelForm.listingImageInputRefs}
+              onFormChange={hotelForm.handleFormChange}
+              onAddListing={hotelForm.addListing}
+              onRemoveListing={hotelForm.removeListing}
+              onToggleCollapse={hotelForm.toggleListingCollapse}
+              onUpdateListing={hotelForm.updateListing}
+              onImageChange={hotelForm.handleListingImageChange}
+              onRemoveImage={hotelForm.removeListingImage}
+              onCountryInputChange={hotelForm.handleCountryInputChange}
+              onPrevStep={prevStep}
+              onNextStep={nextStep}
+              onSubmit={handleHotelSubmit}
+            />
+          )}
         </div>
-
-        {/* Forms */}
-        {userType === "creator" && (
-          <CreatorProfileForm
-            form={creatorForm.form}
-            platforms={creatorForm.platforms}
-            currentStep={currentStep}
-            totalSteps={totalSteps}
-            error={error}
-            submitting={submitting}
-            canProceed={canProceedToNextStep()}
-            expandedPlatforms={creatorForm.expandedPlatforms}
-            platformCountryInputs={creatorForm.platformCountryInputs}
-            imageInputRef={creatorForm.imageInputRef}
-            onFormChange={creatorForm.handleFormChange}
-            onImageChange={creatorForm.handleImageChange}
-            onAddPlatform={creatorForm.addPlatform}
-            onRemovePlatform={creatorForm.removePlatform}
-            onUpdatePlatform={creatorForm.updatePlatform}
-            onTogglePlatformExpanded={creatorForm.togglePlatformExpanded}
-            onCountryInputChange={creatorForm.handleCountryInputChange}
-            onAddCountry={creatorForm.addCountryFromInput}
-            onRemoveCountry={creatorForm.removeCountry}
-            onUpdateCountryPercentage={creatorForm.updateCountryPercentage}
-            getAvailableCountries={creatorForm.getAvailableCountries}
-            onToggleAgeGroup={creatorForm.toggleAgeGroup}
-            onUpdateGenderSplit={creatorForm.updateGenderSplit}
-            onPrevStep={prevStep}
-            onNextStep={nextStep}
-            onSubmit={handleCreatorSubmit}
-          />
-        )}
-
-        {userType === "hotel" && (
-          <HotelProfileForm
-            form={hotelForm.form}
-            listings={hotelForm.listings}
-            currentStep={currentStep}
-            totalSteps={totalSteps}
-            error={error}
-            submitting={submitting}
-            canProceed={canProceedToNextStep()}
-            collapsedCards={hotelForm.collapsedCards}
-            countryInputs={hotelForm.countryInputs}
-            countries={hotelForm.countries}
-            imageInputRefs={hotelForm.listingImageInputRefs}
-            onFormChange={hotelForm.handleFormChange}
-            onAddListing={hotelForm.addListing}
-            onRemoveListing={hotelForm.removeListing}
-            onToggleCollapse={hotelForm.toggleListingCollapse}
-            onUpdateListing={hotelForm.updateListing}
-            onImageChange={hotelForm.handleListingImageChange}
-            onRemoveImage={hotelForm.removeListingImage}
-            onCountryInputChange={hotelForm.handleCountryInputChange}
-            onPrevStep={prevStep}
-            onNextStep={nextStep}
-            onSubmit={handleHotelSubmit}
-          />
-        )}
       </div>
     </OnboardingShell>
   );

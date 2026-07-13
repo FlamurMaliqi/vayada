@@ -124,7 +124,6 @@ export function HotelProfileForm({
           submitting={submitting}
           canProceed={canProceed}
           onPrevious={onPrevStep}
-          onNext={onNextStep}
           submitLabel="Complete Profile"
         />
       </form>
