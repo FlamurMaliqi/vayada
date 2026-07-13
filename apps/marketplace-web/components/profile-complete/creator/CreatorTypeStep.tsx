@@ -1,7 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { CheckIcon, PaperAirplaneIcon, SparklesIcon } from "@heroicons/react/24/outline";
+import {
+  CheckIcon,
+  EllipsisHorizontalIcon,
+  PaperAirplaneIcon,
+  SparklesIcon,
+} from "@heroicons/react/24/outline";
 import type { CreatorType } from "@/lib/types";
 
 interface CreatorTypeStepProps {
@@ -26,7 +31,7 @@ const CREATOR_TYPES = [
   },
   {
     type: "Other" as CreatorType,
-    icon: SparklesIcon,
+    icon: EllipsisHorizontalIcon,
     image: "/creator-category-other.jpg",
     label: "Something else",
     description: "A different niche with a strong fit for hotel collaborations.",

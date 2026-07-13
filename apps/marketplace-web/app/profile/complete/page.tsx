@@ -523,9 +523,13 @@ export default function ProfileCompletePage() {
   return (
     <OnboardingShell
       currentStep={2}
-      title={profileShellTitle(userType)}
-      description={profileShellDescription(userType)}
-      compact
+      title={isCreatorCategoryStep ? "Which creator type are you?" : profileShellTitle(userType)}
+      description={
+        isCreatorCategoryStep
+          ? "Choose the option that best describes the content you create."
+          : profileShellDescription(userType)
+      }
+      compact={!isCreatorCategoryStep}
       showProgress={false}
     >
       <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-4xl" : "space-y-2"}>
