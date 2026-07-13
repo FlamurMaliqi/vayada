@@ -6486,6 +6486,8 @@ describe("vayada-api", () => {
     };
     const propertyState: {
       id: string;
+      property_id: string;
+      booking_hotel_id: string | null;
       slug: string;
       property_name: string;
       reservation_email: string | null;
@@ -6501,7 +6503,9 @@ describe("vayada-api", () => {
       cancellation_policy_text: string | null;
       accepted_payment_methods: string[];
     } = {
-      id: "d3000000-0000-0000-0000-000000000682",
+      id: "booking_hotel_alpenrose",
+      property_id: "d3000000-0000-0000-0000-000000000682",
+      booking_hotel_id: "booking_hotel_alpenrose",
       slug: "hotel-alpenrose",
       property_name: "Hotel Alpenrose",
       reservation_email: "reservations@alpenrose.example",
@@ -6556,6 +6560,13 @@ describe("vayada-api", () => {
           propertyState.check_in_time = values?.[6] as string;
           propertyState.check_out_time = values?.[7] as string;
           propertyState.cancellation_policy_text = values?.[8] as string;
+          state.default_language = values?.[9] as string;
+          state.default_currency = values?.[11] as string;
+          state.supported_currencies = values?.[12] as string[];
+          state.supported_languages = values?.[13] as string[];
+          state.special_requests_enabled = values?.[14] as boolean;
+          state.arrival_time_enabled = values?.[15] as boolean;
+          state.guest_count_enabled = values?.[16] as boolean;
           return {
             rows: [
               {
@@ -6638,7 +6649,9 @@ describe("vayada-api", () => {
     });
     expect(propertySettingsResponse.statusCode).toBe(200);
     expect(propertySettingsResponse.body).toMatchObject({
-      id: "d3000000-0000-0000-0000-000000000682",
+      id: "booking_hotel_alpenrose",
+      property_id: "d3000000-0000-0000-0000-000000000682",
+      booking_hotel_id: "booking_hotel_alpenrose",
       slug: "hotel-alpenrose",
       property_name: "Hotel Alpenrose",
       default_currency: "CHF",
@@ -6689,6 +6702,13 @@ describe("vayada-api", () => {
         check_in_time: "14:00",
         check_out_time: "10:00",
         cancellation_policy_text: "Target cancellation policy.",
+        default_currency: "EUR",
+        default_language: "en-US",
+        supported_currencies: ["CHF", "EUR"],
+        supported_languages: ["de", "en-US"],
+        special_requests_enabled: true,
+        arrival_time_enabled: false,
+        guest_count_enabled: false,
       },
     });
     expect(propertyPatchResponse.statusCode).toBe(200);
@@ -6697,8 +6717,10 @@ describe("vayada-api", () => {
       reservation_email: "target@alpenrose.example",
       address: "Target lane 1",
       city: "Vienna",
-      default_currency: "CHF",
-      default_language: "de",
+      default_currency: "EUR",
+      default_language: "en-US",
+      supported_currencies: ["CHF"],
+      supported_languages: ["de"],
       pay_at_property_enabled: true,
       pay_at_hotel_methods: ["card"],
       online_card_payment: false,
@@ -6708,13 +6730,19 @@ describe("vayada-api", () => {
     const propertyUpdateQuery = queries.find((query) =>
       query.text.includes("UPDATE hotel_catalog.property_public_profile_read_model profile"),
     );
-    expect(propertyUpdateQuery?.text).toContain("'rawMarketplaceLocation', $3::text");
+    expect(propertyUpdateQuery?.text).toContain("'rawMarketplaceLocation', CASE");
     expect(propertyUpdateQuery?.text).toContain("'city', $4::text");
     expect(propertyUpdateQuery?.text).toContain("'countryCode', $5::text");
     expect(propertyUpdateQuery?.text).toContain("'cancellationSummary', $9::text");
     expect(propertyUpdateQuery?.text).toContain("default_locale = $10");
     expect(propertyUpdateQuery?.text).toContain("supported_locales = $11::text[]");
-    expect(propertyUpdateQuery?.text).not.toContain("$12");
+    expect(propertyUpdateQuery?.text).toContain("default_currency = EXCLUDED.default_currency");
+    expect(propertyUpdateQuery?.text).toContain(
+      "guest_count_enabled = EXCLUDED.guest_count_enabled",
+    );
+    expect(propertyUpdateQuery?.text).toContain("contact.source_system = 'booking'");
+    expect(propertyUpdateQuery?.text).toContain("existing.source_system <> 'booking'");
+    expect(propertyUpdateQuery?.text).not.toContain("address_public = TRUE");
 
     const cases = [
       {
@@ -6848,6 +6876,8 @@ describe("vayada-api", () => {
             {
               source_link_count: 1,
               id: propertyId,
+              property_id: propertyId,
+              booking_hotel_id: null,
               slug: "hotel-alpenrose",
               property_name: "Hotel Alpenrose",
               reservation_email: null,
@@ -6906,6 +6936,8 @@ describe("vayada-api", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toMatchObject({
       id: propertyId,
+      property_id: propertyId,
+      booking_hotel_id: null,
       slug: "hotel-alpenrose",
       property_name: "Hotel Alpenrose",
     });
@@ -6914,7 +6946,7 @@ describe("vayada-api", () => {
     expect(queries[0]?.text).not.toMatch(/\bFROM\s+booking_hotels\b/i);
   });
 
-  it("serves target booking add-on items without legacy queries or retired rows", async () => {
+  it("serves target booking add-on items by canonical property id", async () => {
     const queries: { text: string; values?: unknown[] }[] = [];
     const pool: BookingAddonItemsPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
@@ -6954,12 +6986,13 @@ describe("vayada-api", () => {
       pool,
     });
 
-    const items = await repository.listAddonItemsByHotelId("booking_hotel_alpenrose");
+    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
+    const items = await repository.listAddonItemsByHotelId(canonicalPropertyId);
 
     expect(items).toEqual([
       {
         addonItemId: "0f840001-0000-4000-8000-000000000001",
-        hotelId: "booking_hotel_alpenrose",
+        hotelId: canonicalPropertyId,
         propertyId: "d3000000-0000-0000-0000-000000000682",
         name: "Migrated add-on",
         description: "",
@@ -6976,16 +7009,17 @@ describe("vayada-api", () => {
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
     ]);
-    await repository.updateAddonItemByHotelId("booking_hotel_alpenrose", "not-a-uuid", {
+    await repository.updateAddonItemByHotelId(canonicalPropertyId, "not-a-uuid", {
       name: "Updated",
     });
 
     expect(queries[1]?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
     expect(queries[1]?.text).toContain("addon_definitions.status <> 'retired'");
+    expect(queries[0]?.text).toContain("property.id::text = $1");
     expect(queries.map((query) => query.text).join("\n")).not.toContain("$2::uuid");
   });
 
-  it("serves target booking promo codes without touching applied-promo outcomes", async () => {
+  it("serves target booking promo codes by canonical property id", async () => {
     const queries: { text: string; values?: unknown[] }[] = [];
     const pool: BookingPromoCodesPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
@@ -7028,8 +7062,9 @@ describe("vayada-api", () => {
       pool,
     });
 
-    const items = await repository.listPromoCodesByHotelId("booking_hotel_alpenrose");
-    const created = await repository.createPromoCodeByHotelId("booking_hotel_alpenrose", {
+    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
+    const items = await repository.listPromoCodesByHotelId(canonicalPropertyId);
+    const created = await repository.createPromoCodeByHotelId(canonicalPropertyId, {
       code: "SUMMER20",
       discountType: "percentage",
       discountValue: "20.00",
@@ -7040,14 +7075,14 @@ describe("vayada-api", () => {
       maxUses: 50,
     });
     const retired = await repository.retirePromoCodeByHotelId(
-      "booking_hotel_alpenrose",
+      canonicalPropertyId,
       "0f850001-0000-4000-8000-000000000001",
     );
 
     expect(items).toEqual([
       {
         promoCodeId: "0f850001-0000-4000-8000-000000000001",
-        hotelId: "booking_hotel_alpenrose",
+        hotelId: canonicalPropertyId,
         propertyId: "d3000000-0000-0000-0000-000000000682",
         code: "SUMMER20",
         discountType: "percentage",
@@ -7067,6 +7102,7 @@ describe("vayada-api", () => {
     const sql = queries.map((query) => query.text).join("\n");
     expect(sql).toContain("booking.promo_definitions");
     expect(sql).toContain("promo_definitions.status <> 'retired'");
+    expect(sql).toContain("property.id::text = $1");
     expect(sql).not.toContain("promo_applications");
   });
 

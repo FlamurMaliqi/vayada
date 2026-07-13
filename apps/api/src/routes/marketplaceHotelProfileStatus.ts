@@ -43,6 +43,10 @@ type HotelProfileStatusAccess = {
   profileResourceId: string;
 };
 
+type MarketplacePropertyParams = {
+  propertyId: string;
+};
+
 export async function registerMarketplaceHotelProfileStatusRoutes(
   app: FastifyInstance,
   options: MarketplaceHotelProfileStatusRoutesOptions,
@@ -53,8 +57,12 @@ export async function registerMarketplaceHotelProfileStatusRoutes(
     await repository.close?.();
   });
 
-  app.get("/hotels/me/profile-status", async (request, reply) => {
-    const access = resolveHotelProfileStatusAccess(request, reply);
+  const sendStatus = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    requestedPropertyId?: string,
+  ) => {
+    const access = resolveHotelProfileStatusAccess(request, reply, requestedPropertyId);
     if (!access) return reply;
 
     const status = await repository.getHotelProfileStatus(access);
@@ -67,7 +75,13 @@ export async function registerMarketplaceHotelProfileStatusRoutes(
         completion_steps: ["Complete your marketplace hotel profile"],
       }
     );
-  });
+  };
+
+  app.get<{ Params: MarketplacePropertyParams }>(
+    "/properties/:propertyId/profile-status",
+    async (request, reply) => sendStatus(request, reply, request.params.propertyId),
+  );
+  app.get("/hotels/me/profile-status", async (request, reply) => sendStatus(request, reply));
 }
 
 export function createPgMarketplaceHotelProfileStatusRepository(config: {
@@ -136,6 +150,7 @@ export function createPgMarketplaceHotelProfileStatusRepository(config: {
 function resolveHotelProfileStatusAccess(
   request: FastifyRequest,
   reply: FastifyReply,
+  requestedPropertyId?: string,
 ): HotelProfileStatusAccess | null {
   try {
     const context = enforceRoutePolicy(request, { permission: "marketplace.profile.manage" });
@@ -158,7 +173,7 @@ function resolveHotelProfileStatusAccess(
       return null;
     }
     const profileResourceIds = [...new Set(profileLinks.map((resource) => resource.resourceId))];
-    if (profileResourceIds.length > 1) {
+    if (!requestedPropertyId && profileResourceIds.length > 1) {
       reply.status(409).send({
         code: "ambiguous_marketplace_hotel_profile",
         detail: "Selected organization has multiple active marketplace hotel profile links",
@@ -166,9 +181,25 @@ function resolveHotelProfileStatusAccess(
       return null;
     }
 
-    const profileResourceId = profileResourceIds[0]!;
+    const profileResourceId = requestedPropertyId ?? profileResourceIds[0]!;
+    if (!profileResourceIds.includes(profileResourceId)) {
+      reply.status(403).send({
+        code: "missing_marketplace_profile_resource_link",
+        detail: "The selected hotel is not linked to this Marketplace account",
+      });
+      return null;
+    }
     enforceRoutePolicy(request, {
       permission: "marketplace.profile.manage",
+      entitlement: {
+        product: "marketplace",
+        key: "marketplace-hotel-profile",
+        resource: {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: profileResourceId,
+        },
+      },
       resource: {
         product: "marketplace",
         resourceType: "hotel_profile",

@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon, CheckIcon } from "@heroicons/react/24/outline";
+import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
+import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
@@ -18,12 +20,13 @@ function buildHandoffUrl(baseUrl: string): string {
   const token = localStorage.getItem("access_token");
   const expiresAt = localStorage.getItem("token_expires_at");
   const user = localStorage.getItem(STORAGE_KEYS.USER);
-  if (!token || !expiresAt) return baseUrl;
+  const propertyId = localStorage.getItem("selectedSharedPropertyId");
   const params = new URLSearchParams({
-    token,
-    expires_at: expiresAt,
-    ...(user ? { user: encodeURIComponent(user) } : {}),
+    ...(token && expiresAt ? { token, expires_at: expiresAt } : {}),
+    ...(token && expiresAt && user ? { user: encodeURIComponent(user) } : {}),
+    ...(propertyId ? { property_id: propertyId } : {}),
   });
+  if (params.size === 0) return baseUrl;
   return `${baseUrl}/handoff#${params.toString()}`;
 }
 
@@ -36,11 +39,36 @@ export function AppSwitcher({
 }) {
   const [open, setOpen] = useState(false);
   const [userType, setUserType] = useState<UserType | null>(null);
+  const [enabledProducts, setEnabledProducts] = useState<Set<SharedHotelSetupProduct>>(
+    () => new Set<SharedHotelSetupProduct>(["marketplace"]),
+  );
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     setUserType(localStorage.getItem(STORAGE_KEYS.USER_TYPE) as UserType | null);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void sharedHotelSetupApi
+      .getStatus({ entryProduct: "marketplace" })
+      .then((status) => {
+        if (!cancelled) {
+          setEnabledProducts(
+            new Set<SharedHotelSetupProduct>([
+              "marketplace",
+              ...status.hotelGroup.selectedProducts,
+            ]),
+          );
+        }
+      })
+      .catch(() => {
+        // Keep the current product available when account status cannot be loaded.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -166,64 +194,76 @@ export function AppSwitcher({
             <CheckIcon className="w-4 h-4 text-primary-500 shrink-0" />
           </button>
 
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              goTo(BOOKING_ADMIN_URL);
-            }}
-            className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
-          >
-            <div className="w-7 h-7 bg-primary-500 rounded-md flex items-center justify-center shrink-0">
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 18 18"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <rect x="2" y="3" width="14" height="12" rx="2" stroke="white" strokeWidth="1.5" />
-                <path d="M2 7H16" stroke="white" strokeWidth="1.5" />
-                <path d="M6 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-                <path d="M12 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-gray-900 leading-tight">Booking Engine</p>
-              <p className="text-[10px] text-gray-500 leading-tight">Direct bookings</p>
-            </div>
-          </a>
+          {enabledProducts.has("booking") && (
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                goTo(BOOKING_ADMIN_URL);
+              }}
+              className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
+            >
+              <div className="w-7 h-7 bg-primary-500 rounded-md flex items-center justify-center shrink-0">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 18 18"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <rect
+                    x="2"
+                    y="3"
+                    width="14"
+                    height="12"
+                    rx="2"
+                    stroke="white"
+                    strokeWidth="1.5"
+                  />
+                  <path d="M2 7H16" stroke="white" strokeWidth="1.5" />
+                  <path d="M6 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M12 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-gray-900 leading-tight">Booking Engine</p>
+                <p className="text-[10px] text-gray-500 leading-tight">Direct bookings</p>
+              </div>
+            </a>
+          )}
 
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              goTo(PMS_FRONTEND_URL);
-            }}
-            className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
-          >
-            <div className="w-7 h-7 bg-emerald-600 rounded-md flex items-center justify-center shrink-0">
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="white"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M3 7v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7" />
-                <path d="M6 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2" />
-                <path d="M3 7h18" />
-                <path d="M8 11h8" />
-              </svg>
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-gray-900 leading-tight">Property Manager</p>
-              <p className="text-[10px] text-gray-500 leading-tight">PMS</p>
-            </div>
-          </a>
+          {enabledProducts.has("pms") && (
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                goTo(PMS_FRONTEND_URL);
+              }}
+              className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
+            >
+              <div className="w-7 h-7 bg-emerald-600 rounded-md flex items-center justify-center shrink-0">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 7v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7" />
+                  <path d="M6 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2" />
+                  <path d="M3 7h18" />
+                  <path d="M8 11h8" />
+                </svg>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-gray-900 leading-tight">Property Manager</p>
+                <p className="text-[10px] text-gray-500 leading-tight">PMS</p>
+              </div>
+            </a>
+          )}
         </div>
       )}
     </div>

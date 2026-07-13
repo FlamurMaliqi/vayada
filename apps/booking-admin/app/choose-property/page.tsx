@@ -46,8 +46,19 @@ export default function ChoosePropertyPage() {
           return;
         }
         if (list.length === 1) {
-          localStorage.setItem("selectedHotelId", list[0].id);
-          router.replace("/dashboard");
+          const hotel = list[0];
+          if (hotel.propertyId) {
+            localStorage.setItem("selectedSharedPropertyId", hotel.propertyId);
+          }
+          if (hotel.productReady === false) {
+            localStorage.removeItem("selectedHotelId");
+            router.replace(
+              `/setup?entryProduct=booking&propertyId=${encodeURIComponent(hotel.propertyId ?? hotel.id)}`,
+            );
+          } else {
+            localStorage.setItem("selectedHotelId", hotel.id);
+            router.replace("/dashboard");
+          }
           return;
         }
         setHotels(list);
@@ -65,6 +76,16 @@ export default function ChoosePropertyPage() {
   }, [router, t]);
 
   const selectHotel = (hotel: HotelSummary) => {
+    if (hotel.propertyId) {
+      localStorage.setItem("selectedSharedPropertyId", hotel.propertyId);
+    }
+    if (hotel.productReady === false) {
+      localStorage.removeItem("selectedHotelId");
+      router.replace(
+        `/setup?entryProduct=booking&propertyId=${encodeURIComponent(hotel.propertyId ?? hotel.id)}`,
+      );
+      return;
+    }
     localStorage.setItem("selectedHotelId", hotel.id);
     localStorage.setItem("setupComplete", "true");
     router.replace("/dashboard");
@@ -177,7 +198,7 @@ export default function ChoosePropertyPage() {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            {t("auth.chooseProperty.addProperty")}
+            Add hotel
           </button>
         </div>
       </div>

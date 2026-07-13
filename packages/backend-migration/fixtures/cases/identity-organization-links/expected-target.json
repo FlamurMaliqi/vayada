@@ -6,8 +6,8 @@
     "identity.organization_memberships": 1,
     "identity.organization_resource_links": 3,
     "identity.product_entitlements": 2,
-    "identity.permission_catalog": 24,
-    "identity.role_permission_grants": 41
+    "identity.permission_catalog": 25,
+    "identity.role_permission_grants": 43
   },
   "idStability": {
     "identity.users": ["a1b2c3d4-0000-0000-0000-000000000001"],

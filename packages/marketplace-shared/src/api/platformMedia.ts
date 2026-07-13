@@ -13,13 +13,19 @@ const LEGACY_IMAGE_UPLOAD_API_BASE_URL =
 const platformMediaApiClient = new ApiClient(PLATFORM_MEDIA_API_BASE_URL);
 
 export type PlatformMediaPurpose =
+  | "identity.user.profile_image"
   | "property.hero_image"
   | "marketplace.offer.media"
   | "marketplace.creator.profile_image";
 
 export type PlatformMediaResourceScope = {
-  product: "booking" | "marketplace";
-  resourceType: "booking_hotel" | "hotel_profile" | "marketplace_offer" | "creator_profile";
+  product: "platform" | "booking" | "marketplace";
+  resourceType:
+    | "user_profile"
+    | "booking_hotel"
+    | "hotel_profile"
+    | "marketplace_offer"
+    | "creator_profile";
   resourceId: string;
   propertyId?: string;
   targetResourceId?: string;
@@ -223,6 +229,8 @@ function legacyEndpointForPurpose(purpose: PlatformMediaPurpose): {
   path: string;
 } {
   switch (purpose) {
+    case "identity.user.profile_image":
+      return { kind: "single", path: "/upload/image?prefix=users" };
     case "property.hero_image":
       return { kind: "single", path: "/upload/image/hotel-profile" };
     case "marketplace.creator.profile_image":

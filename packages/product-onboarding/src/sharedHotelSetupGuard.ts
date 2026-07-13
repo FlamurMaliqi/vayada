@@ -52,7 +52,7 @@ export function resolveSharedHotelSetupGuardDecision(
   return {
     action: "redirect_to_setup",
     propertyId,
-    redirectPath: buildSharedHotelSetupRedirectPath(input),
+    redirectPath: buildSharedHotelSetupRedirectPath({ ...input, propertyId }),
     setupAction: status.nextAction.action,
     product,
     productStatus: activation?.status ?? null,
@@ -68,23 +68,50 @@ export async function resolveSharedHotelSetupGuard(
     entryProduct: SharedHotelSetupEntryProduct;
     returnTo: string;
     propertyId?: string | null;
+    onInvalidPropertyId?: () => void;
   },
 ): Promise<SharedHotelSetupGuardDecision> {
-  const status = await api.getStatus({
-    entryProduct: input.entryProduct,
-    returnTo: input.returnTo,
-    propertyId: input.propertyId,
-  });
+  let status: SharedHotelSetupStatus;
+  try {
+    status = await api.getStatus({
+      entryProduct: input.entryProduct,
+      returnTo: input.returnTo,
+      propertyId: input.propertyId,
+    });
+  } catch (error) {
+    if (!input.propertyId || !isMissingPropertyResourceLinkError(error)) throw error;
+    input.onInvalidPropertyId?.();
+    status = await api.getStatus({
+      entryProduct: input.entryProduct,
+      returnTo: input.returnTo,
+      propertyId: null,
+    });
+  }
   return resolveSharedHotelSetupGuardDecision(status, input);
+}
+
+function isMissingPropertyResourceLinkError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { status?: unknown; statusCode?: unknown; data?: unknown };
+  const status = Number(candidate.status ?? candidate.statusCode);
+  const data =
+    typeof candidate.data === "object" && candidate.data !== null
+      ? (candidate.data as { code?: unknown })
+      : null;
+  return status === 403 && data?.code === "missing_property_resource_link";
 }
 
 export function buildSharedHotelSetupRedirectPath(input: {
   entryProduct: SharedHotelSetupEntryProduct;
   returnTo: string;
+  propertyId?: string | null;
 }): string {
   const query = new URLSearchParams({ entryProduct: input.entryProduct });
   if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {
     query.set("returnTo", input.returnTo);
+  }
+  if (input.propertyId?.trim()) {
+    query.set("propertyId", input.propertyId.trim());
   }
   return `/setup?${query.toString()}`;
 }

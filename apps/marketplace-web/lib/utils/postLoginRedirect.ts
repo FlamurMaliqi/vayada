@@ -5,7 +5,7 @@ import { getPostLoginProfileRedirect } from "./profileRedirect";
 import { checkProfileStatus } from "./profileStatus";
 import { resolveMarketplaceSetupGuard } from "./sharedSetupGuard";
 
-type ProfileStorage = Pick<Storage, "getItem" | "setItem">;
+type ProfileStorage = Pick<Storage, "getItem" | "setItem"> & Partial<Pick<Storage, "removeItem">>;
 
 export async function getMarketplacePostLoginRedirect(
   returnTo: string = ROUTES.MARKETPLACE,

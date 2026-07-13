@@ -73,6 +73,8 @@ export type SharedHotelSetupStatus = {
   hotelGroup: {
     organizationId: string;
     displayName: string;
+    websiteUrl: string | null;
+    selectedProducts: SharedHotelSetupEntryProduct[];
   };
   selection: {
     state: "no_property" | "single_property" | "multiple_properties";
@@ -83,8 +85,8 @@ export type SharedHotelSetupStatus = {
   updatedAt: string;
 };
 
-export type SharedHotelSetupProductSelection = {
-  propertyId: string;
+export type SharedHotelSetupAccountProductSelection = {
+  organizationId: string;
   selectedProducts: SharedHotelSetupEntryProduct[];
   updatedAt: string;
 };
@@ -130,6 +132,8 @@ export type SharedPropertyProfile = SharedPropertyProfileInput & {
 export type SharedHotelSetupStatusRepository = {
   getHotelSetupStatus(input: { organizationId: string; propertyIds: string[] }): Promise<{
     hotelGroupDisplayName: string | null;
+    hotelGroupWebsiteUrl: string | null;
+    hotelGroupSelectedProducts: SharedHotelSetupEntryProduct[];
     properties: SharedSetupProperty[];
   }>;
   getPropertyProfile(input: {
@@ -145,11 +149,10 @@ export type SharedHotelSetupStatusRepository = {
     propertyId: string;
     profile: SharedPropertyProfileInput;
   }): Promise<SharedPropertyProfile | null>;
-  setPropertyProductSelections(input: {
+  setOrganizationProductSelections?(input: {
     organizationId: string;
-    propertyId: string;
     selectedProducts: SharedHotelSetupEntryProduct[];
-  }): Promise<SharedHotelSetupProductSelection>;
+  }): Promise<SharedHotelSetupAccountProductSelection>;
   close?(): Promise<void>;
 };
 
@@ -164,11 +167,7 @@ type SharedHotelSetupQuery = {
   propertyId?: string;
 };
 
-type SharedHotelSetupProductSelectionParams = {
-  propertyId?: string;
-};
-
-type SharedHotelSetupProductSelectionBody = {
+type SharedHotelSetupAccountProductSelectionBody = {
   selectedProducts?: unknown;
 };
 
@@ -235,6 +234,8 @@ export async function registerSharedHotelSetupStatusRoutes(
       hotelGroup: {
         organizationId: access.organizationId,
         displayName: status.hotelGroupDisplayName ?? access.organizationId,
+        websiteUrl: status.hotelGroupWebsiteUrl,
+        selectedProducts: status.hotelGroupSelectedProducts,
       },
       selection: {
         state: selectionState(availablePropertyIds),
@@ -274,6 +275,7 @@ export async function registerSharedHotelSetupStatusRoutes(
       reply,
     );
     if (profileInput === false) return reply;
+    if (!validateNewHotelBasics(profileInput, reply)) return reply;
 
     const access = resolveSharedSetupAccess(request, reply, null, "hotel_catalog.setup.manage");
     if (!access) return reply;
@@ -320,38 +322,25 @@ export async function registerSharedHotelSetupStatusRoutes(
     return profile;
   });
 
-  app.put("/properties/:propertyId/products", async (request, reply) => {
-    const params = request.params as SharedHotelSetupProductSelectionParams;
-    const propertyId = parsePropertyId(params.propertyId, reply);
-    if (propertyId === false || propertyId === null) return reply;
-
-    const body = request.body as SharedHotelSetupProductSelectionBody | undefined;
-    const selectedProducts = parseSelectedProducts(body, reply);
+  app.put("/products", async (request, reply) => {
+    const selectedProducts = parseSelectedProducts(
+      request.body as SharedHotelSetupAccountProductSelectionBody | undefined,
+      reply,
+    );
     if (selectedProducts === false) return reply;
 
-    const access = resolveSharedSetupAccess(
-      request,
-      reply,
-      propertyId,
-      "hotel_catalog.setup.manage",
-    );
+    const access = resolveSharedSetupAccess(request, reply, null, "hotel_catalog.products.manage");
     if (!access) return reply;
 
-    const status = await repository.getHotelSetupStatus({
-      organizationId: access.organizationId,
-      propertyIds: [propertyId],
-    });
-    const authorizedProperties = filterAuthorizedProperties(status.properties, [propertyId]);
-    if (!authorizedProperties.some((item) => item.propertyId === propertyId)) {
-      return reply.status(404).send({
-        code: "property_setup_status_not_found",
-        detail: "Setup status was not found for the selected property.",
+    if (!repository.setOrganizationProductSelections) {
+      return reply.status(501).send({
+        code: "organization_product_selection_unavailable",
+        detail: "Account-level product selection is not available.",
       });
     }
 
-    return repository.setPropertyProductSelections({
+    return repository.setOrganizationProductSelections({
       organizationId: access.organizationId,
-      propertyId,
       selectedProducts,
     });
   });
@@ -436,7 +425,7 @@ function parsePropertyId(value: string | undefined, reply: FastifyReply): string
 }
 
 function parseSelectedProducts(
-  body: SharedHotelSetupProductSelectionBody | undefined,
+  body: SharedHotelSetupAccountProductSelectionBody | undefined,
   reply: FastifyReply,
 ): SharedHotelSetupEntryProduct[] | false {
   if (!body || !Array.isArray(body.selectedProducts)) {
@@ -508,6 +497,24 @@ function parseSharedPropertyProfile(
     longDescription,
     media,
   };
+}
+
+function validateNewHotelBasics(profile: SharedPropertyProfileInput, reply: FastifyReply): boolean {
+  const errors: Record<string, string[]> = {};
+  if (!profile.location.city) {
+    addFieldError(errors, "location.city", "city is required.");
+  }
+  if (!profile.location.countryCode) {
+    addFieldError(errors, "location.countryCode", "countryCode is required.");
+  }
+  if (Object.keys(errors).length === 0) return true;
+
+  reply.status(422).send({
+    code: "invalid_shared_property_profile",
+    detail: "Hotel name, city, and country code are required.",
+    fields: errors,
+  });
+  return false;
 }
 
 function parseLocation(
@@ -750,11 +757,18 @@ function nextAction(
   }
 
   const property = properties.find((item) => item.propertyId === selectedPropertyId)!;
-  if (property.sharedProfile.status !== "complete") {
+  const missingRoutingFields = property.sharedProfile.missingFields.filter(
+    (field) => field === "displayName" || field === "location",
+  );
+  if (
+    missingRoutingFields.length > 0 ||
+    property.sharedProfile.status === "disabled" ||
+    property.sharedProfile.status === "private"
+  ) {
     return {
       action: "complete_shared_profile",
       propertyId: property.propertyId,
-      missingFields: property.sharedProfile.missingFields,
+      missingFields: missingRoutingFields,
       reasonCodes: [`shared_profile_${property.sharedProfile.status}`],
     };
   }

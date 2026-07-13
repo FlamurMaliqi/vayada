@@ -5,10 +5,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BoltIcon, ChevronLeftIcon, ChevronDownIcon, CheckIcon } from "@heroicons/react/24/outline";
 import { useFeatureModuleActivations } from "@vayada/feature-hub";
+import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { messagingService } from "@/services/messaging";
 import { moduleActivationClient } from "@/services/api/moduleActivationClient";
+import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
 const UNREAD_POLL_MS = 60_000;
 
@@ -20,12 +22,14 @@ function buildHandoffUrl(baseUrl: string): string {
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
   const expiresAt = typeof window !== "undefined" ? localStorage.getItem("token_expires_at") : null;
   const user = typeof window !== "undefined" ? localStorage.getItem("user") : null;
-  if (!token || !expiresAt) return baseUrl;
+  const propertyId =
+    typeof window !== "undefined" ? localStorage.getItem("selectedSharedPropertyId") : null;
   const params = new URLSearchParams({
-    token,
-    expires_at: expiresAt,
-    ...(user ? { user: encodeURIComponent(user) } : {}),
+    ...(token && expiresAt ? { token, expires_at: expiresAt } : {}),
+    ...(token && expiresAt && user ? { user: encodeURIComponent(user) } : {}),
+    ...(propertyId ? { property_id: propertyId } : {}),
   });
+  if (params.size === 0) return baseUrl;
   return `${baseUrl}/handoff#${params.toString()}`;
 }
 
@@ -55,6 +59,9 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
+  const [enabledProducts, setEnabledProducts] = useState<Set<SharedHotelSetupProduct>>(
+    () => new Set<SharedHotelSetupProduct>(["pms"]),
+  );
   const [inboxUnread, setInboxUnread] = useState(0);
   const { t } = useTranslation();
   const switcherRef = useRef<HTMLDivElement>(null);
@@ -68,6 +75,25 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void sharedHotelSetupApi
+      .getStatus({ entryProduct: "pms" })
+      .then((status) => {
+        if (!cancelled) {
+          setEnabledProducts(
+            new Set<SharedHotelSetupProduct>(["pms", ...status.hotelGroup.selectedProducts]),
+          );
+        }
+      })
+      .catch(() => {
+        // Keep the current product available when account status cannot be loaded.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -178,79 +204,83 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               </svg>
               {t("layout.sidebar.switchApp")}
             </p>
-            <a
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                window.location.href = buildHandoffUrl(BOOKING_ADMIN_URL);
-              }}
-              className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
-            >
-              <div className="w-7 h-7 bg-primary-500 rounded-md flex items-center justify-center shrink-0">
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 18 18"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <rect
-                    x="2"
-                    y="3"
-                    width="14"
+            {enabledProducts.has("booking") && (
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.location.href = buildHandoffUrl(BOOKING_ADMIN_URL);
+                }}
+                className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
+              >
+                <div className="w-7 h-7 bg-primary-500 rounded-md flex items-center justify-center shrink-0">
+                  <svg
+                    width="12"
                     height="12"
-                    rx="2"
+                    viewBox="0 0 18 18"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <rect
+                      x="2"
+                      y="3"
+                      width="14"
+                      height="12"
+                      rx="2"
+                      stroke="white"
+                      strokeWidth="1.5"
+                    />
+                    <path d="M2 7H16" stroke="white" strokeWidth="1.5" />
+                    <path d="M6 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M12 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-gray-900 leading-tight">
+                    {t("layout.sidebar.bookingEngine")}
+                  </p>
+                  <p className="text-[10px] text-gray-500 leading-tight">
+                    {t("layout.sidebar.bookingEngineDescription")}
+                  </p>
+                </div>
+              </a>
+            )}
+            {enabledProducts.has("marketplace") && (
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.location.href = buildHandoffUrl(MARKETPLACE_URL);
+                }}
+                className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
+              >
+                <div className="w-7 h-7 bg-violet-600 rounded-md flex items-center justify-center shrink-0">
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
                     stroke="white"
                     strokeWidth="1.5"
-                  />
-                  <path d="M2 7H16" stroke="white" strokeWidth="1.5" />
-                  <path d="M6 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-                  <path d="M12 3V1" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-gray-900 leading-tight">
-                  {t("layout.sidebar.bookingEngine")}
-                </p>
-                <p className="text-[10px] text-gray-500 leading-tight">
-                  {t("layout.sidebar.bookingEngineDescription")}
-                </p>
-              </div>
-            </a>
-            <a
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                window.location.href = buildHandoffUrl(MARKETPLACE_URL);
-              }}
-              className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
-            >
-              <div className="w-7 h-7 bg-violet-600 rounded-md flex items-center justify-center shrink-0">
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="white"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-                  <circle cx="9" cy="7" r="4" />
-                  <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                </svg>
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-gray-900 leading-tight">
-                  {t("layout.sidebar.creatorMarketplace")}
-                </p>
-                <p className="text-[10px] text-gray-500 leading-tight">
-                  {t("layout.sidebar.creatorMarketplaceDescription")}
-                </p>
-              </div>
-            </a>
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-gray-900 leading-tight">
+                    {t("layout.sidebar.creatorMarketplace")}
+                  </p>
+                  <p className="text-[10px] text-gray-500 leading-tight">
+                    {t("layout.sidebar.creatorMarketplaceDescription")}
+                  </p>
+                </div>
+              </a>
+            )}
             <button
               onClick={() => setShowSwitcher(false)}
               className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors w-full"

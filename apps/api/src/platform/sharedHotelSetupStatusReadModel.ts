@@ -71,7 +71,7 @@ type SharedHotelSetupRow = {
   marketplaceRequirementUpdatedAt: unknown;
 };
 
-type ProductSelectionRow = {
+type AccountProductSelectionRow = {
   product: SharedHotelSetupEntryProduct;
   updatedAt: unknown;
 };
@@ -151,8 +151,8 @@ export function createPgSharedHotelSetupStatusRepository(config: {
 
   return {
     async getHotelSetupStatus({ organizationId, propertyIds }) {
-      const hotelGroup = await pool.query<{ displayName: string }>(
-        `SELECT name AS "displayName"
+      const hotelGroup = await pool.query<{ displayName: string; websiteUrl: string | null }>(
+        `SELECT name AS "displayName", website_url AS "websiteUrl"
          FROM identity.organizations
          WHERE id = $1::uuid
            AND kind = 'hotel_group'
@@ -160,10 +160,19 @@ export function createPgSharedHotelSetupStatusRepository(config: {
          LIMIT 1`,
         [organizationId],
       );
+      const accountProducts = await pool.query<AccountProductSelectionRow>(
+        organizationProductSelectionsSql(),
+        [organizationId, PRODUCT_ORDER],
+      );
+      const hotelGroupSelectedProducts = PRODUCT_ORDER.filter((product) =>
+        accountProducts.rows.some((row) => row.product === product),
+      );
 
       if (propertyIds.length === 0) {
         return {
           hotelGroupDisplayName: hotelGroup.rows[0]?.displayName ?? null,
+          hotelGroupWebsiteUrl: hotelGroup.rows[0]?.websiteUrl ?? null,
+          hotelGroupSelectedProducts,
           properties: [],
         };
       }
@@ -175,6 +184,8 @@ export function createPgSharedHotelSetupStatusRepository(config: {
 
       return {
         hotelGroupDisplayName: hotelGroup.rows[0]?.displayName ?? null,
+        hotelGroupWebsiteUrl: hotelGroup.rows[0]?.websiteUrl ?? null,
+        hotelGroupSelectedProducts,
         properties: result.rows.map(toSharedSetupProperty),
       };
     },
@@ -206,16 +217,15 @@ export function createPgSharedHotelSetupStatusRepository(config: {
       if (!updatedPropertyId) return null;
       return loadPropertyProfile(pool, organizationId, updatedPropertyId);
     },
-    async setPropertyProductSelections({ organizationId, propertyId, selectedProducts }) {
-      const result = await pool.query<ProductSelectionRow>(propertyProductSelectionsSql(), [
-        organizationId,
-        propertyId,
-        selectedProducts,
-      ]);
+    async setOrganizationProductSelections({ organizationId, selectedProducts }) {
+      const result = await pool.query<AccountProductSelectionRow>(
+        organizationProductSelectionsWriteSql(),
+        [organizationId, selectedProducts, PRODUCT_ORDER],
+      );
       const selected = new Set(result.rows.map((row) => row.product));
 
       return {
-        propertyId,
+        organizationId,
         selectedProducts: PRODUCT_ORDER.filter((product) => selected.has(product)),
         updatedAt: latest(...result.rows.map((row) => row.updatedAt)) ?? new Date().toISOString(),
       };
@@ -355,12 +365,15 @@ function sharedProfileSource(value: string | null): SharedSetupProperty["sharedP
 
 function sharedProfileMissingFields(row: SharedHotelSetupRow): SharedPropertyProfileMissingField[] {
   const missing: SharedPropertyProfileMissingField[] = [];
+  const needsGuestProfile = row.bookingSelected || row.marketplaceSelected;
   if (!nonEmpty(row.displayName)) missing.push("displayName");
   if (!hasLocation(row.location)) missing.push("location");
-  if (!hasContact(row.publicContacts, ["website"])) missing.push("website");
-  if (!hasContact(row.publicContacts, ["phone", "whatsapp"])) missing.push("phone");
-  if (!hasDescription(row.descriptions)) missing.push("description");
-  if (!hasMedia(row.media)) missing.push("media");
+  if (needsGuestProfile && !hasContact(row.publicContacts, ["website"])) missing.push("website");
+  if (needsGuestProfile && !hasContact(row.publicContacts, ["phone", "whatsapp"])) {
+    missing.push("phone");
+  }
+  if (needsGuestProfile && !hasDescription(row.descriptions)) missing.push("description");
+  if (needsGuestProfile && !hasMedia(row.media)) missing.push("media");
   return missing;
 }
 
@@ -429,16 +442,6 @@ function bookingActivation(row: SharedHotelSetupRow): SharedProductActivation<"b
       row.bookingEntitlementUpdatedAt,
     );
   }
-  if (row.bookabilityStatus === "unavailable") {
-    return productActivation(
-      "booking",
-      "unavailable",
-      [],
-      ["booking_unavailable"],
-      row.bookabilityUpdatedAt,
-    );
-  }
-
   const missingSteps: string[] = [];
   if (!row.bookingEntitlementActive) missingSteps.push("productEntitlement");
   if (!row.hasBookingSettings) missingSteps.push("bookingSettings");
@@ -447,6 +450,22 @@ function bookingActivation(row: SharedHotelSetupRow): SharedProductActivation<"b
     missingSteps.push("bookabilityFreshness");
   }
   if (row.paymentsEnabled !== true) missingSteps.push("paymentReadiness");
+
+  if (row.bookabilityStatus === "unavailable") {
+    return productActivation(
+      "booking",
+      "unavailable",
+      missingSteps,
+      ["booking_unavailable"],
+      latest(
+        row.bookingSelectionUpdatedAt,
+        row.bookingSettingsUpdatedAt,
+        row.bookabilityUpdatedAt,
+        row.paymentSettingsUpdatedAt,
+        row.bookingEntitlementUpdatedAt,
+      ),
+    );
+  }
 
   return missingSteps.length === 0
     ? productActivation(
@@ -1018,7 +1037,73 @@ function createPropertyProfileSql(): string {
       FROM created_property
       ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
       DO UPDATE SET status = 'active', updated_at = now()
-      RETURNING resource_id
+      RETURNING product, resource_id
+    ),
+    linked_product_properties AS (
+      INSERT INTO identity.organization_resource_links (
+        organization_id,
+        product,
+        resource_type,
+        resource_id,
+        relationship,
+        status
+      )
+      SELECT
+        $1::uuid,
+        entitlement.product,
+        CASE entitlement.product
+          WHEN 'booking' THEN 'booking_hotel'
+          WHEN 'pms' THEN 'pms_property'
+          WHEN 'marketplace' THEN 'hotel_profile'
+        END,
+        created_property.property_id::text,
+        'owner',
+        'active'
+      FROM created_property
+      JOIN (
+        SELECT product
+        FROM identity.product_entitlements
+        WHERE organization_id = $1::uuid
+          AND (starts_at IS NULL OR starts_at <= now())
+          AND (expires_at IS NULL OR expires_at > now())
+          AND (
+            (product = 'booking' AND entitlement_key IN ('booking-engine', 'account_access'))
+            OR (
+              product = 'pms'
+              AND entitlement_key IN ('property-management', 'pms-core', 'account_access')
+            )
+            OR (
+              product = 'marketplace'
+              AND entitlement_key IN ('marketplace-hotel-profile', 'account_access')
+            )
+          )
+        GROUP BY product
+        HAVING bool_or(status = 'active') AND NOT bool_or(status = 'suspended')
+      ) entitlement ON TRUE
+      ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
+      DO UPDATE SET status = 'active', updated_at = now()
+      RETURNING product, resource_id
+    ),
+    initialized_marketplace_profile AS (
+      INSERT INTO marketplace.marketplace_hotel_profiles (
+        property_id,
+        organization_id,
+        source_system,
+        source_hotel_profile_id
+      )
+      SELECT resource_id::uuid, $1::uuid, 'marketplace', resource_id
+      FROM linked_product_properties
+      WHERE product = 'marketplace'
+      ON CONFLICT (property_id) DO NOTHING
+      RETURNING property_id
+    ),
+    initialized_booking_settings AS (
+      INSERT INTO booking.booking_settings (property_id)
+      SELECT resource_id::uuid
+      FROM linked_product_properties
+      WHERE product = 'booking'
+      ON CONFLICT (property_id) DO NOTHING
+      RETURNING property_id
     ),
     written_property AS (
       SELECT * FROM created_property
@@ -1263,6 +1348,35 @@ function propertyProfileMutationCtes(): string {
 
 function sharedHotelSetupStatusSql(): string {
   return `
+    WITH effective_product_entitlements AS (
+      SELECT
+        product,
+        bool_or(
+          status = 'active'
+          AND (starts_at IS NULL OR starts_at <= now())
+          AND (expires_at IS NULL OR expires_at > now())
+        ) AS active,
+        bool_or(
+          status = 'suspended'
+          AND (starts_at IS NULL OR starts_at <= now())
+          AND (expires_at IS NULL OR expires_at > now())
+        ) AS suspended,
+        max(updated_at) AS updated_at
+      FROM identity.product_entitlements
+      WHERE organization_id = $1::uuid
+        AND (
+          (product = 'booking' AND entitlement_key IN ('booking-engine', 'account_access'))
+          OR (
+            product = 'pms'
+            AND entitlement_key IN ('property-management', 'pms-core', 'account_access')
+          )
+          OR (
+            product = 'marketplace'
+            AND entitlement_key IN ('marketplace-hotel-profile', 'account_access')
+          )
+        )
+      GROUP BY product
+    )
     SELECT
       property.id::text AS "propertyId",
       property.public_id AS "publicId",
@@ -1307,8 +1421,11 @@ function sharedHotelSetupStatusSql(): string {
           THEN catalog_contacts.public_contacts || COALESCE(legacy_contacts.public_contacts, '[]'::jsonb)
         ELSE COALESCE(legacy_contacts.public_contacts, '[]'::jsonb)
       END AS "publicContacts",
-      booking_selection.id IS NOT NULL AS "bookingSelected",
-      booking_selection.updated_at AS "bookingSelectionUpdatedAt",
+      (
+        COALESCE(booking_entitlement.active, FALSE)
+        OR COALESCE(booking_entitlement.suspended, FALSE)
+      ) AS "bookingSelected",
+      booking_entitlement.updated_at AS "bookingSelectionUpdatedAt",
       booking_settings.property_id IS NOT NULL AS "hasBookingSettings",
       booking_settings.updated_at AS "bookingSettingsUpdatedAt",
       COALESCE(booking_entitlement.active, FALSE) AS "bookingEntitlementActive",
@@ -1319,8 +1436,11 @@ function sharedHotelSetupStatusSql(): string {
       bookability.updated_at AS "bookabilityUpdatedAt",
       payment_settings.payments_enabled AS "paymentsEnabled",
       payment_settings.updated_at AS "paymentSettingsUpdatedAt",
-      pms_selection.id IS NOT NULL AS "pmsSelected",
-      pms_selection.updated_at AS "pmsSelectionUpdatedAt",
+      (
+        COALESCE(pms_entitlement.active, FALSE)
+        OR COALESCE(pms_entitlement.suspended, FALSE)
+      ) AS "pmsSelected",
+      pms_entitlement.updated_at AS "pmsSelectionUpdatedAt",
       COALESCE(pms_entitlement.active, FALSE) AS "pmsEntitlementActive",
       COALESCE(pms_entitlement.suspended, FALSE) AS "pmsEntitlementSuspended",
       pms_entitlement.updated_at AS "pmsEntitlementUpdatedAt",
@@ -1329,8 +1449,11 @@ function sharedHotelSetupStatusSql(): string {
       COALESCE(pms_rooms.count, 0) AS "pmsRoomCount",
       COALESCE(pms_rate_plans.count, 0) AS "pmsRatePlanCount",
       pms_rate_plans.updated_at AS "pmsRateUpdatedAt",
-      marketplace_selection.id IS NOT NULL AS "marketplaceSelected",
-      marketplace_selection.updated_at AS "marketplaceSelectionUpdatedAt",
+      (
+        COALESCE(marketplace_entitlement.active, FALSE)
+        OR COALESCE(marketplace_entitlement.suspended, FALSE)
+      ) AS "marketplaceSelected",
+      marketplace_entitlement.updated_at AS "marketplaceSelectionUpdatedAt",
       COALESCE(marketplace_entitlement.active, FALSE) AS "marketplaceEntitlementActive",
       COALESCE(marketplace_entitlement.suspended, FALSE) AS "marketplaceEntitlementSuspended",
       marketplace_entitlement.updated_at AS "marketplaceEntitlementUpdatedAt",
@@ -1632,108 +1755,18 @@ function sharedHotelSetupStatusSql(): string {
           + COALESCE(jsonb_array_length(marketplace_media.items), 0)
         ) > 0 AS has_media
     ) legacy_media ON TRUE
-    LEFT JOIN hotel_catalog.property_product_selections booking_selection
-      ON booking_selection.organization_id = $1::uuid
-     AND booking_selection.property_id = property.id
-     AND booking_selection.product = 'booking'
-     AND booking_selection.status = 'selected'
     LEFT JOIN booking.booking_settings booking_settings
       ON booking_settings.property_id = property.id
     LEFT JOIN distribution.public_hotel_bookability_profiles bookability
       ON bookability.property_id = property.id
     LEFT JOIN finance.payment_settings payment_settings
       ON payment_settings.property_id = property.id
-    LEFT JOIN hotel_catalog.property_product_selections pms_selection
-      ON pms_selection.organization_id = $1::uuid
-     AND pms_selection.property_id = property.id
-     AND pms_selection.product = 'pms'
-     AND pms_selection.status = 'selected'
-    LEFT JOIN LATERAL (
-      SELECT
-        bool_or(
-          status = 'active'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS active,
-        bool_or(
-          status = 'suspended'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS suspended,
-        max(updated_at) AS updated_at
-      FROM identity.product_entitlements
-      WHERE organization_id = $1::uuid
-        AND product = 'booking'
-        AND (
-          resource_product IS NULL
-          OR (
-            resource_id = property.id::text
-            AND (
-              (resource_product = 'hotel_catalog' AND resource_type = 'property')
-              OR (resource_product = 'booking' AND resource_type = 'booking_hotel')
-            )
-          )
-        )
-    ) booking_entitlement ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        bool_or(
-          status = 'active'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS active,
-        bool_or(
-          status = 'suspended'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS suspended,
-        max(updated_at) AS updated_at
-      FROM identity.product_entitlements
-      WHERE organization_id = $1::uuid
-        AND product = 'pms'
-        AND (
-          resource_product IS NULL
-          OR (
-            resource_id = property.id::text
-            AND (
-              (resource_product = 'hotel_catalog' AND resource_type = 'property')
-              OR (resource_product = 'pms' AND resource_type IN ('pms_property', 'pms_hotel'))
-            )
-          )
-        )
-    ) pms_entitlement ON TRUE
-    LEFT JOIN hotel_catalog.property_product_selections marketplace_selection
-      ON marketplace_selection.organization_id = $1::uuid
-     AND marketplace_selection.property_id = property.id
-     AND marketplace_selection.product = 'marketplace'
-     AND marketplace_selection.status = 'selected'
-    LEFT JOIN LATERAL (
-      SELECT
-        bool_or(
-          status = 'active'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS active,
-        bool_or(
-          status = 'suspended'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS suspended,
-        max(updated_at) AS updated_at
-      FROM identity.product_entitlements
-      WHERE organization_id = $1::uuid
-        AND product = 'marketplace'
-        AND (
-          resource_product IS NULL
-          OR (
-            resource_id = property.id::text
-            AND (
-              (resource_product = 'hotel_catalog' AND resource_type = 'property')
-              OR (resource_product = 'marketplace' AND resource_type IN ('hotel_profile', 'marketplace_offer'))
-            )
-          )
-        )
-    ) marketplace_entitlement ON TRUE
+    LEFT JOIN effective_product_entitlements booking_entitlement
+      ON booking_entitlement.product = 'booking'
+    LEFT JOIN effective_product_entitlements pms_entitlement
+      ON pms_entitlement.product = 'pms'
+    LEFT JOIN effective_product_entitlements marketplace_entitlement
+      ON marketplace_entitlement.product = 'marketplace'
     LEFT JOIN marketplace.marketplace_hotel_profiles marketplace_profile
       ON marketplace_profile.property_id = property.id
      AND marketplace_profile.organization_id = $1::uuid
@@ -1802,39 +1835,314 @@ function sharedHotelSetupStatusSql(): string {
   `;
 }
 
-function propertyProductSelectionsSql(): string {
+function organizationProductSelectionsSql(): string {
   return `
-    WITH requested(product) AS (
-      SELECT DISTINCT unnest($3::text[])
-    ),
-    upserted AS (
-      INSERT INTO hotel_catalog.property_product_selections
-        (organization_id, property_id, product, status)
-      SELECT $1::uuid, $2::uuid, product, 'selected'
-      FROM requested
-      ON CONFLICT (organization_id, property_id, product)
-      DO UPDATE SET status = 'selected', updated_at = now()
-      RETURNING product, updated_at
-    ),
-    unselected AS (
-      UPDATE hotel_catalog.property_product_selections
-      SET status = 'unselected', updated_at = now()
+    WITH effective_product_entitlements AS (
+      SELECT
+        product,
+        bool_or(status = 'active') AS active,
+        bool_or(status = 'suspended') AS suspended,
+        max(updated_at) AS updated_at
+      FROM identity.product_entitlements
       WHERE organization_id = $1::uuid
-        AND property_id = $2::uuid
-        AND status = 'selected'
-        AND NOT (product = ANY($3::text[]))
-      RETURNING product, updated_at
-    ),
-    selected_after_write AS (
-      SELECT product, updated_at
-      FROM upserted
-      UNION ALL
-      SELECT product, updated_at
-      FROM unselected
-      WHERE FALSE
+        AND product = ANY($2::text[])
+        AND (starts_at IS NULL OR starts_at <= now())
+        AND (expires_at IS NULL OR expires_at > now())
+        AND (
+          (product = 'booking' AND entitlement_key IN ('booking-engine', 'account_access'))
+          OR (
+            product = 'pms'
+            AND entitlement_key IN ('property-management', 'pms-core', 'account_access')
+          )
+          OR (
+            product = 'marketplace'
+            AND entitlement_key IN ('marketplace-hotel-profile', 'account_access')
+          )
+        )
+      GROUP BY product
     )
     SELECT product, updated_at
+    FROM effective_product_entitlements
+    WHERE active AND NOT suspended
+    ORDER BY CASE product
+      WHEN 'booking' THEN 1
+      WHEN 'pms' THEN 2
+      WHEN 'marketplace' THEN 3
+      ELSE 4
+    END
+  `;
+}
+
+function organizationProductSelectionsWriteSql(): string {
+  return `
+    WITH requested(product, entitlement_key) AS (
+      SELECT
+        product,
+        CASE product
+          WHEN 'booking' THEN 'booking-engine'
+          WHEN 'pms' THEN 'property-management'
+          WHEN 'marketplace' THEN 'marketplace-hotel-profile'
+        END
+      FROM (SELECT DISTINCT unnest($2::text[]) AS product) selected
+    ),
+    upserted AS (
+      INSERT INTO identity.product_entitlements (
+        organization_id,
+        product,
+        entitlement_key,
+        status,
+        starts_at,
+        expires_at,
+        metadata
+      )
+      SELECT
+        $1::uuid,
+        product,
+        entitlement_key,
+        'active',
+        now(),
+        NULL,
+        jsonb_build_object('source', 'shared_hotel_setup')
+      FROM requested
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM identity.product_entitlements suspended
+        WHERE suspended.organization_id = $1::uuid
+          AND suspended.product = requested.product
+          AND suspended.status = 'suspended'
+          AND (suspended.starts_at IS NULL OR suspended.starts_at <= now())
+          AND (suspended.expires_at IS NULL OR suspended.expires_at > now())
+          AND (
+            suspended.entitlement_key IN (requested.entitlement_key, 'account_access')
+            OR (requested.product = 'pms' AND suspended.entitlement_key = 'pms-core')
+          )
+      )
+      ON CONFLICT (
+        organization_id,
+        product,
+        entitlement_key,
+        COALESCE(resource_product, ''),
+        COALESCE(resource_type, ''),
+        COALESCE(resource_id, '')
+      ) DO UPDATE SET
+        status = 'active',
+        starts_at = CASE
+          WHEN identity.product_entitlements.status = 'expired'
+            OR (
+              identity.product_entitlements.status = 'suspended'
+              AND identity.product_entitlements.expires_at IS NOT NULL
+              AND identity.product_entitlements.expires_at <= now()
+            )
+            THEN now()
+          ELSE COALESCE(identity.product_entitlements.starts_at, now())
+        END,
+        expires_at = NULL,
+        metadata = identity.product_entitlements.metadata || EXCLUDED.metadata,
+        updated_at = now()
+      WHERE (
+          identity.product_entitlements.metadata ->> 'source' = 'shared_hotel_setup'
+          AND identity.product_entitlements.status IN ('active', 'expired')
+        )
+        OR (
+          identity.product_entitlements.status = 'suspended'
+          AND identity.product_entitlements.expires_at IS NOT NULL
+          AND identity.product_entitlements.expires_at <= now()
+        )
+      RETURNING product, updated_at
+    ),
+    expired AS (
+      UPDATE identity.product_entitlements
+      SET
+        status = 'expired',
+        expires_at = COALESCE(expires_at, now()),
+        metadata = metadata || jsonb_build_object('source', 'shared_hotel_setup'),
+        updated_at = now()
+      WHERE organization_id = $1::uuid
+        AND product = ANY($3::text[])
+        AND resource_product IS NULL
+        AND resource_type IS NULL
+        AND resource_id IS NULL
+        AND status = 'active'
+        AND metadata ->> 'source' = 'shared_hotel_setup'
+        AND entitlement_key IN (
+          'booking-engine',
+          'property-management',
+          'marketplace-hotel-profile'
+        )
+        AND NOT (product = ANY($2::text[]))
+      RETURNING product, updated_at
+    ),
+    organization_properties AS (
+      SELECT link.resource_id, link.relationship
+      FROM identity.organization_resource_links link
+      JOIN hotel_catalog.properties property
+        ON property.id::text = link.resource_id
+      WHERE link.organization_id = $1::uuid
+        AND link.product = 'hotel_catalog'
+        AND link.resource_type = 'property'
+        AND link.status = 'active'
+        AND link.relationship IN ('owner', 'operator')
+    ),
+    requested_state AS (
+      SELECT
+        requested.product,
+        COALESCE(
+          bool_or(
+            upserted.product IS NOT NULL
+            OR (
+              entitlement.status = 'active'
+              AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+              AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+            )
+          ),
+          false
+        ) AS active,
+        COALESCE(
+          bool_or(
+            entitlement.status = 'suspended'
+            AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+            AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+          ),
+          false
+        ) AS suspended
+      FROM requested
+      LEFT JOIN upserted
+        ON upserted.product = requested.product
+      LEFT JOIN identity.product_entitlements entitlement
+        ON entitlement.organization_id = $1::uuid
+       AND entitlement.product = requested.product
+       AND (
+         entitlement.entitlement_key IN (requested.entitlement_key, 'account_access')
+         OR (requested.product = 'pms' AND entitlement.entitlement_key = 'pms-core')
+       )
+      GROUP BY requested.product
+    ),
+    active_requested AS (
+      SELECT product
+      FROM requested_state
+      WHERE active AND NOT suspended
+    ),
+    linked_product_properties AS (
+      INSERT INTO identity.organization_resource_links (
+        organization_id,
+        product,
+        resource_type,
+        resource_id,
+        relationship,
+        status
+      )
+      SELECT
+        $1::uuid,
+        active_requested.product,
+        CASE active_requested.product
+          WHEN 'booking' THEN 'booking_hotel'
+          WHEN 'pms' THEN 'pms_property'
+          WHEN 'marketplace' THEN 'hotel_profile'
+        END,
+        organization_properties.resource_id,
+        organization_properties.relationship,
+        'active'
+      FROM active_requested
+      CROSS JOIN organization_properties
+      ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
+      DO UPDATE SET status = 'active', updated_at = now()
+      WHERE identity.organization_resource_links.status <> 'suspended'
+      RETURNING product, resource_id
+    ),
+    initialized_marketplace_profiles AS (
+      INSERT INTO marketplace.marketplace_hotel_profiles (
+        property_id,
+        organization_id,
+        source_system,
+        source_hotel_profile_id
+      )
+      SELECT resource_id::uuid, $1::uuid, 'marketplace', resource_id
+      FROM linked_product_properties
+      WHERE product = 'marketplace'
+      ON CONFLICT (property_id) DO NOTHING
+      RETURNING property_id
+    ),
+    initialized_booking_settings AS (
+      INSERT INTO booking.booking_settings (property_id)
+      SELECT resource_id::uuid
+      FROM linked_product_properties
+      WHERE product = 'booking'
+      ON CONFLICT (property_id) DO NOTHING
+      RETURNING property_id
+    ),
+    selected_after_write AS (
+      SELECT
+        active_requested.product,
+        COALESCE(max(upserted.updated_at), max(entitlement.updated_at), now()) AS updated_at
+      FROM active_requested
+      LEFT JOIN upserted
+        ON upserted.product = active_requested.product
+      LEFT JOIN identity.product_entitlements entitlement
+        ON entitlement.organization_id = $1::uuid
+       AND entitlement.product = active_requested.product
+       AND entitlement.status = 'active'
+       AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+       AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+       AND (
+         (entitlement.product = 'booking' AND entitlement.entitlement_key IN ('booking-engine', 'account_access'))
+         OR (
+           entitlement.product = 'pms'
+           AND entitlement.entitlement_key IN ('property-management', 'pms-core', 'account_access')
+         )
+         OR (
+           entitlement.product = 'marketplace'
+           AND entitlement.entitlement_key IN ('marketplace-hotel-profile', 'account_access')
+         )
+       )
+      GROUP BY active_requested.product
+
+      UNION ALL
+
+      SELECT entitlement.product, max(entitlement.updated_at) AS updated_at
+      FROM identity.product_entitlements entitlement
+      WHERE entitlement.organization_id = $1::uuid
+        AND entitlement.product = ANY($3::text[])
+        AND NOT (entitlement.product = ANY($2::text[]))
+        AND entitlement.status = 'active'
+        AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+        AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+        AND entitlement.metadata ->> 'source' IS DISTINCT FROM 'shared_hotel_setup'
+        AND (
+          (entitlement.product = 'booking' AND entitlement.entitlement_key IN ('booking-engine', 'account_access'))
+          OR (
+            entitlement.product = 'pms'
+            AND entitlement.entitlement_key IN ('property-management', 'pms-core', 'account_access')
+          )
+          OR (
+            entitlement.product = 'marketplace'
+            AND entitlement.entitlement_key IN ('marketplace-hotel-profile', 'account_access')
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM identity.product_entitlements suspended
+          WHERE suspended.organization_id = $1::uuid
+            AND suspended.product = entitlement.product
+            AND suspended.status = 'suspended'
+            AND (suspended.starts_at IS NULL OR suspended.starts_at <= now())
+            AND (suspended.expires_at IS NULL OR suspended.expires_at > now())
+            AND (
+              suspended.entitlement_key IN (
+                CASE suspended.product
+                  WHEN 'booking' THEN 'booking-engine'
+                  WHEN 'pms' THEN 'property-management'
+                  WHEN 'marketplace' THEN 'marketplace-hotel-profile'
+                END,
+                'account_access'
+              )
+              OR (suspended.product = 'pms' AND suspended.entitlement_key = 'pms-core')
+            )
+        )
+      GROUP BY entitlement.product
+    )
+    SELECT product, max(updated_at) AS updated_at
     FROM selected_after_write
+    GROUP BY product
     ORDER BY CASE product
       WHEN 'booking' THEN 1
       WHEN 'pms' THEN 2

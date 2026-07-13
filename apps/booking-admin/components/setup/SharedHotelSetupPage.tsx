@@ -59,9 +59,15 @@ export function SharedHotelSetupPage({
     [defaultReturnTo, searchParams],
   );
   const initialAddProperty = searchParams.get("mode") === "add";
+  const initialPropertyId = searchParams.get("propertyId");
 
   const handleProductContinue = (input: SharedFirstRunProductContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
+    if (input.action === "complete_product_activation" && input.product === "booking") {
+      localStorage.setItem("selectedHotelId", input.propertyId);
+      window.location.href = `/setup?legacy=booking&propertyId=${encodeURIComponent(input.propertyId)}`;
+      return;
+    }
     if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {
       router.push(input.returnTo);
       return;
@@ -81,6 +87,7 @@ export function SharedHotelSetupPage({
     <SharedFirstRunPropertySetupWizard
       api={sharedHotelSetupApi}
       entryProduct={entryProduct}
+      initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
       onProductContinue={handleProductContinue}

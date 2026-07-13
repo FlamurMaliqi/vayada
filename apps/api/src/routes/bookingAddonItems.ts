@@ -200,13 +200,20 @@ export function createPgTargetBookingAddonItemsRepository(config: {
 
   async function resolvePropertyId(hotelId: string): Promise<string | null> {
     const result = await pool.query<{ propertyId: string }>(
-      `SELECT property_id::text AS "propertyId"
-       FROM hotel_catalog.property_source_links
-       WHERE source_system = 'booking'
-         AND source_table = 'booking_hotels'
-         AND source_id = $1
-         AND relationship = 'canonical_input'
-         AND status = 'active'`,
+      `WITH property_candidates AS (
+         SELECT property.id::text AS "propertyId"
+         FROM hotel_catalog.properties property
+         WHERE property.id::text = $1
+         UNION
+         SELECT property_id::text AS "propertyId"
+         FROM hotel_catalog.property_source_links
+         WHERE source_system = 'booking'
+           AND source_table = 'booking_hotels'
+           AND source_id = $1
+           AND relationship = 'canonical_input'
+           AND status = 'active'
+       )
+       SELECT "propertyId" FROM property_candidates`,
       [hotelId],
     );
     if (result.rows.length > 1) {

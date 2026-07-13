@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect } from "react";
-import { getScopedBookingHotelIds } from "@/services/auth/sessionStore";
+import { authService } from "@/services/auth";
+import { settingsService, type HotelSummary } from "@/services/settings";
+import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 
 export default function HandoffPage() {
   useEffect(() => {
@@ -13,6 +15,7 @@ export default function HandoffPage() {
     const expiresAt = hashParams.get("expires_at");
     const userData = hashParams.get("user");
     const handoffHotelId = hashParams.get("hotel_id");
+    const propertyId = hashParams.get("property_id");
 
     // Optional `?redirect=...` query param tells us where to go after
     // auth. Used by the PMS header's "Add Property" button which
@@ -20,18 +23,18 @@ export default function HandoffPage() {
     const queryParams = new URLSearchParams(window.location.search);
     const redirectParam = queryParams.get("redirect");
     // Only honor same-origin relative paths — never trust an arbitrary URL
-    const safeRedirect =
-      redirectParam && redirectParam.startsWith("/") && !redirectParam.startsWith("//")
-        ? redirectParam
-        : null;
+    const safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
 
-    if (token && expiresAt) {
-      localStorage.setItem("access_token", token);
-      localStorage.setItem("token_expires_at", expiresAt);
-      if (handoffHotelId) {
-        localStorage.setItem("selectedHotelId", handoffHotelId);
+    void (async () => {
+      if (token && expiresAt) {
+        localStorage.setItem("access_token", token);
+        localStorage.setItem("token_expires_at", expiresAt);
+      } else if (!(await authService.ensureSession())) {
+        window.location.href = "/login";
+        return;
       }
-      if (userData) {
+
+      if (token && expiresAt && userData) {
         try {
           const user = JSON.parse(decodeURIComponent(userData));
           localStorage.setItem("isLoggedIn", "true");
@@ -46,37 +49,80 @@ export default function HandoffPage() {
         }
       }
 
+      let hotels: HotelSummary[];
+      try {
+        hotels = await settingsService.listHotels();
+      } catch {
+        window.location.href = "/setup";
+        return;
+      }
+
+      const storedPropertyId = localStorage.getItem("selectedSharedPropertyId")?.trim();
+      const storedHotelId = localStorage.getItem("selectedHotelId")?.trim();
+      const requestedPropertyId = propertyId?.trim();
+      const requestedHotelId = handoffHotelId?.trim();
+      let selected = requestedPropertyId
+        ? (hotels.find(
+            (hotel) => hotel.propertyId === requestedPropertyId || hotel.id === requestedPropertyId,
+          ) ?? null)
+        : requestedHotelId
+          ? (hotels.find((hotel) => hotel.id === requestedHotelId) ?? null)
+          : storedPropertyId
+            ? (hotels.find(
+                (hotel) => hotel.propertyId === storedPropertyId || hotel.id === storedPropertyId,
+              ) ?? null)
+            : storedHotelId
+              ? (hotels.find((hotel) => hotel.id === storedHotelId) ?? null)
+              : null;
+
+      if (
+        (requestedPropertyId || requestedHotelId || storedPropertyId || storedHotelId) &&
+        !selected
+      ) {
+        localStorage.removeItem("selectedSharedPropertyId");
+        localStorage.removeItem("selectedHotelId");
+      }
+      if (!selected && hotels.length === 1) {
+        selected = hotels[0]!;
+      }
+      if (selected) {
+        localStorage.setItem("selectedSharedPropertyId", selected.propertyId ?? selected.id);
+        if (selected.productReady === false) {
+          localStorage.removeItem("selectedHotelId");
+        } else {
+          localStorage.setItem("selectedHotelId", selected.id);
+        }
+      }
+
       if (safeRedirect) {
         localStorage.setItem("setupComplete", "true");
         window.location.href = safeRedirect;
         return;
       }
-
-      if (handoffHotelId) {
-        localStorage.setItem("setupComplete", "true");
-        window.location.href = "/dashboard";
+      if (hotels.length === 0) {
+        localStorage.setItem("setupComplete", "false");
+        window.location.href = "/setup";
         return;
       }
-
-      const scopedHotelIds = getScopedBookingHotelIds();
-      if (scopedHotelIds.length === 1) {
-        localStorage.setItem("selectedHotelId", scopedHotelIds[0]!);
-        localStorage.setItem("setupComplete", "true");
-        window.location.href = "/dashboard";
-        return;
-      }
-      if (scopedHotelIds.length > 1) {
-        localStorage.removeItem("selectedHotelId");
+      if (!selected && hotels.length > 1) {
         localStorage.setItem("setupComplete", "true");
         window.location.href = "/choose-property";
         return;
       }
 
-      localStorage.setItem("setupComplete", "false");
-      window.location.href = "/setup";
-    } else {
+      if (selected?.productReady === false) {
+        localStorage.setItem("setupComplete", "false");
+        window.location.href = `/setup?entryProduct=booking&propertyId=${encodeURIComponent(
+          selected.propertyId ?? selected.id,
+        )}`;
+        return;
+      }
+
+      localStorage.setItem("setupComplete", "true");
+      window.location.href = "/dashboard";
+    })().catch(() => {
       window.location.href = "/login";
-    }
+    });
   }, []);
 
   return (

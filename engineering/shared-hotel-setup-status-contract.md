@@ -4,10 +4,11 @@ _VAY-966 contract record. Parent: VAY-965._
 
 ## Purpose
 
-Vayada hotel users should complete shared property facts once, then activate
-Booking Engine, PMS, and Creator Marketplace independently per property. This
-contract defines the shared setup status response that those product apps use
-after login.
+Vayada hotel users should choose the systems their hotel group uses once, then
+create a small shared record for each hotel/listing. The account-level system
+choice applies to every property under the hotel group; product-specific setup
+collects the remaining details per property. This contract defines the shared
+setup status response that those product apps use after login.
 
 The contract deliberately models the new canonical setup world. It does not use
 legacy Booking/PMS/Marketplace product links as the normal authorization or
@@ -15,7 +16,20 @@ routing source.
 
 ## Decision
 
-Shared setup is property-centered.
+Shared setup has an account-level system choice and property-centered profile
+setup.
+
+```text
+hotel_group organization
+-> account-scope identity.product_entitlements rows
+   product IN ('booking', 'pms', 'marketplace')
+   entitlement_key = product's primary access key
+     booking: booking-engine
+     pms: property-management
+     marketplace: marketplace-hotel-profile
+   resource_product/resource_type/resource_id = NULL
+-> systems selected for every property/listing in the group
+```
 
 ```text
 hotel_group organization
@@ -134,13 +148,24 @@ Write commands also require `hotel_catalog.setup.manage`: `POST /properties`
 requires it for the selected hotel group, and `PUT /properties/:propertyId/profile`
 requires it in addition to the direct property-link check.
 
-Writes persist only shared property basics in the canonical catalog:
+Writes persist shared property facts in the canonical catalog:
 
 - display name
 - location
 - public website and phone
 - short and long description
 - media references
+
+Creating a property requires only the routing baseline:
+
+- display name
+- city
+- two-letter country code
+
+Website, phone, descriptions, media, rooms, rates, policies, and listing content
+must not block creation of the first hotel. Product setup may collect shared
+public-profile fields when they become relevant and write them back through the
+same canonical profile command.
 
 Validation failures return field-addressable `422` responses:
 
@@ -164,6 +189,40 @@ databases at runtime. Conflict precedence is deterministic:
 Prefill is read-only until the user saves the shared setup wizard. Saving writes
 the edited values back to canonical `hotel_catalog` rows; prefill must not
 silently overwrite user-edited canonical values.
+
+## Account System Selection Command
+
+```http
+PUT /api/hotel-setup/products
+```
+
+Body:
+
+```json
+{ "selectedProducts": ["booking", "pms", "marketplace"] }
+```
+
+This command stores the selected systems for the resolved `hotel_group`
+organization as account-scope `identity.product_entitlements`, using the actual
+primary access key each product route authorizes. It requires the owner-only
+`hotel_catalog.products.manage` permission and does not take a `propertyId`: choosing
+Marketplace, PMS, or Booking means that system is intended for every
+hotel/listing in the group.
+
+The command may activate, reactivate, or expire only entitlements marked with
+`metadata.source = shared_hotel_setup`. Billing-managed entitlements retain
+their status, suspended entitlements cannot be reactivated from onboarding, and
+`hotelGroup.selectedProducts` contains only currently active account access.
+During migration, `account_access` and `pms-core` aliases count as the same
+account-wide access as the canonical keys. Any currently effective suspension
+across those aliases wins, and neither selection nor migration may reactivate
+an explicitly suspended hotel resource link. Future and bounded suspension
+windows retain their original dates.
+
+The former `PUT /api/hotel-setup/properties/:propertyId/products` command is
+removed. Product choice has one account-level source of truth; property-level
+activation status only tracks whether each hotel has completed that product's
+setup.
 
 ## Authorization
 
@@ -204,6 +263,8 @@ type SharedHotelSetupStatus = {
   hotelGroup: {
     organizationId: string;
     displayName: string;
+    websiteUrl: string | null;
+    selectedProducts: Array<"booking" | "pms" | "marketplace">;
   };
   selection: {
     state: "no_property" | "single_property" | "multiple_properties";
@@ -286,11 +347,18 @@ type SharedHotelSetupNextAction =
   `hotel_catalog.properties` or
   `hotel_catalog.property_public_profile_read_model`: `complete`, `incomplete`,
   `disabled`, or `private`.
-- `products.<product>.status` is based only on that product's selection and
-  activation state for the selected canonical property.
+- An `incomplete` shared profile blocks routing only when `displayName` or
+  `location` is missing. Missing website, phone, description, or media is
+  reported as profile metadata but is completed inside the relevant product
+  setup rather than in first-run hotel creation.
+- `hotelGroup.selectedProducts` is the account-level system choice for every
+  property/listing in the hotel group.
+- `products.<product>.status` combines the account-level system choice with the
+  product activation state for the selected canonical property.
 - `disabled` and `private` are shared catalog states; they must not be collapsed
   into product `suspended` or `unavailable` states.
-- `not_selected` means the hotel has not chosen that product for the property.
+- `not_selected` means the hotel group has not chosen that system for the
+  account.
 - `selected_incomplete` means the product was chosen but product-specific setup
   is missing.
 - `active` means the product can be entered normally for that property.
@@ -299,15 +367,22 @@ type SharedHotelSetupNextAction =
 - `unavailable` means the product cannot currently be used for that property or
   organization.
 
+Booking Admin may still open when only downstream publication readiness
+(`publicBookability`, freshness, or payment readiness) remains. Those states
+block publishing or accepting bookings, not access to the configuration UI.
+
 `sharedProfile.status` and `products.<product>.status` must never be collapsed
 into one generic `profileComplete` boolean.
 
 ## Product Activation Boundaries
 
-Shared profile fields:
+Shared routing baseline:
 
 - display name
-- location
+- city and country code
+
+Additional shared public-profile fields:
+
 - public website/contact phone
 - short or long description
 - media/cover/gallery readiness
@@ -320,9 +395,9 @@ Product-specific activation examples:
 - Creator Marketplace: creator-facing pitch, collaboration offers, creator
   requirements, listing setup.
 
-Marketplace must not ask for shared hotel basics when `sharedProfile.status` is
-`complete`; it should show "Activate Creator Marketplace" style copy and only
-ask for Marketplace activation inputs.
+Marketplace must not ask for the shared routing baseline again. It may ask for
+public website/contact, descriptions, and media as part of building the public
+listing, then persist those values to the canonical shared profile.
 
 ## Examples
 
@@ -334,7 +409,9 @@ ask for Marketplace activation inputs.
   "entry": { "entryProduct": "booking", "returnTo": "/dashboard" },
   "hotelGroup": {
     "organizationId": "11111111-1111-1111-1111-111111111111",
-    "displayName": "Bali Hospitality Group"
+    "displayName": "Bali Hospitality Group",
+    "websiteUrl": "https://bali-hospitality.example/",
+    "selectedProducts": ["booking"]
   },
   "selection": { "state": "no_property", "selectedPropertyId": null },
   "properties": [],
@@ -354,7 +431,9 @@ ask for Marketplace activation inputs.
   "entry": { "entryProduct": "marketplace", "returnTo": "/marketplace" },
   "hotelGroup": {
     "organizationId": "11111111-1111-1111-1111-111111111111",
-    "displayName": "Bali Hospitality Group"
+    "displayName": "Bali Hospitality Group",
+    "websiteUrl": "https://bali-hospitality.example/",
+    "selectedProducts": ["booking", "marketplace"]
   },
   "selection": {
     "state": "single_property",
@@ -412,7 +491,8 @@ ask for Marketplace activation inputs.
 - VAY-975 adds canonical `hotel_catalog/property` identity links required by
   this contract.
 - VAY-967 implements the read endpoint against this contract.
-- VAY-968 defines per-property product selection storage.
+- VAY-968 originally defined per-property product selection storage; current
+  first-run setup uses account-level system selection instead.
 - VAY-969 defines shared property profile create/update commands.
 - VAY-970 consumes this contract in the shared setup wizard.
 - VAY-971 applies this contract to Booking Admin, PMS, and Marketplace guards.

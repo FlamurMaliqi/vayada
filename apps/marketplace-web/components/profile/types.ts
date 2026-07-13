@@ -136,10 +136,12 @@ export interface ListingOffering {
 // Hotel listing for profile management
 export interface ProfileHotelListing {
   id: string;
+  mediaResourceId?: string;
   name: string;
   location: string;
   description: string;
   images: string[];
+  imageMediaObjectIds?: string[];
   accommodationType?: string;
   offerings: ListingOffering[];
   // Legacy aggregated fields, kept for read paths that haven't migrated yet

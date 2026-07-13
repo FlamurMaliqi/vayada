@@ -2,11 +2,14 @@
 
 import { useEffect } from "react";
 import {
+  clearStoredPmsPropertyId,
   getStoredPmsPropertyId,
   listPmsProperties,
   storeSelectedPmsPropertyId,
   type PmsPropertySummary,
 } from "@/services/api/pmsPropertyClient";
+import { authService } from "@/services/auth";
+import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 
 export default function HandoffPage() {
   useEffect(() => {
@@ -18,6 +21,7 @@ export default function HandoffPage() {
     const expiresAt = hashParams.get("expires_at");
     const userData = hashParams.get("user");
     const handoffHotelId = hashParams.get("hotel_id");
+    const propertyId = hashParams.get("property_id");
 
     // Optional `?redirect=...` query param — honored if it's a
     // same-origin relative path, else ignored. Used when another
@@ -25,15 +29,18 @@ export default function HandoffPage() {
     // /choose-property, /setup?mode=add).
     const queryParams = new URLSearchParams(window.location.search);
     const redirectParam = queryParams.get("redirect");
-    const safeRedirect =
-      redirectParam && redirectParam.startsWith("/") && !redirectParam.startsWith("//")
-        ? redirectParam
-        : null;
+    const safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
 
-    if (token && expiresAt) {
-      localStorage.setItem("access_token", token);
-      localStorage.setItem("token_expires_at", expiresAt);
-      if (userData) {
+    void (async () => {
+      if (token && expiresAt) {
+        localStorage.setItem("access_token", token);
+        localStorage.setItem("token_expires_at", expiresAt);
+      } else if (!(await authService.ensureSession())) {
+        window.location.href = "/login";
+        return;
+      }
+
+      if (token && expiresAt && userData) {
         try {
           const user = JSON.parse(decodeURIComponent(userData));
           localStorage.setItem("isLoggedIn", "true");
@@ -48,65 +55,52 @@ export default function HandoffPage() {
         }
       }
 
-      // Check PMS setup status before redirecting.
-      // Precedence: explicit safeRedirect > choose-property (if 2+ hotels and no
-      // valid selected PMS property) > setup (if incomplete) > dashboard.
-      (async () => {
-        let properties: PmsPropertySummary[] = [];
-        let selectedPmsPropertyId = handoffHotelId?.trim() || getStoredPmsPropertyId();
-
-        if (selectedPmsPropertyId) {
-          storeSelectedPmsPropertyId(selectedPmsPropertyId);
-        } else {
-          try {
-            properties = await listPmsProperties();
-            const selected = properties[0] ?? null;
-            if (selected) {
-              selectedPmsPropertyId = selected.id;
-              storeSelectedPmsPropertyId(selected.id);
-            }
-          } catch {
-            /* A missing list read model should not clear a valid AuthKit resource selection. */
-          }
-        }
-
-        if (!safeRedirect && !selectedPmsPropertyId && properties.length > 1) {
-          window.location.href = "/choose-property";
-          return;
-        }
-
-        const setupComplete = Boolean(selectedPmsPropertyId || properties.length > 0);
-        localStorage.setItem("pmsSetupComplete", setupComplete ? "true" : "false");
-
-        if (safeRedirect) {
-          window.location.href = safeRedirect;
-          return;
-        }
-        if (!setupComplete) {
-          window.location.href = "/setup";
-          return;
-        }
-
-        // If the caller already told us which hotel to land on,
-        // honor it and skip the choose-property step.
-        if (selectedPmsPropertyId) {
-          window.location.href = "/dashboard";
-          return;
-        }
-
-        window.location.href = "/dashboard";
-      })().catch(() => {
-        if (getStoredPmsPropertyId()) {
-          localStorage.setItem("pmsSetupComplete", "true");
-          window.location.href = safeRedirect ?? "/dashboard";
-          return;
-        }
+      let properties: PmsPropertySummary[];
+      try {
+        properties = await listPmsProperties();
+      } catch {
         localStorage.setItem("pmsSetupComplete", "false");
         window.location.href = "/setup";
-      });
-    } else {
-      window.location.href = "/login";
-    }
+        return;
+      }
+
+      const requestedPropertyId =
+        propertyId?.trim() || handoffHotelId?.trim() || getStoredPmsPropertyId();
+      let selected = requestedPropertyId
+        ? (properties.find((property) => property.id === requestedPropertyId) ?? null)
+        : null;
+
+      if (requestedPropertyId && !selected) {
+        clearStoredPmsPropertyId();
+      }
+      if (!selected && properties.length === 1) {
+        selected = properties[0]!;
+      }
+      if (selected) {
+        storeSelectedPmsPropertyId(selected.id);
+      }
+
+      if (safeRedirect) {
+        window.location.href = safeRedirect;
+        return;
+      }
+      if (properties.length === 0) {
+        localStorage.setItem("pmsSetupComplete", "false");
+        window.location.href = "/setup";
+        return;
+      }
+      if (!selected && properties.length > 1) {
+        localStorage.setItem("pmsSetupComplete", "true");
+        window.location.href = "/choose-property";
+        return;
+      }
+
+      localStorage.setItem("pmsSetupComplete", "true");
+      window.location.href = "/dashboard";
+    })().catch(() => {
+      localStorage.setItem("pmsSetupComplete", "false");
+      window.location.href = "/setup";
+    });
   }, []);
 
   return (

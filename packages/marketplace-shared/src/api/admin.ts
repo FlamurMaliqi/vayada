@@ -127,6 +127,7 @@ export type MarketplaceAdminOffer = {
   offerStatus: MarketplaceOfferStatus;
   title: string;
   offerSummary: string | null;
+  media: Array<{ mediaObjectId: string | null; url: string }>;
   deliverables: (MarketplaceOfferDeliverableWrite & { deliverableId: string })[];
   compensationOptions: (MarketplaceOfferCompensationOptionWrite & {
     compensationOptionId: string;

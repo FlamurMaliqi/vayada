@@ -533,7 +533,7 @@ describe.skipIf(!TEST_DATABASE_URL)("rebuild with fixture loading (integration)"
       const perms = await client.query(
         `SELECT count(*)::int AS count FROM identity.permission_catalog`,
       );
-      expect(perms.rows[0].count).toBe(24);
+      expect(perms.rows[0].count).toBe(25);
 
       const entitlements = await client.query(
         `SELECT count(*)::int AS count FROM identity.product_entitlements`,

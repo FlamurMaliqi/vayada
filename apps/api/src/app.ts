@@ -61,6 +61,10 @@ import {
   type MarketplaceHotelProfileStatusRepository,
 } from "./routes/marketplaceHotelProfileStatus.js";
 import {
+  registerMarketplaceHotelSelfServiceRoutes,
+  type MarketplaceHotelSelfServiceRepository,
+} from "./routes/marketplaceHotelSelfService.js";
+import {
   registerMarketplaceCreatorSelfServiceRoutes,
   type MarketplaceCreatorSelfServiceRepository,
 } from "./routes/marketplaceCreatorSelfService.js";
@@ -150,6 +154,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceAdminRepository?: MarketplaceAdminRepository;
   marketplaceAdminLegacySuperadminFallbackEnabled?: MarketplaceAdminRoutesOptions["legacySuperadminFallbackEnabled"];
   marketplaceHotelProfileStatusRepository?: MarketplaceHotelProfileStatusRepository;
+  marketplaceHotelSelfServiceRepository?: MarketplaceHotelSelfServiceRepository;
   marketplaceCreatorSelfServiceRepository?: MarketplaceCreatorSelfServiceRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   identityPrivacyRepository?: IdentityPrivacyRepository;
@@ -295,6 +300,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerMarketplaceHotelProfileStatusRoutes, {
       prefix: "/api/marketplace",
       repository: options.marketplaceHotelProfileStatusRepository,
+    });
+  }
+  if (options.marketplaceHotelSelfServiceRepository && options.identityLifecycleCommandBus) {
+    app.register(registerMarketplaceHotelSelfServiceRoutes, {
+      prefix: "/api/marketplace",
+      repository: options.marketplaceHotelSelfServiceRepository,
+      lifecycleCommandBus: options.identityLifecycleCommandBus,
     });
   }
   if (options.marketplaceCreatorSelfServiceRepository && options.identityLifecycleCommandBus) {

@@ -8,7 +8,8 @@ import {
 
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
-type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem">;
+type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem"> &
+  Partial<Pick<Storage, "removeItem">>;
 
 export const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
 export { canOpenMarketplaceProfileTools };
@@ -34,6 +35,7 @@ export async function resolveMarketplaceSetupGuard(
     entryProduct: "marketplace",
     returnTo,
     propertyId: readSelectedSharedPropertyId(storage),
+    onInvalidPropertyId: () => storage?.removeItem?.(SELECTED_SHARED_PROPERTY_ID_KEY),
   });
   persistEnteredSharedProperty(decision, storage);
   return decision;

@@ -202,6 +202,8 @@ export type BookingHotelPropertyLinkReadModel = {
 
 export type BookingPropertySettingsReadModel = {
   id: string;
+  propertyId?: string | null;
+  bookingHotelId?: string | null;
   slug?: string | null;
   propertyName?: string | null;
   reservationEmail?: string | null;
@@ -789,6 +791,8 @@ type TargetBookingSettingsQueryRow = TargetBookingSettingsRow & {
 type TargetBookingPropertySettingsRow = TargetBookingSettingsRow & {
   source_link_count: number | string;
   id: string;
+  property_id: string;
+  booking_hotel_id: string | null;
   slug: string | null;
   property_name: string | null;
   reservation_email: string | null;
@@ -869,7 +873,9 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
   ${TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE}
   SELECT
     source_link_status.source_link_count,
-    property.id::text AS id,
+    COALESCE(booking_source.source_id, property.id::text) AS id,
+    property.id::text AS property_id,
+    booking_source.source_id AS booking_hotel_id,
     slug.slug,
     property.display_name AS property_name,
     contact.reservation_email,
@@ -918,6 +924,17 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
   FROM source_link_status
   JOIN hotel_catalog.properties property
     ON property.id = source_link_status.property_id
+  LEFT JOIN LATERAL (
+    SELECT source_link.source_id
+    FROM hotel_catalog.property_source_links source_link
+    WHERE source_link.property_id = property.id
+      AND source_link.source_system = 'booking'
+      AND source_link.source_table = 'booking_hotels'
+      AND source_link.relationship = 'canonical_input'
+      AND source_link.status = 'active'
+    ORDER BY source_link.updated_at DESC, source_link.source_id
+    LIMIT 1
+  ) booking_source ON TRUE
   LEFT JOIN LATERAL (
     SELECT property_slug.slug
     FROM hotel_catalog.property_slugs property_slug
@@ -1002,8 +1019,13 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     SET display_name = $2,
         default_locale = $10,
         supported_locales = $11::text[],
-        location = jsonb_strip_nulls(jsonb_build_object(
-          'rawMarketplaceLocation', $3::text,
+        location = (
+          COALESCE(profile.location, '{}'::jsonb) - 'rawMarketplaceLocation'
+        ) || jsonb_strip_nulls(jsonb_build_object(
+          'rawMarketplaceLocation', CASE
+            WHEN COALESCE(existing_location.address_public, FALSE) THEN $3::text
+            ELSE NULL
+          END,
           'city', $4::text,
           'countryCode', $5::text
         )),
@@ -1015,8 +1037,26 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
             ),
             '[]'::jsonb
           )
-          FROM jsonb_to_recordset($6::jsonb) AS contact(channel_type text, value text)
-          WHERE NULLIF(contact.value, '') IS NOT NULL
+          FROM (
+            SELECT existing.channel_type, existing.value
+            FROM hotel_catalog.property_contact_channels existing
+            WHERE existing.property_id = target_property.property_id
+              AND existing.is_public = TRUE
+              AND existing.source_system <> 'booking'
+            UNION
+            SELECT input.channel_type, input.value
+            FROM jsonb_to_recordset($6::jsonb) AS input(channel_type text, value text)
+            WHERE NULLIF(input.value, '') IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM hotel_catalog.property_contact_channels private_contact
+                WHERE private_contact.property_id = target_property.property_id
+                  AND private_contact.channel_type = input.channel_type
+                  AND private_contact.value = input.value
+                  AND private_contact.source_system <> 'booking'
+                  AND private_contact.is_public = FALSE
+              )
+          ) contact
         ),
         public_policy = jsonb_strip_nulls(jsonb_build_object(
           'checkInTime', $7::text,
@@ -1025,6 +1065,8 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
         )),
         projected_at = now()
     FROM target_property
+    LEFT JOIN hotel_catalog.property_locations existing_location
+      ON existing_location.property_id = target_property.property_id
     WHERE profile.property_id = target_property.property_id
     RETURNING profile.property_id
   ),
@@ -1043,7 +1085,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       $3,
       $4,
       NULLIF($5::text, '')::char(2),
-      TRUE,
+      FALSE,
       'high',
       now()
     FROM target_property
@@ -1051,7 +1093,6 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     SET raw_marketplace_location = EXCLUDED.raw_marketplace_location,
         city = EXCLUDED.city,
         country_code = EXCLUDED.country_code,
-        address_public = TRUE,
         source_confidence = EXCLUDED.source_confidence,
         updated_at = now()
     RETURNING property_id
@@ -1060,8 +1101,16 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     DELETE FROM hotel_catalog.property_contact_channels contact
     USING target_property
     WHERE contact.property_id = target_property.property_id
+      AND contact.source_system = 'booking'
       AND contact.channel_type = ANY(
         ARRAY['email', 'phone', 'whatsapp', 'instagram', 'facebook']::text[]
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM jsonb_to_recordset($6::jsonb) AS input(channel_type text, value text)
+        WHERE input.channel_type = contact.channel_type
+          AND input.value = contact.value
+          AND NULLIF(input.value, '') IS NOT NULL
       )
     RETURNING contact.property_id
   ),
@@ -1090,8 +1139,8 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     WHERE NULLIF(contact_input.value, '') IS NOT NULL
     ON CONFLICT (property_id, channel_type, value) DO UPDATE
     SET is_public = TRUE,
-        source_system = EXCLUDED.source_system,
         updated_at = now()
+    WHERE hotel_catalog.property_contact_channels.source_system = 'booking'
     RETURNING property_id
   ),
   upserted_policy AS (
@@ -1118,11 +1167,56 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
         policy_source_owner = EXCLUDED.policy_source_owner,
         updated_at = now()
     RETURNING property_id
+  ),
+  upserted_booking_settings AS (
+    INSERT INTO booking.booking_settings (
+      property_id,
+      default_currency,
+      default_language,
+      supported_currencies,
+      supported_languages,
+      special_requests_enabled,
+      arrival_time_enabled,
+      guest_count_enabled,
+      updated_at
+    )
+    SELECT
+      target_property.property_id,
+      $12,
+      $10,
+      $13::text[],
+      $14::text[],
+      $15,
+      $16,
+      $17,
+      now()
+    FROM target_property
+    ON CONFLICT (property_id) DO UPDATE
+    SET default_currency = EXCLUDED.default_currency,
+        default_language = EXCLUDED.default_language,
+        supported_currencies = EXCLUDED.supported_currencies,
+        supported_languages = EXCLUDED.supported_languages,
+        special_requests_enabled = EXCLUDED.special_requests_enabled,
+        arrival_time_enabled = EXCLUDED.arrival_time_enabled,
+        guest_count_enabled = EXCLUDED.guest_count_enabled,
+        updated_at = now()
+    RETURNING property_id
   )
   SELECT source_link_status.source_link_count,
-         target_property.property_id::text AS id
+         COALESCE(booking_source.source_id, target_property.property_id::text) AS id
   FROM source_link_status
   LEFT JOIN target_property ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT source_link.source_id
+    FROM hotel_catalog.property_source_links source_link
+    WHERE source_link.property_id = target_property.property_id
+      AND source_link.source_system = 'booking'
+      AND source_link.source_table = 'booking_hotels'
+      AND source_link.relationship = 'canonical_input'
+      AND source_link.status = 'active'
+    ORDER BY source_link.updated_at DESC, source_link.source_id
+    LIMIT 1
+  ) booking_source ON TRUE
   WHERE source_link_status.source_link_count > 0
 `;
 
@@ -1187,6 +1281,8 @@ function toTargetPropertySettings(
 ): BookingPropertySettingsReadModel {
   return {
     id: row.id,
+    propertyId: row.property_id,
+    bookingHotelId: row.booking_hotel_id,
     slug: row.slug,
     propertyName: row.property_name,
     reservationEmail: row.reservation_email,
@@ -1221,6 +1317,11 @@ function targetPropertySettingsWriteValues(
     defaultLanguage,
   );
   const propertySupportedLocales = withDefaultCode(defaultLanguage, supportedLanguages);
+  const defaultCurrency = update.defaultCurrency ?? current.defaultCurrency ?? "EUR";
+  const supportedCurrencies = withoutDefaultCode(
+    update.supportedCurrencies ?? parseStringList(current.supportedCurrencies, []),
+    defaultCurrency,
+  );
   const contacts = targetPropertyContactInputs({
     reservationEmail:
       update.reservationEmail !== undefined ? update.reservationEmail : current.reservationEmail,
@@ -1247,6 +1348,12 @@ function targetPropertySettingsWriteValues(
     ),
     defaultLanguage,
     propertySupportedLocales,
+    defaultCurrency,
+    supportedCurrencies,
+    supportedLanguages,
+    update.specialRequestsEnabled ?? current.specialRequestsEnabled ?? true,
+    update.arrivalTimeEnabled ?? current.arrivalTimeEnabled ?? false,
+    update.guestCountEnabled ?? current.guestCountEnabled ?? false,
   ];
 }
 
@@ -2685,6 +2792,8 @@ export function toPropertySettingsResponse(
 
   return {
     id: settings.id,
+    property_id: settings.propertyId ?? settings.id,
+    booking_hotel_id: settings.bookingHotelId ?? null,
     slug: settings.slug ?? "",
     property_name: settings.propertyName ?? "",
     reservation_email: settings.reservationEmail ?? "",

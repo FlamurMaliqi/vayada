@@ -62,7 +62,7 @@ Vayada should own these application concerns:
 - Internal organizations: Vayada tenant/business containers such as platform,
   hotel group, creator workspace, and affiliate partner.
 - Resource links: mappings from an internal organization to marketplace hotel
-  profiles/listings, booking hotels, PMS hotels/properties, creator profiles,
+  profiles/offers, booking hotels, PMS hotels/properties, creator profiles,
   affiliate records, payouts, and future product resources.
 - Product roles and permissions: fine-grained permissions like
   `pms.booking.update`, `booking.settings.manage`,
@@ -96,8 +96,10 @@ Keep `users.id` as the stable internal principal ID.
 Recommended schema shape:
 
 - `users.id`: Vayada UUID, unchanged.
-- `users.email`, `users.name`, `users.status`, consent fields: retained as
-  Vayada's local cache and product state.
+- `users.email`, `users.name`, optional contact `phone`, profile-picture media
+  reference, `users.status`, and consent fields: retained as Vayada's local
+  cache and product state. Hotel and organization contact details remain on
+  their own resources rather than being copied onto the user.
 - `external_identities.provider`: `workos`.
 - `external_identities.user_id`: FK to `users.id`.
 - `external_identities.provider_user_id`: WorkOS `user_*` ID.
@@ -136,7 +138,7 @@ Recommended schema shape:
 - `organizations.id`: Vayada UUID.
 - `organizations.kind`: `platform`, `hotel_group`, `creator_workspace`,
   `affiliate_partner`.
-- `organizations.name`, `slug`, `status`, timestamps.
+- `organizations.name`, optional `website_url`, `slug`, `status`, timestamps.
 - `organizations.workos_org_id`: WorkOS `org_*` ID, nullable during backfill.
 - `organizations.workos_external_id`: normally the same value as
   `organizations.id`.
@@ -223,7 +225,7 @@ Recommended schema shape:
 
 - `organization_id`: FK to `organizations.id`.
 - `product`: `marketplace`, `booking`, `pms`, `platform`.
-- `resource_type`: `hotel_profile`, `hotel_listing`, `booking_hotel`,
+- `resource_type`: `hotel_profile`, `marketplace_offer`, `booking_hotel`,
   `pms_hotel`, `creator_profile`, `affiliate`, `payout_account`.
 - `resource_id`: UUID or product-native ID.
 - `relationship`: `owner`, `operator`, `promotes`, `billing_account`.

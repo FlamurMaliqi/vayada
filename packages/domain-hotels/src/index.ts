@@ -77,6 +77,10 @@ export const SHARED_HOTEL_SETUP_READ_PERMISSION = "hotel_catalog.setup.read" as 
 
 export type SharedHotelSetupReadPermission = typeof SHARED_HOTEL_SETUP_READ_PERMISSION;
 
+export const SHARED_HOTEL_PRODUCTS_MANAGE_PERMISSION = "hotel_catalog.products.manage" as const;
+
+export type SharedHotelProductsManagePermission = typeof SHARED_HOTEL_PRODUCTS_MANAGE_PERMISSION;
+
 export const SHARED_PROPERTY_ACCESS_RESOURCE = {
   product: "hotel_catalog",
   resourceType: "property",
@@ -198,6 +202,8 @@ export type SharedHotelSetupStatus = {
   hotelGroup: {
     organizationId: string;
     displayName: string;
+    websiteUrl: string | null;
+    selectedProducts: SharedHotelSetupProduct[];
   };
   selection: {
     state: SharedPropertySelectionState;

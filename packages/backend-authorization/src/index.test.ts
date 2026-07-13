@@ -267,7 +267,7 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgRolePermissionRepository", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("createPgEntitlementRepository", () => {
-  it("reads org and active linked-resource entitlements from identity.product_entitlements", async () => {
+  it("reads linked entitlements and normalizes expired rows", async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
 
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
@@ -277,12 +277,14 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgEntitlementRepository", () => {
       await resetProductEntitlementsTable(client);
       await client.query(
         `INSERT INTO identity.product_entitlements
-           (organization_id, product, entitlement_key, status, resource_product, resource_type, resource_id)
+           (organization_id, product, entitlement_key, status, resource_product, resource_type, resource_id, expires_at)
          VALUES
-           ('00000000-0000-0000-0000-000000000001', 'booking', 'booking-engine', 'active', NULL, NULL, NULL),
-           ('00000000-0000-0000-0000-000000000001', 'pms', 'pms-core', 'active', 'pms', 'pms_hotel', 'pms_hotel_alpenrose'),
-           ('00000000-0000-0000-0000-000000000001', 'pms', 'pms-core', 'active', 'pms', 'pms_hotel', 'pms_hotel_other'),
-           ('00000000-0000-0000-0000-000000000002', 'booking', 'booking-engine', 'active', NULL, NULL, NULL)`,
+           ('00000000-0000-0000-0000-000000000001', 'booking', 'booking-engine', 'active', NULL, NULL, NULL, NULL),
+           ('00000000-0000-0000-0000-000000000001', 'booking', 'booking-engine', 'suspended', 'booking', 'booking_hotel', 'booking_hotel_alpenrose', now() - interval '1 day'),
+           ('00000000-0000-0000-0000-000000000001', 'pms', 'pms-core', 'active', 'pms', 'pms_hotel', 'pms_hotel_alpenrose', NULL),
+           ('00000000-0000-0000-0000-000000000001', 'pms', 'pms-core', 'active', 'pms', 'pms_hotel', 'pms_hotel_other', NULL),
+           ('00000000-0000-0000-0000-000000000001', 'pms', 'account_access', 'suspended', 'pms', 'pms_hotel', 'pms_hotel_archived', NULL),
+           ('00000000-0000-0000-0000-000000000002', 'booking', 'booking-engine', 'active', NULL, NULL, NULL, NULL)`,
       );
     } finally {
       await client.end();
@@ -301,7 +303,10 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgEntitlementRepository", () => {
             ...hotelContext.selectedOrganization,
             organizationId: "00000000-0000-0000-0000-000000000001",
           },
-          linkedResources: [linkedResource("pms", "pms_hotel", "pms_hotel_alpenrose")],
+          linkedResources: [
+            linkedResource("booking", "booking_hotel", "booking_hotel_alpenrose"),
+            linkedResource("pms", "pms_hotel", "pms_hotel_alpenrose"),
+          ],
         }),
       ).resolves.toEqual([
         {
@@ -310,8 +315,28 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgEntitlementRepository", () => {
           status: "active",
         },
         {
+          product: "booking",
+          key: "booking-engine",
+          status: "expired",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_alpenrose",
+          },
+        },
+        {
           product: "pms",
-          key: "pms-core",
+          key: "property-management",
+          status: "suspended",
+          resource: {
+            product: "pms",
+            resourceType: "pms_hotel",
+            resourceId: "pms_hotel_archived",
+          },
+        },
+        {
+          product: "pms",
+          key: "property-management",
           status: "active",
           resource: {
             product: "pms",
@@ -527,6 +552,29 @@ describe("entitlement helpers", () => {
       true,
     ],
     [
+      "lets any primary-product resource suspension override account access",
+      contextFor({
+        entitlements: [
+          entitlement("active"),
+          entitlement("suspended", {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_legacy_alias",
+          }),
+        ],
+      }),
+      {
+        product: "booking",
+        key: "booking-engine",
+        resource: {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+        },
+      },
+      false,
+    ],
+    [
       "allows matching resource-scoped entitlement",
       contextFor({
         entitlements: [
@@ -572,6 +620,36 @@ describe("entitlement helpers", () => {
     ],
   ] as const)("%s", (_name, context, entitlementRequirement, expected) => {
     expect(hasActiveEntitlement(context, entitlementRequirement)).toBe(expected);
+  });
+
+  it("normalizes a legacy PMS entitlement key before applying a suspension", () => {
+    const context = contextFor({
+      entitlements: [
+        { product: "pms", key: "property-management", status: "active" },
+        {
+          product: "pms",
+          key: "pms-core",
+          status: "suspended",
+          resource: {
+            product: "pms",
+            resourceType: "pms_hotel",
+            resourceId: "legacy-pms-hotel",
+          },
+        },
+      ],
+    });
+
+    expect(
+      hasActiveEntitlement(context, {
+        product: "pms",
+        key: "property-management",
+        resource: {
+          product: "pms",
+          resourceType: "pms_property",
+          resourceId: "canonical-property",
+        },
+      }),
+    ).toBe(false);
   });
 
   it("throws authorization errors for missing active entitlement", () => {

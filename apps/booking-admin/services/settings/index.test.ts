@@ -16,6 +16,98 @@ describe("settingsService next-stack bootstrap data", () => {
       "fetch",
       vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
         const href = String(url);
+        if (href.includes("/api/hotel-setup/status?entryProduct=booking")) {
+          return new Response(
+            JSON.stringify({
+              contractVersion: "shared-hotel-setup-status.v1",
+              entry: { entryProduct: "booking", returnTo: null },
+              hotelGroup: {
+                organizationId: "organization_1",
+                displayName: "Alpenrose Hotels",
+                websiteUrl: null,
+                selectedProducts: ["booking"],
+              },
+              selection: {
+                state: "single_property",
+                selectedPropertyId: "property_alpenrose",
+              },
+              properties: [
+                {
+                  propertyId: "property_alpenrose",
+                  publicId: "hotel-alpenrose",
+                  displayName: "Hotel Alpenrose",
+                  locationSummary: "Innsbruck, AT",
+                  sharedProfile: {
+                    status: "incomplete",
+                    source: "canonical",
+                    completionPercent: 33,
+                    missingFields: ["website", "phone", "description", "media"],
+                  },
+                  products: {
+                    booking: {
+                      product: "booking",
+                      status: "selected_incomplete",
+                      missingSteps: ["bookingSettings"],
+                      statusReasons: ["booking_activation_incomplete"],
+                      updatedAt: null,
+                    },
+                    pms: {
+                      product: "pms",
+                      status: "not_selected",
+                      missingSteps: [],
+                      statusReasons: [],
+                      updatedAt: null,
+                    },
+                    marketplace: {
+                      product: "marketplace",
+                      status: "not_selected",
+                      missingSteps: [],
+                      statusReasons: [],
+                      updatedAt: null,
+                    },
+                  },
+                },
+              ],
+              nextAction: {
+                action: "complete_product_activation",
+                propertyId: "property_alpenrose",
+                product: "booking",
+                missingSteps: ["bookingSettings"],
+                reasonCodes: ["entry_product_activation_incomplete"],
+              },
+              updatedAt: "2026-07-10T10:00:00.000Z",
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        if (href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/property-link")) {
+          return new Response(
+            JSON.stringify({
+              hotelId: "booking_hotel_alpenrose",
+              propertyId: "property_alpenrose",
+              resourceLinks: {
+                bookingHotel: true,
+                pmsProperty: true,
+                financeProperty: true,
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        if (href.endsWith("/api/booking/hotels/property_alpenrose/property-link")) {
+          return new Response(
+            JSON.stringify({
+              hotelId: "property_alpenrose",
+              propertyId: "property_alpenrose",
+              resourceLinks: {
+                bookingHotel: true,
+                pmsProperty: true,
+                financeProperty: true,
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
         if (href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/property")) {
           if (init?.method === "PATCH") {
             return new Response(
@@ -82,7 +174,9 @@ describe("settingsService next-stack bootstrap data", () => {
     process.env.NEXT_PUBLIC_API_URL = "https://next-api.vayada.com";
     setAuthKitSession({
       accessToken: "workos-access-token",
-      resources: { "booking:booking_hotel": ["booking_hotel_alpenrose"] },
+      resources: {
+        "booking:booking_hotel": ["property_alpenrose", "booking_hotel_alpenrose"],
+      },
       user: {
         id: "user_1",
         email: "owner@example.com",
@@ -103,12 +197,16 @@ describe("settingsService next-stack bootstrap data", () => {
     await expect(settingsService.listHotels()).resolves.toEqual([
       {
         id: "booking_hotel_alpenrose",
-        name: "My Property",
-        slug: "",
-        location: "",
+        propertyId: "property_alpenrose",
+        bookingHotelId: "booking_hotel_alpenrose",
+        productReady: true,
+        name: "Hotel Alpenrose",
+        slug: "hotel-alpenrose",
+        location: "Innsbruck, AT",
         country: "",
       },
     ]);
+    localStorage.setItem("selectedHotelId", "booking_hotel_alpenrose");
     await expect(settingsService.getSetupStatus()).resolves.toMatchObject({
       setup_complete: true,
       missing_fields: [],
@@ -123,7 +221,7 @@ describe("settingsService next-stack bootstrap data", () => {
       id: "booking_hotel_alpenrose",
       property_name: "Updated",
     });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(8);
     expect(fetch).toHaveBeenLastCalledWith(
       expect.stringMatching(/\/api\/booking\/hotels\/booking_hotel_alpenrose\/settings\/property$/),
       expect.objectContaining({ method: "PATCH" }),

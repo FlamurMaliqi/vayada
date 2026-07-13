@@ -3,7 +3,7 @@
 Marketplace hotel setup is property-scoped. The hotel catalog owns hotel facts;
 Marketplace owns the hotel profile and collaboration offers.
 
-## Current target route
+## Current target routes
 
 `GET /api/marketplace/hotels/me/profile-status` requires a hotel-group request
 context, `marketplace.profile.manage`, and an active hotel-profile resource link.
@@ -20,6 +20,15 @@ type HotelProfileStatusResponse = {
 
 An active, non-archived `marketplace_offer` satisfies the Marketplace offer
 step. The route no longer calls it a property listing.
+
+The signed-in hotel editor uses the selected canonical property:
+
+- `GET/PUT /api/marketplace/properties/:propertyId/profile`
+- `GET/POST /api/marketplace/properties/:propertyId/offers`
+- `PUT/DELETE /api/marketplace/properties/:propertyId/offers/:offerId`
+
+Profile writes accept only Marketplace-owned pitch and collaboration guidance.
+The shared hotel setup API owns canonical hotel facts and media.
 
 ## Offer ownership
 
@@ -56,10 +65,10 @@ Hotel-side offer reads and mutations require an active resource link:
 Create is authorized through the parent hotel profile because the offer does
 not exist yet. Target-native `marketplace_offers.id` is the API `offerId`.
 
-## Transitional client
+## Compatibility client
 
-The regular hotel editor still reaches the retired FastAPI listing endpoints
-through a compatibility adapter. That adapter is not a second target model: it
-maps the old form into offer terminology while the dedicated hotel self-service
-write route is cut over. Public discovery, collaboration APIs, platform media,
-and Vayada admin already use canonical offers.
+The regular hotel editor retains its legacy in-process TypeScript names while
+calling the target offer routes above. Its adapter maps the existing form into
+offer terminology and sends location and gallery changes to the canonical
+property profile. It does not expose or write the migrated compatibility
+columns on `marketplace_offers`.

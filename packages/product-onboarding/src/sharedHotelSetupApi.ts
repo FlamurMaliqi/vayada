@@ -1,7 +1,7 @@
 import type {
+  SharedHotelSetupAccountProductSelection,
   SharedHotelSetupEntryProduct,
   SharedHotelSetupProduct,
-  SharedHotelSetupProductSelection,
   SharedHotelSetupStatus,
   SharedPropertyProfile,
   SharedPropertyProfileInput,
@@ -27,10 +27,9 @@ export type SharedHotelSetupApi = {
     propertyId: string,
     profile: SharedPropertyProfileInput,
   ): Promise<SharedPropertyProfile>;
-  saveProductSelection(
-    propertyId: string,
+  saveAccountProductSelection(
     selectedProducts: SharedHotelSetupProduct[],
-  ): Promise<SharedHotelSetupProductSelection>;
+  ): Promise<SharedHotelSetupAccountProductSelection>;
 };
 
 export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): SharedHotelSetupApi {
@@ -47,11 +46,10 @@ export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): S
         `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/profile`,
         profile,
       ),
-    saveProductSelection: (propertyId, selectedProducts) =>
-      client.put<SharedHotelSetupProductSelection>(
-        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/products`,
-        { selectedProducts },
-      ),
+    saveAccountProductSelection: (selectedProducts) =>
+      client.put<SharedHotelSetupAccountProductSelection>("/api/hotel-setup/products", {
+        selectedProducts,
+      }),
   };
 }
 

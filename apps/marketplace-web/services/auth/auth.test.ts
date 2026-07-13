@@ -117,7 +117,7 @@ describe("authService", () => {
         accessToken: "workos-access-token",
         csrfToken: "csrf-token",
         organizationId: "org_creator",
-        organizationKind: "creator_workspace",
+        organizationKind: "hotel_group",
         user: {
           id: "user_creator",
           email: "creator@example.test",
@@ -437,7 +437,7 @@ describe("authService", () => {
     expect(getPendingEmailVerification()).toBeNull();
   });
 
-  it("completes onboarding with the selected account type", async () => {
+  it("completes hotel onboarding from account type alone", async () => {
     setAuthKitSession({
       accessToken: "signup-workos-access-token",
       csrfToken: "signup-csrf-token",
@@ -448,7 +448,7 @@ describe("authService", () => {
         accessToken: "creator-workos-access-token",
         csrfToken: "creator-csrf-token",
         organizationId: "org_creator",
-        organizationKind: "creator_workspace",
+        organizationKind: "hotel_group",
         user: {
           id: "user_creator",
           email: "creator@example.test",
@@ -458,8 +458,8 @@ describe("authService", () => {
       }),
     );
 
-    await expect(authService.completeOnboarding("creator")).resolves.toMatchObject({
-      organizationKind: "creator_workspace",
+    await expect(authService.completeOnboarding("hotel")).resolves.toMatchObject({
+      organizationKind: "hotel_group",
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.localhost/auth/onboarding",
@@ -470,7 +470,7 @@ describe("authService", () => {
           "x-vayada-csrf": "signup-csrf-token",
         }),
         body: JSON.stringify({
-          type: "creator",
+          type: "hotel",
           surface: "marketplace-web",
         }),
       }),

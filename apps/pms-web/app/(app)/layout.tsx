@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Header from "@/components/layout/Header";
 import Sidebar from "@/components/layout/Sidebar";
 import { authService } from "@/services/auth";
-import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
+import { isPmsRoomSetupDecision, resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [setupGuardError, setSetupGuardError] = useState(false);
@@ -50,7 +51,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         "pmsSetupComplete",
         decision.action === "enter_product" ? "true" : "false",
       );
-      if (decision.action === "redirect_to_setup") {
+      const allowRoomSetup = pathname.startsWith("/rooms") && isPmsRoomSetupDecision(decision);
+      if (decision.action === "redirect_to_setup" && !allowRoomSetup) {
         router.replace(decision.redirectPath);
         return;
       }
@@ -60,7 +62,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, [pathname, router]);
 
   if (setupGuardError) {
     return (

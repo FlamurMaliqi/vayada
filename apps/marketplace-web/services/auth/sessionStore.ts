@@ -137,6 +137,10 @@ export function getAuthBearerToken(): string | null {
   return getAuthKitAccessToken();
 }
 
+export function getAuthSessionUser(): AuthUser | null {
+  return authKitSession?.user ?? null;
+}
+
 function getLegacyCompatibilityToken(): string | null {
   if (legacyCompatibilityToken && Date.now() < legacyCompatibilityToken.expiresAt - 30_000) {
     return legacyCompatibilityToken.token;

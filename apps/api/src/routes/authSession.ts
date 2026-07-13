@@ -213,6 +213,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     "/compat/pms-web-token",
     "/compat/affiliate-dashboard-token",
     "/compat/marketplace-web-token",
+    "/profile",
   ]) {
     app.options(path, async (request, reply) => {
       if (!writeCorsHeaders(request, reply, options)) {
@@ -1131,6 +1132,60 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     );
   });
 
+  app.post("/profile", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({ error: "origin_rejected" });
+    }
+    if (!passesCsrfCheck(request, options)) {
+      return reply.code(403).send({ error: "csrf_rejected" });
+    }
+    const parsed = parseProfileBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+    const sealedSession = readCookie(request, SESSION_COOKIE);
+    if (!sealedSession) {
+      return reply.code(401).send({ error: "missing_session" });
+    }
+    const session = await options.authKitClient.authenticateSession({ sealedSession });
+    if (!session) {
+      return reply.code(401).send({ error: "invalid_session" });
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+      resolution = await resolveExistingIdentity(
+        session,
+        options,
+        surfacePolicy,
+        organizationAccessOptionsFromRequest(request, surfacePolicy),
+      );
+      await options.lifecycleCommandBus.execute({
+        commandType: "identity.user.profile.update",
+        commandId: randomUUID(),
+        idempotencyKey: `self-profile:${resolution.user.userId}:${request.id}`,
+        audit: {
+          actor: { kind: "user", userId: resolution.user.userId },
+          source: "web",
+          requestId: request.id,
+          correlationId: session.sessionId,
+          reason: "Self-service contact profile update",
+          requestedAt: new Date().toISOString(),
+        },
+        payload: {
+          userId: resolution.user.userId,
+          profilePictureUrl: parsed.profilePictureUrl ?? undefined,
+          profilePictureMediaObjectId: parsed.profilePictureMediaObjectId ?? undefined,
+        },
+      });
+    } catch (error) {
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    return reply.send({ updated: true });
+  });
+
   app.post("/logout", async (request, reply) => {
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({ error: "origin_rejected" });
@@ -1576,7 +1631,73 @@ function parseOnboardingBody(
     }
     return { ok: true, surface, intent: parseSignupIntent(surface, rawIntent) };
   } catch {
-    return { ok: false, error: { state: "auth_failed", message: "Unsupported onboarding type." } };
+    return { ok: false, error: { state: "auth_failed", message: "Unsupported onboarding." } };
+  }
+}
+
+function parseProfileBody(body: unknown):
+  | {
+      ok: true;
+      surface: AuthSurface;
+      profilePictureUrl: string | null;
+      profilePictureMediaObjectId: string | null;
+    }
+  | { ok: false; error: { state: "auth_failed"; message: string } } {
+  if (!body || typeof body !== "object") {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Profile details are required." },
+    };
+  }
+  const input = body as {
+    surface?: unknown;
+    profilePictureUrl?: unknown;
+    profilePictureMediaObjectId?: unknown;
+  };
+  const allowedKeys = new Set(["surface", "profilePictureUrl", "profilePictureMediaObjectId"]);
+  if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Unsupported profile details." },
+    };
+  }
+  try {
+    const surface = parseSurface(
+      typeof input.surface === "string" ? input.surface : "marketplace-web",
+    );
+    const profilePictureUrl =
+      typeof input.profilePictureUrl === "string" ? input.profilePictureUrl.trim() : "";
+    const profilePictureMediaObjectId =
+      typeof input.profilePictureMediaObjectId === "string"
+        ? input.profilePictureMediaObjectId.trim()
+        : "";
+    if (
+      profilePictureUrl.length > 2048 ||
+      profilePictureMediaObjectId.length > 2048 ||
+      (!profilePictureUrl && !profilePictureMediaObjectId)
+    ) {
+      throw new Error("Invalid profile details");
+    }
+    if (profilePictureUrl && !profilePictureUrl.startsWith("staging/")) {
+      const profilePicture = new URL(profilePictureUrl);
+      const localHttpUrl =
+        profilePicture.protocol === "http:" &&
+        ["localhost", "127.0.0.1"].includes(profilePicture.hostname);
+      if (profilePicture.protocol !== "https:" && !localHttpUrl) {
+        throw new Error("Invalid profile picture URL");
+      }
+    }
+    return {
+      ok: true,
+      surface,
+      profilePictureUrl: profilePictureUrl || null,
+      profilePictureMediaObjectId: profilePictureMediaObjectId || null,
+    };
+  } catch {
+    return {
+      ok: false,
+      error: { state: "auth_failed", message: "Enter valid profile details to continue." },
+    };
   }
 }
 
@@ -1759,10 +1880,12 @@ async function createSignupOrganizationContext(
   signupIntent: AuthSignupIntent,
   loginHint: string | undefined,
   externalIdSuffix: string,
+  organizationName?: string,
 ): Promise<AuthSignupOrganizationContext> {
   const template = signupOrganizationTemplate(surface, signupIntent, loginHint, externalIdSuffix);
+  const name = organizationName ?? template.name;
   const organization = await authKitClient.createSignupOrganization({
-    name: template.name,
+    name,
     externalId: template.externalId,
     metadata: {
       auth_flow: "signup",
@@ -1775,7 +1898,7 @@ async function createSignupOrganizationContext(
   return {
     workosOrganizationId: organization.organizationId,
     workosExternalId: template.externalId,
-    name: template.name,
+    name,
     kind: template.kind,
     roleKey: template.roleKey,
   };

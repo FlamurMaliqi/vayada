@@ -19,6 +19,7 @@ import {
   setPendingOrganizationSelection,
   type AuthSessionResponse,
 } from "./sessionStore";
+import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 const AUTH_SURFACE = "pms-web";
@@ -206,7 +207,7 @@ export const authService = {
 
     const callbackUrl = new URL("/login", window.location.origin);
     callbackUrl.searchParams.set("auth", "callback");
-    if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    if (isSafeRelativeReturnTo(returnTo)) {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/login", window.location.origin);
@@ -223,7 +224,7 @@ export const authService = {
 
     const callbackUrl = new URL("/login", window.location.origin);
     callbackUrl.searchParams.set("auth", "callback");
-    if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    if (isSafeRelativeReturnTo(returnTo)) {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/signup", window.location.origin);

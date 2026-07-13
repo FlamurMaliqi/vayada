@@ -24,10 +24,11 @@ function TimeWindow({
   label: string;
   icon: React.ReactNode;
   from: string;
-  until: string;
+  until?: string;
   onFromChange: (v: string) => void;
-  onUntilChange: (v: string) => void;
+  onUntilChange?: (v: string) => void;
 }) {
+  const hasUntil = until !== undefined && onUntilChange !== undefined;
   return (
     <div>
       <label className="flex items-center gap-1.5 text-[12px] font-semibold text-gray-700 mb-2">
@@ -35,9 +36,11 @@ function TimeWindow({
         {label}
       </label>
       <div className="flex items-stretch rounded-xl border border-gray-300 overflow-hidden bg-white focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent transition-shadow">
-        <div className="flex-1 flex flex-col px-3 py-2 bg-gray-50/60 border-r border-gray-200">
+        <div
+          className={`flex-1 flex flex-col px-3 py-2 bg-gray-50/60 ${hasUntil ? "border-r border-gray-200" : ""}`}
+        >
           <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
-            From
+            {hasUntil ? "From" : "Time"}
           </span>
           <input
             type="time"
@@ -46,20 +49,26 @@ function TimeWindow({
             className="w-full bg-transparent text-[15px] font-semibold tabular-nums text-gray-900 focus:outline-none [&::-webkit-calendar-picker-indicator]:hidden"
           />
         </div>
-        <div className="flex items-center px-2 text-gray-300 select-none text-[13px]">→</div>
-        <div className="flex-1 flex flex-col px-3 py-2">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
-            Until
-          </span>
-          <input
-            type="time"
-            value={until}
-            onChange={(e) => onUntilChange(e.target.value)}
-            className="w-full bg-transparent text-[15px] font-semibold tabular-nums text-gray-900 focus:outline-none [&::-webkit-calendar-picker-indicator]:hidden"
-          />
-        </div>
+        {hasUntil && (
+          <>
+            <div className="flex items-center px-2 text-gray-300 select-none text-[13px]">→</div>
+            <div className="flex-1 flex flex-col px-3 py-2">
+              <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                Until
+              </span>
+              <input
+                type="time"
+                value={until}
+                onChange={(e) => onUntilChange?.(e.target.value)}
+                className="w-full bg-transparent text-[15px] font-semibold tabular-nums text-gray-900 focus:outline-none [&::-webkit-calendar-picker-indicator]:hidden"
+              />
+            </div>
+          </>
+        )}
       </div>
-      <p className="text-[10px] text-gray-400 mt-1.5">{formatWindow(from, until)}</p>
+      {hasUntil && (
+        <p className="text-[10px] text-gray-400 mt-1.5">{formatWindow(from, until ?? "")}</p>
+      )}
     </div>
   );
 }
@@ -67,10 +76,10 @@ function TimeWindow({
 interface PoliciesStepProps {
   checkInFrom: string;
   setCheckInFrom: (v: string) => void;
-  checkInUntil: string;
-  setCheckInUntil: (v: string) => void;
-  checkOutFrom: string;
-  setCheckOutFrom: (v: string) => void;
+  checkInUntil?: string;
+  setCheckInUntil?: (v: string) => void;
+  checkOutFrom?: string;
+  setCheckOutFrom?: (v: string) => void;
   checkOutUntil: string;
   setCheckOutUntil: (v: string) => void;
   payAtHotel: boolean;
@@ -107,8 +116,8 @@ interface PoliciesStepProps {
   setEstimatedArrivalTime: (v: boolean) => void;
   numberOfGuests: boolean;
   setNumberOfGuests: (v: boolean) => void;
-  enableReferAGuest: boolean;
-  setEnableReferAGuest: (v: boolean) => void;
+  enableReferAGuest?: boolean;
+  setEnableReferAGuest?: (v: boolean) => void;
   error: string;
   saving: boolean;
   onBack: () => void;
@@ -224,10 +233,10 @@ export default function PoliciesStep({
                   />
                 </svg>
               }
-              from={checkOutFrom}
-              until={checkOutUntil}
-              onFromChange={setCheckOutFrom}
-              onUntilChange={setCheckOutUntil}
+              from={checkOutFrom ?? checkOutUntil}
+              until={checkOutFrom === undefined ? undefined : checkOutUntil}
+              onFromChange={setCheckOutFrom ?? setCheckOutUntil}
+              onUntilChange={checkOutFrom === undefined ? undefined : setCheckOutUntil}
             />
           </div>
         </div>
@@ -933,28 +942,29 @@ export default function PoliciesStep({
           ))}
         </div>
 
-        {/* Refer a Guest */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-[13px] font-semibold text-gray-900">
-                &ldquo;Refer a Guest&rdquo; Feature
-              </h3>
-              <p className="text-[12px] text-gray-500 mt-0.5">
-                Allow guests to refer friends and earn rewards through your booking page
-              </p>
-            </div>
-            <button onClick={() => setEnableReferAGuest(!enableReferAGuest)} className="shrink-0">
-              <div
-                className={`w-9 h-5 rounded-full transition-colors relative ${enableReferAGuest ? "bg-primary-500" : "bg-gray-300"}`}
-              >
-                <div
-                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${enableReferAGuest ? "left-4" : "left-0.5"}`}
-                />
+        {enableReferAGuest !== undefined && setEnableReferAGuest && (
+          <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-[13px] font-semibold text-gray-900">
+                  &ldquo;Refer a Guest&rdquo; Feature
+                </h3>
+                <p className="text-[12px] text-gray-500 mt-0.5">
+                  Allow guests to refer friends and earn rewards through your booking page
+                </p>
               </div>
-            </button>
+              <button onClick={() => setEnableReferAGuest(!enableReferAGuest)} className="shrink-0">
+                <div
+                  className={`w-9 h-5 rounded-full transition-colors relative ${enableReferAGuest ? "bg-primary-500" : "bg-gray-300"}`}
+                >
+                  <div
+                    className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${enableReferAGuest ? "left-4" : "left-0.5"}`}
+                  />
+                </div>
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {error && (
           <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">

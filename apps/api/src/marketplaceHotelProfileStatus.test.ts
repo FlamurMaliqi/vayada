@@ -3,6 +3,7 @@ import {
   type LinkedResource,
   type IdentityRepository,
   type PermissionKey,
+  type ProductEntitlement,
   type VerifiedSession,
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
@@ -54,7 +55,7 @@ describe("marketplace hotel profile status route", () => {
 
     const response = await injectJson<HotelProfileStatusResponse>(app, {
       method: "GET",
-      url: "/api/marketplace/hotels/me/profile-status",
+      url: `/api/marketplace/properties/${hotelProfileResourceId}/profile-status`,
       headers: { authorization: "Bearer valid-token" },
     });
 
@@ -174,6 +175,55 @@ describe("marketplace hotel profile status route", () => {
     expect(response.body.profile_complete).toBe(true);
   });
 
+  it("selects an explicit property when the account has multiple hotel profiles", async () => {
+    const calls: string[] = [];
+    app = buildMarketplaceHotelProfileStatusApp({
+      linkedResources: [hotelProfileLink("property-one"), hotelProfileLink("property-two")],
+      repository: {
+        async getHotelProfileStatus(input) {
+          calls.push(input.profileResourceId);
+          return {
+            profile_complete: true,
+            missing_fields: [],
+            has_defaults: { location: false },
+            missing_offers: false,
+            completion_steps: [],
+          };
+        },
+      },
+    });
+
+    const response = await injectJson<HotelProfileStatusResponse>(app, {
+      method: "GET",
+      url: "/api/marketplace/properties/property-two/profile-status",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual(["property-two"]);
+  });
+
+  it("rejects profile status while Marketplace access is suspended", async () => {
+    app = buildMarketplaceHotelProfileStatusApp({
+      entitlements: [
+        { product: "marketplace", key: "marketplace-hotel-profile", status: "suspended" },
+      ],
+      repository: {
+        async getHotelProfileStatus() {
+          throw new Error("suspended access should not hit the repository");
+        },
+      },
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "GET",
+      url: `/api/marketplace/properties/${hotelProfileResourceId}/profile-status`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
   it("queries profile status inside the authorized profile resource scope", async () => {
     const query = vi.fn(async (_text: string, _values?: readonly unknown[]) => ({
       rows: [{ profileComplete: true, hasOffers: true }],
@@ -214,6 +264,7 @@ function buildMarketplaceHotelProfileStatusApp(options: {
   repository: MarketplaceHotelProfileStatusRepository;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
+  entitlements?: ProductEntitlement[];
 }): FastifyInstance {
   return buildApp({
     logger: false,
@@ -224,6 +275,19 @@ function buildMarketplaceHotelProfileStatusApp(options: {
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["marketplace.profile.manage"];
+        },
+      },
+      entitlementRepository: {
+        async findEntitlementsForContext() {
+          return (
+            options.entitlements ?? [
+              {
+                product: "marketplace",
+                key: "marketplace-hotel-profile",
+                status: "active",
+              },
+            ]
+          );
         },
       },
     },

@@ -38,6 +38,8 @@ export {
   type DeleteIdentityUserPayload,
   type GrantIdentityAccessCommand,
   type GrantIdentityAccessPayload,
+  type GrantIdentityResourceLinksCommand,
+  type GrantIdentityResourceLinksPayload,
   type IdentityCommandActor,
   type IdentityCommandAudit,
   type IdentityLifecycleCommand,

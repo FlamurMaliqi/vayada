@@ -105,33 +105,56 @@ test.describe("marketplace-web smoke", () => {
     await assertHealthy();
   });
 
-  test("hotel onboarding allows multiple product selections", async ({ page }) => {
+  test("hotel onboarding asks only for account type before shared setup", async ({ page }) => {
     await primeBrowserState(page);
     await mockOnboardingAuth(page);
     await mockSharedSetupStatus(page);
 
     await page.goto("/onboarding");
-    await expect(page.getByRole("heading", { name: "Welcome to Vayada" })).toBeVisible();
-    await page.getByRole("button", { name: "Continue" }).click();
-
     await expect(
-      page.getByRole("heading", { name: "Which products do you want to use?" }),
+      page.getByRole("heading", { name: "Thank you for signing up to Vayada" }),
     ).toBeVisible();
-    await page.getByText("PMS", { exact: true }).click();
-    await page.getByText("Booking Admin", { exact: true }).click();
+    await expect(
+      page.getByText("Let's set up your profile in a little more detail."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue" })).toHaveCount(0);
 
-    await expect(page.locator('input[value="marketplace"]')).toBeChecked();
-    await expect(page.locator('input[value="pms"]')).toBeChecked();
-    await expect(page.locator('input[value="booking"]')).toBeChecked();
-
-    await page
-      .getByRole("button", { name: "Continue with Creator Marketplace, PMS, Booking Admin" })
-      .click();
+    await expect(page.getByRole("heading", { name: "Welcome to Vayada" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: /manage a hotel/i })).toBeVisible();
+    await page.getByRole("button", { name: "Continue to hotel setup" }).click();
 
     await expect(page).toHaveURL(/\/setup\?/);
     const url = new URL(page.url());
     expect(url.searchParams.get("entryProduct")).toBe("marketplace");
-    expect(url.searchParams.getAll("selectedProducts")).toEqual(["marketplace", "pms", "booking"]);
+    expect(url.searchParams.has("selectedProducts")).toBe(false);
+    await expect(page.getByRole("heading", { name: "Add your first hotel" })).toBeVisible();
+    await expect(page.getByLabel("Hotel name")).toBeVisible();
+    await expect(page.getByText("We'd like to get to know you better")).toHaveCount(0);
+    await expect(page.getByText("Which systems do you want to use?")).toHaveCount(0);
+  });
+
+  test("redirects to login and blocks onboarding actions when the session check fails", async ({
+    page,
+  }) => {
+    await primeBrowserState(page);
+    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 503,
+        headers: corsHeaders(route),
+        json: { error: "session_unavailable" },
+      });
+    });
+
+    await page.goto("/onboarding");
+
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: /sign in to vayada/i })).toBeVisible();
+    await expect(page.getByRole("radio")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Continue to hotel setup" })).toHaveCount(0);
   });
 });
 
@@ -145,6 +168,7 @@ async function primeBrowserState(page: Page) {
 }
 
 async function mockOnboardingAuth(page: Page) {
+  let onboarded = false;
   const guestSession = {
     accessToken: "test-access-token",
     csrfToken: "test-csrf-token",
@@ -160,8 +184,25 @@ async function mockOnboardingAuth(page: Page) {
     organizationKind: "hotel_group",
   };
 
-  await routeJson(page, /\/auth\/session(?:\?|$)/, guestSession);
-  await routeJson(page, /\/auth\/onboarding$/, hotelSession);
+  await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: corsHeaders(route),
+      json: onboarded ? hotelSession : guestSession,
+    });
+  });
+  await page.route(/\/auth\/onboarding$/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    onboarded = true;
+    await route.fulfill({ status: 200, headers: corsHeaders(route), json: hotelSession });
+  });
   await routeJson(page, /\/auth\/compat\/marketplace-web-token/, {
     accessToken: "legacy-marketplace-token",
     expiresIn: 900,

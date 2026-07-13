@@ -17,7 +17,6 @@ import {
   updateFinancePaymentSettings,
 } from "@/services/api/financePaymentSettingsClient";
 import { checkSetupStatus } from "@/lib/utils/setupStatus";
-import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import {
   COUNTRY_OPTIONS,
   CURRENCY_OPTIONS,
@@ -33,31 +32,19 @@ import { SharedHotelSetupPage } from "@/components/setup/SharedHotelSetupPage";
 import {
   AddonsStep,
   BenefitsStep,
-  BrandMediaStep,
   LastMinuteStep,
   PoliciesStep,
   PropertyStep,
-  RoomsStep,
-  createEmptyRoom,
-  hasSeasonCoverageGaps,
-  type RoomType,
   type SetupAddon,
   useSetupWizardState,
 } from "@vayada/product-onboarding";
 
-const GOOGLE_FONTS_URL =
-  "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Sans+Pro:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&family=Cormorant+Garamond:ital,wght@0,400;0,700;1,400&family=Lato:wght@300;400;700&family=Cinzel:wght@400;600;700&family=Italiana&display=swap";
-
 const STEPS = [
   { number: 1, label: "Your Property" },
-  { number: 2, label: "Brand & Media" },
-  // { number: 3, label: 'Choose PMS' },  // Hidden — only vayada PMS for now
-  { number: 4, label: "Rooms & Rates" },
-  { number: 5, label: "Add-ons" },
-  // { number: 6, label: 'Promo Codes' },  // Hidden — can be re-enabled later
-  { number: 7, label: "Benefits" },
-  { number: 9, label: "Last-Minute" },
-  { number: 8, label: "Policies" },
+  { number: 2, label: "Add-ons" },
+  { number: 3, label: "Benefits" },
+  { number: 4, label: "Last-Minute" },
+  { number: 5, label: "Policies" },
 ];
 
 function toAddonPricingModel(addon: { perPerson?: boolean; perNight?: boolean }) {
@@ -120,6 +107,8 @@ function readPositiveInteger(value: unknown): number | null {
 
 function BookingProductSetupPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const productActivationMode = searchParams.get("legacy") === "booking";
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
@@ -131,9 +120,6 @@ function BookingProductSetupPage() {
   const [appliedInviteCode, setAppliedInviteCode] = useState("");
   const [showWizard, setShowWizard] = useState(false);
   const [setupPromoCodes, setSetupPromoCodes] = useState<CreateBookingPromoCodeBody[]>([]);
-
-  // Step 3: Choose PMS
-  const [selectedPms] = useState("vayada");
 
   const {
     propertyName,
@@ -154,10 +140,6 @@ function BookingProductSetupPage() {
     setInstagram,
     facebook,
     setFacebook,
-    tiktok,
-    setTiktok,
-    youtube,
-    setYoutube,
     currency,
     setCurrency,
     defaultLanguage,
@@ -166,34 +148,6 @@ function BookingProductSetupPage() {
     setSupportedCurrencies,
     supportedLanguages,
     setSupportedLanguages,
-    heroImage,
-    setHeroImage,
-    primaryColor,
-    setPrimaryColor,
-    selectedFont,
-    setSelectedFont,
-    propertyDescription,
-    setPropertyDescription,
-    bookingFilters,
-    setBookingFilters,
-    fileInputRef,
-    uploading,
-    handleImageUpload,
-    rooms,
-    setRooms,
-    activeRoomIndex,
-    setActiveRoomIndex,
-    activeRoomTab,
-    setActiveRoomTab,
-    amenityInput,
-    setAmenityInput,
-    featureInput,
-    setFeatureInput,
-    roomFileInputRef,
-    uploadingRoomImages,
-    roomImageUploadError,
-    handleRoomImageUpload,
-    handleRoomImageFiles,
     setupAddons,
     setSetupAddons,
     benefits,
@@ -202,10 +156,6 @@ function BookingProductSetupPage() {
     setLastMinuteConfig,
     checkInFrom,
     setCheckInFrom,
-    checkInUntil,
-    setCheckInUntil,
-    checkOutFrom,
-    setCheckOutFrom,
     checkOutUntil,
     setCheckOutUntil,
     payAtHotel,
@@ -234,8 +184,6 @@ function BookingProductSetupPage() {
     setEstimatedArrivalTime,
     numberOfGuests,
     setNumberOfGuests,
-    enableReferAGuest,
-    setEnableReferAGuest,
     paymentProvider,
     setPaymentProvider,
     xenditChannelCode,
@@ -305,35 +253,93 @@ function BookingProductSetupPage() {
       const urlParams =
         typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
       const addMode = urlParams?.get("mode") === "add";
-      if (addMode) {
+      if (addMode && !productActivationMode) {
         try {
           localStorage.removeItem("selectedHotelId");
         } catch {}
       }
 
       const status = await checkSetupStatus();
-      if (status?.setup_complete && !addMode) {
+      if (status?.setup_complete && !addMode && !productActivationMode) {
         localStorage.setItem("setupComplete", "true");
         router.replace("/dashboard");
         return;
       }
       // In add mode we intentionally DON'T prefill from the existing
       // setup — the user is creating a fresh property, so start blank.
-      if (!addMode) {
+      if (productActivationMode) {
+        try {
+          const profile = await settingsService.getPropertySettings();
+          if (profile.property_name) setPropertyName(profile.property_name);
+          if (profile.city) setCity(profile.city);
+          if (profile.country) setCountry(profile.country);
+          if (profile.address) setAddress(profile.address);
+          if (profile.reservation_email) setReservationEmail(profile.reservation_email);
+          if (profile.phone_number) setPhoneNumber(profile.phone_number);
+          if (profile.whatsapp_number) setWhatsapp(profile.whatsapp_number);
+          if (profile.instagram) setInstagram(profile.instagram);
+          if (profile.facebook) setFacebook(profile.facebook);
+          if (profile.default_currency) setCurrency(profile.default_currency);
+          if (profile.default_language) setDefaultLanguage(profile.default_language);
+          if (profile.supported_currencies) {
+            setSupportedCurrencies(profile.supported_currencies);
+          }
+          if (profile.supported_languages) {
+            setSupportedLanguages(profile.supported_languages);
+          }
+          if (profile.check_in_from ?? profile.check_in_time) {
+            setCheckInFrom(profile.check_in_from ?? profile.check_in_time);
+          }
+          if (profile.check_out_until ?? profile.check_out_time) {
+            setCheckOutUntil(profile.check_out_until ?? profile.check_out_time);
+          }
+          if (profile.pay_at_property_enabled !== undefined) {
+            setPayAtHotel(profile.pay_at_property_enabled);
+          }
+          if (profile.pay_at_hotel_methods) {
+            setPayAtHotelMethods(profile.pay_at_hotel_methods);
+          }
+          if (profile.online_card_payment !== undefined) {
+            setOnlineCardPayment(profile.online_card_payment);
+          }
+          if (profile.bank_transfer !== undefined) setBankTransfer(profile.bank_transfer);
+          if (profile.payout_account_holder) {
+            setPayoutAccountHolder(profile.payout_account_holder);
+          }
+          if (profile.payout_account_type) setPayoutAccountType(profile.payout_account_type);
+          if (profile.payout_iban) setPayoutIban(profile.payout_iban);
+          if (profile.payout_account_number) {
+            setPayoutAccountNumber(profile.payout_account_number);
+          }
+          if (profile.payout_bank_name) setPayoutBankName(profile.payout_bank_name);
+          if (profile.payout_swift) setPayoutSwift(profile.payout_swift);
+          if (profile.special_requests_enabled !== undefined) {
+            setSpecialRequests(profile.special_requests_enabled);
+          }
+          if (profile.arrival_time_enabled !== undefined) {
+            setEstimatedArrivalTime(profile.arrival_time_enabled);
+          }
+          if (profile.guest_count_enabled !== undefined) {
+            setNumberOfGuests(profile.guest_count_enabled);
+          }
+          setPrefilled(true);
+        } catch {
+          setShowWizard(true);
+        }
+      } else if (!addMode) {
         const prefill = status?.prefill_data;
         if (prefill) {
           if (prefill.property_name) setPropertyName(prefill.property_name);
           if (prefill.reservation_email) setReservationEmail(prefill.reservation_email);
           if (prefill.phone_number) setPhoneNumber(prefill.phone_number);
           if (prefill.address) setAddress(prefill.address);
-          if (prefill.hero_image) setHeroImage(prefill.hero_image);
           setPrefilled(true);
         }
       }
       setLoading(false);
     }
     checkAuth();
-  }, [router]);
+  }, [productActivationMode, router]);
 
   const canProceed = (): boolean => {
     if (step === 1) {
@@ -346,49 +352,19 @@ function BookingProductSetupPage() {
         phoneNumber.trim()
       );
     }
-    if (step === 2) {
-      return !!(primaryColor && selectedFont && heroImage.trim());
-    }
-    if (step === 3) {
-      return !!selectedPms;
-    }
-    if (step === 4) {
-      return rooms.every(
-        (r) =>
-          !!(r.name.trim() && r.maxOccupancy >= 1 && r.totalRooms >= 1) &&
-          r.seasons.some((s) => s.rate && Number(s.rate) > 0) &&
-          !hasSeasonCoverageGaps(r),
-      );
-    }
-    if (step === 5) {
-      return true; // add-ons are optional
-    }
-    if (step === 6) {
-      return true; // promo codes are optional
-    }
-    if (step === 7) {
-      return true;
-    }
-    if (step === 9) {
-      return true; // last-minute is optional
-    }
-    return false;
+    return true;
   };
 
   const handleComplete = async () => {
     setError("");
     setSaving(true);
     try {
-      const unavailableSelections: string[] = [];
-      if (unavailableSelections.length > 0) {
-        setError(unavailableSelections.join(" "));
-        setSaving(false);
-        return;
+      const selectedSharedPropertyId = localStorage.getItem("selectedSharedPropertyId");
+      if (productActivationMode && selectedSharedPropertyId) {
+        localStorage.setItem("selectedHotelId", selectedSharedPropertyId);
+      } else {
+        localStorage.removeItem("selectedHotelId");
       }
-
-      localStorage.removeItem("selectedHotelId");
-      const failedRooms: string[] = [];
-
       const propertyPayload = {
         property_name: propertyName,
         reservation_email: reservationEmail,
@@ -399,8 +375,6 @@ function BookingProductSetupPage() {
         country,
         instagram,
         facebook,
-        tiktok,
-        youtube,
         default_currency: currency,
         default_language: defaultLanguage,
         supported_currencies: supportedCurrencies,
@@ -408,8 +382,6 @@ function BookingProductSetupPage() {
         check_in_time: checkInFrom,
         check_out_time: checkOutUntil,
         check_in_from: checkInFrom,
-        check_in_until: checkInUntil,
-        check_out_from: checkOutFrom,
         check_out_until: checkOutUntil,
         pay_at_property_enabled: payAtHotel,
         pay_at_hotel_methods: payAtHotelMethods,
@@ -424,11 +396,13 @@ function BookingProductSetupPage() {
         special_requests_enabled: specialRequests,
         arrival_time_enabled: estimatedArrivalTime,
         guest_count_enabled: numberOfGuests,
-        refer_a_guest_enabled: enableReferAGuest,
       };
 
-      const savedSettings = await settingsService.createHotel(propertyPayload);
-      const createdHotelId = savedSettings.id;
+      const savedSettings = productActivationMode
+        ? await settingsService.updatePropertySettings(propertyPayload)
+        : await settingsService.createHotel(propertyPayload);
+      const createdHotelId =
+        savedSettings.booking_hotel_id ?? savedSettings.property_id ?? savedSettings.id;
       if (createdHotelId) {
         localStorage.setItem("selectedHotelId", createdHotelId);
       }
@@ -508,18 +482,6 @@ function BookingProductSetupPage() {
         }
       }
 
-      // 2. Save the room-filter portion of design settings. Media/color
-      // design fields are not persisted by next-api yet and the service
-      // rejects them instead of silently dropping them.
-      await settingsService.updateDesignSettings({
-        booking_filters: bookingFilters,
-      });
-
-      if (selectedPms === "vayada") {
-        localStorage.setItem("pmsProvider", "vayada");
-        if (rooms.length > 0) failedRooms.push(...rooms.map((room) => room.name));
-      }
-
       // 8. Save benefits
       if (benefits.length > 0) {
         try {
@@ -546,21 +508,6 @@ function BookingProductSetupPage() {
             "Last-minute settings could not be saved during setup. You can retry from Booking Settings.",
           );
         }
-      }
-
-      // Auto-select the newly created hotel
-      const hotelList = await settingsService.listHotels();
-      if (hotelList.length > 0) {
-        const newHotel = hotelList[hotelList.length - 1];
-        localStorage.setItem("selectedHotelId", newHotel.id);
-      }
-
-      // Store warning about failed rooms so dashboard can show it
-      if (failedRooms.length > 0) {
-        localStorage.setItem(
-          "setupWarning",
-          `Some rooms could not be created: ${failedRooms.join(", ")}. You can add them manually from the dashboard.`,
-        );
       }
 
       localStorage.setItem("setupComplete", "true");
@@ -677,33 +624,10 @@ function BookingProductSetupPage() {
         if (p.whatsapp_number) setWhatsapp(p.whatsapp_number);
         if (p.instagram) setInstagram(p.instagram);
         if (p.facebook) setFacebook(p.facebook);
-        if (p.tiktok) setTiktok(p.tiktok);
-        if (p.youtube) setYoutube(p.youtube);
         if (p.default_currency) setCurrency(p.default_currency);
         if (p.default_language) setDefaultLanguage(p.default_language);
         if (p.supported_currencies) setSupportedCurrencies(p.supported_currencies);
         if (p.supported_languages) setSupportedLanguages(p.supported_languages);
-      }
-
-      // Prefill branding
-      if (data.branding) {
-        const b = data.branding;
-        if (b.hero_image) setHeroImage(b.hero_image);
-        if (b.primary_color) setPrimaryColor(b.primary_color);
-        if (b.font_pairing) setSelectedFont(b.font_pairing);
-        if (b.description) setPropertyDescription(b.description);
-        if (b.booking_filters) setBookingFilters(b.booking_filters);
-      }
-
-      // Prefill rooms
-      if (data.rooms && data.rooms.length > 0) {
-        setRooms(
-          data.rooms.map((r: Partial<RoomType>) => ({
-            ...createEmptyRoom(),
-            ...r,
-            currency: r.currency || data.property?.default_currency || "EUR",
-          })),
-        );
       }
 
       // Prefill addons
@@ -743,8 +667,6 @@ function BookingProductSetupPage() {
         const pol = data.policies;
         if (pol.check_in_from) setCheckInFrom(pol.check_in_from);
         else if (pol.check_in_time) setCheckInFrom(pol.check_in_time);
-        if (pol.check_in_until) setCheckInUntil(pol.check_in_until);
-        if (pol.check_out_from) setCheckOutFrom(pol.check_out_from);
         if (pol.check_out_until) setCheckOutUntil(pol.check_out_until);
         else if (pol.check_out_time) setCheckOutUntil(pol.check_out_time);
         if (pol.pay_at_property !== undefined) setPayAtHotel(pol.pay_at_property);
@@ -753,7 +675,6 @@ function BookingProductSetupPage() {
         if (pol.special_requests !== undefined) setSpecialRequests(pol.special_requests);
         if (pol.arrival_time !== undefined) setEstimatedArrivalTime(pol.arrival_time);
         if (pol.guest_count !== undefined) setNumberOfGuests(pol.guest_count);
-        if (pol.refer_a_guest !== undefined) setEnableReferAGuest(pol.refer_a_guest);
       }
 
       // Prefill payment provider from internal settings
@@ -886,9 +807,6 @@ function BookingProductSetupPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {}
-      <link rel="stylesheet" href={GOOGLE_FONTS_URL} />
-
       {/* Top bar */}
       <div className="bg-white border-b border-gray-200 px-4 sm:px-8 py-3 shrink-0">
         <div className="flex items-center justify-between gap-3">
@@ -947,10 +865,6 @@ function BookingProductSetupPage() {
           setInstagram={setInstagram}
           facebook={facebook}
           setFacebook={setFacebook}
-          tiktok={tiktok}
-          setTiktok={setTiktok}
-          youtube={youtube}
-          setYoutube={setYoutube}
           currency={currency}
           setCurrency={setCurrency}
           defaultLanguage={defaultLanguage}
@@ -976,58 +890,45 @@ function BookingProductSetupPage() {
       )}
 
       {step === 2 && (
-        <BrandMediaStep
-          heroImage={heroImage}
-          setHeroImage={setHeroImage}
-          primaryColor={primaryColor}
-          setPrimaryColor={setPrimaryColor}
-          selectedFont={selectedFont}
-          setSelectedFont={setSelectedFont}
-          propertyDescription={propertyDescription}
-          setPropertyDescription={setPropertyDescription}
-          uploading={uploading}
-          fileInputRef={fileInputRef}
-          handleImageUpload={handleImageUpload}
-          propertyName={propertyName}
+        <AddonsStep
+          addons={setupAddons}
+          setAddons={setSetupAddons}
           currency={currency}
-          defaultLanguage={defaultLanguage}
           error={error}
           canProceed={canProceed()}
           onBack={() => setStep(1)}
           onContinue={() => {
             setError("");
-            setStep(4);
+            setStep(3);
           }}
           stepIndicators={stepIndicators}
-          colorPresets={COLOR_PRESETS}
-          fontPairings={FONT_PAIRINGS}
-          formatPrice={(amt, c) => `${getCurrencySymbol(c)}${amt}`}
+          uploadImage={uploadSingleImage}
+          formatPrice={(amt, c) => `${getCurrencySymbol(c)}${amt.toFixed(2)}`}
         />
       )}
 
-      {/* Step 3 (PMS selection) hidden — only vayada PMS for now. Re-enable when more PMS options are available. */}
-
-      {step === 4 && (
-        <RoomsStep
-          rooms={rooms}
-          setRooms={setRooms}
-          activeRoomIndex={activeRoomIndex}
-          setActiveRoomIndex={setActiveRoomIndex}
-          activeRoomTab={activeRoomTab}
-          setActiveRoomTab={setActiveRoomTab}
-          amenityInput={amenityInput}
-          setAmenityInput={setAmenityInput}
-          featureInput={featureInput}
-          setFeatureInput={setFeatureInput}
-          roomFileInputRef={roomFileInputRef}
-          uploadingRoomImages={uploadingRoomImages}
-          roomImageUploadError={roomImageUploadError}
-          handleRoomImageUpload={handleRoomImageUpload}
-          handleRoomImageFiles={handleRoomImageFiles}
-          currency={currency}
+      {step === 3 && (
+        <BenefitsStep
+          benefits={benefits}
+          setBenefits={setBenefits}
           error={error}
           canProceed={canProceed()}
           onBack={() => setStep(2)}
+          onContinue={() => {
+            setError("");
+            setStep(4);
+          }}
+          stepIndicators={stepIndicators}
+        />
+      )}
+
+      {step === 4 && (
+        <LastMinuteStep
+          config={lastMinuteConfig}
+          setConfig={setLastMinuteConfig}
+          error={error}
+          canProceed={canProceed()}
+          onBack={() => setStep(3)}
           onContinue={() => {
             setError("");
             setStep(5);
@@ -1037,63 +938,9 @@ function BookingProductSetupPage() {
       )}
 
       {step === 5 && (
-        <AddonsStep
-          addons={setupAddons}
-          setAddons={setSetupAddons}
-          currency={currency}
-          error={error}
-          canProceed={canProceed()}
-          onBack={() => setStep(4)}
-          onContinue={() => {
-            setError("");
-            setStep(7);
-          }}
-          stepIndicators={stepIndicators}
-          uploadImage={uploadSingleImage}
-          formatPrice={(amt, c) => `${getCurrencySymbol(c)}${amt.toFixed(2)}`}
-        />
-      )}
-
-      {/* Step 6 (Promo Codes) hidden — can be re-enabled later */}
-
-      {step === 7 && (
-        <BenefitsStep
-          benefits={benefits}
-          setBenefits={setBenefits}
-          error={error}
-          canProceed={canProceed()}
-          onBack={() => setStep(5)}
-          onContinue={() => {
-            setError("");
-            setStep(9);
-          }}
-          stepIndicators={stepIndicators}
-        />
-      )}
-
-      {step === 9 && (
-        <LastMinuteStep
-          config={lastMinuteConfig}
-          setConfig={setLastMinuteConfig}
-          error={error}
-          canProceed={canProceed()}
-          onBack={() => setStep(7)}
-          onContinue={() => {
-            setError("");
-            setStep(8);
-          }}
-          stepIndicators={stepIndicators}
-        />
-      )}
-
-      {step === 8 && (
         <PoliciesStep
           checkInFrom={checkInFrom}
           setCheckInFrom={setCheckInFrom}
-          checkInUntil={checkInUntil}
-          setCheckInUntil={setCheckInUntil}
-          checkOutFrom={checkOutFrom}
-          setCheckOutFrom={setCheckOutFrom}
           checkOutUntil={checkOutUntil}
           setCheckOutUntil={setCheckOutUntil}
           payAtHotel={payAtHotel}
@@ -1130,11 +977,9 @@ function BookingProductSetupPage() {
           setEstimatedArrivalTime={setEstimatedArrivalTime}
           numberOfGuests={numberOfGuests}
           setNumberOfGuests={setNumberOfGuests}
-          enableReferAGuest={enableReferAGuest}
-          setEnableReferAGuest={setEnableReferAGuest}
           error={error}
           saving={saving}
-          onBack={() => setStep(9)}
+          onBack={() => setStep(4)}
           onComplete={handleComplete}
           stepIndicators={stepIndicators}
         />

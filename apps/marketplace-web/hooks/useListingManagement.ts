@@ -30,6 +30,9 @@ export function useListingManagement(
     listingName: "",
   });
   const listingImageInputRef = useRef<HTMLInputElement | null>(null);
+  const editingListingMediaResourceId = hotelProfile?.listings.find(
+    (listing) => listing.id === editingListingId,
+  )?.mediaResourceId;
 
   const openAddListingModal = () => {
     setListingFormData(createEmptyListingFormData());
@@ -110,9 +113,12 @@ export function useListingManagement(
           }
 
           if (editingListingId) {
+            if (!editingListingMediaResourceId) {
+              throw new Error("The listing media resource is unavailable");
+            }
             const uploadResponse = await hotelService.uploadListingImages(
               base64Files,
-              editingListingId,
+              editingListingMediaResourceId,
             );
             const newImageUrls = uploadResponse.images.map((img) => img.url);
             const newMediaObjectIds = uploadResponse.images.map((img) => img.mediaObjectId);
@@ -145,9 +151,12 @@ export function useListingManagement(
         const createdListing = await hotelService.createListing(apiListingData);
         if (base64Files.length > 0) {
           try {
+            if (!createdListing.media_resource_id) {
+              throw new Error("The listing media resource is unavailable");
+            }
             const uploadResponse = await hotelService.uploadListingImages(
               base64Files,
-              createdListing.id,
+              createdListing.media_resource_id,
             );
             imageUrls = [...imageUrls, ...uploadResponse.images.map((img) => img.url)];
             imageMediaObjectIds = [
@@ -275,7 +284,13 @@ export function useListingManagement(
         return;
       }
 
-      const uploadResponse = await hotelService.uploadListingImages(fileList, editingListingId);
+      if (!editingListingMediaResourceId) {
+        throw new Error("The listing media resource is unavailable");
+      }
+      const uploadResponse = await hotelService.uploadListingImages(
+        fileList,
+        editingListingMediaResourceId,
+      );
       const newImageUrls = uploadResponse.images.map((img) => img.url);
       const newMediaObjectIds = uploadResponse.images.map((img) => img.mediaObjectId);
 

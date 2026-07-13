@@ -27,6 +27,7 @@ export type Product =
 
 export type ResourceType =
   | "platform"
+  | "user_profile"
   | "property"
   | "booking_hotel"
   | "pms_hotel"
@@ -52,6 +53,7 @@ export type PermissionKey =
   | "platform.user.suspend"
   | "hotel_catalog.setup.read"
   | "hotel_catalog.setup.manage"
+  | "hotel_catalog.products.manage"
   | "intelligence.ask.read"
   | "booking.settings.manage"
   | "booking.settings.read"

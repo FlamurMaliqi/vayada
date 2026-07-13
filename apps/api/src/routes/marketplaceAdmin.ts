@@ -247,6 +247,7 @@ export type MarketplaceAdminOffer = {
   offerStatus: "draft" | "pending" | "verified" | "rejected" | "suspended" | "archived";
   title: string;
   offerSummary: string | null;
+  media: MarketplaceAdminOfferMedia[];
   deliverables: (MarketplaceOfferDeliverableWrite & { deliverableId: string })[];
   compensationOptions: (MarketplaceOfferCompensationOptionWrite & {
     compensationOptionId: string;
@@ -254,6 +255,11 @@ export type MarketplaceAdminOffer = {
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type MarketplaceAdminOfferMedia = {
+  mediaObjectId: string | null;
+  url: string;
 };
 
 export type MarketplaceAdminDeleteOfferResponse = {
@@ -922,7 +928,7 @@ function readIdempotencyKey(request: FastifyRequest): string | null {
   return readNonEmptyString(headerValue) ?? readNonEmptyString(bodyValue);
 }
 
-function validateCreateOfferRequest(
+export function validateCreateOfferRequest(
   body: MarketplaceAdminCreateOfferRequest | undefined,
 ): string | null {
   if (!body || !readNonEmptyString(body.title)) return "title_required";
@@ -940,7 +946,7 @@ function validateCreateOfferRequest(
   );
 }
 
-function validateUpdateOfferRequest(
+export function validateUpdateOfferRequest(
   body: MarketplaceAdminUpdateOfferRequest | undefined,
 ): string | null {
   if (!body) return "body_required";
@@ -1506,7 +1512,7 @@ async function resolveOfferForProfile(
   return result.rows[0] ?? null;
 }
 
-async function replaceOfferChildren(
+export async function replaceOfferChildren(
   client: Pick<MarketplaceAdminPool, "query">,
   input: {
     offerId: string;
@@ -1623,7 +1629,67 @@ async function replaceOfferChildren(
   }
 }
 
-async function syncOfferReadModel(
+function offerMediaLateralSql(publicOnly: boolean): string {
+  const visibilityFilter = publicOnly
+    ? `AND media_object.visibility = 'public'
+        AND media_object.public_approved = TRUE
+        AND media_object.lifecycle_status = 'active'`
+    : `AND media_object.lifecycle_status NOT IN (
+          'quarantined', 'rejected', 'delete_requested', 'deleted'
+        )`;
+  return `
+  LEFT JOIN LATERAL (
+    SELECT
+      jsonb_agg(
+        jsonb_build_object(
+          'mediaObjectId', item.id::text,
+          'url', item.url
+        ) ORDER BY item.created_at, item.id
+      ) AS items,
+      array_agg(item.url ORDER BY item.created_at, item.id) AS urls
+    FROM (
+      SELECT
+        media_object.id,
+        media_object.created_at,
+        COALESCE(
+          (
+            SELECT variant.public_cdn_url
+            FROM platform.media_variants variant
+            WHERE variant.media_object_id = media_object.id
+              AND variant.public_cdn_url IS NOT NULL
+            ORDER BY CASE variant.variant_name
+              WHEN 'original_safe' THEN 0
+              WHEN 'large' THEN 1
+              WHEN 'thumbnail' THEN 2
+              ELSE 3
+            END,
+            variant.created_at,
+            variant.id
+            LIMIT 1
+          ),
+          media_object.source_url,
+          CASE
+            WHEN media_object.storage_key LIKE 'https://%' THEN media_object.storage_key
+            ELSE NULL
+          END
+        ) AS url
+      FROM platform.media_objects media_object
+      WHERE media_object.owner_organization_id = offer.organization_id
+        AND media_object.resource_product = 'marketplace'
+        AND media_object.resource_type = 'marketplace_offer'
+        AND media_object.resource_id = offer.id::text
+        AND media_object.purpose = 'marketplace.offer.media'
+        ${visibilityFilter}
+    ) item
+    WHERE item.url IS NOT NULL
+  ) offer_media ON TRUE
+`;
+}
+
+const OFFER_MEDIA_LATERAL_SQL = offerMediaLateralSql(false);
+const PUBLIC_OFFER_MEDIA_LATERAL_SQL = offerMediaLateralSql(true);
+
+export async function syncOfferReadModel(
   client: Pick<MarketplaceAdminPool, "query">,
   offerId: string,
   visibilityMode: "initialize" | "preserve" | "disable",
@@ -1665,7 +1731,7 @@ async function syncOfferReadModel(
          ELSE 'private'
        END,
        COALESCE(public_profile.location, '{}'::jsonb),
-       '{}'::text[],
+       COALESCE(offer_media.urls, offer.image_urls, '{}'::text[]),
        COALESCE(compensation.items, '[]'::jsonb),
        COALESCE(requirements.item, '{}'::jsonb),
        jsonb_build_object('source', 'marketplace_admin'),
@@ -1676,6 +1742,7 @@ async function syncOfferReadModel(
        ON current_projection.offer_id = offer.id
      LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
        ON public_profile.property_id = offer.property_id
+     ${PUBLIC_OFFER_MEDIA_LATERAL_SQL}
      LEFT JOIN LATERAL (
        SELECT slug.slug
        FROM hotel_catalog.property_slugs slug
@@ -1739,7 +1806,7 @@ async function syncOfferReadModel(
   );
 }
 
-async function readOffer(
+export async function readOffer(
   client: Pick<MarketplaceAdminPool, "query">,
   offerResourceId: string,
   authorizationMode: MarketplaceAdminAuthorizationMode,
@@ -1833,7 +1900,7 @@ function mapCollaborationRow(row: CollaborationRow): MarketplaceCollaborationRea
   };
 }
 
-function mapOfferRow(
+export function mapOfferRow(
   row: OfferRow,
   authorizationMode: MarketplaceAdminAuthorizationMode,
 ): MarketplaceAdminOffer {
@@ -1845,12 +1912,23 @@ function mapOfferRow(
     offerStatus: row.offerStatus,
     title: row.title,
     offerSummary: row.offerSummary,
+    media: toOfferMedia(row.media),
     deliverables: toOfferDeliverables(row.deliverables),
     compensationOptions: toCompensationOptions(row.compensationOptions),
     creatorRequirements: toCreatorRequirements(row.creatorRequirements),
     createdAt: toIsoString(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
   };
+}
+
+function toOfferMedia(value: unknown): MarketplaceAdminOfferMedia[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const url = readString(item.url);
+    if (!url) return [];
+    return [{ mediaObjectId: readString(item.mediaObjectId), url }];
+  });
 }
 
 function toInviteCode(row: InviteCodeRow): MarketplaceAdminInviteCode {
@@ -2204,12 +2282,13 @@ type CollaborationRow = {
   updatedAt: Date | string;
 };
 
-type OfferRow = {
+export type OfferRow = {
   offerId: string;
   propertyId: string;
   offerStatus: MarketplaceAdminOffer["offerStatus"];
   title: string;
   offerSummary: string | null;
+  media: unknown;
   deliverables: unknown;
   compensationOptions: unknown;
   creatorRequirements: unknown;
@@ -2332,19 +2411,29 @@ const COLLABORATION_MUTATION_CTE = `
   )
 `;
 
-const OFFER_SELECT_SQL = `
+export const OFFER_SELECT_SQL = `
   SELECT
     offer.id::text AS "offerId",
     offer.property_id::text AS "propertyId",
     offer.offer_status AS "offerStatus",
     offer.title,
     offer.offer_summary AS "offerSummary",
+    COALESCE(offer_media.items, legacy_media.items, '[]'::jsonb) AS media,
     COALESCE(deliverables.items, '[]'::jsonb) AS deliverables,
     COALESCE(compensation.items, '[]'::jsonb) AS "compensationOptions",
     COALESCE(requirements.item, '{}'::jsonb) AS "creatorRequirements",
     offer.created_at AS "createdAt",
     offer.updated_at AS "updatedAt"
   FROM marketplace.marketplace_offers offer
+  ${OFFER_MEDIA_LATERAL_SQL}
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+      jsonb_build_object('mediaObjectId', NULL, 'url', legacy.url)
+      ORDER BY legacy.ordinality
+    ) AS items
+    FROM unnest(offer.image_urls) WITH ORDINALITY AS legacy(url, ordinality)
+    WHERE NULLIF(btrim(legacy.url), '') IS NOT NULL
+  ) legacy_media ON TRUE
   LEFT JOIN LATERAL (
     SELECT jsonb_agg(
       jsonb_build_object(

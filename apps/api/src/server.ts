@@ -48,6 +48,7 @@ import { createPgPmsModuleActivationRepository } from "./routes/pmsModuleActivat
 import { createPgMarketplaceCollaborationReadRepository } from "./routes/marketplaceCollaborations.js";
 import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js";
 import { createPgMarketplaceHotelProfileStatusRepository } from "./routes/marketplaceHotelProfileStatus.js";
+import { createPgMarketplaceHotelSelfServiceRepository } from "./routes/marketplaceHotelSelfService.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
@@ -409,6 +410,11 @@ const app = buildApp({
           connectionString: config.targetDatabaseUrl!,
         })
       : undefined,
+  marketplaceHotelSelfServiceRepository: config.targetDatabaseUrl
+    ? createPgMarketplaceHotelSelfServiceRepository({
+        connectionString: config.targetDatabaseUrl,
+      })
+    : undefined,
   marketplaceCreatorSelfServiceRepository: config.targetDatabaseUrl
     ? createPgMarketplaceCreatorSelfServiceRepository({
         connectionString: config.targetDatabaseUrl,
