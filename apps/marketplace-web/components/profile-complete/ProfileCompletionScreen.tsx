@@ -89,15 +89,7 @@ export function ProfileCompletionScreen({
             </div>
           </div>
 
-          <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-center">
-            <Button
-              type="button"
-              variant="outline"
-              className="justify-center rounded-full border-gray-200 px-6 font-semibold"
-              onClick={onEditProfile}
-            >
-              Edit profile details
-            </Button>
+          <div className="mt-7 flex flex-col gap-3 sm:flex-row-reverse sm:justify-center">
             <Button
               type="button"
               variant="primary"
@@ -105,6 +97,14 @@ export function ProfileCompletionScreen({
               onClick={onGoHome}
             >
               Open marketplace
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="justify-center rounded-full border-gray-200 px-6 font-semibold"
+              onClick={onEditProfile}
+            >
+              Edit profile details
             </Button>
           </div>
 

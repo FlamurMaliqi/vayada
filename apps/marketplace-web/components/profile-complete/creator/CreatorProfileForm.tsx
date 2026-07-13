@@ -141,7 +141,10 @@ export function CreatorProfileForm({
       )}
 
       {error && (
-        <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4">
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4"
+        >
           <XMarkIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600" />
           <p className="whitespace-pre-line text-sm font-medium text-red-800">{error}</p>
         </div>

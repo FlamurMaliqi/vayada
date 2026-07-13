@@ -490,6 +490,7 @@ export default function ProfileCompletePage() {
         currentStep={2}
         title={profileShellTitle(userType)}
         description={profileShellDescription(userType)}
+        compact
         showProgress={false}
       >
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

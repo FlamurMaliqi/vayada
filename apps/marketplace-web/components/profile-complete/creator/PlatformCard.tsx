@@ -113,6 +113,7 @@ export function PlatformCard({
         <button
           type="button"
           onClick={() => onAddPlatform(platformName)}
+          aria-label={`Add ${platformName} account`}
           className="rounded-full border border-primary-200 px-4 py-2 text-sm font-semibold text-primary-700 transition-colors hover:bg-primary-50"
         >
           Add account
@@ -153,6 +154,7 @@ export function PlatformCard({
                         onRemovePlatform(platformToRemove.index);
                       }
                     }}
+                    aria-label={`Remove ${platform.handle || `account ${idx + 1}`} from ${platformName}`}
                     className="rounded-full border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700 transition-colors hover:bg-red-50"
                   >
                     Remove

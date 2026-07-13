@@ -37,6 +37,7 @@ export function PlatformDemographics({
       <button
         type="button"
         onClick={onToggleExpanded}
+        aria-expanded={isExpanded}
         className="flex w-full items-center justify-between text-left"
       >
         <span>

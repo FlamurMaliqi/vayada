@@ -31,6 +31,7 @@ export function CreatorBasicInfoStep({
 }: CreatorBasicInfoStepProps) {
   const profilePictureError =
     !!error && error.toLowerCase().includes("profile picture") && !form.profile_image;
+  const profilePictureErrorId = "creator-profile-picture-error";
   return (
     <div className="space-y-7">
       <div>
@@ -110,6 +111,7 @@ export function CreatorBasicInfoStep({
                 : "border-gray-300 bg-white hover:border-primary-300"
             }`}
             onClick={() => imageInputRef.current?.click()}
+            aria-describedby={profilePictureError ? profilePictureErrorId : undefined}
           >
             {form.profile_image ? (
               <>
@@ -142,10 +144,15 @@ export function CreatorBasicInfoStep({
             ref={imageInputRef}
             onChange={onImageChange}
             accept="image/jpeg,image/png,image/webp"
+            aria-invalid={profilePictureError || undefined}
+            aria-describedby={profilePictureError ? profilePictureErrorId : undefined}
             className="hidden"
           />
           {profilePictureError && (
-            <p className="mt-2 text-center text-xs font-medium text-red-500">
+            <p
+              id={profilePictureErrorId}
+              className="mt-2 text-center text-xs font-medium text-red-500"
+            >
               Profile picture is required
             </p>
           )}
