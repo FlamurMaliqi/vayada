@@ -10,6 +10,7 @@ import type {
 export type IdentityUser = {
   userId: string;
   email: string;
+  phone?: string | null;
   status: InternalUserStatus;
 };
 
@@ -82,9 +83,10 @@ export function createPgIdentityRepository(config: RepositoryConfig): IdentityRe
       const result = await pool.query<{
         user_id: string;
         email: string;
+        phone: string | null;
         status: InternalUserStatus;
       }>(
-        `SELECT u.id AS user_id, u.email, u.status
+        `SELECT u.id AS user_id, u.email, u.phone, u.status
          FROM identity.external_identities ei
          JOIN identity.users u ON u.id = ei.user_id
          WHERE ei.provider = $1 AND ei.provider_user_id = $2
@@ -93,7 +95,7 @@ export function createPgIdentityRepository(config: RepositoryConfig): IdentityRe
       );
       const row = result.rows[0];
       if (!row) return null;
-      return { userId: row.user_id, email: row.email, status: row.status };
+      return { userId: row.user_id, email: row.email, phone: row.phone, status: row.status };
     },
 
     async findOrganizationByWorkosOrgId(workosOrgId) {

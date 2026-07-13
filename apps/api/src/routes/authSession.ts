@@ -2611,6 +2611,7 @@ function toSessionResponse(
     user: {
       id: user.userId,
       email: user.email,
+      phone: user.phone ?? null,
       status: user.status,
       workosUserId: session.user.id,
     },

@@ -4,6 +4,20 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { enforceRoutePolicy } from "./policy.js";
 
 export type SharedHotelSetupEntryProduct = "booking" | "pms" | "marketplace";
+export const SHARED_PROPERTY_TYPES = [
+  "hotel",
+  "resort",
+  "hostel",
+  "apartment",
+  "aparthotel",
+  "guesthouse",
+  "bed_and_breakfast",
+  "villa",
+  "vacation_rental",
+  "motel",
+  "other",
+] as const;
+export type SharedPropertyType = (typeof SHARED_PROPERTY_TYPES)[number];
 export type SharedPropertyProfileMissingField =
   | "displayName"
   | "location"
@@ -114,8 +128,10 @@ export type SharedPropertyProfileMedia = {
 
 export type SharedPropertyProfileInput = {
   displayName: string;
+  propertyType: string | null;
   location: SharedPropertyProfileLocation;
   website: string | null;
+  contactEmail: string | null;
   phone: string | null;
   shortDescription: string | null;
   longDescription: string | null;
@@ -182,6 +198,7 @@ const MEDIA_TYPES = ["hero_image", "gallery_image", "logo"] as const;
 const MAP_DISPLAY_MODES = ["hidden", "approximate", "exact"] as const;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TIMEZONE_PATTERN = /^[A-Za-z_]+\/[A-Za-z0-9_+./-]+$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function registerSharedHotelSetupStatusRoutes(
   app: FastifyInstance,
@@ -296,6 +313,7 @@ export async function registerSharedHotelSetupStatusRoutes(
     const profileInput = parseSharedPropertyProfile(
       request.body as SharedPropertyProfileBody,
       reply,
+      true,
     );
     if (profileInput === false) return reply;
 
@@ -456,6 +474,7 @@ function parseSelectedProducts(
 function parseSharedPropertyProfile(
   body: SharedPropertyProfileBody,
   reply: FastifyReply,
+  allowLegacyPropertyType = false,
 ): SharedPropertyProfileInput | false {
   const errors: Record<string, string[]> = {};
   const input = objectValue(body);
@@ -468,8 +487,22 @@ function parseSharedPropertyProfile(
   const displayName = requiredString(input["displayName"], "displayName", errors, {
     maxLength: 200,
   });
+  const propertyType = optionalString(input["propertyType"], "propertyType", errors, {
+    maxLength: 40,
+  });
+  if (
+    propertyType &&
+    !allowLegacyPropertyType &&
+    !(SHARED_PROPERTY_TYPES as readonly string[]).includes(propertyType)
+  ) {
+    addFieldError(errors, "propertyType", "propertyType is invalid.");
+  }
   const website = optionalUrl(input["website"], "website", errors);
+  const contactEmail = optionalEmail(input["contactEmail"], "contactEmail", errors);
   const phone = optionalString(input["phone"], "phone", errors, { maxLength: 64 });
+  if (phone && phone.length < 5) {
+    addFieldError(errors, "phone", "phone is too short.");
+  }
   const shortDescription = optionalString(input["shortDescription"], "shortDescription", errors, {
     maxLength: 500,
   });
@@ -490,8 +523,10 @@ function parseSharedPropertyProfile(
 
   return {
     displayName,
+    propertyType,
     location: parsedLocation,
     website,
+    contactEmail,
     phone,
     shortDescription,
     longDescription,
@@ -501,17 +536,37 @@ function parseSharedPropertyProfile(
 
 function validateNewHotelBasics(profile: SharedPropertyProfileInput, reply: FastifyReply): boolean {
   const errors: Record<string, string[]> = {};
+  if (!profile.propertyType) {
+    addFieldError(errors, "propertyType", "propertyType is required.");
+  } else if (!(SHARED_PROPERTY_TYPES as readonly string[]).includes(profile.propertyType)) {
+    addFieldError(errors, "propertyType", "propertyType is invalid.");
+  }
+  if (!profile.location.streetAddress) {
+    addFieldError(errors, "location.streetAddress", "streetAddress is required.");
+  }
+  if (!profile.location.postalCode) {
+    addFieldError(errors, "location.postalCode", "postalCode is required.");
+  }
   if (!profile.location.city) {
     addFieldError(errors, "location.city", "city is required.");
   }
   if (!profile.location.countryCode) {
     addFieldError(errors, "location.countryCode", "countryCode is required.");
   }
+  if (!profile.location.timezone) {
+    addFieldError(errors, "location.timezone", "timezone is required.");
+  }
+  if (!profile.contactEmail) {
+    addFieldError(errors, "contactEmail", "contactEmail is required.");
+  }
+  if (!profile.phone) {
+    addFieldError(errors, "phone", "phone is required.");
+  }
   if (Object.keys(errors).length === 0) return true;
 
   reply.status(422).send({
     code: "invalid_shared_property_profile",
-    detail: "Hotel name, city, and country code are required.",
+    detail: "Required hotel basics are missing.",
     fields: errors,
   });
   return false;
@@ -531,7 +586,7 @@ function parseLocation(
   const timezone = optionalString(location["timezone"], "location.timezone", errors, {
     maxLength: 80,
   });
-  if (timezone && !TIMEZONE_PATTERN.test(timezone)) {
+  if (timezone && (!TIMEZONE_PATTERN.test(timezone) || !isValidTimezone(timezone))) {
     addFieldError(errors, "location.timezone", "timezone must be an IANA timezone.");
   }
 
@@ -680,6 +735,27 @@ function optionalUrl(
 
   addFieldError(errors, field, `${field} must be an http or https URL.`);
   return null;
+}
+
+function optionalEmail(
+  value: unknown,
+  field: string,
+  errors: Record<string, string[]>,
+): string | null {
+  const parsed = optionalString(value, field, errors, { maxLength: 320 });
+  if (!parsed) return null;
+  if (EMAIL_PATTERN.test(parsed)) return parsed.toLowerCase();
+  addFieldError(errors, field, `${field} must be a valid email address.`);
+  return null;
+}
+
+function isValidTimezone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function optionalNumber(

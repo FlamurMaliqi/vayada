@@ -53,6 +53,7 @@ interface PropertyStepProps {
   supportedLanguages: string[];
   setSupportedLanguages: (v: string[]) => void;
   prefilled: boolean;
+  sharedBasicsReadOnly?: boolean;
   error: string;
   canProceed: boolean;
   onContinue: () => void;
@@ -367,6 +368,7 @@ export default function PropertyStep({
   supportedLanguages,
   setSupportedLanguages,
   prefilled,
+  sharedBasicsReadOnly = false,
   error,
   canProceed,
   onContinue,
@@ -383,14 +385,16 @@ export default function PropertyStep({
         {stepIndicators}
         {prefilled && (
           <div className="mb-4 px-3 py-2.5 rounded-lg text-[13px] bg-blue-50 text-blue-800 border border-blue-200">
-            Some fields were pre-filled from your marketplace profile. Review and adjust as needed.
+            {sharedBasicsReadOnly
+              ? "Hotel basics are reused from shared setup. Configure only Booking-specific settings below."
+              : "Some hotel basics were prefilled from shared setup. Complete the missing fields below."}
           </div>
         )}
 
         <div className="text-center mb-6">
           <h2 className="text-base font-bold text-gray-900">Your Property</h2>
           <p className="text-[12px] text-gray-500 mt-1">
-            Tell us about your property so we can set up everything for you.
+            Configure how this hotel should appear and communicate in Booking Engine.
           </p>
         </div>
 
@@ -414,7 +418,9 @@ export default function PropertyStep({
               <path d="M10 14h4" />
               <path d="M10 18h4" />
             </svg>
-            <h3 className="text-[13px] font-bold text-gray-900">Basic Information</h3>
+            <h3 className="text-[13px] font-bold text-gray-900">
+              {sharedBasicsReadOnly ? "Shared hotel profile" : "Basic Information"}
+            </h3>
           </div>
 
           <div>
@@ -425,6 +431,7 @@ export default function PropertyStep({
               type="text"
               value={propertyName}
               onChange={(e) => setPropertyName(e.target.value)}
+              readOnly={sharedBasicsReadOnly}
               className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
               placeholder="e.g. Sundancer Villas & Suites"
             />
@@ -439,6 +446,7 @@ export default function PropertyStep({
                 type="text"
                 value={city}
                 onChange={(e) => setCity(e.target.value)}
+                readOnly={sharedBasicsReadOnly}
                 className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
                 placeholder="e.g. Seminyak"
               />
@@ -447,14 +455,23 @@ export default function PropertyStep({
               <label className="block text-[12px] font-semibold text-gray-800 mb-1">
                 Country <span className="text-gray-800">*</span>
               </label>
-              <FlagSelect<CountryOption>
-                value={country}
-                onChange={setCountry}
-                options={countryOptions}
-                getLabel={(o) => o.name}
-                getValue={(o) => o.name}
-                placeholder="Select country"
-              />
+              {sharedBasicsReadOnly ? (
+                <input
+                  type="text"
+                  value={country}
+                  readOnly
+                  className="w-full px-3 py-2 bg-gray-100 border border-gray-200 rounded-lg text-[12px] text-gray-700"
+                />
+              ) : (
+                <FlagSelect<CountryOption>
+                  value={country}
+                  onChange={setCountry}
+                  options={countryOptions}
+                  getLabel={(o) => o.name}
+                  getValue={(o) => o.code}
+                  placeholder="Select country"
+                />
+              )}
             </div>
           </div>
 
@@ -466,6 +483,7 @@ export default function PropertyStep({
               type="text"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
+              readOnly={sharedBasicsReadOnly}
               className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
               placeholder="Street address, area"
             />
@@ -488,33 +506,47 @@ export default function PropertyStep({
                 d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"
               />
             </svg>
-            <h3 className="text-[13px] font-bold text-gray-900">Contact Details</h3>
+            <h3 className="text-[13px] font-bold text-gray-900">
+              {sharedBasicsReadOnly ? "Shared hotel contact" : "Hotel contact"}
+            </h3>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                Email <span className="text-gray-800">*</span>
+                Hotel contact email <span className="text-gray-800">*</span>
               </label>
               <input
                 type="email"
                 value={reservationEmail}
                 onChange={(e) => setReservationEmail(e.target.value)}
+                readOnly={sharedBasicsReadOnly}
                 className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
                 placeholder="reservations@yourproperty.com"
               />
+              <p className="mt-1 text-[11px] text-gray-400">
+                {sharedBasicsReadOnly
+                  ? "Managed once in the shared hotel profile."
+                  : "Saved to the shared hotel profile and used by Booking Engine."}
+              </p>
             </div>
             <div>
               <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                Phone Number <span className="text-gray-800">*</span>
+                Hotel phone <span className="text-gray-800">*</span>
               </label>
               <input
                 type="tel"
                 value={phoneNumber}
                 onChange={(e) => setPhoneNumber(e.target.value)}
+                readOnly={sharedBasicsReadOnly}
                 className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
                 placeholder="+62 812 3456 7890"
               />
+              <p className="mt-1 text-[11px] text-gray-400">
+                {sharedBasicsReadOnly
+                  ? "Managed once in the shared hotel profile."
+                  : "Saved to the shared hotel profile and used by Booking Engine."}
+              </p>
             </div>
           </div>
 

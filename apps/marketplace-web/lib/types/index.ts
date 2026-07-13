@@ -155,6 +155,7 @@ export interface HotelProfile {
   id: string;
   user_id: string; // Reference to the user account
   name: string; // Company/Chain name
+  propertyType?: string | null;
   category: string;
   location: string;
   picture?: string | null;

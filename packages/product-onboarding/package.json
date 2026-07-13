@@ -18,6 +18,9 @@
     "./SharedHotelLoginForm": "./src/SharedHotelLoginForm.tsx",
     "./SharedSignupPage": "./src/SharedSignupPage.tsx"
   },
+  "dependencies": {
+    "@vayada/locale-constants": "*"
+  },
   "peerDependencies": {
     "@heroicons/react": "^2.2.0",
     "react": "^18.2.0"

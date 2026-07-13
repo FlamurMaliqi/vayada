@@ -1,6 +1,7 @@
 export type AuthUser = {
   id: string;
   email: string;
+  phone?: string | null;
   status: string;
   workosUserId?: string;
 };
@@ -142,6 +143,10 @@ export function getAuthCsrfToken(): string | null {
 
 export function getAuthKitAccessToken(): string | null {
   return authKitSession?.accessToken ?? null;
+}
+
+export function getAuthSessionUser(): AuthUser | null {
+  return authKitSession?.user ?? null;
 }
 
 export function getAuthBearerToken(): string | null {

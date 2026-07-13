@@ -26,6 +26,7 @@ const sharedProfile = {
   propertyId,
   publicId: "hotel-alpenrose",
   displayName: "Hotel Alpenrose",
+  propertyType: "hotel",
   location: {
     countryCode: "DE",
     region: "Bavaria",
@@ -40,6 +41,7 @@ const sharedProfile = {
     mapDisplayMode: "approximate",
   },
   website: "https://alpenrose.example",
+  contactEmail: "hello@alpenrose.example",
   phone: "+49 89 123456",
   shortDescription: "Independent city hotel",
   longDescription: null,
@@ -202,7 +204,7 @@ describe("hotel target self-service client", () => {
       location: "Munich, Germany",
       picture: "https://images.example/alpenrose.jpg",
       about: "A friendly independent hotel.",
-      email: "owner@example.com",
+      email: "hello@alpenrose.example",
       listings: [
         {
           id: "offer-resource-id",
@@ -385,8 +387,8 @@ describe("hotel target self-service client", () => {
       },
     };
 
-    await hotelService.createListing(createRequest);
-    await hotelService.updateListing("offer-resource-id", {
+    const created = await hotelService.createListing(createRequest);
+    const updated = await hotelService.updateListing("offer-resource-id", {
       name: "Updated stay",
       images: ["https://images.example/offer-one.jpg"],
     });
@@ -428,6 +430,14 @@ describe("hotel target self-service client", () => {
       method: "DELETE",
       body: null,
     });
+    expect(created).toMatchObject({
+      location: "Munich, Germany",
+      accommodation_type: "hotel",
+    });
+    expect(updated).toMatchObject({
+      location: "Munich, Germany",
+      accommodation_type: "hotel",
+    });
     expect(
       requests.filter(
         (request) =>
@@ -435,11 +445,7 @@ describe("hotel target self-service client", () => {
             `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile` &&
           request.method === "PUT",
       ),
-    ).toEqual([
-      expect.objectContaining({
-        body: expect.objectContaining({ media: sharedProfile.media }),
-      }),
-    ]);
+    ).toEqual([]);
   });
 
   it("authorizes offer image uploads with the opaque media resource ID", async () => {

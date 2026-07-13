@@ -321,7 +321,7 @@ export const hotelService = {
    */
   createListing: async (data: CreateListingRequest): Promise<HotelListing> => {
     const propertyId = await resolveSelectedPropertyId();
-    const property = await updateCanonicalOfferLocation(propertyId, data);
+    const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
     const offer = await targetApiClient.post<TargetMarketplaceOffer>(
       marketplaceOffersPath(propertyId),
       toTargetOfferCreate(data),
@@ -334,7 +334,7 @@ export const hotelService = {
    */
   updateListing: async (id: string, data: UpdateListingRequest): Promise<HotelListing> => {
     const propertyId = await resolveSelectedPropertyId();
-    const property = await updateCanonicalOfferLocation(propertyId, data);
+    const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
     const offer = await targetApiClient.put<TargetMarketplaceOffer>(
       `${marketplaceOffersPath(propertyId)}/${encodeURIComponent(id)}`,
       toTargetOfferUpdate(data),
@@ -461,6 +461,7 @@ function applyCanonicalProfileUpdate(
   const displayName = update.name?.trim() || profile.displayName;
   return {
     displayName,
+    propertyType: profile.propertyType,
     location:
       update.location === undefined
         ? profile.location
@@ -470,6 +471,7 @@ function applyCanonicalProfileUpdate(
           },
     website:
       update.website === undefined ? profile.website : normalizedOptionalText(update.website),
+    contactEmail: profile.contactEmail,
     phone: update.phone === undefined ? profile.phone : normalizedOptionalText(update.phone),
     shortDescription: profile.shortDescription,
     longDescription: profile.longDescription,
@@ -499,6 +501,7 @@ function toLegacyHotelProfile(
 ): HotelProfile {
   const user = getAuthSessionUser();
   const email =
+    property.contactEmail ??
     user?.email ??
     (typeof window === "undefined" ? "" : (localStorage.getItem(STORAGE_KEYS.USER_EMAIL) ?? ""));
   const location = formatPropertyLocation(property);
@@ -506,6 +509,7 @@ function toLegacyHotelProfile(
     id: property.propertyId,
     user_id: user?.id ?? property.propertyId,
     name: property.displayName,
+    propertyType: property.propertyType,
     category: "Hotel",
     location,
     picture: property.media.find((media) => media.mediaType === "hero_image")?.url ?? null,
@@ -518,30 +522,6 @@ function toLegacyHotelProfile(
     updated_at: marketplaceProfile.updatedAt,
     listings: offers.map((offer) => toLegacyHotelListing(offer, property)),
   };
-}
-
-async function updateCanonicalOfferLocation(
-  propertyId: string,
-  data: UpdateListingRequest,
-): Promise<SharedPropertyProfile> {
-  const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
-  if (data.location === undefined) return property;
-
-  return sharedHotelSetupApi.updatePropertyProfile(propertyId, {
-    displayName: property.displayName,
-    location:
-      data.location === undefined
-        ? property.location
-        : {
-            ...property.location,
-            rawMarketplaceLocation: normalizedOptionalText(data.location),
-          },
-    website: property.website,
-    phone: property.phone,
-    shortDescription: property.shortDescription,
-    longDescription: property.longDescription,
-    media: property.media,
-  });
 }
 
 function toTargetOfferCreate(data: CreateListingRequest): TargetMarketplaceOfferWrite {
@@ -634,7 +614,7 @@ function toLegacyHotelListing(
     name: offer.title,
     location: formatPropertyLocation(property),
     description: offer.offerSummary ?? "",
-    accommodation_type: null,
+    accommodation_type: property.propertyType,
     images: offer.media.map((media) => media.url),
     image_media_object_ids: offer.media.flatMap((media) =>
       media.mediaObjectId ? [media.mediaObjectId] : [],

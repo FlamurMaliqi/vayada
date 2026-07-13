@@ -17,8 +17,10 @@ export function HotelBasicInfoStep({ form, onFormChange, error }: HotelBasicInfo
       <div className="flex items-center gap-3 pb-1">
         <HotelBadgeIcon active={false} />
         <div>
-          <h3 className="text-lg font-bold text-gray-900">Basic Information</h3>
-          <p className="text-xs text-gray-500">Your hotel details</p>
+          <h3 className="text-lg font-bold text-gray-900">Hotel profile</h3>
+          <p className="text-xs text-gray-500">
+            Shared hotel details are prefilled; edits update them across Vayada.
+          </p>
         </div>
       </div>
 
@@ -37,14 +39,14 @@ export function HotelBasicInfoStep({ form, onFormChange, error }: HotelBasicInfo
             />
 
             <Input
-              label="Location"
+              label="Creator-facing location"
               type="text"
               value={form.location}
               onChange={(e) => onFormChange({ location: e.target.value })}
               required
               placeholder="City, Country"
               error={error && error.includes("Location") ? error : undefined}
-              helperText="Country or island, e.g., Bali, Indonesia."
+              helperText="A recognizable destination for creators, e.g. Bali, Indonesia."
               leadingIcon={<MapPinIcon className="w-5 h-5 text-gray-400" />}
             />
           </div>
@@ -72,7 +74,7 @@ export function HotelBasicInfoStep({ form, onFormChange, error }: HotelBasicInfo
       </div>
 
       <div className="space-y-2">
-        <p className="text-sm font-semibold text-gray-900">Contact Information</p>
+        <p className="text-sm font-semibold text-gray-900">Shared hotel contact</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Input
             label="Website"
