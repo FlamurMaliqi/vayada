@@ -310,13 +310,6 @@ export async function registerSharedHotelSetupStatusRoutes(
     const propertyId = parsePropertyId(params.propertyId, reply);
     if (propertyId === false || propertyId === null) return reply;
 
-    const profileInput = parseSharedPropertyProfile(
-      request.body as SharedPropertyProfileBody,
-      reply,
-      true,
-    );
-    if (profileInput === false) return reply;
-
     const access = resolveSharedSetupAccess(
       request,
       reply,
@@ -324,6 +317,24 @@ export async function registerSharedHotelSetupStatusRoutes(
       "hotel_catalog.setup.manage",
     );
     if (!access) return reply;
+
+    const existingProfile = await repository.getPropertyProfile({
+      organizationId: access.organizationId,
+      propertyId,
+    });
+    if (!existingProfile) {
+      return reply.status(404).send({
+        code: "property_profile_not_found",
+        detail: "Shared property profile was not found for the selected property.",
+      });
+    }
+
+    const profileInput = parseSharedPropertyProfile(
+      request.body as SharedPropertyProfileBody,
+      reply,
+      existingProfile.propertyType,
+    );
+    if (profileInput === false) return reply;
 
     const profile = await repository.updatePropertyProfile({
       organizationId: access.organizationId,
@@ -474,7 +485,7 @@ function parseSelectedProducts(
 function parseSharedPropertyProfile(
   body: SharedPropertyProfileBody,
   reply: FastifyReply,
-  allowLegacyPropertyType = false,
+  grandfatheredPropertyType: string | null = null,
 ): SharedPropertyProfileInput | false {
   const errors: Record<string, string[]> = {};
   const input = objectValue(body);
@@ -492,8 +503,8 @@ function parseSharedPropertyProfile(
   });
   if (
     propertyType &&
-    !allowLegacyPropertyType &&
-    !(SHARED_PROPERTY_TYPES as readonly string[]).includes(propertyType)
+    !(SHARED_PROPERTY_TYPES as readonly string[]).includes(propertyType) &&
+    propertyType !== grandfatheredPropertyType
   ) {
     addFieldError(errors, "propertyType", "propertyType is invalid.");
   }

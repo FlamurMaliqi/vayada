@@ -458,7 +458,7 @@ export default function PropertyStep({
               {sharedBasicsReadOnly ? (
                 <input
                   type="text"
-                  value={country}
+                  value={countryOptions.find((option) => option.code === country)?.name ?? country}
                   readOnly
                   className="w-full px-3 py-2 bg-gray-100 border border-gray-200 rounded-lg text-[12px] text-gray-700"
                 />

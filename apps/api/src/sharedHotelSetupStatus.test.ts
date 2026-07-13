@@ -444,9 +444,15 @@ describe("shared hotel setup status route", () => {
     expect(profiles.get(propertyId)).toMatchObject({ displayName: "Alpenrose Munich Updated" });
   });
 
-  it("keeps legacy property updates compatible with the expanded creation minimum", async () => {
+  it("preserves a legacy property type and accepts a canonical replacement", async () => {
     const profiles = new Map<string, SharedPropertyProfile>([
-      [propertyId, profileResponse(propertyId, incompleteProfileInput())],
+      [
+        propertyId,
+        profileResponse(propertyId, {
+          ...incompleteProfileInput(),
+          propertyType: "guest_house",
+        }),
+      ],
     ]);
     app = buildSharedSetupApp({
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
@@ -480,6 +486,43 @@ describe("shared hotel setup status route", () => {
       contactEmail: null,
       phone: null,
     });
+
+    const canonicalResponse = await injectJson<SharedPropertyProfile>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...legacyInput, propertyType: "hotel" },
+    });
+
+    expect(canonicalResponse.statusCode).toBe(200);
+    expect(canonicalResponse.body.propertyType).toBe("hotel");
+  });
+
+  it("rejects replacing a grandfathered property type with another unsupported value", async () => {
+    const profiles = new Map<string, SharedPropertyProfile>([
+      [
+        propertyId,
+        profileResponse(propertyId, {
+          ...incompleteProfileInput(),
+          propertyType: "guest_house",
+        }),
+      ],
+    ]);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: profileRepository(profiles),
+    });
+
+    const response = await injectJson<{ fields: Record<string, string[]> }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...minimalHotelInput(), propertyType: "castle" },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.fields).toEqual({ propertyType: ["propertyType is invalid."] });
+    expect(profiles.get(propertyId)?.propertyType).toBe("guest_house");
   });
 
   it("rejects shared property profile reads and writes outside the selected hotel group", async () => {
