@@ -19,10 +19,12 @@ import {
   SparklesIcon,
   Squares2X2Icon,
 } from "@heroicons/react/24/outline";
+import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from "@vayada/locale-constants";
 
 import { HotelIcon } from "./HotelIcon";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
+  SHARED_PROPERTY_TYPES,
   canOpenMarketplaceProfileTools,
   isSharedHotelSetupProductSelectable,
   resolveSharedFirstRunSetupView,
@@ -33,6 +35,7 @@ import {
   type SharedProductActivation,
   type SharedPropertyProfile,
   type SharedPropertyProfileInput,
+  type SharedPropertyType,
   type SharedSetupProperty,
 } from "./sharedFirstRunSetupFlow";
 import type { SharedHotelSetupApi } from "./sharedHotelSetupApi";
@@ -59,11 +62,14 @@ export type SharedFirstRunPropertySetupWizardProps = {
   embedded?: boolean;
   autoContinueToProduct?: boolean;
   productLabels?: Partial<ProductLabels>;
+  accountContactEmail?: string | null;
+  accountContactPhone?: string | null;
   onProductContinue: (input: SharedFirstRunProductContinueInput) => void;
 };
 
 type ProfileDraft = {
   displayName: string;
+  propertyType: string;
   countryCode: string;
   region: string;
   city: string;
@@ -72,6 +78,7 @@ type ProfileDraft = {
   postalCode: string;
   timezone: string;
   website: string;
+  contactEmail: string;
   phone: string;
   shortDescription: string;
   longDescription: string;
@@ -136,21 +143,23 @@ const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
 
 const EMPTY_SELECTED_PRODUCTS: SharedHotelSetupProduct[] = [];
 
-const EMPTY_DRAFT: ProfileDraft = {
-  displayName: "",
-  countryCode: "",
-  region: "",
-  city: "",
-  rawMarketplaceLocation: "",
-  streetAddress: "",
-  postalCode: "",
-  timezone: "",
-  website: "",
-  phone: "",
-  shortDescription: "",
-  longDescription: "",
-  mediaUrl: "",
+const PROPERTY_TYPE_LABELS: Record<SharedPropertyType, string> = {
+  hotel: "Hotel",
+  resort: "Resort",
+  hostel: "Hostel",
+  apartment: "Apartment",
+  aparthotel: "Aparthotel",
+  guesthouse: "Guesthouse",
+  bed_and_breakfast: "Bed and breakfast",
+  villa: "Villa",
+  vacation_rental: "Vacation rental",
+  motel: "Motel",
+  other: "Other",
 };
+
+const TIMEZONE_DATALIST_OPTIONS = TIMEZONE_OPTIONS.map((timezone) =>
+  timezone === "UTC" ? "Etc/UTC" : timezone,
+);
 
 export default function SharedFirstRunPropertySetupWizard({
   api,
@@ -162,6 +171,8 @@ export default function SharedFirstRunPropertySetupWizard({
   embedded = false,
   autoContinueToProduct = false,
   productLabels,
+  accountContactEmail = null,
+  accountContactPhone = null,
   onProductContinue,
 }: SharedFirstRunPropertySetupWizardProps) {
   const labels = { ...DEFAULT_PRODUCT_LABELS, ...productLabels };
@@ -172,7 +183,9 @@ export default function SharedFirstRunPropertySetupWizard({
   const [profileLoadFailed, setProfileLoadFailed] = useState(false);
   const [profileReloadToken, setProfileReloadToken] = useState(0);
   const [loadedProfile, setLoadedProfile] = useState<SharedPropertyProfile | null>(null);
-  const [draft, setDraft] = useState<ProfileDraft>(EMPTY_DRAFT);
+  const [draft, setDraft] = useState<ProfileDraft>(() =>
+    newPropertyDraft(accountContactEmail, accountContactPhone),
+  );
   const [selectedProducts, setSelectedProducts] = useState<SharedHotelSetupProduct[]>(() =>
     uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]),
   );
@@ -230,7 +243,7 @@ export default function SharedFirstRunPropertySetupWizard({
     if (!propertyId) {
       setProfileLoadFailed(false);
       setLoadedProfile(null);
-      setDraft(EMPTY_DRAFT);
+      setDraft(newPropertyDraft(accountContactEmail, accountContactPhone, browserTimezone()));
       return;
     }
 
@@ -259,7 +272,15 @@ export default function SharedFirstRunPropertySetupWizard({
     return () => {
       cancelled = true;
     };
-  }, [api, profileReloadToken, status, view.profileMode, view.selectedPropertyId]);
+  }, [
+    accountContactEmail,
+    accountContactPhone,
+    api,
+    profileReloadToken,
+    status,
+    view.profileMode,
+    view.selectedPropertyId,
+  ]);
 
   useEffect(() => {
     if (!status || view.screen !== "product_selection" || !view.selectedPropertyId) return;
@@ -315,7 +336,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const handleSaveProfile = async () => {
     setError("");
     setFieldErrors({});
-    const nextFieldErrors = validateProfileDraft(draft);
+    const nextFieldErrors = validateProfileDraft(draft, view.profileMode ?? "create");
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors);
       return;
@@ -394,7 +415,7 @@ export default function SharedFirstRunPropertySetupWizard({
           properties={status.properties}
           onSelect={handleSelectProperty}
           onAdd={() => {
-            setDraft(EMPTY_DRAFT);
+            setDraft(newPropertyDraft(accountContactEmail, accountContactPhone, browserTimezone()));
             setLoadedProfile(null);
             setForceCreateProperty(true);
           }}
@@ -412,6 +433,7 @@ export default function SharedFirstRunPropertySetupWizard({
         <ProfileForm
           draft={draft}
           mode={view.profileMode ?? "create"}
+          hasAccountSuggestions={Boolean(accountContactEmail || accountContactPhone)}
           loading={profileLoading}
           saving={saving}
           fieldErrors={fieldErrors}
@@ -699,6 +721,7 @@ function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => vo
 function ProfileForm({
   draft,
   mode,
+  hasAccountSuggestions,
   loading,
   saving,
   fieldErrors,
@@ -708,6 +731,7 @@ function ProfileForm({
 }: {
   draft: ProfileDraft;
   mode: "create" | "update";
+  hasAccountSuggestions: boolean;
   loading: boolean;
   saving: boolean;
   fieldErrors: Record<string, string[]>;
@@ -729,6 +753,21 @@ function ProfileForm({
   const showRawLocation = Boolean(
     draft.rawMarketplaceLocation && !draft.city.trim() && !draft.countryCode.trim(),
   );
+  const propertyTypeOptions: Array<{ value: string; label: string }> = SHARED_PROPERTY_TYPES.map(
+    (value) => ({
+      value,
+      label: PROPERTY_TYPE_LABELS[value],
+    }),
+  );
+  if (
+    draft.propertyType &&
+    !(SHARED_PROPERTY_TYPES as readonly string[]).includes(draft.propertyType)
+  ) {
+    propertyTypeOptions.unshift({
+      value: draft.propertyType,
+      label: `${draft.propertyType} (existing)`,
+    });
+  }
 
   return (
     <form
@@ -761,6 +800,45 @@ function ProfileForm({
               onChange={(value) => setField("displayName", value)}
             />
           </div>
+          <SelectField
+            label="Property type"
+            value={draft.propertyType}
+            placeholder="Select a property type"
+            required={mode === "create"}
+            error={fieldErrors.propertyType?.[0]}
+            options={propertyTypeOptions}
+            onChange={(value) => setField("propertyType", value)}
+          />
+          <div className="hidden md:block" aria-hidden="true" />
+        </div>
+      </section>
+
+      <section className="rounded-2xl bg-white p-5 text-left shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 ring-gray-200 sm:p-6">
+        <div className="mb-4">
+          <h3 className="text-base font-semibold text-gray-950">Address</h3>
+          <p className="mt-1 text-sm text-gray-500">
+            Used for localization, bookings, and daily hotel operations.
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <TextField
+              label="Street address"
+              value={draft.streetAddress}
+              placeholder="Marienplatz 1"
+              required={mode === "create"}
+              error={fieldErrors["location.streetAddress"]?.[0]}
+              onChange={(value) => setField("streetAddress", value)}
+            />
+          </div>
+          <TextField
+            label="Postal code"
+            value={draft.postalCode}
+            placeholder="80331"
+            required={mode === "create"}
+            error={fieldErrors["location.postalCode"]?.[0]}
+            onChange={(value) => setField("postalCode", value)}
+          />
           <TextField
             label="City"
             value={draft.city}
@@ -770,25 +848,85 @@ function ProfileForm({
             error={fieldErrors["location.city"]?.[0]}
             onChange={(value) => setField("city", value)}
           />
-          <TextField
-            label="Country code"
+          <SelectField
+            label="Country"
             value={draft.countryCode}
-            placeholder="DE"
-            helper="Two-letter ISO code."
-            requirementLabel="Required"
+            placeholder="Select a country"
             required
             error={fieldErrors["location.countryCode"]?.[0]}
-            onChange={(value) => setField("countryCode", value.toUpperCase().slice(0, 2))}
+            options={COUNTRY_OPTIONS.map((country) => ({
+              value: country.code,
+              label: `${country.flag} ${country.name}`,
+            }))}
+            onChange={(value) => setField("countryCode", value)}
+          />
+          <TextField
+            label="Time zone"
+            value={draft.timezone}
+            placeholder="Europe/Berlin"
+            helper="Detected automatically. Change it if needed."
+            required={mode === "create"}
+            error={fieldErrors["location.timezone"]?.[0]}
+            listOptions={TIMEZONE_DATALIST_OPTIONS}
+            onChange={(value) => setField("timezone", value)}
           />
           {showRawLocation && (
-            <TextField
-              label="Imported location"
-              value={draft.rawMarketplaceLocation}
-              readOnly
-              helper="Read-only location imported from the existing marketplace profile."
-              onChange={() => undefined}
-            />
+            <div className="md:col-span-2">
+              <TextField
+                label="Imported location"
+                value={draft.rawMarketplaceLocation}
+                readOnly
+                helper="Read-only location imported from the existing marketplace profile."
+                onChange={() => undefined}
+              />
+            </div>
           )}
+        </div>
+      </section>
+
+      <section className="rounded-2xl bg-white p-5 text-left shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 ring-gray-200 sm:p-6">
+        <div className="mb-4">
+          <h3 className="text-base font-semibold text-gray-950">Hotel contact</h3>
+          <p className="mt-1 text-sm text-gray-500">
+            These are the hotel’s public contact details, separate from your personal account.
+          </p>
+          {mode === "create" && hasAccountSuggestions && (
+            <p className="mt-2 rounded-xl bg-primary-50 px-3 py-2 text-xs text-primary-800">
+              We suggested details from your account. Edit them if this hotel uses a different
+              contact; saving confirms these as the hotel contact.
+            </p>
+          )}
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <TextField
+            label="Contact email"
+            value={draft.contactEmail}
+            placeholder="hello@hotel-alpenrose.com"
+            type="email"
+            required={mode === "create"}
+            error={fieldErrors.contactEmail?.[0]}
+            onChange={(value) => setField("contactEmail", value)}
+          />
+          <TextField
+            label="Phone number"
+            value={draft.phone}
+            placeholder="+49 89 123456"
+            type="tel"
+            required={mode === "create"}
+            error={fieldErrors.phone?.[0]}
+            onChange={(value) => setField("phone", value)}
+          />
+          <div className="md:col-span-2">
+            <TextField
+              label="Website"
+              value={draft.website}
+              placeholder="https://hotel-alpenrose.com"
+              type="url"
+              requirementLabel="Optional"
+              error={fieldErrors.website?.[0]}
+              onChange={(value) => setField("website", value)}
+            />
+          </div>
         </div>
       </section>
 
@@ -1171,7 +1309,10 @@ function marketplaceActivationStepCopy(step: string): { title: string; descripti
   );
 }
 
-function validateProfileDraft(draft: ProfileDraft): Record<string, string[]> {
+function validateProfileDraft(
+  draft: ProfileDraft,
+  mode: "create" | "update",
+): Record<string, string[]> {
   const errors: Record<string, string[]> = {};
 
   if (!draft.displayName.trim()) errors.displayName = ["Hotel name is required."];
@@ -1179,7 +1320,34 @@ function validateProfileDraft(draft: ProfileDraft): Record<string, string[]> {
     errors["location.city"] = ["City is required."];
   }
   if (!draft.countryCode.trim()) {
-    errors["location.countryCode"] = ["Country code is required."];
+    errors["location.countryCode"] = ["Country is required."];
+  } else if (!COUNTRY_OPTIONS.some((country) => country.code === draft.countryCode)) {
+    errors["location.countryCode"] = ["Select a valid country."];
+  }
+  if (mode === "create") {
+    if (!draft.propertyType) errors.propertyType = ["Property type is required."];
+    if (!draft.streetAddress.trim()) {
+      errors["location.streetAddress"] = ["Street address is required."];
+    }
+    if (!draft.postalCode.trim()) {
+      errors["location.postalCode"] = ["Postal code is required."];
+    }
+    if (!draft.timezone.trim()) {
+      errors["location.timezone"] = ["Time zone is required."];
+    }
+    if (!draft.contactEmail.trim()) {
+      errors.contactEmail = ["Contact email is required."];
+    }
+    if (!draft.phone.trim()) errors.phone = ["Phone number is required."];
+  }
+  if (draft.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.contactEmail)) {
+    errors.contactEmail = ["Enter a valid email address."];
+  }
+  if (draft.phone && draft.phone.trim().length < 5) {
+    errors.phone = ["Enter a valid phone number."];
+  }
+  if (draft.website && !isHttpUrl(draft.website)) {
+    errors.website = ["Enter a complete website URL, including https://."];
   }
 
   return errors;
@@ -1201,6 +1369,7 @@ function TextField({
   type = "text",
   readOnly = false,
   required = false,
+  listOptions,
 }: {
   label: string;
   value: string;
@@ -1212,6 +1381,7 @@ function TextField({
   type?: string;
   readOnly?: boolean;
   required?: boolean;
+  listOptions?: string[];
 }) {
   const generatedId = useId();
   const inputId = `setup-${generatedId}`;
@@ -1247,11 +1417,82 @@ function TextField({
         aria-invalid={Boolean(error)}
         aria-describedby={describedBy}
         aria-required={required}
+        list={listOptions ? `${inputId}-options` : undefined}
         onChange={(event) => onChange(event.target.value)}
         className={`mt-2 w-full rounded-lg border px-4 py-2.5 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         } ${readOnly ? "bg-gray-50 text-gray-600" : ""}`}
       />
+      {listOptions && (
+        <datalist id={`${inputId}-options`}>
+          {listOptions.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+      )}
+      {error && (
+        <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  placeholder,
+  options,
+  onChange,
+  error,
+  required = false,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  error?: string;
+  required?: boolean;
+}) {
+  const generatedId = useId();
+  const inputId = `setup-${generatedId}`;
+  const errorId = error ? `${inputId}-error` : undefined;
+
+  return (
+    <div>
+      <label
+        htmlFor={inputId}
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+      >
+        <span>{label}</span>
+        <span
+          aria-hidden="true"
+          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
+        >
+          {required ? "Required" : "Optional"}
+        </span>
+      </label>
+      <select
+        id={inputId}
+        value={value}
+        required={required}
+        aria-invalid={Boolean(error)}
+        aria-describedby={errorId}
+        aria-required={required}
+        onChange={(event) => onChange(event.target.value)}
+        className={`mt-2 w-full rounded-lg border bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
+          error ? "border-red-300 bg-red-50" : "border-gray-200"
+        }`}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
       {error && (
         <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
           {error}
@@ -1280,6 +1521,7 @@ function draftFromProfile(profile: SharedPropertyProfile): ProfileDraft {
   const firstMedia = profile.media[0];
   return {
     displayName: profile.displayName,
+    propertyType: profile.propertyType ?? "",
     countryCode: profile.location.countryCode ?? "",
     region: profile.location.region ?? "",
     city: profile.location.city ?? "",
@@ -1288,6 +1530,7 @@ function draftFromProfile(profile: SharedPropertyProfile): ProfileDraft {
     postalCode: profile.location.postalCode ?? "",
     timezone: profile.location.timezone ?? "",
     website: profile.website ?? "",
+    contactEmail: profile.contactEmail ?? "",
     phone: profile.phone ?? "",
     shortDescription: profile.shortDescription ?? "",
     longDescription: profile.longDescription ?? "",
@@ -1302,6 +1545,7 @@ function profileInputFromDraft(
   const existingLocation = existingProfile?.location;
   return {
     displayName: draft.displayName.trim(),
+    propertyType: draft.propertyType || null,
     location: {
       countryCode: nullIfBlank(draft.countryCode.toUpperCase()),
       region: nullIfBlank(draft.region),
@@ -1316,11 +1560,51 @@ function profileInputFromDraft(
       mapDisplayMode: existingLocation?.mapDisplayMode ?? "hidden",
     },
     website: nullIfBlank(draft.website),
+    contactEmail: nullIfBlank(draft.contactEmail),
     phone: nullIfBlank(draft.phone),
     shortDescription: nullIfBlank(draft.shortDescription),
     longDescription: nullIfBlank(draft.longDescription),
     media: mediaFromDraft(draft, existingProfile),
   };
+}
+
+function newPropertyDraft(
+  accountContactEmail: string | null,
+  accountContactPhone: string | null,
+  timezone = "",
+): ProfileDraft {
+  return {
+    displayName: "",
+    propertyType: "",
+    countryCode: "",
+    region: "",
+    city: "",
+    rawMarketplaceLocation: "",
+    streetAddress: "",
+    postalCode: "",
+    timezone,
+    website: "",
+    contactEmail: accountContactEmail?.trim() ?? "",
+    phone: accountContactPhone?.trim() ?? "",
+    shortDescription: "",
+    longDescription: "",
+    mediaUrl: "",
+  };
+}
+
+function browserTimezone(): string {
+  if (typeof window === "undefined") return "";
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return timezone === "UTC" ? "Etc/UTC" : timezone;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function mediaFromDraft(

@@ -80,6 +80,7 @@ type SharedPropertyProfileRow = {
   propertyId: string;
   publicId: string;
   displayName: string | null;
+  propertyType: string | null;
   profileStatus: string | null;
   profileSource: string | null;
   countryCode: string | null;
@@ -96,6 +97,7 @@ type SharedPropertyProfileRow = {
   shortDescription: string | null;
   longDescription: string | null;
   website: string | null;
+  contactEmail: string | null;
   phone: string | null;
   media: unknown;
   updatedAt: unknown;
@@ -107,6 +109,7 @@ type PropertyProfileWriteRow = {
 
 type SharedPropertyProfileWritePayload = {
   display_name: string;
+  property_type: SharedPropertyProfileInput["propertyType"];
   country_code: string | null;
   region: string | null;
   city: string | null;
@@ -121,6 +124,7 @@ type SharedPropertyProfileWritePayload = {
   short_description: string | null;
   long_description: string | null;
   website: string | null;
+  contact_email: string | null;
   phone: string | null;
   media: Array<{
     media_type: SharedPropertyProfileMedia["mediaType"];
@@ -207,10 +211,11 @@ export function createPgSharedHotelSetupStatusRepository(config: {
       }
       return created;
     },
-    async updatePropertyProfile({ organizationId, propertyId, profile }) {
+    async updatePropertyProfile({ organizationId, propertyId, expectedPropertyType, profile }) {
       const updatedPropertyId = await writePropertyProfile(pool, {
         organizationId,
         propertyId,
+        expectedPropertyType,
         profile,
         mode: "update",
       });
@@ -259,6 +264,7 @@ async function writePropertyProfile(
         mode: "update";
         organizationId: string;
         propertyId: string;
+        expectedPropertyType: string | null;
         profile: SharedPropertyProfileInput;
       },
 ): Promise<string | null> {
@@ -279,6 +285,7 @@ async function writePropertyProfile(
           payload,
           profileStatus,
           missingFields,
+          input.expectedPropertyType,
         ]);
 
   return result.rows[0]?.propertyId ?? null;
@@ -288,6 +295,7 @@ function toSharedPropertyProfile(row: SharedPropertyProfileRow): SharedPropertyP
   const media = mediaItems(row.media);
   const profile: SharedPropertyProfileInput = {
     displayName: nonEmpty(row.displayName) ?? "",
+    propertyType: nonEmpty(row.propertyType),
     location: {
       countryCode: nonEmpty(row.countryCode),
       region: nonEmpty(row.region),
@@ -302,6 +310,7 @@ function toSharedPropertyProfile(row: SharedPropertyProfileRow): SharedPropertyP
       mapDisplayMode: mapDisplayMode(row.mapDisplayMode),
     },
     website: nonEmpty(row.website),
+    contactEmail: nonEmpty(row.contactEmail),
     phone: nonEmpty(row.phone),
     shortDescription: nonEmpty(row.shortDescription),
     longDescription: nonEmpty(row.longDescription),
@@ -407,6 +416,7 @@ function propertyProfileWritePayload(
 ): SharedPropertyProfileWritePayload {
   return {
     display_name: profile.displayName,
+    property_type: profile.propertyType,
     country_code: profile.location.countryCode,
     region: profile.location.region,
     city: profile.location.city,
@@ -421,6 +431,7 @@ function propertyProfileWritePayload(
     short_description: profile.shortDescription,
     long_description: profile.longDescription,
     website: profile.website,
+    contact_email: profile.contactEmail,
     phone: profile.phone,
     media: profile.media.map((item) => ({
       media_type: item.mediaType,
@@ -635,6 +646,7 @@ function propertyProfileSql(): string {
         NULLIF(public_profile.display_name, ''),
         marketplace_prefill.display_name
       ) AS "displayName",
+      NULLIF(property.property_type, '') AS "propertyType",
       property.profile_status AS "profileStatus",
       CASE
         WHEN (
@@ -657,6 +669,7 @@ function propertyProfileSql(): string {
           OR (NULLIF(profile.short_description, '') IS NULL AND legacy_description.short_description IS NOT NULL)
           OR (NULLIF(profile.long_description, '') IS NULL AND legacy_description.long_description IS NOT NULL)
           OR (contact.website IS NULL AND legacy_contact.website IS NOT NULL)
+          OR (contact.email IS NULL AND legacy_contact.email IS NOT NULL)
           OR (contact.phone IS NULL AND legacy_contact.phone IS NOT NULL)
           OR (COALESCE(jsonb_array_length(media.items), 0) = 0 AND legacy_media.has_media)
           THEN 'legacy_prefill'
@@ -676,6 +689,7 @@ function propertyProfileSql(): string {
       COALESCE(NULLIF(profile.short_description, ''), legacy_description.short_description) AS "shortDescription",
       COALESCE(NULLIF(profile.long_description, ''), legacy_description.long_description) AS "longDescription",
       COALESCE(contact.website, legacy_contact.website) AS website,
+      COALESCE(contact.email, legacy_contact.email) AS "contactEmail",
       COALESCE(contact.phone, legacy_contact.phone) AS phone,
       COALESCE(media.items, legacy_media.items, '[]'::jsonb) AS media,
       updated_at.value AS "updatedAt"
@@ -837,6 +851,7 @@ function propertyProfileSql(): string {
     LEFT JOIN LATERAL (
       SELECT
         max(value) FILTER (WHERE channel_type = 'website') AS website,
+        max(value) FILTER (WHERE channel_type = 'email') AS email,
         COALESCE(
           max(value) FILTER (WHERE channel_type = 'phone'),
           max(value) FILTER (WHERE channel_type = 'whatsapp')
@@ -846,11 +861,12 @@ function propertyProfileSql(): string {
       WHERE property_id = property.id
         AND is_public = TRUE
         AND source_system = 'platform'
-        AND channel_type IN ('website', 'phone', 'whatsapp')
+        AND channel_type IN ('website', 'email', 'phone', 'whatsapp')
     ) contact ON TRUE
     LEFT JOIN LATERAL (
       SELECT
         max(contact.value) FILTER (WHERE contact.channel_type = 'website') AS website,
+        max(contact.value) FILTER (WHERE contact.channel_type = 'email') AS email,
         COALESCE(
           max(contact.value) FILTER (WHERE contact.channel_type = 'phone'),
           max(contact.value) FILTER (WHERE contact.channel_type = 'whatsapp')
@@ -873,7 +889,7 @@ function propertyProfileSql(): string {
           NULLIF(item.value ->> 'value', '') AS value
       ) contact
       WHERE contact.value IS NOT NULL
-        AND contact.channel_type IN ('website', 'phone', 'whatsapp')
+        AND contact.channel_type IN ('website', 'email', 'phone', 'whatsapp')
     ) legacy_contact ON TRUE
     LEFT JOIN LATERAL (
       SELECT
@@ -975,6 +991,7 @@ function createPropertyProfileSql(): string {
       SELECT *
       FROM jsonb_to_record($2::jsonb) AS input(
         display_name text,
+        property_type text,
         country_code text,
         region text,
         city text,
@@ -989,6 +1006,7 @@ function createPropertyProfileSql(): string {
         short_description text,
         long_description text,
         website text,
+        contact_email text,
         phone text,
         media jsonb
       )
@@ -1001,6 +1019,7 @@ function createPropertyProfileSql(): string {
         id,
         public_id,
         display_name,
+        property_type,
         profile_status,
         completeness_reasons
       )
@@ -1008,6 +1027,7 @@ function createPropertyProfileSql(): string {
         generated_property.property_id,
         'prop_' || replace(generated_property.property_id::text, '-', ''),
         profile_input.display_name,
+        profile_input.property_type,
         $3::text,
         $4::text[]
       FROM generated_property, profile_input
@@ -1120,6 +1140,7 @@ function updatePropertyProfileSql(): string {
       SELECT *
       FROM jsonb_to_record($3::jsonb) AS input(
         display_name text,
+        property_type text,
         country_code text,
         region text,
         city text,
@@ -1134,6 +1155,7 @@ function updatePropertyProfileSql(): string {
         short_description text,
         long_description text,
         website text,
+        contact_email text,
         phone text,
         media jsonb
       )
@@ -1154,6 +1176,7 @@ function updatePropertyProfileSql(): string {
     updated_property AS (
       UPDATE hotel_catalog.properties property
       SET display_name = profile_input.display_name,
+          property_type = COALESCE(profile_input.property_type, property.property_type),
           profile_status = CASE
             WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status
             ELSE $4::text
@@ -1162,6 +1185,7 @@ function updatePropertyProfileSql(): string {
           updated_at = now()
       FROM target_property, profile_input
       WHERE property.id = target_property.property_id
+        AND NULLIF(BTRIM(property.property_type), '') IS NOT DISTINCT FROM $6::text
       RETURNING
         property.id AS property_id,
         property.public_id,
@@ -1260,6 +1284,9 @@ function propertyProfileMutationCtes(): string {
       SELECT written_property.property_id, 'website'::text AS channel_type, profile_input.website AS value
       FROM written_property, profile_input
       UNION ALL
+      SELECT written_property.property_id, 'email'::text AS channel_type, profile_input.contact_email AS value
+      FROM written_property, profile_input
+      UNION ALL
       SELECT written_property.property_id, 'phone'::text AS channel_type, profile_input.phone AS value
       FROM written_property, profile_input
     ),
@@ -1267,7 +1294,7 @@ function propertyProfileMutationCtes(): string {
       DELETE FROM hotel_catalog.property_contact_channels contact
       USING written_property
       WHERE contact.property_id = written_property.property_id
-        AND contact.channel_type IN ('website', 'phone')
+        AND contact.channel_type IN ('website', 'email', 'phone')
         AND contact.source_system = 'platform'
         AND NOT EXISTS (
           SELECT 1

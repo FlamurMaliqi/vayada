@@ -15,6 +15,7 @@ import { ROUTES } from "@/lib/constants";
 import { canOpenMarketplaceProfileTools } from "@/lib/utils/sharedSetupGuard";
 import { authService } from "@/services/auth";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { getAuthSessionUser } from "@/services/auth/sessionStore";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
@@ -35,6 +36,8 @@ export function SharedHotelSetupPage({
   const searchParams = useSearchParams();
   const [authorized, setAuthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [accountContactEmail, setAccountContactEmail] = useState<string | null>(null);
+  const [accountContactPhone, setAccountContactPhone] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +49,9 @@ export function SharedHotelSetupPage({
           router.replace(ROUTES.LOGIN);
           return;
         }
+        const user = getAuthSessionUser();
+        setAccountContactEmail(user?.email ?? null);
+        setAccountContactPhone(user?.phone ?? null);
         setAuthorized(true);
       })
       .catch(() => {
@@ -107,6 +113,8 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
+      accountContactEmail={accountContactEmail}
+      accountContactPhone={accountContactPhone}
       onProductContinue={handleProductContinue}
     />
   );

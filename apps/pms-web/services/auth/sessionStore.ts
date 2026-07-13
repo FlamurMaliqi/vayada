@@ -7,6 +7,7 @@ import {
 export type AuthUser = {
   id: string;
   email: string;
+  phone?: string | null;
   status: string;
   workosUserId?: string;
 };
@@ -149,6 +150,10 @@ export function getAuthBearerToken(): string | null {
   if (isCompatibilityTokenEnabled() && compatibilityToken) return compatibilityToken;
   if (authKitSession?.accessToken) return authKitSession.accessToken;
   return getLegacyPasswordToken();
+}
+
+export function getAuthSessionUser(): AuthUser | null {
+  return authKitSession?.user ?? null;
 }
 
 export function getLegacyPasswordToken(): string | null {

@@ -168,6 +168,7 @@ export interface ProfileHotelListing {
 export interface ProfileHotelProfile {
   id: string;
   name: string;
+  propertyType?: string;
   picture?: string;
   location: string;
   status: "verified" | "pending" | "rejected";
@@ -231,14 +232,16 @@ export interface DeleteConfirmModalState {
 /**
  * Factory function for empty listing form data
  */
-export function createEmptyListingFormData(): ListingFormData {
+export function createEmptyListingFormData(
+  defaults: Partial<Pick<ListingFormData, "location" | "accommodationType">> = {},
+): ListingFormData {
   return {
     name: "",
-    location: "",
+    location: defaults.location ?? "",
     description: "",
     images: [],
     imageMediaObjectIds: [],
-    accommodationType: "",
+    accommodationType: defaults.accommodationType ?? "",
     offerings: [],
     lookingForPlatforms: [],
     targetGroupCountries: [],

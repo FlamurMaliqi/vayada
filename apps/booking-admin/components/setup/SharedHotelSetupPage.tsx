@@ -12,6 +12,7 @@ import {
 } from "@vayada/product-onboarding";
 
 import { authService } from "@/services/auth";
+import { getAuthSessionUser } from "@/services/auth/sessionStore";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
 export function SharedHotelSetupPage({
@@ -25,6 +26,8 @@ export function SharedHotelSetupPage({
   const searchParams = useSearchParams();
   const [authorized, setAuthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [accountContactEmail, setAccountContactEmail] = useState<string | null>(null);
+  const [accountContactPhone, setAccountContactPhone] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,6 +39,9 @@ export function SharedHotelSetupPage({
           router.replace("/login");
           return;
         }
+        const user = getAuthSessionUser();
+        setAccountContactEmail(user?.email ?? localStorage.getItem("userEmail"));
+        setAccountContactPhone(user?.phone ?? null);
         setAuthorized(true);
       })
       .catch(() => {
@@ -90,6 +96,8 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
+      accountContactEmail={accountContactEmail}
+      accountContactPhone={accountContactPhone}
       onProductContinue={handleProductContinue}
     />
   );

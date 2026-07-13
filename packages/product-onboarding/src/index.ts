@@ -52,6 +52,8 @@ export {
   type SharedPropertyProfileMedia,
   type SharedPropertyProfileMissingField,
   type SharedPropertyProfileSource,
+  type SharedPropertyType,
+  SHARED_PROPERTY_TYPES,
   type SharedSetupProperty,
 } from "./sharedFirstRunSetupFlow";
 export {

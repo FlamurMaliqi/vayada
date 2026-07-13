@@ -151,21 +151,44 @@ requires it in addition to the direct property-link check.
 Writes persist shared property facts in the canonical catalog:
 
 - display name
+- property type
 - location
-- public website and phone
+- public website, contact email, and phone
 - short and long description
 - media references
 
-Creating a property requires only the routing baseline:
+The first-run self-service form for a newly created property requires:
 
 - display name
+- property type
+- street address
+- postal code
 - city
 - two-letter country code
+- IANA timezone
+- hotel contact email
+- hotel/reception phone
 
-Website, phone, descriptions, media, rooms, rates, policies, and listing content
-must not block creation of the first hotel. Product setup may collect shared
-public-profile fields when they become relevant and write them back through the
-same canonical profile command.
+Website is optional. Descriptions, media, rooms, rates, policies, and offer
+content remain later product-profile or product-activation work and must not
+block creation of the first hotel.
+
+The self-service property type is one of `hotel`, `resort`, `hostel`,
+`apartment`, `aparthotel`, `guesthouse`, `bed_and_breakfast`, `villa`,
+`vacation_rental`, `motel`, or `other`. The browser may suggest its current
+timezone, but the user must be able to edit it before saving.
+
+Legacy property-type values outside that creation list remain readable and are
+preserved on update until a user explicitly selects a current value.
+
+Account email and phone identify the person. They may prefill the property
+contact fields as visible, editable suggestions, but saving the property form is
+the explicit confirmation that writes them to the public property profile.
+
+Existing canonical properties and migrated/prefilled records are not
+retroactively blocked only because they predate these expanded creation
+requirements. Their missing optional public-profile data remains visible through
+the existing completion metadata.
 
 Validation failures return field-addressable `422` responses:
 
@@ -376,14 +399,17 @@ into one generic `profileComplete` boolean.
 
 ## Product Activation Boundaries
 
-Shared routing baseline:
+New-property first-run baseline:
 
 - display name
-- city and country code
+- property type
+- street address, postal code, city, and country code
+- timezone
+- hotel contact email and hotel/reception phone
 
 Additional shared public-profile fields:
 
-- public website/contact phone
+- public website
 - short or long description
 - media/cover/gallery readiness
 
@@ -396,8 +422,8 @@ Product-specific activation examples:
   requirements, listing setup.
 
 Marketplace must not ask for the shared routing baseline again. It may ask for
-public website/contact, descriptions, and media as part of building the public
-listing, then persist those values to the canonical shared profile.
+the optional public website, descriptions, and media as part of building the
+public listing, then persist those values to the canonical shared profile.
 
 ## Examples
 

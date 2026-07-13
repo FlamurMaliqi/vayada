@@ -242,6 +242,7 @@ export function transformHotelProfile(apiProfile: ApiHotelProfile): ProfileHotel
   return {
     id: apiProfile.id,
     name: apiProfile.name,
+    propertyType: apiProfile.propertyType ?? undefined,
     picture: apiProfile.picture || undefined,
     location: apiProfile.location,
     status:

@@ -5,6 +5,7 @@ import type { UserType } from "@/lib/types";
 export type AuthUser = {
   id: string;
   email: string;
+  phone?: string | null;
   status: string;
   workosUserId?: string;
 };

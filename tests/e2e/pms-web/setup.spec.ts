@@ -158,6 +158,7 @@ function propertyProfile(): SharedPropertyProfile {
     propertyId,
     publicId: "prop_alpenrose",
     displayName: "Alpenrose Munich",
+    propertyType: "hotel",
     location: {
       countryCode: "DE",
       region: null,
@@ -172,6 +173,7 @@ function propertyProfile(): SharedPropertyProfile {
       mapDisplayMode: "hidden",
     },
     website: "https://alpenrose.example/",
+    contactEmail: "hello@alpenrose.example",
     phone: "+49 89 123456",
     shortDescription: "A city hotel close to the old town.",
     longDescription: null,

@@ -38,7 +38,12 @@ export function useListingManagement(
   )?.mediaResourceId;
 
   const openAddListingModal = () => {
-    setListingFormData(createEmptyListingFormData());
+    setListingFormData(
+      createEmptyListingFormData({
+        location: hotelProfile?.location ?? "",
+        accommodationType: hotelProfile?.propertyType ?? "",
+      }),
+    );
     setEditingListingId(null);
     setListingImagePreview(null);
     setListingCountryInput("");

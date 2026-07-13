@@ -18,6 +18,7 @@ import type {
 const user: IdentityUser = {
   userId: "user_platform_admin",
   email: "f.maliqi@vayada.com",
+  phone: "+49 89 123456",
   status: "active",
 };
 
@@ -93,6 +94,7 @@ describe("AuthKit session routes", () => {
         userByProviderUserId: async () => ({
           userId: "user_creator",
           email: "creator@example.test",
+          phone: "+49 30 123456",
           status: "active",
         }),
         organizationByWorkosOrgId: async () => ({
@@ -152,6 +154,7 @@ describe("AuthKit session routes", () => {
       user: {
         id: "user_creator",
         email: "creator@example.test",
+        phone: "+49 30 123456",
         workosUserId: "user_workos_creator",
       },
     });

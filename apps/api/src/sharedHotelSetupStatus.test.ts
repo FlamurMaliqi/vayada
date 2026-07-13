@@ -283,7 +283,7 @@ describe("shared hotel setup status route", () => {
     expect(calls).toEqual([{ organizationId, profile: input }]);
   });
 
-  it("creates a hotel from only its name, city, and country code", async () => {
+  it("creates a hotel with the first-run minimum and leaves enrichment for later", async () => {
     const input = minimalHotelInput();
     app = buildSharedSetupApp({
       linkedResources: [],
@@ -312,18 +312,26 @@ describe("shared hotel setup status route", () => {
     expect(response.statusCode).toBe(201);
     expect(response.body).toMatchObject({
       displayName: "Hotel Alpenrose",
-      location: { city: "Munich", countryCode: "DE" },
+      propertyType: "hotel",
+      location: {
+        streetAddress: "Marienplatz 1",
+        postalCode: "80331",
+        city: "Munich",
+        countryCode: "DE",
+        timezone: "Europe/Berlin",
+      },
       website: null,
-      phone: null,
+      contactEmail: "hello@alpenrose.example",
+      phone: "+49 123",
       media: [],
       sharedProfile: {
         status: "incomplete",
-        missingFields: ["website", "phone", "description", "media"],
+        missingFields: ["website", "description", "media"],
       },
     });
   });
 
-  it("requires city and country code when a hotel is created", async () => {
+  it("returns field-addressable errors for missing first-run hotel basics", async () => {
     app = buildSharedSetupApp({
       linkedResources: [],
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
@@ -339,14 +347,23 @@ describe("shared hotel setup status route", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         ...minimalHotelInput(),
+        propertyType: null,
+        contactEmail: null,
+        phone: null,
         location: {},
       },
     });
 
     expect(response.statusCode).toBe(422);
     expect(response.body.fields).toEqual({
+      propertyType: ["propertyType is required."],
+      "location.streetAddress": ["streetAddress is required."],
+      "location.postalCode": ["postalCode is required."],
       "location.city": ["city is required."],
       "location.countryCode": ["countryCode is required."],
+      "location.timezone": ["timezone is required."],
+      contactEmail: ["contactEmail is required."],
+      phone: ["phone is required."],
     });
   });
 
@@ -427,6 +444,122 @@ describe("shared hotel setup status route", () => {
     expect(profiles.get(propertyId)).toMatchObject({ displayName: "Alpenrose Munich Updated" });
   });
 
+  it("preserves a legacy property type and accepts a canonical replacement", async () => {
+    const profiles = new Map<string, SharedPropertyProfile>([
+      [
+        propertyId,
+        profileResponse(propertyId, {
+          ...incompleteProfileInput(),
+          propertyType: "guest_house",
+        }),
+      ],
+    ]);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: profileRepository(profiles),
+    });
+    const firstRunInput = minimalHotelInput();
+    const legacyInput: SharedPropertyProfileInput = {
+      ...firstRunInput,
+      propertyType: "guest_house",
+      location: {
+        ...firstRunInput.location,
+        streetAddress: null,
+        postalCode: null,
+        timezone: null,
+      },
+      contactEmail: null,
+      phone: null,
+    };
+
+    const response = await injectJson<SharedPropertyProfile>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: legacyInput,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      propertyId,
+      propertyType: "guest_house",
+      contactEmail: null,
+      phone: null,
+    });
+
+    const canonicalResponse = await injectJson<SharedPropertyProfile>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...legacyInput, propertyType: "hotel" },
+    });
+
+    expect(canonicalResponse.statusCode).toBe(200);
+    expect(canonicalResponse.body.propertyType).toBe("hotel");
+  });
+
+  it("rejects replacing a grandfathered property type with another unsupported value", async () => {
+    const profiles = new Map<string, SharedPropertyProfile>([
+      [
+        propertyId,
+        profileResponse(propertyId, {
+          ...incompleteProfileInput(),
+          propertyType: "guest_house",
+        }),
+      ],
+    ]);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: profileRepository(profiles),
+    });
+
+    const response = await injectJson<{ fields: Record<string, string[]> }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...minimalHotelInput(), propertyType: "castle" },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.fields).toEqual({ propertyType: ["propertyType is invalid."] });
+    expect(profiles.get(propertyId)?.propertyType).toBe("guest_house");
+  });
+
+  it("rejects a stale legacy update after the property type was canonicalized", async () => {
+    const legacyProfile = {
+      ...incompleteProfileInput(),
+      propertyType: "guest_house",
+    };
+    const profiles = new Map<string, SharedPropertyProfile>([
+      [propertyId, profileResponse(propertyId, legacyProfile)],
+    ]);
+    const repository = profileRepository(profiles);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: {
+        ...repository,
+        async updatePropertyProfile(input) {
+          profiles.set(
+            propertyId,
+            profileResponse(propertyId, { ...legacyProfile, propertyType: "hotel" }),
+          );
+          return repository.updatePropertyProfile(input);
+        },
+      },
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: legacyProfile,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.code).toBe("property_profile_conflict");
+    expect(profiles.get(propertyId)?.propertyType).toBe("hotel");
+  });
+
   it("rejects shared property profile reads and writes outside the selected hotel group", async () => {
     app = buildSharedSetupApp({
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
@@ -477,21 +610,33 @@ describe("shared hotel setup status route", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         displayName: "",
+        propertyType: "castle",
         website: "ftp://alpenrose.example",
-        location: { countryCode: "DEU", latitude: 48.1, addressPublic: "false" },
+        contactEmail: "not-an-email",
+        phone: "1",
+        location: {
+          countryCode: "DEU",
+          timezone: "Europe/Not_A_Real_Place",
+          latitude: 48.1,
+          addressPublic: "false",
+        },
         media: [{ url: "not-a-url", mediaType: "cover" }],
       },
     });
 
     expect(response.statusCode).toBe(422);
     expect(Object.keys(response.body.fields).sort()).toEqual([
+      "contactEmail",
       "displayName",
       "location.addressPublic",
       "location.countryCode",
       "location.latitude",
       "location.longitude",
+      "location.timezone",
       "media.0.mediaType",
       "media.0.url",
+      "phone",
+      "propertyType",
       "website",
     ]);
   });
@@ -1154,6 +1299,7 @@ describe("shared hotel setup status route", () => {
     const query = vi.fn(async (_text: string, _values?: readonly unknown[]) => ({
       rows: [
         profileRow({
+          propertyType: "guest_house",
           profileStatus: "complete",
           phone: null,
           media: [],
@@ -1178,6 +1324,8 @@ describe("shared hotel setup status route", () => {
 
     expect(profile).toMatchObject({
       propertyId,
+      propertyType: "guest_house",
+      contactEmail: "hello@alpenrose.example",
       sharedProfile: {
         status: "incomplete",
         completionPercent: 67,
@@ -1189,7 +1337,7 @@ describe("shared hotel setup status route", () => {
     expect(sql).toContain("link.product = 'hotel_catalog'");
     expect(sql).toContain("link.resource_type = 'property'");
     expect(sql).toContain("WHERE channel_type = 'whatsapp'");
-    expect(sql).toContain("channel_type IN ('website', 'phone', 'whatsapp')");
+    expect(sql).toContain("channel_type IN ('website', 'email', 'phone', 'whatsapp')");
     expect(sql).toContain("AND media.source_system = 'platform'");
     expect(sql).toContain("AND source_system = 'platform'");
     expect(sql).not.toContain("property_source_links");
@@ -1281,7 +1429,11 @@ describe("shared hotel setup status route", () => {
     expect(createSql).not.toContain("property_source_links");
     expect(query.mock.calls[0]![1]).toMatchObject([
       organizationId,
-      expect.objectContaining({ display_name: "Alpenrose Munich" }),
+      expect.objectContaining({
+        display_name: "Alpenrose Munich",
+        property_type: "hotel",
+        contact_email: "hello@alpenrose.example",
+      }),
       "complete",
       [],
     ]);
@@ -1312,6 +1464,7 @@ describe("shared hotel setup status route", () => {
       repository.updatePropertyProfile({
         organizationId,
         propertyId,
+        expectedPropertyType: "hotel",
         profile: completeProfileInput("Alpenrose Munich Updated"),
       }),
     ).resolves.toMatchObject({
@@ -1322,6 +1475,12 @@ describe("shared hotel setup status route", () => {
     const updateSql = query.mock.calls[0]![0];
     expect(updateSql).toContain("JOIN identity.organization_resource_links link");
     expect(updateSql).toContain("UPDATE hotel_catalog.properties");
+    expect(updateSql).toContain(
+      "property_type = COALESCE(profile_input.property_type, property.property_type)",
+    );
+    expect(updateSql).toContain(
+      "NULLIF(BTRIM(property.property_type), '') IS NOT DISTINCT FROM $6::text",
+    );
     expect(updateSql).toContain("AND contact.source_system = 'platform'");
     expect(updateSql).toContain("AND media.source_system = 'platform'");
     expect(updateSql).not.toContain("INSERT INTO identity.organization_resource_links");
@@ -1329,9 +1488,14 @@ describe("shared hotel setup status route", () => {
     expect(query.mock.calls[0]![1]).toMatchObject([
       organizationId,
       propertyId,
-      expect.objectContaining({ display_name: "Alpenrose Munich Updated" }),
+      expect.objectContaining({
+        display_name: "Alpenrose Munich Updated",
+        property_type: "hotel",
+        contact_email: "hello@alpenrose.example",
+      }),
       "complete",
       [],
+      "hotel",
     ]);
   });
 
@@ -1805,8 +1969,9 @@ function profileRepository(
       profiles.set(secondPropertyId, created);
       return created;
     },
-    async updatePropertyProfile({ propertyId: id, profile }) {
-      if (!profiles.has(id)) return null;
+    async updatePropertyProfile({ propertyId: id, expectedPropertyType, profile }) {
+      const existing = profiles.get(id);
+      if (!existing || existing.propertyType !== expectedPropertyType) return null;
       const updated = profileResponse(id, profile);
       profiles.set(id, updated);
       return updated;
@@ -1834,6 +1999,7 @@ function unusedPropertyProfileMethods(): Pick<
 function completeProfileInput(displayName = "Alpenrose Munich"): SharedPropertyProfileInput {
   return {
     displayName,
+    propertyType: "hotel",
     location: {
       countryCode: "DE",
       region: "Bavaria",
@@ -1848,6 +2014,7 @@ function completeProfileInput(displayName = "Alpenrose Munich"): SharedPropertyP
       mapDisplayMode: "exact",
     },
     website: "https://alpenrose.example/",
+    contactEmail: "hello@alpenrose.example",
     phone: "+49 123",
     shortDescription: "A city hotel in Munich.",
     longDescription: null,
@@ -1865,21 +2032,23 @@ function completeProfileInput(displayName = "Alpenrose Munich"): SharedPropertyP
 function minimalHotelInput(): SharedPropertyProfileInput {
   return {
     displayName: "Hotel Alpenrose",
+    propertyType: "hotel",
     location: {
       countryCode: "DE",
       region: null,
       city: "Munich",
-      streetAddress: null,
-      postalCode: null,
+      streetAddress: "Marienplatz 1",
+      postalCode: "80331",
       rawMarketplaceLocation: null,
-      timezone: null,
+      timezone: "Europe/Berlin",
       latitude: null,
       longitude: null,
       addressPublic: true,
       mapDisplayMode: "hidden",
     },
     website: null,
-    phone: null,
+    contactEmail: "hello@alpenrose.example",
+    phone: "+49 123",
     shortDescription: null,
     longDescription: null,
     media: [],
@@ -1955,6 +2124,7 @@ function profileRow(overrides: Record<string, unknown> = {}): Record<string, unk
     propertyId,
     publicId: "property-aaaaaaaa",
     displayName: "Alpenrose Munich",
+    propertyType: "hotel",
     profileStatus: "complete",
     countryCode: "DE",
     region: "Bavaria",
@@ -1970,6 +2140,7 @@ function profileRow(overrides: Record<string, unknown> = {}): Record<string, unk
     shortDescription: "A city hotel in Munich.",
     longDescription: null,
     website: "https://alpenrose.example/",
+    contactEmail: "hello@alpenrose.example",
     phone: "+49 123",
     media: [
       {

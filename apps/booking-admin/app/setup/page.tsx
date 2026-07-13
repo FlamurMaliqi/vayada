@@ -117,6 +117,7 @@ function BookingProductSetupPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [prefilled, setPrefilled] = useState(false);
+  const [sharedBasicsReadOnly, setSharedBasicsReadOnly] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [inviteError, setInviteError] = useState("");
   const [applyingInvite, setApplyingInvite] = useState(false);
@@ -341,8 +342,22 @@ function BookingProductSetupPage() {
           if (profile.guest_count_enabled !== undefined) {
             setNumberOfGuests(profile.guest_count_enabled);
           }
+          // New hotels have already passed the stricter shared-property creation form.
+          // Legacy hotels are deliberately not retroactively blocked by those new fields;
+          // keep only the Booking-editable shared subset open when it needs repair.
+          setSharedBasicsReadOnly(
+            Boolean(
+              profile.property_name?.trim() &&
+              profile.city?.trim() &&
+              profile.country?.trim() &&
+              profile.address?.trim() &&
+              profile.reservation_email?.trim() &&
+              profile.phone_number?.trim(),
+            ),
+          );
           setPrefilled(true);
         } catch {
+          setSharedBasicsReadOnly(false);
           setShowWizard(true);
         }
       } else if (!addMode) {
@@ -893,6 +908,7 @@ function BookingProductSetupPage() {
           supportedLanguages={supportedLanguages}
           setSupportedLanguages={setSupportedLanguages}
           prefilled={prefilled}
+          sharedBasicsReadOnly={sharedBasicsReadOnly}
           error={error}
           canProceed={canProceed()}
           onContinue={() => {

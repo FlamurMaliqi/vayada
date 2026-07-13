@@ -2,7 +2,7 @@
 
 import { XMarkIcon, SparklesIcon, PaperAirplaneIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { Input, Textarea, Button, HotelBadgeIcon } from "@/components/ui";
-import { HOTEL_TYPES, CREATOR_TYPE_OPTIONS } from "@/lib/constants";
+import { CREATOR_TYPE_OPTIONS } from "@/lib/constants";
 import type { CreatorType } from "@/lib/types";
 import { OfferingEditorCard } from "./OfferingEditorCard";
 import { PlatformSelector } from "./PlatformSelector";
@@ -11,8 +11,6 @@ import { CountrySearchInput } from "./CountrySearchInput";
 import { ListingImageGallery } from "./ListingImageGallery";
 import type { ListingFormData, ListingOffering } from "../types";
 import { createEmptyOffering } from "../types";
-
-const HOTEL_CATEGORIES = HOTEL_TYPES;
 
 interface ListingEditorFormProps {
   formData: ListingFormData;
@@ -104,32 +102,20 @@ export function ListingEditorForm({
               className="bg-gray-50 border-gray-200"
             />
             <Input
-              label="Location"
+              label="Hotel location"
               value={formData.location}
-              onChange={(e) => updateField("location", e.target.value)}
-              required
-              placeholder="Bali, Indonesia"
-              className="bg-gray-50 border-gray-200"
+              readOnly
+              helperText="From the shared hotel profile."
+              className="bg-gray-100 border-gray-200"
             />
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-1">
-              Accommodation Type <span className="text-red-500">*</span>
-            </label>
-            <select
-              value={formData.accommodationType}
-              onChange={(e) => updateField("accommodationType", e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all bg-gray-50 text-sm text-gray-900"
-              required
-            >
-              <option value="">Select type</option>
-              {HOTEL_CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
-          </div>
+          <Input
+            label="Property type"
+            value={formData.accommodationType}
+            readOnly
+            helperText="From the shared hotel profile."
+            className="bg-gray-100 border-gray-200"
+          />
           <Textarea
             label="Description"
             value={formData.description}
