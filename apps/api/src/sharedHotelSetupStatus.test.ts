@@ -525,6 +525,41 @@ describe("shared hotel setup status route", () => {
     expect(profiles.get(propertyId)?.propertyType).toBe("guest_house");
   });
 
+  it("rejects a stale legacy update after the property type was canonicalized", async () => {
+    const legacyProfile = {
+      ...incompleteProfileInput(),
+      propertyType: "guest_house",
+    };
+    const profiles = new Map<string, SharedPropertyProfile>([
+      [propertyId, profileResponse(propertyId, legacyProfile)],
+    ]);
+    const repository = profileRepository(profiles);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: {
+        ...repository,
+        async updatePropertyProfile(input) {
+          profiles.set(
+            propertyId,
+            profileResponse(propertyId, { ...legacyProfile, propertyType: "hotel" }),
+          );
+          return repository.updatePropertyProfile(input);
+        },
+      },
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: legacyProfile,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.code).toBe("property_profile_conflict");
+    expect(profiles.get(propertyId)?.propertyType).toBe("hotel");
+  });
+
   it("rejects shared property profile reads and writes outside the selected hotel group", async () => {
     app = buildSharedSetupApp({
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
@@ -1429,6 +1464,7 @@ describe("shared hotel setup status route", () => {
       repository.updatePropertyProfile({
         organizationId,
         propertyId,
+        expectedPropertyType: "hotel",
         profile: completeProfileInput("Alpenrose Munich Updated"),
       }),
     ).resolves.toMatchObject({
@@ -1441,6 +1477,9 @@ describe("shared hotel setup status route", () => {
     expect(updateSql).toContain("UPDATE hotel_catalog.properties");
     expect(updateSql).toContain(
       "property_type = COALESCE(profile_input.property_type, property.property_type)",
+    );
+    expect(updateSql).toContain(
+      "NULLIF(BTRIM(property.property_type), '') IS NOT DISTINCT FROM $6::text",
     );
     expect(updateSql).toContain("AND contact.source_system = 'platform'");
     expect(updateSql).toContain("AND media.source_system = 'platform'");
@@ -1456,6 +1495,7 @@ describe("shared hotel setup status route", () => {
       }),
       "complete",
       [],
+      "hotel",
     ]);
   });
 
@@ -1929,8 +1969,9 @@ function profileRepository(
       profiles.set(secondPropertyId, created);
       return created;
     },
-    async updatePropertyProfile({ propertyId: id, profile }) {
-      if (!profiles.has(id)) return null;
+    async updatePropertyProfile({ propertyId: id, expectedPropertyType, profile }) {
+      const existing = profiles.get(id);
+      if (!existing || existing.propertyType !== expectedPropertyType) return null;
       const updated = profileResponse(id, profile);
       profiles.set(id, updated);
       return updated;

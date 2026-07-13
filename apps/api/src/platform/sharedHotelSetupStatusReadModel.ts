@@ -211,10 +211,11 @@ export function createPgSharedHotelSetupStatusRepository(config: {
       }
       return created;
     },
-    async updatePropertyProfile({ organizationId, propertyId, profile }) {
+    async updatePropertyProfile({ organizationId, propertyId, expectedPropertyType, profile }) {
       const updatedPropertyId = await writePropertyProfile(pool, {
         organizationId,
         propertyId,
+        expectedPropertyType,
         profile,
         mode: "update",
       });
@@ -263,6 +264,7 @@ async function writePropertyProfile(
         mode: "update";
         organizationId: string;
         propertyId: string;
+        expectedPropertyType: string | null;
         profile: SharedPropertyProfileInput;
       },
 ): Promise<string | null> {
@@ -283,6 +285,7 @@ async function writePropertyProfile(
           payload,
           profileStatus,
           missingFields,
+          input.expectedPropertyType,
         ]);
 
   return result.rows[0]?.propertyId ?? null;
@@ -1182,6 +1185,7 @@ function updatePropertyProfileSql(): string {
           updated_at = now()
       FROM target_property, profile_input
       WHERE property.id = target_property.property_id
+        AND NULLIF(BTRIM(property.property_type), '') IS NOT DISTINCT FROM $6::text
       RETURNING
         property.id AS property_id,
         property.public_id,

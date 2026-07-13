@@ -163,6 +163,7 @@ export type SharedHotelSetupStatusRepository = {
   updatePropertyProfile(input: {
     organizationId: string;
     propertyId: string;
+    expectedPropertyType: string | null;
     profile: SharedPropertyProfileInput;
   }): Promise<SharedPropertyProfile | null>;
   setOrganizationProductSelections?(input: {
@@ -339,9 +340,20 @@ export async function registerSharedHotelSetupStatusRoutes(
     const profile = await repository.updatePropertyProfile({
       organizationId: access.organizationId,
       propertyId,
+      expectedPropertyType: existingProfile.propertyType,
       profile: profileInput,
     });
     if (!profile) {
+      const currentProfile = await repository.getPropertyProfile({
+        organizationId: access.organizationId,
+        propertyId,
+      });
+      if (currentProfile) {
+        return reply.status(409).send({
+          code: "property_profile_conflict",
+          detail: "The property profile changed while it was being updated. Reload and try again.",
+        });
+      }
       return reply.status(404).send({
         code: "property_profile_not_found",
         detail: "Shared property profile was not found for the selected property.",
