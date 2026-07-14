@@ -831,6 +831,7 @@ function ProfileForm({
   return (
     <form
       noValidate
+      aria-busy={saving}
       onSubmit={(event) => {
         event.preventDefault();
         if (step === PROFILE_STEP_FIELDS.length - 1) onSave();
@@ -864,6 +865,7 @@ function ProfileForm({
       </div>
 
       <section
+        inert={saving ? true : undefined}
         className={`${step === 0 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
       >
         <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
@@ -906,6 +908,7 @@ function ProfileForm({
       </section>
 
       <section
+        inert={saving ? true : undefined}
         className={`${step === 2 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
       >
         <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
@@ -963,6 +966,7 @@ function ProfileForm({
       </section>
 
       <section
+        inert={saving ? true : undefined}
         className={`${step === 1 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
       >
         <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
@@ -1044,12 +1048,16 @@ function ProfileForm({
         <LocationIllustration />
       </section>
 
+      <span className="sr-only" role="status" aria-live="polite">
+        {saving ? "Saving hotel details." : ""}
+      </span>
       <div className="flex w-full flex-col-reverse gap-3 pt-1 sm:flex-row sm:justify-end xl:w-[36rem]">
         {(step > 0 || onCancel) && (
           <button
             type="button"
+            disabled={saving}
             onClick={() => (step > 0 ? changeStep(step - 1) : onCancel?.())}
-            className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {step > 0 ? "Back" : "Back to properties"}
           </button>

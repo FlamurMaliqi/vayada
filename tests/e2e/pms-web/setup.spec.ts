@@ -14,6 +14,10 @@ test.describe("pms-web shared setup", () => {
   test("walks first-property setup into product selection", async ({ page }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
     let created = false;
+    let finishCreateRequest: (() => void) | undefined;
+    const createRequestBarrier = new Promise<void>((resolve) => {
+      finishCreateRequest = resolve;
+    });
     const statusRequests: URL[] = [];
 
     await mockPmsWebAuthenticatedSession(page);
@@ -23,6 +27,7 @@ test.describe("pms-web shared setup", () => {
       () => {
         created = true;
       },
+      () => createRequestBarrier,
       statusRequests,
     );
 
@@ -80,6 +85,12 @@ test.describe("pms-web shared setup", () => {
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByLabel("Phone number").fill("+49 89 123456");
     await page.getByRole("button", { name: "Save and continue" }).click();
+    await expect(page.getByRole("button", { name: "Back" })).toBeDisabled();
+    await expect(page.getByRole("status")).toHaveText("Saving hotel details.");
+    await expect(
+      page.getByLabel("Phone number").locator("xpath=ancestor::section"),
+    ).toHaveAttribute("inert", "");
+    finishCreateRequest?.();
 
     await expect(
       page.getByRole("heading", { level: 2, name: "Choose account systems" }),
@@ -109,6 +120,7 @@ async function mockSharedSetupApi(
   page: Parameters<typeof mockPmsWebAuthenticatedSession>[0],
   isCreated: () => boolean,
   markCreated: () => void,
+  waitForCreate: () => Promise<void>,
   statusRequests: URL[],
 ) {
   await page.route("**/api/hotel-setup/**", async (route) => {
@@ -127,6 +139,7 @@ async function mockSharedSetupApi(
     }
 
     if (url.pathname === "/api/hotel-setup/properties" && request.method() === "POST") {
+      await waitForCreate();
       markCreated();
       return route.fulfill({
         status: 201,
