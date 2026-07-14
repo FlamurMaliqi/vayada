@@ -3,6 +3,16 @@ export { default as BenefitsStep } from "./BenefitsStep";
 export { default as BrandMediaStep, type ColorPreset, type FontPairing } from "./BrandMediaStep";
 export { HotelIcon } from "./HotelIcon";
 export {
+  isSharedAccountDetailsComplete,
+  normalizeSharedAccountName,
+  splitSharedAccountName,
+  type SharedAccountDetailsInput,
+} from "./sharedAccountDetails";
+export {
+  createSharedAccountProfileImageUploader,
+  sharedAccountProfileImageError,
+} from "./sharedAccountProfileImage";
+export {
   default as LastMinuteStep,
   DEFAULT_LAST_MINUTE_TIERS,
   createEmptyLastMinuteConfig,
