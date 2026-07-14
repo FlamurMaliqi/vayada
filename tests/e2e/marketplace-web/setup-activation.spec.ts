@@ -169,6 +169,7 @@ async function mockAuthSession(page: Page) {
         user: {
           id: "user-hotel-owner",
           email: "owner@alpenrose.example",
+          name: "Owner Example",
           phone: "+49 89 123456",
           status: "active",
           workosUserId: "user_workos_hotel_owner",

@@ -7,6 +7,7 @@ import {
 export type AuthUser = {
   id: string;
   email: string;
+  name?: string | null;
   phone?: string | null;
   status: string;
   workosUserId?: string;
@@ -67,6 +68,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   localStorage.setItem("isLoggedIn", "true");
   localStorage.setItem("userId", session.user.id);
   localStorage.setItem("userEmail", session.user.email);
+  localStorage.setItem("userName", session.user.name ?? session.user.email);
   localStorage.setItem("userType", "hotel");
   localStorage.setItem("userStatus", session.user.status);
   localStorage.setItem(
@@ -74,6 +76,8 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
     JSON.stringify({
       id: session.user.id,
       email: session.user.email,
+      name: session.user.name ?? session.user.email,
+      phone: session.user.phone ?? null,
       type: "hotel",
       status: session.user.status,
       workos_user_id: session.user.workosUserId,

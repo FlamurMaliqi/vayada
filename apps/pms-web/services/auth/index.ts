@@ -284,6 +284,23 @@ export const authService = {
     return storeAuthSessionResponse(response);
   },
 
+  updateAccountDetails: async (data: {
+    firstName: string;
+    lastName: string;
+    phone?: string;
+    profilePictureUrl?: string;
+    profilePictureMediaObjectId?: string;
+  }): Promise<void> => {
+    const csrfToken = getAuthCsrfToken();
+    if (!csrfToken) throw new Error("Your session has expired. Please sign in again.");
+    await authFetch<{ updated: true }>("/auth/profile", {
+      method: "POST",
+      headers: { "x-vayada-csrf": csrfToken },
+      body: JSON.stringify({ ...data, surface: AUTH_SURFACE }),
+    });
+    await authService.refreshSession();
+  },
+
   confirmEmailVerification: async (code: string): Promise<AuthSessionResponse> => {
     const pending = getPendingEmailVerification();
     if (!pending) {

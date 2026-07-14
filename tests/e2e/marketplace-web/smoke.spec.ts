@@ -105,7 +105,7 @@ test.describe("marketplace-web smoke", () => {
     await assertHealthy();
   });
 
-  test("hotel onboarding asks only for account type before shared setup", async ({ page }) => {
+  test("hotel onboarding saves shared personal details before shared setup", async ({ page }) => {
     await primeBrowserState(page);
     await mockOnboardingAuth(page);
     await mockSharedSetupStatus(page);
@@ -122,6 +122,23 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByRole("heading", { name: "Welcome to Vayada" })).toBeVisible();
     await expect(page.getByRole("radio", { name: /manage a hotel/i })).toBeVisible();
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
+
+    await expect(page.getByRole("heading", { name: "Tell us about you" })).toBeVisible();
+    await expect(page.getByLabel("Email address")).toHaveValue("owner@example.test");
+    await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
+    await page.getByRole("button", { name: "Save and continue" }).click();
+    await expect(page.getByText("Enter your first name.")).toBeVisible();
+    await expect(page.getByText("Enter your last name.")).toBeVisible();
+    await page.getByLabel("First name").fill("Mary Jane");
+    await page.getByLabel("Last name").fill("Watson");
+    await page.getByLabel("Phone number").clear();
+    await page.getByLabel("Profile photo file").setInputFiles({
+      name: "ada.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("profile-image"),
+    });
+    await expect(page.getByRole("img", { name: "Selected profile preview" })).toBeVisible();
+    await page.getByRole("button", { name: "Save and continue" }).click();
 
     await expect(page).toHaveURL(/\/setup\?/);
     const url = new URL(page.url());
@@ -169,6 +186,8 @@ async function primeBrowserState(page: Page) {
 
 async function mockOnboardingAuth(page: Page) {
   let onboarded = false;
+  let accountName: string | null = null;
+  let accountPhone: string | null = "+49 89 123456";
   const guestSession = {
     accessToken: "test-access-token",
     csrfToken: "test-csrf-token",
@@ -192,7 +211,14 @@ async function mockOnboardingAuth(page: Page) {
     await route.fulfill({
       status: 200,
       headers: corsHeaders(route),
-      json: onboarded ? hotelSession : guestSession,
+      json: {
+        ...(onboarded ? hotelSession : guestSession),
+        user: {
+          ...(onboarded ? hotelSession.user : guestSession.user),
+          name: accountName,
+          phone: accountPhone,
+        },
+      },
     });
   });
   await page.route(/\/auth\/onboarding$/, async (route) => {
@@ -201,7 +227,83 @@ async function mockOnboardingAuth(page: Page) {
       return;
     }
     onboarded = true;
-    await route.fulfill({ status: 200, headers: corsHeaders(route), json: hotelSession });
+    await route.fulfill({
+      status: 200,
+      headers: corsHeaders(route),
+      json: {
+        ...hotelSession,
+        user: { ...hotelSession.user, name: accountName, phone: accountPhone },
+      },
+    });
+  });
+  await page.route(/\/auth\/profile$/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    const payload = route.request().postDataJSON() as {
+      firstName?: string;
+      lastName?: string;
+      phone?: string;
+      profilePictureUrl?: string;
+      profilePictureMediaObjectId?: string;
+    };
+    expect(payload).toMatchObject({
+      firstName: "Mary Jane",
+      lastName: "Watson",
+      phone: "",
+      profilePictureUrl: "https://media.example/profile.png",
+      profilePictureMediaObjectId: "media-profile-e2e",
+    });
+    accountName =
+      payload.firstName && payload.lastName ? `${payload.firstName} ${payload.lastName}` : null;
+    accountPhone = payload.phone?.trim() || null;
+    await route.fulfill({ status: 200, headers: corsHeaders(route), json: { updated: true } });
+  });
+  await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    if (route.request().url().endsWith("/finalize")) {
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          mediaObjects: [
+            {
+              mediaId: "media-profile-e2e",
+              storageKey: "staging/profile-e2e/ada.png",
+              variants: [{ publicCdnUrl: "https://media.example/profile.png" }],
+            },
+          ],
+        },
+      });
+      return;
+    }
+    expect(route.request().postDataJSON()).toMatchObject({
+      purpose: "identity.user.profile_image",
+      resource: {
+        product: "platform",
+        resourceType: "user_profile",
+        resourceId: "user-pending-onboarding",
+      },
+    });
+    await route.fulfill({
+      status: 201,
+      headers: corsHeaders(route),
+      json: {
+        uploadSession: { sessionId: "profile-e2e" },
+        uploadTargets: [
+          {
+            uploadTargetId: "profile-target-e2e",
+            method: "PUT",
+            uploadUrl: "https://uploads.vayada.localhost/profile-e2e",
+            headers: {},
+          },
+        ],
+      },
+    });
   });
   await routeJson(page, /\/auth\/compat\/marketplace-web-token/, {
     accessToken: "legacy-marketplace-token",

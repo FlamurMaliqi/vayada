@@ -48,7 +48,7 @@ export function OnboardingShell({
     <div className="relative min-h-screen overflow-x-hidden bg-[#fbfbfa] text-gray-950">
       <header
         className={`relative z-10 mx-auto flex max-w-6xl items-center justify-center px-5 sm:px-8 ${
-          compact ? "py-2" : "py-6"
+          compact ? "py-2" : "py-4"
         }`}
       >
         <Image
@@ -56,20 +56,20 @@ export function OnboardingShell({
           alt="vayada"
           width={120}
           height={40}
-          className="h-8 w-auto"
+          className="h-7 w-auto"
           priority
         />
       </header>
 
       <main
-        className={`relative z-10 mx-auto flex min-h-[calc(100vh-80px)] w-full flex-col items-center px-5 sm:px-8 ${
-          compact ? "max-w-[960px] justify-start py-0" : "max-w-6xl justify-center py-8"
+        className={`relative z-10 mx-auto flex min-h-[calc(100vh-60px)] w-full flex-col items-center px-5 sm:px-8 ${
+          compact ? "max-w-[880px] justify-start py-0" : "max-w-5xl justify-center py-6"
         }`}
       >
         <section className="w-full text-center">
           <h1
             className={`mx-auto max-w-3xl font-semibold tracking-normal text-gray-950 ${
-              compact ? "text-2xl sm:text-3xl" : "text-4xl sm:text-5xl"
+              compact ? "text-2xl" : "text-3xl sm:text-4xl"
             }`}
           >
             {title}
@@ -77,7 +77,7 @@ export function OnboardingShell({
           {description && (
             <p
               className={`mx-auto max-w-xl text-gray-600 ${
-                compact ? "mt-2 text-sm leading-6" : "mt-4 text-base leading-7"
+                compact ? "mt-2 text-sm leading-5" : "mt-3 text-sm leading-6"
               }`}
             >
               {description}
@@ -85,10 +85,10 @@ export function OnboardingShell({
           )}
         </section>
 
-        <section className={`${compact ? "mt-3" : "mt-10"} w-full`}>{children}</section>
+        <section className={`${compact ? "mt-3" : "mt-7"} w-full`}>{children}</section>
 
         {showProgress && (
-          <div className={`${compact ? "mt-8" : "mt-12"} flex flex-col items-center gap-3`}>
+          <div className={`${compact ? "mt-6" : "mt-8"} flex flex-col items-center gap-3`}>
             <p className="text-sm font-semibold text-gray-500">
               Step {currentStepLabel} of {totalSteps}
               {currentStepTitle ? ` · ${currentStepTitle}` : ""}

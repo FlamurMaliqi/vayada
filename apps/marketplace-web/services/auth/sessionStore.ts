@@ -5,6 +5,7 @@ import type { UserType } from "@/lib/types";
 export type AuthUser = {
   id: string;
   email: string;
+  name?: string | null;
   phone?: string | null;
   status: string;
   workosUserId?: string;
@@ -66,7 +67,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   localStorage.removeItem(LEGACY_EXPIRES_AT_KEY);
 
   const userType = userTypeForOrganizationKind(session.organizationKind);
-  const userName = session.user.email;
+  const userName = session.user.name ?? session.user.email;
   localStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
   localStorage.setItem(STORAGE_KEYS.USER_ID, session.user.id);
   localStorage.setItem(STORAGE_KEYS.USER_EMAIL, session.user.email);
@@ -84,6 +85,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
       id: session.user.id,
       email: session.user.email,
       name: userName,
+      phone: session.user.phone ?? null,
       type: userType,
       status: session.user.status,
       is_superadmin: false,

@@ -118,6 +118,7 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
         user: {
           id: "user_pms_owner",
           email: "owner@example.com",
+          name: "PMS Owner",
           status: "active",
           workosUserId: "workos_user_pms_owner",
         },
