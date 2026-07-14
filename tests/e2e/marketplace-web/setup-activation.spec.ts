@@ -50,20 +50,26 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByRole("heading", { name: "Add your first hotel" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: /Contact email/ })).toHaveValue(
-      "owner@alpenrose.example",
-    );
-    await expect(page.getByRole("textbox", { name: /Phone number/ })).toHaveValue("+49 89 123456");
-
+    await expect(page.getByRole("heading", { name: "Let’s get to know your hotel" })).toBeVisible();
     await page.getByRole("textbox", { name: /Hotel name/ }).fill("Hotel Alpenrose");
     await page.getByRole("combobox", { name: /Property type/ }).selectOption("hotel");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Where can guests find you?", level: 3 }),
+    ).toBeVisible();
     await page.getByRole("textbox", { name: /Street address/ }).fill("Marienplatz 1");
     await page.getByRole("textbox", { name: /Postal code/ }).fill("80331");
     await page.getByRole("textbox", { name: /City/ }).fill("Munich");
     const countrySelect = page.getByRole("combobox", { name: /Country/ });
     await expect(countrySelect.locator('option[value="PR"]')).toHaveCount(1);
     await countrySelect.selectOption("DE");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(page.getByRole("textbox", { name: /Contact email/ })).toHaveValue(
+      "owner@alpenrose.example",
+    );
+    await expect(page.getByRole("textbox", { name: /Phone number/ })).toHaveValue("+49 89 123456");
     await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
     await page.getByRole("button", { name: "Save and continue" }).click();
 

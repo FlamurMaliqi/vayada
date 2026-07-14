@@ -144,7 +144,7 @@ test.describe("marketplace-web smoke", () => {
     const url = new URL(page.url());
     expect(url.searchParams.get("entryProduct")).toBe("marketplace");
     expect(url.searchParams.has("selectedProducts")).toBe(false);
-    await expect(page.getByRole("heading", { name: "Add your first hotel" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Let’s get to know your hotel" })).toBeVisible();
     await expect(page.getByLabel("Hotel name")).toBeVisible();
     await expect(page.getByText("We'd like to get to know you better")).toHaveCount(0);
     await expect(page.getByText("Which systems do you want to use?")).toHaveCount(0);

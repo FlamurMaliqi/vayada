@@ -118,17 +118,6 @@ const MARKETPLACE_ACTIVATION_STEPS: Record<string, { title: string; description:
   },
 };
 
-const SETUP_STEPS: ReadonlyArray<{
-  label: string;
-  description: string;
-  icon: IconComponent;
-}> = [
-  { label: "Property", description: "Choose where setup applies", icon: HotelIcon },
-  { label: "Basics", description: "Profile and location", icon: SparklesIcon },
-  { label: "Systems", description: "Pick account systems", icon: Squares2X2Icon },
-  { label: "Launch", description: "Open the right workspace", icon: RocketLaunchIcon },
-];
-
 const PRODUCT_DESCRIPTIONS: Record<SharedHotelSetupProduct, string> = {
   booking: "Direct booking pages, checkout, and guest-facing availability.",
   pms: "Rooms, calendar, reservations, and daily property operations.",
@@ -142,6 +131,19 @@ const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
 };
 
 const EMPTY_SELECTED_PRODUCTS: SharedHotelSetupProduct[] = [];
+
+const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
+  ["displayName", "propertyType"],
+  [
+    "location.streetAddress",
+    "location.postalCode",
+    "location.city",
+    "location.countryCode",
+    "location.timezone",
+  ],
+  ["contactEmail", "phone", "website"],
+];
+const PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
 
 const PROPERTY_TYPE_LABELS: Record<SharedPropertyType, string> = {
   hotel: "Hotel",
@@ -438,6 +440,7 @@ export default function SharedFirstRunPropertySetupWizard({
           saving={saving}
           fieldErrors={fieldErrors}
           onChange={setDraft}
+          onFieldErrors={setFieldErrors}
           onCancel={
             status.properties.length > 0 && view.profileMode === "create"
               ? () => setForceCreateProperty(false)
@@ -503,7 +506,9 @@ function WizardShell({
   const subtitle =
     view.screen === "property_selection"
       ? "Pick an existing property or add a new one to this hotel group."
-      : "Add the basics once. Vayada reuses them across PMS, Booking Engine, and Marketplace.";
+      : view.screen === "property_profile"
+        ? null
+        : "We’ll ask for the basics once and keep them consistent across PMS, Booking Engine, and Marketplace.";
 
   if (embedded) {
     return (
@@ -515,10 +520,10 @@ function WizardShell({
           <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-gray-950">{title}</h2>
-              <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>
+              {subtitle && <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>}
             </div>
             <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
-              Step {progress} of {SETUP_STEPS.length}
+              Step {progress} of 4
             </span>
           </div>
         </div>
@@ -536,94 +541,25 @@ function WizardShell({
   }
 
   return (
-    <main className="min-h-screen bg-white px-4 py-8 text-gray-900 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-6xl">
-        <header className="mb-7 grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px] lg:items-end">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
-              {status?.hotelGroup.displayName ?? "Hotel setup"}
-            </p>
-            <h1 className="mt-3 max-w-3xl text-4xl font-semibold tracking-normal text-gray-950 sm:text-5xl">
-              {title}
-            </h1>
-            <p className="mt-3 max-w-2xl text-base text-gray-500">{subtitle}</p>
-          </div>
-          {status?.entry.entryProduct && (
-            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5">
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
-                Started from
-              </p>
-              <p className="mt-1 text-sm font-semibold text-gray-950">
-                {DEFAULT_PRODUCT_LABELS[status.entry.entryProduct]}
-              </p>
-              <p className="mt-2 text-xs text-gray-500">
-                Complete setup here, then continue into the selected workspace.
-              </p>
-            </div>
-          )}
+    <main className="flex min-h-screen items-center bg-white px-4 py-6 text-gray-900 sm:px-6 lg:px-8">
+      <div className="mx-auto w-full max-w-5xl">
+        <header className="mx-auto mb-5 max-w-xl text-center">
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
+            {status?.hotelGroup.displayName ?? "Hotel setup"}
+          </p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-normal text-gray-950">{title}</h1>
+          {subtitle && <p className="mt-2 text-sm text-gray-500">{subtitle}</p>}
         </header>
 
-        <SetupProgress progress={progress} />
-
-        <section className="mt-7 min-w-0 overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]">
-          {loading ? (
-            <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
-              <LoadingSpinner label="Loading setup" />
-            </div>
-          ) : (
-            <div className="p-5 sm:p-6">{children}</div>
-          )}
-        </section>
+        {loading ? (
+          <div className="flex min-h-80 items-center justify-center">
+            <LoadingSpinner label="Loading setup" />
+          </div>
+        ) : (
+          children
+        )}
       </div>
     </main>
-  );
-}
-
-function SetupProgress({ progress }: { progress: number }) {
-  return (
-    <ol className="grid gap-2 sm:grid-cols-4" aria-label="Property setup progress">
-      {SETUP_STEPS.map((step, index) => {
-        const stepNumber = index + 1;
-        const complete = stepNumber < progress;
-        const current = stepNumber === progress;
-        const Icon = step.icon;
-        return (
-          <li
-            key={step.label}
-            aria-current={current ? "step" : undefined}
-            className={`rounded-2xl border px-3 py-3 ${
-              current
-                ? "border-primary-200 bg-primary-50/70"
-                : complete
-                  ? "border-primary-100 bg-white"
-                  : "border-gray-100 bg-white"
-            }`}
-          >
-            <div className="flex items-start gap-3">
-              <span
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
-                  complete
-                    ? "bg-primary-600 text-white"
-                    : current
-                      ? "bg-primary-600 text-white"
-                      : "bg-gray-100 text-gray-500"
-                }`}
-              >
-                {complete ? (
-                  <CheckIcon className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                )}
-              </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-gray-950">{step.label}</span>
-                <span className="mt-1 block text-xs text-gray-500">{step.description}</span>
-              </span>
-            </div>
-          </li>
-        );
-      })}
-    </ol>
   );
 }
 
@@ -718,6 +654,99 @@ function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => vo
   );
 }
 
+const ONBOARDING_ILLUSTRATION_CLASS =
+  "mx-auto hidden h-80 w-full max-w-[24rem] text-gray-900 xl:block";
+
+function HotelFacadeIllustration() {
+  return (
+    <svg
+      viewBox="0 0 260 220"
+      className={ONBOARDING_ILLUSTRATION_CLASS}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="3"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M29 190h202" />
+      <path d="M76 81v109h109V81" />
+      <rect x="68" y="65" width="125" height="20" rx="3" fill="white" />
+      <path d="M130 65V31" />
+      <path d="m130 33 30 5v20l-30-5" fill="#2948E8" />
+      <path d="M111 190v-48a19 19 0 0 1 38 0v48" fill="#2948E8" />
+      <circle cx="141" cy="166" r="2" fill="currentColor" stroke="none" />
+      <path d="M91 118V99a11 11 0 0 1 22 0v19Z" fill="#EEF1FF" />
+      <path d="M148 118V99a11 11 0 0 1 22 0v19Z" fill="#EEF1FF" />
+      <path d="M199 190h28l-4-30h-20Z" fill="white" />
+      <path d="M213 160v-31M213 148l-13-14M213 143l13-16" />
+      <path
+        d="M200 134c9 0 13 5 13 14-9 0-13-5-13-14ZM226 127c0 9-4 14-13 16 0-9 4-14 13-16Z"
+        fill="#2948E8"
+      />
+    </svg>
+  );
+}
+
+function LocationIllustration() {
+  return (
+    <svg
+      viewBox="0 0 260 220"
+      className={ONBOARDING_ILLUSTRATION_CLASS}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="3"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="m37 64 56-19 57 20 73-20v119l-73 20-57-20-56 19Z" fill="white" />
+      <path d="M93 45v119M150 65v119M37 125c20-1 35-24 56-25 17-1 34 20 57 19 25-1 48-23 73-23" />
+      <path
+        d="M61 153c29-3 48 0 65-17 15-15 20-30 49-31"
+        stroke="#2948E8"
+        strokeDasharray="8 10"
+        strokeWidth="5"
+      />
+      <path
+        d="M190 70c-20 0-34 15-34 34 0 25 34 57 34 57s34-32 34-57c0-19-14-34-34-34Z"
+        fill="#2948E8"
+      />
+      <circle cx="190" cy="104" r="11" fill="white" />
+    </svg>
+  );
+}
+
+function ContactIllustration() {
+  return (
+    <svg
+      viewBox="0 0 260 220"
+      className={ONBOARDING_ILLUSTRATION_CLASS}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="3"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="31" y="92" width="108" height="77" rx="4" fill="white" />
+      <path d="m34 96 51 42 51-42M34 165l37-40M136 165l-37-40" />
+      <path
+        d="M169 84c7-7 18-5 23 2l10 16c4 6 2 14-4 18l-12 8c8 15 20 26 35 34l8-12c4-6 12-8 18-4l16 10c7 5 9 16 2 23l-8 8c-8 8-21 11-32 6-43-18-77-52-95-95-5-11-2-24 6-32Z"
+        fill="#2948E8"
+        transform="translate(-5 -2) scale(.78) translate(52 29)"
+      />
+      <path
+        d="M204 53c0 14-7 22-20 24 13 2 20 10 20 24 0-14 7-22 20-24-13-2-20-10-20-24Z"
+        stroke="#2948E8"
+      />
+    </svg>
+  );
+}
+
 function ProfileForm({
   draft,
   mode,
@@ -726,6 +755,7 @@ function ProfileForm({
   saving,
   fieldErrors,
   onChange,
+  onFieldErrors,
   onCancel,
   onSave,
 }: {
@@ -736,9 +766,23 @@ function ProfileForm({
   saving: boolean;
   fieldErrors: Record<string, string[]>;
   onChange: (draft: ProfileDraft) => void;
+  onFieldErrors: (errors: Record<string, string[]>) => void;
   onCancel?: () => void;
   onSave: () => void;
 }) {
+  const [step, setStep] = useState(0);
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    const errorStep = PROFILE_STEP_FIELDS.findIndex((fields) =>
+      fields.some((field) => fieldErrors[field]),
+    );
+    if (errorStep >= 0 && errorStep !== step) {
+      setStep(errorStep);
+      requestAnimationFrame(() => stepHeading.current?.focus());
+    }
+  }, [fieldErrors, step]);
+
   if (loading) {
     return (
       <div className="flex min-h-80 items-center justify-center">
@@ -749,6 +793,21 @@ function ProfileForm({
 
   const setField = (field: keyof ProfileDraft, value: string) => {
     onChange({ ...draft, [field]: value });
+  };
+  const changeStep = (nextStep: number) => {
+    onFieldErrors({});
+    setStep(nextStep);
+    requestAnimationFrame(() => stepHeading.current?.focus());
+  };
+  const continueToNextStep = () => {
+    const currentFields = new Set(PROFILE_STEP_FIELDS[step]);
+    const currentErrors = Object.fromEntries(
+      Object.entries(validateProfileDraft(draft, mode)).filter(([field]) =>
+        currentFields.has(field),
+      ),
+    );
+    onFieldErrors(currentErrors);
+    if (Object.keys(currentErrors).length === 0) changeStep(step + 1);
   };
   const showRawLocation = Boolean(
     draft.rawMarketplaceLocation && !draft.city.trim() && !draft.countryCode.trim(),
@@ -774,185 +833,248 @@ function ProfileForm({
       noValidate
       onSubmit={(event) => {
         event.preventDefault();
-        onSave();
+        if (step === PROFILE_STEP_FIELDS.length - 1) onSave();
+        else continueToNextStep();
       }}
-      className="mx-auto max-w-2xl space-y-4"
+      className="mx-auto max-w-[36rem] space-y-3 xl:max-w-[60rem]"
     >
-      <section className="rounded-2xl bg-white p-5 text-left shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 ring-gray-200 sm:p-6">
-        <div className="mb-4">
-          <h3 className="text-base font-semibold text-gray-950">
-            {mode === "create" ? "Hotel basics" : "Complete hotel basics"}
-          </h3>
-          <p className="mt-1 text-sm text-gray-500">
-            This identifies the hotel across every enabled Vayada system.
-          </p>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="md:col-span-2">
+      <div className="flex flex-col items-center gap-3">
+        <p className="text-sm font-semibold text-gray-500" aria-live="polite">
+          Step {step + 1} of {PROFILE_STEP_FIELDS.length} · {PROFILE_STEP_TITLES[step]}
+        </p>
+        <ol className="flex items-center justify-center gap-2" aria-label="Hotel setup progress">
+          {PROFILE_STEP_TITLES.map((title, index) => {
+            const isCurrent = index === step;
+            const isComplete = index < step;
+
+            return (
+              <li
+                key={title}
+                aria-current={isCurrent ? "step" : undefined}
+                title={title}
+                className={`h-2 rounded-full transition-all duration-300 ${
+                  isCurrent || isComplete ? "w-10 bg-primary-600" : "w-3 bg-primary-100"
+                }`}
+              >
+                <span className="sr-only">{title}</span>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+
+      <section
+        className={`${step === 0 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
+      >
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
+          <div className="mb-4">
+            <h3
+              ref={step === 0 ? stepHeading : undefined}
+              tabIndex={-1}
+              className="text-base font-semibold text-gray-950 outline-none"
+            >
+              {mode === "create"
+                ? "What should we call your hotel?"
+                : "Are these hotel details correct?"}
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              We’ll use this name and property type wherever your hotel appears.
+            </p>
+          </div>
+          <div className="space-y-4">
             <TextField
               label="Hotel name"
               value={draft.displayName}
               placeholder="Hotel Alpenrose"
-              helper="Use the name guests and staff recognize."
               requirementLabel="Required"
               required
               error={fieldErrors.displayName?.[0]}
               onChange={(value) => setField("displayName", value)}
             />
-          </div>
-          <SelectField
-            label="Property type"
-            value={draft.propertyType}
-            placeholder="Select a property type"
-            required={mode === "create"}
-            error={fieldErrors.propertyType?.[0]}
-            options={propertyTypeOptions}
-            onChange={(value) => setField("propertyType", value)}
-          />
-          <div className="hidden md:block" aria-hidden="true" />
-        </div>
-      </section>
-
-      <section className="rounded-2xl bg-white p-5 text-left shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 ring-gray-200 sm:p-6">
-        <div className="mb-4">
-          <h3 className="text-base font-semibold text-gray-950">Address</h3>
-          <p className="mt-1 text-sm text-gray-500">
-            Used for localization, bookings, and daily hotel operations.
-          </p>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="md:col-span-2">
-            <TextField
-              label="Street address"
-              value={draft.streetAddress}
-              placeholder="Marienplatz 1"
+            <SelectField
+              label="Property type"
+              value={draft.propertyType}
+              placeholder="Select a property type"
               required={mode === "create"}
-              error={fieldErrors["location.streetAddress"]?.[0]}
-              onChange={(value) => setField("streetAddress", value)}
+              error={fieldErrors.propertyType?.[0]}
+              options={propertyTypeOptions}
+              onChange={(value) => setField("propertyType", value)}
             />
           </div>
-          <TextField
-            label="Postal code"
-            value={draft.postalCode}
-            placeholder="80331"
-            required={mode === "create"}
-            error={fieldErrors["location.postalCode"]?.[0]}
-            onChange={(value) => setField("postalCode", value)}
-          />
-          <TextField
-            label="City"
-            value={draft.city}
-            placeholder="Munich"
-            requirementLabel="Required"
-            required
-            error={fieldErrors["location.city"]?.[0]}
-            onChange={(value) => setField("city", value)}
-          />
-          <SelectField
-            label="Country"
-            value={draft.countryCode}
-            placeholder="Select a country"
-            required
-            error={fieldErrors["location.countryCode"]?.[0]}
-            options={COUNTRY_OPTIONS.map((country) => ({
-              value: country.code,
-              label: `${country.flag} ${country.name}`,
-            }))}
-            onChange={(value) => setField("countryCode", value)}
-          />
-          <TextField
-            label="Time zone"
-            value={draft.timezone}
-            placeholder="Europe/Berlin"
-            helper="Detected automatically. Change it if needed."
-            required={mode === "create"}
-            error={fieldErrors["location.timezone"]?.[0]}
-            listOptions={TIMEZONE_DATALIST_OPTIONS}
-            onChange={(value) => setField("timezone", value)}
-          />
-          {showRawLocation && (
+        </div>
+        <HotelFacadeIllustration />
+      </section>
+
+      <section
+        className={`${step === 2 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
+      >
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
+          <div className="mb-4">
+            <h3
+              ref={step === 2 ? stepHeading : undefined}
+              tabIndex={-1}
+              className="text-base font-semibold text-gray-950 outline-none"
+            >
+              How can guests reach you?
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              We’ll show these details wherever guests may need to get in touch.
+            </p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            {mode === "create" && hasAccountSuggestions && (
+              <p className="rounded-xl bg-primary-50 px-3 py-2 text-xs text-primary-800 md:col-span-2">
+                We suggested details from your account. Edit them if this hotel uses a different
+                contact; saving confirms these as the hotel contact.
+              </p>
+            )}
+            <TextField
+              label="Contact email"
+              value={draft.contactEmail}
+              placeholder="hello@hotel-alpenrose.com"
+              type="email"
+              required={mode === "create"}
+              error={fieldErrors.contactEmail?.[0]}
+              onChange={(value) => setField("contactEmail", value)}
+            />
+            <TextField
+              label="Phone number"
+              value={draft.phone}
+              placeholder="+49 89 123456"
+              type="tel"
+              required={mode === "create"}
+              error={fieldErrors.phone?.[0]}
+              onChange={(value) => setField("phone", value)}
+            />
             <div className="md:col-span-2">
               <TextField
-                label="Imported location"
-                value={draft.rawMarketplaceLocation}
-                readOnly
-                helper="Read-only location imported from the existing marketplace profile."
-                onChange={() => undefined}
+                label="Website"
+                value={draft.website}
+                placeholder="https://hotel-alpenrose.com"
+                type="url"
+                requirementLabel="Optional"
+                error={fieldErrors.website?.[0]}
+                onChange={(value) => setField("website", value)}
               />
             </div>
-          )}
-        </div>
-      </section>
-
-      <section className="rounded-2xl bg-white p-5 text-left shadow-[0_22px_55px_-34px_rgba(15,23,42,0.45)] ring-1 ring-gray-200 sm:p-6">
-        <div className="mb-4">
-          <h3 className="text-base font-semibold text-gray-950">Hotel contact</h3>
-          <p className="mt-1 text-sm text-gray-500">
-            These are the hotel’s public contact details, separate from your personal account.
-          </p>
-          {mode === "create" && hasAccountSuggestions && (
-            <p className="mt-2 rounded-xl bg-primary-50 px-3 py-2 text-xs text-primary-800">
-              We suggested details from your account. Edit them if this hotel uses a different
-              contact; saving confirms these as the hotel contact.
-            </p>
-          )}
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <TextField
-            label="Contact email"
-            value={draft.contactEmail}
-            placeholder="hello@hotel-alpenrose.com"
-            type="email"
-            required={mode === "create"}
-            error={fieldErrors.contactEmail?.[0]}
-            onChange={(value) => setField("contactEmail", value)}
-          />
-          <TextField
-            label="Phone number"
-            value={draft.phone}
-            placeholder="+49 89 123456"
-            type="tel"
-            required={mode === "create"}
-            error={fieldErrors.phone?.[0]}
-            onChange={(value) => setField("phone", value)}
-          />
-          <div className="md:col-span-2">
-            <TextField
-              label="Website"
-              value={draft.website}
-              placeholder="https://hotel-alpenrose.com"
-              type="url"
-              requirementLabel="Optional"
-              error={fieldErrors.website?.[0]}
-              onChange={(value) => setField("website", value)}
-            />
           </div>
         </div>
+        <ContactIllustration />
       </section>
 
-      <div className="flex flex-col-reverse gap-3 pt-1 sm:flex-row sm:justify-end">
-        {onCancel && (
+      <section
+        className={`${step === 1 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
+      >
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
+          <div className="mb-4">
+            <h3
+              ref={step === 1 ? stepHeading : undefined}
+              tabIndex={-1}
+              className="text-base font-semibold text-gray-950 outline-none"
+            >
+              Where can guests find you?
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              We’ll use this location for bookings and daily hotel operations.
+            </p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="md:col-span-2">
+              <TextField
+                label="Street address"
+                value={draft.streetAddress}
+                placeholder="Marienplatz 1"
+                required={mode === "create"}
+                error={fieldErrors["location.streetAddress"]?.[0]}
+                onChange={(value) => setField("streetAddress", value)}
+              />
+            </div>
+            <TextField
+              label="Postal code"
+              value={draft.postalCode}
+              placeholder="80331"
+              required={mode === "create"}
+              error={fieldErrors["location.postalCode"]?.[0]}
+              onChange={(value) => setField("postalCode", value)}
+            />
+            <TextField
+              label="City"
+              value={draft.city}
+              placeholder="Munich"
+              requirementLabel="Required"
+              required
+              error={fieldErrors["location.city"]?.[0]}
+              onChange={(value) => setField("city", value)}
+            />
+            <SelectField
+              label="Country"
+              value={draft.countryCode}
+              placeholder="Select a country"
+              required
+              error={fieldErrors["location.countryCode"]?.[0]}
+              options={COUNTRY_OPTIONS.map((country) => ({
+                value: country.code,
+                label: `${country.flag} ${country.name}`,
+              }))}
+              onChange={(value) => setField("countryCode", value)}
+            />
+            <TextField
+              label="Time zone"
+              value={draft.timezone}
+              placeholder="Europe/Berlin"
+              helper="Detected automatically. Change it if needed."
+              required={mode === "create"}
+              error={fieldErrors["location.timezone"]?.[0]}
+              listOptions={TIMEZONE_DATALIST_OPTIONS}
+              onChange={(value) => setField("timezone", value)}
+            />
+            {showRawLocation && (
+              <div className="md:col-span-2">
+                <TextField
+                  label="Imported location"
+                  value={draft.rawMarketplaceLocation}
+                  readOnly
+                  helper="Read-only location imported from the existing marketplace profile."
+                  onChange={() => undefined}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+        <LocationIllustration />
+      </section>
+
+      <div className="flex w-full flex-col-reverse gap-3 pt-1 sm:flex-row sm:justify-end xl:w-[36rem]">
+        {(step > 0 || onCancel) && (
           <button
             type="button"
-            onClick={onCancel}
+            onClick={() => (step > 0 ? changeStep(step - 1) : onCancel?.())}
             className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
-            Back to properties
+            {step > 0 ? "Back" : "Back to properties"}
           </button>
         )}
         <button
           type="submit"
-          disabled={saving}
+          disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
           className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {saving && (
+          {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
             <span
               className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
               aria-hidden="true"
             />
           )}
-          <span>{saving ? "Saving..." : "Save and continue"}</span>
-          {!saving && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
+          <span>
+            {step === PROFILE_STEP_FIELDS.length - 1
+              ? saving
+                ? "Saving..."
+                : "Save and continue"
+              : "Continue"}
+          </span>
+          {!(step === PROFILE_STEP_FIELDS.length - 1 && saving) && (
+            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+          )}
         </button>
       </div>
     </form>
@@ -996,7 +1118,7 @@ function ProductSelection({
           return (
             <label
               key={product}
-              className={`flex min-h-48 flex-col rounded-3xl border p-5 transition ${
+              className={`flex min-h-44 flex-col rounded-2xl border p-4 transition ${
                 disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
               } ${
                 checked
@@ -1261,7 +1383,7 @@ function ReadinessItem({
 }) {
   return (
     <div
-      className={`rounded-3xl border p-5 ${
+      className={`rounded-2xl border p-4 ${
         complete ? "border-gray-100 bg-white" : "border-red-200 bg-red-50"
       }`}
     >
@@ -1419,7 +1541,7 @@ function TextField({
         aria-required={required}
         list={listOptions ? `${inputId}-options` : undefined}
         onChange={(event) => onChange(event.target.value)}
-        className={`mt-2 w-full rounded-lg border px-4 py-2.5 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
+        className={`mt-2 w-full rounded-lg border px-4 py-2.5 text-base outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:text-sm ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         } ${readOnly ? "bg-gray-50 text-gray-600" : ""}`}
       />
@@ -1482,7 +1604,7 @@ function SelectField({
         aria-describedby={errorId}
         aria-required={required}
         onChange={(event) => onChange(event.target.value)}
-        className={`mt-2 w-full rounded-lg border bg-white px-4 py-2.5 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 ${
+        className={`mt-2 w-full rounded-lg border bg-white px-4 py-2.5 text-base outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:text-sm ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         }`}
       >

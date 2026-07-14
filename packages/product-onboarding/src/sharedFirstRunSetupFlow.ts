@@ -231,7 +231,10 @@ export function resolveSharedFirstRunSetupView(
       selectedPropertyId: null,
       selectedProperty: null,
       product: null,
-      title: status.properties.length === 0 ? "Add your first hotel" : "Add hotel",
+      title:
+        status.properties.length === 0
+          ? "Let’s get to know your hotel"
+          : "Let’s get to know this hotel",
     };
   }
 
