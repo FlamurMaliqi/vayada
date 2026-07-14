@@ -1,10 +1,11 @@
-import type {
-  LinkedResource,
-  PermissionKey,
-  Product,
-  RequestContext,
-  ResourceRelationship,
-  ResourceType,
+import {
+  requireAuthContext,
+  type LinkedResource,
+  type PermissionKey,
+  type Product,
+  type RequestContext,
+  type ResourceRelationship,
+  type ResourceType,
 } from "@vayada/backend-auth";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
@@ -293,7 +294,7 @@ export type PlatformMediaRoutesOptions = {
 
 export type PlatformMediaPurposePolicy = {
   purpose: PlatformMediaPurpose;
-  permission: PermissionKey;
+  permission?: PermissionKey;
   actorOwned?: boolean;
   allowedRelationships: readonly ResourceRelationship[];
   allowedResources: ReadonlyArray<Pick<LinkedResource, "product" | "resourceType">>;
@@ -327,7 +328,6 @@ const publicImageVariantMaxDimensions: Record<
 const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> = {
   "identity.user.profile_image": {
     purpose: "identity.user.profile_image",
-    permission: "hotel_catalog.setup.manage",
     actorOwned: true,
     allowedRelationships: [],
     allowedResources: [{ product: "platform", resourceType: "user_profile" }],
@@ -536,19 +536,17 @@ export async function registerPlatformMediaRoutes(
         return sendMediaError(reply, 400, resourceError.code, resourceError.message);
       }
 
-      const context = enforceRoutePolicy(request, {
-        permission: permissionForResource(policy, request.body.resource),
-        ...(policy.actorOwned
-          ? {}
-          : {
-              resource: {
-                product: request.body.resource.product,
-                resourceType: request.body.resource.resourceType,
-                resourceId: request.body.resource.resourceId,
-                allowedRelationships: policy.allowedRelationships,
-              },
-            }),
-      });
+      const context = policy.actorOwned
+        ? requireAuthContext(request)
+        : enforceRoutePolicy(request, {
+            permission: permissionForResource(policy, request.body.resource),
+            resource: {
+              product: request.body.resource.product,
+              resourceType: request.body.resource.resourceType,
+              resourceId: request.body.resource.resourceId,
+              allowedRelationships: policy.allowedRelationships,
+            },
+          });
       if (policy.actorOwned && request.body.resource.resourceId !== context.actor.internalUserId) {
         return sendMediaError(
           reply,
@@ -681,19 +679,17 @@ export async function registerPlatformMediaRoutes(
         return sendMediaError(reply, 404, "upload_session_not_found", "Upload session not found.");
       }
       const policy = purposePolicies[session.purpose];
-      const context = enforceRoutePolicy(request, {
-        permission: permissionForResource(policy, session.resource),
-        ...(policy.actorOwned
-          ? {}
-          : {
-              resource: {
-                product: session.resource.product,
-                resourceType: session.resource.resourceType,
-                resourceId: session.resource.resourceId,
-                allowedRelationships: policy.allowedRelationships,
-              },
-            }),
-      });
+      const context = policy.actorOwned
+        ? requireAuthContext(request)
+        : enforceRoutePolicy(request, {
+            permission: permissionForResource(policy, session.resource),
+            resource: {
+              product: session.resource.product,
+              resourceType: session.resource.resourceType,
+              resourceId: session.resource.resourceId,
+              allowedRelationships: policy.allowedRelationships,
+            },
+          });
       if (policy.actorOwned && session.resource.resourceId !== context.actor.internalUserId) {
         return sendMediaError(
           reply,
@@ -799,7 +795,7 @@ export async function registerPlatformMediaRoutes(
     }
 
     const context = enforceRoutePolicy(request, {
-      permission: policy.permission,
+      permission: permissionForResource(policy, request.body.resource),
       resource: {
         product: request.body.resource.product,
         resourceType: request.body.resource.resourceType,
@@ -1135,6 +1131,7 @@ function permissionForResource(
   if (policy.purpose === "property.hero_image" && resource.product === "marketplace") {
     return "marketplace.profile.manage";
   }
+  if (!policy.permission) throw new Error(`${policy.purpose} does not use a role permission.`);
   return policy.permission;
 }
 

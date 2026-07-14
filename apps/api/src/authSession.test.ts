@@ -18,6 +18,7 @@ import type {
 const user: IdentityUser = {
   userId: "user_platform_admin",
   email: "f.maliqi@vayada.com",
+  name: "Admin Example",
   phone: "+49 89 123456",
   status: "active",
 };
@@ -94,6 +95,7 @@ describe("AuthKit session routes", () => {
         userByProviderUserId: async () => ({
           userId: "user_creator",
           email: "creator@example.test",
+          name: "Creator Example",
           phone: "+49 30 123456",
           status: "active",
         }),
@@ -154,6 +156,7 @@ describe("AuthKit session routes", () => {
       user: {
         id: "user_creator",
         email: "creator@example.test",
+        name: "Creator Example",
         phone: "+49 30 123456",
         workosUserId: "user_workos_creator",
       },
@@ -1784,8 +1787,13 @@ describe("AuthKit session routes", () => {
     expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
   });
 
-  it("attaches an uploaded profile picture only to the signed-in user", async () => {
+  it("updates account details and profile media only for the signed-in user", async () => {
     const commands: IdentityLifecycleCommand[] = [];
+    const workosNameUpdates: Array<{
+      workosUserId: string;
+      firstName: string;
+      lastName: string;
+    }> = [];
     const hotelSession: AuthKitSession = {
       ...session,
       organizationId: "org_workos_hotel_group",
@@ -1800,6 +1808,9 @@ describe("AuthKit session routes", () => {
       authKitClient: createAuthKitClient({
         async authenticateSession() {
           return hotelSession;
+        },
+        async updateUserName(input) {
+          workosNameUpdates.push(input);
         },
       }),
       identityRepository: createIdentityRepository({
@@ -1851,22 +1862,57 @@ describe("AuthKit session routes", () => {
       },
       payload: {
         surface: "marketplace-web",
+        firstName: "Mary Jane",
+        lastName: "Watson",
+        phone: "+49 89 987654",
         profilePictureUrl: "http://localhost:9000/vayada/users/profile.webp",
         profilePictureMediaObjectId: "media_profile_1",
       },
     });
 
     expect(response.statusCode).toBe(200);
+    expect(workosNameUpdates).toEqual([
+      {
+        workosUserId: "user_workos_hotel",
+        firstName: "Mary Jane",
+        lastName: "Watson",
+      },
+    ]);
     expect(commands).toEqual([
       expect.objectContaining({
         commandType: "identity.user.profile.update",
         payload: expect.objectContaining({
           userId: "user_hotel_owner",
+          name: "Mary Jane Watson",
+          phone: "+49 89 987654",
           profilePictureUrl: "http://localhost:9000/vayada/users/profile.webp",
           profilePictureMediaObjectId: "media_profile_1",
         }),
       }),
     ]);
+
+    const clearedPhone = await app.inject({
+      method: "POST",
+      url: "/auth/profile",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: {
+        surface: "marketplace-web",
+        phone: "",
+      },
+    });
+
+    expect(clearedPhone.statusCode).toBe(200);
+    expect(commands[1]).toEqual(
+      expect.objectContaining({
+        commandType: "identity.user.profile.update",
+        payload: expect.objectContaining({ userId: "user_hotel_owner", phone: null }),
+      }),
+    );
+    expect(workosNameUpdates).toHaveLength(1);
 
     const forged = await app.inject({
       method: "POST",
@@ -1884,7 +1930,7 @@ describe("AuthKit session routes", () => {
     });
 
     expect(forged.statusCode).toBe(400);
-    expect(commands).toHaveLength(1);
+    expect(commands).toHaveLength(2);
   });
 
   it("auto-selects a single PMS hotel-group organization without showing a selector", async () => {
@@ -3387,6 +3433,7 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
       return `https://auth.workos.test/logout?return_to=${encodeURIComponent(input.returnTo)}`;
     },
     async updateUserExternalId() {},
+    async updateUserName() {},
     ...overrides,
   };
 }

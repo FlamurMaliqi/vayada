@@ -323,10 +323,13 @@ async function applyWorkosIdentityEvent(
 }
 
 function toWorkosUserPayload(event: WorkosWebhookEvent): WorkosUserPayload {
+  const firstName = optionalString(event.data, "first_name");
+  const lastName = optionalString(event.data, "last_name");
+  const structuredName = [firstName, lastName].filter(Boolean).join(" ");
   return {
     workosUserId: requiredString(event.data, "id"),
     email: requiredString(event.data, "email"),
-    name: optionalString(event.data, "first_name") ?? optionalString(event.data, "name"),
+    name: structuredName || optionalString(event.data, "name"),
     emailVerified: optionalBoolean(event.data, "email_verified") ?? false,
     status: "active",
     rawProfile: event.data ?? {},

@@ -203,14 +203,15 @@ async function updateIdentityUserProfile(
   await pool.query(
     `UPDATE identity.users
      SET name = COALESCE($2, name),
-         phone = COALESCE($3, phone),
-         profile_picture_url = COALESCE($4, profile_picture_url),
-         profile_picture_media_object_id = COALESCE($5, profile_picture_media_object_id),
+         phone = CASE WHEN $3::boolean THEN $4::text ELSE phone END,
+         profile_picture_url = COALESCE($5, profile_picture_url),
+         profile_picture_media_object_id = COALESCE($6, profile_picture_media_object_id),
          updated_at = now()
      WHERE id = $1`,
     [
       command.payload.userId,
       command.payload.name ?? null,
+      Object.prototype.hasOwnProperty.call(command.payload, "phone"),
       command.payload.phone ?? null,
       command.payload.profilePictureUrl ?? null,
       command.payload.profilePictureMediaObjectId ?? null,

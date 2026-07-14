@@ -363,7 +363,7 @@ async function upsertWorkosUser(pool: pg.Pool, input: WorkosUserPayload): Promis
       await client.query(
         `UPDATE identity.users
          SET email = $1,
-             name = $2,
+             name = COALESCE($2, name),
              status = CASE
                WHEN status IN ('suspended', 'deleted') AND $3 = 'active' THEN status
                ELSE $3
