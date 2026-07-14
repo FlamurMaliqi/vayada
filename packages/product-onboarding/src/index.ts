@@ -3,6 +3,10 @@ export { default as BenefitsStep } from "./BenefitsStep";
 export { default as BrandMediaStep, type ColorPreset, type FontPairing } from "./BrandMediaStep";
 export { HotelIcon } from "./HotelIcon";
 export {
+  default as SharedAccountDetailsStep,
+  type SharedAccountDetailsStepProps,
+} from "./SharedAccountDetailsStep";
+export {
   isSharedAccountDetailsComplete,
   normalizeSharedAccountName,
   splitSharedAccountName,
