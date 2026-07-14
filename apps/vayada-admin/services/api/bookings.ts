@@ -1,4 +1,12 @@
-import { apiClient } from "./client";
+import { ApiClient, apiClient } from "./client";
+
+const legacyBookingsEnabled = process.env.NEXT_PUBLIC_LEGACY_ADMIN_BOOKINGS_ENABLED === "true";
+const bookingsClient = legacyBookingsEnabled
+  ? new ApiClient(process.env.NEXT_PUBLIC_PMS_API_URL || "https://pms-api.vayada.com")
+  : apiClient;
+const bookingsPath = legacyBookingsEnabled
+  ? "/super-admin/bookings"
+  : "/api/platform/admin/bookings";
 
 export type BookingStatus = "pending" | "accepted" | "rejected" | "withdrawn";
 
@@ -29,8 +37,6 @@ export const bookingsService = {
     if (params?.limit) qs.set("limit", String(params.limit));
     if (params?.offset) qs.set("offset", String(params.offset));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return apiClient.get<{ bookings: SuperAdminBookingRow[] }>(
-      `/api/platform/admin/bookings${suffix}`,
-    );
+    return bookingsClient.get<{ bookings: SuperAdminBookingRow[] }>(`${bookingsPath}${suffix}`);
   },
 };

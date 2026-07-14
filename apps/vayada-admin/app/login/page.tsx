@@ -9,6 +9,8 @@ function LoginContent() {
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [totpSession, setTotpSession] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -48,7 +50,18 @@ function LoginContent() {
     setSubmitError("");
     setIsSubmitting(true);
     try {
-      await authService.login({ email, password });
+      if (totpSession) {
+        await authService.verifyTotp(totpSession, totpCode);
+        router.push("/dashboard");
+        return;
+      }
+
+      const response = await authService.login({ email, password });
+      if (response.requires_totp && response.totp_session) {
+        setTotpSession(response.totp_session);
+        setPassword("");
+        return;
+      }
       router.push("/dashboard");
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Login failed. Please try again.");
@@ -76,36 +89,60 @@ function LoginContent() {
               </p>
             </div>
           )}
-          <div>
-            <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-gray-700">
-              Email address
-            </label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-              autoComplete="email"
-              className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
-          <div>
-            <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-gray-700">
-              Password
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              required
-              autoComplete="current-password"
-              className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
+          {totpSession ? (
+            <div>
+              <label htmlFor="totp-code" className="mb-1.5 block text-sm font-medium text-gray-700">
+                Authentication code
+              </label>
+              <input
+                id="totp-code"
+                name="totp-code"
+                type="text"
+                inputMode="numeric"
+                value={totpCode}
+                onChange={(event) => setTotpCode(event.target.value)}
+                required
+                autoComplete="one-time-code"
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+          ) : (
+            <>
+              <div>
+                <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-gray-700">
+                  Email address
+                </label>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  required
+                  autoComplete="email"
+                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="password"
+                  className="mb-1.5 block text-sm font-medium text-gray-700"
+                >
+                  Password
+                </label>
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                  autoComplete="current-password"
+                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+            </>
+          )}
           {submitError && (
             <div className="rounded-lg border border-red-200 bg-red-50 p-4">
               <p className="text-sm font-medium text-red-800">{submitError}</p>
@@ -116,7 +153,7 @@ function LoginContent() {
             disabled={isSubmitting}
             className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:opacity-60"
           >
-            {isSubmitting ? "Signing in..." : "Sign in"}
+            {isSubmitting ? "Signing in..." : totpSession ? "Verify" : "Sign in"}
           </button>
         </form>
       </div>
