@@ -59,6 +59,7 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
         return;
       }
 
+      onError?.("");
       setProfilePictureFile(file);
 
       const reader = new FileReader();
@@ -338,35 +339,6 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
     return true;
   }, [form, platforms, onError]);
 
-  // Calculate progress
-  const calculateProgress = useCallback((): number => {
-    let progress = 0;
-
-    // Step 1: Creator Type (10%)
-    if (form.creator_type) progress += 10;
-
-    // Step 2: Basic Info (40% total)
-    if (form.name.trim()) progress += 8;
-    if (form.location.trim()) progress += 8;
-    if (form.short_description.trim() && form.short_description.length >= 10) progress += 8;
-    if (form.phone.trim()) progress += 8;
-    if (form.profile_image) progress += 8;
-
-    // Step 3: Platforms (50% total)
-    if (platforms.length > 0) {
-      progress += 20; // Base points for having a platform
-
-      // check first platform for details (30% max)
-      const firstPlatform = platforms[0];
-      if (firstPlatform.name) progress += 5;
-      if (firstPlatform.handle) progress += 5;
-      if (firstPlatform.followers !== "") progress += 10;
-      if (firstPlatform.engagement_rate !== "") progress += 10;
-    }
-
-    return Math.min(100, progress);
-  }, [form, platforms]);
-
   // Can proceed to next step - Step 1: Creator Type
   const canProceedCreatorType = useCallback((): boolean => {
     return !!form.creator_type && CREATOR_TYPE_OPTIONS.includes(form.creator_type);
@@ -416,7 +388,6 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
 
     // Validation & progress
     validateForm,
-    calculateProgress,
     canProceedCreatorType,
     canProceedStep1,
 

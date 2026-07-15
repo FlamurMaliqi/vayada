@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { splitSharedAccountName } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants/routes";
 import { STORAGE_KEYS } from "@/lib/constants";
@@ -36,7 +37,7 @@ export default function ProfileCompletePage() {
   const [profileCompleted, setProfileCompleted] = useState(false);
   const [currentStep, setCurrentStep] = useState<number>(1);
 
-  const creatorSteps = ["Creator category", "Profile details", "Audience & platforms"];
+  const creatorSteps = ["Creator category", "About your work", "Audience & platforms"];
   const hotelSteps = ["Basic Information", "Collaboration Offers"];
 
   // Initialize hooks with error handler
@@ -63,6 +64,32 @@ export default function ProfileCompletePage() {
 
       if (storedUserType === "creator") {
         creatorForm.setForm((prev) => ({ ...prev, name: userName }));
+        const hydrationController = new AbortController();
+        const hydrationTimeout = window.setTimeout(() => hydrationController.abort(), 5_000);
+        let cancelled = false;
+        setLoading(true);
+        void Promise.allSettled([
+          hydrateCreatorProfile(userName, hydrationController.signal),
+          loadProfileStatus("creator", true, false),
+        ])
+          .then(([hydrationResult]) => {
+            if (cancelled || hydrationResult.status === "fulfilled") return;
+            setProfileStatusLoadFailed(true);
+            setError(
+              hydrationController.signal.aborted
+                ? "Loading your creator profile took too long. Please refresh and try again."
+                : "Failed to load your creator profile. Please refresh and try again.",
+            );
+          })
+          .finally(() => {
+            window.clearTimeout(hydrationTimeout);
+            if (!cancelled) setLoading(false);
+          });
+        return () => {
+          cancelled = true;
+          window.clearTimeout(hydrationTimeout);
+          hydrationController.abort();
+        };
       }
 
       if (storedUserType) {
@@ -73,11 +100,26 @@ export default function ProfileCompletePage() {
     }
   }, [router]);
 
+  const hydrateCreatorProfile = async (fallbackName: string, signal: AbortSignal) => {
+    const profile = await creatorService.getMyProfile({ signal });
+    creatorForm.setForm((prev) => ({
+      ...prev,
+      name: profile.name.trim() || fallbackName || prev.name,
+      location: profile.location.trim() || prev.location,
+      short_description: profile.shortDescription?.trim() || prev.short_description,
+      portfolio_link: profile.portfolioLink?.trim() || prev.portfolio_link,
+      phone: profile.phone?.trim() || prev.phone,
+      profile_image: profile.profilePicture?.trim() || prev.profile_image,
+      creator_type: profile.creatorType,
+    }));
+  };
+
   const loadProfileStatus = async (
     type: "creator" | "hotel",
     skipRedirect = false,
+    manageLoading = true,
   ): Promise<CreatorProfileStatus | HotelProfileStatus | null> => {
-    setLoading(true);
+    if (manageLoading) setLoading(true);
     setProfileStatusLoadFailed(false);
     try {
       const status = await checkProfileStatus(type);
@@ -96,7 +138,7 @@ export default function ProfileCompletePage() {
       );
       return null;
     } finally {
-      setLoading(false);
+      if (manageLoading) setLoading(false);
     }
   };
 
@@ -513,26 +555,39 @@ export default function ProfileCompletePage() {
 
   const steps = userType === "creator" ? creatorSteps : hotelSteps;
   const totalSteps = steps.length;
-  const completionPercentage = effectiveProfileStatus.profile_complete
-    ? 100
-    : userType === "creator"
-      ? creatorForm.calculateProgress()
-      : hotelForm.calculateProgress();
   const isCreatorCategoryStep = userType === "creator" && currentStep === 1;
+  const creatorFirstName = splitSharedAccountName(creatorForm.form.name).firstName;
+  const creatorCategoryTitle = creatorFirstName
+    ? `Hi, ${creatorFirstName}! What kind of creator are you?`
+    : "Which creator type are you?";
+  const creatorProfileTitle =
+    currentStep === 2 ? "Tell hotels about your work" : "Show hotels your reach";
+  const creatorProfileDescription =
+    currentStep === 2
+      ? "Your account details are already saved. Add what hotels need to understand your content."
+      : "Add the audience and platform details hotels use to assess a collaboration.";
 
   return (
     <OnboardingShell
       currentStep={2}
-      title={isCreatorCategoryStep ? "Which creator type are you?" : profileShellTitle(userType)}
+      title={
+        isCreatorCategoryStep
+          ? creatorCategoryTitle
+          : userType === "creator"
+            ? creatorProfileTitle
+            : profileShellTitle(userType)
+      }
       description={
         isCreatorCategoryStep
           ? "Choose the option that best describes the content you create."
-          : profileShellDescription(userType)
+          : userType === "creator"
+            ? creatorProfileDescription
+            : profileShellDescription(userType)
       }
       compact={!isCreatorCategoryStep}
       showProgress={false}
     >
-      <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-3xl" : "space-y-2"}>
+      <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-4xl" : "space-y-2"}>
         {!isCreatorCategoryStep && <StepIndicators steps={steps} currentStep={currentStep} />}
 
         <div
@@ -542,8 +597,8 @@ export default function ProfileCompletePage() {
               : "overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]"
           }
         >
-          {!isCreatorCategoryStep && (
-            <ProfileCompletionProgress percentage={completionPercentage} />
+          {!isCreatorCategoryStep && userType === "hotel" && (
+            <ProfileCompletionProgress percentage={hotelForm.calculateProgress()} />
           )}
 
           {/* Forms */}

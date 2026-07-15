@@ -133,9 +133,9 @@ export const creatorService = {
    * Get current creator's profile
    * GET /api/marketplace/creators/me
    */
-  getMyProfile: async (): Promise<Creator> => {
+  getMyProfile: async (options?: RequestInit): Promise<Creator> => {
     return toLegacyCreator(
-      await targetApiClient.get<TargetCreatorProfile>("/api/marketplace/creators/me"),
+      await targetApiClient.get<TargetCreatorProfile>("/api/marketplace/creators/me", options),
     );
   },
 

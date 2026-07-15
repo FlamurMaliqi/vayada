@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRightIcon, CameraIcon, UserCircleIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { ArrowRightIcon, CameraIcon, UserCircleIcon } from "@heroicons/react/24/outline";
 
 import {
   normalizeSharedAccountName,
@@ -17,6 +17,7 @@ const ACCOUNT_INPUT_CLASS =
   "mt-2 h-12 w-full rounded-xl border border-gray-200 bg-white px-3 text-base text-gray-950 outline-none transition placeholder:text-gray-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:text-sm";
 
 export type SharedAccountDetailsStepProps = {
+  accountType?: "hotel" | "creator";
   email: string;
   initialName?: string | null;
   initialPhone?: string | null;
@@ -25,6 +26,7 @@ export type SharedAccountDetailsStepProps = {
 };
 
 export default function SharedAccountDetailsStep({
+  accountType,
   email,
   initialName,
   initialPhone,
@@ -32,6 +34,20 @@ export default function SharedAccountDetailsStep({
   onSubmit,
 }: SharedAccountDetailsStepProps) {
   const initial = splitSharedAccountName(initialName);
+  const isGuidedOnboarding = accountType === "hotel" || accountType === "creator";
+  const description =
+    accountType === "hotel"
+      ? "Start with your details. Next, we’ll set up your first hotel."
+      : accountType === "creator"
+        ? "Start with your details. Next, we’ll build the creator profile hotels will see."
+        : "Add your details once. We’ll use them across Marketplace, Booking Admin, and PMS.";
+  const submitLabel =
+    accountType === "hotel"
+      ? "Continue to hotel setup"
+      : accountType === "creator"
+        ? "Continue to creator profile"
+        : "Save and continue";
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const profileImageInputRef = useRef<HTMLInputElement>(null);
   const uploadedProfileImageRef = useRef<{
     file: File;
@@ -46,6 +62,10 @@ export default function SharedAccountDetailsStep({
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [profileImagePreviewUrl, setProfileImagePreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isGuidedOnboarding) headingRef.current?.focus();
+  }, [isGuidedOnboarding]);
 
   useEffect(() => {
     uploadedProfileImageRef.current = null;
@@ -98,15 +118,19 @@ export default function SharedAccountDetailsStep({
     <main className="flex min-h-screen items-center bg-white px-4 py-8 text-gray-900 sm:px-6 lg:px-8">
       <div className="mx-auto w-full max-w-xl">
         <header className="mx-auto mb-6 max-w-xl text-center">
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
-            Personal account
-          </p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-normal text-gray-950">
-            Tell us about you
+          {!isGuidedOnboarding && (
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
+              Personal account
+            </p>
+          )}
+          <h1
+            ref={headingRef}
+            tabIndex={isGuidedOnboarding ? -1 : undefined}
+            className="mt-2 text-3xl font-semibold tracking-normal text-gray-950 outline-none first:mt-0"
+          >
+            {isGuidedOnboarding ? "Let’s create your profile" : "Tell us about you"}
           </h1>
-          <p className="mt-2 text-sm text-gray-500">
-            Add your details once. We’ll use them across Marketplace, Booking Admin, and PMS.
-          </p>
+          <p className="mt-2 text-sm text-gray-500">{description}</p>
         </header>
 
         <form
@@ -123,7 +147,10 @@ export default function SharedAccountDetailsStep({
               onClick={() => profileImageInputRef.current?.click()}
               disabled={submitting}
               aria-label={profileImage ? "Change profile photo" : "Upload profile photo"}
-              className="group relative mt-3 flex h-24 w-24 items-center justify-center rounded-full bg-primary-50 text-primary-600 outline-none ring-offset-4 transition hover:bg-primary-100 focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-not-allowed disabled:opacity-60 sm:h-28 sm:w-28"
+              title={profileImage ? "Change profile photo" : "Upload profile photo"}
+              aria-invalid={profileImageError ? true : undefined}
+              aria-describedby={profileImageError ? "account-profile-image-error" : undefined}
+              className="group relative mt-3 flex h-36 w-36 items-center justify-center rounded-full bg-primary-50 text-primary-600 outline-none ring-1 ring-gray-100 transition hover:bg-primary-100 focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:h-40 sm:w-40"
             >
               {profileImagePreviewUrl ? (
                 <img
@@ -132,17 +159,24 @@ export default function SharedAccountDetailsStep({
                   className="h-full w-full rounded-full object-cover"
                 />
               ) : (
-                <UserCircleIcon className="h-16 w-16" strokeWidth={1.25} />
+                <UserCircleIcon
+                  className="h-20 w-20 sm:h-24 sm:w-24"
+                  strokeWidth={1.25}
+                  aria-hidden="true"
+                />
               )}
-              <span className="absolute bottom-1 right-1 flex h-8 w-8 items-center justify-center rounded-full border-4 border-white bg-primary-600 text-white shadow-sm transition group-hover:bg-primary-700">
-                <CameraIcon className="h-4 w-4" aria-hidden="true" />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute bottom-1 right-1 flex h-11 w-11 items-center justify-center rounded-full border-4 border-white bg-primary-600 text-white shadow-sm transition-colors group-hover:bg-primary-700"
+              >
+                <CameraIcon className="h-5 w-5" aria-hidden="true" />
               </span>
             </button>
             <input
               ref={profileImageInputRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              className="sr-only"
+              className="hidden"
               aria-label="Profile photo file"
               onChange={(event) => {
                 const file = event.target.files?.[0];
@@ -157,34 +191,27 @@ export default function SharedAccountDetailsStep({
                 setProfileImageError("");
               }}
             />
-            <div className="mt-3 flex items-center justify-center gap-3">
+            {profileImage && (
               <button
                 type="button"
-                onClick={() => profileImageInputRef.current?.click()}
+                onClick={() => {
+                  setProfileImage(null);
+                  setProfileImageError("");
+                  if (profileImageInputRef.current) profileImageInputRef.current.value = "";
+                }}
                 disabled={submitting}
-                className="text-sm font-semibold text-primary-700 hover:text-primary-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-2 text-sm font-medium text-gray-500 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {profileImage ? "Change photo" : "Upload photo"}
+                Remove photo
               </button>
-              {profileImage && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProfileImage(null);
-                    setProfileImageError("");
-                    if (profileImageInputRef.current) profileImageInputRef.current.value = "";
-                  }}
-                  disabled={submitting}
-                  className="inline-flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <XMarkIcon className="h-4 w-4" aria-hidden="true" />
-                  Remove
-                </button>
-              )}
-            </div>
-            <p className="mt-1 text-xs text-gray-500">JPG, PNG, or WebP. Max 5 MB.</p>
+            )}
+            <p className="mt-2 text-xs text-gray-500">JPG, PNG, or WebP. Max 5 MB.</p>
             {profileImageError && (
-              <p className="mt-2 text-sm text-red-600" role="alert">
+              <p
+                id="account-profile-image-error"
+                className="mt-2 text-sm text-red-600"
+                role="alert"
+              >
                 {profileImageError}
               </p>
             )}
@@ -265,7 +292,7 @@ export default function SharedAccountDetailsStep({
               disabled={submitting}
               className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitting ? "Saving..." : "Save and continue"}
+              {submitting ? "Saving..." : submitLabel}
               {!submitting && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
             </button>
           </div>

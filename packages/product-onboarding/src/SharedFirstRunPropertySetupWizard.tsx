@@ -11,13 +11,23 @@ import {
 } from "react";
 import {
   ArrowRightIcon,
+  BuildingOffice2Icon,
+  BuildingOfficeIcon,
+  BuildingStorefrontIcon,
+  CakeIcon,
   CheckIcon,
+  EllipsisHorizontalIcon,
   ExclamationCircleIcon,
   GlobeAltIcon,
+  HomeModernIcon,
+  KeyIcon,
+  MapPinIcon,
   PlusIcon,
   RocketLaunchIcon,
   SparklesIcon,
   Squares2X2Icon,
+  SunIcon,
+  UsersIcon,
 } from "@heroicons/react/24/outline";
 import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from "@vayada/locale-constants";
 
@@ -145,18 +155,18 @@ const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
 ];
 const PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
 
-const PROPERTY_TYPE_LABELS: Record<SharedPropertyType, string> = {
-  hotel: "Hotel",
-  resort: "Resort",
-  hostel: "Hostel",
-  apartment: "Apartment",
-  aparthotel: "Aparthotel",
-  guesthouse: "Guesthouse",
-  bed_and_breakfast: "Bed and breakfast",
-  villa: "Villa",
-  vacation_rental: "Vacation rental",
-  motel: "Motel",
-  other: "Other",
+const PROPERTY_TYPE_DETAILS: Record<SharedPropertyType, { label: string; icon: IconComponent }> = {
+  hotel: { label: "Hotel", icon: HotelIcon },
+  resort: { label: "Resort", icon: SunIcon },
+  hostel: { label: "Hostel", icon: UsersIcon },
+  apartment: { label: "Apartment", icon: BuildingOffice2Icon },
+  aparthotel: { label: "Aparthotel", icon: BuildingOfficeIcon },
+  guesthouse: { label: "Guesthouse", icon: BuildingStorefrontIcon },
+  bed_and_breakfast: { label: "Bed and breakfast", icon: CakeIcon },
+  villa: { label: "Villa", icon: HomeModernIcon },
+  vacation_rental: { label: "Vacation rental", icon: KeyIcon },
+  motel: { label: "Motel", icon: MapPinIcon },
+  other: { label: "Other", icon: EllipsisHorizontalIcon },
 };
 
 const TIMEZONE_DATALIST_OPTIONS = TIMEZONE_OPTIONS.map((timezone) =>
@@ -509,6 +519,7 @@ function WizardShell({
       : view.screen === "property_profile"
         ? null
         : "We’ll ask for the basics once and keep them consistent across PMS, Booking Engine, and Marketplace.";
+  const isProfileScreen = view.screen === "property_profile";
 
   if (embedded) {
     return (
@@ -541,13 +552,19 @@ function WizardShell({
   }
 
   return (
-    <main className="flex min-h-screen items-center bg-white px-4 py-6 text-gray-900 sm:px-6 lg:px-8">
-      <div className="mx-auto w-full max-w-5xl">
-        <header className="mx-auto mb-5 max-w-xl text-center">
+    <main
+      className={`min-h-screen px-4 text-gray-900 sm:px-6 lg:px-8 ${
+        isProfileScreen ? "bg-gray-50 py-5 lg:py-6" : "flex items-center bg-white py-6"
+      }`}
+    >
+      <div className={`mx-auto w-full ${isProfileScreen ? "max-w-7xl" : "max-w-5xl"}`}>
+        <header
+          className={`mx-auto text-center ${isProfileScreen ? "mb-4 max-w-2xl" : "mb-5 max-w-xl"}`}
+        >
           <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
             {status?.hotelGroup.displayName ?? "Hotel setup"}
           </p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-normal text-gray-950">{title}</h1>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-gray-950">{title}</h1>
           {subtitle && <p className="mt-2 text-sm text-gray-500">{subtitle}</p>}
         </header>
 
@@ -654,8 +671,7 @@ function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => vo
   );
 }
 
-const ONBOARDING_ILLUSTRATION_CLASS =
-  "mx-auto hidden h-80 w-full max-w-[24rem] text-gray-900 xl:block";
+const ONBOARDING_ILLUSTRATION_CLASS = "mx-auto h-auto w-full max-w-[20rem] text-gray-900";
 
 function HotelFacadeIllustration() {
   return (
@@ -747,6 +763,36 @@ function ContactIllustration() {
   );
 }
 
+function ProfileIllustrationPanel({
+  children,
+  title,
+  description,
+}: {
+  children: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <aside className="relative hidden min-h-[32rem] overflow-hidden bg-gradient-to-br from-primary-50 via-white to-primary-100 xl:flex xl:items-center xl:justify-center xl:p-8">
+      <span
+        className="absolute -right-24 -top-24 h-72 w-72 rounded-full border-[48px] border-white/60"
+        aria-hidden="true"
+      />
+      <span
+        className="absolute -bottom-36 -left-24 h-80 w-80 rounded-full bg-white/50"
+        aria-hidden="true"
+      />
+      <div className="relative z-10 w-full max-w-lg text-center">
+        <div className="rounded-[2rem] bg-white/60 px-6 py-6 ring-1 ring-primary-100/80 backdrop-blur-sm">
+          {children}
+        </div>
+        <h2 className="mt-5 text-xl font-semibold text-gray-950">{title}</h2>
+        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-gray-600">{description}</p>
+      </div>
+    </aside>
+  );
+}
+
 function ProfileForm({
   draft,
   mode,
@@ -815,7 +861,7 @@ function ProfileForm({
   const propertyTypeOptions: Array<{ value: string; label: string }> = SHARED_PROPERTY_TYPES.map(
     (value) => ({
       value,
-      label: PROPERTY_TYPE_LABELS[value],
+      label: PROPERTY_TYPE_DETAILS[value].label,
     }),
   );
   if (
@@ -827,6 +873,42 @@ function ProfileForm({
       label: `${draft.propertyType} (existing)`,
     });
   }
+  const actions = (
+    <div className="mt-auto flex w-full flex-col-reverse gap-3 pt-5 sm:flex-row sm:justify-end">
+      {(step > 0 || onCancel) && (
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => (step > 0 ? changeStep(step - 1) : onCancel?.())}
+          className="w-full rounded-full border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+        >
+          {step > 0 ? "Back" : "Back to properties"}
+        </button>
+      )}
+      <button
+        type="submit"
+        disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
+        className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+      >
+        {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
+          <span
+            className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+            aria-hidden="true"
+          />
+        )}
+        <span>
+          {step === PROFILE_STEP_FIELDS.length - 1
+            ? saving
+              ? "Saving..."
+              : "Save and continue"
+            : "Continue"}
+        </span>
+        {!(step === PROFILE_STEP_FIELDS.length - 1 && saving) && (
+          <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+        )}
+      </button>
+    </div>
+  );
 
   return (
     <form
@@ -837,13 +919,16 @@ function ProfileForm({
         if (step === PROFILE_STEP_FIELDS.length - 1) onSave();
         else continueToNextStep();
       }}
-      className="mx-auto max-w-[36rem] space-y-3 xl:max-w-[60rem]"
+      className="mx-auto max-w-7xl space-y-3"
     >
-      <div className="flex flex-col items-center gap-3">
-        <p className="text-sm font-semibold text-gray-500" aria-live="polite">
+      <div className="flex flex-col items-center gap-2">
+        <p className="text-sm font-semibold text-gray-600" aria-live="polite">
           Step {step + 1} of {PROFILE_STEP_FIELDS.length} · {PROFILE_STEP_TITLES[step]}
         </p>
-        <ol className="flex items-center justify-center gap-2" aria-label="Hotel setup progress">
+        <ol
+          className="grid w-full max-w-[12rem] grid-cols-3 gap-2"
+          aria-label="Hotel setup progress"
+        >
           {PROFILE_STEP_TITLES.map((title, index) => {
             const isCurrent = index === step;
             const isComplete = index < step;
@@ -853,8 +938,8 @@ function ProfileForm({
                 key={title}
                 aria-current={isCurrent ? "step" : undefined}
                 title={title}
-                className={`h-2 rounded-full transition-all duration-300 ${
-                  isCurrent || isComplete ? "w-10 bg-primary-600" : "w-3 bg-primary-100"
+                className={`h-1.5 rounded-full transition-colors duration-300 ${
+                  isCurrent || isComplete ? "bg-primary-600" : "bg-primary-100"
                 }`}
               >
                 <span className="sr-only">{title}</span>
@@ -866,20 +951,20 @@ function ProfileForm({
 
       <section
         inert={saving ? true : undefined}
-        className={`${step === 0 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
+        className={`${step === 0 ? "grid" : "hidden"} overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] xl:grid-cols-2`}
       >
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
+        <div className="flex flex-col p-5 text-left sm:p-6 xl:min-h-[32rem] xl:p-8">
           <div className="mb-4">
             <h3
               ref={step === 0 ? stepHeading : undefined}
               tabIndex={-1}
-              className="text-base font-semibold text-gray-950 outline-none"
+              className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
               {mode === "create"
                 ? "What should we call your hotel?"
                 : "Are these hotel details correct?"}
             </h3>
-            <p className="mt-1 text-sm text-gray-500">
+            <p className="mt-2 text-sm leading-6 text-gray-600">
               We’ll use this name and property type wherever your hotel appears.
             </p>
           </div>
@@ -893,34 +978,38 @@ function ProfileForm({
               error={fieldErrors.displayName?.[0]}
               onChange={(value) => setField("displayName", value)}
             />
-            <SelectField
-              label="Property type"
+            <PropertyTypeField
               value={draft.propertyType}
-              placeholder="Select a property type"
               required={mode === "create"}
               error={fieldErrors.propertyType?.[0]}
               options={propertyTypeOptions}
               onChange={(value) => setField("propertyType", value)}
             />
           </div>
+          {actions}
         </div>
-        <HotelFacadeIllustration />
+        <ProfileIllustrationPanel
+          title="One profile, ready everywhere"
+          description="Add the essentials once and keep your hotel consistent across every Vayada product."
+        >
+          <HotelFacadeIllustration />
+        </ProfileIllustrationPanel>
       </section>
 
       <section
         inert={saving ? true : undefined}
-        className={`${step === 2 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
+        className={`${step === 2 ? "grid" : "hidden"} overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] xl:grid-cols-2`}
       >
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
+        <div className="flex flex-col p-5 text-left sm:p-6 xl:min-h-[32rem] xl:p-8">
           <div className="mb-4">
             <h3
               ref={step === 2 ? stepHeading : undefined}
               tabIndex={-1}
-              className="text-base font-semibold text-gray-950 outline-none"
+              className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
               How can guests reach you?
             </h3>
-            <p className="mt-1 text-sm text-gray-500">
+            <p className="mt-2 text-sm leading-6 text-gray-600">
               We’ll show these details wherever guests may need to get in touch.
             </p>
           </div>
@@ -961,24 +1050,30 @@ function ProfileForm({
               />
             </div>
           </div>
+          {actions}
         </div>
-        <ContactIllustration />
+        <ProfileIllustrationPanel
+          title="Keep guests connected"
+          description="Use the right contact details wherever guests need to reach your team."
+        >
+          <ContactIllustration />
+        </ProfileIllustrationPanel>
       </section>
 
       <section
         inert={saving ? true : undefined}
-        className={`${step === 1 ? "grid" : "hidden"} gap-6 xl:grid-cols-[minmax(0,36rem)_24rem] xl:items-center xl:justify-center xl:gap-0`}
+        className={`${step === 1 ? "grid" : "hidden"} overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] xl:grid-cols-2`}
       >
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6">
+        <div className="flex flex-col p-5 text-left sm:p-6 xl:min-h-[32rem] xl:p-8">
           <div className="mb-4">
             <h3
               ref={step === 1 ? stepHeading : undefined}
               tabIndex={-1}
-              className="text-base font-semibold text-gray-950 outline-none"
+              className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
               Where can guests find you?
             </h3>
-            <p className="mt-1 text-sm text-gray-500">
+            <p className="mt-2 text-sm leading-6 text-gray-600">
               We’ll use this location for bookings and daily hotel operations.
             </p>
           </div>
@@ -1044,47 +1139,19 @@ function ProfileForm({
               </div>
             )}
           </div>
+          {actions}
         </div>
-        <LocationIllustration />
+        <ProfileIllustrationPanel
+          title="Put your hotel on the map"
+          description="Accurate location details keep bookings and daily operations running smoothly."
+        >
+          <LocationIllustration />
+        </ProfileIllustrationPanel>
       </section>
 
       <span className="sr-only" role="status" aria-live="polite">
         {saving ? "Saving hotel details." : ""}
       </span>
-      <div className="flex w-full flex-col-reverse gap-3 pt-1 sm:flex-row sm:justify-end xl:w-[36rem]">
-        {(step > 0 || onCancel) && (
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => (step > 0 ? changeStep(step - 1) : onCancel?.())}
-            className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {step > 0 ? "Back" : "Back to properties"}
-          </button>
-        )}
-        <button
-          type="submit"
-          disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
-            <span
-              className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
-              aria-hidden="true"
-            />
-          )}
-          <span>
-            {step === PROFILE_STEP_FIELDS.length - 1
-              ? saving
-                ? "Saving..."
-                : "Save and continue"
-              : "Continue"}
-          </span>
-          {!(step === PROFILE_STEP_FIELDS.length - 1 && saving) && (
-            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
-          )}
-        </button>
-      </div>
     </form>
   );
 }
@@ -1566,6 +1633,88 @@ function TextField({
         </p>
       )}
     </div>
+  );
+}
+
+function PropertyTypeField({
+  value,
+  options,
+  onChange,
+  error,
+  required = false,
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  error?: string;
+  required?: boolean;
+}) {
+  const generatedId = useId();
+  const groupName = `property-type-${generatedId}`;
+  const errorId = error ? `${groupName}-error` : undefined;
+
+  return (
+    <fieldset aria-describedby={errorId} aria-invalid={Boolean(error)}>
+      <legend className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700">
+        <span>Property type</span>
+        <span
+          aria-hidden="true"
+          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
+        >
+          {required ? "Required" : "Optional"}
+        </span>
+      </legend>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+        {options.map((option) => {
+          const checked = value === option.value;
+          const Icon =
+            PROPERTY_TYPE_DETAILS[option.value as SharedPropertyType]?.icon ??
+            EllipsisHorizontalIcon;
+
+          return (
+            <label key={option.value} className="relative block cursor-pointer">
+              <input
+                type="radio"
+                name={groupName}
+                value={option.value}
+                checked={checked}
+                required={required}
+                aria-invalid={Boolean(error)}
+                aria-describedby={errorId}
+                onChange={(event) => onChange(event.target.value)}
+                className="peer absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+              />
+              <span
+                className={`relative flex min-h-16 items-center gap-2 rounded-xl border p-2.5 transition peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-primary-600 peer-focus-visible:ring-offset-2 ${
+                  checked
+                    ? "border-primary-500 bg-primary-50 shadow-[0_12px_30px_-24px_rgba(30,62,219,0.8)]"
+                    : "border-gray-200 bg-white hover:border-primary-300 hover:bg-primary-50/40"
+                }`}
+              >
+                <span
+                  className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                    checked ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-700"
+                  }`}
+                >
+                  <Icon className="h-4 w-4" aria-hidden="true" />
+                  {checked && (
+                    <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary-700 text-white ring-2 ring-white">
+                      <CheckIcon className="h-3 w-3" aria-hidden="true" />
+                    </span>
+                  )}
+                </span>
+                <span className="text-sm font-medium leading-5 text-gray-900">{option.label}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      {error && (
+        <p id={errorId} className="mt-2 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </fieldset>
   );
 }
 

@@ -52,7 +52,7 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await expect(page.getByRole("heading", { name: "Let’s get to know your hotel" })).toBeVisible();
     await page.getByRole("textbox", { name: /Hotel name/ }).fill("Hotel Alpenrose");
-    await page.getByRole("combobox", { name: /Property type/ }).selectOption("hotel");
+    await page.getByRole("radio", { name: "Hotel", exact: true }).check();
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(
@@ -73,6 +73,9 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
     await page.getByRole("button", { name: "Save and continue" }).click();
 
+    await expect(
+      page.getByRole("heading", { name: "How would you like to use Vayada?", level: 1 }),
+    ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Choose account systems", level: 2 }),
     ).toBeVisible();
