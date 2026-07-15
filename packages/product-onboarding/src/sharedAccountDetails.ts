@@ -23,5 +23,5 @@ export function isSharedAccountDetailsComplete(name?: string | null): boolean {
 }
 
 export function normalizeSharedAccountName(firstName: string, lastName: string): string {
-  return `${firstName.trim()} ${lastName.trim()}`.replace(/\s+/g, " ");
+  return `${firstName.trim()} ${lastName.trim()}`.replace(/\s+/g, " ").trim();
 }

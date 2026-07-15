@@ -23,6 +23,8 @@ describe("shared account details", () => {
 
   it("normalizes the persisted full name", () => {
     expect(normalizeSharedAccountName(" Ada ", " Byron  Lovelace ")).toBe("Ada Byron Lovelace");
+    expect(normalizeSharedAccountName("Ada", "")).toBe("Ada");
+    expect(normalizeSharedAccountName("", "Lovelace")).toBe("Lovelace");
   });
 
   it("accepts supported profile photos within the shared 5 MB limit", () => {
