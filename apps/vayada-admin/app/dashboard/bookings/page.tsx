@@ -44,16 +44,21 @@ function formatDate(iso: string) {
 
 export default function BookingsPage() {
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [bookings, setBookings] = useState<SuperAdminBookingRow[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | BookingStatus>("all");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
     setLoading(true);
+    setError(false);
     bookingsService
       .list({ limit: 500 })
       .then((res) => setBookings(res.bookings))
-      .catch(() => setBookings([]))
+      .catch(() => {
+        setBookings([]);
+        setError(true);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -126,6 +131,13 @@ export default function BookingsPage() {
 
       {loading ? (
         <div className="animate-pulse h-64 bg-gray-100 rounded-xl" />
+      ) : error ? (
+        <div
+          role="alert"
+          className="bg-red-50 border border-red-200 rounded-xl p-12 text-center text-[13px] text-red-700"
+        >
+          Could not load bookings. Please refresh and try again.
+        </div>
       ) : filtered.length === 0 ? (
         <div className="bg-white border border-gray-200 rounded-xl p-12 text-center">
           <p className="text-[13px] text-gray-500">No bookings found.</p>

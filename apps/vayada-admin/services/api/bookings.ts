@@ -1,4 +1,8 @@
-import { apiClient } from "./client";
+import { ApiClient } from "./client";
+
+const bookingsClient = new ApiClient(
+  process.env.NEXT_PUBLIC_PMS_API_URL || "https://pms-api.vayada.com",
+);
 
 export type BookingStatus = "pending" | "accepted" | "rejected" | "withdrawn";
 
@@ -29,8 +33,8 @@ export const bookingsService = {
     if (params?.limit) qs.set("limit", String(params.limit));
     if (params?.offset) qs.set("offset", String(params.offset));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return apiClient.get<{ bookings: SuperAdminBookingRow[] }>(
-      `/api/platform/admin/bookings${suffix}`,
+    return bookingsClient.get<{ bookings: SuperAdminBookingRow[] }>(
+      `/super-admin/bookings${suffix}`,
     );
   },
 };
