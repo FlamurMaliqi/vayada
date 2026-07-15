@@ -159,7 +159,7 @@ export const creatorService = {
   uploadProfilePicture: async (
     file: File,
     creatorProfileId: string,
-  ): Promise<{ url: string; mediaObjectId: string }> => {
+  ): Promise<{ url?: string; mediaObjectId: string }> => {
     const [uploaded] = await uploadPlatformMedia({
       purpose: "marketplace.creator.profile_image",
       resource: {
@@ -170,7 +170,10 @@ export const creatorService = {
       files: [file],
     });
     if (!uploaded) throw new Error("Platform media did not return an uploaded image");
-    return { url: uploaded.url, mediaObjectId: uploaded.mediaId };
+    return {
+      ...(isAbsoluteHttpsUrl(uploaded.url) ? { url: uploaded.url } : {}),
+      mediaObjectId: uploaded.mediaId,
+    };
   },
 
   /**
@@ -210,6 +213,15 @@ export const creatorService = {
     };
   },
 };
+
+function isAbsoluteHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
 
 function toTargetCreatorUpdate(data: Partial<Creator>): TargetUpdateCreatorProfile {
   const input = data as Partial<Creator> & {

@@ -37,6 +37,16 @@ const options: Array<{
   },
 ];
 
+function absoluteHttpsUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function OnboardingPage() {
   const router = useRouter();
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -167,15 +177,28 @@ export default function OnboardingPage() {
         }}
         onSubmit={async (accountDetails) => {
           if (provisionedType === "creator") {
-            // Project first so a failed request cannot mark shared identity details complete and
-            // skip the retry. The public URL is reusable; its media ID remains identity-scoped.
-            await creatorService.updateMyProfile({
-              name: `${accountDetails.firstName} ${accountDetails.lastName}`.trim(),
-              phone: accountDetails.phone?.trim() || null,
-              ...(accountDetails.profilePictureUrl && {
-                profilePicture: accountDetails.profilePictureUrl,
-              }),
-            });
+            const currentProfile = await creatorService.getMyProfile();
+            const accountName = `${accountDetails.firstName} ${accountDetails.lastName}`.trim();
+            const accountPhone = accountDetails.phone?.trim();
+            const profilePictureUrl = absoluteHttpsUrl(accountDetails.profilePictureUrl);
+            const shouldProjectPhoto =
+              !currentProfile.profilePicture?.trim() &&
+              Boolean(accountDetails.profilePictureMediaObjectId);
+            const creatorUpdate = {
+              ...(!currentProfile.name.trim() ? { name: accountName } : {}),
+              ...(!currentProfile.phone?.trim() && accountPhone ? { phone: accountPhone } : {}),
+              ...(shouldProjectPhoto
+                ? {
+                    ...(profilePictureUrl ? { profilePicture: profilePictureUrl } : {}),
+                    profilePictureMediaObjectId: accountDetails.profilePictureMediaObjectId,
+                  }
+                : {}),
+            };
+
+            // Project only missing creator fields before marking shared identity details complete.
+            if (Object.keys(creatorUpdate).length > 0) {
+              await creatorService.updateMyProfile(creatorUpdate);
+            }
           }
           await authService.updateAccountDetails(accountDetails);
           router.push(nextPathForType(provisionedType));

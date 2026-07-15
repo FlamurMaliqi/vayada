@@ -200,10 +200,12 @@ test.describe("marketplace-web smoke", () => {
           displayName?: string;
           phone?: string;
           profilePictureUrl?: string;
+          profilePictureMediaObjectId?: string;
         };
         expect(payload).toEqual({
           displayName: "Mary Watson",
           phone: "+49 89 123456",
+          profilePictureMediaObjectId: "media-profile-e2e",
         });
         creatorProfile = {
           ...creatorProfile,
@@ -241,6 +243,14 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByLabel("Profile photo file")).not.toHaveAttribute("required", "");
     await expect(page.getByRole("button", { name: "Upload profile photo" })).toBeVisible();
 
+    await page.getByLabel("Profile photo file").setInputFiles({
+      name: "mary.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("profile-image"),
+    });
+    await expect(page.getByRole("img", { name: "Selected profile preview" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Change profile photo" })).toBeVisible();
+
     await page.getByLabel("First name").fill("Mary");
     await page.getByLabel("Last name").fill("Watson");
     await page.getByRole("button", { name: "Continue to creator profile" }).click();
@@ -251,6 +261,8 @@ test.describe("marketplace-web smoke", () => {
     ).toBeVisible();
     const lifestyleCard = page.getByRole("button", { name: /^Lifestyle/ });
     await expect(lifestyleCard).toBeVisible();
+    await expect(lifestyleCard).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
     expect((await lifestyleCard.boundingBox())?.width).toBeGreaterThan(280);
     await lifestyleCard.click();
     await page.getByRole("button", { name: "Continue" }).click();
@@ -299,6 +311,94 @@ test.describe("marketplace-web smoke", () => {
     await expect(continueButton).toBeInViewport({ ratio: 1 });
   });
 
+  test("creator onboarding preserves an existing public profile and hydrates its platforms", async ({
+    page,
+  }) => {
+    await primeBrowserState(page);
+    await mockOnboardingAuth(page, "creator", "Mary", "");
+    let creatorPutCount = 0;
+    const existingCreatorProfile = {
+      creatorProfileId: "creator-profile-existing",
+      displayName: "Established Creator",
+      creatorType: "travel",
+      locationText: "Berlin",
+      shortDescription: "Independent travel stories for thoughtful explorers.",
+      portfolioUrl: "https://creator.example/portfolio",
+      phone: "+41 44 555 0101",
+      profilePictureUrl: "https://media.example/existing-creator.png",
+      profileComplete: false,
+      profileStatus: "pending",
+      platforms: [
+        {
+          platformId: "platform-existing-instagram",
+          platform: "instagram",
+          handle: "established",
+          profileUrl: null,
+          followerCount: 12345,
+          engagementRate: 4.6,
+          audienceCountries: [{ country: "Germany", percentage: 60 }],
+          audienceAgeGroups: [{ ageRange: "25-34", percentage: 70 }],
+          audienceGenderSplit: { male: 35, female: 60, other: 5 },
+        },
+      ],
+      audienceSize: 12345,
+      rating: { averageRating: 0, totalReviews: 0 },
+      createdAt: "2026-07-14T10:00:00.000Z",
+      updatedAt: "2026-07-15T10:00:00.000Z",
+    };
+    await page.route(/\/api\/marketplace\/creators\/me(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      if (route.request().method() === "PUT") creatorPutCount += 1;
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: existingCreatorProfile,
+      });
+    });
+    await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
+      profileComplete: false,
+      missingFields: [],
+      missingPlatforms: false,
+      completionSteps: [],
+    });
+
+    await page.goto("/onboarding");
+    await page.getByRole("button", { name: "Let’s get you set up" }).click();
+    await page.getByRole("radio", { name: /i’m a creator/i }).click();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await page.getByLabel("First name").fill("Mary");
+    await page.getByLabel("Last name").fill("Watson");
+    await page.getByLabel("Phone number").clear();
+    await page.getByLabel("Profile photo file").setInputFiles({
+      name: "replacement.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("replacement-profile-image"),
+    });
+    await page.getByRole("button", { name: "Continue to creator profile" }).click();
+
+    await expect(page).toHaveURL(/\/profile\/complete$/);
+    await expect(
+      page.getByRole("heading", { name: "Hi, Established! What kind of creator are you?" }),
+    ).toBeVisible();
+    expect(creatorPutCount).toBe(0);
+    const travelCard = page.getByRole("button", { name: /^Travel/ });
+    await expect(travelCard).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(page.getByLabel("Location")).toHaveValue("Berlin");
+    await expect(
+      page.getByRole("img", { name: "Established Creator profile photo" }),
+    ).toHaveAttribute("src", "https://media.example/existing-creator.png");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(page.locator('input[placeholder="@ username"]')).toHaveValue("established");
+    await expect(page.locator('input[placeholder="0"]')).toHaveValue("12345");
+    await expect(page.locator('input[placeholder="0.00"]')).toHaveValue("4.6");
+  });
+
   test("redirects to login and blocks onboarding actions when the session check fails", async ({
     page,
   }) => {
@@ -337,6 +437,7 @@ async function mockOnboardingAuth(
   page: Page,
   accountType: "hotel" | "creator" = "hotel",
   expectedFirstName = "Mary Jane",
+  expectedPhone = accountType === "creator" ? "+49 89 123456" : "",
 ) {
   let onboarded = false;
   let accountName: string | null = null;
@@ -408,17 +509,15 @@ async function mockOnboardingAuth(
     expect(payload).toMatchObject({
       firstName: expectedFirstName,
       lastName: "Watson",
-      phone: accountType === "creator" ? "+49 89 123456" : "",
+      phone: expectedPhone,
     });
-    if (accountType === "hotel") {
-      expect(payload).toMatchObject({
-        profilePictureUrl: "https://media.example/profile.png",
-        profilePictureMediaObjectId: "media-profile-e2e",
-      });
-    } else {
-      expect(payload).not.toHaveProperty("profilePictureUrl");
-      expect(payload).not.toHaveProperty("profilePictureMediaObjectId");
-    }
+    expect(payload).toMatchObject({
+      profilePictureUrl:
+        accountType === "hotel"
+          ? "https://media.example/profile.png"
+          : "staging/profile-e2e/ada.png",
+      profilePictureMediaObjectId: "media-profile-e2e",
+    });
     accountName =
       payload.firstName && payload.lastName ? `${payload.firstName} ${payload.lastName}` : null;
     accountPhone = payload.phone?.trim() || null;
@@ -438,7 +537,12 @@ async function mockOnboardingAuth(
             {
               mediaId: "media-profile-e2e",
               storageKey: "staging/profile-e2e/ada.png",
-              variants: [{ publicCdnUrl: "https://media.example/profile.png" }],
+              variants: [
+                {
+                  publicCdnUrl:
+                    accountType === "hotel" ? "https://media.example/profile.png" : null,
+                },
+              ],
             },
           ],
         },

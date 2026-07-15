@@ -8,6 +8,12 @@ import {
 } from "@/services/auth/sessionStore";
 import { creatorService } from "./creators";
 
+const uploadPlatformMediaMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@vayada/marketplace-shared/api/platformMedia", () => ({
+  uploadPlatformMedia: uploadPlatformMediaMock,
+}));
+
 function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -56,8 +62,46 @@ const targetProfile = {
 describe("creator target self-service client", () => {
   afterEach(() => {
     clearAuthData();
+    uploadPlatformMediaMock.mockReset();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it("omits the storage-key fallback when no public CDN URL exists", async () => {
+    uploadPlatformMediaMock.mockResolvedValue([
+      {
+        mediaId: "media-id",
+        url: "staging/creator-profile/media-id/original.jpg",
+        storageKey: "staging/creator-profile/media-id/original.jpg",
+      },
+    ]);
+
+    const result = await creatorService.uploadProfilePicture(
+      new File(["image"], "profile.jpg", { type: "image/jpeg" }),
+      "creator-profile-id",
+    );
+
+    expect(result).toEqual({ mediaObjectId: "media-id" });
+  });
+
+  it("returns a public HTTPS profile-picture URL", async () => {
+    uploadPlatformMediaMock.mockResolvedValue([
+      {
+        mediaId: "media-id",
+        url: "https://cdn.example.com/creator-profile/media-id.jpg",
+        storageKey: "staging/creator-profile/media-id/original.jpg",
+      },
+    ]);
+
+    const result = await creatorService.uploadProfilePicture(
+      new File(["image"], "profile.jpg", { type: "image/jpeg" }),
+      "creator-profile-id",
+    );
+
+    expect(result).toEqual({
+      mediaObjectId: "media-id",
+      url: "https://cdn.example.com/creator-profile/media-id.jpg",
+    });
   });
 
   it("uses the AuthKit token, not the legacy compatibility token, for target status reads", async () => {

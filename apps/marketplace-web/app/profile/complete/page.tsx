@@ -102,6 +102,12 @@ export default function ProfileCompletePage() {
 
   const hydrateCreatorProfile = async (fallbackName: string, signal: AbortSignal) => {
     const profile = await creatorService.getMyProfile({ signal });
+    const hasStartedCreatorProfile = Boolean(
+      profile.location.trim() ||
+      profile.shortDescription?.trim() ||
+      profile.portfolioLink?.trim() ||
+      profile.platforms.length,
+    );
     creatorForm.setForm((prev) => ({
       ...prev,
       name: profile.name.trim() || fallbackName || prev.name,
@@ -110,8 +116,19 @@ export default function ProfileCompletePage() {
       portfolio_link: profile.portfolioLink?.trim() || prev.portfolio_link,
       phone: profile.phone?.trim() || prev.phone,
       profile_image: profile.profilePicture?.trim() || prev.profile_image,
-      creator_type: profile.creatorType,
+      creator_type: hasStartedCreatorProfile ? profile.creatorType : prev.creator_type,
     }));
+    creatorForm.setPlatforms(
+      profile.platforms.map((platform) => ({
+        name: platform.name,
+        handle: platform.handle,
+        followers: platform.followers,
+        engagement_rate: platform.engagementRate,
+        top_countries: platform.topCountries,
+        top_age_groups: platform.topAgeGroups,
+        gender_split: platform.genderSplit,
+      })),
+    );
   };
 
   const loadProfileStatus = async (
@@ -194,10 +211,7 @@ export default function ProfileCompletePage() {
             })),
           }),
           ...(validAgeGroups.length && { topAgeGroups: validAgeGroups }),
-          ...(p.gender_split &&
-            (p.gender_split.male > 0 || p.gender_split.female > 0) && {
-              genderSplit: { male: p.gender_split.male, female: p.gender_split.female },
-            }),
+          ...(p.gender_split && { genderSplit: p.gender_split }),
         };
       });
 
