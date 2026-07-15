@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRightIcon, CameraIcon, UserCircleIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
 import {
@@ -33,6 +33,10 @@ export default function SharedAccountDetailsStep({
 }: SharedAccountDetailsStepProps) {
   const initial = splitSharedAccountName(initialName);
   const profileImageInputRef = useRef<HTMLInputElement>(null);
+  const uploadedProfileImageRef = useRef<{
+    file: File;
+    upload: SharedAccountProfileImageUpload;
+  } | null>(null);
   const [firstName, setFirstName] = useState(initial.firstName);
   const [lastName, setLastName] = useState(initial.lastName);
   const [phone, setPhone] = useState(initialPhone ?? "");
@@ -41,17 +45,26 @@ export default function SharedAccountDetailsStep({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const profileImagePreviewUrl = useMemo(
-    () => (profileImage ? URL.createObjectURL(profileImage) : null),
-    [profileImage],
-  );
+  const [profileImagePreviewUrl, setProfileImagePreviewUrl] = useState<string | null>(null);
 
-  useEffect(
-    () => () => {
-      if (profileImagePreviewUrl) URL.revokeObjectURL(profileImagePreviewUrl);
-    },
-    [profileImagePreviewUrl],
-  );
+  useEffect(() => {
+    uploadedProfileImageRef.current = null;
+    if (!profileImage) {
+      setProfileImagePreviewUrl(null);
+      return;
+    }
+    const previewUrl = URL.createObjectURL(profileImage);
+    setProfileImagePreviewUrl(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [profileImage]);
+
+  async function uploadProfileImage(file: File) {
+    const cached = uploadedProfileImageRef.current;
+    if (cached?.file === file) return cached.upload;
+    const upload = await onUploadProfileImage(file);
+    uploadedProfileImageRef.current = { file, upload };
+    return upload;
+  }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -64,7 +77,7 @@ export default function SharedAccountDetailsStep({
     try {
       const normalizedPhone = phone.trim();
       const uploadedProfileImage = profileImage
-        ? await onUploadProfileImage(profileImage)
+        ? await uploadProfileImage(profileImage)
         : undefined;
       await onSubmit({
         firstName: firstName.trim().replace(/\s+/g, " "),
@@ -218,7 +231,6 @@ export default function SharedAccountDetailsStep({
                 if (!file) return;
                 const error = sharedAccountProfileImageError(file);
                 if (error) {
-                  setProfileImage(null);
                   setProfileImageError(error);
                   event.target.value = "";
                   return;
