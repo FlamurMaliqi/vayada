@@ -34,6 +34,9 @@ describe("shared account details", () => {
     expect(
       sharedAccountProfileImageError(new File(["profile"], "profile.gif", { type: "image/gif" })),
     ).toBe("Choose a JPG, PNG, or WebP image.");
+    expect(sharedAccountProfileImageError(new File([], "empty.png", { type: "image/png" }))).toBe(
+      "Choose an image that isn’t empty.",
+    );
   });
 
   it("uploads an account photo against the signed-in user's shared profile", async () => {
@@ -84,5 +87,37 @@ describe("shared account details", () => {
         },
       },
     });
+  });
+
+  it("does not persist a profile photo until a public variant exists", async () => {
+    const responses = [
+      {
+        uploadSession: { sessionId: "upload-session-1" },
+        uploadTargets: [
+          {
+            uploadTargetId: "upload-target-1",
+            method: "PUT",
+            uploadUrl: "https://uploads.vayada.localhost/upload-session-1",
+            headers: {},
+          },
+        ],
+      },
+      {
+        mediaObjects: [
+          {
+            mediaId: "media-profile-1",
+            storageKey: "staging/upload-session-1/profile.webp",
+            variants: [{ publicCdnUrl: null }],
+          },
+        ],
+      },
+    ];
+    const uploader = createSharedAccountProfileImageUploader({
+      post: async <T>() => responses.shift() as T,
+    });
+
+    await expect(
+      uploader("user-owner", new File(["profile"], "profile.webp", { type: "image/webp" })),
+    ).rejects.toThrow("The profile image is still processing. Please try again later.");
   });
 });

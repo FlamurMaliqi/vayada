@@ -353,8 +353,8 @@ export const authService = {
   },
 
   updateAccountDetails: async (data: {
-    firstName: string;
-    lastName: string;
+    firstName?: string;
+    lastName?: string;
     phone?: string;
     profilePictureUrl?: string;
     profilePictureMediaObjectId?: string;

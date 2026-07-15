@@ -734,6 +734,7 @@ describe("pg marketplace discovery repository", () => {
     const repository = createPgMarketplaceDiscoveryReadRepository({
       connectionString: "postgresql://marketplace-db",
       pool,
+      profilePhotoRequired: true,
     });
 
     const result = await repository.listPublicOffers({ limit: 1, offset: 2 });
@@ -839,6 +840,9 @@ describe("pg marketplace discovery repository", () => {
     });
     const sql = pool.sql.join("\n");
     expect(sql).toContain("creator.profile_complete = TRUE");
+    expect(sql).toContain("profilePictureMediaObjectId");
+    expect(sql).toContain("NOT $3::boolean");
+    expect(sql).toContain("NOT $1::boolean");
     expect(sql).toContain("creator.profile_status = 'active'");
     expect(sql).toContain('creator.source_creator_id AS "creatorId"');
     expect(sql).toContain("creator.source_creator_id IS NOT NULL");

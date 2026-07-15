@@ -10,7 +10,7 @@ import {
   isSharedAccountDetailsComplete,
 } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
-import { ROUTES } from "@/lib/constants";
+import { CREATOR_PROFILE_PHOTO_REQUIRED, ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 import { creatorService } from "@/services/api/creators";
 import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
@@ -36,16 +36,6 @@ const options: Array<{
     image: "/creator-hero.jpg",
   },
 ];
-
-function absoluteHttpsUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" ? url.toString() : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -168,6 +158,7 @@ export default function OnboardingPage() {
     return (
       <SharedAccountDetailsStep
         accountType={provisionedType}
+        requireProfileImage={CREATOR_PROFILE_PHOTO_REQUIRED}
         email={user?.email ?? ""}
         initialName={user?.name}
         initialPhone={user?.phone}
@@ -180,16 +171,15 @@ export default function OnboardingPage() {
             const currentProfile = await creatorService.getMyProfile();
             const accountName = `${accountDetails.firstName} ${accountDetails.lastName}`.trim();
             const accountPhone = accountDetails.phone?.trim();
-            const profilePictureUrl = absoluteHttpsUrl(accountDetails.profilePictureUrl);
             const shouldProjectPhoto =
               !currentProfile.profilePicture?.trim() &&
+              !currentProfile.profilePictureMediaObjectId &&
               Boolean(accountDetails.profilePictureMediaObjectId);
             const creatorUpdate = {
               ...(!currentProfile.name.trim() ? { name: accountName } : {}),
               ...(!currentProfile.phone?.trim() && accountPhone ? { phone: accountPhone } : {}),
               ...(shouldProjectPhoto
                 ? {
-                    ...(profilePictureUrl ? { profilePicture: profilePictureUrl } : {}),
                     profilePictureMediaObjectId: accountDetails.profilePictureMediaObjectId,
                   }
                 : {}),

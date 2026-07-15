@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback } from "react";
 import { countries } from "countries-list";
+import { sharedAccountProfileImageError } from "@vayada/product-onboarding";
 import type { CreatorFormState, PlatformFormData } from "@/lib/types";
 import { CREATOR_TYPE_OPTIONS } from "@/lib/constants/options";
 
@@ -12,10 +13,11 @@ const COUNTRIES = Object.values(countries)
 interface UseCreatorProfileFormOptions {
   initialName?: string;
   onError?: (message: string) => void;
+  profileImageRequired?: boolean;
 }
 
 export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}) {
-  const { initialName = "", onError } = options;
+  const { initialName = "", onError, profileImageRequired = false } = options;
 
   // Form state
   const [form, setForm] = useState<CreatorFormState>({
@@ -50,12 +52,10 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
       if (!files || files.length === 0) return;
 
       const file = files[0];
-      if (!file.type.startsWith("image/")) {
-        onError?.("Please upload an image file (JPG, PNG, WebP)");
-        return;
-      }
-      if (file.size > 20 * 1024 * 1024) {
-        onError?.("Image must be less than 20MB");
+      const validationError = sharedAccountProfileImageError(file);
+      if (validationError) {
+        onError?.(validationError);
+        e.target.value = "";
         return;
       }
 
@@ -292,7 +292,7 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
       onError?.("Short description must be at most 500 characters");
       return false;
     }
-    if (!form.profile_image) {
+    if (profileImageRequired && !form.profile_image) {
       onError?.("Profile picture is required");
       return false;
     }
@@ -337,7 +337,7 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
     }
 
     return true;
-  }, [form, platforms, onError]);
+  }, [form, platforms, onError, profileImageRequired]);
 
   // Can proceed to next step - Step 1: Creator Type
   const canProceedCreatorType = useCallback((): boolean => {
@@ -351,9 +351,9 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
       form.location.trim() &&
       form.short_description.trim() &&
       form.short_description.trim().length >= 10 &&
-      form.profile_image
+      (!profileImageRequired || form.profile_image)
     );
-  }, [form]);
+  }, [form, profileImageRequired]);
 
   return {
     // State

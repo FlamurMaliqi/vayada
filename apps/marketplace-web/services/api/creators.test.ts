@@ -67,7 +67,7 @@ describe("creator target self-service client", () => {
     vi.unstubAllGlobals();
   });
 
-  it("omits the storage-key fallback when no public CDN URL exists", async () => {
+  it("rejects a profile image until a public CDN URL exists", async () => {
     uploadPlatformMediaMock.mockResolvedValue([
       {
         mediaId: "media-id",
@@ -76,12 +76,12 @@ describe("creator target self-service client", () => {
       },
     ]);
 
-    const result = await creatorService.uploadProfilePicture(
-      new File(["image"], "profile.jpg", { type: "image/jpeg" }),
-      "creator-profile-id",
-    );
-
-    expect(result).toEqual({ mediaObjectId: "media-id" });
+    await expect(
+      creatorService.uploadProfilePicture(
+        new File(["image"], "profile.jpg", { type: "image/jpeg" }),
+        "creator-profile-id",
+      ),
+    ).rejects.toThrow("The profile image is still processing. Please try again later.");
   });
 
   it("returns a public HTTPS profile-picture URL", async () => {
@@ -102,6 +102,34 @@ describe("creator target self-service client", () => {
       mediaObjectId: "media-id",
       url: "https://cdn.example.com/creator-profile/media-id.jpg",
     });
+  });
+
+  it("sends only the issued media ID when linking a creator profile picture", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    let body: Record<string, unknown> = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({
+          ...targetProfile,
+          profilePictureMediaObjectId: "media-id",
+        });
+      }),
+    );
+
+    const profile = await creatorService.updateMyProfile({
+      profilePicture: "staging/creator-profile/media-id/original.jpg",
+      profilePictureMediaObjectId: "media-id",
+    });
+
+    expect(body).toEqual({ profilePictureMediaObjectId: "media-id" });
+    expect(profile.profilePictureMediaObjectId).toBe("media-id");
   });
 
   it("uses the AuthKit token, not the legacy compatibility token, for target status reads", async () => {
@@ -192,6 +220,7 @@ describe("creator target self-service client", () => {
       shortDescription: "Travel creator",
       platforms: [
         {
+          id: "platform_instagram",
           name: "Instagram",
           handle: "lina",
           followers: 1200,
@@ -207,6 +236,7 @@ describe("creator target self-service client", () => {
       shortDescription: "Travel creator",
       platforms: [
         {
+          platformId: "platform_instagram",
           platform: "instagram",
           handle: "lina",
           followerCount: 1200,
@@ -227,6 +257,71 @@ describe("creator target self-service client", () => {
       creatorType: "Travel",
       audienceSize: 1200,
     });
+  });
+
+  it("preserves stable IDs and demographics for a multi-platform edit", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    let body: { platforms?: unknown[] } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body)) as { platforms?: unknown[] };
+        return jsonResponse(targetProfile);
+      }),
+    );
+
+    await creatorService.updateMyProfile({
+      platforms: [
+        {
+          id: "platform_instagram",
+          name: "Instagram",
+          handle: "lina",
+          followers: 1500,
+          engagementRate: 4.5,
+          topCountries: [{ country: "Germany", percentage: 70 }],
+          topAgeGroups: [{ ageRange: "25-34", percentage: 60 }],
+          genderSplit: { male: 30, female: 60, other: 10 },
+        },
+        {
+          id: null,
+          name: "YouTube",
+          handle: "lina-travels",
+          followers: 800,
+          engagementRate: 3.2,
+          topCountries: [],
+          topAgeGroups: [],
+          genderSplit: { male: 0, female: 0 },
+        },
+      ],
+    });
+
+    expect(body.platforms).toEqual([
+      {
+        platformId: "platform_instagram",
+        platform: "instagram",
+        handle: "lina",
+        followerCount: 1500,
+        engagementRate: 4.5,
+        audienceCountries: [{ country: "Germany", percentage: 70 }],
+        audienceAgeGroups: [{ ageRange: "25-34", percentage: 60 }],
+        audienceGenderSplit: { male: 30, female: 60, other: 10 },
+      },
+      {
+        platformId: null,
+        platform: "youtube",
+        handle: "lina-travels",
+        followerCount: 800,
+        engagementRate: 3.2,
+        audienceCountries: [],
+        audienceAgeGroups: [],
+        audienceGenderSplit: { male: 0, female: 0 },
+      },
+    ]);
   });
 
   it("preserves the other creator type in target reads and writes", async () => {

@@ -3,7 +3,13 @@
 import { type RefObject, useState } from "react";
 import Image from "next/image";
 import { Input, Textarea } from "@/components/ui";
-import { CameraIcon, CheckCircleIcon, LinkIcon, MapPinIcon } from "@heroicons/react/24/outline";
+import {
+  CameraIcon,
+  CheckCircleIcon,
+  LinkIcon,
+  MapPinIcon,
+  UserCircleIcon,
+} from "@heroicons/react/24/outline";
 import type { CreatorFormState } from "@/lib/types";
 
 interface CreatorBasicInfoStepProps {
@@ -25,6 +31,8 @@ export function CreatorBasicInfoStep({
     !!error && error.toLowerCase().includes("profile picture") && !form.profile_image;
   const profilePictureErrorId = "creator-profile-picture-error";
   const [showFallbackName] = useState(() => !form.name.trim());
+  const canRenderProfilePicture =
+    form.profile_image.startsWith("https://") || form.profile_image.startsWith("data:image/");
 
   return (
     <div className="space-y-5">
@@ -45,14 +53,25 @@ export function CreatorBasicInfoStep({
         {form.profile_image && (
           <div className="flex shrink-0 items-center gap-3 rounded-2xl border border-primary-100 bg-primary-50/60 px-3 py-2.5 text-left sm:min-w-56">
             <div className="relative h-11 w-11 overflow-hidden rounded-full bg-white ring-2 ring-white">
-              <Image
-                src={form.profile_image}
-                alt={form.name ? `${form.name} profile photo` : "Creator profile photo"}
-                fill
-                unoptimized
-                sizes="44px"
-                className="object-cover"
-              />
+              {canRenderProfilePicture ? (
+                <Image
+                  src={form.profile_image}
+                  alt={form.name ? `${form.name} profile photo` : "Creator profile photo"}
+                  fill
+                  unoptimized
+                  sizes="44px"
+                  className="object-cover"
+                />
+              ) : (
+                <span
+                  role="img"
+                  aria-label="Saved creator profile photo"
+                  data-testid="creator-photo-placeholder"
+                  className="flex h-full w-full items-center justify-center text-primary-600"
+                >
+                  <UserCircleIcon className="h-8 w-8" aria-hidden="true" />
+                </span>
+              )}
             </div>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-gray-950">
@@ -152,7 +171,7 @@ export function CreatorBasicInfoStep({
             <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
               <p className="text-sm font-semibold text-gray-950">Add your creator photo</p>
               <p className="mt-1 text-xs leading-5 text-gray-600">
-                We could not find a photo on your account. Add a JPG, PNG, or WebP up to 20 MB.
+                We could not find a photo on your account. Add a JPG, PNG, or WebP up to 5 MB.
               </p>
               <button
                 type="button"

@@ -100,11 +100,15 @@ export function createSharedAccountProfileImageUploader(
     );
     const mediaObject = finalized.mediaObjects[0];
     if (!mediaObject) throw new Error("The profile image upload did not finish.");
+    const publicCdnUrl = mediaObject.variants.find((variant) =>
+      variant.publicCdnUrl?.startsWith("https://"),
+    )?.publicCdnUrl;
+    if (!publicCdnUrl) {
+      throw new Error("The profile image is still processing. Please try again later.");
+    }
 
     return {
-      profilePictureUrl:
-        mediaObject.variants.find((variant) => variant.publicCdnUrl)?.publicCdnUrl ??
-        mediaObject.storageKey,
+      profilePictureUrl: publicCdnUrl,
       profilePictureMediaObjectId: mediaObject.mediaId,
     };
   };

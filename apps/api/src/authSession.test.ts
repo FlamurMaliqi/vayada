@@ -14,6 +14,7 @@ import type {
   AuthSurfacePolicy,
   ProductAuditEvent,
 } from "./routes/authSession.js";
+import type { ApprovedPublicProfileImageRepository } from "./routes/platformMedia.js";
 
 const user: IdentityUser = {
   userId: "user_platform_admin",
@@ -1852,6 +1853,10 @@ describe("AuthKit session routes", () => {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
         },
       },
+      profileImageMediaRepository: approvedProfileImageRepository({
+        actorUserId: "user_hotel_owner",
+        ownerOrganizationId: "org_hotel_group",
+      }),
     });
 
     const response = await app.inject({
@@ -1867,7 +1872,7 @@ describe("AuthKit session routes", () => {
         firstName: "Mary Jane",
         lastName: "Watson",
         phone: "+49 89 987654",
-        profilePictureUrl: "http://localhost:9000/vayada/users/profile.webp",
+        profilePictureUrl: "https://media.example/users/profile.webp",
         profilePictureMediaObjectId: "media_profile_1",
       },
     });
@@ -1887,7 +1892,7 @@ describe("AuthKit session routes", () => {
           userId: "user_hotel_owner",
           name: "Mary Jane Watson",
           phone: "+49 89 987654",
-          profilePictureUrl: "http://localhost:9000/vayada/users/profile.webp",
+          profilePictureUrl: "https://media.example/users/profile.webp",
           profilePictureMediaObjectId: "media_profile_1",
         }),
       }),
@@ -3365,6 +3370,7 @@ function buildAuthSessionApp(
         AuthSurfacePolicy
       >
     >;
+    profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
   } = {},
 ) {
   return buildApp({
@@ -3384,8 +3390,52 @@ function buildAuthSessionApp(
       oauthStateSecret: "test-oauth-state-secret",
       cookieSecure: false,
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
+      profileImageMediaRepository: options.profileImageMediaRepository,
     },
   });
+}
+
+function approvedProfileImageRepository(input: {
+  actorUserId: string;
+  ownerOrganizationId: string;
+}): ApprovedPublicProfileImageRepository {
+  return {
+    persistent: true,
+    publicCdnBaseUrl: "https://media.example/",
+    async findMediaObject(mediaId) {
+      if (mediaId !== "media_profile_1") return null;
+      return {
+        mediaId,
+        purpose: "identity.user.profile_image",
+        visibility: "public",
+        requestedVisibility: "public",
+        approvalStatus: "approved",
+        lifecycleStatus: "active",
+        storageKind: "vayada_managed",
+        bucket: "vayada-media",
+        storageKey: "public/users/profile.webp",
+        ownerOrganizationId: input.ownerOrganizationId,
+        actorUserId: input.actorUserId,
+        resourceProduct: "platform",
+        resourceType: "user_profile",
+        resourceId: input.actorUserId,
+        contentType: "image/webp",
+        sizeBytes: 1024,
+        originalFilename: "profile.webp",
+        variants: [
+          {
+            variantName: "original_safe",
+            visibility: "public",
+            storageKey: "public/users/profile-original.webp",
+            contentType: "image/webp",
+            sizeBytes: 1024,
+            publicCdnUrl: "https://media.example/users/profile.webp",
+          },
+        ],
+        createdAt: "2026-07-15T10:00:00.000Z",
+      };
+    },
+  };
 }
 
 function readJwtPayload(token: string): Record<string, unknown> {

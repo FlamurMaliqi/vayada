@@ -65,6 +65,7 @@ export function createPublicRuntimeRepositories(config: ApiConfig, pools: Public
       ? createPgMarketplaceDiscoveryReadRepository({
           connectionString: requireTargetDatabaseUrl(config),
           pool: pools.marketplaceDiscoveryPool,
+          profilePhotoRequired: config.creatorProfilePhotoRequired,
         })
       : undefined;
 

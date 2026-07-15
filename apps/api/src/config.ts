@@ -85,6 +85,7 @@ export type ApiConfig = {
   marketplaceDiscoverySource: MarketplaceDiscoverySource;
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
+  creatorProfilePhotoRequired: boolean;
   pmsOperationsSource: PmsOperationsSource;
   financeSource: FinanceSource;
   marketplaceDiscoveryAllowedOrigins: string[];
@@ -472,6 +473,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       env,
       "MARKETPLACE_ADMIN_LEGACY_SUPERADMIN_FALLBACK_ENABLED",
     ),
+    creatorProfilePhotoRequired: readBooleanEnv(env, "CREATOR_PROFILE_PHOTO_REQUIRED"),
     pmsOperationsSource,
     financeSource,
     marketplaceDiscoveryAllowedOrigins: readOptionalCsvEnv(

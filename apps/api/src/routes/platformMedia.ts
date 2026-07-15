@@ -134,8 +134,9 @@ export type PlatformMediaObjectRecord = {
   purpose: PlatformMediaPurpose;
   visibility: PlatformMediaVisibility;
   requestedVisibility: PlatformMediaVisibility;
-  approvalStatus: "pending_domain_approval" | "private";
-  lifecycleStatus: "staged";
+  approvalStatus: "pending_domain_approval" | "private" | "approved";
+  lifecycleStatus: "staged" | "active";
+  storageKind: "vayada_managed" | "external_reference";
   bucket: string;
   storageKey: string;
   ownerOrganizationId: string;
@@ -221,6 +222,7 @@ export type PlatformMediaRepository = {
     expiresAt: string;
   }): Promise<PlatformMediaSessionRecord>;
   findUploadSession(sessionId: string): Promise<PlatformMediaSessionRecord | null>;
+  findMediaObject(mediaId: string): Promise<PlatformMediaObjectRecord | null>;
   completeUploadSession(input: {
     session: PlatformMediaSessionRecord;
     files: PlatformMediaFinalizedFileRecord[];
@@ -240,6 +242,81 @@ export type PlatformMediaRepository = {
   recordAudit(event: PlatformMediaAuditEvent): Promise<void>;
   close?(): Promise<void>;
 };
+
+export type ApprovedPublicProfileImageRepository = {
+  persistent?: boolean;
+  publicCdnBaseUrl?: string;
+  findMediaObject(mediaId: string): Promise<PlatformMediaObjectRecord | null>;
+};
+
+export type ApprovedPublicProfileImageTarget = {
+  purpose: "identity.user.profile_image" | "marketplace.creator.profile_image";
+  resourceProduct: PlatformMediaResourceProduct;
+  resourceType: string;
+  resourceId: string;
+};
+
+export async function resolveApprovedPublicProfileImage(input: {
+  repository?: ApprovedPublicProfileImageRepository;
+  mediaId: string;
+  actorUserId: string;
+  ownerOrganizationId: string;
+  allowedTargets: ApprovedPublicProfileImageTarget[];
+}): Promise<{ ok: true; publicCdnUrl: string } | { ok: false; reason: "unavailable" | "invalid" }> {
+  const { repository } = input;
+  if (!repository?.persistent || !repository.publicCdnBaseUrl) {
+    return { ok: false, reason: "unavailable" };
+  }
+
+  const mediaObject = await repository.findMediaObject(input.mediaId);
+  const targetAllowed = input.allowedTargets.some(
+    (target) =>
+      mediaObject?.purpose === target.purpose &&
+      mediaObject.resourceProduct === target.resourceProduct &&
+      mediaObject.resourceType === target.resourceType &&
+      mediaObject.resourceId === target.resourceId,
+  );
+  const canonicalVariant = mediaObject?.variants.find(
+    (variant) => variant.variantName === "original_safe",
+  );
+  const publicCdnUrl = canonicalVariant?.publicCdnUrl ?? null;
+  const isApprovedPublicImage =
+    mediaObject?.actorUserId === input.actorUserId &&
+    mediaObject.ownerOrganizationId === input.ownerOrganizationId &&
+    targetAllowed &&
+    mediaObject.storageKind === "vayada_managed" &&
+    mediaObject.requestedVisibility === "public" &&
+    mediaObject.visibility === "public" &&
+    mediaObject.approvalStatus === "approved" &&
+    mediaObject.lifecycleStatus === "active" &&
+    mediaObject.contentType.startsWith("image/") &&
+    !mediaObject.storageKey.startsWith("staging/") &&
+    canonicalVariant?.visibility === "public" &&
+    canonicalVariant.contentType.startsWith("image/") &&
+    !canonicalVariant.storageKey.startsWith("staging/") &&
+    publicCdnUrl !== null &&
+    isUrlUnderBase(publicCdnUrl, repository.publicCdnBaseUrl);
+
+  return isApprovedPublicImage && publicCdnUrl
+    ? { ok: true, publicCdnUrl }
+    : { ok: false, reason: "invalid" };
+}
+
+function isUrlUnderBase(value: string, base: string): boolean {
+  try {
+    const url = new URL(value);
+    const baseUrl = new URL(base);
+    const basePath = baseUrl.pathname.endsWith("/") ? baseUrl.pathname : `${baseUrl.pathname}/`;
+    return (
+      url.protocol === "https:" &&
+      baseUrl.protocol === "https:" &&
+      url.origin === baseUrl.origin &&
+      (url.pathname === baseUrl.pathname || url.pathname.startsWith(basePath))
+    );
+  } catch {
+    return false;
+  }
+}
 
 export type PlatformMediaUploadSigner = {
   signUploadTarget(input: {
@@ -973,6 +1050,15 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
     async findUploadSession(sessionId) {
       return sessions.get(sessionId) ?? null;
     },
+    async findMediaObject(mediaId) {
+      for (const session of sessions.values()) {
+        const mediaObject = (session.completedMediaObjects ?? []).find(
+          (candidate) => candidate.mediaId === mediaId,
+        );
+        if (mediaObject) return mediaObject;
+      }
+      return null;
+    },
     async completeUploadSession(input) {
       const mediaObjects = input.files.map((finalized, index) => {
         const sessionFile = finalized.sessionFile;
@@ -984,6 +1070,7 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
           approvalStatus:
             input.session.requestedVisibility === "public" ? "pending_domain_approval" : "private",
           lifecycleStatus: "staged",
+          storageKind: "vayada_managed",
           bucket: input.bucketName,
           storageKey: `${input.session.stagingPrefix}/${index + 1}/active/${sessionFile.filename}`,
           ownerOrganizationId: input.session.ownerOrganizationId,

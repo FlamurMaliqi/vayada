@@ -66,6 +66,7 @@ import {
 } from "./routes/marketplaceHotelSelfService.js";
 import {
   registerMarketplaceCreatorSelfServiceRoutes,
+  type MarketplaceCreatorProfileMediaRepository,
   type MarketplaceCreatorSelfServiceRepository,
 } from "./routes/marketplaceCreatorSelfService.js";
 import {
@@ -156,6 +157,8 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceHotelProfileStatusRepository?: MarketplaceHotelProfileStatusRepository;
   marketplaceHotelSelfServiceRepository?: MarketplaceHotelSelfServiceRepository;
   marketplaceCreatorSelfServiceRepository?: MarketplaceCreatorSelfServiceRepository;
+  marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
+  creatorProfilePhotoRequired?: boolean;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
@@ -215,6 +218,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerAuthSessionRoutes, {
       prefix: "/auth",
       ...options.authSession,
+      profileImageMediaRepository:
+        options.authSession.profileImageMediaRepository ??
+        options.marketplaceCreatorProfileMediaRepository,
     });
   }
   if (options.workosWebhooks) {
@@ -314,6 +320,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/marketplace",
       repository: options.marketplaceCreatorSelfServiceRepository,
       lifecycleCommandBus: options.identityLifecycleCommandBus,
+      mediaRepository: options.marketplaceCreatorProfileMediaRepository,
+      profilePhotoRequired: options.creatorProfilePhotoRequired,
     });
   }
   if (options.sharedHotelSetupStatusRepository) {

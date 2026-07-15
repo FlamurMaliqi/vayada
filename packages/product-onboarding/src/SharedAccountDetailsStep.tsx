@@ -21,6 +21,7 @@ export type SharedAccountDetailsStepProps = {
   email: string;
   initialName?: string | null;
   initialPhone?: string | null;
+  requireProfileImage?: boolean;
   onUploadProfileImage: (file: File) => Promise<SharedAccountProfileImageUpload>;
   onSubmit: (input: SharedAccountDetailsInput) => Promise<void>;
 };
@@ -30,10 +31,12 @@ export default function SharedAccountDetailsStep({
   email,
   initialName,
   initialPhone,
+  requireProfileImage = false,
   onUploadProfileImage,
   onSubmit,
 }: SharedAccountDetailsStepProps) {
   const initial = splitSharedAccountName(initialName);
+  const profileImageRequired = accountType === "creator" && requireProfileImage;
   const isGuidedOnboarding = accountType === "hotel" || accountType === "creator";
   const description =
     accountType === "hotel"
@@ -90,8 +93,12 @@ export default function SharedAccountDetailsStep({
     event.preventDefault();
     setSubmitError("");
     const errors = accountDetailsErrors({ firstName, lastName, phone });
+    const missingRequiredProfileImage = profileImageRequired && !profileImage;
     setFieldErrors(errors);
-    if (Object.keys(errors).length > 0) return;
+    if (missingRequiredProfileImage && !profileImageError) {
+      setProfileImageError("Profile photo is required.");
+    }
+    if (Object.keys(errors).length > 0 || missingRequiredProfileImage) return;
 
     setSubmitting(true);
     try {
@@ -140,7 +147,10 @@ export default function SharedAccountDetailsStep({
         >
           <div className="mb-4 flex flex-col items-center text-center">
             <p className="text-sm font-semibold text-gray-900">
-              Profile photo <span className="font-normal text-gray-400">Optional</span>
+              Profile photo
+              {!profileImageRequired && (
+                <span className="font-normal text-gray-400"> Optional</span>
+              )}
             </p>
             <button
               type="button"
@@ -176,6 +186,7 @@ export default function SharedAccountDetailsStep({
               ref={profileImageInputRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
+              required={profileImageRequired}
               className="hidden"
               aria-label="Profile photo file"
               onChange={(event) => {
@@ -191,7 +202,7 @@ export default function SharedAccountDetailsStep({
                 setProfileImageError("");
               }}
             />
-            {profileImage && (
+            {profileImage && !profileImageRequired && (
               <button
                 type="button"
                 onClick={() => {

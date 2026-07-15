@@ -138,6 +138,7 @@ export const CREATOR_PROFILE_MISSING_FIELDS = [
   "displayName",
   "locationText",
   "shortDescription",
+  "profilePicture",
   "platforms",
 ] as const;
 
@@ -147,6 +148,7 @@ export const CREATOR_PROFILE_COMPLETION_STEPS = [
   "add_display_name",
   "set_location",
   "add_short_description",
+  "add_profile_picture",
   "add_platform",
 ] as const;
 
@@ -182,6 +184,7 @@ export type CreatorProfilePlatform = {
 };
 
 export type CreatorProfilePlatformInput = {
+  platformId?: string | null;
   platform: MarketplacePlatformName;
   handle: string;
   profileUrl?: string | null;
@@ -220,6 +223,7 @@ export type CreatorProfileDocument = {
   portfolioUrl: string | null;
   phone: string | null;
   profilePictureUrl: string | null;
+  profilePictureMediaObjectId?: string | null;
   profileComplete: boolean;
   profileCompletedAt: MarketplaceUtcDateTime | null;
   profileStatus: CreatorProfileStatus;
