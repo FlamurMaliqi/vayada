@@ -67,7 +67,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   localStorage.removeItem(LEGACY_EXPIRES_AT_KEY);
 
   const userType = userTypeForOrganizationKind(session.organizationKind);
-  const userName = session.user.name ?? session.user.email;
+  const userName = session.user.name ?? "";
   localStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
   localStorage.setItem(STORAGE_KEYS.USER_ID, session.user.id);
   localStorage.setItem(STORAGE_KEYS.USER_EMAIL, session.user.email);

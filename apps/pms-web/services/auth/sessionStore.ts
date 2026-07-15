@@ -61,6 +61,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   authKitSession = session;
   pendingOrganizationSelectionCsrfToken = null;
   if (typeof window === "undefined") return;
+  const userName = session.user.name ?? "";
   clearSharedPropertySelectionIfOrganizationChanged(session.organizationId);
   persistPmsResourceSelection(session);
   localStorage.removeItem(LEGACY_TOKEN_KEY);
@@ -68,7 +69,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   localStorage.setItem("isLoggedIn", "true");
   localStorage.setItem("userId", session.user.id);
   localStorage.setItem("userEmail", session.user.email);
-  localStorage.setItem("userName", session.user.name ?? session.user.email);
+  localStorage.setItem("userName", userName);
   localStorage.setItem("userType", "hotel");
   localStorage.setItem("userStatus", session.user.status);
   localStorage.setItem(
@@ -76,7 +77,7 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
     JSON.stringify({
       id: session.user.id,
       email: session.user.email,
-      name: session.user.name ?? session.user.email,
+      name: userName,
       phone: session.user.phone ?? null,
       type: "hotel",
       status: session.user.status,
