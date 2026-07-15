@@ -14,6 +14,10 @@ test.describe("pms-web shared setup", () => {
   test("walks first-property setup into product selection", async ({ page }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
     let created = false;
+    let finishCreateRequest: (() => void) | undefined;
+    const createRequestBarrier = new Promise<void>((resolve) => {
+      finishCreateRequest = resolve;
+    });
     const statusRequests: URL[] = [];
 
     await mockPmsWebAuthenticatedSession(page);
@@ -23,19 +27,22 @@ test.describe("pms-web shared setup", () => {
       () => {
         created = true;
       },
+      () => createRequestBarrier,
       statusRequests,
     );
 
     await page.goto("/setup?entryProduct=pms&returnTo=/dashboard");
 
     await expect(
-      page.getByRole("heading", { level: 1, name: "Add your first hotel" }),
+      page.getByRole("heading", { level: 1, name: "Let’s get to know your hotel" }),
     ).toBeVisible();
-    await expect(page.getByRole("heading", { level: 3, name: "Hotel basics" })).toBeVisible();
-    await page.getByRole("button", { name: "Save and continue" }).click();
+    await expect(
+      page.getByRole("heading", { level: 3, name: "What should we call your hotel?" }),
+    ).toBeVisible();
+    await expect(page.getByText("Step 1 of 3")).toBeVisible();
+    await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByText("Hotel name is required.")).toBeVisible();
-    await expect(page.getByText("City is required.")).toBeVisible();
-    await expect(page.getByText("Country code is required.")).toBeVisible();
+    await expect(page.getByText("Property type is required.")).toBeVisible();
     const propertyNameField = page.getByLabel("Hotel name");
     await expect(propertyNameField).toHaveAttribute("aria-invalid", "true");
     const describedBy = await propertyNameField.getAttribute("aria-describedby");
@@ -47,9 +54,43 @@ test.describe("pms-web shared setup", () => {
     await expect(propertyNameError).toHaveAttribute("role", "alert");
 
     await page.getByLabel("Hotel name").fill("Alpenrose Munich");
-    await page.getByLabel("Country code").fill("DE");
+    await page.getByLabel("Property type").selectOption("hotel");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(
+      page.getByRole("heading", { level: 3, name: "Where can guests find you?" }),
+    ).toBeVisible();
+    await expect(page.getByText("Step 2 of 3")).toBeVisible();
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByText("Street address is required.")).toBeVisible();
+    await expect(page.getByText("Postal code is required.")).toBeVisible();
+    await expect(page.getByText("City is required.")).toBeVisible();
+    await expect(page.getByText("Country is required.")).toBeVisible();
+
+    await page.getByLabel("Street address").fill("Marienplatz 1");
+    await page.getByLabel("Postal code").fill("80331");
     await page.getByLabel("City").fill("Munich");
+    await page.getByLabel("Country").selectOption("DE");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(
+      page.getByRole("heading", { level: 3, name: "How can guests reach you?" }),
+    ).toBeVisible();
+    await expect(page.getByText("Step 3 of 3")).toBeVisible();
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.getByLabel("Street address")).toHaveValue("Marienplatz 1");
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.getByLabel("Hotel name")).toHaveValue("Alpenrose Munich");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByLabel("Phone number").fill("+49 89 123456");
     await page.getByRole("button", { name: "Save and continue" }).click();
+    await expect(page.getByRole("button", { name: "Back" })).toBeDisabled();
+    await expect(page.getByRole("status")).toHaveText("Saving hotel details.");
+    await expect(
+      page.getByLabel("Phone number").locator("xpath=ancestor::section"),
+    ).toHaveAttribute("inert", "");
+    finishCreateRequest?.();
 
     await expect(
       page.getByRole("heading", { level: 2, name: "Choose account systems" }),
@@ -79,6 +120,7 @@ async function mockSharedSetupApi(
   page: Parameters<typeof mockPmsWebAuthenticatedSession>[0],
   isCreated: () => boolean,
   markCreated: () => void,
+  waitForCreate: () => Promise<void>,
   statusRequests: URL[],
 ) {
   await page.route("**/api/hotel-setup/**", async (route) => {
@@ -97,6 +139,7 @@ async function mockSharedSetupApi(
     }
 
     if (url.pathname === "/api/hotel-setup/properties" && request.method() === "POST") {
+      await waitForCreate();
       markCreated();
       return route.fulfill({
         status: 201,
