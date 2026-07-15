@@ -1166,36 +1166,37 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
       );
-      if (parsed.firstName !== undefined && parsed.lastName !== undefined) {
-        await options.authKitClient.updateUserName({
-          workosUserId: session.user.id,
-          firstName: parsed.firstName,
-          lastName: parsed.lastName,
-        });
-      }
-      await options.lifecycleCommandBus.execute({
-        commandType: "identity.user.profile.update",
-        commandId: randomUUID(),
-        idempotencyKey: `self-profile:${resolution.user.userId}:${request.id}`,
-        audit: {
-          actor: { kind: "user", userId: resolution.user.userId },
-          source: "web",
-          requestId: request.id,
-          correlationId: session.sessionId,
-          reason: "Self-service contact profile update",
-          requestedAt: new Date().toISOString(),
-        },
-        payload: {
-          userId: resolution.user.userId,
-          ...(parsed.name !== undefined ? { name: parsed.name } : {}),
-          ...(parsed.phone !== undefined ? { phone: parsed.phone } : {}),
-          profilePictureUrl: parsed.profilePictureUrl ?? undefined,
-          profilePictureMediaObjectId: parsed.profilePictureMediaObjectId ?? undefined,
-        },
-      });
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
+
+    if (parsed.firstName !== undefined && parsed.lastName !== undefined) {
+      await options.authKitClient.updateUserName({
+        workosUserId: session.user.id,
+        firstName: parsed.firstName,
+        lastName: parsed.lastName,
+      });
+    }
+    await options.lifecycleCommandBus.execute({
+      commandType: "identity.user.profile.update",
+      commandId: randomUUID(),
+      idempotencyKey: `self-profile:${resolution.user.userId}:${request.id}`,
+      audit: {
+        actor: { kind: "user", userId: resolution.user.userId },
+        source: "web",
+        requestId: request.id,
+        correlationId: session.sessionId,
+        reason: "Self-service contact profile update",
+        requestedAt: new Date().toISOString(),
+      },
+      payload: {
+        userId: resolution.user.userId,
+        ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+        ...(parsed.phone !== undefined ? { phone: parsed.phone } : {}),
+        profilePictureUrl: parsed.profilePictureUrl ?? undefined,
+        profilePictureMediaObjectId: parsed.profilePictureMediaObjectId ?? undefined,
+      },
+    });
 
     return reply.send({ updated: true });
   });

@@ -1794,6 +1794,7 @@ describe("AuthKit session routes", () => {
       firstName: string;
       lastName: string;
     }> = [];
+    let failWorkosNameUpdate = false;
     const hotelSession: AuthKitSession = {
       ...session,
       organizationId: "org_workos_hotel_group",
@@ -1810,6 +1811,7 @@ describe("AuthKit session routes", () => {
           return hotelSession;
         },
         async updateUserName(input) {
+          if (failWorkosNameUpdate) throw new Error("WorkOS unavailable");
           workosNameUpdates.push(input);
         },
       }),
@@ -1930,6 +1932,25 @@ describe("AuthKit session routes", () => {
     });
 
     expect(forged.statusCode).toBe(400);
+    expect(commands).toHaveLength(2);
+
+    failWorkosNameUpdate = true;
+    const unavailable = await app.inject({
+      method: "POST",
+      url: "/auth/profile",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: {
+        surface: "marketplace-web",
+        firstName: "Mary",
+        lastName: "Watson",
+      },
+    });
+
+    expect(unavailable.statusCode).toBe(500);
     expect(commands).toHaveLength(2);
   });
 
