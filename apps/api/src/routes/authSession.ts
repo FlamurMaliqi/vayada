@@ -83,6 +83,11 @@ export type AuthKitClient = {
   }): Promise<{ membershipId: string; roleSlugs: string[]; status?: MembershipStatus }>;
   getLogoutUrl(input: { sealedSession: string; returnTo: string }): Promise<string>;
   updateUserExternalId(input: { workosUserId: string; externalId: string }): Promise<void>;
+  updateUserName(input: {
+    workosUserId: string;
+    firstName: string;
+    lastName: string;
+  }): Promise<void>;
 };
 
 export type ProductAuditEvent = {
@@ -1161,27 +1166,37 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         surfacePolicy,
         organizationAccessOptionsFromRequest(request, surfacePolicy),
       );
-      await options.lifecycleCommandBus.execute({
-        commandType: "identity.user.profile.update",
-        commandId: randomUUID(),
-        idempotencyKey: `self-profile:${resolution.user.userId}:${request.id}`,
-        audit: {
-          actor: { kind: "user", userId: resolution.user.userId },
-          source: "web",
-          requestId: request.id,
-          correlationId: session.sessionId,
-          reason: "Self-service contact profile update",
-          requestedAt: new Date().toISOString(),
-        },
-        payload: {
-          userId: resolution.user.userId,
-          profilePictureUrl: parsed.profilePictureUrl ?? undefined,
-          profilePictureMediaObjectId: parsed.profilePictureMediaObjectId ?? undefined,
-        },
-      });
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
+
+    if (parsed.firstName !== undefined && parsed.lastName !== undefined) {
+      await options.authKitClient.updateUserName({
+        workosUserId: session.user.id,
+        firstName: parsed.firstName,
+        lastName: parsed.lastName,
+      });
+    }
+    await options.lifecycleCommandBus.execute({
+      commandType: "identity.user.profile.update",
+      commandId: randomUUID(),
+      idempotencyKey: `self-profile:${resolution.user.userId}:${request.id}`,
+      audit: {
+        actor: { kind: "user", userId: resolution.user.userId },
+        source: "web",
+        requestId: request.id,
+        correlationId: session.sessionId,
+        reason: "Self-service contact profile update",
+        requestedAt: new Date().toISOString(),
+      },
+      payload: {
+        userId: resolution.user.userId,
+        ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+        ...(parsed.phone !== undefined ? { phone: parsed.phone } : {}),
+        profilePictureUrl: parsed.profilePictureUrl ?? undefined,
+        profilePictureMediaObjectId: parsed.profilePictureMediaObjectId ?? undefined,
+      },
+    });
 
     return reply.send({ updated: true });
   });
@@ -1639,6 +1654,10 @@ function parseProfileBody(body: unknown):
   | {
       ok: true;
       surface: AuthSurface;
+      name?: string;
+      firstName?: string;
+      lastName?: string;
+      phone?: string | null;
       profilePictureUrl: string | null;
       profilePictureMediaObjectId: string | null;
     }
@@ -1651,10 +1670,20 @@ function parseProfileBody(body: unknown):
   }
   const input = body as {
     surface?: unknown;
+    firstName?: unknown;
+    lastName?: unknown;
+    phone?: unknown;
     profilePictureUrl?: unknown;
     profilePictureMediaObjectId?: unknown;
   };
-  const allowedKeys = new Set(["surface", "profilePictureUrl", "profilePictureMediaObjectId"]);
+  const allowedKeys = new Set([
+    "surface",
+    "firstName",
+    "lastName",
+    "phone",
+    "profilePictureUrl",
+    "profilePictureMediaObjectId",
+  ]);
   if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
     return {
       ok: false,
@@ -1665,6 +1694,24 @@ function parseProfileBody(body: unknown):
     const surface = parseSurface(
       typeof input.surface === "string" ? input.surface : "marketplace-web",
     );
+    const hasFirstName = Object.prototype.hasOwnProperty.call(input, "firstName");
+    const hasLastName = Object.prototype.hasOwnProperty.call(input, "lastName");
+    const hasName = hasFirstName || hasLastName;
+    const hasPhone = Object.prototype.hasOwnProperty.call(input, "phone");
+    if (
+      hasFirstName !== hasLastName ||
+      (hasFirstName && typeof input.firstName !== "string") ||
+      (hasLastName && typeof input.lastName !== "string")
+    ) {
+      throw new Error("Invalid name");
+    }
+    if (hasPhone && typeof input.phone !== "string") throw new Error("Invalid phone");
+    const firstName =
+      typeof input.firstName === "string" ? input.firstName.trim().replace(/\s+/g, " ") : "";
+    const lastName =
+      typeof input.lastName === "string" ? input.lastName.trim().replace(/\s+/g, " ") : "";
+    const name = hasName ? `${firstName} ${lastName}` : "";
+    const phone = typeof input.phone === "string" ? input.phone.trim() : "";
     const profilePictureUrl =
       typeof input.profilePictureUrl === "string" ? input.profilePictureUrl.trim() : "";
     const profilePictureMediaObjectId =
@@ -1672,9 +1719,16 @@ function parseProfileBody(body: unknown):
         ? input.profilePictureMediaObjectId.trim()
         : "";
     if (
+      (hasName &&
+        (!firstName ||
+          firstName.length > 60 ||
+          !lastName ||
+          lastName.length > 60 ||
+          name.length > 120)) ||
+      (phone && (phone.length < 5 || phone.length > 64)) ||
       profilePictureUrl.length > 2048 ||
       profilePictureMediaObjectId.length > 2048 ||
-      (!profilePictureUrl && !profilePictureMediaObjectId)
+      (!hasName && !hasPhone && !profilePictureUrl && !profilePictureMediaObjectId)
     ) {
       throw new Error("Invalid profile details");
     }
@@ -1690,6 +1744,8 @@ function parseProfileBody(body: unknown):
     return {
       ok: true,
       surface,
+      ...(hasName ? { name, firstName, lastName } : {}),
+      ...(hasPhone ? { phone: phone || null } : {}),
       profilePictureUrl: profilePictureUrl || null,
       profilePictureMediaObjectId: profilePictureMediaObjectId || null,
     };
@@ -2479,6 +2535,8 @@ function sendOrganizationSelectionResponse(
     user: {
       id: error.user.userId,
       email: error.user.email,
+      name: error.user.name ?? null,
+      phone: error.user.phone ?? null,
       status: error.user.status,
       workosUserId: error.session.user.id,
     },
@@ -2611,6 +2669,7 @@ function toSessionResponse(
     user: {
       id: user.userId,
       email: user.email,
+      name: user.name ?? null,
       phone: user.phone ?? null,
       status: user.status,
       workosUserId: session.user.id,

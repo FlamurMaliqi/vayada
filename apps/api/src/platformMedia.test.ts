@@ -866,8 +866,8 @@ describe("platform media upload routes", () => {
     expect((response.body as ErrorResponse).code).toBe("unsupported_media_type");
   });
 
-  it("allows a hotel account contact to upload only their own profile image", async () => {
-    const app = buildMediaApp({ permissions: ["hotel_catalog.setup.manage"], resources: [] });
+  it("allows any signed-in account to upload only their own profile image", async () => {
+    const app = buildMediaApp({ permissions: [], resources: [] });
     const payload = {
       purpose: "identity.user.profile_image",
       visibility: "public",

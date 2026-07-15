@@ -7,6 +7,7 @@ const workosMocks = vi.hoisted(() => ({
   authenticate: vi.fn(),
   loadSealedSession: vi.fn(),
   refresh: vi.fn(),
+  updateUser: vi.fn(),
 }));
 
 vi.mock("@workos-inc/node", () => ({
@@ -19,6 +20,7 @@ describe("createWorkOSAuthKitClient", () => {
     workosMocks.authenticate.mockReset();
     workosMocks.loadSealedSession.mockReset();
     workosMocks.refresh.mockReset();
+    workosMocks.updateUser.mockReset();
   });
 
   it("preserves the selected organization returned by WorkOS refresh", async () => {
@@ -106,6 +108,37 @@ describe("createWorkOSAuthKitClient", () => {
       cookiePassword: "a".repeat(32),
     });
 
-    await expect(client.authenticateSession({ sealedSession: "stale-session" })).resolves.toBeNull();
+    await expect(
+      client.authenticateSession({ sealedSession: "stale-session" }),
+    ).resolves.toBeNull();
+  });
+
+  it("updates both structured and display names", async () => {
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          updateUser: workosMocks.updateUser,
+        },
+      };
+    });
+    workosMocks.updateUser.mockResolvedValue({});
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await client.updateUserName({
+      workosUserId: "user_workos_hotel",
+      firstName: "Mary Jane",
+      lastName: "Watson",
+    });
+
+    expect(workosMocks.updateUser).toHaveBeenCalledWith({
+      userId: "user_workos_hotel",
+      name: "Mary Jane Watson",
+      firstName: "Mary Jane",
+      lastName: "Watson",
+    });
   });
 });

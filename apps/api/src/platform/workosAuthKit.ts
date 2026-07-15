@@ -206,6 +206,15 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
         externalId: input.externalId,
       });
     },
+
+    async updateUserName(input) {
+      await workos.userManagement.updateUser({
+        userId: input.workosUserId,
+        name: `${input.firstName} ${input.lastName}`,
+        firstName: input.firstName,
+        lastName: input.lastName,
+      });
+    },
   };
 }
 

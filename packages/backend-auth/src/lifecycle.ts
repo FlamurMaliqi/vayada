@@ -157,7 +157,7 @@ export type CreateIdentityUserPayload = {
 export type UpdateIdentityUserProfilePayload = {
   userId: string;
   name?: string;
-  phone?: string;
+  phone?: string | null;
   profilePictureUrl?: string;
   profilePictureMediaObjectId?: string;
 };

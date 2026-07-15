@@ -37,6 +37,7 @@ describe("WorkOS webhook routes", () => {
     expect(response.json()).toMatchObject({ status: "accepted" });
     expect(store.users.get("user_workos_platform")).toMatchObject({
       email: "admin@example.com",
+      name: "Admin User",
       status: "active",
     });
     await app.close();
@@ -470,6 +471,7 @@ function userData() {
     id: "user_workos_platform",
     email: "admin@example.com",
     first_name: "Admin",
+    last_name: "User",
     email_verified: true,
   };
 }
