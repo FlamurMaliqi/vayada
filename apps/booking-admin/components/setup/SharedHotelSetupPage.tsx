@@ -97,7 +97,7 @@ export function SharedHotelSetupPage({
     );
   }
 
-  if (!isSharedAccountDetailsComplete(accountName)) {
+  if (getAuthSessionUser() && !isSharedAccountDetailsComplete(accountName)) {
     return (
       <SharedAccountDetailsStep
         email={accountContactEmail ?? ""}
