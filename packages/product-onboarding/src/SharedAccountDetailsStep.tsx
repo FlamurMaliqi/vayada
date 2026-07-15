@@ -96,7 +96,7 @@ export default function SharedAccountDetailsStep({
 
   return (
     <main className="flex min-h-screen items-center bg-white px-4 py-8 text-gray-900 sm:px-6 lg:px-8">
-      <div className="mx-auto w-full max-w-4xl">
+      <div className="mx-auto w-full max-w-xl">
         <header className="mx-auto mb-6 max-w-xl text-center">
           <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
             Personal account
@@ -109,94 +109,12 @@ export default function SharedAccountDetailsStep({
           </p>
         </header>
 
-        <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,32rem)_1fr] lg:items-center">
-          <form
-            onSubmit={handleSubmit}
-            noValidate
-            className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6"
-          >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <AccountField
-                id="account-first-name"
-                label="First name"
-                value={firstName}
-                autoComplete="given-name"
-                maxLength={60}
-                required
-                error={fieldErrors.firstName}
-                onChange={(value) => {
-                  setFirstName(value);
-                  setFieldErrors((current) => ({ ...current, firstName: "" }));
-                }}
-              />
-              <AccountField
-                id="account-last-name"
-                label="Last name"
-                value={lastName}
-                autoComplete="family-name"
-                maxLength={60}
-                required
-                error={fieldErrors.lastName}
-                onChange={(value) => {
-                  setLastName(value);
-                  setFieldErrors((current) => ({ ...current, lastName: "" }));
-                }}
-              />
-              <div className="sm:col-span-2">
-                <label htmlFor="account-email" className="block text-sm font-medium text-gray-800">
-                  Email address
-                </label>
-                <input
-                  id="account-email"
-                  type="email"
-                  value={email}
-                  readOnly
-                  autoComplete="email"
-                  className={`${ACCOUNT_INPUT_CLASS} cursor-not-allowed bg-gray-50 text-gray-500`}
-                />
-                <p className="mt-2 text-xs text-gray-500">This comes from your sign-in account.</p>
-              </div>
-              <div className="sm:col-span-2">
-                <AccountField
-                  id="account-phone"
-                  label="Phone number"
-                  optional
-                  type="tel"
-                  value={phone}
-                  autoComplete="tel"
-                  maxLength={64}
-                  placeholder="+49 89 123456"
-                  error={fieldErrors.phone}
-                  onChange={(value) => {
-                    setPhone(value);
-                    setFieldErrors((current) => ({ ...current, phone: "" }));
-                  }}
-                />
-              </div>
-            </div>
-
-            {submitError && (
-              <div
-                className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
-                role="alert"
-              >
-                {submitError}
-              </div>
-            )}
-
-            <div className="mt-5 flex justify-end">
-              <button
-                type="submit"
-                disabled={submitting}
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submitting ? "Saving..." : "Save and continue"}
-                {!submitting && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
-              </button>
-            </div>
-          </form>
-
-          <div className="order-first flex flex-col items-center justify-center text-center lg:order-last">
+        <form
+          onSubmit={handleSubmit}
+          noValidate
+          className="rounded-2xl border border-gray-200 bg-white p-5 text-left shadow-sm sm:p-6"
+        >
+          <div className="mb-4 flex flex-col items-center text-center">
             <p className="text-sm font-semibold text-gray-900">
               Profile photo <span className="font-normal text-gray-400">Optional</span>
             </p>
@@ -205,19 +123,19 @@ export default function SharedAccountDetailsStep({
               onClick={() => profileImageInputRef.current?.click()}
               disabled={submitting}
               aria-label={profileImage ? "Change profile photo" : "Upload profile photo"}
-              className="group relative mt-4 flex h-48 w-48 items-center justify-center overflow-hidden rounded-full bg-primary-50 text-primary-600 outline-none ring-offset-4 transition hover:bg-primary-100 focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-not-allowed disabled:opacity-60 sm:h-52 sm:w-52"
+              className="group relative mt-3 flex h-24 w-24 items-center justify-center rounded-full bg-primary-50 text-primary-600 outline-none ring-offset-4 transition hover:bg-primary-100 focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-not-allowed disabled:opacity-60 sm:h-28 sm:w-28"
             >
               {profileImagePreviewUrl ? (
                 <img
                   src={profileImagePreviewUrl}
                   alt="Selected profile preview"
-                  className="h-full w-full object-cover"
+                  className="h-full w-full rounded-full object-cover"
                 />
               ) : (
-                <UserCircleIcon className="h-32 w-32" strokeWidth={1.25} />
+                <UserCircleIcon className="h-16 w-16" strokeWidth={1.25} />
               )}
-              <span className="absolute bottom-3 right-3 flex h-10 w-10 items-center justify-center rounded-full border-4 border-white bg-primary-600 text-white shadow-sm transition group-hover:bg-primary-700">
-                <CameraIcon className="h-5 w-5" aria-hidden="true" />
+              <span className="absolute bottom-1 right-1 flex h-8 w-8 items-center justify-center rounded-full border-4 border-white bg-primary-600 text-white shadow-sm transition group-hover:bg-primary-700">
+                <CameraIcon className="h-4 w-4" aria-hidden="true" />
               </span>
             </button>
             <input
@@ -239,7 +157,7 @@ export default function SharedAccountDetailsStep({
                 setProfileImageError("");
               }}
             />
-            <div className="mt-4 flex items-center justify-center gap-3">
+            <div className="mt-3 flex items-center justify-center gap-3">
               <button
                 type="button"
                 onClick={() => profileImageInputRef.current?.click()}
@@ -264,14 +182,94 @@ export default function SharedAccountDetailsStep({
                 </button>
               )}
             </div>
-            <p className="mt-2 text-xs text-gray-500">JPG, PNG, or WebP. Max 5 MB.</p>
+            <p className="mt-1 text-xs text-gray-500">JPG, PNG, or WebP. Max 5 MB.</p>
             {profileImageError && (
               <p className="mt-2 text-sm text-red-600" role="alert">
                 {profileImageError}
               </p>
             )}
           </div>
-        </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <AccountField
+              id="account-first-name"
+              label="First name"
+              value={firstName}
+              autoComplete="given-name"
+              maxLength={60}
+              required
+              error={fieldErrors.firstName}
+              onChange={(value) => {
+                setFirstName(value);
+                setFieldErrors((current) => ({ ...current, firstName: "" }));
+              }}
+            />
+            <AccountField
+              id="account-last-name"
+              label="Last name"
+              value={lastName}
+              autoComplete="family-name"
+              maxLength={60}
+              required
+              error={fieldErrors.lastName}
+              onChange={(value) => {
+                setLastName(value);
+                setFieldErrors((current) => ({ ...current, lastName: "" }));
+              }}
+            />
+            <div className="sm:col-span-2">
+              <label htmlFor="account-email" className="block text-sm font-medium text-gray-800">
+                Email address
+              </label>
+              <input
+                id="account-email"
+                type="email"
+                value={email}
+                readOnly
+                autoComplete="email"
+                className={`${ACCOUNT_INPUT_CLASS} cursor-not-allowed bg-gray-50 text-gray-500`}
+              />
+              <p className="mt-1 text-xs text-gray-500">This comes from your sign-in account.</p>
+            </div>
+            <div className="sm:col-span-2">
+              <AccountField
+                id="account-phone"
+                label="Phone number"
+                optional
+                type="tel"
+                value={phone}
+                autoComplete="tel"
+                maxLength={64}
+                placeholder="+49 89 123456"
+                error={fieldErrors.phone}
+                onChange={(value) => {
+                  setPhone(value);
+                  setFieldErrors((current) => ({ ...current, phone: "" }));
+                }}
+              />
+            </div>
+          </div>
+
+          {submitError && (
+            <div
+              className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+              role="alert"
+            >
+              {submitError}
+            </div>
+          )}
+
+          <div className="mt-5 flex justify-end">
+            <button
+              type="submit"
+              disabled={submitting}
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? "Saving..." : "Save and continue"}
+              {!submitting && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
+            </button>
+          </div>
+        </form>
       </div>
     </main>
   );
