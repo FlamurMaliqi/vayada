@@ -261,12 +261,19 @@ export async function mockBookingAdminAuthenticatedSession(page: Page): Promise<
       window.localStorage.setItem("access_token", token);
       window.localStorage.setItem("token_expires_at", String(oneHourFromNow));
       window.localStorage.setItem("isLoggedIn", "true");
+      window.localStorage.setItem("userName", "Booking Owner");
+      window.localStorage.setItem("userEmail", "owner@example.com");
       window.localStorage.setItem("userType", "hotel");
       window.localStorage.setItem("isSuperAdmin", "false");
       window.localStorage.setItem("selectedHotelId", hotelId);
       window.localStorage.setItem(
         "user",
-        JSON.stringify({ id: "user_1", email: "owner@example.com", type: "hotel" }),
+        JSON.stringify({
+          id: "user_1",
+          email: "owner@example.com",
+          name: "Booking Owner",
+          type: "hotel",
+        }),
       );
     },
     {

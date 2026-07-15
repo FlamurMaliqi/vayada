@@ -532,7 +532,7 @@ export default function ProfileCompletePage() {
       compact={!isCreatorCategoryStep}
       showProgress={false}
     >
-      <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-4xl" : "space-y-2"}>
+      <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-3xl" : "space-y-2"}>
         {!isCreatorCategoryStep && <StepIndicators steps={steps} currentStep={currentStep} />}
 
         <div

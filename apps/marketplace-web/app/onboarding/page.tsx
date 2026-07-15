@@ -4,10 +4,15 @@ import { type KeyboardEvent, type MutableRefObject, useEffect, useRef, useState 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { ArrowRightIcon, CheckIcon, UserIcon } from "@heroicons/react/24/outline";
-import { HotelIcon } from "@vayada/product-onboarding";
+import {
+  HotelIcon,
+  SharedAccountDetailsStep,
+  isSharedAccountDetailsComplete,
+} from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
+import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
 
 type AccountType = "hotel" | "creator";
 
@@ -37,6 +42,7 @@ export default function OnboardingPage() {
   const router = useRouter();
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [selectedType, setSelectedType] = useState<AccountType>("hotel");
+  const [provisionedType, setProvisionedType] = useState<AccountType | null>(null);
   const [loading, setLoading] = useState(true);
   const [introComplete, setIntroComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -54,7 +60,14 @@ export default function OnboardingPage() {
         }
         const userType = authService.getUserType();
         if (userType === "creator" || userType === "hotel") {
-          router.replace(nextPathForType(userType));
+          if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
+            router.replace(nextPathForType(userType));
+            return;
+          }
+          setSelectedType(userType);
+          setProvisionedType(userType);
+          setIntroComplete(true);
+          setLoading(false);
           return;
         }
         setLoading(false);
@@ -70,7 +83,7 @@ export default function OnboardingPage() {
   }, [router]);
 
   useEffect(() => {
-    if (loading || error) return;
+    if (loading || error || provisionedType) return;
 
     const user = authService.getSessionUser();
     const storageKey = `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
@@ -121,14 +134,18 @@ export default function OnboardingPage() {
 
     const timer = window.setTimeout(finishIntro, remaining);
     return () => window.clearTimeout(timer);
-  }, [error, loading]);
+  }, [error, loading, provisionedType]);
 
   async function handleContinue() {
     setError("");
     setSubmitting(true);
     try {
       await authService.completeOnboarding(selectedType);
-      router.push(nextPathForType(selectedType));
+      if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
+        router.push(nextPathForType(selectedType));
+        return;
+      }
+      setProvisionedType(selectedType);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to continue onboarding.");
     } finally {
@@ -161,6 +178,25 @@ export default function OnboardingPage() {
 
   const showSignupWelcome = !introComplete && !error;
 
+  if (!loading && provisionedType) {
+    const user = authService.getSessionUser();
+    return (
+      <SharedAccountDetailsStep
+        email={user?.email ?? ""}
+        initialName={user?.name}
+        initialPhone={user?.phone}
+        onUploadProfileImage={(file) => {
+          if (!user?.id) throw new Error("Your session has expired. Please sign in again.");
+          return sharedAccountProfileImageUploader(user.id, file);
+        }}
+        onSubmit={async (accountDetails) => {
+          await authService.updateAccountDetails(accountDetails);
+          router.push(nextPathForType(provisionedType));
+        }}
+      />
+    );
+  }
+
   return (
     <OnboardingShell
       currentStep={1}
@@ -172,7 +208,7 @@ export default function OnboardingPage() {
       }
       showProgress={false}
     >
-      <div className="mx-auto w-full max-w-4xl">
+      <div className="mx-auto w-full max-w-3xl">
         {loading ? (
           <div className="flex min-h-72 items-center justify-center">
             <p className="text-sm text-gray-600">Loading...</p>
@@ -180,7 +216,7 @@ export default function OnboardingPage() {
         ) : showSignupWelcome ? (
           <SignupWelcomeMoment />
         ) : (
-          <div className="space-y-6 text-center">
+          <div className="space-y-5 text-center">
             <PathChoice
               selectedType={selectedType}
               optionRefs={optionRefs}
@@ -204,7 +240,7 @@ export default function OnboardingPage() {
               aria-label={
                 selectedType === "hotel" ? "Continue to hotel setup" : "Continue to creator profile"
               }
-              className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+              className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             >
               {submitting ? "Continuing..." : "Continue"}
               {!submitting && <ArrowRightIcon className="h-4 w-4" />}
@@ -231,7 +267,7 @@ function PathChoice({
     <div
       role="radiogroup"
       aria-label="Choose onboarding path"
-      className="grid gap-5 sm:grid-cols-2"
+      className="grid gap-4 sm:grid-cols-2"
     >
       {options.map((option, index) => {
         const selected = selectedType === option.type;
@@ -250,11 +286,11 @@ function PathChoice({
             tabIndex={selected ? 0 : -1}
             onClick={() => onSelect(option.type)}
             onKeyDown={(event) => onKeyDown(event, index)}
-            className={`group relative rounded-3xl bg-white p-3 pb-5 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 sm:hover:-translate-y-1 ${tiltClass} ${
+            className={`group relative rounded-2xl bg-white p-2.5 pb-4 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 sm:hover:-translate-y-1 ${tiltClass} ${
               selected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
             }`}
           >
-            <span className="relative block aspect-[4/3] overflow-hidden rounded-2xl bg-gray-100">
+            <span className="relative block aspect-[16/10] overflow-hidden rounded-xl bg-gray-100">
               <Image
                 src={option.image}
                 alt=""
@@ -276,17 +312,17 @@ function PathChoice({
               </span>
             </span>
 
-            <span className="mt-4 flex items-start gap-3">
+            <span className="mt-3 flex items-start gap-3">
               <span
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
                   selected ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
                 }`}
               >
-                {isHotel ? <HotelIcon className="h-5 w-5" /> : <UserIcon className="h-5 w-5" />}
+                {isHotel ? <HotelIcon className="h-4 w-4" /> : <UserIcon className="h-4 w-4" />}
               </span>
               <span>
                 <span className="block text-base font-semibold text-gray-950">{option.title}</span>
-                <span className="mt-1 block text-sm leading-6 text-gray-600">
+                <span className="mt-1 block text-sm leading-5 text-gray-600">
                   {option.description}
                 </span>
               </span>
@@ -304,13 +340,13 @@ function nextPathForType(type: AccountType): string {
 
 function SignupWelcomeMoment() {
   return (
-    <div className="mx-auto flex min-h-56 w-full max-w-md flex-col items-center justify-center rounded-3xl bg-white px-8 py-10 text-center shadow-[0_22px_55px_-32px_rgba(15,23,42,0.45)] ring-1 ring-gray-200">
-      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary-600 text-white">
-        <CheckIcon className="h-7 w-7" />
+    <div className="mx-auto flex min-h-48 w-full max-w-sm flex-col items-center justify-center rounded-2xl bg-white px-6 py-8 text-center shadow-[0_22px_55px_-32px_rgba(15,23,42,0.45)] ring-1 ring-gray-200">
+      <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-600 text-white">
+        <CheckIcon className="h-6 w-6" />
       </span>
-      <p className="mt-5 text-base font-semibold text-gray-950">Your account is ready</p>
+      <p className="mt-4 text-base font-semibold text-gray-950">Your account is ready</p>
       <p className="mt-2 text-sm text-gray-600">Preparing your setup...</p>
-      <div className="mt-5 flex justify-center gap-2" aria-hidden="true">
+      <div className="mt-4 flex justify-center gap-2" aria-hidden="true">
         <span className="h-2 w-2 animate-pulse rounded-full bg-primary-600" />
         <span className="h-2 w-2 animate-pulse rounded-full bg-primary-300 [animation-delay:150ms]" />
         <span className="h-2 w-2 animate-pulse rounded-full bg-primary-200 [animation-delay:300ms]" />

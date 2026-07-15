@@ -3,8 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  SharedAccountDetailsStep,
   SharedFirstRunPropertySetupWizard,
+  isSharedAccountDetailsComplete,
   isSafeSharedHotelSetupReturnTo,
+  normalizeSharedAccountName,
   parseSharedHotelSetupEntryProduct,
   safeSharedHotelSetupReturnTo,
   type SharedFirstRunProductContinueInput,
@@ -14,7 +17,10 @@ import {
 import { ROUTES } from "@/lib/constants";
 import { canOpenMarketplaceProfileTools } from "@/lib/utils/sharedSetupGuard";
 import { authService } from "@/services/auth";
-import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import {
+  sharedAccountProfileImageUploader,
+  sharedHotelSetupApi,
+} from "@/services/api/sharedHotelSetupClient";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
@@ -36,6 +42,7 @@ export function SharedHotelSetupPage({
   const searchParams = useSearchParams();
   const [authorized, setAuthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [accountName, setAccountName] = useState<string | null>(null);
   const [accountContactEmail, setAccountContactEmail] = useState<string | null>(null);
   const [accountContactPhone, setAccountContactPhone] = useState<string | null>(null);
 
@@ -50,6 +57,7 @@ export function SharedHotelSetupPage({
           return;
         }
         const user = getAuthSessionUser();
+        setAccountName(user?.name ?? localStorage.getItem("userName"));
         setAccountContactEmail(user?.email ?? null);
         setAccountContactPhone(user?.phone ?? null);
         setAuthorized(true);
@@ -103,6 +111,28 @@ export function SharedHotelSetupPage({
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
       </div>
+    );
+  }
+
+  if (!isSharedAccountDetailsComplete(accountName)) {
+    return (
+      <SharedAccountDetailsStep
+        email={accountContactEmail ?? ""}
+        initialName={accountName}
+        initialPhone={accountContactPhone}
+        onUploadProfileImage={(file) => {
+          const userId = getAuthSessionUser()?.id;
+          if (!userId) throw new Error("Your session has expired. Please sign in again.");
+          return sharedAccountProfileImageUploader(userId, file);
+        }}
+        onSubmit={async (accountDetails) => {
+          await authService.updateAccountDetails(accountDetails);
+          setAccountName(
+            normalizeSharedAccountName(accountDetails.firstName, accountDetails.lastName),
+          );
+          setAccountContactPhone(accountDetails.phone ?? null);
+        }}
+      />
     );
   }
 
