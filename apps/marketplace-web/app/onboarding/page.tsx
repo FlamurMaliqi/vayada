@@ -300,12 +300,12 @@ export default function OnboardingPage() {
         loading
           ? "Loading your account details."
           : showSignupWelcome
-            ? "Welcome to Vayada — we’re glad you’re here. Let’s get you set up."
+            ? "Welcome to Vayada — where independent hotels and creators connect, build trusted partnerships, and grow together."
             : "Choose your role so we can tailor your setup."
       }
       showProgress={false}
     >
-      <div className={`mx-auto w-full ${showSignupWelcome ? "max-w-5xl" : "max-w-3xl"}`}>
+      <div className={`mx-auto w-full ${showSignupWelcome ? "max-w-4xl" : "max-w-3xl"}`}>
         {loading ? (
           <div className="flex min-h-72 items-center justify-center">
             <p className="text-sm text-gray-600">Loading...</p>
@@ -455,119 +455,56 @@ function onboardingWelcomeStorageKey(): string {
 }
 
 function SignupWelcomeMoment({ onContinue }: { onContinue: () => void }) {
-  const nextSteps = [
-    "Choose your path",
-    "Tell us a little about you",
-    "Set up your first hotel or creator profile",
-  ];
-
   return (
-    <section
-      aria-labelledby="signup-welcome-title"
-      className="mx-auto w-full overflow-hidden rounded-[2rem] bg-white text-left shadow-[0_32px_90px_-42px_rgba(15,23,42,0.55)] ring-1 ring-gray-200/80"
-    >
-      <div className="grid md:grid-cols-[1.05fr_0.95fr]">
-        <div className="relative isolate order-2 min-h-[340px] overflow-hidden bg-gradient-to-br from-[#1737c7] via-primary-600 to-[#7067e8] px-7 py-8 text-white sm:px-9 md:order-1 md:min-h-[410px]">
-          <span
-            aria-hidden="true"
-            className="absolute -left-20 -top-24 h-64 w-64 rounded-full bg-white/10 blur-2xl"
+    <section aria-label="Welcome to Vayada" className="flex w-full flex-col items-center">
+      <div aria-hidden="true" className="relative h-56 w-full max-w-3xl sm:h-72">
+        <div className="absolute inset-x-5 bottom-0 top-5 rounded-[2.5rem] bg-gradient-to-r from-primary-50 via-white to-violet-50 sm:inset-x-14" />
+        <div className="absolute left-[8%] top-[4%] h-3 w-3 rounded-full bg-primary-300 sm:left-[13%] sm:h-4 sm:w-4" />
+        <div className="absolute right-[8%] top-[12%] h-5 w-5 rounded-full border-2 border-violet-200 sm:right-[14%]" />
+
+        <div className="absolute bottom-3 left-[2%] h-[78%] w-[55%] -rotate-3 overflow-hidden rounded-[1.6rem] border-4 border-white bg-white shadow-[0_24px_55px_-28px_rgba(15,23,42,0.5)] sm:bottom-4 sm:left-[5%] sm:w-[51%] sm:rounded-[2rem]">
+          <Image
+            src="/hotel-hero.JPG"
+            alt=""
+            fill
+            priority
+            sizes="(min-width: 640px) 390px, 55vw"
+            className="object-cover object-[center_70%]"
           />
-          <span
-            aria-hidden="true"
-            className="absolute -bottom-24 -right-16 h-72 w-72 rounded-full bg-cyan-300/20 blur-3xl"
-          />
-
-          <div className="relative z-10 max-w-md">
-            <p className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold tracking-wide text-white/95 backdrop-blur-sm">
-              <CheckIcon className="h-4 w-4" aria-hidden="true" />
-              Welcome to Vayada
-            </p>
-            <p className="mt-5 text-2xl font-semibold leading-tight tracking-tight sm:text-3xl">
-              Your next chapter in hospitality starts here.
-            </p>
-            <p className="mt-3 max-w-sm text-sm leading-6 text-white/90">
-              Connect, collaborate, and grow with hotels and creators who share your ambition.
-            </p>
-          </div>
-
-          <div className="relative z-10 mt-7 h-40 sm:h-44" aria-hidden="true">
-            <div className="absolute bottom-0 left-0 h-36 w-[54%] -rotate-3 overflow-hidden rounded-2xl border-4 border-white/90 bg-white shadow-2xl sm:h-40">
-              <Image
-                src="/hotel-hero.JPG"
-                alt=""
-                fill
-                priority
-                sizes="(min-width: 768px) 260px, 45vw"
-                className="object-cover object-[center_75%]"
-              />
-              <span className="absolute inset-0 bg-gradient-to-t from-gray-950/55 via-transparent to-transparent" />
-              <span className="absolute bottom-2.5 left-3 text-xs font-semibold text-white">
-                Hotels
-              </span>
-            </div>
-            <div className="absolute bottom-1 right-0 h-32 w-[58%] rotate-3 overflow-hidden rounded-2xl border-4 border-white/90 bg-white shadow-2xl sm:h-36">
-              <Image
-                src="/creator-category-travel.jpg"
-                alt=""
-                fill
-                priority
-                sizes="(min-width: 768px) 280px, 48vw"
-                className="object-cover"
-              />
-              <span className="absolute inset-0 bg-gradient-to-t from-gray-950/55 via-transparent to-transparent" />
-              <span className="absolute bottom-2.5 left-3 text-xs font-semibold text-white">
-                Creators
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="order-1 flex flex-col justify-center px-7 py-8 sm:px-10 sm:py-10 md:order-2">
-          <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary-50 text-primary-700 ring-1 ring-primary-100">
-            <CheckIcon className="h-5 w-5" aria-hidden="true" />
+          <span className="absolute inset-0 bg-gradient-to-t from-gray-950/50 via-transparent to-transparent" />
+          <span className="absolute bottom-3 left-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm backdrop-blur-sm sm:bottom-4 sm:left-4">
+            Independent hotels
           </span>
-          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.16em] text-primary-700">
-            Account created
-          </p>
-          <h2 id="signup-welcome-title" className="mt-2 text-2xl font-semibold text-gray-950">
-            Your account is ready
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-gray-600">
-            We’ll start with your profile and guide you through the rest.
-          </p>
-
-          <div className="mt-6 rounded-2xl bg-gray-50 px-4 py-4 ring-1 ring-gray-100">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
-              What happens next
-            </p>
-            <ol className="mt-3 space-y-3">
-              {nextSteps.map((step, index) => (
-                <li
-                  key={step}
-                  className="flex items-center gap-3 text-sm font-medium text-gray-800"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-primary-700 shadow-sm ring-1 ring-primary-100"
-                  >
-                    {index + 1}
-                  </span>
-                  {step}
-                </li>
-              ))}
-            </ol>
-          </div>
-
-          <button
-            type="button"
-            onClick={onContinue}
-            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_16px_34px_-16px_rgba(37,99,235,0.9)] transition hover:-translate-y-0.5 hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
-          >
-            Let’s get you set up
-            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
-          </button>
         </div>
+
+        <div className="absolute right-[2%] top-3 h-[76%] w-[55%] rotate-3 overflow-hidden rounded-[1.6rem] border-4 border-white bg-white shadow-[0_24px_55px_-28px_rgba(15,23,42,0.5)] sm:right-[5%] sm:top-4 sm:w-[51%] sm:rounded-[2rem]">
+          <Image
+            src="/creator-category-travel.jpg"
+            alt=""
+            fill
+            priority
+            sizes="(min-width: 640px) 390px, 55vw"
+            className="object-cover"
+          />
+          <span className="absolute inset-0 bg-gradient-to-t from-gray-950/50 via-transparent to-transparent" />
+          <span className="absolute bottom-3 right-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm backdrop-blur-sm sm:bottom-4 sm:right-4">
+            Creators
+          </span>
+        </div>
+
+        <span className="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-4 border-white bg-white shadow-[0_14px_30px_-12px_rgba(37,99,235,0.55)] sm:h-16 sm:w-16">
+          <Image src="/vayada-logo.png" alt="" width={30} height={30} className="h-7 w-auto" />
+        </span>
       </div>
+
+      <button
+        type="button"
+        onClick={onContinue}
+        className="mt-8 inline-flex min-h-12 w-full max-w-xs items-center justify-center gap-2 rounded-full bg-primary-600 px-7 py-3 text-sm font-semibold text-white shadow-[0_16px_34px_-16px_rgba(37,99,235,0.9)] transition hover:-translate-y-0.5 hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 sm:mt-9"
+      >
+        Continue to Vayada
+        <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+      </button>
     </section>
   );
 }
