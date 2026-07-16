@@ -68,6 +68,7 @@ export type PublicMediaReplacementPlan = {
 
 export function loadPlatformMediaServingConfig(
   env: EnvSource,
+  options: { incomplete?: "error" | "disabled" } = {},
 ): PlatformMediaServingConfig | undefined {
   const bucketName = readOptionalEnv(env, "PLATFORM_MEDIA_BUCKET");
   const cdnBaseUrl = readOptionalEnv(env, "PLATFORM_MEDIA_CDN_BASE_URL");
@@ -83,6 +84,7 @@ export function loadPlatformMediaServingConfig(
   }
 
   if (!bucketName || !cdnBaseUrl || !cdnOriginHost) {
+    if (options.incomplete === "disabled") return undefined;
     const missing = [
       !bucketName && "PLATFORM_MEDIA_BUCKET",
       !cdnBaseUrl && "PLATFORM_MEDIA_CDN_BASE_URL",

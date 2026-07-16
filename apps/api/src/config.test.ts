@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "./config.js";
 
+const completeRequiredCreatorPhotoEnv = {
+  CREATOR_PROFILE_PHOTO_REQUIRED: "true",
+  TARGET_DATABASE_URL: "postgresql://target-db",
+  AUTH_DATABASE_URL: "postgresql://auth-db",
+  WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
+  WORKOS_ISSUER: "https://api.workos.com",
+  WORKOS_AUDIENCE: "client",
+  PLATFORM_MEDIA_BUCKET: "vayada-media-staging",
+  PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.staging.vayada.com",
+  PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
+};
+
 describe("api config", () => {
   it("keeps auth disabled when auth env values are absent", () => {
     expect(loadConfig({}).auth).toBeUndefined();
@@ -440,32 +452,32 @@ describe("api config", () => {
 
   it("keeps creator profile photos optional unless explicitly enabled", () => {
     expect(loadConfig({}).creatorProfilePhotoRequired).toBe(false);
-    expect(
-      loadConfig({
-        CREATOR_PROFILE_PHOTO_REQUIRED: "true",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        AUTH_DATABASE_URL: "postgresql://auth-db",
-        WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
-        WORKOS_ISSUER: "https://api.workos.com",
-        WORKOS_AUDIENCE: "client",
-        PLATFORM_MEDIA_BUCKET: "vayada-media-staging",
-        PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.staging.vayada.com",
-        PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
-      }).creatorProfilePhotoRequired,
-    ).toBe(true);
+    expect(loadConfig(completeRequiredCreatorPhotoEnv).creatorProfilePhotoRequired).toBe(true);
   });
 
-  it("rejects required creator photos without durable platform media", () => {
-    expect(() =>
-      loadConfig({
-        CREATOR_PROFILE_PHOTO_REQUIRED: "true",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        AUTH_DATABASE_URL: "postgresql://auth-db",
-        WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
-        WORKOS_ISSUER: "https://api.workos.com",
-        WORKOS_AUDIENCE: "client",
-      }),
-    ).toThrow("complete PLATFORM_MEDIA_* config");
+  it("rejects required creator photos when any durable-media prerequisite is absent", () => {
+    const incompleteEnvironments = [
+      { ...completeRequiredCreatorPhotoEnv, TARGET_DATABASE_URL: undefined },
+      {
+        ...completeRequiredCreatorPhotoEnv,
+        AUTH_DATABASE_URL: undefined,
+        WORKOS_JWKS_URL: undefined,
+        WORKOS_ISSUER: undefined,
+        WORKOS_AUDIENCE: undefined,
+      },
+      {
+        ...completeRequiredCreatorPhotoEnv,
+        PLATFORM_MEDIA_BUCKET: undefined,
+        PLATFORM_MEDIA_CDN_BASE_URL: undefined,
+        PLATFORM_MEDIA_CDN_ORIGIN_HOST: undefined,
+      },
+    ];
+
+    for (const env of incompleteEnvironments) {
+      expect(() => loadConfig(env)).toThrow(
+        "CREATOR_PROFILE_PHOTO_REQUIRED=true requires TARGET_DATABASE_URL, complete auth config, and complete PLATFORM_MEDIA_* config",
+      );
+    }
   });
 
   it("keeps PMS operations routes disabled by default", () => {
@@ -672,12 +684,33 @@ describe("api config", () => {
     });
   });
 
-  it("rejects partial platform media serving config", () => {
-    expect(() =>
+  it("keeps partial optional platform media config dark", () => {
+    expect(
       loadConfig({
         PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.vayada.com",
+      }).platformMediaServing,
+    ).toBeUndefined();
+  });
+
+  it("rejects partial platform media config when creator photos are required", () => {
+    expect(() =>
+      loadConfig({
+        ...completeRequiredCreatorPhotoEnv,
+        PLATFORM_MEDIA_BUCKET: undefined,
+        PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.vayada.com",
+        PLATFORM_MEDIA_CDN_ORIGIN_HOST: undefined,
       }),
     ).toThrow("Incomplete platform media serving config");
+  });
+
+  it("still rejects invalid complete optional platform media config", () => {
+    expect(() =>
+      loadConfig({
+        PLATFORM_MEDIA_BUCKET: "vayada-media-production",
+        PLATFORM_MEDIA_CDN_BASE_URL: "http://cdn.vayada.com",
+        PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-production.s3.us-east-1.amazonaws.com",
+      }),
+    ).toThrow("PLATFORM_MEDIA_CDN_BASE_URL must be an HTTPS origin");
   });
 
   it("keeps Ask Intelligence on the fixture provider by default", () => {

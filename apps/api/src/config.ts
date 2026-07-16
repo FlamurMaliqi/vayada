@@ -399,7 +399,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
   const creatorProfilePhotoRequired = readBooleanEnv(env, "CREATOR_PROFILE_PHOTO_REQUIRED");
-  const platformMediaServing = loadPlatformMediaServingConfig(env);
+  const platformMediaServing = loadPlatformMediaServingConfig(env, {
+    incomplete: creatorProfilePhotoRequired ? "error" : "disabled",
+  });
   assertNextApiRuntimeConfig(env, {
     apiRuntime,
     publicHotelProfileSource,
