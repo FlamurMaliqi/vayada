@@ -65,9 +65,7 @@ jobs:
             NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=${{ env.NEXT_API_URL }}
             NEXT_PUBLIC_BOOKING_ADMIN_URL=${{ env.NEXT_BOOKING_ADMIN_URL }}
             NEXT_PUBLIC_MARKETPLACE_URL=${{ env.NEXT_MARKETPLACE_URL }}
-            NEXT_PUBLIC_PMS_OPERATIONS_READS_ENABLED=true
             NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true
-            NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=false
             NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=false
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest
