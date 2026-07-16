@@ -88,6 +88,17 @@ describe("PostgreSQL platform media repository", () => {
     ]);
   });
 
+  it("treats malformed PostgreSQL identifiers as missing without querying", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+
+    await expect(repository.findUploadSession("not-a-uuid")).resolves.toBeNull();
+    await expect(
+      repository.findMediaObject("https://legacy.example/photo.jpg"),
+    ).resolves.toBeNull();
+    expect(database.queries).toEqual([]);
+  });
+
   it("rolls back completion when its audit event cannot be recorded", async () => {
     const database = createFakeDatabase("platform_media.upload_session.finalized");
     const repository = repositoryFor(database.pool);
