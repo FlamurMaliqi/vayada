@@ -669,6 +669,14 @@ export async function registerPlatformMediaRoutes(
       }
 
       const requestedVisibility = request.body.visibility ?? "private";
+      if (policy.autoApprovePublicOnFinalize && requestedVisibility !== "public") {
+        return sendMediaError(
+          reply,
+          400,
+          "invalid_media_visibility",
+          `${request.body.purpose} uploads must be public.`,
+        );
+      }
       if (policy.privateOnly && requestedVisibility !== "private") {
         return sendMediaError(
           reply,
