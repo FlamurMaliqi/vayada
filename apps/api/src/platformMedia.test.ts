@@ -71,6 +71,18 @@ const pmsRoomTypeMediaCase = contractCase("pms-room-type-media-upload-session");
 const pmsImportSourceImageCase = contractCase("pms-import-source-image-job");
 const marketplaceCreatorProfileCase = contractCase("marketplace-creator-profile-upload-session");
 const marketplaceOfferMediaCase = contractCase("marketplace-offer-media-upload-session");
+const allMediaPurposes: readonly PlatformMediaPurpose[] = [
+  "identity.user.profile_image",
+  "property.hero_image",
+  "property.gallery_image",
+  "property.logo",
+  "marketplace.offer.media",
+  "marketplace.creator.profile_image",
+  "marketplace.collaboration_chat.attachment",
+  "pms.room_type.media",
+  "pms.messaging.attachment",
+  "pms.import.source_image",
+];
 
 type MediaCreateResponse = {
   contractVersion: string;
@@ -156,20 +168,51 @@ describe("platform media upload routes", () => {
     expect(response.headers.vary).toBe("Origin");
   });
 
-  it("rejects media purposes that the configured runtime has not enabled", async () => {
-    const app = buildMediaApp({
-      enabledPurposes: ["identity.user.profile_image", "marketplace.creator.profile_image"],
-    });
-
-    const response = await injectJson(app, {
+  it("rejects disabled media purposes on create, finalize, and import", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const enabledApp = buildMediaApp({ repository });
+    const create = await injectJson(enabledApp, {
       method: "POST",
       url: propertyGalleryCase.request.path,
       headers: { authorization: "Bearer valid-token" },
       payload: propertyGalleryCase.request.body,
     });
+    const created = create.body as MediaCreateResponse;
+    expect(create.statusCode).toBe(201);
 
-    expect(response.statusCode).toBe(503);
-    expect((response.body as ErrorResponse).code).toBe("media_purpose_unavailable");
+    const app = buildMediaApp({
+      repository,
+      enabledPurposes: ["identity.user.profile_image", "marketplace.creator.profile_image"],
+    });
+
+    const createDisabled = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const finalizeDisabled = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    });
+    const importDisabled = await injectJson(app, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+
+    for (const response of [createDisabled, finalizeDisabled, importDisabled]) {
+      expect(response.statusCode).toBe(503);
+      expect((response.body as ErrorResponse).code).toBe("media_purpose_unavailable");
+    }
   });
 
   it("creates a signed property upload session and finalizes it with inspected private variants", async () => {
@@ -303,6 +346,47 @@ describe("platform media upload routes", () => {
 
     expect(finalize.statusCode).toBe(500);
     expect(cleanupUploadedFile).not.toHaveBeenCalled();
+  });
+
+  it("bounds staging cleanup and retries it on an idempotent finalize replay", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const cleanupUploadedFile = vi.fn(() => new Promise<void>(() => undefined));
+    const app = buildMediaApp({
+      repository,
+      cleanupTimeoutMs: 5,
+      finalizer: {
+        ...createDeterministicPlatformMediaFinalizer(),
+        cleanupUploadedFile,
+      },
+    });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const finalizeRequest = {
+      method: "POST" as const,
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    };
+
+    const finalize = await injectJson(app, finalizeRequest);
+    expect(finalize.statusCode).toBe(200);
+    expect(cleanupUploadedFile).toHaveBeenCalledTimes(1);
+
+    cleanupUploadedFile.mockImplementation(async () => undefined);
+    const replay = await injectJson(app, finalizeRequest);
+    expect(replay.statusCode).toBe(200);
+    expect((replay.body as { sideEffects: string[] }).sideEffects).toEqual(["idempotency_replay"]);
+    expect(cleanupUploadedFile).toHaveBeenCalledTimes(2);
   });
 
   it("finalizes every signed file in a batch upload session", async () => {
@@ -633,6 +717,16 @@ describe("platform media upload routes", () => {
       expect(finalizeBody.mediaObject.variants.map((variant) => variant.variantName)).toEqual([
         ...(contractCase.expected.requiredVariants ?? []),
       ]);
+      if (contractCase === marketplaceCreatorProfileCase) {
+        expect(finalizeBody.mediaObject).toMatchObject({
+          visibility: "public",
+          approvalStatus: "approved",
+          lifecycleStatus: "active",
+        });
+        expect(
+          finalizeBody.mediaObject.variants.every(({ visibility }) => visibility === "public"),
+        ).toBe(true);
+      }
       expect(finalizeBody.sideEffects).toEqual(contractCase.expected.sideEffects);
     },
   );
@@ -890,6 +984,18 @@ describe("platform media upload routes", () => {
       targetType: "media_import_job",
       organizationId: "org_media",
     });
+
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+    expect((replay.body as MediaImportResponse).importJob.importJobId).toBe(
+      body.importJob.importJobId,
+    );
+    expect(repository.importJobs.size).toBe(1);
+    expect(repository.auditEvents).toHaveLength(1);
   });
 
   it("rejects malformed file fields before signing", async () => {
@@ -1075,8 +1181,9 @@ function buildMediaApp(
     }>;
     targetResolver?: PlatformMediaTargetResolver;
     finalizer?: PlatformMediaUploadFinalizer;
-    enabledPurposes?: PlatformMediaPurpose[];
+    enabledPurposes?: readonly PlatformMediaPurpose[];
     allowedOrigins?: string[];
+    cleanupTimeoutMs?: number;
   } = {},
 ): ReturnType<typeof buildApp> {
   return buildApp({
@@ -1086,8 +1193,9 @@ function buildMediaApp(
       signer: createDeterministicPlatformMediaUploadSigner(),
       targetResolver: options.targetResolver ?? propertyMediaTargetResolver,
       finalizer: options.finalizer ?? createDeterministicPlatformMediaFinalizer(),
-      enabledPurposes: options.enabledPurposes,
+      enabledPurposes: options.enabledPurposes ?? allMediaPurposes,
       allowedOrigins: options.allowedOrigins,
+      cleanupTimeoutMs: options.cleanupTimeoutMs,
       now: () => new Date("2026-06-12T12:00:00.000Z"),
     },
     auth: {

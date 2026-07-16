@@ -296,8 +296,8 @@
           "resourceProduct": "marketplace",
           "resourceType": "creator_profile",
           "resourceId": "creator_profile_lina",
-          "approvalStatus": "pending_domain_approval",
-          "lifecycleStatus": "staged"
+          "approvalStatus": "approved",
+          "lifecycleStatus": "active"
         },
         "requiredVariants": ["original_safe", "large", "thumbnail", "blur_preview"],
         "sideEffects": ["variant_generation", "audit_event"]

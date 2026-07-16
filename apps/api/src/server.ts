@@ -467,6 +467,7 @@ const app = buildApp({
         signer: createDeterministicPlatformMediaUploadSigner(),
         targetResolver: createPassthroughPlatformMediaTargetResolver(),
         finalizer: createDeterministicPlatformMediaFinalizer(),
+        enabledPurposes: [],
         allowedOrigins: config.authSession?.authAllowedOrigins ?? [],
       }
     : undefined,
