@@ -14,6 +14,7 @@ type OnboardingShellProps = {
   currentStep: number;
   compact?: boolean;
   showProgress?: boolean;
+  wideContent?: boolean;
   children: ReactNode;
 };
 
@@ -38,6 +39,7 @@ export function OnboardingShell({
   currentStep,
   compact = false,
   showProgress = true,
+  wideContent = false,
   children,
 }: OnboardingShellProps) {
   const totalSteps = MARKETPLACE_ONBOARDING_STEPS.length;
@@ -63,8 +65,8 @@ export function OnboardingShell({
 
       <main
         className={`relative z-10 mx-auto flex min-h-[calc(100vh-60px)] w-full flex-col items-center px-5 sm:px-8 ${
-          compact ? "max-w-5xl justify-start pb-8 sm:pb-12" : "max-w-5xl justify-center py-6"
-        }`}
+          wideContent ? "max-w-6xl" : "max-w-5xl"
+        } ${compact ? "justify-start pb-8 sm:pb-12" : "justify-center py-6"}`}
       >
         <section className="w-full text-center">
           <h1

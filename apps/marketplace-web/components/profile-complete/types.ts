@@ -32,6 +32,7 @@ export interface FormNavigationButtonsProps {
   canProceed: boolean;
   onPrevious: () => void;
   submitLabel?: string;
+  prominentFirstStep?: boolean;
 }
 
 export interface ProfileCompletionProgressProps {

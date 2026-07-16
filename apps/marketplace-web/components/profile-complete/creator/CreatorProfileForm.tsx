@@ -102,7 +102,7 @@ export function CreatorProfileForm({
   return (
     <form
       onSubmit={handleFormSubmit}
-      className={currentStep === 1 ? "space-y-5" : "space-y-4 p-5 sm:p-6"}
+      className={currentStep === 1 ? "space-y-5 xl:space-y-7" : "space-y-4 p-5 sm:p-6"}
     >
       {/* Step 1: Creator Type Selection */}
       {currentStep === 1 && (
@@ -160,6 +160,7 @@ export function CreatorProfileForm({
         canProceed={canProceed}
         onPrevious={onPrevStep}
         submitLabel="Submit for review"
+        prominentFirstStep
       />
     </form>
   );
