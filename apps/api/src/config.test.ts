@@ -583,10 +583,6 @@ describe("api config", () => {
     ).toThrow("PUBLIC_BOOKABILITY_SOURCE must be one of: legacy, target");
   });
 
-  it("keeps Booking Web legacy command proxy disabled by default", () => {
-    expect(loadConfig({}).bookingWebLegacyCheckoutCommandProxyEnabled).toBe(false);
-  });
-
   it("keeps Booking Web checkout commands on the legacy proxy source by default", () => {
     expect(loadConfig({}).bookingCheckoutCommandSource).toBe("legacy_proxy");
   });
@@ -615,22 +611,6 @@ describe("api config", () => {
         BOOKING_CHECKOUT_COMMAND_SOURCE: "preview",
       }),
     ).toThrow("BOOKING_CHECKOUT_COMMAND_SOURCE must be one of: legacy_proxy, target");
-  });
-
-  it("loads optional Booking Web legacy command proxy config", () => {
-    expect(
-      loadConfig({
-        BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED: "true",
-      }).bookingWebLegacyCheckoutCommandProxyEnabled,
-    ).toBe(true);
-  });
-
-  it("rejects invalid Booking Web legacy command proxy config", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED: "sometimes",
-      }),
-    ).toThrow("BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED must be true or false");
   });
 
   it("loads optional booking host base config", () => {

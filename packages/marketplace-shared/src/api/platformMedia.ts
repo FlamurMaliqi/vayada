@@ -1,15 +1,9 @@
-import { ApiClient, ApiErrorResponse, getApiBearerToken } from "./client";
+import { ApiClient, ApiErrorResponse } from "./client";
 
 const PLATFORM_MEDIA_API_BASE_URL =
   process.env.NEXT_PUBLIC_PLATFORM_MEDIA_API_URL ??
   process.env.NEXT_PUBLIC_AUTH_API_URL ??
   "https://api.localhost";
-const LEGACY_IMAGE_UPLOAD_API_BASE_URL =
-  process.env.NEXT_PUBLIC_MARKETPLACE_API_URL ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  process.env.NEXT_PUBLIC_AUTH_API_URL ??
-  "https://api.marketplace.localhost";
-
 const platformMediaApiClient = new ApiClient(PLATFORM_MEDIA_API_BASE_URL);
 
 export type PlatformMediaPurpose =
@@ -68,21 +62,6 @@ type FinalizeResponse = {
   }>;
 };
 
-type LegacyImageUploadResponse = {
-  url?: string;
-  thumbnail_url?: string | null;
-  key?: string;
-  width?: number;
-  height?: number;
-  size_bytes?: number;
-  format?: string;
-};
-
-type LegacyMultipleImageUploadResponse = {
-  images?: LegacyImageUploadResponse[];
-  total?: number;
-};
-
 export async function uploadPlatformMedia(input: {
   purpose: PlatformMediaPurpose;
   resource: PlatformMediaResourceScope;
@@ -90,10 +69,6 @@ export async function uploadPlatformMedia(input: {
   visibility?: "public" | "private";
 }): Promise<PlatformMediaUploadResult[]> {
   if (input.files.length === 0) return [];
-
-  if (shouldUseLegacyMarketplaceImageUpload()) {
-    return uploadLegacyMarketplaceImages(input);
-  }
 
   const create = await platformMediaApiClient.post<UploadSessionResponse>(
     "/api/media/upload-sessions",
@@ -162,130 +137,4 @@ export async function uploadPlatformMedia(input: {
 
 function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {
   return uploadUrl.startsWith("https://uploads.vayada.localhost/");
-}
-
-async function uploadLegacyMarketplaceImages(input: {
-  purpose: PlatformMediaPurpose;
-  files: File[];
-}): Promise<PlatformMediaUploadResult[]> {
-  const endpoint = legacyEndpointForPurpose(input.purpose);
-  const token = getLegacyBearerToken();
-  if (!token) {
-    throw new ApiErrorResponse(401, { detail: "Not authenticated" });
-  }
-
-  const legacyBaseUrl = stripTrailingSlash(LEGACY_IMAGE_UPLOAD_API_BASE_URL);
-
-  if (endpoint.kind === "single") {
-    const file = input.files[0];
-    if (!file) return [];
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const response = await fetch(`${legacyBaseUrl}${endpoint.path}`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
-    });
-    const body = await parseLegacyUploadResponseBody(response);
-    if (!response.ok) {
-      throw new ApiErrorResponse(response.status, {
-        detail: legacyUploadErrorDetail(body) ?? "Image upload failed",
-      });
-    }
-
-    const image = body as LegacyImageUploadResponse;
-    return legacyImageToPlatformMediaResult(image, file);
-  }
-
-  const formData = new FormData();
-  input.files.forEach((file) => formData.append("files", file));
-
-  const response = await fetch(`${legacyBaseUrl}${endpoint.path}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: formData,
-  });
-  const body = await parseLegacyUploadResponseBody(response);
-  if (!response.ok) {
-    throw new ApiErrorResponse(response.status, {
-      detail: legacyUploadErrorDetail(body) ?? "Image upload failed",
-    });
-  }
-
-  const data = body as LegacyMultipleImageUploadResponse;
-  const uploaded = (data.images ?? []).flatMap((image, index) =>
-    legacyImageToPlatformMediaResult(image, input.files[index]),
-  );
-  if (uploaded.length !== input.files.length) {
-    throw new ApiErrorResponse(502, { detail: "Not all images were uploaded" });
-  }
-  return uploaded;
-}
-
-function legacyEndpointForPurpose(purpose: PlatformMediaPurpose): {
-  kind: "single" | "multiple";
-  path: string;
-} {
-  switch (purpose) {
-    case "identity.user.profile_image":
-      return { kind: "single", path: "/upload/image?prefix=users" };
-    case "property.hero_image":
-      return { kind: "single", path: "/upload/image/hotel-profile" };
-    case "marketplace.creator.profile_image":
-      return { kind: "single", path: "/upload/image/creator-profile" };
-    case "marketplace.offer.media":
-      return { kind: "multiple", path: "/upload/images/listing" };
-  }
-}
-
-function legacyImageToPlatformMediaResult(
-  image: LegacyImageUploadResponse,
-  file?: File,
-): PlatformMediaUploadResult[] {
-  if (!image.url) return [];
-
-  const storageKey = image.key ?? image.url;
-  return [
-    {
-      mediaId: storageKey,
-      url: image.url,
-      storageKey,
-      contentType: file?.type || image.format || "image/jpeg",
-      sizeBytes: image.size_bytes ?? file?.size ?? 0,
-      widthPx: image.width,
-      heightPx: image.height,
-      originalFilename: file?.name || storageKey.split("/").pop() || "image",
-    },
-  ];
-}
-
-async function parseLegacyUploadResponseBody(response: Response): Promise<unknown> {
-  const contentType = response.headers.get("content-type");
-  if (contentType?.includes("application/json")) {
-    return response.json();
-  }
-  return response.text();
-}
-
-function legacyUploadErrorDetail(body: unknown): string | undefined {
-  if (typeof body === "string") return body || undefined;
-  if (body && typeof body === "object" && "detail" in body) {
-    const detail = (body as { detail?: unknown }).detail;
-    return typeof detail === "string" ? detail : undefined;
-  }
-  return undefined;
-}
-
-function shouldUseLegacyMarketplaceImageUpload(): boolean {
-  return process.env.NEXT_PUBLIC_MARKETPLACE_LEGACY_UPLOADS_ENABLED === "true";
-}
-
-function getLegacyBearerToken(): string | null {
-  return getApiBearerToken();
-}
-
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
 }

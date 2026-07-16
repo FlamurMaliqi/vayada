@@ -44,10 +44,6 @@ export function isAuthKitLoginEnabled(): boolean {
   return process.env.NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED !== "false";
 }
 
-export function isLegacyPasswordFallbackEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED === "true";
-}
-
 export function isCompatibilityTokenEnabled(): boolean {
   return process.env.NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED === "true";
 }

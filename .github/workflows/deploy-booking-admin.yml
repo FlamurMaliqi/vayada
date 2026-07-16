@@ -49,7 +49,6 @@ jobs:
             --build-arg NEXT_PUBLIC_API_URL=https://target-api.vayada.com \
             --build-arg NEXT_PUBLIC_AUTH_API_URL=https://target-api.vayada.com \
             --build-arg NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true \
-            --build-arg NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=false \
             --build-arg NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true \
             --build-arg NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=https://target-api.vayada.com \
             --build-arg NEXT_PUBLIC_PMS_URL=https://target-api.vayada.com \

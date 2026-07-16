@@ -91,7 +91,6 @@ export type ApiConfig = {
   affiliatePublicSource?: "target";
   pmsOperationsAllowedOrigins: string[];
   bookingCheckoutCommandSource: BookingCheckoutCommandSource;
-  bookingWebLegacyCheckoutCommandProxyEnabled: boolean;
   bookingWebEventSink: BookingWebEventSink;
   bookingHostBase?: string;
   platformMediaServing?: PlatformMediaServingConfig;
@@ -396,10 +395,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     env,
     "BOOKING_RESERVATIONS_READ_DATABASE_URL",
   );
-  const bookingWebLegacyCheckoutCommandProxyEnabled = readBooleanEnv(
-    env,
-    "BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED",
-  );
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
   assertNextApiRuntimeConfig(env, {
@@ -413,7 +408,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     pmsOperationsSource,
     financeSource,
     bookingCheckoutCommandSource,
-    bookingWebLegacyCheckoutCommandProxyEnabled,
   });
   if (bookingSettingsSource === "target" && !targetDatabaseUrl) {
     throw new Error("TARGET_DATABASE_URL is required when BOOKING_SETTINGS_SOURCE=target");
@@ -489,7 +483,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       "https://pms.localhost",
     ]),
     bookingCheckoutCommandSource,
-    bookingWebLegacyCheckoutCommandProxyEnabled,
     bookingWebEventSink,
     bookingHostBase: readOptionalEnv(env, "BOOKING_HOST_BASE"),
     platformMediaServing: loadPlatformMediaServingConfig(env),
@@ -523,7 +516,6 @@ function assertNextApiRuntimeConfig(
     | "pmsOperationsSource"
     | "financeSource"
     | "bookingCheckoutCommandSource"
-    | "bookingWebLegacyCheckoutCommandProxyEnabled"
   >,
 ): void {
   if (config.apiRuntime !== "next") return;
@@ -554,10 +546,6 @@ function assertNextApiRuntimeConfig(
     { key: "FINANCE_SOURCE", value: config.financeSource },
     { key: "BOOKING_CHECKOUT_COMMAND_SOURCE", value: config.bookingCheckoutCommandSource },
   ].flatMap((source) => nextRuntimeSourceRequirements(env, source));
-
-  if (config.bookingWebLegacyCheckoutCommandProxyEnabled) {
-    requiredTargetSources.push("BOOKING_WEB_LEGACY_CHECKOUT_COMMAND_PROXY_ENABLED=false");
-  }
 
   if (requiredTargetSources.length > 0) {
     throw new Error(
