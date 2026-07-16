@@ -1177,7 +1177,11 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
       return { uploadSession, mediaObjects };
     },
     async createImportJob(input) {
-      const existing = [...importJobs.values()].find(({ jobKey }) => jobKey === input.jobKey);
+      const existing = [...importJobs.values()].find(
+        ({ jobKey, ownerOrganizationId }) =>
+          jobKey === input.jobKey &&
+          ownerOrganizationId === input.context.selectedOrganization.organizationId,
+      );
       if (existing) return existing;
 
       const importJob: PlatformMediaImportJobRecord = {
@@ -1207,7 +1211,10 @@ function recordInMemoryAudit(
 ): void {
   if (
     !auditEvents.some(
-      ({ auditKey, action }) => auditKey === event.auditKey && action === event.action,
+      ({ auditKey, action, organizationId }) =>
+        auditKey === event.auditKey &&
+        action === event.action &&
+        organizationId === event.organizationId,
     )
   ) {
     auditEvents.push(event);

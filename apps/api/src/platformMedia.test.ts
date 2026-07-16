@@ -998,6 +998,56 @@ describe("platform media upload routes", () => {
     expect(repository.auditEvents).toHaveLength(1);
   });
 
+  it("scopes import idempotency and audits to the owning organization", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const resources = [
+      {
+        product: "pms" as const,
+        resourceType: "pms_hotel" as const,
+        resourceId: "pms_hotel_alpenrose",
+        relationship: "operator" as const,
+      },
+    ];
+    const firstApp = buildMediaApp({
+      repository,
+      permissions: ["pms.operations.manage"],
+      resources,
+      organizationId: "org_media_first",
+      workosOrgId: "workos_media_org_first",
+    });
+    const secondApp = buildMediaApp({
+      repository,
+      permissions: ["pms.operations.manage"],
+      resources,
+      organizationId: "org_media_second",
+      workosOrgId: "workos_media_org_second",
+    });
+
+    const first = await injectJson(firstApp, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+    const second = await injectJson(secondApp, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    expect((second.body as MediaImportResponse).importJob.importJobId).not.toBe(
+      (first.body as MediaImportResponse).importJob.importJobId,
+    );
+    expect(repository.importJobs.size).toBe(2);
+    expect(repository.auditEvents.map(({ organizationId }) => organizationId).sort()).toEqual([
+      "org_media_first",
+      "org_media_second",
+    ]);
+  });
+
   it("rejects malformed file fields before signing", async () => {
     const app = buildMediaApp();
 
@@ -1184,8 +1234,11 @@ function buildMediaApp(
     enabledPurposes?: readonly PlatformMediaPurpose[];
     allowedOrigins?: string[];
     cleanupTimeoutMs?: number;
+    organizationId?: string;
+    workosOrgId?: string;
   } = {},
 ): ReturnType<typeof buildApp> {
+  const workosOrgId = options.workosOrgId ?? session.workosOrgId ?? "workos_media_org";
   return buildApp({
     logger: false,
     platformMedia: {
@@ -1199,8 +1252,11 @@ function buildMediaApp(
       now: () => new Date("2026-06-12T12:00:00.000Z"),
     },
     auth: {
-      verifier: createFakeVerifier(new Map([["valid-token", session]])),
-      repository: identityRepository(options.resources),
+      verifier: createFakeVerifier(new Map([["valid-token", { ...session, workosOrgId }]])),
+      repository: identityRepository(options.resources, {
+        organizationId: options.organizationId ?? "org_media",
+        workosOrgId,
+      }),
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.settings.manage"];
@@ -1261,6 +1317,10 @@ function identityRepository(
       relationship: "owner",
     },
   ],
+  organization = {
+    organizationId: "org_media",
+    workosOrgId: "workos_media_org",
+  },
 ): IdentityRepository {
   return {
     async findUserByProviderUserId() {
@@ -1272,8 +1332,7 @@ function identityRepository(
     },
     async findOrganizationByWorkosOrgId() {
       return {
-        organizationId: "org_media",
-        workosOrgId: "workos_media_org",
+        ...organization,
         kind: "hotel_group",
         status: "active",
       };
