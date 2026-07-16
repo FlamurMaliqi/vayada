@@ -241,37 +241,32 @@ export function createS3PlatformMediaAdapter(
       }
 
       try {
-        const variants = await Promise.all(
-          input.policy.requiredVariants.map((variantName) =>
-            createVariant(
-              upload.bytes,
-              input.file.sessionFile.mediaId,
-              variantName,
-              publicPathPrefix,
-            ),
-          ),
-        );
-        await Promise.all(
-          variants.map(({ record, bytes }) =>
-            s3.send(
-              new PutObjectCommand({
-                Bucket: bucketName,
-                Key: record.storageKey,
-                Body: bytes,
-                ContentType: "image/webp",
-                CacheControl: publicCacheControl,
-              }),
-            ),
-          ),
-        );
-
-        return variants.map(({ record }) => ({
-          ...record,
-          publicCdnUrl: new URL(
-            record.storageKey.slice("public/".length),
-            `${cdnBaseUrl}/`,
-          ).toString(),
-        }));
+        const variants: PlatformMediaVariantRecord[] = [];
+        for (const variantName of input.policy.requiredVariants) {
+          const { record, bytes } = await createVariant(
+            upload.bytes,
+            input.file.sessionFile.mediaId,
+            variantName,
+            publicPathPrefix,
+          );
+          await s3.send(
+            new PutObjectCommand({
+              Bucket: bucketName,
+              Key: record.storageKey,
+              Body: bytes,
+              ContentType: "image/webp",
+              CacheControl: publicCacheControl,
+            }),
+          );
+          variants.push({
+            ...record,
+            publicCdnUrl: new URL(
+              record.storageKey.slice("public/".length),
+              `${cdnBaseUrl}/`,
+            ).toString(),
+          });
+        }
+        return variants;
       } finally {
         uploads.delete(cacheKey);
       }
