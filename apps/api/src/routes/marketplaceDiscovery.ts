@@ -133,8 +133,8 @@ export type MarketplaceDiscoveryPageRequest = {
 // Repository obligations (engineering/marketplace-discovery-contract.md):
 // - offers: only visibility_status = 'public' rows, ordered
 //   createdAt DESC, offerId ASC; total counts the full eligible set.
-// - creators: only profile_complete, profile_status = 'active', non-null
-//   display_name rows, ordered createdAt DESC, creatorId ASC;
+// - creators: only base-complete, profile_status = 'active', non-null
+//   source ID rows, ordered createdAt DESC, creatorId ASC;
 //   averageRating rounded to 2 decimals over creator_ratings rows.
 // - IDs are the LEGACY marketplace UUIDs (ID continuity clause), not
 //   target-schema primary keys.
@@ -365,7 +365,17 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
              WHERE rating.creator_profile_id = creator.id
                AND rating.creator_organization_id = creator.organization_id
            ) ratings ON TRUE
-           WHERE creator.profile_complete = TRUE
+           WHERE NULLIF(BTRIM(creator.display_name), '') IS NOT NULL
+             AND NULLIF(BTRIM(creator.location_text), '') IS NOT NULL
+             AND NULLIF(BTRIM(creator.short_description), '') IS NOT NULL
+             AND EXISTS (
+               SELECT 1
+               FROM marketplace.creator_platforms completion_platform
+               WHERE completion_platform.creator_profile_id = creator.id
+                 AND completion_platform.organization_id = creator.organization_id
+                 AND NULLIF(BTRIM(completion_platform.handle), '') IS NOT NULL
+                 AND completion_platform.follower_count > 0
+             )
              AND (
                NOT $3::boolean
                OR (
@@ -374,7 +384,6 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
                )
              )
              AND creator.profile_status = 'active'
-             AND creator.display_name IS NOT NULL
              AND creator.source_creator_id IS NOT NULL
            ORDER BY creator.created_at DESC, creator.source_creator_id ASC
            LIMIT $1 OFFSET $2`,
@@ -383,7 +392,17 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
         pool.query<{ total: string }>(
           `SELECT COUNT(*)::text AS total
            FROM marketplace.creator_profiles creator
-           WHERE creator.profile_complete = TRUE
+           WHERE NULLIF(BTRIM(creator.display_name), '') IS NOT NULL
+             AND NULLIF(BTRIM(creator.location_text), '') IS NOT NULL
+             AND NULLIF(BTRIM(creator.short_description), '') IS NOT NULL
+             AND EXISTS (
+               SELECT 1
+               FROM marketplace.creator_platforms completion_platform
+               WHERE completion_platform.creator_profile_id = creator.id
+                 AND completion_platform.organization_id = creator.organization_id
+                 AND NULLIF(BTRIM(completion_platform.handle), '') IS NOT NULL
+                 AND completion_platform.follower_count > 0
+             )
              AND (
                NOT $1::boolean
                OR (
@@ -392,7 +411,6 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
                )
              )
              AND creator.profile_status = 'active'
-             AND creator.display_name IS NOT NULL
              AND creator.source_creator_id IS NOT NULL`,
           [profilePhotoRequired],
         ),

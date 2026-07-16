@@ -173,6 +173,7 @@ describe("marketplace creator self-service routes", () => {
     });
 
     const response = await injectJson<{
+      profilePhotoRequired: boolean;
       profileComplete: boolean;
       missingFields: string[];
       completionSteps: string[];
@@ -183,6 +184,7 @@ describe("marketplace creator self-service routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.body.profilePhotoRequired).toBe(true);
     expect(response.body.profileComplete).toBe(false);
     expect(response.body.missingFields).toContain("profilePicture");
     expect(response.body.completionSteps).toContain("add_profile_picture");
@@ -579,29 +581,55 @@ describe("marketplace creator platform persistence", () => {
     expect(deletion?.values?.[2]).toEqual(["platform-1", "platform-new-1"]);
   });
 
-  it("requires both persisted photo fields when recalculating completion", async () => {
-    const target = creatorPlatformRepositoryTarget([]);
-    const repository = createPgMarketplaceCreatorSelfServiceRepository({
+  it("persists base completeness independently of the profile photo policy", async () => {
+    const target = creatorPlatformRepositoryTarget(["platform-1"]);
+    const photoRequiredRepository = createPgMarketplaceCreatorSelfServiceRepository({
       connectionString: "postgres://unused",
       pool: target.pool as never,
       profilePhotoRequired: true,
     });
 
-    await repository.updateCreatorProfile({
+    const photoRequiredProfile = await photoRequiredRepository.updateCreatorProfile({
       organizationId: "org_creator_workspace",
       creatorProfileId,
       patch: { displayName: "Lina Creator" },
     });
 
+    expect(photoRequiredProfile?.profileComplete).toBe(false);
     const completion = target.queries.find((query) => query.text.includes("WITH completion AS"));
-    expect(completion?.text).toContain("profilePictureMediaObjectId");
-    expect(completion?.values).toEqual([creatorProfileId, "org_creator_workspace", true]);
+    expect(completion?.text).not.toContain("profile_picture");
+    expect(completion?.values).toEqual([creatorProfileId, "org_creator_workspace"]);
 
     const profileRead = target.queries.find(
       (query) =>
         query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
     );
+    expect(profileRead?.text).toContain("FROM marketplace.creator_platforms completion_platform");
     expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", true]);
+  });
+
+  it("derives base completeness after photo policy rollback without a profile update", async () => {
+    const target = creatorPlatformRepositoryTarget(["platform-1"]);
+    const photoOptionalRepository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+      profilePhotoRequired: false,
+    });
+
+    const photoOptionalProfile = await photoOptionalRepository.getCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+    });
+
+    expect(photoOptionalProfile?.profileComplete).toBe(true);
+    expect(target.queries.some((query) => query.text.includes("WITH completion AS"))).toBe(false);
+    const profileRead = target.queries.find(
+      (query) =>
+        query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
+    );
+    expect(profileRead?.text).not.toContain("(profile.profile_complete");
+    expect(profileRead?.text).toContain("FROM marketplace.creator_platforms completion_platform");
+    expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", false]);
   });
 
   it("preserves omitted optional fields and supports explicit clears", async () => {
@@ -686,6 +714,7 @@ describe("marketplace creator platform persistence", () => {
 function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
   const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
   let insertedPlatformCount = 0;
+  let persistedProfileComplete = false;
   const query = vi.fn(async (text: string, values?: readonly unknown[]) => {
     queries.push({ text, values });
     const normalized = text.trim();
@@ -705,7 +734,19 @@ function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
       insertedPlatformCount += 1;
       return { rows: [{ platformId: `platform-new-${insertedPlatformCount}` }] };
     }
+    if (normalized.startsWith("WITH completion AS")) {
+      persistedProfileComplete =
+        existingPlatformIds.length > 0 && !normalized.includes("profile_picture");
+      return { rows: [] };
+    }
     if (normalized.startsWith("SELECT") && normalized.includes("LEFT JOIN LATERAL")) {
+      const profilePhotoRequired = values?.[2] === true;
+      const derivesBaseCompleteness = normalized.includes(
+        "FROM marketplace.creator_platforms completion_platform",
+      );
+      const baseProfileComplete = derivesBaseCompleteness
+        ? existingPlatformIds.length > 0
+        : persistedProfileComplete;
       return {
         rows: [
           {
@@ -720,8 +761,8 @@ function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
             phone: null,
             profilePictureUrl: null,
             profilePictureMediaObjectId: null,
-            profileComplete: false,
-            profileCompletedAt: null,
+            profileComplete: baseProfileComplete && !profilePhotoRequired,
+            profileCompletedAt: persistedProfileComplete ? "2026-07-05T10:00:00.000Z" : null,
             profileStatus: "pending",
             platforms: [],
             averageRating: 0,

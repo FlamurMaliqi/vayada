@@ -196,7 +196,7 @@ async function createIdentityUser(
   }
 }
 
-async function updateIdentityUserProfile(
+export async function updateIdentityUserProfile(
   pool: pg.Pool,
   command: UpdateIdentityUserProfileCommand,
 ): Promise<IdentityLifecycleCommandResult> {
@@ -204,16 +204,22 @@ async function updateIdentityUserProfile(
     `UPDATE identity.users
      SET name = COALESCE($2, name),
          phone = CASE WHEN $3::boolean THEN $4::text ELSE phone END,
-         profile_picture_url = COALESCE($5, profile_picture_url),
-         profile_picture_media_object_id = COALESCE($6, profile_picture_media_object_id),
+         profile_picture_url = CASE
+           WHEN $5::boolean THEN $6::text ELSE profile_picture_url
+         END,
+         profile_picture_media_object_id = CASE
+           WHEN $7::boolean THEN $8::text ELSE profile_picture_media_object_id
+         END,
          updated_at = now()
      WHERE id = $1`,
     [
       command.payload.userId,
       command.payload.name ?? null,
-      Object.prototype.hasOwnProperty.call(command.payload, "phone"),
+      Object.hasOwn(command.payload, "phone"),
       command.payload.phone ?? null,
+      Object.hasOwn(command.payload, "profilePictureUrl"),
       command.payload.profilePictureUrl ?? null,
+      Object.hasOwn(command.payload, "profilePictureMediaObjectId"),
       command.payload.profilePictureMediaObjectId ?? null,
     ],
   );

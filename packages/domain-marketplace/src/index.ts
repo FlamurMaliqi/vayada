@@ -203,6 +203,7 @@ export type CreatorProfileRatingSummary = {
 export type CreatorProfileStatusResult = {
   creatorProfileId: string;
   organizationId: string;
+  profilePhotoRequired: boolean;
   profileComplete: boolean;
   profileStatus: CreatorProfileStatus;
   missingFields: CreatorProfileMissingField[];

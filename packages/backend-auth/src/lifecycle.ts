@@ -158,8 +158,8 @@ export type UpdateIdentityUserProfilePayload = {
   userId: string;
   name?: string;
   phone?: string | null;
-  profilePictureUrl?: string;
-  profilePictureMediaObjectId?: string;
+  profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
 };
 
 export type UpdateIdentityUserEmailPayload = {

@@ -170,7 +170,7 @@ export function clearPendingEmailVerification(): void {
   }
 }
 
-async function attachMarketplaceCompatibilityToken(): Promise<void> {
+async function attachMarketplaceCompatibilityToken(signal?: AbortSignal): Promise<void> {
   const csrfToken = getAuthCsrfToken();
   if (!csrfToken) return;
 
@@ -179,6 +179,7 @@ async function attachMarketplaceCompatibilityToken(): Promise<void> {
     {
       method: "POST",
       headers: { "x-vayada-csrf": csrfToken },
+      signal,
     },
   );
   setLegacyCompatibilityToken(response.accessToken, response.expiresIn);
@@ -260,7 +261,10 @@ export const authService = {
     window.location.href = url.toString();
   },
 
-  refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
+  refreshSession: async (
+    organizationId?: string,
+    signal?: AbortSignal,
+  ): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
     const response =
       organizationId && csrfToken
@@ -268,11 +272,13 @@ export const authService = {
             method: "POST",
             headers: { "x-vayada-csrf": csrfToken },
             body: JSON.stringify({ organizationId, surface: AUTH_SURFACE }),
+            signal,
           })
         : await authFetch<AuthSessionResponse>(
             `/auth/session?${new URLSearchParams({
               surface: AUTH_SURFACE,
             }).toString()}`,
+            { signal },
           );
 
     if (isAuthOrganizationSelectionResponse(response)) {
@@ -281,19 +287,20 @@ export const authService = {
     }
     setAuthKitSession(response);
     if (isCompatibilityTokenEnabled()) {
-      await attachMarketplaceCompatibilityToken();
+      await attachMarketplaceCompatibilityToken(signal);
     }
     return response;
   },
 
-  ensureSession: async (): Promise<boolean> => {
+  ensureSession: async (signal?: AbortSignal): Promise<boolean> => {
     if (hasAuthenticatedSession()) return true;
     try {
-      const response = await authService.refreshSession();
+      const response = await authService.refreshSession(undefined, signal);
       if (isAuthOrganizationSelectionResponse(response)) return false;
       return true;
-    } catch {
+    } catch (error) {
       clearAuthData();
+      if (signal?.aborted) throw error;
       return false;
     }
   },

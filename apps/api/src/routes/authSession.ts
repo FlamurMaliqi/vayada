@@ -1233,8 +1233,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         userId: resolution.user.userId,
         ...(parsed.name !== undefined ? { name: parsed.name } : {}),
         ...(parsed.phone !== undefined ? { phone: parsed.phone } : {}),
-        ...(profilePictureUrl ? { profilePictureUrl } : {}),
-        ...(parsed.profilePictureMediaObjectId
+        ...(parsed.profilePictureUrl !== undefined ? { profilePictureUrl } : {}),
+        ...(parsed.profilePictureMediaObjectId !== undefined
           ? { profilePictureMediaObjectId: parsed.profilePictureMediaObjectId }
           : {}),
       },

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { splitSharedAccountName } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants/routes";
-import { CREATOR_PROFILE_PHOTO_REQUIRED, STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/constants";
 import { checkProfileStatus, isProfileComplete } from "@/lib/utils";
 import type {
   UserType,
@@ -52,6 +52,8 @@ export default function ProfileCompletePage() {
     identitySynced: boolean;
   } | null>(null);
   const [initialCreatorPlatformsSignature, setInitialCreatorPlatformsSignature] = useState("[]");
+  const creatorPhotoRequired =
+    (profileStatus as CreatorProfileStatus | null)?.profile_photo_required ?? false;
 
   const creatorSteps = ["Creator category", "About your work", "Audience & platforms"];
   const hotelSteps = ["Basic Information", "Collaboration Offers"];
@@ -59,7 +61,7 @@ export default function ProfileCompletePage() {
   // Initialize hooks with error handler
   const creatorForm = useCreatorProfileForm({
     onError: setError,
-    profileImageRequired: CREATOR_PROFILE_PHOTO_REQUIRED,
+    profileImageRequired: creatorPhotoRequired,
   });
   const hotelForm = useHotelProfileForm({ onError: setError });
 
@@ -89,7 +91,7 @@ export default function ProfileCompletePage() {
         setLoading(true);
         void Promise.allSettled([
           hydrateCreatorProfile(userName, hydrationController.signal),
-          loadProfileStatus("creator", true, false),
+          loadProfileStatus("creator", true, false, hydrationController.signal),
         ])
           .then(([hydrationResult, statusResult]) => {
             if (cancelled) return;
@@ -102,10 +104,25 @@ export default function ProfileCompletePage() {
               );
               return;
             }
+            if (statusResult.status === "rejected") {
+              setProfileStatusLoadFailed(true);
+              setError(
+                hydrationController.signal.aborted
+                  ? "Loading your creator profile took too long. Please refresh and try again."
+                  : "Failed to load profile status. Please try again.",
+              );
+              return;
+            }
+            const creatorStatus = statusResult.value as CreatorProfileStatus | null;
             if (
-              statusResult.status === "fulfilled" &&
-              statusResult.value?.profile_complete &&
-              CREATOR_PROFILE_PHOTO_REQUIRED &&
+              creatorStatus?.profile_photo_required &&
+              !hydrationResult.value.profilePictureMediaObjectId?.trim()
+            ) {
+              creatorForm.setForm((prev) => ({ ...prev, profile_image: "" }));
+            }
+            if (
+              creatorStatus?.profile_complete &&
+              creatorStatus.profile_photo_required &&
               (!hydrationResult.value.profilePicture?.trim() ||
                 !hydrationResult.value.profilePictureMediaObjectId?.trim())
             ) {
@@ -134,8 +151,6 @@ export default function ProfileCompletePage() {
   const hydrateCreatorProfile = async (fallbackName: string, signal: AbortSignal) => {
     const profile = await creatorService.getMyProfile({ signal });
     const profilePicture = profile.profilePicture?.trim() || "";
-    const reusableProfilePicture =
-      !CREATOR_PROFILE_PHOTO_REQUIRED || profile.profilePictureMediaObjectId ? profilePicture : "";
     const hasStartedCreatorProfile = Boolean(
       profile.location.trim() ||
       profile.shortDescription?.trim() ||
@@ -149,7 +164,7 @@ export default function ProfileCompletePage() {
       short_description: profile.shortDescription?.trim() || prev.short_description,
       portfolio_link: profile.portfolioLink?.trim() || prev.portfolio_link,
       phone: profile.phone?.trim() || prev.phone,
-      profile_image: reusableProfilePicture || prev.profile_image,
+      profile_image: profilePicture || prev.profile_image,
       creator_type: hasStartedCreatorProfile ? profile.creatorType : prev.creator_type,
     }));
     const hydratedPlatforms = profile.platforms.map((platform) => ({
@@ -176,17 +191,19 @@ export default function ProfileCompletePage() {
     type: "creator" | "hotel",
     skipRedirect = false,
     manageLoading = true,
+    signal?: AbortSignal,
   ): Promise<CreatorProfileStatus | HotelProfileStatus | null> => {
     if (manageLoading) setLoading(true);
     setProfileStatusLoadFailed(false);
     try {
-      const status = await checkProfileStatus(type);
+      const status = await checkProfileStatus(type, { signal });
       setProfileStatus(status);
       if (status?.profile_complete && !skipRedirect && !profileCompleted) {
         setProfileCompleted(true);
       }
       return status;
     } catch (err) {
+      if (signal?.aborted) throw err;
       console.error("Failed to load profile status:", err);
       setProfileStatusLoadFailed(true);
       setError(
@@ -601,7 +618,7 @@ export default function ProfileCompletePage() {
 
   if (
     (profileCompleted || effectiveProfileStatus.profile_complete) &&
-    (userType !== "creator" || !CREATOR_PROFILE_PHOTO_REQUIRED || creatorPhotoPersisted)
+    (userType !== "creator" || !creatorPhotoRequired || creatorPhotoPersisted)
   ) {
     return (
       <ProfileCompletionScreen
@@ -764,6 +781,7 @@ function emptyProfileStatus(
 ): CreatorProfileStatus | HotelProfileStatus {
   if (userType === "creator") {
     return {
+      profile_photo_required: false,
       profile_complete: false,
       missing_fields: [],
       missing_platforms: true,

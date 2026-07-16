@@ -1921,6 +1921,33 @@ describe("AuthKit session routes", () => {
     );
     expect(workosNameUpdates).toHaveLength(1);
 
+    const clearedPhoto = await app.inject({
+      method: "POST",
+      url: "/auth/profile",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: {
+        surface: "marketplace-web",
+        profilePictureUrl: "",
+        profilePictureMediaObjectId: "",
+      },
+    });
+
+    expect(clearedPhoto.statusCode).toBe(200);
+    expect(commands[2]).toEqual(
+      expect.objectContaining({
+        commandType: "identity.user.profile.update",
+        payload: expect.objectContaining({
+          userId: "user_hotel_owner",
+          profilePictureUrl: null,
+          profilePictureMediaObjectId: null,
+        }),
+      }),
+    );
+
     const forged = await app.inject({
       method: "POST",
       url: "/auth/profile",
@@ -1937,7 +1964,7 @@ describe("AuthKit session routes", () => {
     });
 
     expect(forged.statusCode).toBe(400);
-    expect(commands).toHaveLength(2);
+    expect(commands).toHaveLength(3);
 
     failWorkosNameUpdate = true;
     const unavailable = await app.inject({
@@ -1956,7 +1983,7 @@ describe("AuthKit session routes", () => {
     });
 
     expect(unavailable.statusCode).toBe(500);
-    expect(commands).toHaveLength(2);
+    expect(commands).toHaveLength(3);
   });
 
   it("auto-selects a single PMS hotel-group organization without showing a selector", async () => {

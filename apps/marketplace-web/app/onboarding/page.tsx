@@ -10,12 +10,13 @@ import {
   isSharedAccountDetailsComplete,
 } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
-import { CREATOR_PROFILE_PHOTO_REQUIRED, ROUTES } from "@/lib/constants";
+import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 import { creatorService } from "@/services/api/creators";
 import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
 
 type AccountType = "hotel" | "creator";
+const ONBOARDING_REQUEST_TIMEOUT_MS = 5_000;
 
 const options: Array<{
   type: AccountType;
@@ -46,28 +47,51 @@ export default function OnboardingPage() {
   const [welcomeComplete, setWelcomeComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [creatorPhotoRequired, setCreatorPhotoRequired] = useState<boolean | null>(null);
+  const [sessionConfirmed, setSessionConfirmed] = useState(false);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    const requestController = new AbortController();
+    const sessionTimeoutSignal = AbortSignal.timeout(ONBOARDING_REQUEST_TIMEOUT_MS);
+    const sessionSignal = AbortSignal.any([requestController.signal, sessionTimeoutSignal]);
     void (async () => {
       try {
-        const authenticated = await authService.ensureSession();
+        let authenticated: boolean;
+        try {
+          authenticated = await authService.ensureSession(sessionSignal);
+        } catch (error) {
+          if (sessionTimeoutSignal.aborted && !requestController.signal.aborted) {
+            throw new Error("Loading your session took too long. Please try again.");
+          }
+          throw error;
+        }
         if (cancelled) return;
         if (!authenticated) {
           router.replace(ROUTES.LOGIN);
           return;
         }
+        setSessionConfirmed(true);
         const userType = authService.getUserType();
         if (userType === "creator" || userType === "hotel") {
+          setProvisionedType(userType);
           if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
             router.replace(nextPathForType(userType));
             return;
           }
-          setSelectedType(userType);
-          setProvisionedType(userType);
-          setWelcomeComplete(true);
+          const photoRequired = await creatorPhotoRequirement(userType, requestController.signal);
+          if (cancelled) return;
+          setCreatorPhotoRequired(photoRequired);
           setLoading(false);
           return;
+        }
+        try {
+          setWelcomeComplete(
+            window.sessionStorage.getItem(onboardingWelcomeStorageKey()) === "complete",
+          );
+        } catch {
+          // The welcome remains available when browser storage is unavailable.
         }
         setLoading(false);
       } catch (error) {
@@ -78,36 +102,28 @@ export default function OnboardingPage() {
     })();
     return () => {
       cancelled = true;
+      requestController.abort();
     };
-  }, [router]);
-
-  useEffect(() => {
-    if (loading || error || provisionedType) return;
-
-    const user = authService.getSessionUser();
-    const storageKey = `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
-    try {
-      if (window.sessionStorage.getItem(storageKey) === "complete") {
-        setWelcomeComplete(true);
-      }
-    } catch {
-      // The welcome remains available when browser storage is unavailable.
-    }
-  }, [error, loading, provisionedType]);
+  }, [router, sessionAttempt]);
 
   useEffect(() => {
     if (welcomeComplete && !loading && !provisionedType) optionRefs.current[0]?.focus();
   }, [loading, provisionedType, welcomeComplete]);
 
   function handleWelcomeContinue() {
-    const user = authService.getSessionUser();
-    const storageKey = `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
     try {
-      window.sessionStorage.setItem(storageKey, "complete");
+      window.sessionStorage.setItem(onboardingWelcomeStorageKey(), "complete");
     } catch {
       // The in-memory state is enough for the current page.
     }
     setWelcomeComplete(true);
+  }
+
+  function retrySession() {
+    setError("");
+    setLoading(true);
+    setSessionConfirmed(false);
+    setSessionAttempt((attempt) => attempt + 1);
   }
 
   async function handleContinue() {
@@ -116,13 +132,31 @@ export default function OnboardingPage() {
     setSubmitting(true);
     try {
       await authService.completeOnboarding(selectedType);
+      const canonicalType = authService.getUserType();
+      if (canonicalType !== "creator" && canonicalType !== "hotel") {
+        throw new Error("Your account role could not be confirmed. Please sign in again.");
+      }
+      setProvisionedType(canonicalType);
       if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
-        router.push(nextPathForType(selectedType));
+        router.push(nextPathForType(canonicalType));
         return;
       }
-      setProvisionedType(selectedType);
+      setCreatorPhotoRequired(await creatorPhotoRequirement(canonicalType));
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to continue onboarding.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function retryCreatorPhotoRequirement() {
+    if (provisionedType !== "creator") return;
+    setError("");
+    setSubmitting(true);
+    try {
+      setCreatorPhotoRequired(await creatorPhotoRequirement(provisionedType));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Failed to load creator requirements.");
     } finally {
       setSubmitting(false);
     }
@@ -151,14 +185,69 @@ export default function OnboardingPage() {
     selectOptionAtIndex((nextIndex + options.length) % options.length);
   }
 
-  const showSignupWelcome = !welcomeComplete && !error;
+  const showSignupWelcome = !loading && !welcomeComplete && !error;
+
+  if (!loading && !sessionConfirmed) {
+    return (
+      <OnboardingShell
+        currentStep={1}
+        title="Reconnect your session"
+        description="Confirm your account before continuing onboarding."
+        showProgress={false}
+      >
+        <div className="mx-auto max-w-xl rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+          <p role="alert" className="text-sm text-red-700">
+            {error}
+          </p>
+          <button
+            type="button"
+            onClick={retrySession}
+            className="mt-5 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white hover:bg-primary-700"
+          >
+            Retry session
+          </button>
+        </div>
+      </OnboardingShell>
+    );
+  }
+
+  if (!loading && provisionedType === "creator" && creatorPhotoRequired === null) {
+    return (
+      <OnboardingShell
+        currentStep={1}
+        title="Finish setting up your creator profile"
+        description="We need the current creator profile requirements before continuing."
+        showProgress={false}
+      >
+        <div className="mx-auto max-w-xl rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+          {error ? (
+            <p role="alert" className="text-sm text-red-700">
+              {error}
+            </p>
+          ) : (
+            <p className="text-sm text-gray-600">Loading creator profile requirements…</p>
+          )}
+          {error && (
+            <button
+              type="button"
+              onClick={() => void retryCreatorPhotoRequirement()}
+              disabled={submitting}
+              className="mt-5 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? "Retrying…" : "Retry creator requirements"}
+            </button>
+          )}
+        </div>
+      </OnboardingShell>
+    );
+  }
 
   if (!loading && provisionedType) {
     const user = authService.getSessionUser();
     return (
       <SharedAccountDetailsStep
         accountType={provisionedType}
-        requireProfileImage={CREATOR_PROFILE_PHOTO_REQUIRED}
+        requireProfileImage={creatorPhotoRequired === true}
         email={user?.email ?? ""}
         initialName={user?.name}
         initialPhone={user?.phone}
@@ -200,11 +289,19 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell
       currentStep={1}
-      title={showSignupWelcome ? "Thank you for signing up" : "Which best describes you?"}
+      title={
+        loading
+          ? "Getting things ready"
+          : showSignupWelcome
+            ? "Thank you for signing up"
+            : "Which best describes you?"
+      }
       description={
-        showSignupWelcome
-          ? "Welcome to Vayada — we’re glad you’re here. Let’s get you set up."
-          : "Choose your role so we can tailor your setup."
+        loading
+          ? "Loading your account details."
+          : showSignupWelcome
+            ? "Welcome to Vayada — we’re glad you’re here. Let’s get you set up."
+            : "Choose your role so we can tailor your setup."
       }
       showProgress={false}
     >
@@ -333,6 +430,28 @@ function PathChoice({
 
 function nextPathForType(type: AccountType): string {
   return type === "creator" ? ROUTES.PROFILE_COMPLETE : `${ROUTES.SETUP}?entryProduct=marketplace`;
+}
+
+async function creatorPhotoRequirement(type: AccountType, signal?: AbortSignal): Promise<boolean> {
+  if (type !== "creator") return false;
+  const timeoutSignal = AbortSignal.timeout(ONBOARDING_REQUEST_TIMEOUT_MS);
+  try {
+    return (
+      await creatorService.getProfileStatus({
+        signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+      })
+    ).profile_photo_required;
+  } catch (error) {
+    if (timeoutSignal.aborted && !signal?.aborted) {
+      throw new Error("Loading the creator photo requirement took too long. Please try again.");
+    }
+    throw error;
+  }
+}
+
+function onboardingWelcomeStorageKey(): string {
+  const user = authService.getSessionUser();
+  return `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
 }
 
 function SignupWelcomeMoment({ onContinue }: { onContinue: () => void }) {

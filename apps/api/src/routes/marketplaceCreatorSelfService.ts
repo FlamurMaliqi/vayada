@@ -372,11 +372,7 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
             platforms: patch.platforms,
           });
         }
-        await recalculateProfileCompletion(
-          client,
-          { organizationId, creatorProfileId },
-          profilePhotoRequired,
-        );
+        await recalculateProfileCompletion(client, { organizationId, creatorProfileId });
         const profile = await readCreatorProfile(
           client,
           { organizationId, creatorProfileId },
@@ -551,7 +547,17 @@ async function readCreatorProfile(
        profile.phone,
        profile.profile_picture_url AS "profilePictureUrl",
        profile.profile_metadata ->> 'profilePictureMediaObjectId' AS "profilePictureMediaObjectId",
-       (profile.profile_complete
+       (NULLIF(BTRIM(profile.display_name), '') IS NOT NULL
+         AND NULLIF(BTRIM(profile.location_text), '') IS NOT NULL
+         AND NULLIF(BTRIM(profile.short_description), '') IS NOT NULL
+         AND EXISTS (
+           SELECT 1
+           FROM marketplace.creator_platforms completion_platform
+           WHERE completion_platform.creator_profile_id = profile.id
+             AND completion_platform.organization_id = profile.organization_id
+             AND NULLIF(BTRIM(completion_platform.handle), '') IS NOT NULL
+             AND completion_platform.follower_count > 0
+         )
          AND (
            NOT $3::boolean
            OR (
@@ -840,7 +846,6 @@ async function replaceCreatorPlatforms(
 async function recalculateProfileCompletion(
   client: MarketplaceCreatorSelfServiceClient,
   input: { organizationId: string; creatorProfileId: string },
-  profilePhotoRequired = false,
 ): Promise<void> {
   await client.query(
     `WITH completion AS (
@@ -848,13 +853,6 @@ async function recalculateProfileCompletion(
          NULLIF(BTRIM(profile.display_name), '') IS NOT NULL
          AND NULLIF(BTRIM(profile.location_text), '') IS NOT NULL
          AND NULLIF(BTRIM(profile.short_description), '') IS NOT NULL
-         AND (
-           NOT $3::boolean
-           OR (
-             NULLIF(BTRIM(profile.profile_picture_url), '') IS NOT NULL
-             AND NULLIF(BTRIM(profile.profile_metadata ->> 'profilePictureMediaObjectId'), '') IS NOT NULL
-           )
-         )
          AND EXISTS (
            SELECT 1
            FROM marketplace.creator_platforms platform
@@ -878,7 +876,7 @@ async function recalculateProfileCompletion(
      FROM completion
      WHERE profile.id::text = $1
        AND profile.organization_id::text = $2`,
-    [input.creatorProfileId, input.organizationId, profilePhotoRequired],
+    [input.creatorProfileId, input.organizationId],
   );
 }
 
@@ -891,6 +889,7 @@ function creatorProfileStatus(
   return {
     creatorProfileId: profile.creatorProfileId,
     organizationId: profile.organizationId,
+    profilePhotoRequired,
     profileComplete: missingFields.length === 0 && !missingPlatforms,
     profileStatus: profile.profileStatus,
     missingFields: missingPlatforms ? [...missingFields, "platforms"] : missingFields,

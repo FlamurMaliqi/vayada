@@ -4,4 +4,3 @@ export * from "./sections";
 export * from "./content";
 export * from "./storage";
 export * from "./colors";
-export * from "./features";

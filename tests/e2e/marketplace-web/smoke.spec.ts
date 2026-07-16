@@ -216,6 +216,7 @@ test.describe("marketplace-web smoke", () => {
       await route.fulfill({ status: 200, headers: corsHeaders(route), json: creatorProfile });
     });
     await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
+      profilePhotoRequired: true,
       profileComplete: false,
       missingFields: [],
       missingPlatforms: true,
@@ -329,6 +330,62 @@ test.describe("marketplace-web smoke", () => {
     await expect(continueButton).toBeInViewport({ ratio: 1 });
   });
 
+  test("creator onboarding recovers when the photo policy request times out", async ({ page }) => {
+    await primeBrowserState(page);
+    await mockOnboardingAuth(page, "creator");
+    let statusRequests = 0;
+    await page.route(/\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      statusRequests += 1;
+      if (statusRequests === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 6_000));
+        await route.abort().catch(() => undefined);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          profilePhotoRequired: true,
+          profileComplete: false,
+          missingFields: [],
+          missingPlatforms: true,
+          completionSteps: [],
+        },
+      });
+    });
+
+    await page.goto("/onboarding");
+    await page.getByRole("button", { name: "Let’s get you set up" }).click();
+    await page.getByRole("radio", { name: /i’m a creator/i }).click();
+    const continueButton = page.getByRole("button", { name: "Continue", exact: true });
+    await continueButton.click();
+
+    await expect(
+      page.getByText("Loading the creator photo requirement took too long. Please try again."),
+    ).toBeVisible({ timeout: 7_000 });
+    await expect(page.getByRole("radio")).toHaveCount(0);
+    await page.getByRole("button", { name: "Retry creator requirements" }).click();
+    await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
+    expect(statusRequests).toBe(2);
+  });
+
+  test("returning onboarding users do not see the signup welcome again", async ({ page }) => {
+    await primeBrowserState(page);
+    await page.addInitScript(() => {
+      sessionStorage.setItem("vayada:onboarding-welcome:user-pending-onboarding", "complete");
+    });
+    await mockOnboardingAuth(page);
+
+    await page.goto("/onboarding");
+
+    await expect(page.getByRole("heading", { name: "Which best describes you?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toHaveCount(0);
+  });
+
   test("creator onboarding preserves an existing public profile and hydrates its platforms", async ({
     page,
   }) => {
@@ -378,6 +435,7 @@ test.describe("marketplace-web smoke", () => {
       });
     });
     await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
+      profilePhotoRequired: true,
       profileComplete: false,
       missingFields: [],
       missingPlatforms: false,
@@ -428,6 +486,7 @@ test.describe("marketplace-web smoke", () => {
     const uploadedProfilePicture = "https://media.example/creator-replacement.png";
     let updateAttempts = 0;
     let uploadSessionRequests = 0;
+    let uploadFinalizeRequests = 0;
     let identityPhotoUpdates = 0;
     let creatorProfile = {
       creatorProfileId: "creator-profile-legacy",
@@ -506,6 +565,7 @@ test.describe("marketplace-web smoke", () => {
         status: 200,
         headers: corsHeaders(route),
         json: {
+          profilePhotoRequired: true,
           profileComplete,
           missingFields: profileComplete ? [] : ["profilePicture"],
           missingPlatforms: false,
@@ -519,6 +579,7 @@ test.describe("marketplace-web smoke", () => {
         return;
       }
       if (route.request().url().endsWith("/finalize")) {
+        uploadFinalizeRequests += 1;
         await route.fulfill({
           status: 200,
           headers: corsHeaders(route),
@@ -605,12 +666,14 @@ test.describe("marketplace-web smoke", () => {
       page.getByRole("alert").filter({ hasText: "Temporary profile update failure" }),
     ).toBeVisible();
     expect(uploadSessionRequests).toBe(1);
+    expect(uploadFinalizeRequests).toBe(1);
     expect(identityPhotoUpdates).toBe(1);
 
     await page.getByRole("button", { name: "Submit for review" }).click();
     await expect(page.getByRole("heading", { name: "Your profile is complete" })).toBeVisible();
     expect(updateAttempts).toBe(2);
     expect(uploadSessionRequests).toBe(1);
+    expect(uploadFinalizeRequests).toBe(1);
     expect(identityPhotoUpdates).toBe(1);
   });
 
@@ -664,6 +727,7 @@ test.describe("marketplace-web smoke", () => {
       await route.fulfill({ status: 200, headers: corsHeaders(route), json: creatorProfile });
     });
     await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
+      profilePhotoRequired: true,
       profileComplete: true,
       missingFields: [],
       missingPlatforms: false,
@@ -704,6 +768,53 @@ test.describe("marketplace-web smoke", () => {
         exact: true,
       }),
     ).toBeVisible();
+  });
+
+  test("onboarding surfaces a stalled cold session instead of hanging", async ({ page }) => {
+    await primeBrowserState(page);
+    let sessionRequests = 0;
+    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      sessionRequests += 1;
+      if (sessionRequests === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 6_000));
+        await route.abort().catch(() => undefined);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          accessToken: "test-access-token",
+          csrfToken: "test-csrf-token",
+          user: {
+            id: "user-pending-onboarding",
+            email: "owner@example.test",
+            status: "active",
+          },
+        },
+      });
+    });
+    await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
+      accessToken: "legacy-marketplace-token",
+      expiresIn: 900,
+    });
+
+    await page.goto("/onboarding");
+
+    await expect(
+      page.getByText("Loading your session took too long. Please try again."),
+    ).toBeVisible({ timeout: 7_000 });
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(page.getByRole("heading", { name: /sign in to vayada/i })).toHaveCount(0);
+    await expect(page.getByRole("radio")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Retry session" }).click();
+    await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
   });
 
   test("redirects to login and blocks onboarding actions when the session check fails", async ({
@@ -771,6 +882,10 @@ async function mockCreatorSession(page: Page, name: string) {
         },
       },
     });
+  });
+  await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
+    accessToken: "legacy-marketplace-token",
+    expiresIn: 900,
   });
 }
 

@@ -16,6 +16,23 @@ import type {
   CreatorProfile,
 } from "@/components/profile/types";
 
+function normalizeProfilePlatforms(platforms: ProfilePlatform[]): ProfilePlatform[] {
+  return platforms.map((platform) => {
+    const cleanAgeGroups = platform.topAgeGroups?.filter(
+      (ageGroup): ageGroup is PlatformAgeGroup =>
+        ageGroup !== null &&
+        ageGroup.ageRange !== undefined &&
+        ageGroup.ageRange !== "" &&
+        ageGroup.ageRange !== "null",
+    );
+
+    return {
+      ...platform,
+      ...(cleanAgeGroups !== undefined ? { topAgeGroups: cleanAgeGroups } : {}),
+    };
+  });
+}
+
 export function useCreatorProfile(
   showError: (title: string, message: string | string[], details?: string) => void,
 ) {
@@ -114,20 +131,7 @@ export function useCreatorProfile(
         location: creatorProfile.location,
         portfolioLink: creatorProfile.portfolioLink || "",
         creatorType: creatorProfile.creatorType || "Lifestyle",
-        platforms: (creatorProfile.platforms || []).map((platform) => {
-          const cleanAgeGroups = platform.topAgeGroups?.filter(
-            (ag): ag is PlatformAgeGroup =>
-              ag !== null &&
-              ag.ageRange !== undefined &&
-              ag.ageRange !== "" &&
-              ag.ageRange !== "null",
-          );
-
-          return {
-            ...platform,
-            ...(cleanAgeGroups !== undefined ? { topAgeGroups: cleanAgeGroups } : {}),
-          };
-        }),
+        platforms: normalizeProfilePlatforms(creatorProfile.platforms || []),
       });
       setExpandedPlatforms(new Set());
       setPlatformCountryInputs({});
@@ -367,7 +371,7 @@ export function useCreatorProfile(
         location: creatorProfile.location,
         portfolioLink: creatorProfile.portfolioLink || "",
         creatorType: creatorProfile.creatorType || "Lifestyle",
-        platforms: creatorProfile.platforms || [],
+        platforms: normalizeProfilePlatforms(creatorProfile.platforms || []),
       });
       setProfilePicturePreview(null);
       setCreatorProfilePictureFile(null);

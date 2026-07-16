@@ -144,6 +144,7 @@ describe("creator target self-service client", () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
       return jsonResponse({
+        profilePhotoRequired: true,
         profileComplete: false,
         missingFields: ["displayName"],
         missingPlatforms: true,
@@ -152,13 +153,15 @@ describe("creator target self-service client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const status = await creatorService.getProfileStatus();
+    const controller = new AbortController();
+    const status = await creatorService.getProfileStatus({ signal: controller.signal });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.localhost/api/marketplace/creators/me/profile-status",
-      expect.any(Object),
+      expect.objectContaining({ signal: controller.signal }),
     );
     expect(status).toEqual({
+      profile_photo_required: true,
       profile_complete: false,
       missing_fields: ["displayName"],
       missing_platforms: true,
@@ -167,9 +170,11 @@ describe("creator target self-service client", () => {
   });
 
   it("refreshes the AuthKit session from cookies before target status reads after reload", async () => {
+    const controller = new AbortController();
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
       if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+        expect(init?.signal).toBe(controller.signal);
         return jsonResponse({
           accessToken: "workos-access-token",
           csrfToken: "csrf-token",
@@ -180,6 +185,7 @@ describe("creator target self-service client", () => {
       if (href === "https://api.localhost/api/marketplace/creators/me/profile-status") {
         expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
         return jsonResponse({
+          profilePhotoRequired: false,
           profileComplete: false,
           missingFields: [],
           missingPlatforms: true,
@@ -190,13 +196,37 @@ describe("creator target self-service client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const status = await creatorService.getProfileStatus();
+    const status = await creatorService.getProfileStatus({ signal: controller.signal });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(status).toMatchObject({
+      profile_photo_required: false,
       profile_complete: false,
       missing_platforms: true,
     });
+  });
+
+  it("does not turn an aborted cold session refresh into an authentication failure", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        expect(String(url)).toBe("https://api.localhost/auth/session?surface=marketplace-web");
+        expect(init?.signal).toBe(controller.signal);
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = creatorService.getProfileStatus({ signal: controller.signal });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+
+    await expect(request).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("maps the legacy creator form payload to the target update contract", async () => {

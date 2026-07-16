@@ -39,6 +39,7 @@ interface CreatorMarketplaceResponse {
 }
 
 type TargetCreatorProfileStatus = {
+  profilePhotoRequired?: boolean;
   profileComplete: boolean;
   missingFields: string[];
   missingPlatforms: boolean;
@@ -206,11 +207,13 @@ export const creatorService = {
    * Get creator profile completion status
    * GET /api/marketplace/creators/me/profile-status
    */
-  getProfileStatus: async (): Promise<CreatorProfileStatus> => {
+  getProfileStatus: async (options?: RequestInit): Promise<CreatorProfileStatus> => {
     const status = await targetApiClient.get<TargetCreatorProfileStatus>(
       "/api/marketplace/creators/me/profile-status",
+      options,
     );
     return {
+      profile_photo_required: status.profilePhotoRequired === true,
       profile_complete: status.profileComplete,
       missing_fields: status.missingFields,
       missing_platforms: status.missingPlatforms,

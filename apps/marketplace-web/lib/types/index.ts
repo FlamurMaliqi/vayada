@@ -12,6 +12,7 @@ export type CreatorType = "Lifestyle" | "Travel" | "Other";
 
 // Profile Status types
 export interface CreatorProfileStatus {
+  profile_photo_required: boolean;
   profile_complete: boolean;
   missing_fields: string[];
   missing_platforms: boolean;
