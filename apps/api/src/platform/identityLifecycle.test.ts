@@ -62,5 +62,21 @@ describe("identity lifecycle writer", () => {
       true,
       null,
     ]);
+
+    await updateIdentityUserProfile({ query } as never, {
+      ...command,
+      payload: { userId: "user_1" },
+    });
+
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("WHEN $5::boolean"), [
+      "user_1",
+      null,
+      false,
+      null,
+      false,
+      null,
+      false,
+      null,
+    ]);
   });
 });

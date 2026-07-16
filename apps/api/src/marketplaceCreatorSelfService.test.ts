@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import {
   createPgMarketplaceCreatorSelfServiceRepository,
+  type MarketplaceCreatorProfileMediaRepository,
   type MarketplaceCreatorSelfServiceRepository,
 } from "./routes/marketplaceCreatorSelfService.js";
 import type { PlatformMediaObjectRecord } from "./routes/platformMedia.js";
@@ -387,6 +388,34 @@ describe("marketplace creator self-service routes", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.body.detail).toBe("Profile picture validation is temporarily unavailable");
+  });
+
+  it("maps media repository failures to temporary validation unavailability", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+      mediaRepository: {
+        persistent: true,
+        publicCdnBaseUrl: "https://media.example/",
+        async findMediaObject() {
+          throw new Error("database unavailable");
+        },
+      },
+    });
+
+    const response = await injectJson<{ code: string; detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        profilePictureMediaObjectId: "media_creator_profile_owned",
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body).toEqual({
+      code: "media_validation_unavailable",
+      detail: "Profile picture validation is temporarily unavailable",
+    });
   });
 
   it("rejects creator profile updates with too many platforms", async () => {
@@ -792,6 +821,7 @@ function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
 function buildMarketplaceCreatorApp(options: {
   repository: MarketplaceCreatorSelfServiceRepository;
   disableProfileMediaRepository?: boolean;
+  mediaRepository?: MarketplaceCreatorProfileMediaRepository;
   profilePhotoRequired?: boolean;
   lifecycleCommandBus?: IdentityLifecycleCommandBus;
   permissions?: PermissionKey[];
@@ -805,7 +835,7 @@ function buildMarketplaceCreatorApp(options: {
     ...(options.disableProfileMediaRepository
       ? {}
       : {
-          marketplaceCreatorProfileMediaRepository: {
+          marketplaceCreatorProfileMediaRepository: options.mediaRepository ?? {
             persistent: true,
             publicCdnBaseUrl: "https://media.example/",
             async findMediaObject(mediaId: string) {

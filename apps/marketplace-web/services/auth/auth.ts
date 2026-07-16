@@ -18,6 +18,7 @@ import {
   setAuthKitSession,
   setLegacyCompatibilityToken,
   setPendingOrganizationSelection,
+  type AuthKitSessionResponse,
   type AuthSessionResponse,
 } from "./sessionStore";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
@@ -170,19 +171,23 @@ export function clearPendingEmailVerification(): void {
   }
 }
 
-async function attachMarketplaceCompatibilityToken(signal?: AbortSignal): Promise<void> {
-  const csrfToken = getAuthCsrfToken();
-  if (!csrfToken) return;
+async function setAuthenticatedSession(
+  session: AuthKitSessionResponse,
+  signal?: AbortSignal,
+): Promise<void> {
+  const compatibilityToken =
+    isCompatibilityTokenEnabled() && session.csrfToken
+      ? await authFetch<CompatibilityTokenResponse>("/auth/compat/marketplace-web-token", {
+          method: "POST",
+          headers: { "x-vayada-csrf": session.csrfToken },
+          signal,
+        })
+      : null;
 
-  const response = await authFetch<CompatibilityTokenResponse>(
-    "/auth/compat/marketplace-web-token",
-    {
-      method: "POST",
-      headers: { "x-vayada-csrf": csrfToken },
-      signal,
-    },
-  );
-  setLegacyCompatibilityToken(response.accessToken, response.expiresIn);
+  setAuthKitSession(session);
+  if (compatibilityToken) {
+    setLegacyCompatibilityToken(compatibilityToken.accessToken, compatibilityToken.expiresIn);
+  }
 }
 
 /**
@@ -285,10 +290,7 @@ export const authService = {
       setPendingOrganizationSelection(response);
       return response;
     }
-    setAuthKitSession(response);
-    if (isCompatibilityTokenEnabled()) {
-      await attachMarketplaceCompatibilityToken(signal);
-    }
+    await setAuthenticatedSession(response, signal);
     return response;
   },
 
@@ -299,8 +301,8 @@ export const authService = {
       if (isAuthOrganizationSelectionResponse(response)) return false;
       return true;
     } catch (error) {
-      clearAuthData();
       if (signal?.aborted) throw error;
+      if (!hasAuthenticatedSession()) clearAuthData();
       return false;
     }
   },
@@ -322,10 +324,7 @@ export const authService = {
         setPendingOrganizationSelection(response);
         return response;
       }
-      setAuthKitSession(response);
-      if (isCompatibilityTokenEnabled()) {
-        await attachMarketplaceCompatibilityToken();
-      }
+      await setAuthenticatedSession(response);
       return response;
     } catch (error) {
       if (error instanceof ApiErrorResponse || error instanceof AuthStateError) {
@@ -560,10 +559,7 @@ export const authService = {
       setPendingOrganizationSelection(response);
       return response;
     }
-    setAuthKitSession(response);
-    if (isCompatibilityTokenEnabled()) {
-      await attachMarketplaceCompatibilityToken();
-    }
+    await setAuthenticatedSession(response);
     return response;
   },
 };

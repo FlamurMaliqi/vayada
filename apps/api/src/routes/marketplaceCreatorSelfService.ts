@@ -222,26 +222,31 @@ async function validateCreatorProfileMediaPatch(
     return null;
   }
 
-  const resolved = await resolveApprovedPublicProfileImage({
-    repository: mediaRepository,
-    mediaId: patch.profilePictureMediaObjectId,
-    actorUserId: access.actorUserId,
-    ownerOrganizationId: access.organizationId,
-    allowedTargets: [
-      {
-        purpose: "identity.user.profile_image",
-        resourceProduct: "platform",
-        resourceType: "user_profile",
-        resourceId: access.actorUserId,
-      },
-      {
-        purpose: "marketplace.creator.profile_image",
-        resourceProduct: "marketplace",
-        resourceType: "creator_profile",
-        resourceId: access.creatorProfileId,
-      },
-    ],
-  });
+  let resolved: Awaited<ReturnType<typeof resolveApprovedPublicProfileImage>>;
+  try {
+    resolved = await resolveApprovedPublicProfileImage({
+      repository: mediaRepository,
+      mediaId: patch.profilePictureMediaObjectId,
+      actorUserId: access.actorUserId,
+      ownerOrganizationId: access.organizationId,
+      allowedTargets: [
+        {
+          purpose: "identity.user.profile_image",
+          resourceProduct: "platform",
+          resourceType: "user_profile",
+          resourceId: access.actorUserId,
+        },
+        {
+          purpose: "marketplace.creator.profile_image",
+          resourceProduct: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: access.creatorProfileId,
+        },
+      ],
+    });
+  } catch {
+    resolved = { ok: false, reason: "unavailable" };
+  }
   if (!resolved.ok && resolved.reason === "unavailable") {
     return {
       statusCode: 503,

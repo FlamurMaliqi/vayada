@@ -102,6 +102,40 @@ describe("marketplace AuthKit compatibility token", () => {
     await sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("retries session hydration after compatibility token loading is canceled", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    mockBrowserStorage();
+    const controller = new AbortController();
+    let compatibilityAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url) === "https://api.localhost/auth/session?surface=marketplace-web") {
+          return jsonResponse({
+            accessToken: "workos-access-token",
+            csrfToken: "csrf-token",
+            organizationKind: "creator_workspace",
+            user: { id: "user_creator", email: "creator@example.com", status: "active" },
+          });
+        }
+        compatibilityAttempts += 1;
+        if (compatibilityAttempts === 1) {
+          controller.abort();
+          throw new DOMException("The operation was aborted", "AbortError");
+        }
+        return jsonResponse({ accessToken: "legacy-marketplace-token", expiresIn: 900 });
+      }),
+    );
+
+    await expect(authService.ensureSession(controller.signal)).rejects.toThrow("aborted");
+    expect(getAuthBearerToken()).toBeNull();
+
+    await expect(authService.ensureSession()).resolves.toBe(true);
+
+    expect(compatibilityAttempts).toBe(2);
+    expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
+  });
 });
 
 describe("authService", () => {
@@ -147,6 +181,24 @@ describe("authService", () => {
     expect(getAuthBearerToken()).toBe("workos-access-token");
     expect(getAuthCsrfToken()).toBe("csrf-token");
     expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
+  });
+
+  it("preserves a session committed by a concurrent session check", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    const firstRequest = Promise.withResolvers<Response>();
+    fetchMock.mockReturnValueOnce(firstRequest.promise).mockResolvedValueOnce(
+      jsonResponse({
+        accessToken: "concurrent-workos-access-token",
+        user: { id: "user_creator", email: "creator@example.test", status: "active" },
+      }),
+    );
+
+    const failingCheck = authService.ensureSession();
+    await expect(authService.ensureSession()).resolves.toBe(true);
+    firstRequest.reject(new Error("request failed"));
+
+    await expect(failingCheck).resolves.toBe(false);
+    expect(getAuthBearerToken()).toBe("concurrent-workos-access-token");
   });
 
   it("preserves controlled backend login errors", async () => {
