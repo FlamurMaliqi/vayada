@@ -440,8 +440,24 @@ describe("api config", () => {
 
   it("keeps creator profile photos optional unless explicitly enabled", () => {
     expect(loadConfig({}).creatorProfilePhotoRequired).toBe(false);
-    expect(loadConfig({ CREATOR_PROFILE_PHOTO_REQUIRED: "true" }).creatorProfilePhotoRequired).toBe(
-      true,
+    expect(
+      loadConfig({
+        CREATOR_PROFILE_PHOTO_REQUIRED: "true",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        AUTH_DATABASE_URL: "postgresql://auth-db",
+        WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
+        WORKOS_ISSUER: "https://api.workos.com",
+        WORKOS_AUDIENCE: "client",
+        PLATFORM_MEDIA_BUCKET: "vayada-media-staging",
+        PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.staging.vayada.com",
+        PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
+      }).creatorProfilePhotoRequired,
+    ).toBe(true);
+  });
+
+  it("rejects required creator photos without durable platform media", () => {
+    expect(() => loadConfig({ CREATOR_PROFILE_PHOTO_REQUIRED: "true" })).toThrow(
+      "CREATOR_PROFILE_PHOTO_REQUIRED=true requires TARGET_DATABASE_URL",
     );
   });
 

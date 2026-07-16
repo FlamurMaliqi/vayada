@@ -398,6 +398,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   );
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
+  const creatorProfilePhotoRequired = readBooleanEnv(env, "CREATOR_PROFILE_PHOTO_REQUIRED");
+  const platformMediaServing = loadPlatformMediaServingConfig(env);
   assertNextApiRuntimeConfig(env, {
     apiRuntime,
     publicHotelProfileSource,
@@ -451,6 +453,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (bookingCheckoutCommandSource === "target" && !targetDatabaseUrl) {
     throw new Error("BOOKING_CHECKOUT_COMMAND_SOURCE=target requires TARGET_DATABASE_URL");
   }
+  if (creatorProfilePhotoRequired && (!targetDatabaseUrl || !auth || !platformMediaServing)) {
+    throw new Error(
+      "CREATOR_PROFILE_PHOTO_REQUIRED=true requires TARGET_DATABASE_URL, complete auth config, and complete PLATFORM_MEDIA_* config",
+    );
+  }
 
   return {
     ...server,
@@ -473,7 +480,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       env,
       "MARKETPLACE_ADMIN_LEGACY_SUPERADMIN_FALLBACK_ENABLED",
     ),
-    creatorProfilePhotoRequired: readBooleanEnv(env, "CREATOR_PROFILE_PHOTO_REQUIRED"),
+    creatorProfilePhotoRequired,
     pmsOperationsSource,
     financeSource,
     marketplaceDiscoveryAllowedOrigins: readOptionalCsvEnv(
@@ -487,7 +494,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     bookingCheckoutCommandSource,
     bookingWebEventSink,
     bookingHostBase: readOptionalEnv(env, "BOOKING_HOST_BASE"),
-    platformMediaServing: loadPlatformMediaServingConfig(env),
+    platformMediaServing,
     providerWebhooks: loadProviderWebhookConfig(env),
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };
