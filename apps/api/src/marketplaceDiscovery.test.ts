@@ -734,6 +734,7 @@ describe("pg marketplace discovery repository", () => {
     const repository = createPgMarketplaceDiscoveryReadRepository({
       connectionString: "postgresql://marketplace-db",
       pool,
+      profilePhotoRequired: true,
     });
 
     const result = await repository.listPublicOffers({ limit: 1, offset: 2 });
@@ -838,11 +839,64 @@ describe("pg marketplace discovery repository", () => {
       ],
     });
     const sql = pool.sql.join("\n");
-    expect(sql).toContain("creator.profile_complete = TRUE");
+    expect(sql).not.toContain("creator.profile_complete");
+    expect(sql).toContain("FROM marketplace.creator_platforms completion_platform");
+    expect(sql).toContain("profilePictureMediaObjectId");
+    expect(sql).toContain("NOT $3::boolean");
+    expect(sql).toContain("NOT $1::boolean");
     expect(sql).toContain("creator.profile_status = 'active'");
     expect(sql).toContain('creator.source_creator_id AS "creatorId"');
     expect(sql).toContain("creator.source_creator_id IS NOT NULL");
     expect(sql).not.toContain("COALESCE(creator.source_creator_id");
     expect(sql).not.toMatch(/\bauth\b|users/i);
+  });
+
+  it("discovers a base-complete creator after photo policy rollback without an update", async () => {
+    const sql: string[] = [];
+    const storedProfile = creatorSeed({ profileComplete: false, profilePictureUrl: null });
+    const pool: MarketplaceDiscoveryReadPool = {
+      async query(text, values) {
+        sql.push(text);
+        const derivesBaseCompleteness = [
+          "NULLIF(BTRIM(creator.display_name)",
+          "NULLIF(BTRIM(creator.location_text)",
+          "NULLIF(BTRIM(creator.short_description)",
+          "FROM marketplace.creator_platforms completion_platform",
+        ].every((fragment) => text.includes(fragment));
+        const profilePhotoRequired = values ? values[values.length - 1] === true : false;
+        const eligible =
+          (storedProfile.profileComplete || derivesBaseCompleteness) && !profilePhotoRequired;
+        const rows = text.trim().startsWith("SELECT COUNT(*)::text AS total")
+          ? [{ total: eligible ? "1" : "0" }]
+          : eligible
+            ? [storedProfile]
+            : [];
+        return { rows: rows as never[] };
+      },
+      async end() {},
+    };
+    const repository = createPgMarketplaceDiscoveryReadRepository({
+      connectionString: "postgresql://marketplace-db",
+      pool,
+      profilePhotoRequired: false,
+    });
+
+    const result = await repository.listPublicCreators({ limit: 100, offset: 0 });
+
+    expect(result.total).toBe(1);
+    expect(result.items[0]?.creatorId).toBe(LEGACY_CREATOR_ID_A);
+
+    const photoRequiredRepository = createPgMarketplaceDiscoveryReadRepository({
+      connectionString: "postgresql://marketplace-db",
+      pool,
+      profilePhotoRequired: true,
+    });
+    const photoRequiredResult = await photoRequiredRepository.listPublicCreators({
+      limit: 100,
+      offset: 0,
+    });
+
+    expect(photoRequiredResult).toEqual({ items: [], total: 0 });
+    expect(sql.join("\n")).not.toContain("creator.profile_complete");
   });
 });

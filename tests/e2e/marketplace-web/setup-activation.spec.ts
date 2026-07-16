@@ -52,7 +52,7 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await expect(page.getByRole("heading", { name: "Let’s get to know your hotel" })).toBeVisible();
     await page.getByRole("textbox", { name: /Hotel name/ }).fill("Hotel Alpenrose");
-    await page.getByRole("combobox", { name: /Property type/ }).selectOption("hotel");
+    await page.getByRole("radio", { name: "Hotel", exact: true }).check();
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(
@@ -73,6 +73,9 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
     await page.getByRole("button", { name: "Save and continue" }).click();
 
+    await expect(
+      page.getByRole("heading", { name: "How would you like to use Vayada?", level: 1 }),
+    ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Choose account systems", level: 2 }),
     ).toBeVisible();
@@ -211,44 +214,61 @@ async function mockSharedSetupStatus(page: Page, status: ReturnType<typeof share
 }
 
 async function mockMarketplaceProfileApis(page: Page) {
-  await page.route(/\/api\/marketplace\/hotels\/me\/profile-status/, async (route) => {
+  await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile-status`), {
+    profile_complete: false,
+    missing_fields: ["profile"],
+    has_defaults: { location: false },
+    missing_offers: false,
+    completion_steps: ["Complete your marketplace hotel profile"],
+  });
+  await routeJson(
+    page,
+    new RegExp(`/api/hotel-setup/properties/${propertyId}/profile`),
+    sharedPropertyProfile({
+      displayName: "Alpenrose Munich",
+      propertyType: "hotel",
+      location: {
+        countryCode: "DE",
+        region: "Bavaria",
+        city: "Munich",
+        streetAddress: "Marienplatz 1",
+        postalCode: "80331",
+        rawMarketplaceLocation: "Munich, DE",
+        timezone: "Europe/Berlin",
+        latitude: null,
+        longitude: null,
+        addressPublic: true,
+        mapDisplayMode: "exact",
+      },
+      website: "https://alpenrose.example",
+      contactEmail: "owner@alpenrose.example",
+      phone: "+49 89 123456",
+      shortDescription: "A city hotel close to the old town.",
+      longDescription: null,
+      media: [],
+    }),
+  );
+  await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile(?:\\?|$)`), {
+    propertyId,
+    profileStatus: "pending",
+    profileComplete: false,
+    hostSummary: "A city hotel close to the old town.",
+    collaborationGuidelines: null,
+    createdAt: "2026-06-30T00:00:00.000Z",
+    updatedAt: "2026-06-30T00:00:00.000Z",
+  });
+  await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/offers`), {
+    offers: [],
+  });
+}
+
+async function routeJson(page: Page, pattern: RegExp, json: unknown) {
+  await page.route(pattern, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await fulfillCorsPreflight(route);
       return;
     }
-    await route.fulfill({
-      status: 200,
-      headers: corsHeaders(route),
-      json: {
-        profile_complete: false,
-        missing_fields: ["profile"],
-        has_defaults: { location: false },
-        missing_offers: false,
-        completion_steps: ["Complete your marketplace hotel profile"],
-      },
-    });
-  });
-  await page.route(/\/hotels\/me$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      headers: corsHeaders(route),
-      json: {
-        id: "hotel-profile-1",
-        user_id: "user-hotel-owner",
-        name: "Alpenrose Munich",
-        category: "Boutique",
-        location: "Munich, DE",
-        picture: null,
-        website: "https://alpenrose.example",
-        about: "A city hotel close to the old town.",
-        email: "owner@alpenrose.example",
-        phone: "+49 89 123456",
-        status: "pending",
-        created_at: "2026-06-30T00:00:00.000Z",
-        updated_at: "2026-06-30T00:00:00.000Z",
-        listings: [],
-      },
-    });
+    await route.fulfill({ status: 200, headers: corsHeaders(route), json });
   });
 }
 function sharedSetupStatus(

@@ -45,7 +45,7 @@ export function OnboardingShell({
   const currentStepTitle = MARKETPLACE_ONBOARDING_STEPS[currentStepLabel - 1]?.title;
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-[#fbfbfa] text-gray-950">
+    <div className="relative min-h-screen overflow-x-clip bg-[#fbfbfa] text-gray-950">
       <header
         className={`relative z-10 mx-auto flex max-w-6xl items-center justify-center px-5 sm:px-8 ${
           compact ? "py-2" : "py-4"
@@ -63,7 +63,7 @@ export function OnboardingShell({
 
       <main
         className={`relative z-10 mx-auto flex min-h-[calc(100vh-60px)] w-full flex-col items-center px-5 sm:px-8 ${
-          compact ? "max-w-[880px] justify-start py-0" : "max-w-5xl justify-center py-6"
+          compact ? "max-w-5xl justify-start pb-8 sm:pb-12" : "max-w-5xl justify-center py-6"
         }`}
       >
         <section className="w-full text-center">

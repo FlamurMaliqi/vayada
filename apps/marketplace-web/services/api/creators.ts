@@ -39,6 +39,7 @@ interface CreatorMarketplaceResponse {
 }
 
 type TargetCreatorProfileStatus = {
+  profilePhotoRequired?: boolean;
   profileComplete: boolean;
   missingFields: string[];
   missingPlatforms: boolean;
@@ -54,6 +55,7 @@ type TargetCreatorProfile = {
   portfolioUrl: string | null;
   phone: string | null;
   profilePictureUrl: string | null;
+  profilePictureMediaObjectId?: string | null;
   profileComplete: boolean;
   profileStatus: "pending" | "active" | "rejected" | "suspended" | "archived";
   platforms: TargetCreatorPlatform[];
@@ -88,6 +90,7 @@ type TargetUpdateCreatorProfile = {
   profilePictureUrl?: string | null;
   profilePictureMediaObjectId?: string | null;
   platforms?: Array<{
+    platformId?: string | null;
     platform: TargetCreatorPlatform["platform"];
     handle: string;
     profileUrl?: string | null;
@@ -133,9 +136,9 @@ export const creatorService = {
    * Get current creator's profile
    * GET /api/marketplace/creators/me
    */
-  getMyProfile: async (): Promise<Creator> => {
+  getMyProfile: async (options?: RequestInit): Promise<Creator> => {
     return toLegacyCreator(
-      await targetApiClient.get<TargetCreatorProfile>("/api/marketplace/creators/me"),
+      await targetApiClient.get<TargetCreatorProfile>("/api/marketplace/creators/me", options),
     );
   },
 
@@ -170,7 +173,13 @@ export const creatorService = {
       files: [file],
     });
     if (!uploaded) throw new Error("Platform media did not return an uploaded image");
-    return { url: uploaded.url, mediaObjectId: uploaded.mediaId };
+    if (!isAbsoluteHttpsUrl(uploaded.url)) {
+      throw new Error("The profile image is still processing. Please try again later.");
+    }
+    return {
+      url: uploaded.url,
+      mediaObjectId: uploaded.mediaId,
+    };
   },
 
   /**
@@ -198,11 +207,13 @@ export const creatorService = {
    * Get creator profile completion status
    * GET /api/marketplace/creators/me/profile-status
    */
-  getProfileStatus: async (): Promise<CreatorProfileStatus> => {
+  getProfileStatus: async (options?: RequestInit): Promise<CreatorProfileStatus> => {
     const status = await targetApiClient.get<TargetCreatorProfileStatus>(
       "/api/marketplace/creators/me/profile-status",
+      options,
     );
     return {
+      profile_photo_required: status.profilePhotoRequired === true,
       profile_complete: status.profileComplete,
       missing_fields: status.missingFields,
       missing_platforms: status.missingPlatforms,
@@ -211,12 +222,26 @@ export const creatorService = {
   },
 };
 
+function isAbsoluteHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function toTargetCreatorUpdate(data: Partial<Creator>): TargetUpdateCreatorProfile {
   const input = data as Partial<Creator> & {
     profile_picture?: string | null;
     profilePictureMediaObjectId?: string | null;
     profile_picture_media_object_id?: string | null;
   };
+  const includesProfilePictureMediaObjectId =
+    input.profilePictureMediaObjectId !== undefined ||
+    input.profile_picture_media_object_id !== undefined;
+  const profilePictureMediaObjectId =
+    input.profilePictureMediaObjectId ?? input.profile_picture_media_object_id ?? null;
   return {
     ...(input.name !== undefined ? { displayName: input.name } : {}),
     ...(input.location !== undefined ? { locationText: input.location } : {}),
@@ -228,26 +253,28 @@ function toTargetCreatorUpdate(data: Partial<Creator>): TargetUpdateCreatorProfi
       ? { shortDescription: input.shortDescription ?? null }
       : {}),
     ...(input.phone !== undefined ? { phone: input.phone ?? null } : {}),
-    ...(input.profilePicture !== undefined || input.profile_picture !== undefined
+    ...(!includesProfilePictureMediaObjectId &&
+    (input.profilePicture !== undefined || input.profile_picture !== undefined)
       ? { profilePictureUrl: input.profilePicture ?? input.profile_picture ?? null }
       : {}),
-    ...(input.profilePictureMediaObjectId !== undefined ||
-    input.profile_picture_media_object_id !== undefined
-      ? {
-          profilePictureMediaObjectId:
-            input.profilePictureMediaObjectId ?? input.profile_picture_media_object_id ?? null,
-        }
-      : {}),
+    ...(includesProfilePictureMediaObjectId ? { profilePictureMediaObjectId } : {}),
     ...(input.platforms !== undefined
       ? {
           platforms: input.platforms.map((platform) => ({
+            platformId: platform.id ?? null,
             platform: toTargetPlatformName(platform.name),
             handle: platform.handle,
             followerCount: Number(platform.followers) || 0,
             engagementRate: Number(platform.engagementRate) || 0,
-            audienceCountries: platform.topCountries ?? [],
-            audienceAgeGroups: platform.topAgeGroups ?? [],
-            audienceGenderSplit: platform.genderSplit ?? null,
+            ...(platform.topCountries !== undefined
+              ? { audienceCountries: platform.topCountries }
+              : {}),
+            ...(platform.topAgeGroups !== undefined
+              ? { audienceAgeGroups: platform.topAgeGroups }
+              : {}),
+            ...(platform.genderSplit !== undefined
+              ? { audienceGenderSplit: platform.genderSplit }
+              : {}),
           })),
         }
       : {}),
@@ -260,12 +287,17 @@ function toLegacyCreator(profile: TargetCreatorProfile): Creator {
     email: "",
     name: profile.displayName ?? "",
     platforms: profile.platforms.map((platform) => ({
+      id: platform.platformId,
       name: toLegacyPlatformName(platform.platform),
       handle: platform.handle,
       followers: platform.followerCount,
       engagementRate: platform.engagementRate,
-      topCountries: platform.audienceCountries,
-      topAgeGroups: platform.audienceAgeGroups,
+      ...(platform.audienceCountries.length > 0
+        ? { topCountries: platform.audienceCountries }
+        : {}),
+      ...(platform.audienceAgeGroups.length > 0
+        ? { topAgeGroups: platform.audienceAgeGroups }
+        : {}),
       genderSplit: platform.audienceGenderSplit ?? undefined,
     })),
     audienceSize: profile.audienceSize,
@@ -274,6 +306,7 @@ function toLegacyCreator(profile: TargetCreatorProfile): Creator {
     shortDescription: profile.shortDescription ?? undefined,
     phone: profile.phone,
     profilePicture: profile.profilePictureUrl ?? undefined,
+    profilePictureMediaObjectId: profile.profilePictureMediaObjectId ?? undefined,
     creatorType: toLegacyCreatorType(profile.creatorType),
     rating: profile.rating,
     status: toLegacyStatus(profile.profileStatus),

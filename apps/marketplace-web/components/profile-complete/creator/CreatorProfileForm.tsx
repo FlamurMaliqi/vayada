@@ -100,7 +100,10 @@ export function CreatorProfileForm({
   };
 
   return (
-    <form onSubmit={handleFormSubmit} className={currentStep === 1 ? "space-y-5" : "space-y-4 p-4"}>
+    <form
+      onSubmit={handleFormSubmit}
+      className={currentStep === 1 ? "space-y-5" : "space-y-4 p-5 sm:p-6"}
+    >
       {/* Step 1: Creator Type Selection */}
       {currentStep === 1 && (
         <CreatorTypeStep

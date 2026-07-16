@@ -40,7 +40,10 @@ test.describe("pms-web shared setup", () => {
       page.getByRole("heading", { level: 3, name: "What should we call your hotel?" }),
     ).toBeVisible();
     await expect(page.getByText("Step 1 of 3")).toBeVisible();
-    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByRole("radio")).toHaveCount(11);
+    const continueButton = page.getByRole("button", { name: "Continue" });
+    await expect(continueButton).toBeInViewport({ ratio: 1 });
+    await continueButton.click();
     await expect(page.getByText("Hotel name is required.")).toBeVisible();
     await expect(page.getByText("Property type is required.")).toBeVisible();
     const propertyNameField = page.getByLabel("Hotel name");
@@ -54,7 +57,9 @@ test.describe("pms-web shared setup", () => {
     await expect(propertyNameError).toHaveAttribute("role", "alert");
 
     await page.getByLabel("Hotel name").fill("Alpenrose Munich");
-    await page.getByLabel("Property type").selectOption("hotel");
+    const hotelPropertyType = page.getByRole("radio", { name: "Hotel", exact: true });
+    await hotelPropertyType.check();
+    await expect(hotelPropertyType).toBeChecked();
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(
@@ -92,6 +97,9 @@ test.describe("pms-web shared setup", () => {
     ).toHaveAttribute("inert", "");
     finishCreateRequest?.();
 
+    await expect(
+      page.getByRole("heading", { level: 1, name: "How would you like to use Vayada?" }),
+    ).toBeVisible();
     await expect(
       page.getByRole("heading", { level: 2, name: "Choose account systems" }),
     ).toBeVisible();

@@ -12,10 +12,11 @@ import { ApiErrorResponse } from "@/services/api/client";
  */
 export async function checkProfileStatus(
   userType: UserType,
+  options?: RequestInit,
 ): Promise<CreatorProfileStatus | HotelProfileStatus | null> {
   try {
     if (userType === "creator") {
-      return await creatorService.getProfileStatus();
+      return await creatorService.getProfileStatus(options);
     } else if (userType === "hotel") {
       return await hotelService.getProfileStatus();
     }

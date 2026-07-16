@@ -8,6 +8,12 @@ import {
 } from "@/services/auth/sessionStore";
 import { creatorService } from "./creators";
 
+const uploadPlatformMediaMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@vayada/marketplace-shared/api/platformMedia", () => ({
+  uploadPlatformMedia: uploadPlatformMediaMock,
+}));
+
 function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -56,8 +62,74 @@ const targetProfile = {
 describe("creator target self-service client", () => {
   afterEach(() => {
     clearAuthData();
+    uploadPlatformMediaMock.mockReset();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it("rejects a profile image until a public CDN URL exists", async () => {
+    uploadPlatformMediaMock.mockResolvedValue([
+      {
+        mediaId: "media-id",
+        url: "staging/creator-profile/media-id/original.jpg",
+        storageKey: "staging/creator-profile/media-id/original.jpg",
+      },
+    ]);
+
+    await expect(
+      creatorService.uploadProfilePicture(
+        new File(["image"], "profile.jpg", { type: "image/jpeg" }),
+        "creator-profile-id",
+      ),
+    ).rejects.toThrow("The profile image is still processing. Please try again later.");
+  });
+
+  it("returns a public HTTPS profile-picture URL", async () => {
+    uploadPlatformMediaMock.mockResolvedValue([
+      {
+        mediaId: "media-id",
+        url: "https://cdn.example.com/creator-profile/media-id.jpg",
+        storageKey: "staging/creator-profile/media-id/original.jpg",
+      },
+    ]);
+
+    const result = await creatorService.uploadProfilePicture(
+      new File(["image"], "profile.jpg", { type: "image/jpeg" }),
+      "creator-profile-id",
+    );
+
+    expect(result).toEqual({
+      mediaObjectId: "media-id",
+      url: "https://cdn.example.com/creator-profile/media-id.jpg",
+    });
+  });
+
+  it("sends only the issued media ID when linking a creator profile picture", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    let body: Record<string, unknown> = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({
+          ...targetProfile,
+          profilePictureMediaObjectId: "media-id",
+        });
+      }),
+    );
+
+    const profile = await creatorService.updateMyProfile({
+      profilePicture: "staging/creator-profile/media-id/original.jpg",
+      profilePictureMediaObjectId: "media-id",
+    });
+
+    expect(body).toEqual({ profilePictureMediaObjectId: "media-id" });
+    expect(profile.profilePictureMediaObjectId).toBe("media-id");
   });
 
   it("uses the AuthKit token, not the legacy compatibility token, for target status reads", async () => {
@@ -72,6 +144,7 @@ describe("creator target self-service client", () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
       return jsonResponse({
+        profilePhotoRequired: true,
         profileComplete: false,
         missingFields: ["displayName"],
         missingPlatforms: true,
@@ -80,13 +153,15 @@ describe("creator target self-service client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const status = await creatorService.getProfileStatus();
+    const controller = new AbortController();
+    const status = await creatorService.getProfileStatus({ signal: controller.signal });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.localhost/api/marketplace/creators/me/profile-status",
-      expect.any(Object),
+      expect.objectContaining({ signal: controller.signal }),
     );
     expect(status).toEqual({
+      profile_photo_required: true,
       profile_complete: false,
       missing_fields: ["displayName"],
       missing_platforms: true,
@@ -95,9 +170,11 @@ describe("creator target self-service client", () => {
   });
 
   it("refreshes the AuthKit session from cookies before target status reads after reload", async () => {
+    const controller = new AbortController();
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
       if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+        expect(init?.signal).toBe(controller.signal);
         return jsonResponse({
           accessToken: "workos-access-token",
           csrfToken: "csrf-token",
@@ -108,6 +185,7 @@ describe("creator target self-service client", () => {
       if (href === "https://api.localhost/api/marketplace/creators/me/profile-status") {
         expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
         return jsonResponse({
+          profilePhotoRequired: false,
           profileComplete: false,
           missingFields: [],
           missingPlatforms: true,
@@ -118,13 +196,37 @@ describe("creator target self-service client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const status = await creatorService.getProfileStatus();
+    const status = await creatorService.getProfileStatus({ signal: controller.signal });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(status).toMatchObject({
+      profile_photo_required: false,
       profile_complete: false,
       missing_platforms: true,
     });
+  });
+
+  it("does not turn an aborted cold session refresh into an authentication failure", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        expect(String(url)).toBe("https://api.localhost/auth/session?surface=marketplace-web");
+        expect(init?.signal).toBe(controller.signal);
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = creatorService.getProfileStatus({ signal: controller.signal });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+
+    await expect(request).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("maps the legacy creator form payload to the target update contract", async () => {
@@ -148,6 +250,7 @@ describe("creator target self-service client", () => {
       shortDescription: "Travel creator",
       platforms: [
         {
+          id: "platform_instagram",
           name: "Instagram",
           handle: "lina",
           followers: 1200,
@@ -163,6 +266,7 @@ describe("creator target self-service client", () => {
       shortDescription: "Travel creator",
       platforms: [
         {
+          platformId: "platform_instagram",
           platform: "instagram",
           handle: "lina",
           followerCount: 1200,
@@ -183,6 +287,71 @@ describe("creator target self-service client", () => {
       creatorType: "Travel",
       audienceSize: 1200,
     });
+  });
+
+  it("preserves stable IDs and demographics for a multi-platform edit", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    let body: { platforms?: unknown[] } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body)) as { platforms?: unknown[] };
+        return jsonResponse(targetProfile);
+      }),
+    );
+
+    await creatorService.updateMyProfile({
+      platforms: [
+        {
+          id: "platform_instagram",
+          name: "Instagram",
+          handle: "lina",
+          followers: 1500,
+          engagementRate: 4.5,
+          topCountries: [{ country: "Germany", percentage: 70 }],
+          topAgeGroups: [{ ageRange: "25-34", percentage: 60 }],
+          genderSplit: { male: 30, female: 60, other: 10 },
+        },
+        {
+          id: null,
+          name: "YouTube",
+          handle: "lina-travels",
+          followers: 800,
+          engagementRate: 3.2,
+          topCountries: [],
+          topAgeGroups: [],
+          genderSplit: { male: 0, female: 0 },
+        },
+      ],
+    });
+
+    expect(body.platforms).toEqual([
+      {
+        platformId: "platform_instagram",
+        platform: "instagram",
+        handle: "lina",
+        followerCount: 1500,
+        engagementRate: 4.5,
+        audienceCountries: [{ country: "Germany", percentage: 70 }],
+        audienceAgeGroups: [{ ageRange: "25-34", percentage: 60 }],
+        audienceGenderSplit: { male: 30, female: 60, other: 10 },
+      },
+      {
+        platformId: null,
+        platform: "youtube",
+        handle: "lina-travels",
+        followerCount: 800,
+        engagementRate: 3.2,
+        audienceCountries: [],
+        audienceAgeGroups: [],
+        audienceGenderSplit: { male: 0, female: 0 },
+      },
+    ]);
   });
 
   it("preserves the other creator type in target reads and writes", async () => {

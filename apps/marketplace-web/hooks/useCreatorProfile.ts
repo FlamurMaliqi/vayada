@@ -16,6 +16,23 @@ import type {
   CreatorProfile,
 } from "@/components/profile/types";
 
+function normalizeProfilePlatforms(platforms: ProfilePlatform[]): ProfilePlatform[] {
+  return platforms.map((platform) => {
+    const cleanAgeGroups = platform.topAgeGroups?.filter(
+      (ageGroup): ageGroup is PlatformAgeGroup =>
+        ageGroup !== null &&
+        ageGroup.ageRange !== undefined &&
+        ageGroup.ageRange !== "" &&
+        ageGroup.ageRange !== "null",
+    );
+
+    return {
+      ...platform,
+      ...(cleanAgeGroups !== undefined ? { topAgeGroups: cleanAgeGroups } : {}),
+    };
+  });
+}
+
 export function useCreatorProfile(
   showError: (title: string, message: string | string[], details?: string) => void,
 ) {
@@ -114,25 +131,7 @@ export function useCreatorProfile(
         location: creatorProfile.location,
         portfolioLink: creatorProfile.portfolioLink || "",
         creatorType: creatorProfile.creatorType || "Lifestyle",
-        platforms: (creatorProfile.platforms || []).map((platform) => {
-          const cleanAgeGroups: PlatformAgeGroup[] = (platform.topAgeGroups || []).filter(
-            (ag): ag is PlatformAgeGroup => {
-              return (
-                ag !== null &&
-                ag.ageRange !== undefined &&
-                ag.ageRange !== "" &&
-                ag.ageRange !== "null"
-              );
-            },
-          );
-
-          return {
-            ...platform,
-            topCountries: platform.topCountries || [],
-            topAgeGroups: cleanAgeGroups,
-            genderSplit: platform.genderSplit || { male: 0, female: 0 },
-          };
-        }),
+        platforms: normalizeProfilePlatforms(creatorProfile.platforms || []),
       });
       setExpandedPlatforms(new Set());
       setPlatformCountryInputs({});
@@ -222,44 +221,49 @@ export function useCreatorProfile(
 
     setIsSavingProfile(true);
     try {
-      const platforms = editFormData.platforms.map((platform) => {
+      const toPlatformUpdate = (platform: ProfilePlatform) => {
         const validAgeGroups =
-          platform.topAgeGroups && platform.topAgeGroups.length > 0
-            ? platform.topAgeGroups
-                .filter((tag): tag is PlatformAgeGroup => {
-                  const ageRange = tag.ageRange?.trim() || "";
-                  return ageRange !== "" && ageRange !== "null";
-                })
-                .map((tag) => ({
-                  ageRange: tag.ageRange.trim(),
-                  percentage: tag.percentage,
-                }))
-            : [];
+          platform.topAgeGroups
+            ?.filter((tag): tag is PlatformAgeGroup => {
+              const ageRange = tag.ageRange?.trim() || "";
+              return ageRange !== "" && ageRange !== "null";
+            })
+            .map((tag) => ({
+              ageRange: tag.ageRange.trim(),
+              percentage: tag.percentage,
+            })) ?? [];
 
         return {
+          id: platform.id ?? null,
           name: platform.name as "Instagram" | "TikTok" | "YouTube" | "Facebook",
           handle: platform.handle.trim(),
           followers: platform.followers,
-          engagement_rate: platform.engagementRate,
-          ...(platform.topCountries &&
-            platform.topCountries.length > 0 && {
-              top_countries: platform.topCountries.map((tc) => ({
-                country: tc.country,
-                percentage: tc.percentage,
-              })),
-            }),
-          ...(validAgeGroups.length > 0 && {
-            topAgeGroups: validAgeGroups,
-          }),
-          ...(platform.genderSplit &&
-            (platform.genderSplit.male > 0 || platform.genderSplit.female > 0) && {
-              gender_split: {
-                male: platform.genderSplit.male,
-                female: platform.genderSplit.female,
-              },
-            }),
+          engagementRate: platform.engagementRate,
+          ...(platform.topCountries !== undefined
+            ? {
+                topCountries: platform.topCountries.map((country) => ({
+                  country: country.country,
+                  percentage: country.percentage,
+                })),
+              }
+            : {}),
+          ...(platform.topAgeGroups !== undefined ? { topAgeGroups: validAgeGroups } : {}),
+          ...(platform.genderSplit !== undefined
+            ? {
+                genderSplit: {
+                  male: platform.genderSplit.male,
+                  female: platform.genderSplit.female,
+                  ...(platform.genderSplit.other !== undefined
+                    ? { other: platform.genderSplit.other }
+                    : {}),
+                },
+              }
+            : {}),
         };
-      });
+      };
+      const platforms = editFormData.platforms.map(toPlatformUpdate);
+      const originalPlatforms = creatorProfile.platforms.map(toPlatformUpdate);
+      const platformsChanged = JSON.stringify(platforms) !== JSON.stringify(originalPlatforms);
 
       const audienceSize = platforms.reduce((sum, p) => sum + p.followers, 0);
 
@@ -296,8 +300,7 @@ export function useCreatorProfile(
         location: editFormData.location.trim(),
         short_description: editFormData.shortDescription.trim(),
         creator_type: editFormData.creatorType,
-        platforms: platforms,
-        audience_size: audienceSize,
+        ...(platformsChanged && { platforms, audience_size: audienceSize }),
         ...(editFormData.portfolioLink &&
           editFormData.portfolioLink.trim() && {
             portfolio_link: editFormData.portfolioLink.trim(),
@@ -368,12 +371,7 @@ export function useCreatorProfile(
         location: creatorProfile.location,
         portfolioLink: creatorProfile.portfolioLink || "",
         creatorType: creatorProfile.creatorType || "Lifestyle",
-        platforms: (creatorProfile.platforms || []).map((platform) => ({
-          ...platform,
-          topCountries: platform.topCountries || [],
-          topAgeGroups: platform.topAgeGroups || [],
-          genderSplit: platform.genderSplit || { male: 0, female: 0 },
-        })),
+        platforms: normalizeProfilePlatforms(creatorProfile.platforms || []),
       });
       setProfilePicturePreview(null);
       setCreatorProfilePictureFile(null);

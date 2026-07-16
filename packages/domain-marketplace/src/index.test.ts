@@ -92,6 +92,7 @@ describe("@vayada/domain-marketplace", () => {
     const status: CreatorProfileStatusResult = {
       creatorProfileId: "creator_profile_lina",
       organizationId: "org_creator_workspace",
+      profilePhotoRequired: false,
       profileComplete: false,
       profileStatus: "pending",
       missingFields: ["displayName", "locationText", "shortDescription", "platforms"],

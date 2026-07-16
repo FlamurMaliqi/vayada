@@ -33,6 +33,22 @@ describe("checkProfileStatus", () => {
     await expect(checkProfileStatus("creator")).rejects.toBe(error);
   });
 
+  it("forwards request cancellation to creator profile status reads", async () => {
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
+    vi.mocked(creatorService.getProfileStatus).mockResolvedValue({
+      profile_photo_required: true,
+      profile_complete: false,
+      missing_fields: ["profilePicture"],
+      missing_platforms: false,
+      completion_steps: ["add_profile_picture"],
+    });
+
+    await checkProfileStatus("creator", options);
+
+    expect(creatorService.getProfileStatus).toHaveBeenCalledWith(options);
+  });
+
   it("does not call marketplace profile APIs for admin users", async () => {
     await expect(checkProfileStatus("admin")).resolves.toBeNull();
     expect(creatorService.getProfileStatus).not.toHaveBeenCalled();

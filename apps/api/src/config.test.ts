@@ -438,6 +438,13 @@ describe("api config", () => {
     ).toBe(true);
   });
 
+  it("keeps creator profile photos optional unless explicitly enabled", () => {
+    expect(loadConfig({}).creatorProfilePhotoRequired).toBe(false);
+    expect(loadConfig({ CREATOR_PROFILE_PHOTO_REQUIRED: "true" }).creatorProfilePhotoRequired).toBe(
+      true,
+    );
+  });
+
   it("keeps PMS operations routes disabled by default", () => {
     expect(loadConfig({}).pmsOperationsSource).toBe("disabled");
   });

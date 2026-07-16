@@ -18,6 +18,7 @@ import {
   setAuthKitSession,
   setLegacyCompatibilityToken,
   setPendingOrganizationSelection,
+  type AuthKitSessionResponse,
   type AuthSessionResponse,
 } from "./sessionStore";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
@@ -170,18 +171,23 @@ export function clearPendingEmailVerification(): void {
   }
 }
 
-async function attachMarketplaceCompatibilityToken(): Promise<void> {
-  const csrfToken = getAuthCsrfToken();
-  if (!csrfToken) return;
+async function setAuthenticatedSession(
+  session: AuthKitSessionResponse,
+  signal?: AbortSignal,
+): Promise<void> {
+  const compatibilityToken =
+    isCompatibilityTokenEnabled() && session.csrfToken
+      ? await authFetch<CompatibilityTokenResponse>("/auth/compat/marketplace-web-token", {
+          method: "POST",
+          headers: { "x-vayada-csrf": session.csrfToken },
+          signal,
+        })
+      : null;
 
-  const response = await authFetch<CompatibilityTokenResponse>(
-    "/auth/compat/marketplace-web-token",
-    {
-      method: "POST",
-      headers: { "x-vayada-csrf": csrfToken },
-    },
-  );
-  setLegacyCompatibilityToken(response.accessToken, response.expiresIn);
+  setAuthKitSession(session);
+  if (compatibilityToken) {
+    setLegacyCompatibilityToken(compatibilityToken.accessToken, compatibilityToken.expiresIn);
+  }
 }
 
 /**
@@ -260,7 +266,10 @@ export const authService = {
     window.location.href = url.toString();
   },
 
-  refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
+  refreshSession: async (
+    organizationId?: string,
+    signal?: AbortSignal,
+  ): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
     const response =
       organizationId && csrfToken
@@ -268,32 +277,32 @@ export const authService = {
             method: "POST",
             headers: { "x-vayada-csrf": csrfToken },
             body: JSON.stringify({ organizationId, surface: AUTH_SURFACE }),
+            signal,
           })
         : await authFetch<AuthSessionResponse>(
             `/auth/session?${new URLSearchParams({
               surface: AUTH_SURFACE,
             }).toString()}`,
+            { signal },
           );
 
     if (isAuthOrganizationSelectionResponse(response)) {
       setPendingOrganizationSelection(response);
       return response;
     }
-    setAuthKitSession(response);
-    if (isCompatibilityTokenEnabled()) {
-      await attachMarketplaceCompatibilityToken();
-    }
+    await setAuthenticatedSession(response, signal);
     return response;
   },
 
-  ensureSession: async (): Promise<boolean> => {
+  ensureSession: async (signal?: AbortSignal): Promise<boolean> => {
     if (hasAuthenticatedSession()) return true;
     try {
-      const response = await authService.refreshSession();
+      const response = await authService.refreshSession(undefined, signal);
       if (isAuthOrganizationSelectionResponse(response)) return false;
       return true;
-    } catch {
-      clearAuthData();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (!hasAuthenticatedSession()) clearAuthData();
       return false;
     }
   },
@@ -315,10 +324,7 @@ export const authService = {
         setPendingOrganizationSelection(response);
         return response;
       }
-      setAuthKitSession(response);
-      if (isCompatibilityTokenEnabled()) {
-        await attachMarketplaceCompatibilityToken();
-      }
+      await setAuthenticatedSession(response);
       return response;
     } catch (error) {
       if (error instanceof ApiErrorResponse || error instanceof AuthStateError) {
@@ -353,8 +359,8 @@ export const authService = {
   },
 
   updateAccountDetails: async (data: {
-    firstName: string;
-    lastName: string;
+    firstName?: string;
+    lastName?: string;
     phone?: string;
     profilePictureUrl?: string;
     profilePictureMediaObjectId?: string;
@@ -553,10 +559,7 @@ export const authService = {
       setPendingOrganizationSelection(response);
       return response;
     }
-    setAuthKitSession(response);
-    if (isCompatibilityTokenEnabled()) {
-      await attachMarketplaceCompatibilityToken();
-    }
+    await setAuthenticatedSession(response);
     return response;
   },
 };

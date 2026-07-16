@@ -12,11 +12,11 @@ import {
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
+import { creatorService } from "@/services/api/creators";
 import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
 
 type AccountType = "hotel" | "creator";
-
-const SIGNUP_WELCOME_DURATION_MS = 1800;
+const ONBOARDING_REQUEST_TIMEOUT_MS = 5_000;
 
 const options: Array<{
   type: AccountType;
@@ -26,13 +26,13 @@ const options: Array<{
 }> = [
   {
     type: "hotel",
-    title: "Manage a hotel",
+    title: "I manage a hotel",
     description: "Set up one hotel or manage several from the same account.",
     image: "/hotel-hero.JPG",
   },
   {
     type: "creator",
-    title: "Create a creator profile",
+    title: "I’m a creator",
     description: "Build a profile hotels can review before working with you.",
     image: "/creator-hero.jpg",
   },
@@ -41,34 +41,57 @@ const options: Array<{
 export default function OnboardingPage() {
   const router = useRouter();
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const [selectedType, setSelectedType] = useState<AccountType>("hotel");
+  const [selectedType, setSelectedType] = useState<AccountType | null>(null);
   const [provisionedType, setProvisionedType] = useState<AccountType | null>(null);
   const [loading, setLoading] = useState(true);
-  const [introComplete, setIntroComplete] = useState(false);
+  const [welcomeComplete, setWelcomeComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [creatorPhotoRequired, setCreatorPhotoRequired] = useState<boolean | null>(null);
+  const [sessionConfirmed, setSessionConfirmed] = useState(false);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    const requestController = new AbortController();
+    const sessionTimeoutSignal = AbortSignal.timeout(ONBOARDING_REQUEST_TIMEOUT_MS);
+    const sessionSignal = AbortSignal.any([requestController.signal, sessionTimeoutSignal]);
     void (async () => {
       try {
-        const authenticated = await authService.ensureSession();
+        let authenticated: boolean;
+        try {
+          authenticated = await authService.ensureSession(sessionSignal);
+        } catch (error) {
+          if (sessionTimeoutSignal.aborted && !requestController.signal.aborted) {
+            throw new Error("Loading your session took too long. Please try again.");
+          }
+          throw error;
+        }
         if (cancelled) return;
         if (!authenticated) {
           router.replace(ROUTES.LOGIN);
           return;
         }
+        setSessionConfirmed(true);
         const userType = authService.getUserType();
         if (userType === "creator" || userType === "hotel") {
+          setProvisionedType(userType);
           if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
             router.replace(nextPathForType(userType));
             return;
           }
-          setSelectedType(userType);
-          setProvisionedType(userType);
-          setIntroComplete(true);
+          const photoRequired = await creatorPhotoRequirement(userType, requestController.signal);
+          if (cancelled) return;
+          setCreatorPhotoRequired(photoRequired);
           setLoading(false);
           return;
+        }
+        try {
+          setWelcomeComplete(
+            window.sessionStorage.getItem(onboardingWelcomeStorageKey()) === "complete",
+          );
+        } catch {
+          // The welcome remains available when browser storage is unavailable.
         }
         setLoading(false);
       } catch (error) {
@@ -79,75 +102,61 @@ export default function OnboardingPage() {
     })();
     return () => {
       cancelled = true;
+      requestController.abort();
     };
-  }, [router]);
+  }, [router, sessionAttempt]);
 
   useEffect(() => {
-    if (loading || error || provisionedType) return;
+    if (welcomeComplete && !loading && !provisionedType) optionRefs.current[0]?.focus();
+  }, [loading, provisionedType, welcomeComplete]);
 
-    const user = authService.getSessionUser();
-    const storageKey = `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
-    let storedState: string | null = null;
-
+  function handleWelcomeContinue() {
     try {
-      storedState = window.sessionStorage.getItem(storageKey);
+      window.sessionStorage.setItem(onboardingWelcomeStorageKey(), "complete");
     } catch {
-      // The transition still works when browser storage is unavailable.
+      // The in-memory state is enough for the current page.
     }
+    setWelcomeComplete(true);
+  }
 
-    const finishIntro = () => {
-      try {
-        window.sessionStorage.setItem(storageKey, "complete");
-      } catch {
-        // The in-memory state is enough for the current page.
-      }
-      setIntroComplete(true);
-    };
-
-    if (
-      storedState === "complete" ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      finishIntro();
-      return;
-    }
-
-    const storedDeadline = Number(storedState);
-    const deadline =
-      Number.isFinite(storedDeadline) && storedDeadline > 0
-        ? storedDeadline
-        : Date.now() + SIGNUP_WELCOME_DURATION_MS;
-
-    if (storedState === null || !Number.isFinite(storedDeadline) || storedDeadline <= 0) {
-      try {
-        window.sessionStorage.setItem(storageKey, String(deadline));
-      } catch {
-        // The timer below remains the fallback.
-      }
-    }
-
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      finishIntro();
-      return;
-    }
-
-    const timer = window.setTimeout(finishIntro, remaining);
-    return () => window.clearTimeout(timer);
-  }, [error, loading, provisionedType]);
+  function retrySession() {
+    setError("");
+    setLoading(true);
+    setSessionConfirmed(false);
+    setSessionAttempt((attempt) => attempt + 1);
+  }
 
   async function handleContinue() {
+    if (!selectedType) return;
     setError("");
     setSubmitting(true);
     try {
       await authService.completeOnboarding(selectedType);
+      const canonicalType = authService.getUserType();
+      if (canonicalType !== "creator" && canonicalType !== "hotel") {
+        throw new Error("Your account role could not be confirmed. Please sign in again.");
+      }
+      setProvisionedType(canonicalType);
       if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
-        router.push(nextPathForType(selectedType));
+        router.push(nextPathForType(canonicalType));
         return;
       }
-      setProvisionedType(selectedType);
+      setCreatorPhotoRequired(await creatorPhotoRequirement(canonicalType));
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to continue onboarding.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function retryCreatorPhotoRequirement() {
+    if (provisionedType !== "creator") return;
+    setError("");
+    setSubmitting(true);
+    try {
+      setCreatorPhotoRequired(await creatorPhotoRequirement(provisionedType));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Failed to load creator requirements.");
     } finally {
       setSubmitting(false);
     }
@@ -176,12 +185,69 @@ export default function OnboardingPage() {
     selectOptionAtIndex((nextIndex + options.length) % options.length);
   }
 
-  const showSignupWelcome = !introComplete && !error;
+  const showSignupWelcome = !loading && !welcomeComplete && !error;
+
+  if (!loading && !sessionConfirmed) {
+    return (
+      <OnboardingShell
+        currentStep={1}
+        title="Reconnect your session"
+        description="Confirm your account before continuing onboarding."
+        showProgress={false}
+      >
+        <div className="mx-auto max-w-xl rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+          <p role="alert" className="text-sm text-red-700">
+            {error}
+          </p>
+          <button
+            type="button"
+            onClick={retrySession}
+            className="mt-5 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white hover:bg-primary-700"
+          >
+            Retry session
+          </button>
+        </div>
+      </OnboardingShell>
+    );
+  }
+
+  if (!loading && provisionedType === "creator" && creatorPhotoRequired === null) {
+    return (
+      <OnboardingShell
+        currentStep={1}
+        title="Finish setting up your creator profile"
+        description="We need the current creator profile requirements before continuing."
+        showProgress={false}
+      >
+        <div className="mx-auto max-w-xl rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+          {error ? (
+            <p role="alert" className="text-sm text-red-700">
+              {error}
+            </p>
+          ) : (
+            <p className="text-sm text-gray-600">Loading creator profile requirements…</p>
+          )}
+          {error && (
+            <button
+              type="button"
+              onClick={() => void retryCreatorPhotoRequirement()}
+              disabled={submitting}
+              className="mt-5 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? "Retrying…" : "Retry creator requirements"}
+            </button>
+          )}
+        </div>
+      </OnboardingShell>
+    );
+  }
 
   if (!loading && provisionedType) {
     const user = authService.getSessionUser();
     return (
       <SharedAccountDetailsStep
+        accountType={provisionedType}
+        requireProfileImage={creatorPhotoRequired === true}
         email={user?.email ?? ""}
         initialName={user?.name}
         initialPhone={user?.phone}
@@ -190,6 +256,29 @@ export default function OnboardingPage() {
           return sharedAccountProfileImageUploader(user.id, file);
         }}
         onSubmit={async (accountDetails) => {
+          if (provisionedType === "creator") {
+            const currentProfile = await creatorService.getMyProfile();
+            const accountName = `${accountDetails.firstName} ${accountDetails.lastName}`.trim();
+            const accountPhone = accountDetails.phone?.trim();
+            const shouldProjectPhoto =
+              !currentProfile.profilePicture?.trim() &&
+              !currentProfile.profilePictureMediaObjectId &&
+              Boolean(accountDetails.profilePictureMediaObjectId);
+            const creatorUpdate = {
+              ...(!currentProfile.name.trim() ? { name: accountName } : {}),
+              ...(!currentProfile.phone?.trim() && accountPhone ? { phone: accountPhone } : {}),
+              ...(shouldProjectPhoto
+                ? {
+                    profilePictureMediaObjectId: accountDetails.profilePictureMediaObjectId,
+                  }
+                : {}),
+            };
+
+            // Project only missing creator fields before marking shared identity details complete.
+            if (Object.keys(creatorUpdate).length > 0) {
+              await creatorService.updateMyProfile(creatorUpdate);
+            }
+          }
           await authService.updateAccountDetails(accountDetails);
           router.push(nextPathForType(provisionedType));
         }}
@@ -200,21 +289,29 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell
       currentStep={1}
-      title={showSignupWelcome ? "Thank you for signing up to Vayada" : "Welcome to Vayada"}
+      title={
+        loading
+          ? "Getting things ready"
+          : showSignupWelcome
+            ? "Thank you for signing up"
+            : "Which best describes you?"
+      }
       description={
-        showSignupWelcome
-          ? "Let's set up your profile in a little more detail."
-          : "Choose how you want to use Vayada."
+        loading
+          ? "Loading your account details."
+          : showSignupWelcome
+            ? "Welcome to Vayada — we’re glad you’re here. Let’s get you set up."
+            : "Choose your role so we can tailor your setup."
       }
       showProgress={false}
     >
-      <div className="mx-auto w-full max-w-3xl">
+      <div className={`mx-auto w-full ${showSignupWelcome ? "max-w-5xl" : "max-w-3xl"}`}>
         {loading ? (
           <div className="flex min-h-72 items-center justify-center">
             <p className="text-sm text-gray-600">Loading...</p>
           </div>
         ) : showSignupWelcome ? (
-          <SignupWelcomeMoment />
+          <SignupWelcomeMoment onContinue={handleWelcomeContinue} />
         ) : (
           <div className="space-y-5 text-center">
             <PathChoice
@@ -236,13 +333,10 @@ export default function OnboardingPage() {
             <button
               type="button"
               onClick={handleContinue}
-              disabled={submitting}
-              aria-label={
-                selectedType === "hotel" ? "Continue to hotel setup" : "Continue to creator profile"
-              }
+              disabled={submitting || !selectedType}
               className="mx-auto inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             >
-              {submitting ? "Continuing..." : "Continue"}
+              {submitting ? "Getting things ready..." : "Continue"}
               {!submitting && <ArrowRightIcon className="h-4 w-4" />}
             </button>
           </div>
@@ -258,7 +352,7 @@ function PathChoice({
   onSelect,
   onKeyDown,
 }: {
-  selectedType: AccountType;
+  selectedType: AccountType | null;
   optionRefs: MutableRefObject<Array<HTMLButtonElement | null>>;
   onSelect: (type: AccountType) => void;
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, index: number) => void;
@@ -283,7 +377,7 @@ function PathChoice({
             type="button"
             role="radio"
             aria-checked={selected}
-            tabIndex={selected ? 0 : -1}
+            tabIndex={selected || (!selectedType && index === 0) ? 0 : -1}
             onClick={() => onSelect(option.type)}
             onKeyDown={(event) => onKeyDown(event, index)}
             className={`group relative rounded-2xl bg-white p-2.5 pb-4 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 sm:hover:-translate-y-1 ${tiltClass} ${
@@ -338,19 +432,142 @@ function nextPathForType(type: AccountType): string {
   return type === "creator" ? ROUTES.PROFILE_COMPLETE : `${ROUTES.SETUP}?entryProduct=marketplace`;
 }
 
-function SignupWelcomeMoment() {
+async function creatorPhotoRequirement(type: AccountType, signal?: AbortSignal): Promise<boolean> {
+  if (type !== "creator") return false;
+  const timeoutSignal = AbortSignal.timeout(ONBOARDING_REQUEST_TIMEOUT_MS);
+  try {
+    return (
+      await creatorService.getProfileStatus({
+        signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+      })
+    ).profile_photo_required;
+  } catch (error) {
+    if (timeoutSignal.aborted && !signal?.aborted) {
+      throw new Error("Loading the creator photo requirement took too long. Please try again.");
+    }
+    throw error;
+  }
+}
+
+function onboardingWelcomeStorageKey(): string {
+  const user = authService.getSessionUser();
+  return `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
+}
+
+function SignupWelcomeMoment({ onContinue }: { onContinue: () => void }) {
+  const nextSteps = [
+    "Choose your path",
+    "Tell us a little about you",
+    "Set up your first hotel or creator profile",
+  ];
+
   return (
-    <div className="mx-auto flex min-h-48 w-full max-w-sm flex-col items-center justify-center rounded-2xl bg-white px-6 py-8 text-center shadow-[0_22px_55px_-32px_rgba(15,23,42,0.45)] ring-1 ring-gray-200">
-      <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-600 text-white">
-        <CheckIcon className="h-6 w-6" />
-      </span>
-      <p className="mt-4 text-base font-semibold text-gray-950">Your account is ready</p>
-      <p className="mt-2 text-sm text-gray-600">Preparing your setup...</p>
-      <div className="mt-4 flex justify-center gap-2" aria-hidden="true">
-        <span className="h-2 w-2 animate-pulse rounded-full bg-primary-600" />
-        <span className="h-2 w-2 animate-pulse rounded-full bg-primary-300 [animation-delay:150ms]" />
-        <span className="h-2 w-2 animate-pulse rounded-full bg-primary-200 [animation-delay:300ms]" />
+    <section
+      aria-labelledby="signup-welcome-title"
+      className="mx-auto w-full overflow-hidden rounded-[2rem] bg-white text-left shadow-[0_32px_90px_-42px_rgba(15,23,42,0.55)] ring-1 ring-gray-200/80"
+    >
+      <div className="grid md:grid-cols-[1.05fr_0.95fr]">
+        <div className="relative isolate order-2 min-h-[340px] overflow-hidden bg-gradient-to-br from-[#1737c7] via-primary-600 to-[#7067e8] px-7 py-8 text-white sm:px-9 md:order-1 md:min-h-[410px]">
+          <span
+            aria-hidden="true"
+            className="absolute -left-20 -top-24 h-64 w-64 rounded-full bg-white/10 blur-2xl"
+          />
+          <span
+            aria-hidden="true"
+            className="absolute -bottom-24 -right-16 h-72 w-72 rounded-full bg-cyan-300/20 blur-3xl"
+          />
+
+          <div className="relative z-10 max-w-md">
+            <p className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold tracking-wide text-white/95 backdrop-blur-sm">
+              <CheckIcon className="h-4 w-4" aria-hidden="true" />
+              Welcome to Vayada
+            </p>
+            <p className="mt-5 text-2xl font-semibold leading-tight tracking-tight sm:text-3xl">
+              Your next chapter in hospitality starts here.
+            </p>
+            <p className="mt-3 max-w-sm text-sm leading-6 text-white/90">
+              Connect, collaborate, and grow with hotels and creators who share your ambition.
+            </p>
+          </div>
+
+          <div className="relative z-10 mt-7 h-40 sm:h-44" aria-hidden="true">
+            <div className="absolute bottom-0 left-0 h-36 w-[54%] -rotate-3 overflow-hidden rounded-2xl border-4 border-white/90 bg-white shadow-2xl sm:h-40">
+              <Image
+                src="/hotel-hero.JPG"
+                alt=""
+                fill
+                priority
+                sizes="(min-width: 768px) 260px, 45vw"
+                className="object-cover object-[center_75%]"
+              />
+              <span className="absolute inset-0 bg-gradient-to-t from-gray-950/55 via-transparent to-transparent" />
+              <span className="absolute bottom-2.5 left-3 text-xs font-semibold text-white">
+                Hotels
+              </span>
+            </div>
+            <div className="absolute bottom-1 right-0 h-32 w-[58%] rotate-3 overflow-hidden rounded-2xl border-4 border-white/90 bg-white shadow-2xl sm:h-36">
+              <Image
+                src="/creator-category-travel.jpg"
+                alt=""
+                fill
+                priority
+                sizes="(min-width: 768px) 280px, 48vw"
+                className="object-cover"
+              />
+              <span className="absolute inset-0 bg-gradient-to-t from-gray-950/55 via-transparent to-transparent" />
+              <span className="absolute bottom-2.5 left-3 text-xs font-semibold text-white">
+                Creators
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="order-1 flex flex-col justify-center px-7 py-8 sm:px-10 sm:py-10 md:order-2">
+          <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary-50 text-primary-700 ring-1 ring-primary-100">
+            <CheckIcon className="h-5 w-5" aria-hidden="true" />
+          </span>
+          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.16em] text-primary-700">
+            Account created
+          </p>
+          <h2 id="signup-welcome-title" className="mt-2 text-2xl font-semibold text-gray-950">
+            Your account is ready
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-gray-600">
+            We’ll start with your profile and guide you through the rest.
+          </p>
+
+          <div className="mt-6 rounded-2xl bg-gray-50 px-4 py-4 ring-1 ring-gray-100">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
+              What happens next
+            </p>
+            <ol className="mt-3 space-y-3">
+              {nextSteps.map((step, index) => (
+                <li
+                  key={step}
+                  className="flex items-center gap-3 text-sm font-medium text-gray-800"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-primary-700 shadow-sm ring-1 ring-primary-100"
+                  >
+                    {index + 1}
+                  </span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </div>
+
+          <button
+            type="button"
+            onClick={onContinue}
+            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_16px_34px_-16px_rgba(37,99,235,0.9)] transition hover:-translate-y-0.5 hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+          >
+            Let’s get you set up
+            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
       </div>
-    </div>
+    </section>
   );
 }

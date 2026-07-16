@@ -12,6 +12,7 @@ export type CreatorType = "Lifestyle" | "Travel" | "Other";
 
 // Profile Status types
 export interface CreatorProfileStatus {
+  profile_photo_required: boolean;
   profile_complete: boolean;
   missing_fields: string[];
   missing_platforms: boolean;
@@ -178,10 +179,11 @@ export interface Creator {
   audienceSize: number;
   avgEngagementRate?: number;
   location: string;
-  portfolioLink?: string;
+  portfolioLink?: string | null;
   shortDescription?: string;
   phone?: string | null;
   profilePicture?: string | null;
+  profilePictureMediaObjectId?: string | null;
   creatorType: CreatorType;
   rating?: CreatorRating;
   status: UserStatus;
@@ -221,6 +223,7 @@ export interface PlatformGenderSplit {
 }
 
 export interface Platform {
+  id?: string | null;
   name: string;
   handle: string;
   followers: number;
@@ -337,13 +340,14 @@ export interface LoginResponse {
 
 // Profile Completion Form Types
 export interface PlatformFormData {
+  id?: string | null;
   name: string;
   handle: string;
   followers: number | "";
   engagement_rate: number | "";
   top_countries?: Array<{ country: string; percentage: number }>;
   top_age_groups?: Array<{ ageRange: string; percentage: number }>;
-  gender_split?: { male: number; female: number };
+  gender_split?: PlatformGenderSplit;
 }
 
 export interface ListingFormData {

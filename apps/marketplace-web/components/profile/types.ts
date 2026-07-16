@@ -89,13 +89,14 @@ export interface CreatorUpdatePayload {
   audience_size?: number;
   creator_type?: CreatorType;
   platforms?: Array<{
+    id?: string | null;
     name: "Instagram" | "TikTok" | "YouTube" | "Facebook";
     handle: string;
     followers: number;
-    engagement_rate: number;
-    top_countries?: Array<{ country: string; percentage: number }>;
+    engagementRate: number;
+    topCountries?: Array<{ country: string; percentage: number }>;
     topAgeGroups?: Array<{ ageRange: string; percentage: number }>;
-    gender_split?: { male: number; female: number };
+    genderSplit?: { male: number; female: number; other?: number };
   }>;
 }
 

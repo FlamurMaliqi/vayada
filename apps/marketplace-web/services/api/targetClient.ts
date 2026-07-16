@@ -5,7 +5,7 @@ import { ApiErrorResponse } from "./client";
 const TARGET_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 
 async function targetRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = await getOrRefreshAuthKitAccessToken();
+  const token = await getOrRefreshAuthKitAccessToken(options.signal ?? undefined);
   if (!token) throw new ApiErrorResponse(401, { detail: "Not authenticated" });
 
   const headers = new Headers(options.headers);
@@ -33,12 +33,12 @@ async function targetRequest<T>(endpoint: string, options: RequestInit = {}): Pr
   return body as T;
 }
 
-async function getOrRefreshAuthKitAccessToken(): Promise<string | null> {
+async function getOrRefreshAuthKitAccessToken(signal?: AbortSignal): Promise<string | null> {
   const token = getAuthKitAccessToken();
   if (token) return token;
 
   const { authService } = await import("@/services/auth/auth");
-  const refreshed = await authService.ensureSession();
+  const refreshed = await authService.ensureSession(signal);
   return refreshed ? getAuthKitAccessToken() : null;
 }
 

@@ -16,6 +16,10 @@ import type {
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
 import { mapWorkOSAuthError } from "../platform/workosAuthState.js";
+import {
+  resolveApprovedPublicProfileImage,
+  type ApprovedPublicProfileImageRepository,
+} from "./platformMedia.js";
 
 export type AuthKitUser = {
   id: string;
@@ -150,6 +154,7 @@ export type AuthSessionRouteOptions = {
   cookieSecure: boolean;
   cookieDomain?: string;
   legacyMarketplaceJwtSecret?: string;
+  profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
 };
 
 const SESSION_COOKIE = "vayada_workos_session";
@@ -1039,6 +1044,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
+
     if (baseResolution.organizationKind) {
       return reply.send(
         toSessionResponse(
@@ -1170,6 +1176,40 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(403).send(toAuthError(error));
     }
 
+    let profilePictureUrl = parsed.profilePictureUrl;
+    if (parsed.profilePictureMediaObjectId) {
+      if (!resolution.organizationId) {
+        return reply.code(403).send({
+          state: "auth_failed",
+          message: "Choose an organization before updating your profile picture.",
+        });
+      }
+      const media = await resolveApprovedPublicProfileImage({
+        repository: options.profileImageMediaRepository,
+        mediaId: parsed.profilePictureMediaObjectId,
+        actorUserId: resolution.user.userId,
+        ownerOrganizationId: resolution.organizationId,
+        allowedTargets: [
+          {
+            purpose: "identity.user.profile_image",
+            resourceProduct: "platform",
+            resourceType: "user_profile",
+            resourceId: resolution.user.userId,
+          },
+        ],
+      });
+      if (!media.ok) {
+        return reply.code(media.reason === "unavailable" ? 503 : 400).send({
+          state: "auth_failed",
+          message:
+            media.reason === "unavailable"
+              ? "Profile picture validation is temporarily unavailable."
+              : "Choose a valid, approved profile picture.",
+        });
+      }
+      profilePictureUrl = media.publicCdnUrl;
+    }
+
     if (parsed.firstName !== undefined && parsed.lastName !== undefined) {
       await options.authKitClient.updateUserName({
         workosUserId: session.user.id,
@@ -1193,8 +1233,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         userId: resolution.user.userId,
         ...(parsed.name !== undefined ? { name: parsed.name } : {}),
         ...(parsed.phone !== undefined ? { phone: parsed.phone } : {}),
-        profilePictureUrl: parsed.profilePictureUrl ?? undefined,
-        profilePictureMediaObjectId: parsed.profilePictureMediaObjectId ?? undefined,
+        ...(parsed.profilePictureUrl !== undefined ? { profilePictureUrl } : {}),
+        ...(parsed.profilePictureMediaObjectId !== undefined
+          ? { profilePictureMediaObjectId: parsed.profilePictureMediaObjectId }
+          : {}),
       },
     });
 
@@ -1658,8 +1700,8 @@ function parseProfileBody(body: unknown):
       firstName?: string;
       lastName?: string;
       phone?: string | null;
-      profilePictureUrl: string | null;
-      profilePictureMediaObjectId: string | null;
+      profilePictureUrl?: string | null;
+      profilePictureMediaObjectId?: string | null;
     }
   | { ok: false; error: { state: "auth_failed"; message: string } } {
   if (!body || typeof body !== "object") {
@@ -1698,6 +1740,11 @@ function parseProfileBody(body: unknown):
     const hasLastName = Object.prototype.hasOwnProperty.call(input, "lastName");
     const hasName = hasFirstName || hasLastName;
     const hasPhone = Object.prototype.hasOwnProperty.call(input, "phone");
+    const hasProfilePictureUrl = Object.prototype.hasOwnProperty.call(input, "profilePictureUrl");
+    const hasProfilePictureMediaObjectId = Object.prototype.hasOwnProperty.call(
+      input,
+      "profilePictureMediaObjectId",
+    );
     if (
       hasFirstName !== hasLastName ||
       (hasFirstName && typeof input.firstName !== "string") ||
@@ -1706,6 +1753,13 @@ function parseProfileBody(body: unknown):
       throw new Error("Invalid name");
     }
     if (hasPhone && typeof input.phone !== "string") throw new Error("Invalid phone");
+    if (
+      hasProfilePictureUrl !== hasProfilePictureMediaObjectId ||
+      (hasProfilePictureUrl && typeof input.profilePictureUrl !== "string") ||
+      (hasProfilePictureMediaObjectId && typeof input.profilePictureMediaObjectId !== "string")
+    ) {
+      throw new Error("Invalid profile picture");
+    }
     const firstName =
       typeof input.firstName === "string" ? input.firstName.trim().replace(/\s+/g, " ") : "";
     const lastName =
@@ -1728,7 +1782,8 @@ function parseProfileBody(body: unknown):
       (phone && (phone.length < 5 || phone.length > 64)) ||
       profilePictureUrl.length > 2048 ||
       profilePictureMediaObjectId.length > 2048 ||
-      (!hasName && !hasPhone && !profilePictureUrl && !profilePictureMediaObjectId)
+      Boolean(profilePictureUrl) !== Boolean(profilePictureMediaObjectId) ||
+      (!hasName && !hasPhone && !hasProfilePictureUrl)
     ) {
       throw new Error("Invalid profile details");
     }
@@ -1746,8 +1801,10 @@ function parseProfileBody(body: unknown):
       surface,
       ...(hasName ? { name, firstName, lastName } : {}),
       ...(hasPhone ? { phone: phone || null } : {}),
-      profilePictureUrl: profilePictureUrl || null,
-      profilePictureMediaObjectId: profilePictureMediaObjectId || null,
+      ...(hasProfilePictureUrl ? { profilePictureUrl: profilePictureUrl || null } : {}),
+      ...(hasProfilePictureMediaObjectId
+        ? { profilePictureMediaObjectId: profilePictureMediaObjectId || null }
+        : {}),
     };
   } catch {
     return {

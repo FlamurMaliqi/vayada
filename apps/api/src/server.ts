@@ -418,8 +418,10 @@ const app = buildApp({
   marketplaceCreatorSelfServiceRepository: config.targetDatabaseUrl
     ? createPgMarketplaceCreatorSelfServiceRepository({
         connectionString: config.targetDatabaseUrl,
+        profilePhotoRequired: config.creatorProfilePhotoRequired,
       })
     : undefined,
+  creatorProfilePhotoRequired: config.creatorProfilePhotoRequired,
   sharedHotelSetupStatusRepository,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth

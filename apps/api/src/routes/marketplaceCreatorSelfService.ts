@@ -18,6 +18,10 @@ import type {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { enforceRoutePolicy } from "./policy.js";
+import {
+  resolveApprovedPublicProfileImage,
+  type ApprovedPublicProfileImageRepository,
+} from "./platformMedia.js";
 
 export type MarketplaceCreatorSelfServiceRepository = {
   ensureCreatorProfile(input: {
@@ -39,7 +43,11 @@ export type MarketplaceCreatorSelfServiceRepository = {
 type MarketplaceCreatorSelfServiceRoutesOptions = {
   repository: MarketplaceCreatorSelfServiceRepository;
   lifecycleCommandBus: IdentityLifecycleCommandBus;
+  mediaRepository?: MarketplaceCreatorProfileMediaRepository;
+  profilePhotoRequired?: boolean;
 };
+
+export type MarketplaceCreatorProfileMediaRepository = ApprovedPublicProfileImageRepository;
 
 type MarketplaceCreatorSelfServiceClient = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -60,6 +68,7 @@ type MarketplaceCreatorSelfServicePool = MarketplaceCreatorSelfServiceClient & {
 type CreatorProfileAccess = {
   organizationId: string;
   creatorProfileId: string;
+  actorUserId: string;
 };
 
 type CreatorProfileRow = {
@@ -73,6 +82,7 @@ type CreatorProfileRow = {
   portfolioUrl: string | null;
   phone: string | null;
   profilePictureUrl: string | null;
+  profilePictureMediaObjectId: string | null;
   profileComplete: boolean;
   profileCompletedAt: Date | string | null;
   profileStatus: CreatorProfileStatus;
@@ -97,11 +107,14 @@ const creatorTypes = new Set<MarketplaceCreatorType>(["lifestyle", "travel", "ot
 const maxCreatorPlatforms = 20;
 const maxAudienceEntries = 50;
 
+class CreatorPlatformConflictError extends Error {}
+
 export async function registerMarketplaceCreatorSelfServiceRoutes(
   app: FastifyInstance,
   options: MarketplaceCreatorSelfServiceRoutesOptions,
 ): Promise<void> {
-  const { lifecycleCommandBus, repository } = options;
+  const { lifecycleCommandBus, mediaRepository, repository } = options;
+  const profilePhotoRequired = options.profilePhotoRequired ?? false;
   const resolveAccess = (request: FastifyRequest, reply: FastifyReply) =>
     resolveCreatorProfileAccess(request, reply, repository, lifecycleCommandBus);
 
@@ -120,7 +133,7 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
         detail: "Creator profile was not found",
       });
     }
-    return creatorProfileStatus(profile);
+    return creatorProfileStatus(profile, profilePhotoRequired);
   });
 
   app.get("/creators/me", async (request, reply) => {
@@ -146,10 +159,33 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
     const access = await resolveAccess(request, reply);
     if (!access) return;
 
-    const profile = await repository.updateCreatorProfile({
-      ...access,
-      patch: parsed.value,
-    });
+    const mediaError = await validateCreatorProfileMediaPatch(
+      parsed.value,
+      access,
+      mediaRepository,
+    );
+    if (mediaError) {
+      return reply.status(mediaError.statusCode).send({
+        code: mediaError.code,
+        detail: mediaError.detail,
+      });
+    }
+
+    let profile: CreatorProfileDocument | null;
+    try {
+      profile = await repository.updateCreatorProfile({
+        ...access,
+        patch: parsed.value,
+      });
+    } catch (error) {
+      if (error instanceof CreatorPlatformConflictError) {
+        return reply.status(409).send({
+          code: "profile_conflict",
+          detail: error.message,
+        });
+      }
+      throw error;
+    }
     if (!profile) {
       return reply.status(404).send({
         code: "creator_profile_not_found",
@@ -160,10 +196,89 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
   });
 }
 
+async function validateCreatorProfileMediaPatch(
+  patch: UpdateCreatorProfileRequest,
+  access: CreatorProfileAccess,
+  mediaRepository?: MarketplaceCreatorProfileMediaRepository,
+): Promise<{
+  statusCode: 400 | 503;
+  code: "invalid_profile_picture_media" | "media_validation_unavailable";
+  detail: string;
+} | null> {
+  const includesUrl = has(patch, "profilePictureUrl");
+  const includesMediaId = has(patch, "profilePictureMediaObjectId");
+  if (!includesUrl && !includesMediaId) return null;
+
+  if (!patch.profilePictureMediaObjectId) {
+    if (patch.profilePictureUrl) {
+      return {
+        statusCode: 400,
+        code: "invalid_profile_picture_media",
+        detail: "A verified profile picture media object is required",
+      };
+    }
+    if (includesUrl) patch.profilePictureMediaObjectId = null;
+    if (includesMediaId) patch.profilePictureUrl = null;
+    return null;
+  }
+
+  let resolved: Awaited<ReturnType<typeof resolveApprovedPublicProfileImage>>;
+  try {
+    resolved = await resolveApprovedPublicProfileImage({
+      repository: mediaRepository,
+      mediaId: patch.profilePictureMediaObjectId,
+      actorUserId: access.actorUserId,
+      ownerOrganizationId: access.organizationId,
+      allowedTargets: [
+        {
+          purpose: "identity.user.profile_image",
+          resourceProduct: "platform",
+          resourceType: "user_profile",
+          resourceId: access.actorUserId,
+        },
+        {
+          purpose: "marketplace.creator.profile_image",
+          resourceProduct: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: access.creatorProfileId,
+        },
+      ],
+    });
+  } catch {
+    resolved = { ok: false, reason: "unavailable" };
+  }
+  if (!resolved.ok && resolved.reason === "unavailable") {
+    return {
+      statusCode: 503,
+      code: "media_validation_unavailable",
+      detail: "Profile picture validation is temporarily unavailable",
+    };
+  }
+  if (!resolved.ok) {
+    return {
+      statusCode: 400,
+      code: "invalid_profile_picture_media",
+      detail: "Profile picture media must be an owned, approved public image upload",
+    };
+  }
+
+  const publicCdnUrl = resolved.publicCdnUrl;
+  if (patch.profilePictureUrl && patch.profilePictureUrl !== publicCdnUrl) {
+    return {
+      statusCode: 400,
+      code: "invalid_profile_picture_media",
+      detail: "Profile picture URL does not match the uploaded media object",
+    };
+  }
+  patch.profilePictureUrl = publicCdnUrl;
+  return null;
+}
+
 export function createPgMarketplaceCreatorSelfServiceRepository(config: {
   connectionString: string;
   max?: number;
   pool?: MarketplaceCreatorSelfServicePool;
+  profilePhotoRequired?: boolean;
 }): MarketplaceCreatorSelfServiceRepository {
   if (!config.connectionString.trim()) {
     throw new Error(
@@ -177,6 +292,7 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
       connectionString: config.connectionString,
       max: config.max,
     }) as unknown as MarketplaceCreatorSelfServicePool);
+  const profilePhotoRequired = config.profilePhotoRequired ?? false;
 
   return {
     async ensureCreatorProfile({ organizationId, ownerUserId }) {
@@ -246,7 +362,7 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
     },
 
     async getCreatorProfile(input) {
-      return readCreatorProfile(pool, input);
+      return readCreatorProfile(pool, input, profilePhotoRequired);
     },
 
     async updateCreatorProfile({ organizationId, creatorProfileId, patch }) {
@@ -262,7 +378,11 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
           });
         }
         await recalculateProfileCompletion(client, { organizationId, creatorProfileId });
-        const profile = await readCreatorProfile(client, { organizationId, creatorProfileId });
+        const profile = await readCreatorProfile(
+          client,
+          { organizationId, creatorProfileId },
+          profilePhotoRequired,
+        );
         await client.query("COMMIT");
         return profile;
       } catch (error) {
@@ -341,6 +461,7 @@ async function resolveCreatorProfileAccess(
     return {
       organizationId: context.selectedOrganization.organizationId,
       creatorProfileId,
+      actorUserId: context.actor.internalUserId,
     };
   } catch (error) {
     const statusCode =
@@ -416,6 +537,7 @@ async function grantCreatorProfileAccess(
 async function readCreatorProfile(
   client: MarketplaceCreatorSelfServiceClient,
   input: { organizationId: string; creatorProfileId: string },
+  profilePhotoRequired = false,
 ): Promise<CreatorProfileDocument | null> {
   const result = await client.query<CreatorProfileRow>(
     `SELECT
@@ -429,7 +551,25 @@ async function readCreatorProfile(
        profile.portfolio_url AS "portfolioUrl",
        profile.phone,
        profile.profile_picture_url AS "profilePictureUrl",
-       profile.profile_complete AS "profileComplete",
+       profile.profile_metadata ->> 'profilePictureMediaObjectId' AS "profilePictureMediaObjectId",
+       (NULLIF(BTRIM(profile.display_name), '') IS NOT NULL
+         AND NULLIF(BTRIM(profile.location_text), '') IS NOT NULL
+         AND NULLIF(BTRIM(profile.short_description), '') IS NOT NULL
+         AND EXISTS (
+           SELECT 1
+           FROM marketplace.creator_platforms completion_platform
+           WHERE completion_platform.creator_profile_id = profile.id
+             AND completion_platform.organization_id = profile.organization_id
+             AND NULLIF(BTRIM(completion_platform.handle), '') IS NOT NULL
+             AND completion_platform.follower_count > 0
+         )
+         AND (
+           NOT $3::boolean
+           OR (
+             NULLIF(BTRIM(profile.profile_picture_url), '') IS NOT NULL
+             AND NULLIF(BTRIM(profile.profile_metadata ->> 'profilePictureMediaObjectId'), '') IS NOT NULL
+           )
+         )) AS "profileComplete",
        profile.profile_completed_at AS "profileCompletedAt",
        profile.profile_status AS "profileStatus",
        COALESCE(platforms.platforms, '[]'::jsonb) AS platforms,
@@ -468,7 +608,7 @@ async function readCreatorProfile(
      WHERE profile.id::text = $1
        AND profile.organization_id::text = $2
      LIMIT 1`,
-    [input.creatorProfileId, input.organizationId],
+    [input.creatorProfileId, input.organizationId, profilePhotoRequired],
   );
 
   const row = result.rows[0];
@@ -485,8 +625,10 @@ async function readCreatorProfile(
     portfolioUrl: row.portfolioUrl,
     phone: row.phone,
     profilePictureUrl: row.profilePictureUrl,
+    profilePictureMediaObjectId: row.profilePictureMediaObjectId,
     profileComplete: row.profileComplete,
-    profileCompletedAt: row.profileCompletedAt ? toIsoString(row.profileCompletedAt) : null,
+    profileCompletedAt:
+      row.profileComplete && row.profileCompletedAt ? toIsoString(row.profileCompletedAt) : null,
     profileStatus: row.profileStatus,
     platforms,
     audienceSize: platforms.reduce((sum, platform) => sum + platform.followerCount, 0),
@@ -555,15 +697,109 @@ async function replaceCreatorPlatforms(
     platforms: CreatorProfilePlatformInput[];
   },
 ): Promise<void> {
+  const retainedPlatformIds: string[] = [];
   await client.query(
-    `DELETE FROM marketplace.creator_platforms
-     WHERE creator_profile_id::text = $1
-       AND organization_id::text = $2`,
+    `SELECT id
+     FROM marketplace.creator_profiles
+     WHERE id::text = $1
+       AND organization_id::text = $2
+     FOR UPDATE`,
     [input.creatorProfileId, input.organizationId],
   );
+  const existing = await client.query<{ platformId: string }>(
+    `SELECT id::text AS "platformId"
+     FROM marketplace.creator_platforms
+     WHERE creator_profile_id::text = $1
+       AND organization_id::text = $2
+     ORDER BY id
+     FOR UPDATE`,
+    [input.creatorProfileId, input.organizationId],
+  );
+  const existingPlatformIds = new Set(existing.rows.map((row) => row.platformId));
+  const includesLegacyRows = input.platforms.some((platform) => !has(platform, "platformId"));
+
+  if (includesLegacyRows && input.platforms.length > 0 && existingPlatformIds.size > 0) {
+    throw new CreatorPlatformConflictError(
+      "Your creator platforms must be refreshed before they can be updated.",
+    );
+  }
+  for (const platform of input.platforms) {
+    if (typeof platform.platformId === "string" && !existingPlatformIds.has(platform.platformId)) {
+      throw new CreatorPlatformConflictError(
+        "A creator platform changed while you were editing. Refresh and try again.",
+      );
+    }
+  }
 
   for (const platform of input.platforms) {
-    await client.query(
+    if (typeof platform.platformId === "string") {
+      const includesProfileUrl = has(platform, "profileUrl");
+      const includesAudienceCountries = has(platform, "audienceCountries");
+      const includesAudienceAgeGroups = has(platform, "audienceAgeGroups");
+      const includesAudienceGenderSplit = has(platform, "audienceGenderSplit");
+      const updated = await client.query<{ platformId: string }>(
+        `UPDATE marketplace.creator_platforms
+         SET verification_status = CASE
+               WHEN verification_status = 'verified' AND (
+                 platform IS DISTINCT FROM $3::text
+                 OR handle IS DISTINCT FROM $4::text
+                 OR follower_count IS DISTINCT FROM $5::integer
+                 OR engagement_rate IS DISTINCT FROM $6::numeric
+                 OR ($7::boolean AND profile_url IS DISTINCT FROM $8::text)
+                 OR ($9::boolean AND audience_countries IS DISTINCT FROM $10::jsonb)
+                 OR ($11::boolean AND audience_age_groups IS DISTINCT FROM $12::jsonb)
+                 OR ($13::boolean AND audience_gender_split IS DISTINCT FROM $14::jsonb)
+               ) THEN 'stale'
+               ELSE verification_status
+             END,
+             platform = $3,
+             handle = $4,
+             follower_count = $5,
+             engagement_rate = $6,
+             profile_url = CASE WHEN $7::boolean THEN $8::text ELSE profile_url END,
+             audience_countries = CASE
+               WHEN $9::boolean THEN $10::jsonb ELSE audience_countries
+             END,
+             audience_age_groups = CASE
+               WHEN $11::boolean THEN $12::jsonb ELSE audience_age_groups
+             END,
+             audience_gender_split = CASE
+               WHEN $13::boolean THEN $14::jsonb ELSE audience_gender_split
+             END,
+             updated_at = now()
+         WHERE id::text = $15
+           AND creator_profile_id::text = $1
+           AND organization_id::text = $2
+         RETURNING id::text AS "platformId"`,
+        [
+          input.creatorProfileId,
+          input.organizationId,
+          platform.platform,
+          platform.handle,
+          platform.followerCount,
+          platform.engagementRate,
+          includesProfileUrl,
+          platform.profileUrl ?? null,
+          includesAudienceCountries,
+          JSON.stringify(platform.audienceCountries ?? []),
+          includesAudienceAgeGroups,
+          JSON.stringify(platform.audienceAgeGroups ?? []),
+          includesAudienceGenderSplit,
+          JSON.stringify(platform.audienceGenderSplit ?? {}),
+          platform.platformId,
+        ],
+      );
+      const platformId = updated.rows[0]?.platformId;
+      if (!platformId) {
+        throw new CreatorPlatformConflictError(
+          "A creator platform changed while you were editing. Refresh and try again.",
+        );
+      }
+      retainedPlatformIds.push(platformId);
+      continue;
+    }
+
+    const inserted = await client.query<{ platformId: string }>(
       `INSERT INTO marketplace.creator_platforms (
          creator_profile_id,
          organization_id,
@@ -577,7 +813,8 @@ async function replaceCreatorPlatforms(
          audience_age_groups,
          audience_gender_split
        )
-       VALUES ($1, $2, 'marketplace', $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)`,
+       VALUES ($1, $2, 'marketplace', $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
+       RETURNING id::text AS "platformId"`,
       [
         input.creatorProfileId,
         input.organizationId,
@@ -591,7 +828,24 @@ async function replaceCreatorPlatforms(
         JSON.stringify(platform.audienceGenderSplit ?? {}),
       ],
     );
+    const platformId = inserted.rows[0]?.platformId;
+    if (!platformId) throw new Error("Failed to create creator platform");
+    retainedPlatformIds.push(platformId);
   }
+
+  await client.query(
+    retainedPlatformIds.length > 0
+      ? `DELETE FROM marketplace.creator_platforms
+         WHERE creator_profile_id::text = $1
+           AND organization_id::text = $2
+           AND NOT (id::text = ANY($3::text[]))`
+      : `DELETE FROM marketplace.creator_platforms
+         WHERE creator_profile_id::text = $1
+           AND organization_id::text = $2`,
+    retainedPlatformIds.length > 0
+      ? [input.creatorProfileId, input.organizationId, retainedPlatformIds]
+      : [input.creatorProfileId, input.organizationId],
+  );
 }
 
 async function recalculateProfileCompletion(
@@ -631,12 +885,16 @@ async function recalculateProfileCompletion(
   );
 }
 
-function creatorProfileStatus(profile: CreatorProfileDocument): CreatorProfileStatusResult {
-  const missingFields = creatorProfileMissingFields(profile);
+function creatorProfileStatus(
+  profile: CreatorProfileDocument,
+  profilePhotoRequired = false,
+): CreatorProfileStatusResult {
+  const missingFields = creatorProfileMissingFields(profile, profilePhotoRequired);
   const missingPlatforms = !hasCompletePlatform(profile.platforms);
   return {
     creatorProfileId: profile.creatorProfileId,
     organizationId: profile.organizationId,
+    profilePhotoRequired,
     profileComplete: missingFields.length === 0 && !missingPlatforms,
     profileStatus: profile.profileStatus,
     missingFields: missingPlatforms ? [...missingFields, "platforms"] : missingFields,
@@ -650,11 +908,18 @@ function creatorProfileStatus(profile: CreatorProfileDocument): CreatorProfileSt
 
 function creatorProfileMissingFields(
   profile: CreatorProfileDocument,
+  profilePhotoRequired = false,
 ): CreatorProfileMissingField[] {
   const missingFields: CreatorProfileMissingField[] = [];
   if (!profile.displayName?.trim()) missingFields.push("displayName");
   if (!profile.locationText?.trim()) missingFields.push("locationText");
   if (!profile.shortDescription?.trim()) missingFields.push("shortDescription");
+  if (
+    profilePhotoRequired &&
+    (!profile.profilePictureUrl?.trim() || !profile.profilePictureMediaObjectId?.trim())
+  ) {
+    missingFields.push("profilePicture");
+  }
   return missingFields;
 }
 
@@ -666,6 +931,7 @@ function creatorProfileCompletionSteps(
   if (missingFields.includes("displayName")) steps.push("add_display_name");
   if (missingFields.includes("locationText")) steps.push("set_location");
   if (missingFields.includes("shortDescription")) steps.push("add_short_description");
+  if (missingFields.includes("profilePicture")) steps.push("add_profile_picture");
   if (missingPlatforms) steps.push("add_platform");
   return steps;
 }
@@ -744,9 +1010,16 @@ function parseUpdateCreatorProfileRequest(
       return { ok: false, error: `platforms must contain at most ${maxCreatorPlatforms} entries` };
     }
     const platforms: CreatorProfilePlatformInput[] = [];
+    const platformIds = new Set<string>();
     for (const [index, platform] of body.platforms.entries()) {
       const parsed = parsePlatformInput(platform, index);
       if (!parsed.ok) return parsed;
+      if (parsed.value.platformId) {
+        if (platformIds.has(parsed.value.platformId)) {
+          return { ok: false, error: `platforms[${index}].platformId must be unique` };
+        }
+        platformIds.add(parsed.value.platformId);
+      }
       platforms.push(parsed.value);
     }
     patch.platforms = platforms;
@@ -763,6 +1036,13 @@ function parsePlatformInput(
   if (!platformNames.has(raw.platform as MarketplacePlatformName)) {
     return { ok: false, error: `platforms[${index}].platform is invalid` };
   }
+  const includesPlatformId = has(raw, "platformId");
+  const platformId = !includesPlatformId
+    ? ({ ok: true, value: undefined } as const)
+    : raw.platformId === null
+      ? ({ ok: true, value: null } as const)
+      : requiredString(raw.platformId, `platforms[${index}].platformId`);
+  if (!platformId.ok) return platformId;
   const handle = requiredString(raw.handle, `platforms[${index}].handle`);
   if (!handle.ok) return handle;
   const followerCount = nonNegativeNumber(raw.followerCount, `platforms[${index}].followerCount`);
@@ -772,18 +1052,22 @@ function parsePlatformInput(
     `platforms[${index}].engagementRate`,
   );
   if (!engagementRate.ok) return engagementRate;
+  const includesProfileUrl = has(raw, "profileUrl");
   const profileUrl = nullableHttpsUrl(raw.profileUrl, `platforms[${index}].profileUrl`);
   if (!profileUrl.ok) return profileUrl;
+  const includesAudienceCountries = has(raw, "audienceCountries");
   const audienceCountries = audienceCountryArray(
     raw.audienceCountries,
     `platforms[${index}].audienceCountries`,
   );
   if (!audienceCountries.ok) return audienceCountries;
+  const includesAudienceAgeGroups = has(raw, "audienceAgeGroups");
   const audienceAgeGroups = audienceAgeGroupArray(
     raw.audienceAgeGroups,
     `platforms[${index}].audienceAgeGroups`,
   );
   if (!audienceAgeGroups.ok) return audienceAgeGroups;
+  const includesAudienceGenderSplit = has(raw, "audienceGenderSplit");
   const audienceGenderSplit = genderSplit(
     raw.audienceGenderSplit,
     `platforms[${index}].audienceGenderSplit`,
@@ -793,14 +1077,15 @@ function parsePlatformInput(
   return {
     ok: true,
     value: {
+      ...(includesPlatformId ? { platformId: platformId.value } : {}),
       platform: raw.platform as MarketplacePlatformName,
       handle: handle.value,
-      profileUrl: profileUrl.value,
+      ...(includesProfileUrl ? { profileUrl: profileUrl.value } : {}),
       followerCount: followerCount.value,
       engagementRate: engagementRate.value,
-      audienceCountries: audienceCountries.value,
-      audienceAgeGroups: audienceAgeGroups.value,
-      audienceGenderSplit: audienceGenderSplit.value,
+      ...(includesAudienceCountries ? { audienceCountries: audienceCountries.value } : {}),
+      ...(includesAudienceAgeGroups ? { audienceAgeGroups: audienceAgeGroups.value } : {}),
+      ...(includesAudienceGenderSplit ? { audienceGenderSplit: audienceGenderSplit.value } : {}),
     },
   };
 }

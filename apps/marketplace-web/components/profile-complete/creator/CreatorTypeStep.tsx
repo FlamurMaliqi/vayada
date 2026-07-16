@@ -60,7 +60,7 @@ export function CreatorTypeStep({ selectedType, onSelect }: CreatorTypeStepProps
                 alt=""
                 fill
                 priority
-                sizes="(min-width: 768px) 280px, 100vw"
+                sizes="(min-width: 768px) 300px, 100vw"
                 className="object-cover transition duration-300 group-hover:scale-105"
               />
               <span className="absolute inset-0 bg-gradient-to-t from-gray-950/20 to-transparent" />

@@ -265,7 +265,7 @@ export function resolveSharedFirstRunSetupView(
     return propertyActionView(status, status.nextAction.propertyId, {
       screen: "product_selection",
       product: null,
-      title: "Choose account systems",
+      title: "How would you like to use Vayada?",
     });
   }
 

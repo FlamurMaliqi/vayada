@@ -2,14 +2,23 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { splitSharedAccountName } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants/routes";
 import { STORAGE_KEYS } from "@/lib/constants";
 import { checkProfileStatus, isProfileComplete } from "@/lib/utils";
-import type { UserType, CreatorProfileStatus, HotelProfileStatus, Creator } from "@/lib/types";
+import type {
+  UserType,
+  CreatorProfileStatus,
+  HotelProfileStatus,
+  Creator,
+  PlatformFormData,
+} from "@/lib/types";
 import { creatorService } from "@/services/api/creators";
 import { hotelService } from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
+import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
+import { authService } from "@/services/auth";
 import { useCreatorProfileForm } from "@/hooks/useCreatorProfileForm";
 import { useHotelProfileForm } from "@/hooks/useHotelProfileForm";
 import { formatErrorDetail } from "@/hooks/useErrorModal";
@@ -35,12 +44,25 @@ export default function ProfileCompletePage() {
   const [error, setError] = useState("");
   const [profileCompleted, setProfileCompleted] = useState(false);
   const [currentStep, setCurrentStep] = useState<number>(1);
+  const [creatorPhotoPersisted, setCreatorPhotoPersisted] = useState(false);
+  const [uploadedCreatorPhoto, setUploadedCreatorPhoto] = useState<{
+    file: File;
+    url: string;
+    mediaObjectId: string;
+    identitySynced: boolean;
+  } | null>(null);
+  const [initialCreatorPlatformsSignature, setInitialCreatorPlatformsSignature] = useState("[]");
+  const creatorPhotoRequired =
+    (profileStatus as CreatorProfileStatus | null)?.profile_photo_required ?? false;
 
-  const creatorSteps = ["Creator category", "Profile details", "Audience & platforms"];
+  const creatorSteps = ["Creator category", "About your work", "Audience & platforms"];
   const hotelSteps = ["Basic Information", "Collaboration Offers"];
 
   // Initialize hooks with error handler
-  const creatorForm = useCreatorProfileForm({ onError: setError });
+  const creatorForm = useCreatorProfileForm({
+    onError: setError,
+    profileImageRequired: creatorPhotoRequired,
+  });
   const hotelForm = useHotelProfileForm({ onError: setError });
 
   useEffect(() => {
@@ -63,6 +85,59 @@ export default function ProfileCompletePage() {
 
       if (storedUserType === "creator") {
         creatorForm.setForm((prev) => ({ ...prev, name: userName }));
+        const hydrationController = new AbortController();
+        const hydrationTimeout = window.setTimeout(() => hydrationController.abort(), 5_000);
+        let cancelled = false;
+        setLoading(true);
+        void Promise.allSettled([
+          hydrateCreatorProfile(userName, hydrationController.signal),
+          loadProfileStatus("creator", true, false, hydrationController.signal),
+        ])
+          .then(([hydrationResult, statusResult]) => {
+            if (cancelled) return;
+            if (hydrationResult.status === "rejected") {
+              setProfileStatusLoadFailed(true);
+              setError(
+                hydrationController.signal.aborted
+                  ? "Loading your creator profile took too long. Please refresh and try again."
+                  : "Failed to load your creator profile. Please refresh and try again.",
+              );
+              return;
+            }
+            if (statusResult.status === "rejected") {
+              setProfileStatusLoadFailed(true);
+              setError(
+                hydrationController.signal.aborted
+                  ? "Loading your creator profile took too long. Please refresh and try again."
+                  : "Failed to load profile status. Please try again.",
+              );
+              return;
+            }
+            const creatorStatus = statusResult.value as CreatorProfileStatus | null;
+            if (
+              creatorStatus?.profile_photo_required &&
+              !hydrationResult.value.profilePictureMediaObjectId?.trim()
+            ) {
+              creatorForm.setForm((prev) => ({ ...prev, profile_image: "" }));
+            }
+            if (
+              creatorStatus?.profile_complete &&
+              creatorStatus.profile_photo_required &&
+              (!hydrationResult.value.profilePicture?.trim() ||
+                !hydrationResult.value.profilePictureMediaObjectId?.trim())
+            ) {
+              setCurrentStep(2);
+            }
+          })
+          .finally(() => {
+            window.clearTimeout(hydrationTimeout);
+            if (!cancelled) setLoading(false);
+          });
+        return () => {
+          cancelled = true;
+          window.clearTimeout(hydrationTimeout);
+          hydrationController.abort();
+        };
       }
 
       if (storedUserType) {
@@ -73,20 +148,62 @@ export default function ProfileCompletePage() {
     }
   }, [router]);
 
+  const hydrateCreatorProfile = async (fallbackName: string, signal: AbortSignal) => {
+    const profile = await creatorService.getMyProfile({ signal });
+    const profilePicture = profile.profilePicture?.trim() || "";
+    const hasStartedCreatorProfile = Boolean(
+      profile.location.trim() ||
+      profile.shortDescription?.trim() ||
+      profile.portfolioLink?.trim() ||
+      profile.platforms.length,
+    );
+    creatorForm.setForm((prev) => ({
+      ...prev,
+      name: profile.name.trim() || fallbackName || prev.name,
+      location: profile.location.trim() || prev.location,
+      short_description: profile.shortDescription?.trim() || prev.short_description,
+      portfolio_link: profile.portfolioLink?.trim() || prev.portfolio_link,
+      phone: profile.phone?.trim() || prev.phone,
+      profile_image: profilePicture || prev.profile_image,
+      creator_type: hasStartedCreatorProfile ? profile.creatorType : prev.creator_type,
+    }));
+    const hydratedPlatforms = profile.platforms.map((platform) => ({
+      id: platform.id,
+      name: platform.name,
+      handle: platform.handle,
+      followers: platform.followers,
+      engagement_rate: platform.engagementRate,
+      top_countries: platform.topCountries,
+      top_age_groups: platform.topAgeGroups,
+      gender_split: platform.genderSplit,
+    }));
+    creatorForm.setPlatforms(hydratedPlatforms);
+    setInitialCreatorPlatformsSignature(
+      JSON.stringify(hydratedPlatforms.map(toCreatorPlatformUpdate)),
+    );
+    setCreatorPhotoPersisted(
+      Boolean(profilePicture && profile.profilePictureMediaObjectId?.trim()),
+    );
+    return profile;
+  };
+
   const loadProfileStatus = async (
     type: "creator" | "hotel",
     skipRedirect = false,
+    manageLoading = true,
+    signal?: AbortSignal,
   ): Promise<CreatorProfileStatus | HotelProfileStatus | null> => {
-    setLoading(true);
+    if (manageLoading) setLoading(true);
     setProfileStatusLoadFailed(false);
     try {
-      const status = await checkProfileStatus(type);
+      const status = await checkProfileStatus(type, { signal });
       setProfileStatus(status);
       if (status?.profile_complete && !skipRedirect && !profileCompleted) {
         setProfileCompleted(true);
       }
       return status;
     } catch (err) {
+      if (signal?.aborted) throw err;
       console.error("Failed to load profile status:", err);
       setProfileStatusLoadFailed(true);
       setError(
@@ -96,7 +213,7 @@ export default function ProfileCompletePage() {
       );
       return null;
     } finally {
-      setLoading(false);
+      if (manageLoading) setLoading(false);
     }
   };
 
@@ -134,49 +251,48 @@ export default function ProfileCompletePage() {
 
     setSubmitting(true);
     try {
-      const platforms = creatorForm.platforms.map((p) => {
-        const validAgeGroups =
-          p.top_age_groups
-            ?.filter((tag) => tag.ageRange?.trim())
-            .map((tag) => ({ ageRange: tag.ageRange.trim(), percentage: tag.percentage })) || [];
+      const platforms = creatorForm.platforms.map(toCreatorPlatformUpdate);
+      const platformsChanged = JSON.stringify(platforms) !== initialCreatorPlatformsSignature;
 
-        return {
-          name: p.name,
-          handle: p.handle,
-          followers: Number(p.followers),
-          engagementRate: Number(p.engagement_rate),
-          ...(p.top_countries?.length && {
-            topCountries: p.top_countries.map((tc) => ({
-              country: tc.country,
-              percentage: tc.percentage,
-            })),
-          }),
-          ...(validAgeGroups.length && { topAgeGroups: validAgeGroups }),
-          ...(p.gender_split &&
-            (p.gender_split.male > 0 || p.gender_split.female > 0) && {
-              genderSplit: { male: p.gender_split.male, female: p.gender_split.female },
-            }),
-        };
-      });
-
-      const audienceSize = platforms.reduce((sum, p) => sum + p.followers, 0);
-
-      let profilePictureUrl: string | undefined;
       let profilePictureMediaObjectId: string | undefined;
       if (creatorForm.profilePictureFile) {
         try {
-          const currentProfile = await creatorService.getMyProfile();
-          const uploadResponse = await creatorService.uploadProfilePicture(
-            creatorForm.profilePictureFile,
-            currentProfile.id,
-          );
-          profilePictureUrl = uploadResponse.url;
-          profilePictureMediaObjectId = uploadResponse.mediaObjectId;
+          let uploaded =
+            uploadedCreatorPhoto?.file === creatorForm.profilePictureFile
+              ? uploadedCreatorPhoto
+              : null;
+          if (!uploaded) {
+            const user = authService.getSessionUser();
+            if (!user?.id) throw new Error("Your session has expired. Please sign in again.");
+            const uploadResponse = await sharedAccountProfileImageUploader(
+              user.id,
+              creatorForm.profilePictureFile,
+            );
+            uploaded = {
+              file: creatorForm.profilePictureFile,
+              url: uploadResponse.profilePictureUrl,
+              mediaObjectId: uploadResponse.profilePictureMediaObjectId,
+              identitySynced: false,
+            };
+            setUploadedCreatorPhoto(uploaded);
+          }
+          if (!uploaded.identitySynced) {
+            await authService.updateAccountDetails({
+              profilePictureUrl: uploaded.url,
+              profilePictureMediaObjectId: uploaded.mediaObjectId,
+            });
+            uploaded = { ...uploaded, identitySynced: true };
+            setUploadedCreatorPhoto(uploaded);
+          }
+          profilePictureMediaObjectId = uploaded.mediaObjectId;
+          creatorForm.setForm((prev) => ({ ...prev, profile_image: uploaded.url }));
         } catch (err) {
           if (err instanceof ApiErrorResponse) {
             setError(formatErrorDetail(err.data.detail) || "Failed to upload profile picture");
           } else {
-            setError("Failed to upload profile picture. Please try again.");
+            setError(
+              err instanceof Error ? err.message : "Failed to upload profile picture. Try again.",
+            );
           }
           setSubmitting(false);
           return;
@@ -186,17 +302,13 @@ export default function ProfileCompletePage() {
       const updatePayload = {
         name: creatorForm.form.name,
         location: creatorForm.form.location,
-        platforms,
-        audienceSize,
+        ...(platformsChanged && { platforms }),
         creatorType: creatorForm.form.creator_type,
-        ...(creatorForm.form.portfolio_link?.trim() && {
-          portfolioLink: creatorForm.form.portfolio_link.trim(),
-        }),
+        portfolioLink: creatorForm.form.portfolio_link.trim() || null,
         ...(creatorForm.form.short_description?.trim() && {
           shortDescription: creatorForm.form.short_description.trim(),
         }),
         ...(creatorForm.form.phone?.trim() && { phone: creatorForm.form.phone.trim() }),
-        ...(profilePictureUrl && { profilePicture: profilePictureUrl }),
         ...(profilePictureMediaObjectId && {
           profilePictureMediaObjectId,
           profile_picture_media_object_id: profilePictureMediaObjectId,
@@ -206,9 +318,12 @@ export default function ProfileCompletePage() {
       const updatedProfile = await creatorService.updateMyProfile(updatePayload);
       const responseWithSnakeCase = updatedProfile as Creator & { profile_picture?: string | null };
       const pictureUrl = updatedProfile.profilePicture || responseWithSnakeCase.profile_picture;
-      if (pictureUrl?.trim()) {
-        creatorForm.setForm((prev) => ({ ...prev, profile_image: pictureUrl }));
+      const persistedPictureUrl = pictureUrl?.trim() || "";
+      if (persistedPictureUrl && updatedProfile.profilePictureMediaObjectId?.trim()) {
+        creatorForm.setForm((prev) => ({ ...prev, profile_image: persistedPictureUrl }));
+        setCreatorPhotoPersisted(true);
       }
+      if (platformsChanged) setInitialCreatorPlatformsSignature(JSON.stringify(platforms));
 
       const complete = await isProfileComplete("creator");
       if (complete) {
@@ -501,7 +616,10 @@ export default function ProfileCompletePage() {
   }
   const effectiveProfileStatus = profileStatus ?? emptyProfileStatus(userType);
 
-  if (profileCompleted || effectiveProfileStatus.profile_complete) {
+  if (
+    (profileCompleted || effectiveProfileStatus.profile_complete) &&
+    (userType !== "creator" || !creatorPhotoRequired || creatorPhotoPersisted)
+  ) {
     return (
       <ProfileCompletionScreen
         userType={userType}
@@ -513,26 +631,39 @@ export default function ProfileCompletePage() {
 
   const steps = userType === "creator" ? creatorSteps : hotelSteps;
   const totalSteps = steps.length;
-  const completionPercentage = effectiveProfileStatus.profile_complete
-    ? 100
-    : userType === "creator"
-      ? creatorForm.calculateProgress()
-      : hotelForm.calculateProgress();
   const isCreatorCategoryStep = userType === "creator" && currentStep === 1;
+  const creatorFirstName = splitSharedAccountName(creatorForm.form.name).firstName;
+  const creatorCategoryTitle = creatorFirstName
+    ? `Hi, ${creatorFirstName}! What kind of creator are you?`
+    : "Which creator type are you?";
+  const creatorProfileTitle =
+    currentStep === 2 ? "Tell hotels about your work" : "Show hotels your reach";
+  const creatorProfileDescription =
+    currentStep === 2
+      ? "Your account details are already saved. Add what hotels need to understand your content."
+      : "Add the audience and platform details hotels use to assess a collaboration.";
 
   return (
     <OnboardingShell
       currentStep={2}
-      title={isCreatorCategoryStep ? "Which creator type are you?" : profileShellTitle(userType)}
+      title={
+        isCreatorCategoryStep
+          ? creatorCategoryTitle
+          : userType === "creator"
+            ? creatorProfileTitle
+            : profileShellTitle(userType)
+      }
       description={
         isCreatorCategoryStep
           ? "Choose the option that best describes the content you create."
-          : profileShellDescription(userType)
+          : userType === "creator"
+            ? creatorProfileDescription
+            : profileShellDescription(userType)
       }
       compact={!isCreatorCategoryStep}
       showProgress={false}
     >
-      <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-3xl" : "space-y-2"}>
+      <div className={isCreatorCategoryStep ? "mx-auto w-full max-w-4xl" : "space-y-2"}>
         {!isCreatorCategoryStep && <StepIndicators steps={steps} currentStep={currentStep} />}
 
         <div
@@ -542,8 +673,8 @@ export default function ProfileCompletePage() {
               : "overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]"
           }
         >
-          {!isCreatorCategoryStep && (
-            <ProfileCompletionProgress percentage={completionPercentage} />
+          {!isCreatorCategoryStep && userType === "hotel" && (
+            <ProfileCompletionProgress percentage={hotelForm.calculateProgress()} />
           )}
 
           {/* Forms */}
@@ -610,6 +741,31 @@ export default function ProfileCompletePage() {
   );
 }
 
+function toCreatorPlatformUpdate(platform: PlatformFormData) {
+  const validAgeGroups =
+    platform.top_age_groups
+      ?.filter((tag) => tag.ageRange?.trim())
+      .map((tag) => ({ ageRange: tag.ageRange.trim(), percentage: tag.percentage })) || [];
+
+  return {
+    id: platform.id ?? null,
+    name: platform.name,
+    handle: platform.handle,
+    followers: Number(platform.followers),
+    engagementRate: Number(platform.engagement_rate),
+    ...(platform.top_countries !== undefined
+      ? {
+          topCountries: platform.top_countries.map((country) => ({
+            country: country.country,
+            percentage: country.percentage,
+          })),
+        }
+      : {}),
+    ...(platform.top_age_groups !== undefined ? { topAgeGroups: validAgeGroups } : {}),
+    ...(platform.gender_split !== undefined ? { genderSplit: platform.gender_split } : {}),
+  };
+}
+
 function profileShellTitle(userType: "creator" | "hotel"): string {
   return userType === "creator" ? "Create your creator profile" : "Create your first offer";
 }
@@ -625,6 +781,7 @@ function emptyProfileStatus(
 ): CreatorProfileStatus | HotelProfileStatus {
   if (userType === "creator") {
     return {
+      profile_photo_required: false,
       profile_complete: false,
       missing_fields: [],
       missing_platforms: true,

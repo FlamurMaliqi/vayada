@@ -14,10 +14,15 @@ import type {
   UpdateCreatorProfileRequest,
 } from "@vayada/domain-marketplace";
 import type { FastifyInstance } from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
-import type { MarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
+import {
+  createPgMarketplaceCreatorSelfServiceRepository,
+  type MarketplaceCreatorProfileMediaRepository,
+  type MarketplaceCreatorSelfServiceRepository,
+} from "./routes/marketplaceCreatorSelfService.js";
+import type { PlatformMediaObjectRecord } from "./routes/platformMedia.js";
 
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
 const creatorProfileId = "creator_profile_local";
@@ -136,6 +141,56 @@ describe("marketplace creator self-service routes", () => {
     expect(calls).toEqual([`org_creator_workspace:${creatorProfileId}`]);
   });
 
+  it("reports a missing approved profile photo when the requirement is enabled", async () => {
+    app = buildMarketplaceCreatorApp({
+      profilePhotoRequired: true,
+      repository: {
+        async ensureCreatorProfile() {
+          throw new Error("existing profile link should not bootstrap");
+        },
+        async getCreatorProfile() {
+          return profileDocument({
+            profileComplete: true,
+            platforms: [
+              {
+                platformId: "platform_instagram",
+                platform: "instagram",
+                handle: "lina",
+                profileUrl: null,
+                followerCount: 1200,
+                engagementRate: 4.2,
+                audienceCountries: [],
+                audienceAgeGroups: [],
+                audienceGenderSplit: null,
+                verificationStatus: "unverified",
+              },
+            ],
+          });
+        },
+        async updateCreatorProfile() {
+          throw new Error("profile status should not update");
+        },
+      },
+    });
+
+    const response = await injectJson<{
+      profilePhotoRequired: boolean;
+      profileComplete: boolean;
+      missingFields: string[];
+      completionSteps: string[];
+    }>(app, {
+      method: "GET",
+      url: "/api/marketplace/creators/me/profile-status",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.profilePhotoRequired).toBe(true);
+    expect(response.body.profileComplete).toBe(false);
+    expect(response.body.missingFields).toContain("profilePicture");
+    expect(response.body.completionSteps).toContain("add_profile_picture");
+  });
+
   it("forwards valid profile updates to the target repository", async () => {
     let patch: UpdateCreatorProfileRequest | undefined;
     app = buildMarketplaceCreatorApp({
@@ -178,8 +233,10 @@ describe("marketplace creator self-service routes", () => {
         creatorType: "travel",
         locationText: "Berlin",
         shortDescription: "Travel creator",
+        profilePictureMediaObjectId: "media_creator_profile_owned",
         platforms: [
           {
+            platformId: null,
             platform: "instagram",
             handle: "lina",
             followerCount: 1200,
@@ -196,14 +253,168 @@ describe("marketplace creator self-service routes", () => {
       creatorType: "travel",
       locationText: "Berlin",
       shortDescription: "Travel creator",
+      profilePictureMediaObjectId: "media_creator_profile_owned",
+      profilePictureUrl: "https://media.example/creator-profile.png",
       platforms: [
         {
+          platformId: null,
           platform: "instagram",
           handle: "lina",
           followerCount: 1200,
           engagementRate: 4.2,
         },
       ],
+    });
+  });
+
+  it("rejects profile picture URLs without an issued media object", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        profilePictureUrl: "https://example.invalid/unowned.png",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe("A verified profile picture media object is required");
+  });
+
+  it("clears the stored picture URL and media link together", async () => {
+    let patch: UpdateCreatorProfileRequest | undefined;
+    app = buildMarketplaceCreatorApp({
+      repository: {
+        async ensureCreatorProfile() {
+          throw new Error("existing profile link should not bootstrap");
+        },
+        async getCreatorProfile() {
+          throw new Error("profile write should not read before update");
+        },
+        async updateCreatorProfile(input) {
+          patch = input.patch;
+          return profileDocument();
+        },
+      },
+    });
+
+    const response = await injectJson<CreatorProfileDocument>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { profilePictureUrl: null },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(patch).toEqual({ profilePictureUrl: null, profilePictureMediaObjectId: null });
+  });
+
+  it("rejects staging storage keys as creator profile picture URLs", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        profilePictureUrl: "staging/00000000-0000-4000-8000-000000000001/1/active/profile.png",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe("profilePictureUrl must be an absolute https URL");
+  });
+
+  it("rejects creator profile media that was not issued to the current creator", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        profilePictureMediaObjectId: "media_not_owned",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe(
+      "Profile picture media must be an owned, approved public image upload",
+    );
+  });
+
+  it("rejects owned creator media until it has a public variant", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        profilePictureMediaObjectId: "media_creator_profile_staged",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe(
+      "Profile picture media must be an owned, approved public image upload",
+    );
+  });
+
+  it("gates profile photo updates when persistent media validation is unavailable", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+      disableProfileMediaRepository: true,
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        profilePictureMediaObjectId: "media_creator_profile_owned",
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.detail).toBe("Profile picture validation is temporarily unavailable");
+  });
+
+  it("maps media repository failures to temporary validation unavailability", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+      mediaRepository: {
+        persistent: true,
+        publicCdnBaseUrl: "https://media.example/",
+        async findMediaObject() {
+          throw new Error("database unavailable");
+        },
+      },
+    });
+
+    const response = await injectJson<{ code: string; detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        profilePictureMediaObjectId: "media_creator_profile_owned",
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body).toEqual({
+      code: "media_validation_unavailable",
+      detail: "Profile picture validation is temporarily unavailable",
     });
   });
 
@@ -228,6 +439,30 @@ describe("marketplace creator self-service routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.body.detail).toBe("platforms must contain at most 20 entries");
+  });
+
+  it("rejects duplicate creator platform IDs", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        platforms: ["instagram", "youtube"].map((platform) => ({
+          platformId: "platform-shared",
+          platform,
+          handle: "creator",
+          followerCount: 1200,
+          engagementRate: 4.2,
+        })),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe("platforms[1].platformId must be unique");
   });
 
   it("rejects creator profile updates with too many audience entries", async () => {
@@ -312,8 +547,282 @@ describe("marketplace creator self-service routes", () => {
   });
 });
 
+describe("marketplace creator platform persistence", () => {
+  it("updates stable IDs, creates explicit new rows, and deletes only omitted rows", async () => {
+    const target = creatorPlatformRepositoryTarget(["platform-1", "platform-removed"]);
+    const repository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+    });
+
+    await repository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      patch: {
+        platforms: [
+          {
+            platformId: "platform-1",
+            platform: "instagram",
+            handle: "lina",
+            followerCount: 1500,
+            engagementRate: 4.5,
+          },
+          {
+            platformId: null,
+            platform: "youtube",
+            handle: "lina-travels",
+            followerCount: 800,
+            engagementRate: 3.2,
+            audienceCountries: [],
+            audienceAgeGroups: [],
+            audienceGenderSplit: null,
+          },
+        ],
+      },
+    });
+
+    const update = target.queries.find((query) =>
+      query.text.trim().startsWith("UPDATE marketplace.creator_platforms"),
+    );
+    expect(update?.text).toContain("verification_status = CASE");
+    expect(update?.text).toContain("verification_status = 'verified'");
+    expect(update?.text).not.toMatch(/source_system\s*=/);
+    expect(update?.text).not.toMatch(/source_platform_id\s*=/);
+    expect(update?.text).not.toMatch(/platform_metadata\s*=/);
+    expect(update?.values?.slice(6, 14)).toEqual([
+      false,
+      null,
+      false,
+      "[]",
+      false,
+      "[]",
+      false,
+      "{}",
+    ]);
+
+    const insert = target.queries.find((query) =>
+      query.text.trim().startsWith("INSERT INTO marketplace.creator_platforms"),
+    );
+    expect(insert).toBeDefined();
+    const deletion = target.queries.find((query) =>
+      query.text.trim().startsWith("DELETE FROM marketplace.creator_platforms"),
+    );
+    expect(deletion?.values?.[2]).toEqual(["platform-1", "platform-new-1"]);
+  });
+
+  it("persists base completeness independently of the profile photo policy", async () => {
+    const target = creatorPlatformRepositoryTarget(["platform-1"]);
+    const photoRequiredRepository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+      profilePhotoRequired: true,
+    });
+
+    const photoRequiredProfile = await photoRequiredRepository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      patch: { displayName: "Lina Creator" },
+    });
+
+    expect(photoRequiredProfile?.profileComplete).toBe(false);
+    const completion = target.queries.find((query) => query.text.includes("WITH completion AS"));
+    expect(completion?.text).not.toContain("profile_picture");
+    expect(completion?.values).toEqual([creatorProfileId, "org_creator_workspace"]);
+
+    const profileRead = target.queries.find(
+      (query) =>
+        query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
+    );
+    expect(profileRead?.text).toContain("FROM marketplace.creator_platforms completion_platform");
+    expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", true]);
+  });
+
+  it("derives base completeness after photo policy rollback without a profile update", async () => {
+    const target = creatorPlatformRepositoryTarget(["platform-1"]);
+    const photoOptionalRepository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+      profilePhotoRequired: false,
+    });
+
+    const photoOptionalProfile = await photoOptionalRepository.getCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+    });
+
+    expect(photoOptionalProfile?.profileComplete).toBe(true);
+    expect(target.queries.some((query) => query.text.includes("WITH completion AS"))).toBe(false);
+    const profileRead = target.queries.find(
+      (query) =>
+        query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
+    );
+    expect(profileRead?.text).not.toContain("(profile.profile_complete");
+    expect(profileRead?.text).toContain("FROM marketplace.creator_platforms completion_platform");
+    expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", false]);
+  });
+
+  it("preserves omitted optional fields and supports explicit clears", async () => {
+    const target = creatorPlatformRepositoryTarget(["platform-1"]);
+    const repository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+    });
+
+    await repository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      patch: {
+        platforms: [
+          {
+            platformId: "platform-1",
+            platform: "instagram",
+            handle: "lina",
+            profileUrl: null,
+            followerCount: 1200,
+            engagementRate: 4.2,
+            audienceCountries: [],
+            audienceAgeGroups: [],
+            audienceGenderSplit: null,
+          },
+        ],
+      },
+    });
+
+    const update = target.queries.find((query) =>
+      query.text.trim().startsWith("UPDATE marketplace.creator_platforms"),
+    );
+    expect(update?.values?.slice(6, 14)).toEqual([true, null, true, "[]", true, "[]", true, "{}"]);
+  });
+
+  it("rolls back legacy snapshots and unknown IDs before mutating platform rows", async () => {
+    for (const platforms of [
+      [
+        {
+          platform: "instagram" as const,
+          handle: "legacy",
+          followerCount: 1200,
+          engagementRate: 4.2,
+        },
+      ],
+      [
+        {
+          platformId: "platform-foreign",
+          platform: "instagram" as const,
+          handle: "foreign",
+          followerCount: 1200,
+          engagementRate: 4.2,
+        },
+      ],
+    ]) {
+      const target = creatorPlatformRepositoryTarget(["platform-1"]);
+      const repository = createPgMarketplaceCreatorSelfServiceRepository({
+        connectionString: "postgres://unused",
+        pool: target.pool as never,
+      });
+
+      await expect(
+        repository.updateCreatorProfile({
+          organizationId: "org_creator_workspace",
+          creatorProfileId,
+          patch: { platforms },
+        }),
+      ).rejects.toThrow(/refresh|changed/);
+
+      expect(
+        target.queries.filter((query) =>
+          /^(UPDATE|INSERT INTO|DELETE FROM) marketplace\.creator_platforms/.test(
+            query.text.trim(),
+          ),
+        ),
+      ).toHaveLength(0);
+      expect(target.queries.some((query) => query.text === "ROLLBACK")).toBe(true);
+    }
+  });
+});
+
+function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
+  const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
+  let insertedPlatformCount = 0;
+  let persistedProfileComplete = false;
+  const query = vi.fn(async (text: string, values?: readonly unknown[]) => {
+    queries.push({ text, values });
+    const normalized = text.trim();
+    if (
+      normalized.startsWith('SELECT id::text AS "platformId"') &&
+      normalized.includes("FROM marketplace.creator_platforms")
+    ) {
+      return { rows: existingPlatformIds.map((platformId) => ({ platformId })) };
+    }
+    if (normalized.startsWith("UPDATE marketplace.creator_platforms")) {
+      const platformId = String(values?.[14] ?? "");
+      return {
+        rows: existingPlatformIds.includes(platformId) ? [{ platformId }] : [],
+      };
+    }
+    if (normalized.startsWith("INSERT INTO marketplace.creator_platforms")) {
+      insertedPlatformCount += 1;
+      return { rows: [{ platformId: `platform-new-${insertedPlatformCount}` }] };
+    }
+    if (normalized.startsWith("WITH completion AS")) {
+      persistedProfileComplete =
+        existingPlatformIds.length > 0 && !normalized.includes("profile_picture");
+      return { rows: [] };
+    }
+    if (normalized.startsWith("SELECT") && normalized.includes("LEFT JOIN LATERAL")) {
+      const profilePhotoRequired = values?.[2] === true;
+      const derivesBaseCompleteness = normalized.includes(
+        "FROM marketplace.creator_platforms completion_platform",
+      );
+      const baseProfileComplete = derivesBaseCompleteness
+        ? existingPlatformIds.length > 0
+        : persistedProfileComplete;
+      return {
+        rows: [
+          {
+            creatorProfileId,
+            organizationId: "org_creator_workspace",
+            sourceCreatorId: null,
+            displayName: "Lina Creator",
+            creatorType: "travel",
+            locationText: "Berlin",
+            shortDescription: "Travel creator",
+            portfolioUrl: null,
+            phone: null,
+            profilePictureUrl: null,
+            profilePictureMediaObjectId: null,
+            profileComplete: baseProfileComplete && !profilePhotoRequired,
+            profileCompletedAt: persistedProfileComplete ? "2026-07-05T10:00:00.000Z" : null,
+            profileStatus: "pending",
+            platforms: [],
+            averageRating: 0,
+            totalReviews: 0,
+            createdAt: "2026-07-05T10:00:00.000Z",
+            updatedAt: "2026-07-05T10:00:00.000Z",
+          },
+        ],
+      };
+    }
+    if (normalized.startsWith("SELECT id") && normalized.includes("creator_profiles")) {
+      return { rows: [{ id: creatorProfileId }] };
+    }
+    return { rows: [] };
+  });
+  const client = { query, release: vi.fn() };
+  return {
+    queries,
+    pool: {
+      query,
+      connect: vi.fn(async () => client),
+      end: vi.fn(async () => undefined),
+    },
+  };
+}
+
 function buildMarketplaceCreatorApp(options: {
   repository: MarketplaceCreatorSelfServiceRepository;
+  disableProfileMediaRepository?: boolean;
+  mediaRepository?: MarketplaceCreatorProfileMediaRepository;
+  profilePhotoRequired?: boolean;
   lifecycleCommandBus?: IdentityLifecycleCommandBus;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
@@ -322,6 +831,41 @@ function buildMarketplaceCreatorApp(options: {
   return buildApp({
     logger: false,
     marketplaceCreatorSelfServiceRepository: options.repository,
+    creatorProfilePhotoRequired: options.profilePhotoRequired,
+    ...(options.disableProfileMediaRepository
+      ? {}
+      : {
+          marketplaceCreatorProfileMediaRepository: options.mediaRepository ?? {
+            persistent: true,
+            publicCdnBaseUrl: "https://media.example/",
+            async findMediaObject(mediaId: string) {
+              if (mediaId === "media_creator_profile_owned") return profileMediaObject();
+              if (mediaId === "media_creator_profile_staged") {
+                return profileMediaObject({
+                  mediaId,
+                  visibility: "private",
+                  approvalStatus: "pending_domain_approval",
+                  lifecycleStatus: "staged",
+                  storageKey: "staging/session/1/active/profile.png",
+                  variants: [
+                    {
+                      variantName: "original_safe" as const,
+                      visibility: "private" as const,
+                      storageKey: "staging/session/1/variants/original_safe",
+                      contentType: "image/png",
+                      sizeBytes: 1024,
+                      publicCdnUrl: null,
+                    },
+                  ],
+                });
+              }
+              if (mediaId === "media_not_owned") {
+                return profileMediaObject({ mediaId, actorUserId: "user_other_creator" });
+              }
+              return null;
+            },
+          },
+        }),
     identityLifecycleCommandBus: options.lifecycleCommandBus ?? createRecordingCommandBus(),
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
@@ -336,6 +880,42 @@ function buildMarketplaceCreatorApp(options: {
       },
     },
   });
+}
+
+function profileMediaObject(
+  overrides: Partial<PlatformMediaObjectRecord> = {},
+): PlatformMediaObjectRecord {
+  return {
+    mediaId: "media_creator_profile_owned",
+    purpose: "identity.user.profile_image",
+    visibility: "public",
+    requestedVisibility: "public",
+    approvalStatus: "approved",
+    lifecycleStatus: "active",
+    storageKind: "vayada_managed",
+    bucket: "vayada-media-local",
+    storageKey: "public/users/user_creator/profile.png",
+    ownerOrganizationId: "org_creator_workspace",
+    actorUserId: "user_creator",
+    resourceProduct: "platform",
+    resourceType: "user_profile",
+    resourceId: "user_creator",
+    contentType: "image/png",
+    sizeBytes: 1024,
+    originalFilename: "profile.png",
+    variants: [
+      {
+        variantName: "original_safe",
+        visibility: "public",
+        storageKey: "public/users/user_creator/original_safe.png",
+        contentType: "image/png",
+        sizeBytes: 1024,
+        publicCdnUrl: "https://media.example/creator-profile.png",
+      },
+    ],
+    createdAt: "2026-07-15T10:00:00.000Z",
+    ...overrides,
+  };
 }
 
 function identityRepository(options: {
@@ -430,6 +1010,7 @@ function profileDocument(overrides: Partial<CreatorProfileDocument> = {}): Creat
     portfolioUrl: null,
     phone: null,
     profilePictureUrl: null,
+    profilePictureMediaObjectId: null,
     profileComplete: false,
     profileCompletedAt: null,
     profileStatus: "pending",
