@@ -418,6 +418,7 @@ describe("S3 platform profile media adapter", () => {
   }, 30_000);
 
   it("rejects images above the profile pixel cap even when policy allows more", async () => {
+    const permissivePolicy = { ...policy, maxImagePixels: 60_000_000 };
     const source = await sharp({
       create: { width: 5_001, height: 5_000, channels: 3, background: "#334455" },
     })
@@ -437,7 +438,7 @@ describe("S3 platform profile media adapter", () => {
         sessionFile: session.files[0]!,
         uploadTarget: session.uploadTargets[0]!,
         clientFile: { uploadTargetId },
-        policy,
+        policy: permissivePolicy,
       }),
     ).resolves.toMatchObject({ ok: false, code: "invalid_media_dimensions" });
   });
