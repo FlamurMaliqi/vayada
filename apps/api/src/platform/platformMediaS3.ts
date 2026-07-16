@@ -277,16 +277,12 @@ export function createS3PlatformMediaAdapter(
 
     async cleanupUploadedFile(input) {
       assertStagingKey(input.file.uploadTarget.stagingKey, input.session.sessionId);
-      try {
-        await s3.send(
-          new DeleteObjectCommand({
-            Bucket: bucketName,
-            Key: input.file.uploadTarget.stagingKey,
-          }),
-        );
-      } catch {
-        // The bucket lifecycle expires staging objects if immediate cleanup fails.
-      }
+      await s3.send(
+        new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: input.file.uploadTarget.stagingKey,
+        }),
+      );
     },
   };
 }
