@@ -17,6 +17,7 @@ import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/ma
 import { createPgProductAuditSink } from "./platform/productAudit.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
 import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
+import { composePlatformMediaRuntime } from "./platform/platformMediaRuntime.js";
 import { createWorkOSAuthKitClient } from "./platform/workosAuthKit.js";
 import {
   createPgWorkosWebhookStore,
@@ -53,12 +54,6 @@ import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/market
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
-import {
-  createDeterministicPlatformMediaFinalizer,
-  createDeterministicPlatformMediaUploadSigner,
-  createInMemoryPlatformMediaRepository,
-  createPassthroughPlatformMediaTargetResolver,
-} from "./routes/platformMedia.js";
 import { createTargetPlatformAdminDashboardRepository } from "./routes/platform/admin/dashboard/bookingCompatible.js";
 import { createPgPlatformContactIntakeRepository } from "./routes/platformContactIntake.js";
 
@@ -251,6 +246,13 @@ const bookingWebAffiliateHotelResolver =
       })
     : undefined;
 
+const platformMediaRuntime = composePlatformMediaRuntime({
+  auth: config.auth,
+  targetDatabaseUrl: config.targetDatabaseUrl,
+  platformMediaServing: config.platformMediaServing,
+  allowedOrigins: config.authSession?.authAllowedOrigins,
+});
+
 const app = buildApp({
   auth: buildAuthOptions(config.auth),
   browserAllowedOrigins: config.authSession?.authAllowedOrigins ?? [],
@@ -421,6 +423,7 @@ const app = buildApp({
         profilePhotoRequired: config.creatorProfilePhotoRequired,
       })
     : undefined,
+  marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   creatorProfilePhotoRequired: config.creatorProfilePhotoRequired,
   sharedHotelSetupStatusRepository,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
@@ -461,16 +464,7 @@ const app = buildApp({
       : undefined,
   bookingWebAffiliateHotelResolver,
   bookingWebAffiliateRepository,
-  platformMedia: config.auth
-    ? {
-        repository: createInMemoryPlatformMediaRepository(),
-        signer: createDeterministicPlatformMediaUploadSigner(),
-        targetResolver: createPassthroughPlatformMediaTargetResolver(),
-        finalizer: createDeterministicPlatformMediaFinalizer(),
-        enabledPurposes: [],
-        allowedOrigins: config.authSession?.authAllowedOrigins ?? [],
-      }
-    : undefined,
+  platformMedia: platformMediaRuntime?.routes,
 });
 
 try {
