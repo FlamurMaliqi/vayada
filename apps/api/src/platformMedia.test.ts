@@ -650,6 +650,33 @@ describe("platform media upload routes", () => {
     );
   });
 
+  it("requires explicit public visibility for public profile images", async () => {
+    const app = buildMediaApp({
+      permissions: ["marketplace.profile.manage"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_lina",
+          relationship: "owner",
+        },
+      ],
+    });
+    const { visibility: _visibility, ...body } = marketplaceCreatorProfileCase.request.body;
+
+    for (const visibility of [undefined, "private"] as const) {
+      const response = await injectJson(app, {
+        method: "POST",
+        url: marketplaceCreatorProfileCase.request.path,
+        headers: { authorization: "Bearer valid-token" },
+        payload: visibility === undefined ? body : { ...body, visibility },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect((response.body as ErrorResponse).code).toBe("invalid_media_visibility");
+    }
+  });
+
   it.each([
     {
       contractCase: marketplaceCreatorProfileCase,

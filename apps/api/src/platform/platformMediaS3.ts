@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  type GetObjectCommandOutput,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -112,11 +113,17 @@ export function createS3PlatformMediaAdapter(
       uploads.delete(cacheKey);
       const maxBytes = Math.min(input.sessionFile.sizeBytes, input.policy.maxFileSizeBytes);
 
+      assertStagingKey(input.uploadTarget.stagingKey, input.session.sessionId);
+      let object: GetObjectCommandOutput;
       try {
-        assertStagingKey(input.uploadTarget.stagingKey, input.session.sessionId);
-        const object = await s3.send(
+        object = await s3.send(
           new GetObjectCommand({ Bucket: bucketName, Key: input.uploadTarget.stagingKey }),
         );
+      } catch (error) {
+        if (isMissingS3ObjectError(error)) return missingUpload();
+        throw error;
+      }
+      try {
         if (object.ContentLength !== undefined && object.ContentLength > maxBytes) {
           return tooLarge();
         }
@@ -127,11 +134,7 @@ export function createS3PlatformMediaAdapter(
           return sizeMismatch();
         }
         if (!object.Body) {
-          return {
-            ok: false,
-            code: "media_upload_missing",
-            message: "The staged profile image could not be read.",
-          };
+          return missingUpload();
         }
 
         const bytes = await readBody(object.Body, maxBytes);
@@ -148,10 +151,12 @@ export function createS3PlatformMediaAdapter(
           input.policy.maxImagePixels ?? MAX_PROFILE_IMAGE_PIXELS,
           MAX_PROFILE_IMAGE_PIXELS,
         );
-        const metadata = await sharp(bytes, {
+        const image = sharp(bytes, {
           failOn: "error",
           limitInputPixels: maxImagePixels,
-        }).metadata();
+        });
+        const metadata = await image.metadata();
+        await image.clone().resize({ width: 1, height: 1, fit: "inside" }).toBuffer();
         const contentType = imageContentType(metadata.format);
         if (!contentType || !PROFILE_IMAGE_CONTENT_TYPES.has(contentType)) {
           return {
@@ -215,6 +220,7 @@ export function createS3PlatformMediaAdapter(
         if (error instanceof Error && /pixel limit|image dimensions/i.test(error.message)) {
           return invalidDimensions();
         }
+        if (!isInvalidImageError(error)) throw error;
         return {
           ok: false,
           code: "invalid_media_image",
@@ -224,26 +230,26 @@ export function createS3PlatformMediaAdapter(
     },
 
     async generateVariants(input) {
-      if (
-        !isSupportedPurpose(input.session.purpose) ||
-        input.policy.purpose !== input.session.purpose
-      ) {
-        throw new Error("S3 platform media currently finalizes profile images only");
-      }
-      if (input.session.effectiveVisibility !== "public") {
-        throw new Error("Profile image variants require public visibility");
-      }
-
       const cacheKey = uploadCacheKey(
         input.session.sessionId,
         input.file.sessionFile.uploadTargetId,
       );
-      const upload = uploads.get(cacheKey);
-      if (!upload || upload.inspection.checksumSha256 !== input.file.inspection.checksumSha256) {
-        throw new Error("Profile image must be inspected before variants are generated");
-      }
-
       try {
+        if (
+          !isSupportedPurpose(input.session.purpose) ||
+          input.policy.purpose !== input.session.purpose
+        ) {
+          throw new Error("S3 platform media currently finalizes profile images only");
+        }
+        if (input.session.effectiveVisibility !== "public") {
+          throw new Error("Profile image variants require public visibility");
+        }
+
+        const upload = uploads.get(cacheKey);
+        if (!upload || upload.inspection.checksumSha256 !== input.file.inspection.checksumSha256) {
+          throw new Error("Profile image must be inspected before variants are generated");
+        }
+
         const variants: PlatformMediaVariantRecord[] = [];
         for (const variantName of input.policy.requiredVariants) {
           const { record, bytes } = await createVariant(
@@ -276,6 +282,11 @@ export function createS3PlatformMediaAdapter(
     },
 
     async cleanupUploadedFile(input) {
+      const cacheKey = uploadCacheKey(
+        input.session.sessionId,
+        input.file.sessionFile.uploadTargetId,
+      );
+      uploads.delete(cacheKey);
       assertStagingKey(input.file.uploadTarget.stagingKey, input.session.sessionId);
       await s3.send(
         new DeleteObjectCommand({
@@ -441,4 +452,25 @@ function invalidDimensions() {
     code: "invalid_media_dimensions",
     message: "Profile image dimensions exceed the platform media limit.",
   };
+}
+
+function missingUpload() {
+  return {
+    ok: false as const,
+    code: "media_upload_missing",
+    message: "The staged profile image could not be read.",
+  };
+}
+
+function isMissingS3ObjectError(error: unknown): boolean {
+  return error instanceof Error && error.name === "NoSuchKey";
+}
+
+function isInvalidImageError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /^(?:Input buffer (?:contains unsupported image format|has corrupt header|is empty)|VipsJpeg: .*(?:corrupt|invalid|premature)|pngload_buffer:|webpload_buffer:)/i.test(
+      error.message,
+    )
+  );
 }
