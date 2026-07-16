@@ -3863,6 +3863,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       const platformPrivateMediaObjectId = "bbbbbbbb-8888-4888-8888-bbbbbbbbbbb2";
       const platformUploadSessionId = "bbbbbbbb-9999-4999-8999-bbbbbbbbbbb1";
 
+      await expect(
+        verifyClient.query(
+          `SELECT platform.valid_media_purpose_visibility(
+             'identity.user.profile_image', 'public'
+           ) AS allowed`,
+        ),
+      ).resolves.toMatchObject({ rows: [{ allowed: true }] });
+
       await verifyClient.query(
         `INSERT INTO platform.media_objects
            (

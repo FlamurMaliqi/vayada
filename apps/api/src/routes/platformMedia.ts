@@ -9,6 +9,7 @@ import {
 } from "@vayada/backend-auth";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -107,7 +108,13 @@ export type PlatformMediaSessionRecord = {
   ownerOrganizationId: string;
   resource: PlatformMediaResourceScope;
   target: PlatformMediaResolvedTarget;
-  files: Array<PlatformMediaUploadFileRequest & { clientFileId: string; uploadTargetId: string }>;
+  files: Array<
+    PlatformMediaUploadFileRequest & {
+      clientFileId: string;
+      uploadTargetId: string;
+      mediaId: string;
+    }
+  >;
   uploadTargets: PlatformMediaUploadTarget[];
   stagingPrefix: string;
   status: "signed" | "completed" | "failed";
@@ -126,6 +133,7 @@ export type PlatformMediaVariantRecord = {
   widthPx?: number;
   heightPx?: number;
   sizeBytes: number;
+  checksumSha256?: string;
   publicCdnUrl: string | null;
 };
 
@@ -220,6 +228,7 @@ export type PlatformMediaRepository = {
     uploadTargets: PlatformMediaUploadTarget[];
     now: string;
     expiresAt: string;
+    auditEvent: PlatformMediaAuditEvent;
   }): Promise<PlatformMediaSessionRecord>;
   findUploadSession(sessionId: string): Promise<PlatformMediaSessionRecord | null>;
   findMediaObject(mediaId: string): Promise<PlatformMediaObjectRecord | null>;
@@ -229,6 +238,7 @@ export type PlatformMediaRepository = {
     variantSets: PlatformMediaVariantRecord[][];
     bucketName: string;
     now: string;
+    auditEvent: PlatformMediaAuditEvent;
   }): Promise<PlatformMediaCompleteUploadSessionResult>;
   createImportJob(input: {
     importJobId: string;
@@ -357,6 +367,10 @@ export type PlatformMediaUploadFinalizer = {
     fileIndex: number;
     policy: PlatformMediaPurposePolicy;
   }): Promise<PlatformMediaVariantRecord[]>;
+  cleanupUploadedFile?(input: {
+    session: PlatformMediaSessionRecord;
+    file: PlatformMediaFinalizedFileRecord;
+  }): Promise<void>;
 };
 
 export type PlatformMediaRoutesOptions = {
@@ -364,8 +378,10 @@ export type PlatformMediaRoutesOptions = {
   signer: PlatformMediaUploadSigner;
   targetResolver: PlatformMediaTargetResolver;
   finalizer: PlatformMediaUploadFinalizer;
+  enabledPurposes: readonly PlatformMediaPurpose[];
   allowedOrigins?: string[];
   bucketName?: string;
+  cleanupTimeoutMs?: number;
   now?: () => Date;
 };
 
@@ -381,6 +397,7 @@ export type PlatformMediaPurposePolicy = {
   maxFileCount: number;
   maxImagePixels?: number;
   resizeOversizedPublicImages?: boolean;
+  autoApprovePublicOnFinalize?: boolean;
   privateOnly: boolean;
   targetResourceProduct: PlatformMediaResourceProduct;
   targetResourceType: string;
@@ -413,6 +430,7 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
     maxFileSizeBytes: 5 * 1024 * 1024,
     maxFileCount: 1,
     maxImagePixels: defaultMaxImagePixels,
+    autoApprovePublicOnFinalize: true,
     privateOnly: false,
     targetResourceProduct: "platform",
     targetResourceType: "user_profile",
@@ -491,6 +509,7 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
     maxFileSizeBytes: 5 * 1024 * 1024,
     maxFileCount: 1,
     maxImagePixels: defaultMaxImagePixels,
+    autoApprovePublicOnFinalize: true,
     privateOnly: false,
     targetResourceProduct: "marketplace",
     targetResourceType: "creator_profile",
@@ -584,6 +603,7 @@ export async function registerPlatformMediaRoutes(
   options: PlatformMediaRoutesOptions,
 ): Promise<void> {
   const bucketName = options.bucketName ?? "vayada-media-local";
+  const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
   const now = options.now ?? (() => new Date());
   app.addHook("onClose", async () => {
     await options.repository.close?.();
@@ -606,6 +626,9 @@ export async function registerPlatformMediaRoutes(
     async (request, reply) => {
       const validation = validateUploadSessionRequest(request.body);
       if (!validation.ok) return sendMediaError(reply, 400, validation.code, validation.message);
+      if (!isPurposeEnabled(options, request.body.purpose)) {
+        return sendPurposeUnavailable(reply);
+      }
 
       const policy = purposePolicies[request.body.purpose];
       const resourceError = validateResourceScope(request.body.resource, policy);
@@ -720,22 +743,21 @@ export async function registerPlatformMediaRoutes(
         uploadTargets,
         now: createdAt,
         expiresAt,
-      });
-
-      await options.repository.recordAudit({
-        action: "platform_media.upload_session.created",
-        auditKey: uploadSessionKey,
-        actorUserId: context.actor.internalUserId,
-        organizationId: context.selectedOrganization.organizationId,
-        targetType: "media_upload_session",
-        targetId: session.sessionId,
-        requestId: context.audit.requestId,
-        metadata: {
-          purpose: session.purpose,
-          requestedVisibility: session.requestedVisibility,
-          resource: session.resource,
-          target: session.target,
-          fileCount: session.files.length,
+        auditEvent: {
+          action: "platform_media.upload_session.created",
+          auditKey: uploadSessionKey,
+          actorUserId: context.actor.internalUserId,
+          organizationId: context.selectedOrganization.organizationId,
+          targetType: "media_upload_session",
+          targetId: sessionId,
+          requestId: context.audit.requestId,
+          metadata: {
+            purpose: request.body.purpose,
+            requestedVisibility,
+            resource: request.body.resource,
+            target: resolvedTarget.target,
+            fileCount: files.length,
+          },
         },
       });
 
@@ -754,6 +776,9 @@ export async function registerPlatformMediaRoutes(
       const session = await options.repository.findUploadSession(request.params.sessionId);
       if (!session) {
         return sendMediaError(reply, 404, "upload_session_not_found", "Upload session not found.");
+      }
+      if (!isPurposeEnabled(options, session.purpose)) {
+        return sendPurposeUnavailable(reply);
       }
       const policy = purposePolicies[session.purpose];
       const context = policy.actorOwned
@@ -787,6 +812,22 @@ export async function registerPlatformMediaRoutes(
         );
       }
       if (session.status === "completed" && session.completedMediaObject) {
+        await cleanupUploadedFiles({
+          finalizer: options.finalizer,
+          session,
+          files: finalizedFilesFromCompletedSession(session),
+          timeoutMs: cleanupTimeoutMs,
+          onError(error, file) {
+            request.log.warn(
+              {
+                err: error,
+                sessionId: session.sessionId,
+                uploadTargetId: file.uploadTarget.uploadTargetId,
+              },
+              "Platform media staging cleanup failed; a finalize replay will retry it.",
+            );
+          },
+        });
         return reply.code(200).send({
           contractVersion: PLATFORM_MEDIA_UPLOAD_CONTRACT_VERSION,
           uploadSession: serializeSession(session),
@@ -798,12 +839,16 @@ export async function registerPlatformMediaRoutes(
       if (new Date(session.expiresAt).getTime() <= now().getTime()) {
         return sendMediaError(reply, 409, "upload_session_expired", "Upload session expired.");
       }
-      const validation = validateFinalizeRequest(request.body, session);
+      const finalizationSession =
+        session.requestedVisibility === "public" && policy.autoApprovePublicOnFinalize === true
+          ? { ...session, effectiveVisibility: "public" as const }
+          : session;
+      const validation = validateFinalizeRequest(request.body, finalizationSession);
       if (!validation.ok) return sendMediaError(reply, 400, validation.code, validation.message);
 
       const finalizedFiles = await inspectFinalizedFiles({
         request: request.body,
-        session,
+        session: finalizationSession,
         policy,
         finalizer: options.finalizer,
       });
@@ -814,7 +859,7 @@ export async function registerPlatformMediaRoutes(
       const variantSets = await Promise.all(
         finalizedFiles.files.map((file, index) =>
           options.finalizer.generateVariants({
-            session,
+            session: finalizationSession,
             file,
             fileIndex: index,
             policy,
@@ -823,31 +868,46 @@ export async function registerPlatformMediaRoutes(
       );
       const completedAt = now().toISOString();
       const completed = await options.repository.completeUploadSession({
-        session,
+        session: finalizationSession,
         files: finalizedFiles.files,
         variantSets,
         bucketName,
         now: completedAt,
+        auditEvent: {
+          action: "platform_media.upload_session.finalized",
+          auditKey: `media.finalize:${session.sessionId}`,
+          actorUserId: finalizationSession.actorUserId,
+          organizationId: finalizationSession.ownerOrganizationId,
+          targetType: "media_object",
+          targetId: finalizationSession.files[0]!.mediaId,
+          requestId: context.audit.requestId,
+          metadata: {
+            purpose: finalizationSession.purpose,
+            requestedVisibility: finalizationSession.requestedVisibility,
+            effectiveVisibility: finalizationSession.effectiveVisibility,
+            target: finalizationSession.target,
+            mediaIds: finalizationSession.files.map(({ mediaId }) => mediaId),
+            variantNames: variantSets[0]?.map(({ variantName }) => variantName) ?? [],
+          },
+        },
       });
       const completedSession = completed.uploadSession;
       const mediaObjects = completed.mediaObjects;
       const primaryMediaObject = mediaObjects[0]!;
-
-      await options.repository.recordAudit({
-        action: "platform_media.upload_session.finalized",
-        auditKey: `media.finalize:${completedSession.sessionId}`,
-        actorUserId: completedSession.actorUserId,
-        organizationId: completedSession.ownerOrganizationId,
-        targetType: "media_object",
-        targetId: primaryMediaObject.mediaId,
-        requestId: context.audit.requestId,
-        metadata: {
-          purpose: primaryMediaObject.purpose,
-          requestedVisibility: primaryMediaObject.requestedVisibility,
-          effectiveVisibility: primaryMediaObject.visibility,
-          target: completedSession.target,
-          mediaIds: mediaObjects.map((mediaObject) => mediaObject.mediaId),
-          variantNames: primaryMediaObject.variants.map((variant) => variant.variantName),
+      await cleanupUploadedFiles({
+        finalizer: options.finalizer,
+        session: completedSession,
+        files: finalizedFiles.files,
+        timeoutMs: cleanupTimeoutMs,
+        onError(error, file) {
+          request.log.warn(
+            {
+              err: error,
+              sessionId: completedSession.sessionId,
+              uploadTargetId: file.uploadTarget.uploadTargetId,
+            },
+            "Platform media staging cleanup failed; a finalize replay will retry it.",
+          );
         },
       });
 
@@ -864,6 +924,9 @@ export async function registerPlatformMediaRoutes(
   app.post<{ Body: PlatformMediaImportRequest }>("/imports", async (request, reply) => {
     const validation = validateImportRequest(request.body);
     if (!validation.ok) return sendMediaError(reply, 400, validation.code, validation.message);
+    if (!isPurposeEnabled(options, request.body.purpose)) {
+      return sendPurposeUnavailable(reply);
+    }
 
     const policy = purposePolicies[request.body.purpose];
     const resourceError = validateResourceScope(request.body.resource, policy);
@@ -1037,6 +1100,7 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
           ...file,
           clientFileId: file.clientFileId?.trim() || `file_${index + 1}`,
           uploadTargetId: input.uploadTargets[index]!.uploadTargetId,
+          mediaId: randomUUID(),
         })),
         uploadTargets: input.uploadTargets,
         stagingPrefix: input.stagingPrefix,
@@ -1045,6 +1109,7 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
         createdAt: input.now,
       };
       sessions.set(session.sessionId, session);
+      recordInMemoryAudit(auditEvents, input.auditEvent);
       return session;
     },
     async findUploadSession(sessionId) {
@@ -1060,16 +1125,23 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
       return null;
     },
     async completeUploadSession(input) {
+      const autoApproved =
+        input.session.requestedVisibility === "public" &&
+        input.session.effectiveVisibility === "public";
+      const effectiveVisibility = autoApproved ? "public" : input.session.effectiveVisibility;
       const mediaObjects = input.files.map((finalized, index) => {
         const sessionFile = finalized.sessionFile;
         return {
-          mediaId: randomUUID(),
+          mediaId: sessionFile.mediaId,
           purpose: input.session.purpose,
-          visibility: input.session.effectiveVisibility,
+          visibility: effectiveVisibility,
           requestedVisibility: input.session.requestedVisibility,
-          approvalStatus:
-            input.session.requestedVisibility === "public" ? "pending_domain_approval" : "private",
-          lifecycleStatus: "staged",
+          approvalStatus: autoApproved
+            ? "approved"
+            : input.session.requestedVisibility === "public"
+              ? "pending_domain_approval"
+              : "private",
+          lifecycleStatus: autoApproved ? "active" : "staged",
           storageKind: "vayada_managed",
           bucket: input.bucketName,
           storageKey: `${input.session.stagingPrefix}/${index + 1}/active/${sessionFile.filename}`,
@@ -1085,21 +1157,33 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
           widthPx: finalized.inspection.widthPx,
           heightPx: finalized.inspection.heightPx,
           originalFilename: sessionFile.filename,
-          variants: input.variantSets[index]!,
+          variants: input.variantSets[index]!.map((variant) => ({
+            ...variant,
+            visibility: effectiveVisibility,
+          })),
           createdAt: input.now,
         } satisfies PlatformMediaObjectRecord;
       });
       const uploadSession: PlatformMediaSessionRecord = {
         ...input.session,
+        effectiveVisibility,
         status: "completed",
         completedAt: input.now,
         completedMediaObjects: mediaObjects,
         completedMediaObject: mediaObjects[0],
       };
       sessions.set(uploadSession.sessionId, uploadSession);
+      recordInMemoryAudit(auditEvents, input.auditEvent);
       return { uploadSession, mediaObjects };
     },
     async createImportJob(input) {
+      const existing = [...importJobs.values()].find(
+        ({ jobKey, ownerOrganizationId }) =>
+          jobKey === input.jobKey &&
+          ownerOrganizationId === input.context.selectedOrganization.organizationId,
+      );
+      if (existing) return existing;
+
       const importJob: PlatformMediaImportJobRecord = {
         importJobId: input.importJobId,
         jobKey: input.jobKey,
@@ -1116,9 +1200,25 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
       return importJob;
     },
     async recordAudit(event) {
-      auditEvents.push(event);
+      recordInMemoryAudit(auditEvents, event);
     },
   };
+}
+
+function recordInMemoryAudit(
+  auditEvents: PlatformMediaAuditEvent[],
+  event: PlatformMediaAuditEvent,
+): void {
+  if (
+    !auditEvents.some(
+      ({ auditKey, action, organizationId }) =>
+        auditKey === event.auditKey &&
+        action === event.action &&
+        organizationId === event.organizationId,
+    )
+  ) {
+    auditEvents.push(event);
+  }
 }
 
 export function createPassthroughPlatformMediaTargetResolver(): PlatformMediaTargetResolver {
@@ -1577,6 +1677,85 @@ function serializeAudit(context: RequestContext): Record<string, string> {
 
 function sendMediaError(reply: FastifyReply, statusCode: number, code: string, message: string) {
   return reply.code(statusCode).send({ code, message });
+}
+
+function sendPurposeUnavailable(reply: FastifyReply) {
+  return sendMediaError(
+    reply,
+    503,
+    "media_purpose_unavailable",
+    "This media purpose is not available in the configured runtime.",
+  );
+}
+
+function isPurposeEnabled(
+  options: PlatformMediaRoutesOptions,
+  purpose: PlatformMediaPurpose,
+): boolean {
+  return options.enabledPurposes?.includes(purpose) === true;
+}
+
+async function cleanupUploadedFiles(input: {
+  finalizer: PlatformMediaUploadFinalizer;
+  session: PlatformMediaSessionRecord;
+  files: PlatformMediaFinalizedFileRecord[];
+  timeoutMs: number;
+  onError(error: unknown, file: PlatformMediaFinalizedFileRecord): void;
+}): Promise<void> {
+  if (!input.finalizer.cleanupUploadedFile) return;
+
+  await Promise.all(
+    input.files.map(async (file) => {
+      try {
+        await withTimeout(
+          input.finalizer.cleanupUploadedFile!({ session: input.session, file }),
+          input.timeoutMs,
+        );
+      } catch (error) {
+        input.onError(error, file);
+      }
+    }),
+  );
+}
+
+function finalizedFilesFromCompletedSession(
+  session: PlatformMediaSessionRecord,
+): PlatformMediaFinalizedFileRecord[] {
+  const mediaObjects = new Map(
+    (
+      session.completedMediaObjects ??
+      (session.completedMediaObject ? [session.completedMediaObject] : [])
+    ).map((mediaObject) => [mediaObject.mediaId, mediaObject]),
+  );
+  return session.files.flatMap((sessionFile) => {
+    const uploadTarget = session.uploadTargets.find(
+      (candidate) => candidate.uploadTargetId === sessionFile.uploadTargetId,
+    );
+    const mediaObject = mediaObjects.get(sessionFile.mediaId);
+    if (!uploadTarget || !mediaObject) return [];
+    return [
+      {
+        sessionFile,
+        uploadTarget,
+        inspection: {
+          contentType: mediaObject.contentType,
+          sizeBytes: mediaObject.sizeBytes,
+          checksumSha256: mediaObject.checksumSha256,
+          widthPx: mediaObject.widthPx,
+          heightPx: mediaObject.heightPx,
+        },
+      },
+    ];
+  });
+}
+
+function withTimeout(operation: Promise<void>, timeoutMs: number): Promise<void> {
+  return Promise.race([
+    operation,
+    delay(timeoutMs, undefined, { ref: false }).then(() => {
+      throw new Error(`Platform media staging cleanup timed out after ${timeoutMs} ms.`);
+    }),
+  ]);
 }
 
 function isMediaPurpose(value: unknown): value is PlatformMediaPurpose {

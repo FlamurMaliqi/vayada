@@ -9,7 +9,7 @@ import {
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import {
@@ -17,6 +17,7 @@ import {
   createDeterministicPlatformMediaUploadSigner,
   createInMemoryPlatformMediaRepository,
   type PlatformMediaObjectRecord,
+  type PlatformMediaPurpose,
   type PlatformMediaRepository,
   type PlatformMediaTargetResolver,
   type PlatformMediaUploadFinalizer,
@@ -70,6 +71,18 @@ const pmsRoomTypeMediaCase = contractCase("pms-room-type-media-upload-session");
 const pmsImportSourceImageCase = contractCase("pms-import-source-image-job");
 const marketplaceCreatorProfileCase = contractCase("marketplace-creator-profile-upload-session");
 const marketplaceOfferMediaCase = contractCase("marketplace-offer-media-upload-session");
+const allMediaPurposes: readonly PlatformMediaPurpose[] = [
+  "identity.user.profile_image",
+  "property.hero_image",
+  "property.gallery_image",
+  "property.logo",
+  "marketplace.offer.media",
+  "marketplace.creator.profile_image",
+  "marketplace.collaboration_chat.attachment",
+  "pms.room_type.media",
+  "pms.messaging.attachment",
+  "pms.import.source_image",
+];
 
 type MediaCreateResponse = {
   contractVersion: string;
@@ -153,6 +166,53 @@ describe("platform media upload routes", () => {
     expect(response.headers["access-control-allow-headers"]).toBeUndefined();
     expect(response.headers["access-control-allow-methods"]).toBeUndefined();
     expect(response.headers.vary).toBe("Origin");
+  });
+
+  it("rejects disabled media purposes on create, finalize, and import", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const enabledApp = buildMediaApp({ repository });
+    const create = await injectJson(enabledApp, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    expect(create.statusCode).toBe(201);
+
+    const app = buildMediaApp({
+      repository,
+      enabledPurposes: ["identity.user.profile_image", "marketplace.creator.profile_image"],
+    });
+
+    const createDisabled = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const finalizeDisabled = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    });
+    const importDisabled = await injectJson(app, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+
+    for (const response of [createDisabled, finalizeDisabled, importDisabled]) {
+      expect(response.statusCode).toBe(503);
+      expect((response.body as ErrorResponse).code).toBe("media_purpose_unavailable");
+    }
   });
 
   it("creates a signed property upload session and finalizes it with inspected private variants", async () => {
@@ -249,6 +309,84 @@ describe("platform media upload routes", () => {
     expect((authenticatedReplay.body as { sideEffects: string[] }).sideEffects).toEqual([
       "idempotency_replay",
     ]);
+  });
+
+  it("does not clean staging when durable completion fails", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    repository.completeUploadSession = async () => {
+      throw new Error("database unavailable");
+    };
+    const cleanupUploadedFile = vi.fn(async () => undefined);
+    const app = buildMediaApp({
+      repository,
+      finalizer: {
+        ...createDeterministicPlatformMediaFinalizer(),
+        cleanupUploadedFile,
+      },
+    });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+
+    const finalize = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    });
+
+    expect(finalize.statusCode).toBe(500);
+    expect(cleanupUploadedFile).not.toHaveBeenCalled();
+  });
+
+  it("bounds staging cleanup and retries it on an idempotent finalize replay", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const cleanupUploadedFile = vi.fn(() => new Promise<void>(() => undefined));
+    const app = buildMediaApp({
+      repository,
+      cleanupTimeoutMs: 5,
+      finalizer: {
+        ...createDeterministicPlatformMediaFinalizer(),
+        cleanupUploadedFile,
+      },
+    });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const finalizeRequest = {
+      method: "POST" as const,
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    };
+
+    const finalize = await injectJson(app, finalizeRequest);
+    expect(finalize.statusCode).toBe(200);
+    expect(cleanupUploadedFile).toHaveBeenCalledTimes(1);
+
+    cleanupUploadedFile.mockImplementation(async () => undefined);
+    const replay = await injectJson(app, finalizeRequest);
+    expect(replay.statusCode).toBe(200);
+    expect((replay.body as { sideEffects: string[] }).sideEffects).toEqual(["idempotency_replay"]);
+    expect(cleanupUploadedFile).toHaveBeenCalledTimes(2);
   });
 
   it("finalizes every signed file in a batch upload session", async () => {
@@ -579,6 +717,16 @@ describe("platform media upload routes", () => {
       expect(finalizeBody.mediaObject.variants.map((variant) => variant.variantName)).toEqual([
         ...(contractCase.expected.requiredVariants ?? []),
       ]);
+      if (contractCase === marketplaceCreatorProfileCase) {
+        expect(finalizeBody.mediaObject).toMatchObject({
+          visibility: "public",
+          approvalStatus: "approved",
+          lifecycleStatus: "active",
+        });
+        expect(
+          finalizeBody.mediaObject.variants.every(({ visibility }) => visibility === "public"),
+        ).toBe(true);
+      }
       expect(finalizeBody.sideEffects).toEqual(contractCase.expected.sideEffects);
     },
   );
@@ -836,6 +984,68 @@ describe("platform media upload routes", () => {
       targetType: "media_import_job",
       organizationId: "org_media",
     });
+
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+    expect((replay.body as MediaImportResponse).importJob.importJobId).toBe(
+      body.importJob.importJobId,
+    );
+    expect(repository.importJobs.size).toBe(1);
+    expect(repository.auditEvents).toHaveLength(1);
+  });
+
+  it("scopes import idempotency and audits to the owning organization", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const resources = [
+      {
+        product: "pms" as const,
+        resourceType: "pms_hotel" as const,
+        resourceId: "pms_hotel_alpenrose",
+        relationship: "operator" as const,
+      },
+    ];
+    const firstApp = buildMediaApp({
+      repository,
+      permissions: ["pms.operations.manage"],
+      resources,
+      organizationId: "org_media_first",
+      workosOrgId: "workos_media_org_first",
+    });
+    const secondApp = buildMediaApp({
+      repository,
+      permissions: ["pms.operations.manage"],
+      resources,
+      organizationId: "org_media_second",
+      workosOrgId: "workos_media_org_second",
+    });
+
+    const first = await injectJson(firstApp, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+    const second = await injectJson(secondApp, {
+      method: "POST",
+      url: pmsImportSourceImageCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsImportSourceImageCase.request.body,
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    expect((second.body as MediaImportResponse).importJob.importJobId).not.toBe(
+      (first.body as MediaImportResponse).importJob.importJobId,
+    );
+    expect(repository.importJobs.size).toBe(2);
+    expect(repository.auditEvents.map(({ organizationId }) => organizationId).sort()).toEqual([
+      "org_media_first",
+      "org_media_second",
+    ]);
   });
 
   it("rejects malformed file fields before signing", async () => {
@@ -1021,9 +1231,14 @@ function buildMediaApp(
     }>;
     targetResolver?: PlatformMediaTargetResolver;
     finalizer?: PlatformMediaUploadFinalizer;
+    enabledPurposes?: readonly PlatformMediaPurpose[];
     allowedOrigins?: string[];
+    cleanupTimeoutMs?: number;
+    organizationId?: string;
+    workosOrgId?: string;
   } = {},
 ): ReturnType<typeof buildApp> {
+  const workosOrgId = options.workosOrgId ?? session.workosOrgId ?? "workos_media_org";
   return buildApp({
     logger: false,
     platformMedia: {
@@ -1031,12 +1246,17 @@ function buildMediaApp(
       signer: createDeterministicPlatformMediaUploadSigner(),
       targetResolver: options.targetResolver ?? propertyMediaTargetResolver,
       finalizer: options.finalizer ?? createDeterministicPlatformMediaFinalizer(),
+      enabledPurposes: options.enabledPurposes ?? allMediaPurposes,
       allowedOrigins: options.allowedOrigins,
+      cleanupTimeoutMs: options.cleanupTimeoutMs,
       now: () => new Date("2026-06-12T12:00:00.000Z"),
     },
     auth: {
-      verifier: createFakeVerifier(new Map([["valid-token", session]])),
-      repository: identityRepository(options.resources),
+      verifier: createFakeVerifier(new Map([["valid-token", { ...session, workosOrgId }]])),
+      repository: identityRepository(options.resources, {
+        organizationId: options.organizationId ?? "org_media",
+        workosOrgId,
+      }),
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.settings.manage"];
@@ -1097,6 +1317,10 @@ function identityRepository(
       relationship: "owner",
     },
   ],
+  organization = {
+    organizationId: "org_media",
+    workosOrgId: "workos_media_org",
+  },
 ): IdentityRepository {
   return {
     async findUserByProviderUserId() {
@@ -1108,8 +1332,7 @@ function identityRepository(
     },
     async findOrganizationByWorkosOrgId() {
       return {
-        organizationId: "org_media",
-        workosOrgId: "workos_media_org",
+        ...organization,
         kind: "hotel_group",
         status: "active",
       };
