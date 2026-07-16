@@ -138,10 +138,12 @@ describe("S3 platform profile media adapter", () => {
     }
 
     expect(send.mock.calls.some(([command]) => command instanceof DeleteObjectCommand)).toBe(false);
-    await adapter.cleanupUploadedFile?.({
-      session,
-      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
-    });
+    await expect(
+      adapter.cleanupUploadedFile!({
+        session,
+        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+      }),
+    ).rejects.toThrow("retry cleanup later");
 
     const commands = send.mock.calls.map(([command]) => command);
     const puts = commands.filter(
