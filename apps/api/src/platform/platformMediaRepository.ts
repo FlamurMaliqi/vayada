@@ -31,7 +31,11 @@ type PgPlatformMediaRepositoryConfig = {
   pool?: PlatformMediaPool;
 };
 
-type SessionRow = { session: PlatformMediaSessionRecord };
+type SessionRow = {
+  session: PlatformMediaSessionRecord;
+  completedMediaObjectId: string | null;
+  mediaObjectIds: string[] | null;
+};
 type MediaObjectRow = { record: PlatformMediaObjectRecord };
 
 const supportedPurposes = new Set([
@@ -50,8 +54,7 @@ export function createPgPlatformMediaRepository(
     throw new Error("Platform media repository publicCdnBaseUrl must not be empty");
   }
 
-  const pool: PlatformMediaPool =
-    config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: config.max });
+  const pool: PlatformMediaPool = config.pool ?? createPlatformMediaPool(config);
 
   return {
     persistent: true,
@@ -353,12 +356,34 @@ async function readSession(
 ): Promise<PlatformMediaSessionRecord | null> {
   if (!CANONICAL_UUID.test(sessionId)) return null;
   const result = await queryable.query<SessionRow>(
-    `SELECT completion_metadata -> 'session' AS session
+    `SELECT completion_metadata -> 'session' AS session,
+            completed_media_object_id::text AS "completedMediaObjectId",
+            completion_metadata -> 'mediaObjectIds' AS "mediaObjectIds"
      FROM platform.media_upload_sessions
      WHERE id = $1::uuid${forUpdate ? " FOR UPDATE" : ""}`,
     [sessionId],
   );
-  return result.rows[0]?.session ?? null;
+  const row = result.rows[0];
+  if (!row?.session) return null;
+  if (row.session.status !== "completed") return row.session;
+
+  const mediaObjectIds = completedMediaObjectIds(row);
+  if (mediaObjectIds.length === 0) {
+    throw new Error("Completed platform media upload session has no media objects");
+  }
+  const mediaObjects: PlatformMediaObjectRecord[] = [];
+  for (const mediaId of mediaObjectIds) {
+    const mediaObject = await readMediaObject(queryable, mediaId);
+    if (!mediaObject) {
+      throw new Error(`Completed platform media object ${mediaId} was not found`);
+    }
+    mediaObjects.push(mediaObject);
+  }
+  return {
+    ...row.session,
+    completedMediaObject: mediaObjects[0],
+    completedMediaObjects: mediaObjects,
+  };
 }
 
 async function readMediaObject(
@@ -404,7 +429,10 @@ async function readMediaObject(
          FROM platform.media_variants variant
          WHERE variant.media_object_id = media.id
        ), '[]'::jsonb),
-       'createdAt', media.created_at
+       'createdAt', to_char(
+         media.created_at AT TIME ZONE 'UTC',
+         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+       )
      )) AS record
      FROM platform.media_objects media
      WHERE media.id = $1::uuid
@@ -433,9 +461,69 @@ async function recordAudit(queryable: Queryable, event: PlatformMediaAuditEvent)
       event.targetType,
       event.targetId,
       event.requestId,
-      JSON.stringify(event.metadata),
+      JSON.stringify(sanitizeAuditMetadata(event.metadata)),
       JSON.stringify({ requestId: event.requestId, source: "apps/api-platform-media" }),
     ],
+  );
+}
+
+function createPlatformMediaPool(
+  config: Omit<PgPlatformMediaRepositoryConfig, "pool">,
+): PlatformMediaPool {
+  const pool = new pg.Pool({ connectionString: config.connectionString, max: config.max });
+  pool.on("error", (error) => {
+    process.emitWarning("Platform media PostgreSQL pool emitted an idle-client error", {
+      code: "PLATFORM_MEDIA_POOL_ERROR",
+      detail: error.message,
+    });
+  });
+  return pool;
+}
+
+function completedMediaObjectIds(row: SessionRow): string[] {
+  const snapshotIds =
+    row.session.completedMediaObjects?.map(({ mediaId }) => mediaId) ??
+    (row.session.completedMediaObject ? [row.session.completedMediaObject.mediaId] : []);
+  return [
+    ...new Set([
+      ...(row.completedMediaObjectId ? [row.completedMediaObjectId] : []),
+      ...(Array.isArray(row.mediaObjectIds) ? row.mediaObjectIds : []),
+      ...snapshotIds,
+    ]),
+  ];
+}
+
+const redactedAuditMetadataKeys = new Set([
+  "effectiveVisibility",
+  "fileCount",
+  "mediaIds",
+  "product",
+  "propertyId",
+  "purpose",
+  "requestedVisibility",
+  "resource",
+  "resourceId",
+  "resourceProduct",
+  "resourceType",
+  "sourceImageCount",
+  "target",
+  "targetResourceId",
+  "variantNames",
+]);
+
+function sanitizeAuditMetadata(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (CANONICAL_UUID.test(value)) return value;
+    return value
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+      .replace(/\+?\d[\d\s().-]{7,}\d/g, "[redacted-phone]");
+  }
+  if (Array.isArray(value)) return value.map(sanitizeAuditMetadata);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => redactedAuditMetadataKeys.has(key))
+      .map(([key, entry]) => [key, sanitizeAuditMetadata(entry)]),
   );
 }
 
