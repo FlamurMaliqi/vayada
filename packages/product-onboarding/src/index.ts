@@ -41,6 +41,8 @@ export {
   type SharedHotelSetupApi,
   type SharedHotelSetupHttpClient,
   type SharedHotelSetupStatusParams,
+  type SharedPropertyTypeCatalog,
+  type SharedPropertyTypeOption,
 } from "./sharedHotelSetupApi";
 export {
   MARKETPLACE_PROFILE_TOOL_STEPS,
@@ -66,8 +68,6 @@ export {
   type SharedPropertyProfileMedia,
   type SharedPropertyProfileMissingField,
   type SharedPropertyProfileSource,
-  type SharedPropertyType,
-  SHARED_PROPERTY_TYPES,
   type SharedSetupProperty,
 } from "./sharedFirstRunSetupFlow";
 export {

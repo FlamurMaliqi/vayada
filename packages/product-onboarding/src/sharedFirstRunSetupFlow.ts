@@ -5,21 +5,6 @@ export const SHARED_HOTEL_SETUP_PRODUCTS = ["booking", "pms", "marketplace"] as 
 export type SharedHotelSetupProduct = (typeof SHARED_HOTEL_SETUP_PRODUCTS)[number];
 export type SharedHotelSetupEntryProduct = SharedHotelSetupProduct;
 
-export const SHARED_PROPERTY_TYPES = [
-  "hotel",
-  "resort",
-  "hostel",
-  "apartment",
-  "aparthotel",
-  "guesthouse",
-  "bed_and_breakfast",
-  "villa",
-  "vacation_rental",
-  "motel",
-  "other",
-] as const;
-export type SharedPropertyType = (typeof SHARED_PROPERTY_TYPES)[number];
-
 export function parseSharedHotelSetupEntryProduct(
   value: string | null | undefined,
 ): SharedHotelSetupEntryProduct | null {

@@ -14,6 +14,7 @@ import { buildApp } from "./app.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import {
   type SharedHotelSetupEntryProduct,
+  type SharedPropertyTypeCatalog,
   type SharedHotelSetupStatus,
   type SharedHotelSetupStatusRepository,
   type SharedPropertyProfile,
@@ -79,6 +80,83 @@ describe("shared hotel setup status route", () => {
     expect(response.body.hotelGroup.displayName).toBe("Alpenrose Hotel Group");
     expect(response.body.hotelGroup.websiteUrl).toBe("https://alpenrose.example/");
     expect(calls).toEqual([{ organizationId, propertyIds: [] }]);
+  });
+
+  it("returns the ordered property-type catalog without requiring an existing property", async () => {
+    app = buildSharedSetupApp({
+      linkedResources: [],
+      repository: repositoryWith([]),
+    });
+
+    const response = await injectJson<SharedPropertyTypeCatalog>(app, {
+      method: "GET",
+      url: "/api/hotel-setup/property-types",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      contractVersion: "shared-hotel-setup-property-types.v1",
+      propertyTypes: [
+        { value: "hotel", label: "Hotel" },
+        { value: "resort", label: "Resort" },
+        { value: "hostel", label: "Hostel" },
+        { value: "apartment", label: "Apartment" },
+        { value: "aparthotel", label: "Aparthotel" },
+        { value: "guesthouse", label: "Guesthouse" },
+        { value: "bed_and_breakfast", label: "Bed and breakfast" },
+        { value: "villa", label: "Villa" },
+        { value: "vacation_rental", label: "Vacation rental" },
+        { value: "motel", label: "Motel" },
+        { value: "other", label: "Other" },
+      ],
+    });
+  });
+
+  it("requires hotel setup read permission for the property-type catalog", async () => {
+    app = buildSharedSetupApp({
+      permissions: [],
+      linkedResources: [],
+      repository: repositoryWith([]),
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: "/api/hotel-setup/property-types",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("requires authentication for the property-type catalog", async () => {
+    app = buildSharedSetupApp({
+      linkedResources: [],
+      repository: repositoryWith([]),
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: "/api/hotel-setup/property-types",
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects non-hotel organizations for the property-type catalog", async () => {
+    app = buildSharedSetupApp({
+      organizationKind: "creator_workspace",
+      linkedResources: [],
+      repository: repositoryWith([]),
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: "/api/hotel-setup/property-types",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
   });
 
   it("auto-selects a property and routes missing hotel basics first", async () => {

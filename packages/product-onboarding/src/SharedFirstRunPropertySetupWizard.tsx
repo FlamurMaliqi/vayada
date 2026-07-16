@@ -34,7 +34,6 @@ import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from "@vayada/locale-constants";
 import { HotelIcon } from "./HotelIcon";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
-  SHARED_PROPERTY_TYPES,
   canOpenMarketplaceProfileTools,
   isSharedHotelSetupProductSelectable,
   resolveSharedFirstRunSetupView,
@@ -45,10 +44,9 @@ import {
   type SharedProductActivation,
   type SharedPropertyProfile,
   type SharedPropertyProfileInput,
-  type SharedPropertyType,
   type SharedSetupProperty,
 } from "./sharedFirstRunSetupFlow";
-import type { SharedHotelSetupApi } from "./sharedHotelSetupApi";
+import type { SharedHotelSetupApi, SharedPropertyTypeOption } from "./sharedHotelSetupApi";
 
 type ProductLabels = Record<SharedHotelSetupProduct, string>;
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
@@ -155,19 +153,19 @@ const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
 ];
 const PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
 
-const PROPERTY_TYPE_DETAILS: Record<SharedPropertyType, { label: string; icon: IconComponent }> = {
-  hotel: { label: "Hotel", icon: HotelIcon },
-  resort: { label: "Resort", icon: SunIcon },
-  hostel: { label: "Hostel", icon: UsersIcon },
-  apartment: { label: "Apartment", icon: BuildingOffice2Icon },
-  aparthotel: { label: "Aparthotel", icon: BuildingOfficeIcon },
-  guesthouse: { label: "Guesthouse", icon: BuildingStorefrontIcon },
-  bed_and_breakfast: { label: "Bed and breakfast", icon: CakeIcon },
-  villa: { label: "Villa", icon: HomeModernIcon },
-  vacation_rental: { label: "Vacation rental", icon: KeyIcon },
-  motel: { label: "Motel", icon: MapPinIcon },
-  other: { label: "Other", icon: EllipsisHorizontalIcon },
-};
+const PROPERTY_TYPE_ICONS = new Map<string, IconComponent>([
+  ["hotel", HotelIcon],
+  ["resort", SunIcon],
+  ["hostel", UsersIcon],
+  ["apartment", BuildingOffice2Icon],
+  ["aparthotel", BuildingOfficeIcon],
+  ["guesthouse", BuildingStorefrontIcon],
+  ["bed_and_breakfast", CakeIcon],
+  ["villa", HomeModernIcon],
+  ["vacation_rental", KeyIcon],
+  ["motel", MapPinIcon],
+  ["other", EllipsisHorizontalIcon],
+]);
 
 const TIMEZONE_DATALIST_OPTIONS = TIMEZONE_OPTIONS.map((timezone) =>
   timezone === "UTC" ? "Etc/UTC" : timezone,
@@ -191,10 +189,12 @@ export default function SharedFirstRunPropertySetupWizard({
   const [status, setStatus] = useState<SharedHotelSetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [forceCreateProperty, setForceCreateProperty] = useState(initialAddProperty);
-  const [profileLoading, setProfileLoading] = useState(false);
   const [profileLoadFailed, setProfileLoadFailed] = useState(false);
   const [profileReloadToken, setProfileReloadToken] = useState(0);
   const [loadedProfile, setLoadedProfile] = useState<SharedPropertyProfile | null>(null);
+  const [propertyTypeOptions, setPropertyTypeOptions] = useState<SharedPropertyTypeOption[] | null>(
+    null,
+  );
   const [draft, setDraft] = useState<ProfileDraft>(() =>
     newPropertyDraft(accountContactEmail, accountContactPhone),
   );
@@ -251,34 +251,35 @@ export default function SharedFirstRunPropertySetupWizard({
   }, [api, entryProduct, initialPropertyId, returnTo]);
 
   useEffect(() => {
-    const propertyId = view.profileMode === "update" ? view.selectedPropertyId : null;
-    if (!propertyId) {
-      setProfileLoadFailed(false);
-      setLoadedProfile(null);
-      setDraft(newPropertyDraft(accountContactEmail, accountContactPhone, browserTimezone()));
-      return;
-    }
+    if (view.screen !== "property_profile") return;
 
+    const propertyId = view.profileMode === "update" ? view.selectedPropertyId : null;
     let cancelled = false;
-    setProfileLoading(true);
     setProfileLoadFailed(false);
+    setPropertyTypeOptions(null);
     setError("");
 
-    api
-      .getPropertyProfile(propertyId)
-      .then((nextProfile) => {
+    Promise.all([
+      api.getPropertyTypes(),
+      propertyId
+        ? api.getPropertyProfile(propertyId)
+        : Promise.resolve<SharedPropertyProfile | null>(null),
+    ])
+      .then(([catalog, nextProfile]) => {
         if (cancelled) return;
+        setPropertyTypeOptions(propertyTypeOptionsFromCatalog(catalog.propertyTypes));
         setLoadedProfile(nextProfile);
-        setDraft(draftFromProfile(nextProfile));
+        setDraft(
+          nextProfile
+            ? draftFromProfile(nextProfile)
+            : newPropertyDraft(accountContactEmail, accountContactPhone, browserTimezone()),
+        );
       })
       .catch((err) => {
         if (cancelled) return;
         setLoadedProfile(null);
         setProfileLoadFailed(true);
         setError(errorMessage(err));
-      })
-      .finally(() => {
-        if (!cancelled) setProfileLoading(false);
       });
 
     return () => {
@@ -289,8 +290,8 @@ export default function SharedFirstRunPropertySetupWizard({
     accountContactPhone,
     api,
     profileReloadToken,
-    status,
     view.profileMode,
+    view.screen,
     view.selectedPropertyId,
   ]);
 
@@ -412,7 +413,7 @@ export default function SharedFirstRunPropertySetupWizard({
   }
 
   return (
-    <WizardShell title={view.title} view={view} status={status} embedded={embedded}>
+    <WizardShell title={view.title} view={view} embedded={embedded}>
       {error && !(view.screen === "property_profile" && profileLoadFailed) && (
         <div
           className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
@@ -446,9 +447,10 @@ export default function SharedFirstRunPropertySetupWizard({
           draft={draft}
           mode={view.profileMode ?? "create"}
           hasAccountSuggestions={Boolean(accountContactEmail || accountContactPhone)}
-          loading={profileLoading}
+          loading={!propertyTypeOptions}
           saving={saving}
           fieldErrors={fieldErrors}
+          propertyTypeOptions={propertyTypeOptions ?? []}
           onChange={setDraft}
           onFieldErrors={setFieldErrors}
           onCancel={
@@ -494,14 +496,12 @@ function WizardShell({
   children,
   title,
   view,
-  status,
   loading = false,
   embedded = false,
 }: {
   children?: React.ReactNode;
   title: string;
   view: SharedFirstRunSetupViewModel;
-  status?: SharedHotelSetupStatus;
   loading?: boolean;
   embedded?: boolean;
 }) {
@@ -525,10 +525,7 @@ function WizardShell({
     return (
       <section className="min-w-0">
         <div className="mb-4 px-1 sm:px-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
-            {status?.hotelGroup.displayName ?? "Hotel setup"}
-          </p>
-          <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-gray-950">{title}</h2>
               {subtitle && <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>}
@@ -553,18 +550,15 @@ function WizardShell({
 
   return (
     <main
-      className={`min-h-screen px-4 text-gray-900 sm:px-6 lg:px-8 ${
-        isProfileScreen ? "bg-gray-50 py-5 lg:py-6" : "flex items-center bg-white py-6"
+      className={`flex min-h-screen items-center px-4 py-6 text-gray-900 sm:px-6 lg:px-8 ${
+        isProfileScreen ? "bg-gray-50" : "bg-white"
       }`}
     >
       <div className={`mx-auto w-full ${isProfileScreen ? "max-w-7xl" : "max-w-5xl"}`}>
         <header
           className={`mx-auto text-center ${isProfileScreen ? "mb-4 max-w-2xl" : "mb-5 max-w-xl"}`}
         >
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
-            {status?.hotelGroup.displayName ?? "Hotel setup"}
-          </p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-gray-950">{title}</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-gray-950">{title}</h1>
           {subtitle && <p className="mt-2 text-sm text-gray-500">{subtitle}</p>}
         </header>
 
@@ -654,9 +648,9 @@ function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => vo
           aria-hidden="true"
         />
         <div>
-          <h2 className="text-lg font-semibold text-red-900">Property profile unavailable</h2>
+          <h2 className="text-lg font-semibold text-red-900">Property setup unavailable</h2>
           <p className="mt-2 text-sm text-red-700">
-            {error || "The existing property profile could not be loaded."}
+            {error || "The property setup details could not be loaded."}
           </p>
         </div>
       </div>
@@ -671,7 +665,7 @@ function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => vo
   );
 }
 
-const ONBOARDING_ILLUSTRATION_CLASS = "mx-auto h-auto w-full max-w-[20rem] text-gray-900";
+const ONBOARDING_ILLUSTRATION_CLASS = "mx-auto h-auto w-full max-w-[32rem] text-gray-900";
 
 function HotelFacadeIllustration() {
   return (
@@ -769,25 +763,17 @@ function ProfileIllustrationPanel({
   description,
 }: {
   children: React.ReactNode;
-  title: string;
-  description: string;
+  title?: string;
+  description?: string;
 }) {
   return (
-    <aside className="relative hidden min-h-[32rem] overflow-hidden bg-gradient-to-br from-primary-50 via-white to-primary-100 xl:flex xl:items-center xl:justify-center xl:p-8">
-      <span
-        className="absolute -right-24 -top-24 h-72 w-72 rounded-full border-[48px] border-white/60"
-        aria-hidden="true"
-      />
-      <span
-        className="absolute -bottom-36 -left-24 h-80 w-80 rounded-full bg-white/50"
-        aria-hidden="true"
-      />
-      <div className="relative z-10 w-full max-w-lg text-center">
-        <div className="rounded-[2rem] bg-white/60 px-6 py-6 ring-1 ring-primary-100/80 backdrop-blur-sm">
-          {children}
-        </div>
-        <h2 className="mt-5 text-xl font-semibold text-gray-950">{title}</h2>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-gray-600">{description}</p>
+    <aside className="hidden min-h-[32rem] items-center justify-center p-8 xl:flex">
+      <div className="w-full max-w-lg text-center">
+        {children}
+        {title && <h2 className="mt-5 text-xl font-semibold text-gray-950">{title}</h2>}
+        {description && (
+          <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-gray-600">{description}</p>
+        )}
       </div>
     </aside>
   );
@@ -800,6 +786,7 @@ function ProfileForm({
   loading,
   saving,
   fieldErrors,
+  propertyTypeOptions,
   onChange,
   onFieldErrors,
   onCancel,
@@ -811,6 +798,7 @@ function ProfileForm({
   loading: boolean;
   saving: boolean;
   fieldErrors: Record<string, string[]>;
+  propertyTypeOptions: SharedPropertyTypeOption[];
   onChange: (draft: ProfileDraft) => void;
   onFieldErrors: (errors: Record<string, string[]>) => void;
   onCancel?: () => void;
@@ -858,23 +846,15 @@ function ProfileForm({
   const showRawLocation = Boolean(
     draft.rawMarketplaceLocation && !draft.city.trim() && !draft.countryCode.trim(),
   );
-  const propertyTypeOptions: Array<{ value: string; label: string }> = SHARED_PROPERTY_TYPES.map(
-    (value) => ({
-      value,
-      label: PROPERTY_TYPE_DETAILS[value].label,
-    }),
-  );
-  if (
-    draft.propertyType &&
-    !(SHARED_PROPERTY_TYPES as readonly string[]).includes(draft.propertyType)
-  ) {
-    propertyTypeOptions.unshift({
-      value: draft.propertyType,
-      label: `${draft.propertyType} (existing)`,
-    });
-  }
+  const visiblePropertyTypeOptions =
+    draft.propertyType && !propertyTypeOptions.some(({ value }) => value === draft.propertyType)
+      ? [
+          { value: draft.propertyType, label: `${draft.propertyType} (existing)` },
+          ...propertyTypeOptions,
+        ]
+      : propertyTypeOptions;
   const actions = (
-    <div className="mt-auto flex w-full flex-col-reverse gap-3 pt-5 sm:flex-row sm:justify-end">
+    <div className="flex w-full flex-col-reverse items-center gap-3 sm:flex-row sm:justify-center">
       {(step > 0 || onCancel) && (
         <button
           type="button"
@@ -919,7 +899,7 @@ function ProfileForm({
         if (step === PROFILE_STEP_FIELDS.length - 1) onSave();
         else continueToNextStep();
       }}
-      className="mx-auto max-w-7xl space-y-3"
+      className="mx-auto max-w-7xl space-y-8"
     >
       <div className="flex flex-col items-center gap-2">
         <p className="text-sm font-semibold text-gray-600" aria-live="polite">
@@ -951,9 +931,9 @@ function ProfileForm({
 
       <section
         inert={saving ? true : undefined}
-        className={`${step === 0 ? "grid" : "hidden"} overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] xl:grid-cols-2`}
+        className={`${step === 0 ? "grid" : "hidden"} gap-6 xl:grid-cols-2`}
       >
-        <div className="flex flex-col p-5 text-left sm:p-6 xl:min-h-[32rem] xl:p-8">
+        <div className="flex flex-col rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-6 xl:min-h-[32rem] xl:p-8">
           <div className="mb-4">
             <h3
               ref={step === 0 ? stepHeading : undefined}
@@ -973,7 +953,6 @@ function ProfileForm({
               label="Hotel name"
               value={draft.displayName}
               placeholder="Hotel Alpenrose"
-              requirementLabel="Required"
               required
               error={fieldErrors.displayName?.[0]}
               onChange={(value) => setField("displayName", value)}
@@ -982,25 +961,21 @@ function ProfileForm({
               value={draft.propertyType}
               required={mode === "create"}
               error={fieldErrors.propertyType?.[0]}
-              options={propertyTypeOptions}
+              options={visiblePropertyTypeOptions}
               onChange={(value) => setField("propertyType", value)}
             />
           </div>
-          {actions}
         </div>
-        <ProfileIllustrationPanel
-          title="One profile, ready everywhere"
-          description="Add the essentials once and keep your hotel consistent across every Vayada product."
-        >
+        <ProfileIllustrationPanel>
           <HotelFacadeIllustration />
         </ProfileIllustrationPanel>
       </section>
 
       <section
         inert={saving ? true : undefined}
-        className={`${step === 2 ? "grid" : "hidden"} overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] xl:grid-cols-2`}
+        className={`${step === 2 ? "grid" : "hidden"} gap-6 xl:grid-cols-2`}
       >
-        <div className="flex flex-col p-5 text-left sm:p-6 xl:min-h-[32rem] xl:p-8">
+        <div className="flex flex-col rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-6 xl:min-h-[32rem] xl:p-8">
           <div className="mb-4">
             <h3
               ref={step === 2 ? stepHeading : undefined}
@@ -1044,13 +1019,11 @@ function ProfileForm({
                 value={draft.website}
                 placeholder="https://hotel-alpenrose.com"
                 type="url"
-                requirementLabel="Optional"
                 error={fieldErrors.website?.[0]}
                 onChange={(value) => setField("website", value)}
               />
             </div>
           </div>
-          {actions}
         </div>
         <ProfileIllustrationPanel
           title="Keep guests connected"
@@ -1062,9 +1035,9 @@ function ProfileForm({
 
       <section
         inert={saving ? true : undefined}
-        className={`${step === 1 ? "grid" : "hidden"} overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] xl:grid-cols-2`}
+        className={`${step === 1 ? "grid" : "hidden"} gap-6 xl:grid-cols-2`}
       >
-        <div className="flex flex-col p-5 text-left sm:p-6 xl:min-h-[32rem] xl:p-8">
+        <div className="flex flex-col rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-6 xl:min-h-[32rem] xl:p-8">
           <div className="mb-4">
             <h3
               ref={step === 1 ? stepHeading : undefined}
@@ -1100,7 +1073,6 @@ function ProfileForm({
               label="City"
               value={draft.city}
               placeholder="Munich"
-              requirementLabel="Required"
               required
               error={fieldErrors["location.city"]?.[0]}
               onChange={(value) => setField("city", value)}
@@ -1139,7 +1111,6 @@ function ProfileForm({
               </div>
             )}
           </div>
-          {actions}
         </div>
         <ProfileIllustrationPanel
           title="Put your hotel on the map"
@@ -1148,6 +1119,8 @@ function ProfileForm({
           <LocationIllustration />
         </ProfileIllustrationPanel>
       </section>
+
+      {actions}
 
       <span className="sr-only" role="status" aria-live="polite">
         {saving ? "Saving hotel details." : ""}
@@ -1561,7 +1534,6 @@ function TextField({
   onChange,
   error,
   helper,
-  requirementLabel,
   placeholder,
   type = "text",
   readOnly = false,
@@ -1573,7 +1545,6 @@ function TextField({
   onChange: (value: string) => void;
   error?: string;
   helper?: string;
-  requirementLabel?: string;
   placeholder?: string;
   type?: string;
   readOnly?: boolean;
@@ -1593,12 +1564,11 @@ function TextField({
         className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
       >
         <span>{label}</span>
-        <span
-          aria-hidden="true"
-          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
-        >
-          {requirementLabel ?? (required ? "Required" : "Optional")}
-        </span>
+        {!required && (
+          <span aria-hidden="true" className="text-xs text-gray-400">
+            Optional
+          </span>
+        )}
       </label>
       {helper && (
         <p id={helperId} className="mt-1 text-xs text-gray-500">
@@ -1616,7 +1586,7 @@ function TextField({
         aria-required={required}
         list={listOptions ? `${inputId}-options` : undefined}
         onChange={(event) => onChange(event.target.value)}
-        className={`mt-2 w-full rounded-lg border px-4 py-2.5 text-base outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:text-sm ${
+        className={`mt-2 w-full rounded-xl border px-4 py-2.5 text-base outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:text-sm ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         } ${readOnly ? "bg-gray-50 text-gray-600" : ""}`}
       />
@@ -1644,7 +1614,7 @@ function PropertyTypeField({
   required = false,
 }: {
   value: string;
-  options: Array<{ value: string; label: string }>;
+  options: SharedPropertyTypeOption[];
   onChange: (value: string) => void;
   error?: string;
   required?: boolean;
@@ -1657,19 +1627,16 @@ function PropertyTypeField({
     <fieldset aria-describedby={errorId} aria-invalid={Boolean(error)}>
       <legend className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700">
         <span>Property type</span>
-        <span
-          aria-hidden="true"
-          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
-        >
-          {required ? "Required" : "Optional"}
-        </span>
+        {!required && (
+          <span aria-hidden="true" className="text-xs text-gray-400">
+            Optional
+          </span>
+        )}
       </legend>
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {options.map((option) => {
           const checked = value === option.value;
-          const Icon =
-            PROPERTY_TYPE_DETAILS[option.value as SharedPropertyType]?.icon ??
-            EllipsisHorizontalIcon;
+          const Icon = PROPERTY_TYPE_ICONS.get(option.value) ?? EllipsisHorizontalIcon;
 
           return (
             <label key={option.value} className="relative block cursor-pointer">
@@ -1746,12 +1713,11 @@ function SelectField({
         className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
       >
         <span>{label}</span>
-        <span
-          aria-hidden="true"
-          className={required ? "text-xs font-medium text-gray-500" : "text-xs text-gray-400"}
-        >
-          {required ? "Required" : "Optional"}
-        </span>
+        {!required && (
+          <span aria-hidden="true" className="text-xs text-gray-400">
+            Optional
+          </span>
+        )}
       </label>
       <select
         id={inputId}
@@ -1761,7 +1727,7 @@ function SelectField({
         aria-describedby={errorId}
         aria-required={required}
         onChange={(event) => onChange(event.target.value)}
-        className={`mt-2 w-full rounded-lg border bg-white px-4 py-2.5 text-base outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:text-sm ${
+        className={`mt-2 w-full rounded-xl border bg-white px-4 py-2.5 text-base outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100 sm:text-sm ${
           error ? "border-red-300 bg-red-50" : "border-gray-200"
         }`}
       >
@@ -1914,6 +1880,25 @@ function mediaFromDraft(
 function nullIfBlank(value: string): string | null {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function propertyTypeOptionsFromCatalog(options: unknown): SharedPropertyTypeOption[] {
+  if (
+    !Array.isArray(options) ||
+    options.length === 0 ||
+    !options.every(
+      (option) =>
+        typeof option === "object" &&
+        option !== null &&
+        typeof option.value === "string" &&
+        option.value.length > 0 &&
+        typeof option.label === "string" &&
+        option.label.length > 0,
+    )
+  ) {
+    throw new Error("Property types are unavailable. Please try again.");
+  }
+  return options as SharedPropertyTypeOption[];
 }
 
 function errorMessage(error: unknown): string {

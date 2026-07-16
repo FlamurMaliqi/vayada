@@ -1039,6 +1039,10 @@ async function mockOnboardingAuth(
 }
 
 async function mockSharedSetupStatus(page: Page) {
+  await routeJson(page, /\/api\/hotel-setup\/property-types/, {
+    contractVersion: "shared-hotel-setup-property-types.v1",
+    propertyTypes: [{ value: "hotel", label: "Hotel" }],
+  });
   await routeJson(page, /\/api\/hotel-setup\/status/, {
     contractVersion: "shared-hotel-setup-status.v1",
     entry: { entryProduct: "marketplace", returnTo: null },

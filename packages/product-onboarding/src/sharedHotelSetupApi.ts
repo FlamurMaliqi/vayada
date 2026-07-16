@@ -19,8 +19,19 @@ export type SharedHotelSetupStatusParams = {
   propertyId?: string | null;
 };
 
+export type SharedPropertyTypeOption = {
+  value: string;
+  label: string;
+};
+
+export type SharedPropertyTypeCatalog = {
+  contractVersion: "shared-hotel-setup-property-types.v1";
+  propertyTypes: SharedPropertyTypeOption[];
+};
+
 export type SharedHotelSetupApi = {
   getStatus(params?: SharedHotelSetupStatusParams): Promise<SharedHotelSetupStatus>;
+  getPropertyTypes(): Promise<SharedPropertyTypeCatalog>;
   getPropertyProfile(propertyId: string): Promise<SharedPropertyProfile>;
   createPropertyProfile(profile: SharedPropertyProfileInput): Promise<SharedPropertyProfile>;
   updatePropertyProfile(
@@ -35,6 +46,8 @@ export type SharedHotelSetupApi = {
 export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): SharedHotelSetupApi {
   return {
     getStatus: (params) => client.get<SharedHotelSetupStatus>(statusEndpoint(params)),
+    getPropertyTypes: () =>
+      client.get<SharedPropertyTypeCatalog>("/api/hotel-setup/property-types"),
     getPropertyProfile: (propertyId) =>
       client.get<SharedPropertyProfile>(
         `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/profile`,

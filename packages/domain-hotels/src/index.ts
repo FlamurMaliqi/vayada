@@ -73,6 +73,22 @@ export const SHARED_HOTEL_SETUP_ENTRY_PRODUCTS = SHARED_HOTEL_SETUP_PRODUCTS;
 
 export type SharedHotelSetupEntryProduct = (typeof SHARED_HOTEL_SETUP_ENTRY_PRODUCTS)[number];
 
+export const SHARED_PROPERTY_TYPE_OPTIONS = [
+  { value: "hotel", label: "Hotel" },
+  { value: "resort", label: "Resort" },
+  { value: "hostel", label: "Hostel" },
+  { value: "apartment", label: "Apartment" },
+  { value: "aparthotel", label: "Aparthotel" },
+  { value: "guesthouse", label: "Guesthouse" },
+  { value: "bed_and_breakfast", label: "Bed and breakfast" },
+  { value: "villa", label: "Villa" },
+  { value: "vacation_rental", label: "Vacation rental" },
+  { value: "motel", label: "Motel" },
+  { value: "other", label: "Other" },
+] as const;
+
+export type SharedPropertyTypeOption = (typeof SHARED_PROPERTY_TYPE_OPTIONS)[number];
+
 export const SHARED_HOTEL_SETUP_READ_PERMISSION = "hotel_catalog.setup.read" as const;
 
 export type SharedHotelSetupReadPermission = typeof SHARED_HOTEL_SETUP_READ_PERMISSION;
