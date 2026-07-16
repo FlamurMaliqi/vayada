@@ -54,6 +54,7 @@ export function createPgPlatformMediaRepository(
     throw new Error("Platform media repository publicCdnBaseUrl must not be empty");
   }
 
+  const ownsPool = !config.pool;
   const pool: PlatformMediaPool = config.pool ?? createPlatformMediaPool(config);
 
   return {
@@ -159,7 +160,7 @@ export function createPgPlatformMediaRepository(
       await recordAudit(pool, event);
     },
     async close() {
-      await pool.end();
+      if (ownsPool) await pool.end();
     },
   };
 }
@@ -490,7 +491,9 @@ function completedMediaObjectIds(row: SessionRow): string[] {
       ...(Array.isArray(row.mediaObjectIds) ? row.mediaObjectIds : []),
       ...snapshotIds,
     ]),
-  ];
+  ].filter(
+    (mediaId): mediaId is string => typeof mediaId === "string" && CANONICAL_UUID.test(mediaId),
+  );
 }
 
 const redactedAuditMetadataKeys = new Set([
