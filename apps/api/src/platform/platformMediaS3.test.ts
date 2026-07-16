@@ -371,6 +371,77 @@ describe("S3 platform profile media adapter", () => {
     }
   });
 
+  it("processes the profile pixel cap and publishes variants sequentially", async () => {
+    const source = await sharp({
+      create: { width: 5_000, height: 5_000, channels: 3, background: "#334455" },
+    })
+      .jpeg({ quality: 40 })
+      .toBuffer();
+    expect(source.length).toBeLessThan(policy.maxFileSizeBytes);
+
+    let activePuts = 0;
+    let maxActivePuts = 0;
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        return { ContentLength: source.length, Body: Readable.from([source]) };
+      }
+      if (command instanceof PutObjectCommand) {
+        activePuts += 1;
+        maxActivePuts = Math.max(maxActivePuts, activePuts);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        activePuts -= 1;
+      }
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const session = profileSession(source.length);
+    const sessionFile = session.files[0]!;
+    const uploadTarget = session.uploadTargets[0]!;
+    const inspected = await adapter.inspectUploadedFile({
+      session,
+      sessionFile,
+      uploadTarget,
+      clientFile: { uploadTargetId },
+      policy,
+    });
+    if (!inspected.ok) throw new Error(`Expected inspection success: ${inspected.code}`);
+
+    const variants = await adapter.generateVariants({
+      session,
+      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+      fileIndex: 0,
+      policy,
+    });
+
+    expect(variants).toHaveLength(policy.requiredVariants.length);
+    expect(maxActivePuts).toBe(1);
+  }, 30_000);
+
+  it("rejects images above the profile pixel cap even when policy allows more", async () => {
+    const source = await sharp({
+      create: { width: 5_001, height: 5_000, channels: 3, background: "#334455" },
+    })
+      .jpeg({ quality: 40 })
+      .toBuffer();
+    const { client } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = profileSession(source.length);
+
+    await expect(
+      adapter.inspectUploadedFile({
+        session,
+        sessionFile: session.files[0]!,
+        uploadTarget: session.uploadTargets[0]!,
+        clientFile: { uploadTargetId },
+        policy,
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "invalid_media_dimensions" });
+  });
+
   it("rejects an oversized S3 object before reading its body", async () => {
     const transformToByteArray = vi.fn(async () => new Uint8Array());
     const { client } = fakeS3(async (command) =>
