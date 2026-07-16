@@ -406,14 +406,23 @@ describe("S3 platform profile media adapter", () => {
     });
     if (!inspected.ok) throw new Error(`Expected inspection success: ${inspected.code}`);
 
-    const variants = await adapter.generateVariants({
-      session,
-      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
-      fileIndex: 0,
-      policy,
-    });
+    let maxSharpTasks = 0;
+    const recordSharpTasks = () => {
+      const counters = sharp.counters();
+      maxSharpTasks = Math.max(maxSharpTasks, counters.queue + counters.process);
+    };
+    sharp.queue.on("change", recordSharpTasks);
+    const variants = await adapter
+      .generateVariants({
+        session,
+        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+        fileIndex: 0,
+        policy,
+      })
+      .finally(() => sharp.queue.off("change", recordSharpTasks));
 
     expect(variants).toHaveLength(policy.requiredVariants.length);
+    expect(maxSharpTasks).toBe(1);
     expect(maxActivePuts).toBe(1);
   }, 30_000);
 
