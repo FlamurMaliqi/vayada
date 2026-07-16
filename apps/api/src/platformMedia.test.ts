@@ -9,7 +9,7 @@ import {
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import {
@@ -17,6 +17,7 @@ import {
   createDeterministicPlatformMediaUploadSigner,
   createInMemoryPlatformMediaRepository,
   type PlatformMediaObjectRecord,
+  type PlatformMediaPurpose,
   type PlatformMediaRepository,
   type PlatformMediaTargetResolver,
   type PlatformMediaUploadFinalizer,
@@ -155,6 +156,22 @@ describe("platform media upload routes", () => {
     expect(response.headers.vary).toBe("Origin");
   });
 
+  it("rejects media purposes that the configured runtime has not enabled", async () => {
+    const app = buildMediaApp({
+      enabledPurposes: ["identity.user.profile_image", "marketplace.creator.profile_image"],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect((response.body as ErrorResponse).code).toBe("media_purpose_unavailable");
+  });
+
   it("creates a signed property upload session and finalizes it with inspected private variants", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     const app = buildMediaApp({ repository });
@@ -249,6 +266,43 @@ describe("platform media upload routes", () => {
     expect((authenticatedReplay.body as { sideEffects: string[] }).sideEffects).toEqual([
       "idempotency_replay",
     ]);
+  });
+
+  it("does not clean staging when durable completion fails", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    repository.completeUploadSession = async () => {
+      throw new Error("database unavailable");
+    };
+    const cleanupUploadedFile = vi.fn(async () => undefined);
+    const app = buildMediaApp({
+      repository,
+      finalizer: {
+        ...createDeterministicPlatformMediaFinalizer(),
+        cleanupUploadedFile,
+      },
+    });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+
+    const finalize = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    });
+
+    expect(finalize.statusCode).toBe(500);
+    expect(cleanupUploadedFile).not.toHaveBeenCalled();
   });
 
   it("finalizes every signed file in a batch upload session", async () => {
@@ -1021,6 +1075,7 @@ function buildMediaApp(
     }>;
     targetResolver?: PlatformMediaTargetResolver;
     finalizer?: PlatformMediaUploadFinalizer;
+    enabledPurposes?: PlatformMediaPurpose[];
     allowedOrigins?: string[];
   } = {},
 ): ReturnType<typeof buildApp> {
@@ -1031,6 +1086,7 @@ function buildMediaApp(
       signer: createDeterministicPlatformMediaUploadSigner(),
       targetResolver: options.targetResolver ?? propertyMediaTargetResolver,
       finalizer: options.finalizer ?? createDeterministicPlatformMediaFinalizer(),
+      enabledPurposes: options.enabledPurposes,
       allowedOrigins: options.allowedOrigins,
       now: () => new Date("2026-06-12T12:00:00.000Z"),
     },
