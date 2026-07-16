@@ -456,9 +456,16 @@ describe("api config", () => {
   });
 
   it("rejects required creator photos without durable platform media", () => {
-    expect(() => loadConfig({ CREATOR_PROFILE_PHOTO_REQUIRED: "true" })).toThrow(
-      "CREATOR_PROFILE_PHOTO_REQUIRED=true requires TARGET_DATABASE_URL",
-    );
+    expect(() =>
+      loadConfig({
+        CREATOR_PROFILE_PHOTO_REQUIRED: "true",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        AUTH_DATABASE_URL: "postgresql://auth-db",
+        WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
+        WORKOS_ISSUER: "https://api.workos.com",
+        WORKOS_AUDIENCE: "client",
+      }),
+    ).toThrow("complete PLATFORM_MEDIA_* config");
   });
 
   it("keeps PMS operations routes disabled by default", () => {
