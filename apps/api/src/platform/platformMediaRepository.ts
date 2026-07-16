@@ -38,6 +38,7 @@ const supportedPurposes = new Set([
   "identity.user.profile_image",
   "marketplace.creator.profile_image",
 ]);
+const CANONICAL_UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
 export function createPgPlatformMediaRepository(
   config: PgPlatformMediaRepositoryConfig,
@@ -350,6 +351,7 @@ async function readSession(
   sessionId: string,
   forUpdate = false,
 ): Promise<PlatformMediaSessionRecord | null> {
+  if (!CANONICAL_UUID.test(sessionId)) return null;
   const result = await queryable.query<SessionRow>(
     `SELECT completion_metadata -> 'session' AS session
      FROM platform.media_upload_sessions
@@ -363,6 +365,7 @@ async function readMediaObject(
   queryable: Queryable,
   mediaId: string,
 ): Promise<PlatformMediaObjectRecord | null> {
+  if (!CANONICAL_UUID.test(mediaId)) return null;
   const result = await queryable.query<MediaObjectRow>(
     `SELECT jsonb_strip_nulls(jsonb_build_object(
        'mediaId', media.id::text,
