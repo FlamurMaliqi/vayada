@@ -5,6 +5,7 @@ import {
   type S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import sharp from "sharp";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -89,7 +90,6 @@ describe("S3 platform profile media adapter", () => {
       if (command instanceof GetObjectCommand) {
         return { ContentLength: source.length, Body: Readable.from([source]) };
       }
-      if (command instanceof DeleteObjectCommand) throw new Error("retry cleanup later");
       return {};
     });
     const publicPathPrefix = "profile-media";
@@ -138,30 +138,237 @@ describe("S3 platform profile media adapter", () => {
     }
 
     expect(send.mock.calls.some(([command]) => command instanceof DeleteObjectCommand)).toBe(false);
-    await expect(
-      adapter.cleanupUploadedFile!({
-        session,
-        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
-      }),
-    ).rejects.toThrow("retry cleanup later");
+    await adapter.cleanupUploadedFile!({
+      session,
+      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+    });
 
     const commands = send.mock.calls.map(([command]) => command);
+    const get = commands.find(
+      (command): command is GetObjectCommand => command instanceof GetObjectCommand,
+    );
+    expect(get?.input).toEqual({ Bucket: bucketName, Key: stagingKey });
     const puts = commands.filter(
       (command): command is PutObjectCommand => command instanceof PutObjectCommand,
     );
     expect(puts).toHaveLength(4);
-    for (const put of puts) {
+    for (const [index, put] of puts.entries()) {
+      const variant = variants[index]!;
       expect(put.input).toMatchObject({
         Bucket: bucketName,
+        Key: variant.storageKey,
         ContentType: "image/webp",
         CacheControl: cacheControl,
       });
-      const metadata = await sharp(put.input.Body as Buffer).metadata();
+      const body = put.input.Body as Buffer;
+      expect(createHash("sha256").update(body).digest("hex")).toBe(variant.checksumSha256);
+      const metadata = await sharp(body).metadata();
       expect(metadata.format).toBe("webp");
       expect(metadata.exif).toBeUndefined();
       expect(metadata.orientation).toBeUndefined();
+      if (variant.variantName === "original_safe") {
+        expect(metadata).toMatchObject({ width: 80, height: 120 });
+      }
     }
-    expect(commands.at(-1)).toBeInstanceOf(DeleteObjectCommand);
+    const cleanup = commands.at(-1);
+    expect(cleanup).toBeInstanceOf(DeleteObjectCommand);
+    expect((cleanup as DeleteObjectCommand).input).toEqual({
+      Bucket: bucketName,
+      Key: stagingKey,
+    });
+  });
+
+  it("decodes PNG and WebP bytes using their signed content types", async () => {
+    const image = sharp({
+      create: { width: 20, height: 20, channels: 3, background: "#334455" },
+    });
+    const cases = [
+      { contentType: "image/png", source: await image.clone().png().toBuffer() },
+      { contentType: "image/webp", source: await image.clone().webp().toBuffer() },
+    ] as const;
+
+    for (const { contentType, source } of cases) {
+      const { client } = fakeS3(async (command) =>
+        command instanceof GetObjectCommand
+          ? { ContentLength: source.length, Body: Readable.from([source]) }
+          : {},
+      );
+      const adapter = createAdapter(client);
+      const session = profileSession(source.length, contentType);
+
+      await expect(
+        adapter.inspectUploadedFile({
+          session,
+          sessionFile: session.files[0]!,
+          uploadTarget: session.uploadTargets[0]!,
+          clientFile: { uploadTargetId },
+          policy,
+        }),
+      ).resolves.toMatchObject({ ok: true, inspection: { contentType } });
+    }
+  });
+
+  it("rejects image bytes that do not match the signed content type", async () => {
+    const source = await sharp({
+      create: { width: 20, height: 20, channels: 3, background: "#334455" },
+    })
+      .png()
+      .toBuffer();
+    const { client } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = profileSession(source.length);
+
+    await expect(
+      adapter.inspectUploadedFile({
+        session,
+        sessionFile: session.files[0]!,
+        uploadTarget: session.uploadTargets[0]!,
+        clientFile: { uploadTargetId },
+        policy,
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "media_type_mismatch" });
+  });
+
+  it("clears inspected bytes when staging cleanup fails", async () => {
+    const source = await validJpeg();
+    const cleanupError = new Error("cleanup unavailable");
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        return { ContentLength: source.length, Body: Readable.from([source]) };
+      }
+      if (command instanceof DeleteObjectCommand) throw cleanupError;
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const { session, file } = await inspectValidUpload(adapter, source);
+
+    await expect(adapter.cleanupUploadedFile!({ session, file })).rejects.toBe(cleanupError);
+    await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
+      "Profile image must be inspected before variants are generated",
+    );
+  });
+
+  it("clears inspected bytes before staging cleanup settles", async () => {
+    const source = await validJpeg();
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        return { ContentLength: source.length, Body: Readable.from([source]) };
+      }
+      if (command instanceof DeleteObjectCommand) return new Promise<never>(() => undefined);
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const { session, file } = await inspectValidUpload(adapter, source);
+
+    void adapter.cleanupUploadedFile!({ session, file });
+
+    await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
+      "Profile image must be inspected before variants are generated",
+    );
+  });
+
+  it("clears inspected bytes when variant generation rejects private visibility", async () => {
+    const source = await validJpeg();
+    const { client } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const { session, file } = await inspectValidUpload(adapter, source);
+
+    await expect(
+      adapter.generateVariants({
+        session: { ...session, effectiveVisibility: "private" },
+        file,
+        fileIndex: 0,
+        policy,
+      }),
+    ).rejects.toThrow("Profile image variants require public visibility");
+    await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
+      "Profile image must be inspected before variants are generated",
+    );
+  });
+
+  it("reports a missing staged object with the upload validation code", async () => {
+    const missing = Object.assign(new Error("missing"), {
+      name: "NoSuchKey",
+      $metadata: { httpStatusCode: 404 },
+    });
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) throw missing;
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const session = profileSession(100);
+
+    await expect(
+      adapter.inspectUploadedFile({
+        session,
+        sessionFile: session.files[0]!,
+        uploadTarget: session.uploadTargets[0]!,
+        clientFile: { uploadTargetId },
+        policy,
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "media_upload_missing" });
+  });
+
+  it("propagates S3 infrastructure failures", async () => {
+    const failures = [
+      new Error("S3 unavailable"),
+      Object.assign(new Error("bucket missing"), {
+        name: "NoSuchBucket",
+        $metadata: { httpStatusCode: 404 },
+      }),
+    ];
+
+    for (const failure of failures) {
+      const { client } = fakeS3(async (command) => {
+        if (command instanceof GetObjectCommand) throw failure;
+        return {};
+      });
+      const adapter = createAdapter(client);
+      const session = profileSession(100);
+
+      await expect(
+        adapter.inspectUploadedFile({
+          session,
+          sessionFile: session.files[0]!,
+          uploadTarget: session.uploadTargets[0]!,
+          clientFile: { uploadTargetId },
+          policy,
+        }),
+      ).rejects.toBe(failure);
+    }
+  });
+
+  it("rejects malformed and truncated image bytes", async () => {
+    const complete = await validJpeg();
+    const sources = [Buffer.from("not an image"), complete.subarray(0, complete.length - 1)];
+
+    for (const source of sources) {
+      const { client } = fakeS3(async (command) =>
+        command instanceof GetObjectCommand
+          ? { ContentLength: source.length, Body: Readable.from([source]) }
+          : {},
+      );
+      const adapter = createAdapter(client);
+      const session = profileSession(source.length);
+
+      await expect(
+        adapter.inspectUploadedFile({
+          session,
+          sessionFile: session.files[0]!,
+          uploadTarget: session.uploadTargets[0]!,
+          clientFile: { uploadTargetId },
+          policy,
+        }),
+      ).resolves.toMatchObject({ ok: false, code: "invalid_media_image" });
+    }
   });
 
   it("rejects an oversized S3 object before reading its body", async () => {
@@ -186,16 +393,36 @@ describe("S3 platform profile media adapter", () => {
     expect(transformToByteArray).not.toHaveBeenCalled();
   });
 
-  it("rejects a staged object smaller than the signed upload", async () => {
-    const source = await sharp({
-      create: { width: 20, height: 20, channels: 3, background: "#334455" },
-    })
-      .jpeg()
-      .toBuffer();
+  it("stops reading a streamed object when its bytes cross the signed limit", async () => {
+    const smallPolicy = { ...policy, maxFileSizeBytes: 4 };
+    const next = vi
+      .fn()
+      .mockResolvedValueOnce({ value: Buffer.alloc(3), done: false })
+      .mockResolvedValueOnce({ value: Buffer.alloc(2), done: false })
+      .mockResolvedValueOnce({ value: Buffer.alloc(1), done: false });
+    const body = { [Symbol.asyncIterator]: () => ({ next }) };
     const { client } = fakeS3(async (command) =>
-      command instanceof GetObjectCommand
-        ? { ContentLength: source.length, Body: Readable.from([source]) }
-        : {},
+      command instanceof GetObjectCommand ? { Body: body } : {},
+    );
+    const adapter = createAdapter(client);
+    const session = profileSession(4);
+
+    await expect(
+      adapter.inspectUploadedFile({
+        session,
+        sessionFile: session.files[0]!,
+        uploadTarget: session.uploadTargets[0]!,
+        clientFile: { uploadTargetId },
+        policy: smallPolicy,
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "media_file_too_large" });
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a streamed object that finishes smaller than the signed upload", async () => {
+    const source = await validJpeg();
+    const { client } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand ? { Body: Readable.from([source]) } : {},
     );
     const adapter = createAdapter(client);
     const session = profileSession(source.length + 1);
@@ -212,11 +439,7 @@ describe("S3 platform profile media adapter", () => {
   });
 
   it("returns the finalize contract's specific mismatch codes", async () => {
-    const source = await sharp({
-      create: { width: 20, height: 20, channels: 3, background: "#334455" },
-    })
-      .jpeg()
-      .toBuffer();
+    const source = await validJpeg();
     const cases = [
       [{ contentType: "image/png" }, "media_type_mismatch"],
       [{ sizeBytes: source.length + 1 }, "media_size_mismatch"],
@@ -243,28 +466,10 @@ describe("S3 platform profile media adapter", () => {
     }
   });
 
-  it("rejects non-image bytes and unsupported production purposes", async () => {
-    const source = Buffer.from("this is not an image");
-    const { client, send } = fakeS3(async (command) =>
-      command instanceof GetObjectCommand
-        ? { ContentLength: source.length, Body: Readable.from([source]) }
-        : {},
-    );
+  it("rejects unsupported production purposes before reading from S3", async () => {
+    const { client, send } = fakeS3(async () => ({}));
     const adapter = createAdapter(client);
-    const session = profileSession(source.length);
-    const input = {
-      session,
-      sessionFile: session.files[0]!,
-      uploadTarget: session.uploadTargets[0]!,
-      clientFile: { uploadTargetId },
-      policy,
-    };
-
-    await expect(adapter.inspectUploadedFile(input)).resolves.toMatchObject({
-      ok: false,
-      code: "invalid_media_image",
-    });
-
+    const session = profileSession(100);
     const unsupportedPolicy = {
       ...policy,
       purpose: "property.hero_image" as const,
@@ -275,15 +480,45 @@ describe("S3 platform profile media adapter", () => {
     };
     await expect(
       adapter.inspectUploadedFile({
-        ...input,
         session: unsupportedSession,
         sessionFile: unsupportedSession.files[0]!,
+        uploadTarget: unsupportedSession.uploadTargets[0]!,
+        clientFile: { uploadTargetId },
         policy: unsupportedPolicy,
       }),
     ).resolves.toMatchObject({ ok: false, code: "unsupported_media_purpose" });
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
   });
 });
+
+async function inspectValidUpload(
+  adapter: ReturnType<typeof createS3PlatformMediaAdapter>,
+  source: Buffer,
+) {
+  const session = profileSession(source.length);
+  const sessionFile = session.files[0]!;
+  const uploadTarget = session.uploadTargets[0]!;
+  const inspected = await adapter.inspectUploadedFile({
+    session,
+    sessionFile,
+    uploadTarget,
+    clientFile: { uploadTargetId },
+    policy,
+  });
+  if (!inspected.ok) throw new Error("Expected profile image inspection to succeed");
+  return {
+    session,
+    file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+  };
+}
+
+function validJpeg(): Promise<Buffer> {
+  return sharp({
+    create: { width: 20, height: 20, channels: 3, background: "#334455" },
+  })
+    .jpeg()
+    .toBuffer();
+}
 
 function createAdapter(s3Client: S3Client, publicPathPrefix = "media") {
   return createS3PlatformMediaAdapter({
@@ -300,7 +535,11 @@ function fakeS3(implementation: (command: unknown) => Promise<unknown>) {
   return { client: { send } as unknown as S3Client, send };
 }
 
-function profileSession(sizeBytes: number): PlatformMediaSessionRecord {
+function profileSession(
+  sizeBytes: number,
+  contentType: "image/jpeg" | "image/png" | "image/webp" = "image/jpeg",
+): PlatformMediaSessionRecord {
+  const extension = contentType === "image/jpeg" ? "jpg" : contentType.slice("image/".length);
   return {
     sessionId,
     uploadSessionKey: `media.upload_session:${sessionId}`,
@@ -322,8 +561,8 @@ function profileSession(sizeBytes: number): PlatformMediaSessionRecord {
     files: [
       {
         clientFileId: "profile",
-        filename: "profile.jpg",
-        contentType: "image/jpeg",
+        filename: `profile.${extension}`,
+        contentType,
         sizeBytes,
         uploadTargetId,
         mediaId,
@@ -335,7 +574,7 @@ function profileSession(sizeBytes: number): PlatformMediaSessionRecord {
         clientFileId: "profile",
         method: "PUT",
         uploadUrl: "https://signed-upload.example/profile",
-        headers: { "content-type": "image/jpeg" },
+        headers: { "content-type": contentType },
         stagingKey,
         expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       },
