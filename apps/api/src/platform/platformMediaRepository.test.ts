@@ -40,9 +40,6 @@ describe("PostgreSQL platform media repository", () => {
     const completion = completionInput(session);
 
     const completed = await first.completeUploadSession(completion);
-    const replayed = await repositoryFor(database.pool).completeUploadSession(completion);
-
-    expect(replayed).toEqual(completed);
     expect(
       database.queries.filter(({ text }) => text.includes("INSERT INTO platform.media_objects")),
     ).toHaveLength(1);
@@ -63,10 +60,21 @@ describe("PostgreSQL platform media repository", () => {
       checksumSha256: "b".repeat(64),
     });
 
+    const canonicalStorageKey = "media/profile/canonical-original-safe.webp";
+    database.updateMediaRow(session.files[0]!.mediaId, { storageKey: canonicalStorageKey });
+    const replayed = await repositoryFor(database.pool).completeUploadSession(completion);
+    expect(replayed.mediaObjects[0]).toMatchObject({ storageKey: canonicalStorageKey });
+    expect(replayed.uploadSession.completedMediaObject).toMatchObject({
+      storageKey: canonicalStorageKey,
+    });
+
     const fresh = repositoryFor(database.pool);
-    await expect(fresh.findMediaObject(session.files[0]!.mediaId)).resolves.toEqual(
-      completed.mediaObjects[0],
-    );
+    await expect(fresh.findMediaObject(session.files[0]!.mediaId)).resolves.toMatchObject({
+      storageKey: canonicalStorageKey,
+    });
+    expect(
+      database.queries.find(({ text }) => text.includes("FROM platform.media_objects media"))?.text,
+    ).toContain("to_char(");
   });
 
   it("records append-only platform audit events", async () => {
@@ -79,7 +87,11 @@ describe("PostgreSQL platform media repository", () => {
       targetType: "media_object",
       targetId: "00000000-0000-4000-8000-000000000003",
       requestId: "request-1",
-      metadata: { purpose: "identity.user.profile_image" },
+      metadata: {
+        purpose: "identity.user.profile_image",
+        resourceId: "owner@example.com",
+        firstName: "Ada",
+      },
     });
 
     const audit = database.queries.find(({ text }) =>
@@ -94,6 +106,14 @@ describe("PostgreSQL platform media repository", () => {
       "00000000-0000-4000-8000-000000000003",
       "request-1",
     ]);
+    expect(JSON.parse(String(audit?.values?.[7]))).toEqual({
+      purpose: "identity.user.profile_image",
+      resourceId: "[redacted-email]",
+    });
+    expect(JSON.parse(String(audit?.values?.[8]))).toEqual({
+      requestId: "request-1",
+      source: "apps/api-platform-media",
+    });
   });
 
   it("treats malformed PostgreSQL identifiers as missing without querying", async () => {
@@ -232,6 +252,7 @@ function completionInput(session: PlatformMediaSessionRecord) {
         },
       ],
     ],
+    policy: { autoApprovePublicOnFinalize: true } as never,
     bucketName: "vayada-media-production",
     now: "2026-07-16T12:01:00.000Z",
     auditEvent: {
@@ -327,6 +348,11 @@ function createFakeDatabase(failAuditAction?: string) {
     poolQueries,
     clientQueries,
     failAuditActions,
+    updateMediaRow(mediaId: string, patch: Partial<FakeMediaRow>) {
+      const row = committed.mediaRows.get(mediaId);
+      if (!row) throw new Error(`Unknown fake media row ${mediaId}`);
+      committed.mediaRows.set(mediaId, { ...row, ...patch });
+    },
     pool: {
       query: poolQuery,
       async connect() {
@@ -356,7 +382,18 @@ function executeFakeQuery(
   if (text.includes("INSERT INTO platform.media_upload_sessions")) {
     state.session = metadata(values?.[15]).session;
   } else if (text.includes("completion_metadata -> 'session'")) {
-    return { rows: state.session ? [{ session: state.session }] : [] };
+    return {
+      rows: state.session
+        ? [
+            {
+              session: state.session,
+              completedMediaObjectId: state.session.completedMediaObject?.mediaId ?? null,
+              mediaObjectIds:
+                state.session.completedMediaObjects?.map(({ mediaId }) => mediaId) ?? null,
+            },
+          ]
+        : [],
+    };
   } else if (text.includes("UPDATE platform.media_upload_sessions")) {
     state.session = metadata(values?.[2]).session;
   } else if (text.includes("INSERT INTO platform.media_objects")) {
