@@ -40,7 +40,7 @@ const CREATOR_TYPES = [
 
 export function CreatorTypeStep({ selectedType, onSelect }: CreatorTypeStepProps) {
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-3 md:gap-4">
       {CREATOR_TYPES.map(({ type, icon: Icon, image, label, description }) => {
         const isSelected = selectedType === type;
 
@@ -50,7 +50,7 @@ export function CreatorTypeStep({ selectedType, onSelect }: CreatorTypeStepProps
             type="button"
             onClick={() => onSelect(type)}
             aria-pressed={isSelected}
-            className={`group relative rounded-3xl bg-white p-3 pb-5 text-left shadow-[0_22px_55px_-32px_rgba(15,23,42,0.5)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 md:hover:-translate-y-1 ${
+            className={`group relative rounded-3xl bg-white p-3 pb-5 text-left shadow-[0_18px_45px_-32px_rgba(15,23,42,0.3)] ring-1 transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 md:hover:-translate-y-1 ${
               isSelected ? "ring-2 ring-primary-500" : "ring-gray-200 hover:ring-gray-300"
             }`}
           >
@@ -60,13 +60,15 @@ export function CreatorTypeStep({ selectedType, onSelect }: CreatorTypeStepProps
                 alt=""
                 fill
                 priority
-                sizes="(min-width: 768px) 300px, 100vw"
+                sizes="(min-width: 1280px) 340px, (min-width: 768px) 30vw, 100vw"
                 className="object-cover transition duration-300 group-hover:scale-105"
               />
               <span className="absolute inset-0 bg-gradient-to-t from-gray-950/20 to-transparent" />
               <span
                 className={`absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full ${
-                  isSelected ? "bg-primary-600 text-white" : "bg-white/90 text-transparent"
+                  isSelected
+                    ? "bg-primary-600 text-white"
+                    : "bg-white/90 text-transparent ring-1 ring-gray-300/80"
                 }`}
                 aria-hidden="true"
               >
@@ -83,7 +85,7 @@ export function CreatorTypeStep({ selectedType, onSelect }: CreatorTypeStepProps
                 <Icon className="h-5 w-5" aria-hidden="true" />
               </span>
               <span>
-                <span className="block text-base font-semibold text-gray-950">{label}</span>
+                <span className="block text-lg font-semibold leading-6 text-gray-950">{label}</span>
                 <span className="mt-1 block text-sm leading-5 text-gray-600">{description}</span>
               </span>
             </span>
