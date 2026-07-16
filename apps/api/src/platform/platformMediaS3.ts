@@ -23,7 +23,7 @@ const PROFILE_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
 ]);
 const PROFILE_IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_PROFILE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
-const DEFAULT_MAX_IMAGE_PIXELS = 60_000_000;
+const MAX_PROFILE_IMAGE_PIXELS = 25_000_000;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const VARIANTS: Record<
@@ -144,7 +144,10 @@ export function createS3PlatformMediaAdapter(
         }
         if (bytes.length !== input.sessionFile.sizeBytes) return sizeMismatch();
 
-        const maxImagePixels = input.policy.maxImagePixels ?? DEFAULT_MAX_IMAGE_PIXELS;
+        const maxImagePixels = Math.min(
+          input.policy.maxImagePixels ?? MAX_PROFILE_IMAGE_PIXELS,
+          MAX_PROFILE_IMAGE_PIXELS,
+        );
         const metadata = await sharp(bytes, {
           failOn: "error",
           limitInputPixels: maxImagePixels,
