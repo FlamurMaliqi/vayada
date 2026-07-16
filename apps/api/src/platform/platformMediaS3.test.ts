@@ -208,6 +208,31 @@ describe("S3 platform profile media adapter", () => {
     expect(maxActivePuts).toBe(1);
   }, 30_000);
 
+  it("rejects images above the profile pixel cap even when policy allows more", async () => {
+    const source = await sharp({
+      create: { width: 5_001, height: 5_000, channels: 3, background: "#334455" },
+    })
+      .jpeg({ quality: 40 })
+      .toBuffer();
+    const { client } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = profileSession(source.length);
+
+    await expect(
+      adapter.inspectUploadedFile({
+        session,
+        sessionFile: session.files[0]!,
+        uploadTarget: session.uploadTargets[0]!,
+        clientFile: { uploadTargetId },
+        policy,
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "invalid_media_dimensions" });
+  });
+
   it("rejects an oversized S3 object before reading its body", async () => {
     const transformToByteArray = vi.fn(async () => new Uint8Array());
     const { client } = fakeS3(async (command) =>
