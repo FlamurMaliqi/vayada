@@ -113,18 +113,25 @@ test.describe("marketplace-web smoke", () => {
     await page.goto("/onboarding");
     await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
     await expect(
-      page.getByText("Welcome to Vayada — we’re glad you’re here. Let’s get you set up."),
+      page.getByText(
+        "Welcome to Vayada — where independent hotels and creators connect, build trusted partnerships, and grow together.",
+      ),
     ).toBeVisible();
-    await expect(page.getByText("Your account is ready")).toBeVisible();
-    await expect(
-      page.getByText("We’ll start with your profile and guide you through the rest."),
-    ).toBeVisible();
+    await expect(page.getByText("Independent hotels", { exact: true })).toBeVisible();
+    await expect(page.getByText("Creators", { exact: true })).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+    await page.setViewportSize({ width: 1280, height: 720 });
     await expect(page.getByRole("radio")).toHaveCount(0);
     // Guard the user-controlled welcome against the former 1.8-second auto-advance.
     await page.waitForTimeout(2_000);
     await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
     await expect(page.getByRole("radio")).toHaveCount(0);
-    await page.getByRole("button", { name: "Let’s get you set up" }).click();
+    await page.getByRole("button", { name: "Continue to Vayada" }).click();
 
     await expect(page.getByRole("heading", { name: "Which best describes you?" })).toBeVisible();
     await expect(page.getByText("Choose your role so we can tailor your setup.")).toBeVisible();
@@ -225,7 +232,7 @@ test.describe("marketplace-web smoke", () => {
 
     await page.goto("/onboarding");
     await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
-    await page.getByRole("button", { name: "Let’s get you set up" }).click();
+    await page.getByRole("button", { name: "Continue to Vayada" }).click();
     await expect(page.getByRole("heading", { name: "Which best describes you?" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
@@ -359,7 +366,7 @@ test.describe("marketplace-web smoke", () => {
     });
 
     await page.goto("/onboarding");
-    await page.getByRole("button", { name: "Let’s get you set up" }).click();
+    await page.getByRole("button", { name: "Continue to Vayada" }).click();
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
     const continueButton = page.getByRole("button", { name: "Continue", exact: true });
     await continueButton.click();
@@ -443,7 +450,7 @@ test.describe("marketplace-web smoke", () => {
     });
 
     await page.goto("/onboarding");
-    await page.getByRole("button", { name: "Let’s get you set up" }).click();
+    await page.getByRole("button", { name: "Continue to Vayada" }).click();
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page.getByLabel("First name").fill("Mary");
