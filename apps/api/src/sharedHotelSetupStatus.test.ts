@@ -1059,6 +1059,9 @@ describe("shared hotel setup status route", () => {
     expect(setupSql).toContain("NULLIF(public_profile.display_name, '')");
     expect(setupSql).toContain(") marketplace_prefill ON TRUE");
     expect(setupSql).toContain("legacy_location.location");
+    expect(setupSql).toContain(
+      "WHERE catalog_location.source_confidence IS DISTINCT FROM 'verified'",
+    );
     expect(setupSql).toContain("legacy_description.descriptions");
     expect(setupSql).toContain("legacy_media.items");
     expect(setupSql).toContain("|| COALESCE(marketplace_media.items, '[]'::jsonb)");
@@ -1517,12 +1520,30 @@ describe("shared hotel setup status route", () => {
     ]);
   });
 
-  it("updates shared property profiles only through an existing canonical resource link", async () => {
+  it("keeps verified location clears ahead of legacy prefill when updating a profile", async () => {
+    const updatedProfile = completeProfileInput("Alpenrose Berlin");
+    updatedProfile.location = {
+      ...updatedProfile.location,
+      region: null,
+      city: "Berlin",
+      latitude: null,
+      longitude: null,
+    };
     const query = vi.fn(async (text: string, _values?: readonly unknown[]) => {
       if (text.includes("UPDATE hotel_catalog.properties")) {
         return { rows: [{ propertyId }] };
       }
-      return { rows: [profileRow({ displayName: "Alpenrose Munich Updated" })] };
+      return {
+        rows: [
+          profileRow({
+            displayName: "Alpenrose Berlin",
+            region: null,
+            city: "Berlin",
+            latitude: null,
+            longitude: null,
+          }),
+        ],
+      };
     });
     const repository = createPgSharedHotelSetupStatusRepository({
       connectionString: "postgresql://target-db",
@@ -1543,14 +1564,16 @@ describe("shared hotel setup status route", () => {
         organizationId,
         propertyId,
         expectedPropertyType: "hotel",
-        profile: completeProfileInput("Alpenrose Munich Updated"),
+        profile: updatedProfile,
       }),
     ).resolves.toMatchObject({
       propertyId,
-      displayName: "Alpenrose Munich Updated",
+      displayName: "Alpenrose Berlin",
+      location: { region: null, city: "Berlin", latitude: null, longitude: null },
     });
 
     const updateSql = query.mock.calls[0]![0];
+    const profileSql = query.mock.calls[1]![0];
     expect(updateSql).toContain("JOIN identity.organization_resource_links link");
     expect(updateSql).toContain("UPDATE hotel_catalog.properties");
     expect(updateSql).toContain(
@@ -1561,14 +1584,21 @@ describe("shared hotel setup status route", () => {
     );
     expect(updateSql).toContain("AND contact.source_system = 'platform'");
     expect(updateSql).toContain("AND media.source_system = 'platform'");
+    expect(updateSql).toContain("'verified'");
     expect(updateSql).not.toContain("INSERT INTO identity.organization_resource_links");
     expect(updateSql).not.toContain("property_source_links");
+    expect(profileSql).toContain(
+      "WHERE catalog_location.source_confidence IS DISTINCT FROM 'verified'",
+    );
     expect(query.mock.calls[0]![1]).toMatchObject([
       organizationId,
       propertyId,
       expect.objectContaining({
-        display_name: "Alpenrose Munich Updated",
+        display_name: "Alpenrose Berlin",
         property_type: "hotel",
+        region: null,
+        latitude: null,
+        longitude: null,
         contact_email: "hello@alpenrose.example",
       }),
       "complete",

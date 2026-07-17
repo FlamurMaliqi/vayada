@@ -32,6 +32,7 @@ import {
 import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from "@vayada/locale-constants";
 
 import { HotelIcon } from "./HotelIcon";
+import GooglePlacesAddressField from "./GooglePlacesAddressField";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
   canOpenMarketplaceProfileTools,
@@ -84,6 +85,8 @@ type ProfileDraft = {
   rawMarketplaceLocation: string;
   streetAddress: string;
   postalCode: string;
+  latitude: number | null;
+  longitude: number | null;
   timezone: string;
   website: string;
   contactEmail: string;
@@ -92,6 +95,22 @@ type ProfileDraft = {
   longDescription: string;
   mediaUrl: string;
 };
+
+type ManualAddressReset = {
+  latitude?: null;
+  longitude?: null;
+  region?: "";
+};
+
+export function locationResetForManualAddressEdit(field: string): ManualAddressReset {
+  if (!["streetAddress", "postalCode", "city", "countryCode"].includes(field)) return {};
+
+  return {
+    latitude: null,
+    longitude: null,
+    ...(field === "city" || field === "countryCode" ? { region: "" as const } : {}),
+  };
+}
 
 const DEFAULT_PRODUCT_LABELS: ProductLabels = {
   booking: "Booking Engine",
@@ -805,6 +824,7 @@ function ProfileForm({
   onSave: () => void;
 }) {
   const [step, setStep] = useState(0);
+  const addressRevision = useRef(0);
   const stepHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -826,7 +846,13 @@ function ProfileForm({
   }
 
   const setField = (field: keyof ProfileDraft, value: string) => {
-    onChange({ ...draft, [field]: value });
+    const locationReset = locationResetForManualAddressEdit(field);
+    if ("latitude" in locationReset) addressRevision.current += 1;
+    onChange({
+      ...draft,
+      [field]: value,
+      ...locationReset,
+    });
   };
   const changeStep = (nextStep: number) => {
     onFieldErrors({});
@@ -853,6 +879,7 @@ function ProfileForm({
           ...propertyTypeOptions,
         ]
       : propertyTypeOptions;
+  const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
   const actions = (
     <div className="flex w-full flex-col-reverse items-center gap-3 sm:flex-row sm:justify-center">
       {(step > 0 || onCancel) && (
@@ -1051,6 +1078,15 @@ function ProfileForm({
             </p>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
+            {googleMapsApiKey && (
+              <div className="md:col-span-2">
+                <GooglePlacesAddressField
+                  addressRevision={addressRevision}
+                  apiKey={googleMapsApiKey}
+                  onSelect={(address) => onChange({ ...draft, ...address })}
+                />
+              </div>
+            )}
             <div className="md:col-span-2">
               <TextField
                 label="Street address"
@@ -1773,6 +1809,8 @@ function draftFromProfile(profile: SharedPropertyProfile): ProfileDraft {
     rawMarketplaceLocation: profile.location.rawMarketplaceLocation ?? "",
     streetAddress: profile.location.streetAddress ?? "",
     postalCode: profile.location.postalCode ?? "",
+    latitude: profile.location.latitude,
+    longitude: profile.location.longitude,
     timezone: profile.location.timezone ?? "",
     website: profile.website ?? "",
     contactEmail: profile.contactEmail ?? "",
@@ -1799,8 +1837,8 @@ function profileInputFromDraft(
       postalCode: nullIfBlank(draft.postalCode),
       rawMarketplaceLocation: existingLocation?.rawMarketplaceLocation ?? null,
       timezone: nullIfBlank(draft.timezone),
-      latitude: existingLocation?.latitude ?? null,
-      longitude: existingLocation?.longitude ?? null,
+      latitude: draft.latitude,
+      longitude: draft.longitude,
       addressPublic: existingLocation?.addressPublic ?? true,
       mapDisplayMode: existingLocation?.mapDisplayMode ?? "hidden",
     },
@@ -1827,6 +1865,8 @@ function newPropertyDraft(
     rawMarketplaceLocation: "",
     streetAddress: "",
     postalCode: "",
+    latitude: null,
+    longitude: null,
     timezone,
     website: "",
     contactEmail: accountContactEmail?.trim() ?? "",

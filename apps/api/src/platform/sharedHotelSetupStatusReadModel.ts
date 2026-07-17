@@ -716,6 +716,7 @@ function propertyProfileSql(): string {
         location.longitude,
         location.address_public,
         location.map_display_mode,
+        location.source_confidence,
         (
           NULLIF(location.country_code::text, '') IS NOT NULL
           OR NULLIF(location.city, '') IS NOT NULL
@@ -819,6 +820,7 @@ function propertyProfileSql(): string {
           OR NULLIF(public_profile.location ->> 'display', '') IS NOT NULL
           OR marketplace_prefill.raw_location_text IS NOT NULL
         ) AS has_location
+      WHERE catalog_location.source_confidence IS DISTINCT FROM 'verified'
     ) legacy_location ON TRUE
     LEFT JOIN LATERAL (
       SELECT
@@ -1544,6 +1546,7 @@ function sharedHotelSetupStatusSql(): string {
         'addressPublic', location.address_public,
         'mapDisplayMode', location.map_display_mode
       )) AS location,
+      location.source_confidence,
       (
         NULLIF(location.country_code::text, '') IS NOT NULL
         OR NULLIF(location.city, '') IS NOT NULL
@@ -1623,6 +1626,7 @@ function sharedHotelSetupStatusSql(): string {
           OR NULLIF(public_profile.location ->> 'display', '') IS NOT NULL
           OR marketplace_prefill.raw_location_text IS NOT NULL
         ) AS has_location
+      WHERE catalog_location.source_confidence IS DISTINCT FROM 'verified'
     ) legacy_location ON TRUE
     LEFT JOIN LATERAL (
       SELECT

@@ -53,6 +53,7 @@ jobs:
             --build-arg NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true \
             --build-arg NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=false \
             --build-arg NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=${{ env.NEXT_API_URL }} \
+            --build-arg NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_BROWSER_API_KEY }} \
             --build-arg NEXT_PUBLIC_PMS_URL=${{ env.NEXT_API_URL }} \
             --build-arg NEXT_PUBLIC_PMS_FRONTEND_URL=https://next-pms.vayada.com \
             --build-arg NEXT_PUBLIC_MARKETPLACE_URL=https://next-marketplace.vayada.com \

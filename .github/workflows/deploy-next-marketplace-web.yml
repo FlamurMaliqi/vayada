@@ -60,6 +60,7 @@ jobs:
             NEXT_PUBLIC_AUTH_API_URL=${{ env.NEXT_API_URL }}
             NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true
             NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=${{ env.NEXT_API_URL }}
+            NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_BROWSER_API_KEY }}
             NEXT_PUBLIC_PMS_URL=https://next-pms.vayada.com
             NEXT_PUBLIC_BOOKING_ADMIN_URL=https://next-booking-admin.vayada.com
             NEXT_PUBLIC_MARKETPLACE_URL=https://next-marketplace.vayada.com
