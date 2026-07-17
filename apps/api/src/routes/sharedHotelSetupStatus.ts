@@ -1,23 +1,14 @@
 import type { PermissionKey } from "@vayada/backend-auth";
+import { SHARED_PROPERTY_TYPE_OPTIONS, type SharedPropertyTypeOption } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { enforceRoutePolicy } from "./policy.js";
 
 export type SharedHotelSetupEntryProduct = "booking" | "pms" | "marketplace";
-export const SHARED_PROPERTY_TYPES = [
-  "hotel",
-  "resort",
-  "hostel",
-  "apartment",
-  "aparthotel",
-  "guesthouse",
-  "bed_and_breakfast",
-  "villa",
-  "vacation_rental",
-  "motel",
-  "other",
-] as const;
-export type SharedPropertyType = (typeof SHARED_PROPERTY_TYPES)[number];
+export type SharedPropertyTypeCatalog = {
+  contractVersion: "shared-hotel-setup-property-types.v1";
+  propertyTypes: readonly SharedPropertyTypeOption[];
+};
 export type SharedPropertyProfileMissingField =
   | "displayName"
   | "location"
@@ -197,6 +188,9 @@ type SharedPropertyProfileBody = Record<string, unknown> | undefined;
 const ENTRY_PRODUCTS: readonly SharedHotelSetupEntryProduct[] = ["booking", "pms", "marketplace"];
 const MEDIA_TYPES = ["hero_image", "gallery_image", "logo"] as const;
 const MAP_DISPLAY_MODES = ["hidden", "approximate", "exact"] as const;
+const SHARED_PROPERTY_TYPE_VALUES = new Set<string>(
+  SHARED_PROPERTY_TYPE_OPTIONS.map(({ value }) => value),
+);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TIMEZONE_PATTERN = /^[A-Za-z_]+\/[A-Za-z0-9_+./-]+$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -209,6 +203,15 @@ export async function registerSharedHotelSetupStatusRoutes(
 
   app.addHook("onClose", async () => {
     await repository.close?.();
+  });
+
+  app.get("/property-types", async (request, reply) => {
+    if (!resolveSharedSetupAccess(request, reply, null)) return reply;
+
+    return {
+      contractVersion: "shared-hotel-setup-property-types.v1",
+      propertyTypes: SHARED_PROPERTY_TYPE_OPTIONS,
+    } satisfies SharedPropertyTypeCatalog;
   });
 
   app.get("/status", async (request, reply) => {
@@ -515,7 +518,7 @@ function parseSharedPropertyProfile(
   });
   if (
     propertyType &&
-    !(SHARED_PROPERTY_TYPES as readonly string[]).includes(propertyType) &&
+    !SHARED_PROPERTY_TYPE_VALUES.has(propertyType) &&
     propertyType !== grandfatheredPropertyType
   ) {
     addFieldError(errors, "propertyType", "propertyType is invalid.");
@@ -561,7 +564,7 @@ function validateNewHotelBasics(profile: SharedPropertyProfileInput, reply: Fast
   const errors: Record<string, string[]> = {};
   if (!profile.propertyType) {
     addFieldError(errors, "propertyType", "propertyType is required.");
-  } else if (!(SHARED_PROPERTY_TYPES as readonly string[]).includes(profile.propertyType)) {
+  } else if (!SHARED_PROPERTY_TYPE_VALUES.has(profile.propertyType)) {
     addFieldError(errors, "propertyType", "propertyType is invalid.");
   }
   if (!profile.location.streetAddress) {

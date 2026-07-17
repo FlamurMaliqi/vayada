@@ -115,6 +115,32 @@ Invalid `returnTo` values are ignored and returned as `null`. Invalid or
 unauthorized `propertyId` values return a `403` or `404` from the route adapter;
 they must not silently select a different property.
 
+## Property Type Catalog
+
+The first-run form loads its ordered property-type choices from the hotel catalog API:
+
+```http
+GET /api/hotel-setup/property-types
+```
+
+```ts
+{
+  contractVersion: "shared-hotel-setup-property-types.v1";
+  propertyTypes: Array<{ value: string; label: string }>;
+}
+```
+
+This endpoint requires `hotel_catalog.setup.read` and an active `hotel_group`
+organization, but it does not require an existing property link because a hotel
+group needs the choices before creating its first property. The server-owned
+ordered catalog is also the create/update validation source; clients own only
+presentation such as icons and must provide a generic fallback for new values.
+
+Roll this contract out API-first: deploy and verify the catalog endpoint before
+deploying clients that consume it. Clients intentionally do not carry a
+hard-coded fallback catalog, because that would create a second authority that
+can drift from server-side validation.
+
 ## Shared Property Profile Commands
 
 VAY-969 adds the shared profile read/write path used by the first-run setup

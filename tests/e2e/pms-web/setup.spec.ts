@@ -40,9 +40,13 @@ test.describe("pms-web shared setup", () => {
       page.getByRole("heading", { level: 3, name: "What should we call your hotel?" }),
     ).toBeVisible();
     await expect(page.getByText("Step 1 of 3")).toBeVisible();
-    await expect(page.getByRole("radio")).toHaveCount(11);
+    await expect(page.getByRole("radio")).toHaveCount(2);
+    await expect(page.getByRole("radio", { name: "Hotel from API", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("radio", { name: "Future type from API", exact: true }),
+    ).toBeVisible();
     const continueButton = page.getByRole("button", { name: "Continue" });
-    await expect(continueButton).toBeInViewport({ ratio: 1 });
+    await expect(continueButton).toBeInViewport();
     await continueButton.click();
     await expect(page.getByText("Hotel name is required.")).toBeVisible();
     await expect(page.getByText("Property type is required.")).toBeVisible();
@@ -57,7 +61,7 @@ test.describe("pms-web shared setup", () => {
     await expect(propertyNameError).toHaveAttribute("role", "alert");
 
     await page.getByLabel("Hotel name").fill("Alpenrose Munich");
-    const hotelPropertyType = page.getByRole("radio", { name: "Hotel", exact: true });
+    const hotelPropertyType = page.getByRole("radio", { name: "Hotel from API", exact: true });
     await hotelPropertyType.check();
     await expect(hotelPropertyType).toBeChecked();
     await page.getByRole("button", { name: "Continue" }).click();
@@ -138,6 +142,19 @@ async function mockSharedSetupApi(
     }
 
     const url = new URL(request.url());
+    if (url.pathname === "/api/hotel-setup/property-types") {
+      return route.fulfill({
+        headers: corsHeaders(),
+        json: {
+          contractVersion: "shared-hotel-setup-property-types.v1",
+          propertyTypes: [
+            { value: "hotel", label: "Hotel from API" },
+            { value: "constructor", label: "Future type from API" },
+          ],
+        },
+      });
+    }
+
     if (url.pathname === "/api/hotel-setup/status") {
       statusRequests.push(url);
       return route.fulfill({

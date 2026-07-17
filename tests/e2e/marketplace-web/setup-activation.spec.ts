@@ -7,6 +7,10 @@ test.describe("marketplace-web shared setup activation", () => {
   test("creates the first hotel with the complete shared minimum", async ({ page, baseURL }) => {
     await primeBrowserState(page);
     await mockAuthSession(page);
+    await routeJson(page, /\/api\/hotel-setup\/property-types/, {
+      contractVersion: "shared-hotel-setup-property-types.v1",
+      propertyTypes: [{ value: "hotel", label: "Hotel" }],
+    });
 
     let created = false;
     await page.route(/\/api\/hotel-setup\/status/, async (route) => {

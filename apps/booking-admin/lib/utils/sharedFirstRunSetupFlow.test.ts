@@ -22,7 +22,7 @@ describe("resolveSharedFirstRunSetupView", () => {
       screen: "property_profile",
       profileMode: "create",
       selectedPropertyId: null,
-      title: "Add your first hotel",
+      title: "Let’s get to know your hotel",
     });
   });
 
@@ -77,7 +77,7 @@ describe("resolveSharedFirstRunSetupView", () => {
       screen: "property_profile",
       profileMode: "create",
       selectedPropertyId: null,
-      title: "Add hotel",
+      title: "Let’s get to know this hotel",
     });
   });
 
@@ -116,6 +116,31 @@ describe("resolveSharedFirstRunSetupView", () => {
     expect(endpoints).toEqual([
       "/api/hotel-setup/status?entryProduct=pms&returnTo=%2Fdashboard%3Fview%3Drooms&propertyId=property-1",
     ]);
+  });
+
+  it("reads property types from the shared setup catalog endpoint", async () => {
+    const endpoints: string[] = [];
+    const api = createSharedHotelSetupApi({
+      async get<T>(endpoint: string) {
+        endpoints.push(endpoint);
+        return {
+          contractVersion: "shared-hotel-setup-property-types.v1",
+          propertyTypes: [{ value: "hotel", label: "Hotel from API" }],
+        } as T;
+      },
+      async post() {
+        throw new Error("post is not used by this test");
+      },
+      async put() {
+        throw new Error("put is not used by this test");
+      },
+    });
+
+    await expect(api.getPropertyTypes()).resolves.toEqual({
+      contractVersion: "shared-hotel-setup-property-types.v1",
+      propertyTypes: [{ value: "hotel", label: "Hotel from API" }],
+    });
+    expect(endpoints).toEqual(["/api/hotel-setup/property-types"]);
   });
 });
 
