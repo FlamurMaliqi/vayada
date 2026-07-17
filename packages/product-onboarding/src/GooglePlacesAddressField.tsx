@@ -64,25 +64,30 @@ let googlePlacesLibraryPromise: Promise<GooglePlacesLibrary> | null = null;
 export default function GooglePlacesAddressField({
   addressRevision,
   apiKey,
+  onUnavailable,
   onSelect,
 }: {
   addressRevision: RefObject<number>;
   apiKey: string;
+  onUnavailable: (autocompleteWasFocused: boolean) => void;
   onSelect: (address: GooglePlacesAddress) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const latestSelection = useRef(0);
+  const onUnavailableRef = useRef(onUnavailable);
   const onSelectRef = useRef(onSelect);
   const [status, setStatus] = useState<"loading" | "ready" | "unavailable">("loading");
 
   useEffect(() => {
     onSelectRef.current = onSelect;
-  }, [onSelect]);
+    onUnavailableRef.current = onUnavailable;
+  }, [onSelect, onUnavailable]);
 
   useEffect(() => {
     if (!containerRef.current) return;
 
     let disposed = false;
+    let notifiedUnavailable = false;
     let autocomplete: GooglePlaceAutocompleteElement | null = null;
     const container = containerRef.current;
 
@@ -127,9 +132,17 @@ export default function GooglePlacesAddressField({
 
     function handleUnavailable() {
       if (disposed) return;
+      const autocompleteWasFocused = Boolean(
+        autocomplete &&
+        (document.activeElement === autocomplete || autocomplete.contains(document.activeElement)),
+      );
       latestSelection.current += 1;
       container.replaceChildren();
       setStatus("unavailable");
+      if (!notifiedUnavailable) {
+        notifiedUnavailable = true;
+        onUnavailableRef.current(autocompleteWasFocused);
+      }
     }
 
     return () => {
@@ -145,7 +158,7 @@ export default function GooglePlacesAddressField({
     <div>
       <p className="text-sm font-medium text-gray-700">Search for your hotel address</p>
       <p className="mt-1 text-xs text-gray-500">
-        Choose a Google suggestion to fill the address fields below.
+        Choose a Google suggestion to confirm your hotel location.
       </p>
       {status === "loading" && (
         <div
@@ -155,7 +168,7 @@ export default function GooglePlacesAddressField({
       )}
       {status === "unavailable" && (
         <p className="mt-2 rounded-xl bg-gray-50 px-3 py-2.5 text-sm text-gray-600" role="status">
-          Google suggestions are unavailable. Enter the address manually below.
+          Google suggestions are unavailable. Enter the address manually instead.
         </p>
       )}
       <div ref={containerRef} className={status === "ready" ? "mt-2" : "hidden"} />

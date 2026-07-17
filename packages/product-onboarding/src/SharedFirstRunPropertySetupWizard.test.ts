@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { locationResetForManualAddressEdit } from "./SharedFirstRunPropertySetupWizard";
+import {
+  canConfirmLocation,
+  locationResetForManualAddressEdit,
+} from "./SharedFirstRunPropertySetupWizard";
 
 describe("locationResetForManualAddressEdit", () => {
   it("clears a Google-selected region when the city changes", () => {
@@ -24,5 +27,24 @@ describe("locationResetForManualAddressEdit", () => {
       latitude: null,
       longitude: null,
     });
+  });
+});
+
+describe("canConfirmLocation", () => {
+  const completeLocation = {
+    streetAddress: "Marienplatz 1",
+    postalCode: "80331",
+    city: "Munich",
+    countryCode: "DE",
+    timezone: "Europe/Berlin",
+  };
+
+  it("keeps partial Google results editable", () => {
+    expect(canConfirmLocation({ ...completeLocation, postalCode: "" })).toBe(false);
+  });
+
+  it("requires a time zone before confirming an address", () => {
+    expect(canConfirmLocation({ ...completeLocation, timezone: "" })).toBe(false);
+    expect(canConfirmLocation(completeLocation)).toBe(true);
   });
 });
