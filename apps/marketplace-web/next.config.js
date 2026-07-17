@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const path = require("path");
+const isDevelopment = process.env.NODE_ENV === "development";
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
@@ -8,6 +9,7 @@ const nextConfig = {
     root: path.join(__dirname, "../.."),
   },
   images: {
+    dangerouslyAllowLocalIP: isDevelopment,
     remotePatterns: [
       {
         protocol: "https",
@@ -21,10 +23,18 @@ const nextConfig = {
         protocol: "https",
         hostname: "images.unsplash.com",
       },
-      {
-        protocol: "http",
-        hostname: "localhost",
-      },
+      ...(isDevelopment
+        ? [
+            {
+              protocol: "http",
+              hostname: "localhost",
+            },
+            {
+              protocol: "https",
+              hostname: "media.localhost",
+            },
+          ]
+        : []),
     ],
   },
 };

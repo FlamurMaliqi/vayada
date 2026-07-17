@@ -13,6 +13,7 @@ BACKEND_SERVICES=(
   auth-db-migrate
   minio
   minio-setup
+  media-cdn
   marketplace-backend
   booking-backend
   pms-backend
@@ -25,6 +26,7 @@ COMPOSE_CONTAINERS=(
   vayada-auth-db-migrate
   vayada-minio
   vayada-minio-setup
+  vayada-media-cdn
   vayada-marketplace-backend
   vayada-booking-backend
   vayada-pms-backend
@@ -153,6 +155,7 @@ LANDING_ORIGIN="https://landing.localhost${PORT_SUFFIX}"
 MARKETPLACE_API_ORIGIN="https://api.marketplace.localhost${PORT_SUFFIX}"
 BOOKING_API_ORIGIN="https://api.booking.localhost${PORT_SUFFIX}"
 PMS_API_ORIGIN="https://api.pms.localhost${PORT_SUFFIX}"
+MEDIA_CDN_ORIGIN="https://media.localhost${PORT_SUFFIX}"
 GOOGLE_OAUTH_CALLBACK_URL="${API_ORIGIN}/auth/oauth/google/callback"
 
 export AUTH_COOKIE_SECRET="${AUTH_COOKIE_SECRET:-local-dev-auth-cookie-secret-0123456789abcdef}"
@@ -168,6 +171,14 @@ export AUTH_LEGACY_MARKETPLACE_JWT_SECRET="${AUTH_LEGACY_MARKETPLACE_JWT_SECRET:
 export AUTH_LEGACY_BOOKING_JWT_SECRET="${AUTH_LEGACY_BOOKING_JWT_SECRET:-local-legacy-booking-secret}"
 export AUTH_LEGACY_PMS_JWT_SECRET="${AUTH_LEGACY_PMS_JWT_SECRET:-local-legacy-pms-secret}"
 export AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET="${AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET:-local-legacy-affiliate-secret}"
+export PLATFORM_MEDIA_BUCKET="vayada-media-local"
+export PLATFORM_MEDIA_CDN_BASE_URL="$MEDIA_CDN_ORIGIN"
+export PLATFORM_MEDIA_CDN_ORIGIN_HOST="127.0.0.1"
+unset AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_PROFILE
+export AWS_REGION="us-east-1"
+export AWS_ACCESS_KEY_ID="minioadmin"
+export AWS_SECRET_ACCESS_KEY="minioadmin"
+export AWS_ENDPOINT_URL_S3="http://127.0.0.1:9000"
 
 echo "==> Ensuring WorkOS local app URLs are registered"
 ensure_workos_redirect "$GOOGLE_OAUTH_CALLBACK_URL"
@@ -194,6 +205,7 @@ portless alias api 8003
 portless alias api.marketplace 8000
 portless alias api.booking 8001
 portless alias api.pms 8002
+portless alias media 9002
 
 if [[ "${SKIP_SEED:-0}" != "1" ]]; then
   if [[ ! -x .venv/bin/python ]]; then
