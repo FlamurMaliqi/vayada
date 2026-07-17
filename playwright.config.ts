@@ -78,7 +78,8 @@ export default defineConfig({
           timeout: 120_000,
         },
         {
-          command: "PORT=3000 npm run dev:marketplace-web",
+          command:
+            "NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=e2e-google-places PORT=3000 npm run dev:marketplace-web",
           url: "http://127.0.0.1:3000/login?auth=callback",
           reuseExistingServer: !process.env.CI,
           timeout: 120_000,

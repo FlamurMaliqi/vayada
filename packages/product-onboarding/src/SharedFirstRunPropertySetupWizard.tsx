@@ -112,6 +112,21 @@ export function locationResetForManualAddressEdit(field: string): ManualAddressR
   };
 }
 
+export function canConfirmLocation(
+  location: Pick<
+    ProfileDraft,
+    "streetAddress" | "postalCode" | "city" | "countryCode" | "timezone"
+  >,
+): boolean {
+  return Boolean(
+    location.streetAddress.trim() &&
+    location.postalCode.trim() &&
+    location.city.trim() &&
+    COUNTRY_OPTIONS.some((country) => country.code === location.countryCode) &&
+    location.timezone.trim(),
+  );
+}
+
 const DEFAULT_PRODUCT_LABELS: ProductLabels = {
   booking: "Booking Engine",
   pms: "PMS",
@@ -824,7 +839,16 @@ function ProfileForm({
   onSave: () => void;
 }) {
   const [step, setStep] = useState(0);
+  const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
+  const [showAddressFields, setShowAddressFields] = useState(
+    () => !googleMapsApiKey || (mode === "update" && !canConfirmLocation(draft)),
+  );
   const addressRevision = useRef(0);
+  const addressFields = useRef<HTMLDivElement>(null);
+  const addressFieldsId = useId();
+  const addressFieldsWereLoading = useRef(loading);
+  const editAddressButton = useRef<HTMLButtonElement>(null);
+  const focusAddressFieldsWhenShown = useRef(false);
   const stepHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -836,6 +860,30 @@ function ProfileForm({
       requestAnimationFrame(() => stepHeading.current?.focus());
     }
   }, [fieldErrors, step]);
+
+  useEffect(() => {
+    if (PROFILE_STEP_FIELDS[1].some((field) => fieldErrors[field])) {
+      setShowAddressFields(true);
+      requestAnimationFrame(() =>
+        addressFields.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
+      );
+    }
+  }, [fieldErrors]);
+
+  useEffect(() => {
+    const finishedLoading = addressFieldsWereLoading.current && !loading;
+    addressFieldsWereLoading.current = loading;
+    if (finishedLoading && googleMapsApiKey && mode === "update") {
+      setShowAddressFields(!canConfirmLocation(draft));
+    }
+  }, [draft, googleMapsApiKey, loading, mode]);
+
+  useEffect(() => {
+    if (showAddressFields && focusAddressFieldsWhenShown.current) {
+      focusAddressFieldsWhenShown.current = false;
+      focusFirstIncompleteAddressField(addressFields.current);
+    }
+  }, [showAddressFields]);
 
   if (loading) {
     return (
@@ -879,7 +927,11 @@ function ProfileForm({
           ...propertyTypeOptions,
         ]
       : propertyTypeOptions;
-  const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
+  const country = COUNTRY_OPTIONS.find((option) => option.code === draft.countryCode);
+  const countryName = country?.name ?? draft.countryCode;
+  const hasCompleteLocation = canConfirmLocation(draft);
+  const timezoneMatchesBrowser =
+    mode === "create" && draft.timezone && draft.timezone === browserTimezone();
   const actions = (
     <div className="flex w-full flex-col-reverse items-center gap-3 sm:flex-row sm:justify-center">
       {(step > 0 || onCancel) && (
@@ -1077,73 +1129,170 @@ function ProfileForm({
               We’ll use this location for bookings and daily hotel operations.
             </p>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div>
             {googleMapsApiKey && (
-              <div className="md:col-span-2">
-                <GooglePlacesAddressField
-                  addressRevision={addressRevision}
-                  apiKey={googleMapsApiKey}
-                  onSelect={(address) => onChange({ ...draft, ...address })}
-                />
+              <GooglePlacesAddressField
+                addressRevision={addressRevision}
+                apiKey={googleMapsApiKey}
+                onUnavailable={(autocompleteWasFocused) => {
+                  if (!showAddressFields) focusAddressFieldsWhenShown.current = true;
+                  setShowAddressFields(true);
+                  if (showAddressFields && autocompleteWasFocused) {
+                    requestAnimationFrame(() =>
+                      focusFirstIncompleteAddressField(addressFields.current),
+                    );
+                  }
+                }}
+                onSelect={(address) => {
+                  const nextDraft = { ...draft, ...address };
+                  const canCollapse = canConfirmLocation(nextDraft);
+                  onChange(nextDraft);
+                  setShowAddressFields(!canCollapse);
+                  if (!canCollapse) {
+                    requestAnimationFrame(() =>
+                      focusFirstIncompleteAddressField(addressFields.current),
+                    );
+                  }
+                }}
+              />
+            )}
+
+            {!showAddressFields && (
+              <div className={googleMapsApiKey ? "mt-4" : undefined}>
+                {hasCompleteLocation && (
+                  <div
+                    className="flex items-start gap-3 rounded-2xl border border-primary-100 bg-primary-50/60 p-4"
+                    aria-live="polite"
+                  >
+                    <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
+                      <CheckIcon className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-gray-950">Address confirmed</p>
+                      {draft.streetAddress && (
+                        <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
+                      )}
+                      <p className="text-sm text-gray-700">
+                        {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
+                        {countryName ? `, ${countryName}` : ""}
+                      </p>
+                      {draft.timezone && (
+                        <>
+                          <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
+                          {timezoneMatchesBrowser && (
+                            <p className="mt-0.5 text-xs text-gray-500">
+                              This matches your device. Verify it if the hotel is elsewhere.
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+                <button
+                  ref={editAddressButton}
+                  type="button"
+                  aria-controls={addressFieldsId}
+                  aria-expanded={false}
+                  onClick={() => {
+                    setShowAddressFields(true);
+                    requestAnimationFrame(() =>
+                      focusFirstIncompleteAddressField(addressFields.current),
+                    );
+                  }}
+                  className={`${hasCompleteLocation ? "mt-3" : ""} text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2`}
+                >
+                  {hasCompleteLocation ? "Edit address details" : "Enter address manually"}
+                </button>
               </div>
             )}
-            <div className="md:col-span-2">
-              <TextField
-                label="Street address"
-                value={draft.streetAddress}
-                placeholder="Marienplatz 1"
-                required={mode === "create"}
-                error={fieldErrors["location.streetAddress"]?.[0]}
-                onChange={(value) => setField("streetAddress", value)}
-              />
-            </div>
-            <TextField
-              label="Postal code"
-              value={draft.postalCode}
-              placeholder="80331"
-              required={mode === "create"}
-              error={fieldErrors["location.postalCode"]?.[0]}
-              onChange={(value) => setField("postalCode", value)}
-            />
-            <TextField
-              label="City"
-              value={draft.city}
-              placeholder="Munich"
-              required
-              error={fieldErrors["location.city"]?.[0]}
-              onChange={(value) => setField("city", value)}
-            />
-            <SelectField
-              label="Country"
-              value={draft.countryCode}
-              placeholder="Select a country"
-              required
-              error={fieldErrors["location.countryCode"]?.[0]}
-              options={COUNTRY_OPTIONS.map((country) => ({
-                value: country.code,
-                label: `${country.flag} ${country.name}`,
-              }))}
-              onChange={(value) => setField("countryCode", value)}
-            />
-            <TextField
-              label="Time zone"
-              value={draft.timezone}
-              placeholder="Europe/Berlin"
-              helper="Detected automatically. Change it if needed."
-              required={mode === "create"}
-              error={fieldErrors["location.timezone"]?.[0]}
-              listOptions={TIMEZONE_DATALIST_OPTIONS}
-              onChange={(value) => setField("timezone", value)}
-            />
-            {showRawLocation && (
-              <div className="md:col-span-2">
-                <TextField
-                  label="Imported location"
-                  value={draft.rawMarketplaceLocation}
-                  readOnly
-                  helper="Read-only location imported from the existing marketplace profile."
-                  onChange={() => undefined}
-                />
+
+            {showAddressFields && (
+              <div
+                ref={addressFields}
+                id={addressFieldsId}
+                className={googleMapsApiKey ? "mt-4" : undefined}
+              >
+                {googleMapsApiKey && (
+                  <div className="mb-3 flex items-center justify-between gap-4">
+                    <p className="text-sm font-semibold text-gray-900">Address details</p>
+                    {hasCompleteLocation && (
+                      <button
+                        type="button"
+                        aria-controls={addressFieldsId}
+                        aria-expanded={true}
+                        onClick={() => {
+                          setShowAddressFields(false);
+                          requestAnimationFrame(() => editAddressButton.current?.focus());
+                        }}
+                        className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                      >
+                        Done editing
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="md:col-span-2">
+                    <TextField
+                      label="Street address"
+                      value={draft.streetAddress}
+                      placeholder="Marienplatz 1"
+                      required={mode === "create"}
+                      error={fieldErrors["location.streetAddress"]?.[0]}
+                      onChange={(value) => setField("streetAddress", value)}
+                    />
+                  </div>
+                  <TextField
+                    label="Postal code"
+                    value={draft.postalCode}
+                    placeholder="80331"
+                    required={mode === "create"}
+                    error={fieldErrors["location.postalCode"]?.[0]}
+                    onChange={(value) => setField("postalCode", value)}
+                  />
+                  <TextField
+                    label="City"
+                    value={draft.city}
+                    placeholder="Munich"
+                    required
+                    error={fieldErrors["location.city"]?.[0]}
+                    onChange={(value) => setField("city", value)}
+                  />
+                  <SelectField
+                    label="Country"
+                    value={draft.countryCode}
+                    placeholder="Select a country"
+                    required
+                    error={fieldErrors["location.countryCode"]?.[0]}
+                    options={COUNTRY_OPTIONS.map((country) => ({
+                      value: country.code,
+                      label: `${country.flag} ${country.name}`,
+                    }))}
+                    onChange={(value) => setField("countryCode", value)}
+                  />
+                  <TextField
+                    label="Time zone"
+                    value={draft.timezone}
+                    placeholder="Europe/Berlin"
+                    helper="Detected automatically. Change it if needed."
+                    required={mode === "create"}
+                    error={fieldErrors["location.timezone"]?.[0]}
+                    listOptions={TIMEZONE_DATALIST_OPTIONS}
+                    onChange={(value) => setField("timezone", value)}
+                  />
+                  {showRawLocation && (
+                    <div className="md:col-span-2">
+                      <TextField
+                        label="Imported location"
+                        value={draft.rawMarketplaceLocation}
+                        readOnly
+                        helper="Read-only location imported from the existing marketplace profile."
+                        onChange={() => undefined}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1557,6 +1706,13 @@ function validateProfileDraft(
   }
 
   return errors;
+}
+
+function focusFirstIncompleteAddressField(container: HTMLDivElement | null) {
+  const fields = Array.from(
+    container?.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select") ?? [],
+  );
+  (fields.find((field) => !field.value.trim()) ?? fields[0])?.focus();
 }
 
 function uniqueSelectedProducts(products: SharedHotelSetupProduct[]): SharedHotelSetupProduct[] {

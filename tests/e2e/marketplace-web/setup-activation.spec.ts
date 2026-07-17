@@ -5,6 +5,7 @@ const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 test.describe("marketplace-web shared setup activation", () => {
   test("creates the first hotel with the complete shared minimum", async ({ page, baseURL }) => {
+    await mockGooglePlaces(page);
     await primeBrowserState(page);
     await mockAuthSession(page);
     await routeJson(page, /\/api\/hotel-setup\/property-types/, {
@@ -62,12 +63,42 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(
       page.getByRole("heading", { name: "Where can guests find you?", level: 3 }),
     ).toBeVisible();
-    await page.getByRole("textbox", { name: /Street address/ }).fill("Marienplatz 1");
+    const manualAddressButton = page.getByRole("button", { name: "Enter address manually" });
+    const searchFirst = await manualAddressButton.isVisible();
+    if (
+      process.env.CI === "true" ||
+      process.env.E2E_START_SERVERS === "1" ||
+      process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+    ) {
+      expect(searchFirst).toBe(true);
+    }
+    if (searchFirst) {
+      await expect(page.getByRole("textbox", { name: /Street address/ })).toHaveCount(0);
+      const addressSearch = page.getByPlaceholder("Start typing a street address");
+      await expect(addressSearch).toBeVisible();
+      await addressSearch.focus();
+      await page.locator(".vayada-google-place-autocomplete").dispatchEvent("gmp-error");
+    }
+
+    const streetAddress = page.getByRole("textbox", { name: /Street address/ });
+    if (searchFirst) await expect(streetAddress).toBeFocused();
+    await streetAddress.fill("Marienplatz 1");
     await page.getByRole("textbox", { name: /Postal code/ }).fill("80331");
     await page.getByRole("textbox", { name: /City/ }).fill("Munich");
     const countrySelect = page.getByRole("combobox", { name: /Country/ });
     await expect(countrySelect.locator('option[value="PR"]')).toHaveCount(1);
     await countrySelect.selectOption("DE");
+
+    if (searchFirst) {
+      await page.getByRole("button", { name: "Done editing" }).click();
+      await expect(page.getByText("Address confirmed")).toBeVisible();
+      await expect(page.getByText("Marienplatz 1")).toBeVisible();
+      await expect(page.getByText("80331 Munich, Germany")).toBeVisible();
+      await expect(page.getByText("This matches your device.")).toBeVisible();
+      await page.getByRole("button", { name: "Edit address details" }).click();
+      await expect(streetAddress).toBeFocused();
+    }
+
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(page.getByRole("textbox", { name: /Contact email/ })).toHaveValue(
@@ -141,6 +172,37 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("button", { name: "Open Marketplace offer tools" })).toHaveCount(0);
   });
 });
+
+async function mockGooglePlaces(page: Page) {
+  await page.route(/https:\/\/maps\.googleapis\.com\/maps\/api\/js/, async (route) => {
+    await route.fulfill({
+      contentType: "application/javascript",
+      body: `
+        const elementName = "vayada-e2e-place-autocomplete";
+        let PlaceAutocompleteElement = customElements.get(elementName);
+        if (!PlaceAutocompleteElement) {
+          PlaceAutocompleteElement = class extends HTMLElement {
+            constructor(options) {
+              super();
+              const root = this.attachShadow({ mode: "open" });
+              const input = document.createElement("input");
+              input.setAttribute("aria-label", options.description);
+              input.placeholder = options.placeholder;
+              root.append(input);
+            }
+          };
+          customElements.define(elementName, PlaceAutocompleteElement);
+        }
+        window.google = {
+          maps: {
+            importLibrary: async () => ({ PlaceAutocompleteElement }),
+          },
+        };
+        window.__vayadaGoogleMapsReady?.();
+      `,
+    });
+  });
+}
 
 function setupUrl(baseURL: string | undefined) {
   const path = "/setup?entryProduct=marketplace&returnTo=/marketplace";
