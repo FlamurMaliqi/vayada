@@ -66,9 +66,15 @@ test.describe("pms-web shared setup", () => {
     await expect(hotelPropertyType).toBeChecked();
     await page.getByRole("button", { name: "Continue" }).click();
 
+    const locationHeading = page.getByRole("heading", {
+      level: 1,
+      name: "Where is your property?",
+    });
+    await expect(locationHeading).toBeVisible();
+    await expect(locationHeading).toBeFocused();
     await expect(
       page.getByRole("heading", { level: 3, name: "Where is your property?" }),
-    ).toBeVisible();
+    ).toHaveCount(0);
     await expect(page.getByText("Step 2 of 3")).toBeVisible();
     await expect(continueButton).toBeEnabled();
     await continueButton.click();
@@ -89,10 +95,18 @@ test.describe("pms-web shared setup", () => {
     await expect(
       page.getByRole("heading", { level: 3, name: "How can guests reach you?" }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Let’s get to know your hotel" }),
+    ).toBeVisible();
     await expect(page.getByText("Step 3 of 3")).toBeVisible();
     await page.getByRole("button", { name: "Back" }).click();
+    await expect(locationHeading).toBeVisible();
+    await expect(locationHeading).toBeFocused();
     await expect(page.getByLabel("Street address")).toHaveValue("Marienplatz 1");
     await page.getByRole("button", { name: "Back" }).click();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Let’s get to know your hotel" }),
+    ).toBeVisible();
     await expect(page.getByLabel("Hotel name")).toHaveValue("Alpenrose Munich");
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: "Continue" }).click();
