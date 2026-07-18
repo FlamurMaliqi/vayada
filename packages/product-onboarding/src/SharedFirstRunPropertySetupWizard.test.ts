@@ -4,6 +4,7 @@ import {
   canConfirmLocation,
   hasMapCoordinates,
   locationResetForManualAddressEdit,
+  validateProfileDraft,
 } from "./SharedFirstRunPropertySetupWizard";
 
 describe("locationResetForManualAddressEdit", () => {
@@ -47,6 +48,37 @@ describe("canConfirmLocation", () => {
   it("requires a time zone before confirming an address", () => {
     expect(canConfirmLocation({ ...completeLocation, timezone: "" })).toBe(false);
     expect(canConfirmLocation(completeLocation)).toBe(true);
+  });
+
+  it("requires a valid IANA time zone before confirming an address", () => {
+    expect(canConfirmLocation({ ...completeLocation, timezone: "Europe/Not_A_Real_Place" })).toBe(
+      false,
+    );
+    expect(canConfirmLocation({ ...completeLocation, timezone: "Etc/UTC" })).toBe(true);
+  });
+});
+
+describe("validateProfileDraft", () => {
+  it("rejects invalid time zones in create and update mode", () => {
+    const draft = {
+      displayName: "Hotel Alpenrose",
+      propertyType: "hotel",
+      countryCode: "DE",
+      city: "Munich",
+      streetAddress: "Marienplatz 1",
+      postalCode: "80331",
+      timezone: "Europe/Not_A_Real_Place",
+      website: "",
+      contactEmail: "owner@alpenrose.example",
+      phone: "+49 89 123456",
+    } as Parameters<typeof validateProfileDraft>[0];
+
+    expect(validateProfileDraft(draft, "create")["location.timezone"]).toEqual([
+      "Enter a valid IANA time zone.",
+    ]);
+    expect(validateProfileDraft(draft, "update")["location.timezone"]).toEqual([
+      "Enter a valid IANA time zone.",
+    ]);
   });
 });
 

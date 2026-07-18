@@ -70,17 +70,19 @@ test.describe("pms-web shared setup", () => {
       page.getByRole("heading", { level: 3, name: "Where can guests find you?" }),
     ).toBeVisible();
     await expect(page.getByText("Step 2 of 3")).toBeVisible();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByText("Street address is required.")).toBeVisible();
-    await expect(page.getByText("Postal code is required.")).toBeVisible();
-    await expect(page.getByText("City is required.")).toBeVisible();
-    await expect(page.getByText("Country is required.")).toBeVisible();
+    await expect(continueButton).toBeDisabled();
+    await expect(page.getByText("Map preview", { exact: true })).toBeVisible();
 
     await page.getByLabel("Street address").fill("Marienplatz 1");
+    await expect(continueButton).toBeDisabled();
     await page.getByLabel("Postal code").fill("80331");
     await page.getByLabel("City").fill("Munich");
     await page.getByLabel("Country").selectOption("DE");
-    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByLabel("Time zone").fill("Europe/Not_A_Real_Place");
+    await expect(continueButton).toBeDisabled();
+    await page.getByLabel("Time zone").fill("Europe/Berlin");
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
 
     await expect(
       page.getByRole("heading", { level: 3, name: "How can guests reach you?" }),
