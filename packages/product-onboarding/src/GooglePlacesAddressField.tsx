@@ -34,6 +34,7 @@ type GooglePlace = {
 };
 
 type GooglePlacePrediction = {
+  types: string[];
   toPlace: () => GooglePlace;
 };
 
@@ -70,7 +71,7 @@ export default function GooglePlacesAddressField({
   addressRevision: RefObject<number>;
   apiKey: string;
   onUnavailable: (autocompleteWasFocused: boolean) => void;
-  onSelect: (address: GooglePlacesAddress) => void;
+  onSelect: (address: GooglePlacesAddress, isExactAddress: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const latestSelection = useRef(0);
@@ -97,8 +98,8 @@ export default function GooglePlacesAddressField({
 
         autocomplete = new PlaceAutocompleteElement({
           description: "Search for your hotel address",
-          includedPrimaryTypes: ["street_address"],
-          placeholder: "Start typing a street address",
+          includedPrimaryTypes: ["street_address", "route"],
+          placeholder: "Start with a street name",
         });
         autocomplete.className = "vayada-google-place-autocomplete";
 
@@ -114,14 +115,16 @@ export default function GooglePlacesAddressField({
       const revision = addressRevision.current;
 
       try {
-        const place = (event as GooglePlaceSelectEvent).placePrediction.toPlace();
+        const prediction = (event as GooglePlaceSelectEvent).placePrediction;
+        const place = prediction.toPlace();
         await place.fetchFields({ fields: ["addressComponents", "location", "postalAddress"] });
         if (
           !disposed &&
           selection === latestSelection.current &&
           revision === addressRevision.current
         ) {
-          onSelectRef.current(addressFromGooglePlace(place));
+          const isExactAddress = prediction.types.includes("street_address");
+          onSelectRef.current(addressFromGooglePlace(place, isExactAddress), isExactAddress);
         }
       } catch {
         if (selection === latestSelection.current && revision === addressRevision.current) {
@@ -158,7 +161,7 @@ export default function GooglePlacesAddressField({
     <div>
       <p className="text-sm font-medium text-gray-700">Search for your hotel address</p>
       <p className="mt-1 text-xs text-gray-500">
-        Choose a Google suggestion to confirm your hotel location.
+        Start with a street name. Add the house number or city to narrow the suggestions.
       </p>
       {status === "loading" && (
         <div
@@ -200,6 +203,7 @@ export default function GooglePlacesAddressField({
 
 export function addressFromGooglePlace(
   place: Pick<GooglePlace, "addressComponents" | "location" | "postalAddress">,
+  isExactAddress = true,
 ): GooglePlacesAddress {
   const components = place.addressComponents ?? [];
   const postalAddress = place.postalAddress;
@@ -227,8 +231,8 @@ export function addressFromGooglePlace(
       longText("administrative_area_level_2"),
     countryCode: (postalAddress?.regionCode || shortText("country")).toUpperCase(),
     region: postalAddress?.administrativeArea || longText("administrative_area_level_1"),
-    latitude: place.location?.lat() ?? null,
-    longitude: place.location?.lng() ?? null,
+    latitude: isExactAddress ? (place.location?.lat() ?? null) : null,
+    longitude: isExactAddress ? (place.location?.lng() ?? null) : null,
   };
 }
 

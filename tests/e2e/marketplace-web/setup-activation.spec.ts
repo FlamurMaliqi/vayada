@@ -74,10 +74,15 @@ test.describe("marketplace-web shared setup activation", () => {
     }
     if (searchFirst) {
       await expect(page.getByRole("textbox", { name: /Street address/ })).toHaveCount(0);
-      const addressSearch = page.getByPlaceholder("Start typing a street address");
+      const addressSearch = page.getByPlaceholder("Start with a street name");
       await expect(addressSearch).toBeVisible();
+      const googleAddressSearch = page.locator(".vayada-google-place-autocomplete");
+      await expect(googleAddressSearch).toHaveAttribute(
+        "data-included-primary-types",
+        "street_address,route",
+      );
       await addressSearch.focus();
-      await page.locator(".vayada-google-place-autocomplete").dispatchEvent("gmp-error");
+      await googleAddressSearch.dispatchEvent("gmp-error");
     }
 
     const streetAddress = page.getByRole("textbox", { name: /Street address/ });
@@ -189,6 +194,7 @@ async function mockGooglePlaces(page: Page) {
               input.setAttribute("aria-label", options.description);
               input.placeholder = options.placeholder;
               root.append(input);
+              this.dataset.includedPrimaryTypes = options.includedPrimaryTypes.join(",");
             }
           };
           customElements.define(elementName, PlaceAutocompleteElement);
