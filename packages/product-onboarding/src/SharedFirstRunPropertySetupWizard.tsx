@@ -1143,9 +1143,9 @@ function ProfileForm({
                     );
                   }
                 }}
-                onSelect={(address) => {
+                onSelect={(address, isExactAddress) => {
                   const nextDraft = { ...draft, ...address };
-                  const canCollapse = canConfirmLocation(nextDraft);
+                  const canCollapse = isExactAddress && canConfirmLocation(nextDraft);
                   onChange(nextDraft);
                   setShowAddressFields(!canCollapse);
                   if (!canCollapse) {

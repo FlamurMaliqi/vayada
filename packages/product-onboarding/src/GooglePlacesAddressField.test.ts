@@ -58,6 +58,30 @@ describe("addressFromGooglePlace", () => {
       countryCode: "US",
     });
   });
+
+  it("keeps a street-only suggestion incomplete and drops road-level coordinates", () => {
+    expect(
+      addressFromGooglePlace(
+        {
+          addressComponents: [
+            component("Marienplatz", "Marienplatz", "route"),
+            component("80331", "80331", "postal_code"),
+            component("Munich", "Munich", "locality"),
+            component("Germany", "DE", "country"),
+          ],
+          location: { lat: () => 48.1373932, lng: () => 11.5754485 },
+        },
+        false,
+      ),
+    ).toMatchObject({
+      streetAddress: "Marienplatz",
+      postalCode: "80331",
+      city: "Munich",
+      countryCode: "DE",
+      latitude: null,
+      longitude: null,
+    });
+  });
 });
 
 function component(longText: string, shortText: string, type: string) {
