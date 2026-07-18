@@ -64,11 +64,17 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(
-      page.getByRole("heading", { name: "Where can guests find you?", level: 3 }),
+      page.getByRole("heading", { name: "Where is your property?", level: 3 }),
     ).toBeVisible();
     const locationContinueButton = page.getByRole("button", { name: "Continue" });
-    await expect(locationContinueButton).toBeDisabled();
-    await expect(page.getByText("Map preview", { exact: true })).toBeVisible();
+    await expect(locationContinueButton).toBeEnabled();
+    await expect(page.getByText("Search for your hotel address", { exact: true })).toHaveCount(0);
+    await expect(
+      page.getByText(
+        "Start with a street name. Add the house number or city to narrow the suggestions.",
+        { exact: true },
+      ),
+    ).toHaveCount(0);
     const manualAddressButton = page.getByRole("button", { name: "Enter address manually" });
     const searchFirst = await manualAddressButton.isVisible();
     if (
@@ -80,7 +86,7 @@ test.describe("marketplace-web shared setup activation", () => {
     }
     if (searchFirst) {
       await expect(page.getByRole("textbox", { name: /Street address/ })).toHaveCount(0);
-      const addressSearch = page.getByPlaceholder("Start with a street name");
+      const addressSearch = page.getByPlaceholder("Search for an address");
       await expect(addressSearch).toBeVisible();
       const googleAddressSearch = page.locator(".vayada-google-place-autocomplete");
       await expect(googleAddressSearch).toHaveAttribute(
@@ -221,6 +227,7 @@ async function mockGooglePlaces(page: Page) {
               super();
               const root = this.attachShadow({ mode: "open" });
               const input = document.createElement("input");
+              input.setAttribute("part", "input");
               input.setAttribute("aria-label", options.description);
               input.placeholder = options.placeholder;
               root.append(input);

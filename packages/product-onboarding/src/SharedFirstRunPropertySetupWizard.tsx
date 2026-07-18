@@ -840,6 +840,7 @@ function ProfileForm({
       !googleMapsApiKey ||
       (mode === "update" && !(canConfirmLocation(draft) && hasMapCoordinates(draft))),
   );
+  const [addressSearchUnavailable, setAddressSearchUnavailable] = useState(false);
   const addressRevision = useRef(0);
   const addressFields = useRef<HTMLDivElement>(null);
   const addressFieldsId = useId();
@@ -928,16 +929,10 @@ function ProfileForm({
   const countryName = country?.name ?? draft.countryCode;
   const hasCompleteLocation = canConfirmLocation(draft);
   const hasMappedLocation = hasCompleteLocation && hasMapCoordinates(draft);
-  const locationErrors = validateProfileDraft(draft, mode);
-  const locationCanContinue = !PROFILE_STEP_FIELDS[1].some((field) => locationErrors[field]);
   const timezoneMatchesBrowser =
     mode === "create" && draft.timezone && draft.timezone === browserTimezone();
   const actions = (
-    <div
-      className={`flex w-full flex-col-reverse items-center gap-3 sm:flex-row ${
-        step === 1 ? "sm:justify-between" : "sm:justify-center"
-      }`}
-    >
+    <div className="flex w-full flex-col-reverse items-center gap-3 sm:flex-row sm:justify-center">
       {(step > 0 || onCancel) && (
         <button
           type="button"
@@ -950,10 +945,7 @@ function ProfileForm({
       )}
       <button
         type="submit"
-        disabled={
-          (step === 1 && !locationCanContinue) ||
-          (step === PROFILE_STEP_FIELDS.length - 1 && saving)
-        }
+        disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
         className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
       >
         {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
@@ -1120,27 +1112,36 @@ function ProfileForm({
       </section>
 
       <section inert={saving ? true : undefined} className={step === 1 ? "block" : "hidden"}>
-        <div className="mx-auto max-w-6xl overflow-hidden rounded-[2rem] border border-gray-100 bg-white text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)]">
-          <div className="grid lg:min-h-[32rem] lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-            <div className="flex flex-col p-5 sm:p-6 lg:p-8">
-              <div className="mb-4">
-                <h3
-                  ref={step === 1 ? stepHeading : undefined}
-                  tabIndex={-1}
-                  className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
-                >
-                  Where can guests find you?
-                </h3>
-                <p className="mt-2 text-sm leading-6 text-gray-600">
-                  Search for the hotel, then check that the pin is in the right place.
-                </p>
-              </div>
+        <div className="relative isolate min-h-[28rem] overflow-hidden rounded-[2rem] bg-slate-100 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:min-h-[34rem]">
+          {googleMapsApiKey && (
+            <GoogleAddressMap
+              active={step === 1}
+              apiKey={googleMapsApiKey}
+              latitude={draft.latitude}
+              longitude={draft.longitude}
+            />
+          )}
 
-              {googleMapsApiKey && (
+          <div className="pointer-events-none relative z-10 flex min-h-[28rem] flex-col p-4 sm:min-h-[34rem] sm:p-6 xl:p-8">
+            <div
+              className={`pointer-events-auto mx-auto w-full rounded-3xl border border-white/80 bg-white/95 p-4 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur sm:p-5 ${
+                showAddressFields ? "max-w-3xl" : "max-w-xl"
+              }`}
+            >
+              <h3
+                ref={step === 1 ? stepHeading : undefined}
+                tabIndex={-1}
+                className="mb-3 text-xl font-semibold tracking-tight text-gray-950 outline-none sm:text-2xl"
+              >
+                Where is your property?
+              </h3>
+
+              {googleMapsApiKey && !showAddressFields && (
                 <GooglePlacesAddressField
                   addressRevision={addressRevision}
                   apiKey={googleMapsApiKey}
                   onUnavailable={(autocompleteWasFocused) => {
+                    setAddressSearchUnavailable(true);
                     if (!showAddressFields) focusAddressFieldsWhenShown.current = true;
                     setShowAddressFields(true);
                     if (showAddressFields && autocompleteWasFocused) {
@@ -1150,6 +1151,7 @@ function ProfileForm({
                     }
                   }}
                   onSelect={(address, isExactAddress) => {
+                    setAddressSearchUnavailable(false);
                     const nextDraft = { ...draft, ...address };
                     const canCollapse =
                       isExactAddress &&
@@ -1178,7 +1180,7 @@ function ProfileForm({
                       focusFirstIncompleteAddressField(addressFields.current),
                     );
                   }}
-                  className="mt-3 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                  className="mt-2 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
                 >
                   {hasCompleteLocation ? "Edit address details" : "Enter address manually"}
                 </button>
@@ -1188,29 +1190,34 @@ function ProfileForm({
                 <div
                   ref={addressFields}
                   id={addressFieldsId}
-                  className={googleMapsApiKey ? "mt-5 border-t border-gray-100 pt-5" : undefined}
+                  className={googleMapsApiKey ? "border-t border-gray-100 pt-4" : undefined}
                 >
-                  {googleMapsApiKey && (
-                    <div className="mb-3 flex items-center justify-between gap-4">
-                      <p className="text-sm font-semibold text-gray-900">Address details</p>
-                      {hasCompleteLocation && (
-                        <button
-                          type="button"
-                          aria-controls={addressFieldsId}
-                          aria-expanded={true}
-                          onClick={() => {
-                            setShowAddressFields(false);
-                            requestAnimationFrame(() => editAddressButton.current?.focus());
-                          }}
-                          className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
-                        >
-                          Done editing
-                        </button>
-                      )}
+                  {addressSearchUnavailable && (
+                    <p
+                      className="mb-4 rounded-xl bg-gray-50 px-3 py-2.5 text-sm text-gray-600"
+                      role="status"
+                    >
+                      Address suggestions are unavailable. Enter the address manually.
+                    </p>
+                  )}
+                  {googleMapsApiKey && hasCompleteLocation && (
+                    <div className="mb-3 flex justify-end">
+                      <button
+                        type="button"
+                        aria-controls={addressFieldsId}
+                        aria-expanded={true}
+                        onClick={() => {
+                          setShowAddressFields(false);
+                          requestAnimationFrame(() => editAddressButton.current?.focus());
+                        }}
+                        className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                      >
+                        Done editing
+                      </button>
                     </div>
                   )}
-                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                    <div className="md:col-span-2 lg:col-span-1 xl:col-span-2">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="md:col-span-2">
                       <TextField
                         label="Street address"
                         value={draft.streetAddress}
@@ -1259,7 +1266,7 @@ function ProfileForm({
                       onChange={(value) => setField("timezone", value)}
                     />
                     {showRawLocation && (
-                      <div className="md:col-span-2 lg:col-span-1 xl:col-span-2">
+                      <div className="md:col-span-2">
                         <TextField
                           label="Imported location"
                           value={draft.rawMarketplaceLocation}
@@ -1274,78 +1281,45 @@ function ProfileForm({
               )}
             </div>
 
-            <div className="relative min-h-72 overflow-hidden border-t border-gray-100 bg-slate-100 sm:min-h-80 lg:min-h-full lg:border-l lg:border-t-0">
-              {googleMapsApiKey && hasMapCoordinates(draft) ? (
-                <GoogleAddressMap
-                  active={step === 1}
-                  apiKey={googleMapsApiKey}
-                  latitude={draft.latitude}
-                  longitude={draft.longitude}
-                />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-200 p-8 text-center">
-                  <div className="max-w-xs">
-                    <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-primary-600 shadow-sm">
-                      <MapPinIcon className="h-6 w-6" aria-hidden="true" />
-                    </span>
-                    <p className="mt-4 text-sm font-semibold text-gray-900">Map preview</p>
-                    <p className="mt-1 text-sm leading-6 text-gray-600">
-                      {hasCompleteLocation
-                        ? "Your address details are ready."
-                        : googleMapsApiKey
-                          ? "Choose an address to place your hotel on the map."
-                          : "Complete the address details to set your hotel’s location."}
+            {!showAddressFields && hasCompleteLocation && (
+              <div
+                className="pointer-events-auto mx-auto mt-auto w-full max-w-xl pt-4"
+                aria-live="polite"
+              >
+                <div className="flex items-start gap-3 rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
+                  <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
+                    <MapPinIcon className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-gray-950">
+                      {hasMappedLocation
+                        ? "Is this the right location?"
+                        : "Address details entered"}
                     </p>
+                    {draft.streetAddress && (
+                      <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
+                    )}
+                    <p className="text-sm text-gray-700">
+                      {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
+                      {countryName ? `, ${countryName}` : ""}
+                    </p>
+                    {draft.timezone && (
+                      <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
+                    )}
+                    {timezoneMatchesBrowser && (
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        This matches your device. Verify it if the hotel is elsewhere.
+                      </p>
+                    )}
                   </div>
                 </div>
-              )}
-
-              {!showAddressFields && hasCompleteLocation && (
-                <div className="absolute inset-x-0 bottom-0 z-10 p-4 sm:p-5" aria-live="polite">
-                  <div className="flex items-start gap-3 rounded-2xl border border-white/80 bg-white/95 p-4 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
-                    <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
-                      <MapPinIcon className="h-5 w-5" aria-hidden="true" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-gray-950">
-                        {hasMappedLocation
-                          ? "Is this the right location?"
-                          : "Address details entered"}
-                      </p>
-                      {draft.streetAddress && (
-                        <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
-                      )}
-                      <p className="text-sm text-gray-700">
-                        {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
-                        {countryName ? `, ${countryName}` : ""}
-                      </p>
-                      {draft.timezone && (
-                        <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
-                      )}
-                      {timezoneMatchesBrowser && (
-                        <p className="mt-0.5 text-xs text-gray-500">
-                          This matches your device. Verify it if the hotel is elsewhere.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <footer className="border-t border-gray-100 bg-white px-5 py-4 sm:px-6">
-            {!locationCanContinue && (
-              <p className="mb-3 text-center text-xs text-gray-500">
-                Complete the address details to continue.
-              </p>
+              </div>
             )}
-            {actions}
-          </footer>
+          </div>
         </div>
       </section>
 
-      {step !== 1 && actions}
+      {actions}
 
       <span className="sr-only" role="status" aria-live="polite">
         {saving ? "Saving hotel details." : ""}
