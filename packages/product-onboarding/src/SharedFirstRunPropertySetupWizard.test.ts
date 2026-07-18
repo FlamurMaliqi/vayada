@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   canConfirmLocation,
+  hasMapCoordinates,
   locationResetForManualAddressEdit,
 } from "./SharedFirstRunPropertySetupWizard";
 
@@ -46,5 +47,13 @@ describe("canConfirmLocation", () => {
   it("requires a time zone before confirming an address", () => {
     expect(canConfirmLocation({ ...completeLocation, timezone: "" })).toBe(false);
     expect(canConfirmLocation(completeLocation)).toBe(true);
+  });
+});
+
+describe("hasMapCoordinates", () => {
+  it("requires finite latitude and longitude values", () => {
+    expect(hasMapCoordinates({ latitude: 48.1373932, longitude: 11.5754485 })).toBe(true);
+    expect(hasMapCoordinates({ latitude: null, longitude: 11.5754485 })).toBe(false);
+    expect(hasMapCoordinates({ latitude: Number.NaN, longitude: 11.5754485 })).toBe(false);
   });
 });

@@ -32,6 +32,7 @@ import {
 import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from "@vayada/locale-constants";
 
 import { HotelIcon } from "./HotelIcon";
+import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
@@ -124,6 +125,15 @@ export function canConfirmLocation(
     location.city.trim() &&
     COUNTRY_OPTIONS.some((country) => country.code === location.countryCode) &&
     location.timezone.trim(),
+  );
+}
+
+export function hasMapCoordinates(location: Pick<ProfileDraft, "latitude" | "longitude">): boolean {
+  return (
+    typeof location.latitude === "number" &&
+    Number.isFinite(location.latitude) &&
+    typeof location.longitude === "number" &&
+    Number.isFinite(location.longitude)
   );
 }
 
@@ -733,36 +743,6 @@ function HotelFacadeIllustration() {
   );
 }
 
-function LocationIllustration() {
-  return (
-    <svg
-      viewBox="0 0 260 220"
-      className={ONBOARDING_ILLUSTRATION_CLASS}
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="3"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path d="m37 64 56-19 57 20 73-20v119l-73 20-57-20-56 19Z" fill="white" />
-      <path d="M93 45v119M150 65v119M37 125c20-1 35-24 56-25 17-1 34 20 57 19 25-1 48-23 73-23" />
-      <path
-        d="M61 153c29-3 48 0 65-17 15-15 20-30 49-31"
-        stroke="#2948E8"
-        strokeDasharray="8 10"
-        strokeWidth="5"
-      />
-      <path
-        d="M190 70c-20 0-34 15-34 34 0 25 34 57 34 57s34-32 34-57c0-19-14-34-34-34Z"
-        fill="#2948E8"
-      />
-      <circle cx="190" cy="104" r="11" fill="white" />
-    </svg>
-  );
-}
-
 function ContactIllustration() {
   return (
     <svg
@@ -841,7 +821,9 @@ function ProfileForm({
   const [step, setStep] = useState(0);
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
   const [showAddressFields, setShowAddressFields] = useState(
-    () => !googleMapsApiKey || (mode === "update" && !canConfirmLocation(draft)),
+    () =>
+      !googleMapsApiKey ||
+      (mode === "update" && !(canConfirmLocation(draft) && hasMapCoordinates(draft))),
   );
   const addressRevision = useRef(0);
   const addressFields = useRef<HTMLDivElement>(null);
@@ -874,7 +856,7 @@ function ProfileForm({
     const finishedLoading = addressFieldsWereLoading.current && !loading;
     addressFieldsWereLoading.current = loading;
     if (finishedLoading && googleMapsApiKey && mode === "update") {
-      setShowAddressFields(!canConfirmLocation(draft));
+      setShowAddressFields(!(canConfirmLocation(draft) && hasMapCoordinates(draft)));
     }
   }, [draft, googleMapsApiKey, loading, mode]);
 
@@ -930,6 +912,7 @@ function ProfileForm({
   const country = COUNTRY_OPTIONS.find((option) => option.code === draft.countryCode);
   const countryName = country?.name ?? draft.countryCode;
   const hasCompleteLocation = canConfirmLocation(draft);
+  const hasMappedLocation = hasCompleteLocation && hasMapCoordinates(draft);
   const timezoneMatchesBrowser =
     mode === "create" && draft.timezone && draft.timezone === browserTimezone();
   const actions = (
@@ -1112,83 +1095,63 @@ function ProfileForm({
         </ProfileIllustrationPanel>
       </section>
 
-      <section
-        inert={saving ? true : undefined}
-        className={`${step === 1 ? "grid" : "hidden"} gap-6 xl:grid-cols-2`}
-      >
-        <div className="flex flex-col rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-6 xl:min-h-[32rem] xl:p-8">
-          <div className="mb-4">
-            <h3
-              ref={step === 1 ? stepHeading : undefined}
-              tabIndex={-1}
-              className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
-            >
-              Where can guests find you?
-            </h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600">
-              We’ll use this location for bookings and daily hotel operations.
-            </p>
-          </div>
-          <div>
-            {googleMapsApiKey && (
-              <GooglePlacesAddressField
-                addressRevision={addressRevision}
-                apiKey={googleMapsApiKey}
-                onUnavailable={(autocompleteWasFocused) => {
-                  if (!showAddressFields) focusAddressFieldsWhenShown.current = true;
-                  setShowAddressFields(true);
-                  if (showAddressFields && autocompleteWasFocused) {
-                    requestAnimationFrame(() =>
-                      focusFirstIncompleteAddressField(addressFields.current),
-                    );
-                  }
-                }}
-                onSelect={(address, isExactAddress) => {
-                  const nextDraft = { ...draft, ...address };
-                  const canCollapse = isExactAddress && canConfirmLocation(nextDraft);
-                  onChange(nextDraft);
-                  setShowAddressFields(!canCollapse);
-                  if (!canCollapse) {
-                    requestAnimationFrame(() =>
-                      focusFirstIncompleteAddressField(addressFields.current),
-                    );
-                  }
-                }}
-              />
-            )}
+      <section inert={saving ? true : undefined} className={step === 1 ? "block" : "hidden"}>
+        <div className="relative isolate min-h-[34rem] overflow-hidden rounded-[2rem] bg-slate-100 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)]">
+          {googleMapsApiKey && (
+            <GoogleAddressMap
+              active={step === 1}
+              apiKey={googleMapsApiKey}
+              latitude={draft.latitude}
+              longitude={draft.longitude}
+            />
+          )}
 
-            {!showAddressFields && (
-              <div className={googleMapsApiKey ? "mt-4" : undefined}>
-                {hasCompleteLocation && (
-                  <div
-                    className="flex items-start gap-3 rounded-2xl border border-primary-100 bg-primary-50/60 p-4"
-                    aria-live="polite"
-                  >
-                    <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
-                      <CheckIcon className="h-4 w-4" aria-hidden="true" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-gray-950">Address confirmed</p>
-                      {draft.streetAddress && (
-                        <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
-                      )}
-                      <p className="text-sm text-gray-700">
-                        {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
-                        {countryName ? `, ${countryName}` : ""}
-                      </p>
-                      {draft.timezone && (
-                        <>
-                          <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
-                          {timezoneMatchesBrowser && (
-                            <p className="mt-0.5 text-xs text-gray-500">
-                              This matches your device. Verify it if the hotel is elsewhere.
-                            </p>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
+          <div className="pointer-events-none relative z-10 flex min-h-[34rem] flex-col p-4 sm:p-6 xl:p-8">
+            <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur sm:p-6">
+              <div className="mb-4">
+                <h3
+                  ref={step === 1 ? stepHeading : undefined}
+                  tabIndex={-1}
+                  className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+                >
+                  Where can guests find you?
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-gray-600">
+                  Search for the hotel, then check that the pin is in the right place.
+                </p>
+              </div>
+
+              {googleMapsApiKey && (
+                <GooglePlacesAddressField
+                  addressRevision={addressRevision}
+                  apiKey={googleMapsApiKey}
+                  onUnavailable={(autocompleteWasFocused) => {
+                    if (!showAddressFields) focusAddressFieldsWhenShown.current = true;
+                    setShowAddressFields(true);
+                    if (showAddressFields && autocompleteWasFocused) {
+                      requestAnimationFrame(() =>
+                        focusFirstIncompleteAddressField(addressFields.current),
+                      );
+                    }
+                  }}
+                  onSelect={(address, isExactAddress) => {
+                    const nextDraft = { ...draft, ...address };
+                    const canCollapse =
+                      isExactAddress &&
+                      canConfirmLocation(nextDraft) &&
+                      hasMapCoordinates(nextDraft);
+                    onChange(nextDraft);
+                    setShowAddressFields(!canCollapse);
+                    if (!canCollapse) {
+                      requestAnimationFrame(() =>
+                        focusFirstIncompleteAddressField(addressFields.current),
+                      );
+                    }
+                  }}
+                />
+              )}
+
+              {!showAddressFields && (
                 <button
                   ref={editAddressButton}
                   type="button"
@@ -1200,18 +1163,18 @@ function ProfileForm({
                       focusFirstIncompleteAddressField(addressFields.current),
                     );
                   }}
-                  className={`${hasCompleteLocation ? "mt-3" : ""} text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2`}
+                  className="mt-3 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
                 >
                   {hasCompleteLocation ? "Edit address details" : "Enter address manually"}
                 </button>
-              </div>
-            )}
+              )}
+            </div>
 
             {showAddressFields && (
               <div
                 ref={addressFields}
                 id={addressFieldsId}
-                className={googleMapsApiKey ? "mt-4" : undefined}
+                className="pointer-events-auto mx-auto mt-3 w-full max-w-3xl rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur sm:p-6"
               >
                 {googleMapsApiKey && (
                   <div className="mb-3 flex items-center justify-between gap-4">
@@ -1295,14 +1258,43 @@ function ProfileForm({
                 </div>
               </div>
             )}
+
+            {!showAddressFields && hasCompleteLocation && (
+              <div
+                className="pointer-events-auto mx-auto mt-auto w-full max-w-xl pt-4"
+                aria-live="polite"
+              >
+                <div className="flex items-start gap-3 rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
+                  <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
+                    <MapPinIcon className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-gray-950">
+                      {hasMappedLocation
+                        ? "Is this the right location?"
+                        : "Address details entered"}
+                    </p>
+                    {draft.streetAddress && (
+                      <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
+                    )}
+                    <p className="text-sm text-gray-700">
+                      {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
+                      {countryName ? `, ${countryName}` : ""}
+                    </p>
+                    {draft.timezone && (
+                      <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
+                    )}
+                    {timezoneMatchesBrowser && (
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        This matches your device. Verify it if the hotel is elsewhere.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
-        <ProfileIllustrationPanel
-          title="Put your hotel on the map"
-          description="Accurate location details keep bookings and daily operations running smoothly."
-        >
-          <LocationIllustration />
-        </ProfileIllustrationPanel>
       </section>
 
       {actions}
