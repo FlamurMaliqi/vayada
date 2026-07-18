@@ -66,6 +66,9 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(
       page.getByRole("heading", { name: "Where can guests find you?", level: 3 }),
     ).toBeVisible();
+    const locationContinueButton = page.getByRole("button", { name: "Continue" });
+    await expect(locationContinueButton).toBeDisabled();
+    await expect(page.getByText("Map preview", { exact: true })).toBeVisible();
     const manualAddressButton = page.getByRole("button", { name: "Enter address manually" });
     const searchFirst = await manualAddressButton.isVisible();
     if (
@@ -98,6 +101,7 @@ test.describe("marketplace-web shared setup activation", () => {
         "data-marker",
         "48.1373932,11.5754485",
       );
+      await expect(locationContinueButton).toBeEnabled();
 
       await page.setViewportSize({ width: 390, height: 844 });
       expect(
@@ -117,6 +121,7 @@ test.describe("marketplace-web shared setup activation", () => {
     const countrySelect = page.getByRole("combobox", { name: /Country/ });
     await expect(countrySelect.locator('option[value="PR"]')).toHaveCount(1);
     await countrySelect.selectOption("DE");
+    await expect(locationContinueButton).toBeEnabled();
 
     if (searchFirst) {
       await page.getByRole("button", { name: "Done editing" }).click();
@@ -204,6 +209,7 @@ test.describe("marketplace-web shared setup activation", () => {
 
 async function mockGooglePlaces(page: Page) {
   await page.route(/https:\/\/maps\.googleapis\.com\/maps\/api\/js/, async (route) => {
+    expect(new URL(route.request().url()).searchParams.get("language")).toBe("en");
     await route.fulfill({
       contentType: "application/javascript",
       body: `

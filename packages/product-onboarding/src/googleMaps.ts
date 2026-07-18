@@ -25,6 +25,7 @@ export async function importGoogleMapsLibrary<Library>(
         key: apiKey,
         v: "weekly",
         loading: "async",
+        language: "en",
         auth_referrer_policy: "origin",
         callback: "__vayadaGoogleMapsReady",
       }).toString();

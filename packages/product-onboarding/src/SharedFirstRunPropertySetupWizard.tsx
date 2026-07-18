@@ -124,8 +124,19 @@ export function canConfirmLocation(
     location.postalCode.trim() &&
     location.city.trim() &&
     COUNTRY_OPTIONS.some((country) => country.code === location.countryCode) &&
-    location.timezone.trim(),
+    isValidIanaTimezone(location.timezone.trim()),
   );
+}
+
+function isValidIanaTimezone(value: string): boolean {
+  if (!/^[A-Za-z_]+\/[A-Za-z0-9_+./-]+$/.test(value)) return false;
+
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function hasMapCoordinates(location: Pick<ProfileDraft, "latitude" | "longitude">): boolean {
@@ -917,10 +928,16 @@ function ProfileForm({
   const countryName = country?.name ?? draft.countryCode;
   const hasCompleteLocation = canConfirmLocation(draft);
   const hasMappedLocation = hasCompleteLocation && hasMapCoordinates(draft);
+  const locationErrors = validateProfileDraft(draft, mode);
+  const locationCanContinue = !PROFILE_STEP_FIELDS[1].some((field) => locationErrors[field]);
   const timezoneMatchesBrowser =
     mode === "create" && draft.timezone && draft.timezone === browserTimezone();
   const actions = (
-    <div className="flex w-full flex-col-reverse items-center gap-3 sm:flex-row sm:justify-center">
+    <div
+      className={`flex w-full flex-col-reverse items-center gap-3 sm:flex-row ${
+        step === 1 ? "sm:justify-between" : "sm:justify-center"
+      }`}
+    >
       {(step > 0 || onCancel) && (
         <button
           type="button"
@@ -933,7 +950,10 @@ function ProfileForm({
       )}
       <button
         type="submit"
-        disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
+        disabled={
+          (step === 1 && !locationCanContinue) ||
+          (step === PROFILE_STEP_FIELDS.length - 1 && saving)
+        }
         className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
       >
         {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
@@ -1100,18 +1120,9 @@ function ProfileForm({
       </section>
 
       <section inert={saving ? true : undefined} className={step === 1 ? "block" : "hidden"}>
-        <div className="relative isolate min-h-[34rem] overflow-hidden rounded-[2rem] bg-slate-100 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)]">
-          {googleMapsApiKey && (
-            <GoogleAddressMap
-              active={step === 1}
-              apiKey={googleMapsApiKey}
-              latitude={draft.latitude}
-              longitude={draft.longitude}
-            />
-          )}
-
-          <div className="pointer-events-none relative z-10 flex min-h-[34rem] flex-col p-4 sm:p-6 xl:p-8">
-            <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur sm:p-6">
+        <div className="mx-auto max-w-6xl overflow-hidden rounded-[2rem] border border-gray-100 bg-white text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)]">
+          <div className="grid lg:min-h-[32rem] lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+            <div className="flex flex-col p-5 sm:p-6 lg:p-8">
               <div className="mb-4">
                 <h3
                   ref={step === 1 ? stepHeading : undefined}
@@ -1172,136 +1183,169 @@ function ProfileForm({
                   {hasCompleteLocation ? "Edit address details" : "Enter address manually"}
                 </button>
               )}
-            </div>
 
-            {showAddressFields && (
-              <div
-                ref={addressFields}
-                id={addressFieldsId}
-                className="pointer-events-auto mx-auto mt-3 w-full max-w-3xl rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur sm:p-6"
-              >
-                {googleMapsApiKey && (
-                  <div className="mb-3 flex items-center justify-between gap-4">
-                    <p className="text-sm font-semibold text-gray-900">Address details</p>
-                    {hasCompleteLocation && (
-                      <button
-                        type="button"
-                        aria-controls={addressFieldsId}
-                        aria-expanded={true}
-                        onClick={() => {
-                          setShowAddressFields(false);
-                          requestAnimationFrame(() => editAddressButton.current?.focus());
-                        }}
-                        className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
-                      >
-                        Done editing
-                      </button>
-                    )}
-                  </div>
-                )}
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="md:col-span-2">
-                    <TextField
-                      label="Street address"
-                      value={draft.streetAddress}
-                      placeholder="Marienplatz 1"
-                      required={mode === "create"}
-                      error={fieldErrors["location.streetAddress"]?.[0]}
-                      onChange={(value) => setField("streetAddress", value)}
-                    />
-                  </div>
-                  <TextField
-                    label="Postal code"
-                    value={draft.postalCode}
-                    placeholder="80331"
-                    required={mode === "create"}
-                    error={fieldErrors["location.postalCode"]?.[0]}
-                    onChange={(value) => setField("postalCode", value)}
-                  />
-                  <TextField
-                    label="City"
-                    value={draft.city}
-                    placeholder="Munich"
-                    required
-                    error={fieldErrors["location.city"]?.[0]}
-                    onChange={(value) => setField("city", value)}
-                  />
-                  <SelectField
-                    label="Country"
-                    value={draft.countryCode}
-                    placeholder="Select a country"
-                    required
-                    error={fieldErrors["location.countryCode"]?.[0]}
-                    options={COUNTRY_OPTIONS.map((country) => ({
-                      value: country.code,
-                      label: `${country.flag} ${country.name}`,
-                    }))}
-                    onChange={(value) => setField("countryCode", value)}
-                  />
-                  <TextField
-                    label="Time zone"
-                    value={draft.timezone}
-                    placeholder="Europe/Berlin"
-                    helper="Detected automatically. Change it if needed."
-                    required={mode === "create"}
-                    error={fieldErrors["location.timezone"]?.[0]}
-                    listOptions={TIMEZONE_DATALIST_OPTIONS}
-                    onChange={(value) => setField("timezone", value)}
-                  />
-                  {showRawLocation && (
-                    <div className="md:col-span-2">
-                      <TextField
-                        label="Imported location"
-                        value={draft.rawMarketplaceLocation}
-                        readOnly
-                        helper="Read-only location imported from the existing marketplace profile."
-                        onChange={() => undefined}
-                      />
+              {showAddressFields && (
+                <div
+                  ref={addressFields}
+                  id={addressFieldsId}
+                  className={googleMapsApiKey ? "mt-5 border-t border-gray-100 pt-5" : undefined}
+                >
+                  {googleMapsApiKey && (
+                    <div className="mb-3 flex items-center justify-between gap-4">
+                      <p className="text-sm font-semibold text-gray-900">Address details</p>
+                      {hasCompleteLocation && (
+                        <button
+                          type="button"
+                          aria-controls={addressFieldsId}
+                          aria-expanded={true}
+                          onClick={() => {
+                            setShowAddressFields(false);
+                            requestAnimationFrame(() => editAddressButton.current?.focus());
+                          }}
+                          className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                        >
+                          Done editing
+                        </button>
+                      )}
                     </div>
                   )}
-                </div>
-              </div>
-            )}
-
-            {!showAddressFields && hasCompleteLocation && (
-              <div
-                className="pointer-events-auto mx-auto mt-auto w-full max-w-xl pt-4"
-                aria-live="polite"
-              >
-                <div className="flex items-start gap-3 rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
-                  <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
-                    <MapPinIcon className="h-5 w-5" aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-gray-950">
-                      {hasMappedLocation
-                        ? "Is this the right location?"
-                        : "Address details entered"}
-                    </p>
-                    {draft.streetAddress && (
-                      <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
-                    )}
-                    <p className="text-sm text-gray-700">
-                      {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
-                      {countryName ? `, ${countryName}` : ""}
-                    </p>
-                    {draft.timezone && (
-                      <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
-                    )}
-                    {timezoneMatchesBrowser && (
-                      <p className="mt-0.5 text-xs text-gray-500">
-                        This matches your device. Verify it if the hotel is elsewhere.
-                      </p>
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                    <div className="md:col-span-2 lg:col-span-1 xl:col-span-2">
+                      <TextField
+                        label="Street address"
+                        value={draft.streetAddress}
+                        placeholder="Marienplatz 1"
+                        required={mode === "create"}
+                        error={fieldErrors["location.streetAddress"]?.[0]}
+                        onChange={(value) => setField("streetAddress", value)}
+                      />
+                    </div>
+                    <TextField
+                      label="Postal code"
+                      value={draft.postalCode}
+                      placeholder="80331"
+                      required={mode === "create"}
+                      error={fieldErrors["location.postalCode"]?.[0]}
+                      onChange={(value) => setField("postalCode", value)}
+                    />
+                    <TextField
+                      label="City"
+                      value={draft.city}
+                      placeholder="Munich"
+                      required
+                      error={fieldErrors["location.city"]?.[0]}
+                      onChange={(value) => setField("city", value)}
+                    />
+                    <SelectField
+                      label="Country"
+                      value={draft.countryCode}
+                      placeholder="Select a country"
+                      required
+                      error={fieldErrors["location.countryCode"]?.[0]}
+                      options={COUNTRY_OPTIONS.map((country) => ({
+                        value: country.code,
+                        label: `${country.flag} ${country.name}`,
+                      }))}
+                      onChange={(value) => setField("countryCode", value)}
+                    />
+                    <TextField
+                      label="Time zone"
+                      value={draft.timezone}
+                      placeholder="Europe/Berlin"
+                      helper="Detected automatically. Change it if needed."
+                      required={mode === "create"}
+                      error={fieldErrors["location.timezone"]?.[0]}
+                      listOptions={TIMEZONE_DATALIST_OPTIONS}
+                      onChange={(value) => setField("timezone", value)}
+                    />
+                    {showRawLocation && (
+                      <div className="md:col-span-2 lg:col-span-1 xl:col-span-2">
+                        <TextField
+                          label="Imported location"
+                          value={draft.rawMarketplaceLocation}
+                          readOnly
+                          helper="Read-only location imported from the existing marketplace profile."
+                          onChange={() => undefined}
+                        />
+                      </div>
                     )}
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
+
+            <div className="relative min-h-72 overflow-hidden border-t border-gray-100 bg-slate-100 sm:min-h-80 lg:min-h-full lg:border-l lg:border-t-0">
+              {googleMapsApiKey && hasMapCoordinates(draft) ? (
+                <GoogleAddressMap
+                  active={step === 1}
+                  apiKey={googleMapsApiKey}
+                  latitude={draft.latitude}
+                  longitude={draft.longitude}
+                />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-200 p-8 text-center">
+                  <div className="max-w-xs">
+                    <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-primary-600 shadow-sm">
+                      <MapPinIcon className="h-6 w-6" aria-hidden="true" />
+                    </span>
+                    <p className="mt-4 text-sm font-semibold text-gray-900">Map preview</p>
+                    <p className="mt-1 text-sm leading-6 text-gray-600">
+                      {hasCompleteLocation
+                        ? "Your address details are ready."
+                        : googleMapsApiKey
+                          ? "Choose an address to place your hotel on the map."
+                          : "Complete the address details to set your hotel’s location."}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {!showAddressFields && hasCompleteLocation && (
+                <div className="absolute inset-x-0 bottom-0 z-10 p-4 sm:p-5" aria-live="polite">
+                  <div className="flex items-start gap-3 rounded-2xl border border-white/80 bg-white/95 p-4 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
+                    <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
+                      <MapPinIcon className="h-5 w-5" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-gray-950">
+                        {hasMappedLocation
+                          ? "Is this the right location?"
+                          : "Address details entered"}
+                      </p>
+                      {draft.streetAddress && (
+                        <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
+                      )}
+                      <p className="text-sm text-gray-700">
+                        {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
+                        {countryName ? `, ${countryName}` : ""}
+                      </p>
+                      {draft.timezone && (
+                        <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
+                      )}
+                      {timezoneMatchesBrowser && (
+                        <p className="mt-0.5 text-xs text-gray-500">
+                          This matches your device. Verify it if the hotel is elsewhere.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
+
+          <footer className="border-t border-gray-100 bg-white px-5 py-4 sm:px-6">
+            {!locationCanContinue && (
+              <p className="mb-3 text-center text-xs text-gray-500">
+                Complete the address details to continue.
+              </p>
+            )}
+            {actions}
+          </footer>
         </div>
       </section>
 
-      {actions}
+      {step !== 1 && actions}
 
       <span className="sr-only" role="status" aria-live="polite">
         {saving ? "Saving hotel details." : ""}
@@ -1660,7 +1704,7 @@ function marketplaceActivationStepCopy(step: string): { title: string; descripti
   );
 }
 
-function validateProfileDraft(
+export function validateProfileDraft(
   draft: ProfileDraft,
   mode: "create" | "update",
 ): Record<string, string[]> {
@@ -1690,6 +1734,9 @@ function validateProfileDraft(
       errors.contactEmail = ["Contact email is required."];
     }
     if (!draft.phone.trim()) errors.phone = ["Phone number is required."];
+  }
+  if (draft.timezone.trim() && !isValidIanaTimezone(draft.timezone.trim())) {
+    errors["location.timezone"] = ["Enter a valid IANA time zone."];
   }
   if (draft.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.contactEmail)) {
     errors.contactEmail = ["Enter a valid email address."];
