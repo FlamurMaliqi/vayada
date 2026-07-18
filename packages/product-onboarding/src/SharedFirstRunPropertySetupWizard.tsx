@@ -724,13 +724,11 @@ function ProfileLoadError({ error, onRetry }: { error: string; onRetry: () => vo
   );
 }
 
-const ONBOARDING_ILLUSTRATION_CLASS = "mx-auto h-auto w-full max-w-[32rem] text-gray-900";
-
 function HotelFacadeIllustration() {
   return (
     <svg
       viewBox="0 0 260 220"
-      className={ONBOARDING_ILLUSTRATION_CLASS}
+      className="mx-auto h-auto w-full max-w-[32rem] text-gray-900"
       fill="none"
       stroke="currentColor"
       strokeLinecap="round"
@@ -755,56 +753,6 @@ function HotelFacadeIllustration() {
         fill="#2948E8"
       />
     </svg>
-  );
-}
-
-function ContactIllustration() {
-  return (
-    <svg
-      viewBox="0 0 260 220"
-      className={ONBOARDING_ILLUSTRATION_CLASS}
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="3"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <rect x="31" y="92" width="108" height="77" rx="4" fill="white" />
-      <path d="m34 96 51 42 51-42M34 165l37-40M136 165l-37-40" />
-      <path
-        d="M169 84c7-7 18-5 23 2l10 16c4 6 2 14-4 18l-12 8c8 15 20 26 35 34l8-12c4-6 12-8 18-4l16 10c7 5 9 16 2 23l-8 8c-8 8-21 11-32 6-43-18-77-52-95-95-5-11-2-24 6-32Z"
-        fill="#2948E8"
-        transform="translate(-5 -2) scale(.78) translate(52 29)"
-      />
-      <path
-        d="M204 53c0 14-7 22-20 24 13 2 20 10 20 24 0-14 7-22 20-24-13-2-20-10-20-24Z"
-        stroke="#2948E8"
-      />
-    </svg>
-  );
-}
-
-function ProfileIllustrationPanel({
-  children,
-  title,
-  description,
-}: {
-  children: React.ReactNode;
-  title?: string;
-  description?: string;
-}) {
-  return (
-    <aside className="hidden min-h-[32rem] items-center justify-center p-8 xl:flex">
-      <div className="w-full max-w-lg text-center">
-        {children}
-        {title && <h2 className="mt-5 text-xl font-semibold text-gray-950">{title}</h2>}
-        {description && (
-          <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-gray-600">{description}</p>
-        )}
-      </div>
-    </aside>
   );
 }
 
@@ -1044,16 +992,13 @@ function ProfileForm({
             />
           </div>
         </div>
-        <ProfileIllustrationPanel>
+        <aside className="hidden min-h-[32rem] items-center justify-center p-8 xl:flex">
           <HotelFacadeIllustration />
-        </ProfileIllustrationPanel>
+        </aside>
       </section>
 
-      <section
-        inert={saving ? true : undefined}
-        className={`${step === 2 ? "grid" : "hidden"} gap-6 xl:grid-cols-2`}
-      >
-        <div className="flex flex-col rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-6 xl:min-h-[32rem] xl:p-8">
+      <section inert={saving ? true : undefined} className={step === 2 ? "block" : "hidden"}>
+        <div className="mx-auto max-w-3xl rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-8">
           <div className="mb-4">
             <h3
               ref={step === 2 ? stepHeading : undefined}
@@ -1062,17 +1007,13 @@ function ProfileForm({
             >
               How can guests reach you?
             </h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600">
-              We’ll show these details wherever guests may need to get in touch.
-            </p>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
             {mode === "create" && hasAccountSuggestions && (
-              <p className="rounded-xl bg-primary-50 px-3 py-2 text-xs text-primary-800 md:col-span-2">
-                We suggested details from your account. Edit them if this hotel uses a different
-                contact; saving confirms these as the hotel contact.
+              <p className="mt-2 text-sm text-gray-500">
+                Pre-filled from your account. Edit if needed.
               </p>
             )}
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
             <TextField
               label="Contact email"
               value={draft.contactEmail}
@@ -1103,12 +1044,6 @@ function ProfileForm({
             </div>
           </div>
         </div>
-        <ProfileIllustrationPanel
-          title="Keep guests connected"
-          description="Use the right contact details wherever guests need to reach your team."
-        >
-          <ContactIllustration />
-        </ProfileIllustrationPanel>
       </section>
 
       <section inert={saving ? true : undefined} className={step === 1 ? "block" : "hidden"}>
