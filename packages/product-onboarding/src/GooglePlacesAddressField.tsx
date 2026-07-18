@@ -88,9 +88,9 @@ export default function GooglePlacesAddressField({
         if (disposed) return;
 
         autocomplete = new PlaceAutocompleteElement({
-          description: "Search for your hotel address",
+          description: "Property address",
           includedPrimaryTypes: ["street_address", "route"],
-          placeholder: "Start with a street name",
+          placeholder: "Search for an address",
         });
         autocomplete.className = "vayada-google-place-autocomplete";
 
@@ -150,25 +150,18 @@ export default function GooglePlacesAddressField({
 
   return (
     <div>
-      <p className="text-sm font-medium text-gray-700">Search for your hotel address</p>
-      <p className="mt-1 text-xs text-gray-500">
-        Start with a street name. Add the house number or city to narrow the suggestions.
-      </p>
       {status === "loading" && (
         <div
-          className="mt-2 h-[2.625rem] animate-pulse rounded-xl border border-gray-200 bg-gray-50"
+          className="h-12 animate-pulse rounded-xl border border-gray-200 bg-gray-50"
           aria-label="Loading Google address suggestions"
         />
       )}
-      {status === "unavailable" && (
-        <p className="mt-2 rounded-xl bg-gray-50 px-3 py-2.5 text-sm text-gray-600" role="status">
-          Google suggestions are unavailable. Enter the address manually instead.
-        </p>
-      )}
-      <div ref={containerRef} className={status === "ready" ? "mt-2" : "hidden"} />
+      <div ref={containerRef} className={status === "ready" ? undefined : "hidden"} />
       <style>{`
         .vayada-google-place-autocomplete {
+          display: block;
           width: 100%;
+          box-sizing: border-box;
           color-scheme: light;
           border: 1px solid rgb(229 231 235);
           border-radius: 0.75rem;
@@ -176,9 +169,11 @@ export default function GooglePlacesAddressField({
           font: inherit;
         }
         .vayada-google-place-autocomplete::part(input) {
-          min-height: 3.5rem;
-          padding: 0.875rem 1rem;
-          font-size: 1rem;
+          width: 100%;
+          box-sizing: border-box;
+          min-height: 3rem;
+          padding: 0.75rem 0.875rem;
+          font-size: 0.875rem;
         }
         .vayada-google-place-autocomplete:focus-within {
           border-color: rgb(47 82 245);
