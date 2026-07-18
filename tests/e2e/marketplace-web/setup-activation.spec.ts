@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 
 const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -56,8 +56,11 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.goto(setupUrl(baseURL));
 
     await expect(page.getByRole("heading", { name: "Let’s get to know your hotel" })).toBeVisible();
-    await page.getByRole("textbox", { name: /Hotel name/ }).fill("Hotel Alpenrose");
-    await page.getByRole("radio", { name: "Hotel", exact: true }).check();
+    const hotelName = page.getByRole("textbox", { name: /Hotel name/ });
+    await hotelName.fill("Hotel Alpenrose");
+    await expect(hotelName).toHaveValue("Hotel Alpenrose");
+    await page.locator('label:has(input[type="radio"][value="hotel"])').click();
+    await expect(page.getByRole("radio", { name: "Hotel", exact: true })).toBeChecked();
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(
@@ -81,6 +84,27 @@ test.describe("marketplace-web shared setup activation", () => {
         "data-included-primary-types",
         "street_address,route",
       );
+      await selectExactGoogleAddress(googleAddressSearch);
+      await expect(page.getByText("Is this the right location?")).toBeVisible();
+      await expect(page.getByTestId("google-address-map-canvas")).toHaveAttribute(
+        "data-center",
+        "48.1373932,11.5754485",
+      );
+      await expect(page.getByTestId("google-address-map-canvas")).toHaveAttribute(
+        "data-zoom",
+        "17",
+      );
+      await expect(page.getByTestId("google-address-map-canvas")).toHaveAttribute(
+        "data-marker",
+        "48.1373932,11.5754485",
+      );
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        ),
+      ).toBe(true);
       await addressSearch.focus();
       await googleAddressSearch.dispatchEvent("gmp-error");
     }
@@ -96,7 +120,7 @@ test.describe("marketplace-web shared setup activation", () => {
 
     if (searchFirst) {
       await page.getByRole("button", { name: "Done editing" }).click();
-      await expect(page.getByText("Address confirmed")).toBeVisible();
+      await expect(page.getByText("Address details entered")).toBeVisible();
       await expect(page.getByText("Marienplatz 1")).toBeVisible();
       await expect(page.getByText("80331 Munich, Germany")).toBeVisible();
       await expect(page.getByText("This matches your device.")).toBeVisible();
@@ -199,14 +223,68 @@ async function mockGooglePlaces(page: Page) {
           };
           customElements.define(elementName, PlaceAutocompleteElement);
         }
+        class GoogleMap {
+          constructor(element, options) {
+            this.element = element;
+            this.setCenter(options.center);
+            this.setZoom(options.zoom);
+          }
+          setCenter(position) {
+            this.element.dataset.center = position.lat + "," + position.lng;
+          }
+          setZoom(zoom) {
+            this.element.dataset.zoom = String(zoom);
+          }
+        }
+        class GoogleMarker {
+          constructor(options) {
+            this.element = options.map.element;
+            this.setPosition(options.position);
+          }
+          setPosition(position) {
+            if (position) {
+              this.element.dataset.marker = position.lat + "," + position.lng;
+            } else {
+              delete this.element.dataset.marker;
+            }
+          }
+        }
         window.google = {
           maps: {
-            importLibrary: async () => ({ PlaceAutocompleteElement }),
+            importLibrary: async (library) =>
+              library === "maps"
+                ? { Map: GoogleMap }
+                : library === "marker"
+                  ? { Marker: GoogleMarker }
+                  : { PlaceAutocompleteElement },
           },
         };
         window.__vayadaGoogleMapsReady?.();
       `,
     });
+  });
+}
+
+async function selectExactGoogleAddress(autocomplete: Locator) {
+  await autocomplete.evaluate((element) => {
+    const event = new Event("gmp-select");
+    Object.defineProperty(event, "placePrediction", {
+      value: {
+        types: ["street_address"],
+        toPlace: () => ({
+          fetchFields: async () => undefined,
+          location: { lat: () => 48.1373932, lng: () => 11.5754485 },
+          postalAddress: {
+            addressLines: ["Marienplatz 1"],
+            administrativeArea: "Bavaria",
+            locality: "Munich",
+            postalCode: "80331",
+            regionCode: "DE",
+          },
+        }),
+      },
+    });
+    element.dispatchEvent(event);
   });
 }
 

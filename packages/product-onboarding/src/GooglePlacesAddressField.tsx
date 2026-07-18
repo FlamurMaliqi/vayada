@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react";
 
+import { importGoogleMapsLibrary } from "./googleMaps";
+
 export type GooglePlacesAddress = {
   streetAddress: string;
   postalCode: string;
@@ -51,17 +53,6 @@ type GooglePlacesLibrary = {
   }) => GooglePlaceAutocompleteElement;
 };
 
-type GoogleMapsWindow = Window & {
-  google?: {
-    maps?: {
-      importLibrary?: (library: string) => Promise<unknown>;
-    };
-  };
-  __vayadaGoogleMapsReady?: () => void;
-};
-
-let googlePlacesLibraryPromise: Promise<GooglePlacesLibrary> | null = null;
-
 export default function GooglePlacesAddressField({
   addressRevision,
   apiKey,
@@ -92,7 +83,7 @@ export default function GooglePlacesAddressField({
     let autocomplete: GooglePlaceAutocompleteElement | null = null;
     const container = containerRef.current;
 
-    void loadGooglePlaces(apiKey)
+    void importGoogleMapsLibrary<GooglePlacesLibrary>(apiKey, "places")
       .then(({ PlaceAutocompleteElement }) => {
         if (disposed) return;
 
@@ -185,9 +176,9 @@ export default function GooglePlacesAddressField({
           font: inherit;
         }
         .vayada-google-place-autocomplete::part(input) {
-          min-height: 2.5rem;
-          padding: 0.625rem 1rem;
-          font-size: 0.875rem;
+          min-height: 3.5rem;
+          padding: 0.875rem 1rem;
+          font-size: 1rem;
         }
         .vayada-google-place-autocomplete:focus-within {
           border-color: rgb(47 82 245);
@@ -234,49 +225,4 @@ export function addressFromGooglePlace(
     latitude: isExactAddress ? (place.location?.lat() ?? null) : null,
     longitude: isExactAddress ? (place.location?.lng() ?? null) : null,
   };
-}
-
-function loadGooglePlaces(apiKey: string): Promise<GooglePlacesLibrary> {
-  const googleWindow = window as GoogleMapsWindow;
-  const importLibrary = googleWindow.google?.maps?.importLibrary;
-  if (importLibrary) return importLibrary("places") as Promise<GooglePlacesLibrary>;
-  if (googlePlacesLibraryPromise) return googlePlacesLibraryPromise;
-
-  googlePlacesLibraryPromise = new Promise<void>((resolve, reject) => {
-    const script = document.createElement("script");
-    const url = new URL("https://maps.googleapis.com/maps/api/js");
-    url.search = new URLSearchParams({
-      key: apiKey,
-      v: "weekly",
-      loading: "async",
-      libraries: "places",
-      auth_referrer_policy: "origin",
-      callback: "__vayadaGoogleMapsReady",
-    }).toString();
-
-    googleWindow.__vayadaGoogleMapsReady = () => {
-      delete googleWindow.__vayadaGoogleMapsReady;
-      resolve();
-    };
-    script.src = url.toString();
-    script.async = true;
-    script.dataset.vayadaGoogleMaps = "true";
-    script.onerror = () => {
-      delete googleWindow.__vayadaGoogleMapsReady;
-      script.remove();
-      reject(new Error("Google Maps could not load."));
-    };
-    document.head.appendChild(script);
-  })
-    .then(async () => {
-      const loadedImportLibrary = googleWindow.google?.maps?.importLibrary;
-      if (!loadedImportLibrary) throw new Error("Google Places is unavailable.");
-      return loadedImportLibrary("places") as Promise<GooglePlacesLibrary>;
-    })
-    .catch((error) => {
-      googlePlacesLibraryPromise = null;
-      throw error;
-    });
-
-  return googlePlacesLibraryPromise;
 }
