@@ -2,6 +2,7 @@
 
 import {
   type ComponentType,
+  type RefObject,
   type SVGProps,
   useEffect,
   useId,
@@ -263,6 +264,8 @@ export default function SharedFirstRunPropertySetupWizard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
+  const [profileStep, setProfileStep] = useState(0);
+  const profileHeading = useRef<HTMLHeadingElement>(null);
   const seededInitialSelectionPropertyIds = useRef<Set<string>>(new Set());
   const automaticContinueKey = useRef<string | null>(null);
 
@@ -275,10 +278,18 @@ export default function SharedFirstRunPropertySetupWizard({
     [returnTo, status?.entry.returnTo, view],
   );
   const productContinueBlocked = isProductContinueBlocked(view);
+  const title =
+    view.screen === "property_profile" && profileStep === 1
+      ? "Where is your property?"
+      : view.title;
 
   useEffect(() => {
     setForceCreateProperty(initialAddProperty);
   }, [initialAddProperty]);
+
+  useEffect(() => {
+    setProfileStep(0);
+  }, [view.profileMode, view.selectedPropertyId]);
 
   useEffect(() => {
     setSelectedProducts(uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]));
@@ -472,7 +483,12 @@ export default function SharedFirstRunPropertySetupWizard({
   }
 
   return (
-    <WizardShell title={view.title} view={view} embedded={embedded}>
+    <WizardShell
+      title={title}
+      view={view}
+      embedded={embedded}
+      headingRef={view.screen === "property_profile" ? profileHeading : undefined}
+    >
       {error && !(view.screen === "property_profile" && profileLoadFailed) && (
         <div
           className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
@@ -504,14 +520,17 @@ export default function SharedFirstRunPropertySetupWizard({
       {view.screen === "property_profile" && !profileLoadFailed && (
         <ProfileForm
           draft={draft}
+          step={profileStep}
           mode={view.profileMode ?? "create"}
           hasAccountSuggestions={Boolean(accountContactEmail || accountContactPhone)}
           loading={!propertyTypeOptions}
           saving={saving}
           fieldErrors={fieldErrors}
           propertyTypeOptions={propertyTypeOptions ?? []}
+          pageHeadingRef={profileHeading}
           onChange={setDraft}
           onFieldErrors={setFieldErrors}
+          onStepChange={setProfileStep}
           onCancel={
             status.properties.length > 0 && view.profileMode === "create"
               ? () => setForceCreateProperty(false)
@@ -555,12 +574,14 @@ function WizardShell({
   children,
   title,
   view,
+  headingRef,
   loading = false,
   embedded = false,
 }: {
   children?: React.ReactNode;
   title: string;
   view: SharedFirstRunSetupViewModel;
+  headingRef?: RefObject<HTMLHeadingElement>;
   loading?: boolean;
   embedded?: boolean;
 }) {
@@ -586,7 +607,13 @@ function WizardShell({
         <div className="mb-4 px-1 sm:px-2">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-gray-950">{title}</h2>
+              <h2
+                ref={headingRef}
+                tabIndex={headingRef ? -1 : undefined}
+                className="text-lg font-semibold text-gray-950 outline-none"
+              >
+                {title}
+              </h2>
               {subtitle && <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>}
             </div>
             <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
@@ -617,7 +644,13 @@ function WizardShell({
         <header
           className={`mx-auto text-center ${isProfileScreen ? "mb-4 max-w-2xl" : "mb-5 max-w-xl"}`}
         >
-          <h1 className="text-3xl font-semibold tracking-tight text-gray-950">{title}</h1>
+          <h1
+            ref={headingRef}
+            tabIndex={headingRef ? -1 : undefined}
+            className="text-3xl font-semibold tracking-tight text-gray-950 outline-none"
+          >
+            {title}
+          </h1>
           {subtitle && <p className="mt-2 text-sm text-gray-500">{subtitle}</p>}
         </header>
 
@@ -810,30 +843,35 @@ function ProfileIllustrationPanel({
 
 function ProfileForm({
   draft,
+  step,
   mode,
   hasAccountSuggestions,
   loading,
   saving,
   fieldErrors,
   propertyTypeOptions,
+  pageHeadingRef,
   onChange,
   onFieldErrors,
+  onStepChange,
   onCancel,
   onSave,
 }: {
   draft: ProfileDraft;
+  step: number;
   mode: "create" | "update";
   hasAccountSuggestions: boolean;
   loading: boolean;
   saving: boolean;
   fieldErrors: Record<string, string[]>;
   propertyTypeOptions: SharedPropertyTypeOption[];
+  pageHeadingRef: RefObject<HTMLHeadingElement>;
   onChange: (draft: ProfileDraft) => void;
   onFieldErrors: (errors: Record<string, string[]>) => void;
+  onStepChange: (step: number) => void;
   onCancel?: () => void;
   onSave: () => void;
 }) {
-  const [step, setStep] = useState(0);
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
   const [showAddressFields, setShowAddressFields] = useState(
     () =>
@@ -854,10 +892,12 @@ function ProfileForm({
       fields.some((field) => fieldErrors[field]),
     );
     if (errorStep >= 0 && errorStep !== step) {
-      setStep(errorStep);
-      requestAnimationFrame(() => stepHeading.current?.focus());
+      onStepChange(errorStep);
+      requestAnimationFrame(() =>
+        (errorStep === 1 ? pageHeadingRef.current : stepHeading.current)?.focus(),
+      );
     }
-  }, [fieldErrors, step]);
+  }, [fieldErrors, onStepChange, pageHeadingRef, step]);
 
   useEffect(() => {
     if (PROFILE_STEP_FIELDS[1].some((field) => fieldErrors[field])) {
@@ -902,8 +942,10 @@ function ProfileForm({
   };
   const changeStep = (nextStep: number) => {
     onFieldErrors({});
-    setStep(nextStep);
-    requestAnimationFrame(() => stepHeading.current?.focus());
+    onStepChange(nextStep);
+    requestAnimationFrame(() =>
+      (nextStep === 1 ? pageHeadingRef.current : stepHeading.current)?.focus(),
+    );
   };
   const continueToNextStep = () => {
     const currentFields = new Set(PROFILE_STEP_FIELDS[step]);
@@ -1124,18 +1166,11 @@ function ProfileForm({
 
           <div className="pointer-events-none relative z-10 flex min-h-[28rem] flex-col p-4 sm:min-h-[34rem] sm:p-6 xl:p-8">
             <div
-              className={`pointer-events-auto mx-auto w-full rounded-3xl border border-white/80 bg-white/95 p-4 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur sm:p-5 ${
-                showAddressFields ? "max-w-3xl" : "max-w-xl"
+              data-testid="location-address-card"
+              className={`pointer-events-auto mx-auto w-full rounded-3xl border border-white/80 bg-white/95 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur ${
+                showAddressFields ? "max-w-3xl p-4 sm:p-5" : "max-w-xl p-3 sm:p-4"
               }`}
             >
-              <h3
-                ref={step === 1 ? stepHeading : undefined}
-                tabIndex={-1}
-                className="mb-3 text-xl font-semibold tracking-tight text-gray-950 outline-none sm:text-2xl"
-              >
-                Where is your property?
-              </h3>
-
               {googleMapsApiKey && !showAddressFields && (
                 <GooglePlacesAddressField
                   addressRevision={addressRevision}
@@ -1286,9 +1321,9 @@ function ProfileForm({
                 className="pointer-events-auto mx-auto mt-auto w-full max-w-xl pt-4"
                 aria-live="polite"
               >
-                <div className="flex items-start gap-3 rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
-                  <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
-                    <MapPinIcon className="h-5 w-5" aria-hidden="true" />
+                <div className="flex items-start gap-3 rounded-2xl border border-white/80 bg-white/95 p-4 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
+                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
+                    <MapPinIcon className="h-4 w-4" aria-hidden="true" />
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-gray-950">

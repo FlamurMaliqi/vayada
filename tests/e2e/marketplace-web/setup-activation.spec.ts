@@ -63,9 +63,14 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("radio", { name: "Hotel", exact: true })).toBeChecked();
     await page.getByRole("button", { name: "Continue" }).click();
 
-    await expect(
-      page.getByRole("heading", { name: "Where is your property?", level: 3 }),
-    ).toBeVisible();
+    const locationHeading = page.getByRole("heading", {
+      name: "Where is your property?",
+      level: 1,
+    });
+    await expect(locationHeading).toBeVisible();
+    await expect(locationHeading).toBeFocused();
+    const locationAddressCard = page.getByTestId("location-address-card");
+    await expect(locationAddressCard.getByRole("heading")).toHaveCount(0);
     const locationContinueButton = page.getByRole("button", { name: "Continue" });
     await expect(locationContinueButton).toBeEnabled();
     await expect(page.getByText("Search for your hotel address", { exact: true })).toHaveCount(0);
@@ -88,6 +93,19 @@ test.describe("marketplace-web shared setup activation", () => {
       await expect(page.getByRole("textbox", { name: /Street address/ })).toHaveCount(0);
       const addressSearch = page.getByPlaceholder("Search for an address");
       await expect(addressSearch).toBeVisible();
+      const editAddressButton = page.getByRole("button", { name: "Enter address manually" });
+      const [cardBox, searchBox, editButtonBox] = await Promise.all([
+        locationAddressCard.boundingBox(),
+        addressSearch.boundingBox(),
+        editAddressButton.boundingBox(),
+      ]);
+      expect(cardBox).not.toBeNull();
+      expect(searchBox).not.toBeNull();
+      expect(editButtonBox).not.toBeNull();
+      expect(searchBox!.y - cardBox!.y).toBeLessThanOrEqual(24);
+      expect(
+        cardBox!.y + cardBox!.height - (editButtonBox!.y + editButtonBox!.height),
+      ).toBeLessThanOrEqual(24);
       const googleAddressSearch = page.locator(".vayada-google-place-autocomplete");
       await expect(googleAddressSearch).toHaveAttribute(
         "data-included-primary-types",
