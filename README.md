@@ -1,535 +1,428 @@
 # vayada
 
-vayada is a hospitality platform that connects travel creators and influencers with hotels for collaborations, and provides hotels with a direct booking engine and property management system. The platform is composed of three core products — a **Creator Marketplace**, a **Booking Engine**, and a **Property Management System (PMS)** — each with dedicated customer-facing frontends, admin dashboards, and backend APIs, all sharing a centralized authentication system.
+Vayada is a hospitality platform with three connected products:
 
----
+- **Creator Marketplace** — connects hotels with travel creators.
+- **Booking Engine** — powers direct, branded guest bookings.
+- **Property Management System (PMS)** — manages hotel operations, inventory,
+  reservations, and channel connectivity.
 
-## Table of Contents
+This repository is the product application monorepo. It contains every web app,
+the target TypeScript API, the legacy FastAPI services still used during
+migration, shared packages, database migration tooling, and local development
+support.
 
-- [Architecture Overview](#architecture-overview)
-- [Repository Structure](#repository-structure)
-- [Tech Stack](#tech-stack)
-- [Services](#services)
-  - [Creator Marketplace](#creator-marketplace)
-  - [Booking Engine](#booking-engine)
-  - [Property Management System](#property-management-system)
-  - [Shared Authentication](#shared-authentication)
-- [Getting Started](#getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Running Local Development](#running-local-development)
-  - [Seeding Test Data](#seeding-test-data)
-- [Service Ports](#service-ports)
-- [Databases](#databases)
-- [Infrastructure](#infrastructure)
-- [Environment Variables](#environment-variables)
-- [Monorepo App Mapping](#monorepo-app-mapping)
-- [Workspace Package Manager](#workspace-package-manager)
-- [Scripts](#scripts)
-- [Test Accounts](#test-accounts)
-- [Development Workflow](#development-workflow)
+## Architecture
 
----
+Vayada is in a staged backend and identity migration. The repository
+intentionally contains both backend generations; it is not currently a set of
+fully isolated product microservices.
 
-## Architecture Overview
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              vayada Platform                                │
-│                                                                              │
-│  ┌──────────────────────┐  ┌──────────────────────┐  ┌───────────────────┐  │
-│  │  Creator Marketplace │  │    Booking Engine     │  │        PMS        │  │
-│  │                      │  │                       │  │                   │  │
-│  │ ┌────────┐ ┌───────┐ │  │ ┌────────┐ ┌───────┐ │  │ ┌───────┐        │  │
-│  │ │Frontend│ │ Admin │ │  │ │Frontend│ │ Admin │ │  │ │Frontend│        │  │
-│  │ │ :3000  │ │ :3001 │ │  │ │ :3002  │ │ :3003 │ │  │ │ :3004  │        │  │
-│  │ └───┬────┘ └───┬───┘ │  │ └───┬────┘ └───┬───┘ │  │ └───┬───┘        │  │
-│  │     │          │      │  │     │          │      │  │     │            │  │
-│  │ ┌───▼──────────▼────┐ │  │ ┌───▼──────────▼────┐ │  │ ┌───▼──────────┐ │  │
-│  │ │ Marketplace API   │ │  │ │  Booking API      │ │  │ │   PMS API    │ │  │
-│  │ │     :8000         │ │  │ │     :8001         │ │  │ │    :8002     │ │  │
-│  │ └───┬───────────────┘ │  │ └───┬───────────────┘ │  │ └───┬─────────┘ │  │
-│  └─────┼────────────────┘  └─────┼────────────────┘  └─────┼───────────┘  │
-│        │                         │                          │              │
-│  ┌─────▼──────┐ ┌──────────┐ ┌───▼──────┐ ┌───────────┐ ┌──▼──────────┐  │
-│  │Marketplace │ │ Auth DB  │ │Booking DB│ │  PMS DB   │ │   MinIO     │  │
-│  │ DB :5432   │ │  :5435   │ │  :5434   │ │  :5436    │ │ :9000/:9001 │  │
-│  │ PostgreSQL │ │PostgreSQL│ │PostgreSQL│ │PostgreSQL │ │ S3 Storage  │  │
-│  └────────────┘ └──────────┘ └──────────┘ └───────────┘ └─────────────┘  │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  WEB["Seven Next.js applications"] --> API["apps/api<br/>TypeScript + Fastify"]
+  WEB --> LEGACY["Legacy FastAPI APIs"]
+  API --> TARGET["Target PostgreSQL<br/>domain schemas"]
+  LEGACY --> DBS["Legacy product and auth<br/>PostgreSQL databases"]
+  API --> WORKOS["WorkOS / AuthKit"]
+  API --> MEDIA["S3-compatible media"]
+  LEGACY --> MEDIA
 ```
 
-The platform follows a microservices architecture:
+| Layer               | Current role                                                                                                                                                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web applications    | Seven Next.js apps serve the marketplace, platform admin, booking storefront/admin, PMS, affiliate dashboard, and public landing site.                                                                                             |
+| Target API          | `apps/api` is the modular TypeScript/Fastify backend for WorkOS/AuthKit, identity and authorization, migrated product routes, platform media, jobs, and target-domain APIs.                                                        |
+| Legacy APIs         | `apps/marketplace-api`, `apps/booking-api`, and `apps/pms-api` remain in service while routes and data move to the target backend.                                                                                                 |
+| Target data model   | `packages/backend-migration` owns reviewed SQL migrations and parity tooling for the schema-organized target PostgreSQL database. Runtime source flags select target, compatibility, or disabled implementations during migration. |
+| Local support stack | Docker Compose starts the historical PostgreSQL databases, auth migrations, MinIO/media services, and the FastAPI APIs. `apps/api` and the web apps run from the npm workspace.                                                    |
 
-- **Application services**: Legacy FastAPI backends, the TypeScript `apps/api`, and Next.js frontends
-- **Four PostgreSQL databases**: One per domain (marketplace, booking, PMS, auth)
-- **MinIO**: S3-compatible object storage for images
-- **Shared auth database**: Centralized user management across all services
-- **Docker Compose support stack**: Local DBs, MinIO, auth migrations, and legacy FastAPI backends. Next.js frontends and `apps/api` run from npm/portless.
+The main design and migration references are:
 
----
+- [Target TypeScript backend structure](engineering/typescript-backend-structure.md)
+- [API contract ownership](engineering/api-contract-ownership.md)
+- [Target schema ownership](engineering/target-schema-ownership-map.md)
+- [Current next-stack legacy dependency inventory](engineering/next-stack-legacy-dependency-inventory.md)
+- [Backend migration tooling](packages/backend-migration/README.md)
 
-## Repository Structure
+## Repository layout
 
-```
-vayada/
-├── apps/                               # Product applications
-│   ├── api/                                  # TypeScript target/AuthKit backend
-│   ├── marketplace-api/                      # Legacy FastAPI marketplace backend
-│   ├── marketplace-web/                      # Next.js authenticated marketplace app
-│   ├── vayada-admin/                         # Next.js Vayada admin dashboard
-│   ├── booking-api/                          # Legacy FastAPI booking backend
-│   ├── booking-web/                          # Next.js guest booking frontend
-│   ├── booking-admin/                        # Next.js booking admin dashboard
-│   ├── pms-api/                              # Legacy FastAPI PMS backend
-│   ├── pms-web/                              # Next.js hotel dashboard
-│   ├── affiliate-dashboard/                  # Next.js affiliate dashboard
-│   └── landing/                              # Next.js public marketing site
-│
-├── packages/                           # Shared packages (created as needed)
-│
-├── auth-db/                            # Shared authentication database
-│   ├── migrations/                           # Auth schema migrations
-│   └── scripts/                              # Migration runner
-│
-│
-├── docs/                               # Product and engineering documentation
-│   ├── docs/                                 # Docusaurus product docs
-│   └── engineering/                          # Internal engineering notes
-│
-├── scripts/                            # Seed, migration, and local-dev scripts
-│   ├── dev-workos-local.sh                   # Current apps/api + AuthKit local stack
-│   ├── dev-portless.sh                       # Transitional legacy FastAPI-backed stack
-│   ├── seed_all.py                           # Master seed runner
-│   ├── seed_users.py                         # Auth DB user seeds
-│   ├── seed_marketplace.py                   # Marketplace DB seeds
-│   ├── seed_booking.py                       # Booking + PMS DB seeds
-│   └── run_migration.sh                      # Remote migration runner
-│
-├── docker-compose.yml                  # Local DBs, MinIO, auth migrations, and legacy FastAPI backends
-└── README.md
-```
+| Path                                      | Purpose                                                                |
+| ----------------------------------------- | ---------------------------------------------------------------------- |
+| [`apps/`](apps)                           | Deployable APIs and web applications                                   |
+| [`packages/`](packages)                   | Shared TypeScript backend, domain, adapter, migration, and UI packages |
+| [`auth-db/`](auth-db)                     | Shared legacy-auth migrations and migration runner                     |
+| [`engineering/`](engineering)             | Architecture decisions, contracts, inventories, and runbooks           |
+| [`scripts/`](scripts)                     | Local development, seeding, migration, and repository checks           |
+| [`tests/e2e/`](tests/e2e)                 | Playwright browser smoke tests                                         |
+| [`.github/workflows/`](.github/workflows) | CI and application delivery workflows                                  |
 
----
+## Technology
 
-## Tech Stack
+| Layer                 | Current stack                                                                                               |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Target API            | Node.js 24+, TypeScript, Fastify 5, `pg`, Kysely, WorkOS                                                    |
+| Web applications      | Next.js 16 App Router, React 18, TypeScript, Tailwind CSS                                                   |
+| Legacy APIs           | Python 3.11, FastAPI, AsyncPG                                                                               |
+| Data and media        | PostgreSQL 15, AWS S3-compatible storage, MinIO and nginx locally                                           |
+| Identity              | WorkOS/AuthKit provider identity with Vayada-owned authorization; legacy JWT compatibility during migration |
+| Payments and channels | Stripe, Xendit, and Channex                                                                                 |
+| Verification          | Vitest, pytest, ESLint, Ruff, and Playwright                                                                |
 
-| Layer          | Technology                                                                 |
-| -------------- | -------------------------------------------------------------------------- |
-| **Backends**   | TypeScript/Node (`apps/api`), Python 3.11/FastAPI legacy APIs              |
-| **Frontends**  | Next.js 14 (App Router), React 18, TypeScript                              |
-| **Styling**    | Tailwind CSS, PostCSS                                                      |
-| **Databases**  | PostgreSQL 15 (Alpine)                                                     |
-| **ORM / DB**   | AsyncPG (async PostgreSQL driver)                                          |
-| **Auth**       | WorkOS/AuthKit in `apps/api`; legacy JWT/password auth in FastAPI services |
-| **Payments**   | Stripe                                                                     |
-| **Storage**    | MinIO (S3-compatible), boto3                                               |
-| **i18n**       | next-intl (booking engine frontend)                                        |
-| **Icons**      | Heroicons React                                                            |
-| **Infra**      | AWS (ECS Fargate, ALB, RDS, ECR, Route53, S3)                              |
-| **IaC**        | Terraform                                                                  |
-| **CI/CD**      | GitHub Actions                                                             |
-| **Containers** | Docker, Docker Compose                                                     |
+Exact dependency versions live in the root and app package manifests,
+requirements files, and Dockerfiles.
 
----
+## Applications and local endpoints
 
-## Services
+[portless](https://portless.sh) is the recommended local interface. It normally
+exposes HTTPS on port 443; the plain ports remain available when running
+processes directly.
 
-### Creator Marketplace
+| Path                                                   | Role                          | Runtime | Portless URL                                | Plain port |
+| ------------------------------------------------------ | ----------------------------- | ------- | ------------------------------------------- | ---------: |
+| [`apps/api`](apps/api)                                 | Target cross-product API      | Fastify | `https://api.localhost`                     |       8003 |
+| [`apps/marketplace-api`](apps/marketplace-api)         | Legacy Marketplace API        | FastAPI | `https://api.marketplace.localhost`         |       8000 |
+| [`apps/marketplace-web`](apps/marketplace-web)         | Authenticated marketplace     | Next.js | `https://marketplace.localhost`             |       3000 |
+| [`apps/vayada-admin`](apps/vayada-admin)               | Platform administration       | Next.js | `https://admin.localhost`                   |       3001 |
+| [`apps/booking-api`](apps/booking-api)                 | Legacy Booking API            | FastAPI | `https://api.booking.localhost`             |       8001 |
+| [`apps/booking-web`](apps/booking-web)                 | Guest booking storefront      | Next.js | `https://hotel-alpenrose.booking.localhost` |       3002 |
+| [`apps/booking-admin`](apps/booking-admin)             | Booking Engine administration | Next.js | `https://admin.booking.localhost`           |       3003 |
+| [`apps/pms-api`](apps/pms-api)                         | Legacy PMS API                | FastAPI | `https://api.pms.localhost`                 |       8002 |
+| [`apps/pms-web`](apps/pms-web)                         | PMS operations                | Next.js | `https://pms.localhost`                     |       3004 |
+| [`apps/affiliate-dashboard`](apps/affiliate-dashboard) | Affiliate dashboard           | Next.js | `https://affiliate.localhost`               |       3005 |
+| [`apps/landing`](apps/landing)                         | Public marketing site         | Next.js | `https://landing.localhost`                 |       3006 |
 
-The marketplace connects travel creators and influencers with hotels for paid collaborations.
+FastAPI documentation is available at `/docs` on each legacy API origin.
 
-**Backend** (`apps/marketplace-api/`) — Port 8000
+Booking Web is multi-tenant. Use
+`https://<hotel-slug>.booking.localhost`; bare `booking.localhost` does not
+select a property. The integrated local workflow enables wildcard routing.
 
-- User registration and authentication (creators, hotels, admins)
-- Creator profiles with social platforms, audience analytics, and portfolio
-- Hotel listings with collaboration offerings and creator requirements
-- Collaboration workflow: requests, negotiations, deliverables, messaging
-- Real-time chat between creators and hotels
-- Image upload and processing via MinIO/S3
-- Invite codes for hotel onboarding (pre-configured setups)
-- GDPR compliance: data export, deletion requests, consent tracking
-- Email notifications
+### Local support ports
 
-**Admin Panel** (`apps/vayada-admin/`) — Port 3001
+| Service                | Port | Local database      | Local user            |
+| ---------------------- | ---: | ------------------- | --------------------- |
+| Marketplace PostgreSQL | 5432 | `vayada_db`         | `vayada_user`         |
+| Booking PostgreSQL     | 5434 | `vayada_booking_db` | `vayada_booking_user` |
+| Auth PostgreSQL        | 5435 | `vayada_auth_db`    | `vayada_auth_user`    |
+| PMS PostgreSQL         | 5436 | `vayada_pms_db`     | `vayada_pms_user`     |
+| MinIO API              | 9000 | —                   | —                     |
+| MinIO console          | 9001 | —                   | —                     |
+| Local media CDN        | 9002 | —                   | —                     |
 
-- Sidebar navigation: Users, Hotels, Marketplace, Collaborations, Invite Codes
-- User management (view, edit, approve, reject creators and hotels)
-- Hotel booking engine configuration (embedded)
-- Marketplace preview (listings and creators)
-- Collaboration monitoring
-- Invite code creation with full setup wizard (property, branding, rooms, policies, billing terms)
+The canonical local mappings are maintained in
+[`scripts/portless-setup.sh`](scripts/portless-setup.sh), app package
+manifests, [`scripts/dev-workos-local.sh`](scripts/dev-workos-local.sh), and
+[`docker-compose.yml`](docker-compose.yml).
 
----
-
-### Booking Engine
-
-The booking engine allows hotels to accept direct bookings from guests with a fully customizable, white-label booking experience.
-
-**Backend** (`apps/booking-api/`) — Port 8001
-
-- Hotel configuration with branding, amenities, social links, and translations
-- Room type management with images, pricing, and availability
-- End-to-end booking flow with guest details and payment
-- Affiliate link tracking and commission management
-- Multi-currency support with live exchange rates
-- Custom domain support (Cloudflare integration)
-- Property settings API (including billing plans and payout details)
-- Add-on management (transport, wellness, dining, experiences)
-
-**Frontend** (`apps/booking-web/`) — Port 3002
-
-- Hotel landing page with hero, amenities, and room previews
-- Room listing with filters, availability search, and detail modals
-- Dynamic book-direct benefits per room type
-- Checkout flow with guest form and payment
-- Booking confirmation and lookup
-- Affiliate tracking via URL parameters
-- Multi-language support (EN, DE, FR, ES, ID)
-- Social media links in footer
-- Custom domain resolution
-
-**Admin Dashboard** (`apps/booking-admin/`) — Port 3003
-
-- Dashboard with booking metrics
-- Design Studio: hero image, colors, font pairing (live preview)
-- Booking Flow: room filters, add-ons, guest details, payment config
-- Settings: property info, contact, social media, currency/languages, billing
-- Billing tab: view commission/fixed-fee plans, switch for next month, payout details (IBAN)
-- Setup wizard (5 steps) with invite code support for pre-filled onboarding
-
----
-
-### Property Management System
-
-The PMS provides hotel operations management — rooms, bookings, calendar, and channel management.
-
-**Backend** (`apps/pms-api/`) — Port 8002
-
-- Hotel and room type management with seasonal pricing
-- Booking management with room assignment
-- Calendar with availability blocks
-- Public rooms API (serves room data to booking frontend)
-- Image upload to S3
-- Beds24 channel manager integration (two-way sync)
-- Affiliate management and payout scheduling
-
-**Frontend** (`apps/pms-web/`) — Port 3004
-
-- Dashboard with occupancy and revenue metrics
-- Room type management with amenities, features, and benefits
-- Calendar view with drag-and-drop
-- Booking list and detail views
-- Settings: hotel info, integrations
-- Beds24 connection and room mapping
-
----
-
-### Shared Authentication
-
-The auth database (`auth-db/`) provides centralized user management for all services.
-
-**Schema tables:**
-
-- `users` — Core user table (email, password hash, name, type, status, avatar)
-- `password_reset_tokens` — Token-based password recovery
-- `email_verification_codes` — One-time verification codes
-- `cookie_consent`, `consent_history` — GDPR consent tracking
-- `gdpr_requests` — Data export and deletion requests
-
-**User types:** `hotel`, `creator`, `admin`
-**User statuses:** `pending`, `verified`, `rejected`, `suspended`
-
----
-
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- **Docker** and **Docker Compose** (v2+)
-- **Node 24+** and npm
-- **portless** for the recommended HTTPS local workflow
-- **Python 3.11+** with `asyncpg` and `bcrypt` (for seed scripts)
-- **Git**
+- Git
+- Docker with Docker Compose v2
+- Node.js 24 and npm 11 (`.nvmrc` and `package.json` pin the supported versions)
+- Python 3.11+
+- portless for the recommended HTTPS workflow
+- The WorkOS CLI for current AuthKit development
 
-### Running Local Development
-
-1. **Clone the repository:**
-
-   ```bash
-   git clone https://github.com/vayada-marketplace/vayada.git
-   cd vayada
-   ```
-
-2. **Pick the local entry point:**
-
-   ```bash
-   npm install
-   npm run dev:workos-local
-   ```
-
-   `npm run dev:workos-local` is the current path for AuthKit and next-stack
-   work. It starts the Docker support services for the legacy FastAPI APIs, then
-   starts `apps/api` (`https://api.localhost`, port `8003`) and the Next.js apps
-   through portless. It requires `apps/api/.env` with local WorkOS settings.
-
-   `npm run dev:portless` delegates to the same AuthKit-capable workflow so
-   signup/login routes work by default. Use `./scripts/dev-portless.sh --legacy`
-   only for the old FastAPI-only path without WorkOS-specific env wiring or seed
-   bootstrap.
-
-   Run `./scripts/portless-setup.sh` once if portless has not been trusted and
-   configured on the machine.
-
-3. **Seed test data when needed:**
-
-   ```bash
-   npm run seed:test-data
-   ```
-
-   `npm run dev:workos-local` runs this automatically unless `SKIP_SEED=1` is
-   set. Run it manually for `./scripts/dev-portless.sh --legacy`, raw Compose,
-   or individual app development.
-
-4. **Access the applications:**
-
-   | Application             | portless URL                           | Plain-port fallback        |
-   | ----------------------- | -------------------------------------- | -------------------------- |
-   | TypeScript API          | https://api.localhost                  | http://localhost:8003      |
-   | Marketplace Frontend    | https://marketplace.localhost          | http://localhost:3000      |
-   | Marketing / Landing     | https://landing.localhost              | http://localhost:3006      |
-   | Vayada Admin            | https://admin.localhost                | http://localhost:3001      |
-   | Booking Engine Frontend | https://booking.localhost              | http://localhost:3002      |
-   | Booking Engine Admin    | https://admin.booking.localhost        | http://localhost:3003      |
-   | PMS Frontend            | https://pms.localhost                  | http://localhost:3004      |
-   | Marketplace API Docs    | https://api.marketplace.localhost/docs | http://localhost:8000/docs |
-   | Booking Engine API Docs | https://api.booking.localhost/docs     | http://localhost:8001/docs |
-   | PMS API Docs            | https://api.pms.localhost/docs         | http://localhost:8002/docs |
-   | MinIO Console           | n/a                                    | http://localhost:9001      |
-
-Raw `docker compose up -d` has one supported meaning: start Postgres, MinIO,
-`auth-db-migrate`, and the legacy FastAPI backends on ports `8000`-`8002`. It
-does not build or run `apps/api` or any Next.js frontend. Frontends must run
-from the host npm workspace so local `@vayada/*` packages resolve correctly.
-
-For PMS UI testing without portless, run the support services with Compose and
-start the PMS frontend from the host workspace:
+One-time machine and repository setup:
 
 ```bash
-docker compose up -d marketplace-postgres booking-postgres auth-postgres pms-postgres auth-db-migrate minio minio-setup marketplace-backend booking-backend pms-backend
-npm run seed:test-data
-cd apps/pms-web
-NEXT_PUBLIC_AUTH_API_URL=http://localhost:8001 \
-NEXT_PUBLIC_PMS_API_URL=http://localhost:8002 \
-NEXT_PUBLIC_BOOKING_ADMIN_URL=http://localhost:3003 \
-NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=false \
-npm run dev
+nvm use
+npm ci
+npm install -g portless workos
+./scripts/portless-setup.sh
 ```
 
-Then open `http://localhost:3004`.
+`portless-setup.sh` trusts the local certificate authority and may prompt for
+`sudo`.
 
----
+### WorkOS configuration
 
-## Service Ports
+Current AuthKit development requires `apps/api/.env` with approved,
+non-production WorkOS settings. If the file does not exist, start from
+`apps/api/.env.example`, then add the values below. At minimum, configure the
+complete token-verification group and the WorkOS client credentials:
 
-| Service                 | Port | Description                            |
-| ----------------------- | ---- | -------------------------------------- |
-| Marketplace Frontend    | 3000 | Authenticated creator marketplace app  |
-| Marketing / Landing     | 3006 | Public marketing site (vayada-landing) |
-| Vayada Admin            | 3001 | Platform-wide admin dashboard          |
-| Booking Frontend        | 3002 | Guest-facing booking site              |
-| Booking Admin           | 3003 | Hotel admin dashboard                  |
-| PMS Frontend            | 3004 | Hotel property management              |
-| TypeScript API          | 8003 | AuthKit and target backend routes      |
-| Marketplace Backend API | 8000 | Marketplace REST API                   |
-| Booking Backend API     | 8001 | Booking engine REST API                |
-| PMS Backend API         | 8002 | PMS REST API                           |
-| Marketplace PostgreSQL  | 5432 | Marketplace database                   |
-| Booking PostgreSQL      | 5434 | Booking engine database                |
-| Auth PostgreSQL         | 5435 | Shared authentication database         |
-| PMS PostgreSQL          | 5436 | PMS database                           |
-| MinIO API               | 9000 | S3-compatible object storage           |
-| MinIO Console           | 9001 | MinIO web management UI                |
+```dotenv
+AUTH_DATABASE_URL=postgresql://vayada_auth_user:vayada_auth_password@localhost:5435/vayada_auth_db
 
----
+WORKOS_CLIENT_ID=<staging-client-id>
+WORKOS_API_KEY=<staging-api-key>
+WORKOS_JWKS_URL=<staging-jwks-url>
+WORKOS_ISSUER=<staging-issuer>
+WORKOS_AUDIENCE=<staging-audience>
+```
 
-## Databases
+Obtain the WorkOS values through the team's approved secret-sharing process.
+They are intentionally not committed. The launcher supplies local
+cookie/origin defaults, ensures the required roles and redirect/CORS entries
+exist in the configured project, and refuses a production `sk_live_*` key.
 
-| Database    | Port | Name                | User                  |
-| ----------- | ---- | ------------------- | --------------------- |
-| Auth        | 5435 | `vayada_auth_db`    | `vayada_auth_user`    |
-| Marketplace | 5432 | `vayada_db`         | `vayada_user`         |
-| Booking     | 5434 | `vayada_booking_db` | `vayada_booking_user` |
-| PMS         | 5436 | `vayada_pms_db`     | `vayada_pms_user`     |
+Without staging WorkOS access, the Docker support stack and legacy APIs can
+still run, but current AuthKit-backed sign-in will not work.
 
-All databases use PostgreSQL 15 Alpine with UUID primary keys and timestamp columns. Migrations are in each service's `migrations/` directory.
+### Start the current local stack
 
----
+```bash
+npm run dev:workos-local
+```
 
-## Infrastructure
+`npm run dev:portless` delegates to the same workflow. The launcher:
 
-Production infrastructure is managed with Terraform in the [`vayada-platform`](https://github.com/vayada-marketplace/vayada-platform) repository. This repo owns application code only.
+- starts Postgres, MinIO, the media CDN, and all three legacy FastAPI APIs;
+- applies auth, legacy-service, and target-schema migrations;
+- starts `apps/api` and all seven Next.js apps;
+- enables wildcard routing for Booking Web tenant subdomains; and
+- seeds legacy test data unless `SKIP_SEED=1` is set.
 
-- **AWS ECS Fargate**: All services run as containers
-- **Application Load Balancer**: Routes traffic by hostname
-- **RDS PostgreSQL**: Single multi-database instance
-- **ECR**: Container registries for each service (owned by platform; images built and pushed by app CI)
-- **Route53**: DNS for `*.booking.vayada.com`, `pms.vayada.com`, `api.vayada.com`, etc.
-- **S3**: Production image storage (`vayada-uploads-prod`)
-- **Cloudflare**: Custom domain SSL for hotel booking engines
-- **GitHub Actions**: App CI builds, tests, and publishes images; platform CI deploys to ECS
+Stop the foreground apps with `Ctrl-C`. Then stop the Docker support services
+and portless proxy with:
 
-Production domains:
+```bash
+npm run dev:workos-local -- --stop
+```
 
-- `*.booking.vayada.com` — Hotel booking engines (wildcard)
-- `admin.booking.vayada.com` — Booking admin
-- `pms.vayada.com` — PMS frontend
-- `booking-api.vayada.com` — Booking API
-- `pms-api.vayada.com` — PMS API
-- `api.vayada.com` — Marketplace API
-- `admin.vayada.com` — Vayada admin
+Use `./scripts/dev-portless.sh --legacy` only for legacy-backed development
+that does not need the current WorkOS environment wiring.
 
----
+### Plain-port development
 
-## Environment Variables
+Plain ports are useful when running one process directly, but they are not a
+credential-free replacement for the integrated AuthKit stack.
 
-Key environment variables are configured in `docker-compose.yml` and service `.env` files. Production variable names and values are managed in `vayada-platform`.
+Start the Docker support services:
 
-### Frontends
+```bash
+docker compose up -d
+```
 
-| Variable                             | Description                     |
-| ------------------------------------ | ------------------------------- |
-| `NEXT_PUBLIC_API_URL`                | Backend API base URL            |
-| `NEXT_PUBLIC_AUTH_API_URL`           | `apps/api` AuthKit/session API  |
-| `NEXT_PUBLIC_BOOKING_WEB_API_URL`    | `apps/api` booking-web BFF API  |
-| `NEXT_PUBLIC_PMS_OPERATIONS_API_URL` | `apps/api` PMS operations API   |
-| `NEXT_PUBLIC_PLATFORM_MEDIA_API_URL` | `apps/api` media upload API     |
-| `NEXT_PUBLIC_PMS_URL`                | PMS API URL (booking admin)     |
-| `NEXT_PUBLIC_MARKETPLACE_API_URL`    | Marketplace API (invite codes)  |
-| `NEXT_PUBLIC_HOTEL_SLUG`             | Default hotel slug              |
-| `NEXT_PUBLIC_BOOKING_ADMIN_URL`      | Booking admin URL (PMS handoff) |
+This starts the databases, MinIO/media services, auth migrations, and legacy
+FastAPI APIs. It does not run `apps/api` or a Next.js app. Run the required
+host processes in separate terminals.
 
----
+For example, to run PMS Web with AuthKit over plain HTTP, first register
+`http://localhost:8003/auth/oauth/google/callback` and the matching API/PMS
+origins in the staging WorkOS project. `npm run dev:api` does not load
+`apps/api/.env`, and the integrated launcher's session defaults are not present,
+so start the API with:
 
-## Monorepo App Mapping
+```bash
+# Terminal 1
+set -a
+source apps/api/.env
+set +a
+export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-$AUTH_DATABASE_URL}"
+export AUTH_COOKIE_SECRET=local-dev-auth-cookie-secret-0123456789abcdef
+export AUTH_LOGOUT_URL=http://localhost:3004/login
+export AUTH_ALLOWED_ORIGINS=http://localhost:8003,http://localhost:3004
+export AUTH_COOKIE_SECURE=false
+export AUTH_LEGACY_PMS_JWT_SECRET=your-secret-key-change-in-production
+npm run target:migrate -- --env local
+npm run dev:api
+```
 
-Product apps are normal directories under `apps/`. The old app repositories were
-imported with path-scoped history. The old standalone repositories are archived
-in GitHub; the legacy root product directories were removed from this repo.
+In the second terminal, configure `apps/pms-web/.env.local` with the matching
+plain-port URLs and the required compatibility bridge:
 
-| Old path                                              | New monorepo path          |
-| ----------------------------------------------------- | -------------------------- |
-| `marketplace/vayada-creator-marketplace-backend`      | `apps/marketplace-api`     |
-| `marketplace/vayada-creator-marketplace-frontend`     | `apps/marketplace-web`     |
-| `marketplace/vayada-admin`                            | `apps/vayada-admin`        |
-| `booking-engine/vayada-booking-engine-backend`        | `apps/booking-api`         |
-| `booking-engine/vayada-booking-engine-frontend`       | `apps/booking-web`         |
-| `booking-engine/vayada-booking-engine-frontend-admin` | `apps/booking-admin`       |
-| `pms/vayada-pms-backend`                              | `apps/pms-api`             |
-| `pms/vayada-pms-frontend`                             | `apps/pms-web`             |
-| `affiliate/vayada-affiliate-dashboard`                | `apps/affiliate-dashboard` |
-| `marketing/vayada-landing`                            | `apps/landing`             |
+```dotenv
+NEXT_PUBLIC_AUTH_API_URL=http://localhost:8003
+NEXT_PUBLIC_PMS_API_URL=http://localhost:8002
+NEXT_PUBLIC_PMS_OPERATIONS_API_URL=http://localhost:8003
+NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=http://localhost:8003
+NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true
+NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true
+```
 
----
+Then run `npm run dev:pms-web`. Other web apps follow the same pattern using
+their nearest `.env.example`.
 
-## Workspace Package Manager
+For the seeded Booking Web tenant, use
+`http://hotel-alpenrose.localhost:3002` or
+`http://localhost:3002?slug=hotel-alpenrose`.
 
-The monorepo uses **npm workspaces** at the repository root.
+To replace a Compose FastAPI backend with a host process, stop that backend
+first and populate its `.env` from `.env.example`. For example:
 
-The initial workspace migration preserves each app's existing `package-lock.json`
-and app-local npm workflow, while adding a root `package-lock.json` for
-reproducible workspace installs. You can still run `npm install` and
-`npm run dev/build/lint` from an individual frontend app.
+```bash
+docker compose stop pms-backend
+cd apps/pms-api
+pip install -r requirements.txt
+python scripts/run_migrations.py
+uvicorn app.main:app --reload --port 8002
+```
 
-Root workspace commands are available for orchestration:
+## Seed data and legacy test accounts
+
+For standalone seeding, prepare the small Python environment once and pass it
+to the seed runner:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install asyncpg bcrypt
+PYTHON_BIN=.venv/bin/python npm run seed:test-data
+```
+
+The integrated local stack runs this automatically unless `SKIP_SEED=1` is
+set. The seed command populates the legacy auth, marketplace, booking, and PMS
+PostgreSQL data.
+
+**The seed command does not create users or passwords in WorkOS.** Use an
+approved staging WorkOS account for current AuthKit-backed UIs. The credentials
+below are for legacy-auth and data testing only.
+
+| Email               | Password    | Legacy account/data state                                      |
+| ------------------- | ----------- | -------------------------------------------------------------- |
+| `admin@vayada.com`  | `Vayada123` | Legacy `admin` record; not automatically a platform superadmin |
+| `creator1@mock.com` | `Test1234`  | Verified, with social platforms                                |
+| `creator2@mock.com` | `Test1234`  | Verified                                                       |
+| `creator3@mock.com` | `Test1234`  | Pending                                                        |
+| `creator4@mock.com` | `Test1234`  | Verified                                                       |
+| `hotel1@mock.com`   | `Test1234`  | Verified; Hotel Alpenrose booking data                         |
+| `hotel2@mock.com`   | `Test1234`  | Verified; Grand Hotel Riviera                                  |
+| `hotel3@mock.com`   | `Test1234`  | Verified; The Birchwood Lodge                                  |
+| `hotel4@mock.com`   | `Test1234`  | Pending; minimal City Center Hotel data                        |
+| `hotel5@mock.com`   | `Test1234`  | Verified; marketplace profile without a booking record         |
+
+See [`scripts/README.md`](scripts/README.md) for seed inputs and individual
+commands.
+
+## Databases and migrations
+
+Docker Compose provisions the legacy/compatibility databases listed under
+[Local support ports](#local-support-ports). Those names and ports are local
+defaults, not a production topology contract.
+
+Migration ownership is split across three paths:
+
+| Scope                    | Location                                 | Local behavior                                                 | Production behavior                                                                                   |
+| ------------------------ | ---------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Legacy product APIs      | `apps/*-api/migrations/`                 | FastAPI containers apply pending migrations before serving     | Each legacy API image applies its own migrations on container start                                   |
+| Legacy shared auth       | `auth-db/migrations/`                    | Compose runs the `auth-db-migrate` one-shot service            | The dedicated `migrate-auth-db` workflow applies changes                                              |
+| TypeScript target schema | `packages/backend-migration/migrations/` | `dev:workos-local` applies migrations to `TARGET_DATABASE_URL` | Follow the reviewed target migration and cutover runbook; `apps/api` does not auto-migrate on startup |
+
+The target database is organized into domain schemas for platform, identity,
+hotel catalog, booking, PMS, finance, marketplace, distribution, and
+intelligence. The local launcher uses `AUTH_DATABASE_URL` as the target URL
+when `TARGET_DATABASE_URL` is not set.
+
+To apply target migrations manually to a configured local database:
+
+```bash
+set -a
+source apps/api/.env
+set +a
+export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-$AUTH_DATABASE_URL}"
+npm run target:migrate -- --env local
+```
+
+Detailed target migration, fixture, parity, and WorkOS backfill commands live
+in [`packages/backend-migration/README.md`](packages/backend-migration/README.md).
+Production database operations are service-specific; do not treat
+`scripts/run_migration.sh` as a universal migration command.
+
+## Authentication and authorization
+
+Two auth models coexist during migration:
+
+- **Target path:** WorkOS/AuthKit owns provider authentication and sessions.
+  `apps/api` maps provider identities and memberships to Vayada-owned users,
+  organizations, permissions, resource links, and product entitlements in the
+  target identity schema.
+- **Legacy compatibility path:** `auth-db/` and the FastAPI services retain
+  password/JWT-era tables and flows required by unmigrated routes and rollback
+  compatibility.
+
+Legacy `users.type` values (`hotel`, `creator`, `admin`, and `affiliate`) are
+migration inputs, not the target authorization model. Target authorization
+resolves an authenticated identity to an internal user, selected organization,
+active membership, permissions, linked product resources, and entitlements.
+
+## Environment variables
+
+Environment variables are app-specific. Use the nearest
+`apps/<app>/.env.example`, [`apps/api/src/config.ts`](apps/api/src/config.ts),
+and the checked-in deploy workflow as the source of truth. Production values
+and secrets are owned by the platform repository.
+
+The current AuthKit group is shown in [Getting started](#getting-started).
+Target rollout selectors and platform-media options are documented in
+`apps/api/.env.example` and `apps/api/src/config.ts`.
+
+`NEXT_PUBLIC_*` values are bundled into frontend builds and must never contain
+server secrets. Do not assume a variable with the same name has the same
+semantic role in every app; follow that app's example file and deployment
+workflow.
+
+## Workspace commands and validation
+
+The npm workspace globs are `apps/*` and `packages/*`. Python services remain
+outside npm workspaces and use their own requirements and pytest commands.
+
+Common root commands:
 
 ```bash
 npm ci
-npm run dev:booking-web
-npm run build:booking-web
-npm run lint:booking-web
 npm run build
 npm run lint
 npm run typecheck
+npm run test:api
+npm run test:architecture-boundaries
 ```
 
-Workspace layout:
-
-| Path         | Purpose                                      |
-| ------------ | -------------------------------------------- |
-| `apps/*`     | Product apps                                 |
-| `docs`       | Docusaurus docs app                          |
-| `packages/*` | Future shared JavaScript/TypeScript packages |
-
-Python apps remain outside npm workspaces and continue to use
-`requirements.txt`, pytest, and their app-local Python commands.
-
-See `engineering/workspace-package-manager.md` for the decision record.
-
----
-
-## Scripts
-
-| Script                | Description                                                                       |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `seed_test_data.sh`   | Checks local seed dependencies and runs all test-data seeds                       |
-| `dev-workos-local.sh` | Current local stack: Compose support services, `apps/api`, and portless frontends |
-| `dev-portless.sh`     | Transitional stack: Compose support services and locally configured portless apps |
-| `seed_all.py`         | Runs all seeds in sequence (users, marketplace, booking)                          |
-| `seed_users.py`       | Creates admin, creator, and hotel users in auth DB                                |
-| `seed_marketplace.py` | Creates creator profiles, hotel listings, collaborations                          |
-| `seed_booking.py`     | Creates hotels, room types, translations, sample bookings                         |
-| `run_migration.sh`    | Runs migrations against AWS RDS for a given service                               |
-
-All seed scripts use `asyncpg` and are idempotent (safe to run multiple times).
-
----
-
-## Test Accounts
-
-After running `npm run seed:test-data`:
-
-| Email             | Password  | Type    | Notes                        |
-| ----------------- | --------- | ------- | ---------------------------- |
-| admin@vayada.com  | Vayada123 | admin   | Full admin access            |
-| creator1@mock.com | Test1234  | creator | Verified, with platforms     |
-| creator2@mock.com | Test1234  | creator | Verified                     |
-| creator3@mock.com | Test1234  | creator | Pending                      |
-| creator4@mock.com | Test1234  | creator | Verified                     |
-| hotel1@mock.com   | Test1234  | hotel   | Hotel Alpenrose (EUR)        |
-| hotel2@mock.com   | Test1234  | hotel   | Grand Hotel Riviera (USD)    |
-| hotel3@mock.com   | Test1234  | hotel   | The Birchwood Lodge (GBP)    |
-| hotel4@mock.com   | Test1234  | hotel   | City Center Hotel (minimal)  |
-| hotel5@mock.com   | Test1234  | hotel   | Seaside Retreat (no booking) |
-
----
-
-## Development Workflow
-
-### Working on a single service
-
-Each app can be developed independently:
+For a changed FastAPI backend:
 
 ```bash
-# Backend
-cd apps/pms-api
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8002
-
-# Frontend
-cd apps/booking-web
-npm install && npm run dev
+cd apps/<api>
+python -m pytest
+ruff check <changed-paths>
 ```
 
-### Running only databases
+For a changed Next.js app, run its build and lint commands. Root app-specific
+aliases include `build:<app>` and `lint:<app>` for each web app.
+
+UI changes also require browser exercise. Run the full Playwright smoke layer
+or an app-specific command, for example:
 
 ```bash
-docker compose up -d marketplace-postgres booking-postgres auth-postgres pms-postgres minio minio-setup
+npm run e2e
+npm run e2e:booking-web
 ```
 
-### Compose support stack
+See [`tests/e2e/README.md`](tests/e2e/README.md) for URL overrides,
+`E2E_START_SERVERS=1`, supported app commands, and focused smoke coverage.
 
-```bash
-docker compose up -d        # Start DBs, MinIO, auth migrations, and legacy FastAPI backends
-docker compose down          # Stop support services
-docker compose down -v       # Stop support services and remove volumes
-```
+## Production infrastructure and deployment
+
+Production infrastructure, DNS, secrets, certificates, load balancing, and
+runtime configuration are owned in the
+[`vayada-platform`](https://github.com/vayada-marketplace/vayada-platform)
+repository. Its environment documentation is the canonical source for the
+current service and hostname inventory.
+
+The application-repository delivery flow is service-specific:
+
+1. Pull requests run the shared check workflow.
+2. App deploy workflows build Docker images and publish them to ECR. All are
+   manually dispatchable; all except the canonical `deploy-pms-web.yml` also
+   run when their configured paths change on `main`.
+3. ECS-backed workflows send an `app-image-published` repository-dispatch event
+   to `vayada-platform`, which owns the deployment after that handoff.
+4. The current landing and marketplace-web workflows publish images for App
+   Runner auto-deployment rather than dispatching an ECS deployment.
+
+Parallel `deploy-next-*` workflows and `next-*` hostnames are used to validate
+the target stack before canonical routing is cut over. Current product
+frontends also use `target-api.vayada.com` for migrated API/AuthKit surfaces.
+Exact host routing is deliberately not duplicated here; use the platform
+environment documentation as the authoritative mapping.
+
+## Development workflow
+
+Before changing the repository, read [`AGENTS.md`](AGENTS.md) for branch,
+validation, and shipping rules. Target-backend, WorkOS, target-schema,
+migration, and cutover work also follows the
+[TypeScript rewrite workflow](.agents/skills/typescript-rewrite-workflow/SKILL.md);
+Linear conventions live in
+[`engineering/linear-workspace.md`](engineering/linear-workspace.md).
