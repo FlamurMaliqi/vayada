@@ -51,9 +51,15 @@ describe("canConfirmLocation", () => {
 });
 
 describe("hasMapCoordinates", () => {
-  it("requires finite latitude and longitude values", () => {
+  it("accepts finite latitude and longitude values within geographic bounds", () => {
     expect(hasMapCoordinates({ latitude: 48.1373932, longitude: 11.5754485 })).toBe(true);
+    expect(hasMapCoordinates({ latitude: -90, longitude: -180 })).toBe(true);
+    expect(hasMapCoordinates({ latitude: 90, longitude: 180 })).toBe(true);
     expect(hasMapCoordinates({ latitude: null, longitude: 11.5754485 })).toBe(false);
     expect(hasMapCoordinates({ latitude: Number.NaN, longitude: 11.5754485 })).toBe(false);
+    expect(hasMapCoordinates({ latitude: -90.1, longitude: 0 })).toBe(false);
+    expect(hasMapCoordinates({ latitude: 90.1, longitude: 0 })).toBe(false);
+    expect(hasMapCoordinates({ latitude: 0, longitude: -180.1 })).toBe(false);
+    expect(hasMapCoordinates({ latitude: 0, longitude: 180.1 })).toBe(false);
   });
 });
