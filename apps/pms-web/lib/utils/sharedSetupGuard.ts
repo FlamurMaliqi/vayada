@@ -1,4 +1,5 @@
 import {
+  isActionableSharedProductActivation,
   resolveSharedHotelSetupGuard,
   type SharedHotelSetupApi,
   type SharedHotelSetupGuardDecision,
@@ -8,16 +9,13 @@ import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { SELECTED_SHARED_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
 
 type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-const PMS_ACTIVATION_STEPS = new Set(["roomTypes", "rooms", "ratePlans"]);
 
 export function isPmsRoomSetupDecision(decision: SharedHotelSetupGuardDecision): boolean {
   return (
     decision.action === "redirect_to_setup" &&
     decision.setupAction === "complete_product_activation" &&
     decision.product === "pms" &&
-    decision.productStatus === "selected_incomplete" &&
-    decision.missingSteps.length > 0 &&
-    decision.missingSteps.every((step) => PMS_ACTIVATION_STEPS.has(step))
+    isActionableSharedProductActivation(decision)
   );
 }
 

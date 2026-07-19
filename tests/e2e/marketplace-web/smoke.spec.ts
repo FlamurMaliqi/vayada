@@ -111,14 +111,11 @@ test.describe("marketplace-web smoke", () => {
     await mockSharedSetupStatus(page);
 
     await page.goto("/onboarding");
-    await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
     await expect(
-      page.getByText(
-        "Welcome to Vayada — where independent hotels and creators connect, build trusted partnerships, and grow together.",
-      ),
+      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
     ).toBeVisible();
-    await expect(page.getByText("Independent hotels", { exact: true })).toBeVisible();
-    await expect(page.getByText("Creators", { exact: true })).toBeVisible();
+    await expect(page.getByText("Account created", { exact: true })).toBeVisible();
+    await expect(page.getByText("Choose your role so we can tailor your setup.")).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     expect(
       await page.evaluate(
@@ -126,15 +123,6 @@ test.describe("marketplace-web smoke", () => {
       ),
     ).toBe(true);
     await page.setViewportSize({ width: 1280, height: 720 });
-    await expect(page.getByRole("radio")).toHaveCount(0);
-    // Guard the user-controlled welcome against the former 1.8-second auto-advance.
-    await page.waitForTimeout(2_000);
-    await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
-    await expect(page.getByRole("radio")).toHaveCount(0);
-    await page.getByRole("button", { name: "Continue to Vayada" }).click();
-
-    await expect(page.getByRole("heading", { name: "Which best describes you?" })).toBeVisible();
-    await expect(page.getByText("Choose your role so we can tailor your setup.")).toBeVisible();
     const continueButton = page.getByRole("button", { name: "Continue", exact: true });
     await expect(continueButton).toBeDisabled();
     await page.getByRole("radio", { name: /i manage a hotel/i }).click();
@@ -164,6 +152,32 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByRole("button", { name: "Remove photo" })).toBeVisible();
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
 
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+    await expect(
+      page.getByText("Your account details are saved. Next, let’s set up your first hotel."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Set up my first hotel" })).toBeFocused();
+    expect(
+      await page.getByTestId("signup-success-ring").evaluate((element) => ({
+        name: getComputedStyle(element).animationName,
+        iterations: getComputedStyle(element).animationIterationCount,
+      })),
+    ).toEqual({ name: "ping", iterations: "2" });
+    expect(
+      await page.getByTestId("signup-success-check").evaluate((element) => ({
+        name: getComputedStyle(element).animationName,
+        iterations: getComputedStyle(element).animationIterationCount,
+      })),
+    ).toEqual({ name: "bounce", iterations: "1" });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    expect(
+      await page
+        .getByTestId("signup-success-ring")
+        .evaluate((element) => getComputedStyle(element).animationName),
+    ).toBe("none");
+    await page.getByRole("button", { name: "Set up my first hotel" }).click();
+
     await expect(page).toHaveURL(/\/setup\?/);
     const url = new URL(page.url());
     expect(url.searchParams.get("entryProduct")).toBe("marketplace");
@@ -172,6 +186,45 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByLabel("Hotel name")).toBeVisible();
     await expect(page.getByText("We'd like to get to know you better")).toHaveCount(0);
     await expect(page.getByText("Which systems do you want to use?")).toHaveCount(0);
+  });
+
+  test("restored profile-ready sessions still show the onboarding handoff", async ({ page }) => {
+    await primeBrowserState(page);
+    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          accessToken: "restored-hotel-token",
+          csrfToken: "restored-hotel-csrf",
+          organizationId: "11111111-1111-4111-8111-111111111111",
+          organizationKind: "hotel_group",
+          user: {
+            id: "user-restored-hotel",
+            email: "returning-owner@example.test",
+            name: "Returning Owner",
+            status: "active",
+          },
+        },
+      });
+    });
+    await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
+      accessToken: "restored-marketplace-token",
+      expiresIn: 900,
+    });
+
+    await page.goto("/onboarding");
+
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+    await expect(
+      page.getByText("Your account details are saved. Next, let’s set up your first hotel."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Set up my first hotel" })).toBeVisible();
   });
 
   test("creator onboarding uses creator copy and requires a profile photo", async ({ page }) => {
@@ -231,9 +284,9 @@ test.describe("marketplace-web smoke", () => {
     });
 
     await page.goto("/onboarding");
-    await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
-    await page.getByRole("button", { name: "Continue to Vayada" }).click();
-    await expect(page.getByRole("heading", { name: "Which best describes you?" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
     await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -272,6 +325,15 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByRole("button", { name: "Change profile photo" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Remove profile photo" })).toHaveCount(0);
     await page.getByRole("button", { name: "Continue to creator profile" }).click();
+
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+    await expect(
+      page.getByText(
+        "Your account details are saved. Next, let’s create the public creator profile hotels will see.",
+      ),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Create my public creator profile" }).click();
 
     await expect(page).toHaveURL(/\/profile\/complete$/);
     await expect(
@@ -366,7 +428,6 @@ test.describe("marketplace-web smoke", () => {
     });
 
     await page.goto("/onboarding");
-    await page.getByRole("button", { name: "Continue to Vayada" }).click();
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
     const continueButton = page.getByRole("button", { name: "Continue", exact: true });
     await continueButton.click();
@@ -378,19 +439,6 @@ test.describe("marketplace-web smoke", () => {
     await page.getByRole("button", { name: "Retry creator requirements" }).click();
     await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
     expect(statusRequests).toBe(2);
-  });
-
-  test("returning onboarding users do not see the signup welcome again", async ({ page }) => {
-    await primeBrowserState(page);
-    await page.addInitScript(() => {
-      sessionStorage.setItem("vayada:onboarding-welcome:user-pending-onboarding", "complete");
-    });
-    await mockOnboardingAuth(page);
-
-    await page.goto("/onboarding");
-
-    await expect(page.getByRole("heading", { name: "Which best describes you?" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toHaveCount(0);
   });
 
   test("creator onboarding preserves an existing public profile and hydrates its platforms", async ({
@@ -450,7 +498,6 @@ test.describe("marketplace-web smoke", () => {
     });
 
     await page.goto("/onboarding");
-    await page.getByRole("button", { name: "Continue to Vayada" }).click();
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page.getByLabel("First name").fill("Mary");
@@ -462,6 +509,9 @@ test.describe("marketplace-web smoke", () => {
       buffer: Buffer.from("replacement-profile-image"),
     });
     await page.getByRole("button", { name: "Continue to creator profile" }).click();
+
+    await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+    await page.getByRole("button", { name: "Create my public creator profile" }).click();
 
     await expect(page).toHaveURL(/\/profile\/complete$/);
     await expect(
@@ -821,7 +871,9 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Retry session" }).click();
-    await expect(page.getByRole("heading", { name: "Thank you for signing up" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
+    ).toBeVisible();
   });
 
   test("redirects to login and blocks onboarding actions when the session check fails", async ({

@@ -1,11 +1,113 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canContinueProductSetup,
   canConfirmLocation,
   hasMapCoordinates,
   locationResetForManualAddressEdit,
+  productSetupTasks,
   validateProfileDraft,
 } from "./SharedFirstRunPropertySetupWizard";
+
+describe("product setup roadmap", () => {
+  it("groups technical Marketplace requirements into two owner tasks", () => {
+    expect(
+      productSetupTasks("marketplace", {
+        status: "selected_incomplete",
+        missingSteps: [
+          "creatorPitch",
+          "marketplaceOffer",
+          "offerDeliverables",
+          "compensationOptions",
+          "creatorRequirements",
+        ],
+      }),
+    ).toMatchObject([
+      { id: "creator-profile", complete: false },
+      {
+        id: "collaboration-offer",
+        title: "Prepare your collaboration offer",
+        complete: false,
+      },
+    ]);
+  });
+
+  it("marks completed task groups without treating the product as ready", () => {
+    expect(
+      productSetupTasks("booking", {
+        status: "selected_incomplete",
+        missingSteps: ["paymentReadiness"],
+      }),
+    ).toMatchObject([
+      { id: "booking-settings", complete: true },
+      { id: "booking-readiness", complete: false },
+    ]);
+  });
+
+  it("keeps additive backend requirements actionable as additional setup", () => {
+    expect(
+      productSetupTasks("marketplace", {
+        status: "selected_incomplete",
+        missingSteps: ["marketplaceListing"],
+      }),
+    ).toMatchObject([
+      { id: "creator-profile", complete: true },
+      { id: "collaboration-offer", complete: true },
+      { id: "additional-setup", complete: false },
+    ]);
+    expect(
+      canContinueProductSetup({
+        status: "selected_incomplete",
+        missingSteps: ["marketplaceListing"],
+      }),
+    ).toBe(true);
+    expect(
+      canContinueProductSetup({
+        status: "selected_incomplete",
+        missingSteps: ["futureBookingRequirement"],
+      }),
+    ).toBe(true);
+  });
+
+  it("only opens product-owned setup for actionable requirements", () => {
+    expect(
+      canContinueProductSetup({
+        status: "selected_incomplete",
+        missingSteps: ["roomTypes", "rooms", "ratePlans"],
+      }),
+    ).toBe(true);
+    expect(
+      canContinueProductSetup({
+        status: "selected_incomplete",
+        missingSteps: ["productEntitlement", "rooms"],
+      }),
+    ).toBe(false);
+    expect(
+      canContinueProductSetup({
+        status: "selected_incomplete",
+        missingSteps: ["creatorPitch"],
+      }),
+    ).toBe(true);
+    expect(
+      canContinueProductSetup({
+        status: "selected_incomplete",
+        missingSteps: [],
+      }),
+    ).toBe(false);
+    expect(
+      canContinueProductSetup({
+        status: "suspended",
+        missingSteps: ["marketplaceListing"],
+      }),
+    ).toBe(false);
+    expect(
+      canContinueProductSetup({
+        status: "unavailable",
+        missingSteps: ["marketplaceListing"],
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("locationResetForManualAddressEdit", () => {
   it("clears a Google-selected region when the city changes", () => {

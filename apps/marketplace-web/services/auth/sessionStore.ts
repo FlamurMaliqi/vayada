@@ -15,6 +15,7 @@ export type AuthKitSessionResponse = {
   accessToken: string;
   csrfToken?: string;
   organizationId?: string;
+  workosOrganizationId?: string;
   organizationKind?: "creator_workspace" | "hotel_group" | "platform" | "affiliate_partner";
   user: AuthUser;
 };
@@ -142,6 +143,10 @@ export function getAuthBearerToken(): string | null {
 
 export function getAuthSessionUser(): AuthUser | null {
   return authKitSession?.user ?? null;
+}
+
+export function getAuthWorkosOrganizationId(): string | null {
+  return authKitSession?.workosOrganizationId ?? null;
 }
 
 function getLegacyCompatibilityToken(): string | null {

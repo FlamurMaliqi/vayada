@@ -178,6 +178,20 @@ describe("resolveMarketplaceSetupGuard", () => {
     expect(isMarketplaceActivationDecision(decision)).toBe(false);
   });
 
+  it("keeps additive Marketplace requirements profile-editable", () => {
+    expect(
+      isMarketplaceActivationDecision({
+        action: "redirect_to_setup",
+        propertyId: "property-1",
+        redirectPath: "/setup?entryProduct=marketplace&propertyId=property-1",
+        setupAction: "complete_product_activation",
+        product: "marketplace",
+        productStatus: "selected_incomplete",
+        missingSteps: ["marketplaceListing"],
+      }),
+    ).toBe(true);
+  });
+
   it("labels incomplete Marketplace activation for the selected shared property", () => {
     const setupStatus = status({
       properties: [marketplaceActivationProperty("property-1")],

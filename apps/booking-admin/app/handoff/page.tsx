@@ -2,8 +2,13 @@
 
 import { useEffect } from "react";
 import { authService } from "@/services/auth";
+import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStore";
 import { settingsService, type HotelSummary } from "@/services/settings";
-import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
+import {
+  isSafeRelativeReturnTo,
+  missingOrganizationHandoffLoginPath,
+  organizationSelectionLoginPath,
+} from "@vayada/product-onboarding/returnTo";
 
 export default function HandoffPage() {
   useEffect(() => {
@@ -16,6 +21,13 @@ export default function HandoffPage() {
     const userData = hashParams.get("user");
     const handoffHotelId = hashParams.get("hotel_id");
     const propertyId = hashParams.get("property_id");
+    const organizationId = hashParams.get("organization_id")?.trim() || null;
+    const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
+    const organizationSelectionPath = organizationSelectionLoginPath(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash,
+    );
 
     // Optional `?redirect=...` query param tells us where to go after
     // auth. Used by the PMS header's "Add Property" button which
@@ -29,9 +41,68 @@ export default function HandoffPage() {
       if (token && expiresAt) {
         localStorage.setItem("access_token", token);
         localStorage.setItem("token_expires_at", expiresAt);
-      } else if (!(await authService.ensureSession())) {
-        window.location.href = "/login";
-        return;
+      } else if (!authService.isAuthKitEnabled()) {
+        if (!(await authService.ensureSession())) {
+          window.location.href = organizationSelectionPath;
+          return;
+        }
+      } else {
+        try {
+          let session = await authService.refreshSession();
+          if (isAuthOrganizationSelectionResponse(session)) {
+            const organization = organizationId
+              ? session.organizations.find(
+                  (candidate) => candidate.organizationId === organizationId,
+                )
+              : workosOrganizationId
+                ? session.organizations.find(
+                    (candidate) => candidate.workosOrganizationId === workosOrganizationId,
+                  )
+                : session.organizations.length === 1
+                  ? session.organizations[0]
+                  : undefined;
+
+            if (
+              !organization ||
+              (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+
+            session = await authService.refreshSession(
+              workosOrganizationId ?? organization.workosOrganizationId,
+            );
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          } else if (
+            (organizationId && session.organizationId !== organizationId) ||
+            (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+          ) {
+            if (!workosOrganizationId) {
+              window.location.href = missingOrganizationHandoffLoginPath();
+              return;
+            }
+            session = await authService.refreshSession(workosOrganizationId);
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              session.workosOrganizationId !== workosOrganizationId
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          }
+        } catch {
+          window.location.href = organizationSelectionPath;
+          return;
+        }
       }
 
       if (token && expiresAt && userData) {
@@ -53,7 +124,11 @@ export default function HandoffPage() {
       try {
         hotels = await settingsService.listHotels();
       } catch {
-        window.location.href = "/setup";
+        localStorage.setItem("setupComplete", "false");
+        const explicitId = propertyId?.trim() || handoffHotelId?.trim();
+        window.location.href = explicitId
+          ? `/setup?entryProduct=booking&propertyId=${encodeURIComponent(explicitId)}`
+          : "/setup";
         return;
       }
 
@@ -61,6 +136,7 @@ export default function HandoffPage() {
       const storedHotelId = localStorage.getItem("selectedHotelId")?.trim();
       const requestedPropertyId = propertyId?.trim();
       const requestedHotelId = handoffHotelId?.trim();
+      const explicitSelectionRequested = Boolean(requestedPropertyId || requestedHotelId);
       let selected = requestedPropertyId
         ? (hotels.find(
             (hotel) => hotel.propertyId === requestedPropertyId || hotel.id === requestedPropertyId,
@@ -74,6 +150,7 @@ export default function HandoffPage() {
             : storedHotelId
               ? (hotels.find((hotel) => hotel.id === storedHotelId) ?? null)
               : null;
+      const explicitSelectionMissing = explicitSelectionRequested && !selected;
 
       if (
         (requestedPropertyId || requestedHotelId || storedPropertyId || storedHotelId) &&
@@ -82,7 +159,7 @@ export default function HandoffPage() {
         localStorage.removeItem("selectedSharedPropertyId");
         localStorage.removeItem("selectedHotelId");
       }
-      if (!selected && hotels.length === 1) {
+      if (!explicitSelectionRequested && !selected && hotels.length === 1) {
         selected = hotels[0]!;
       }
       if (selected) {
@@ -94,9 +171,20 @@ export default function HandoffPage() {
         }
       }
 
-      if (safeRedirect) {
+      if (safeRedirect && !explicitSelectionMissing) {
         localStorage.setItem("setupComplete", "true");
         window.location.href = safeRedirect;
+        return;
+      }
+      if (explicitSelectionMissing) {
+        localStorage.setItem("setupComplete", "false");
+        if (requestedPropertyId) {
+          window.location.href = `/setup?entryProduct=booking&propertyId=${encodeURIComponent(requestedPropertyId)}`;
+        } else if (hotels.length > 1) {
+          window.location.href = "/choose-property";
+        } else {
+          window.location.href = "/setup";
+        }
         return;
       }
       if (hotels.length === 0) {
@@ -121,7 +209,7 @@ export default function HandoffPage() {
       localStorage.setItem("setupComplete", "true");
       window.location.href = "/dashboard";
     })().catch(() => {
-      window.location.href = "/login";
+      window.location.href = organizationSelectionPath;
     });
   }, []);
 

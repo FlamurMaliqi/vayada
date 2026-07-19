@@ -197,14 +197,21 @@ async function listScopedBookingHotels(): Promise<HotelSummary[]> {
   }
 }
 
-async function resolveBookingHotelId(): Promise<string> {
+function resolveBookingHotelId(explicitHotelId?: string): string {
+  const scopedExplicitHotelId = explicitHotelId?.trim();
+  if (scopedExplicitHotelId) {
+    if (listScopedBookingHotelIds().includes(scopedExplicitHotelId)) {
+      return scopedExplicitHotelId;
+    }
+    throw new Error("Booking hotel is outside the active organization scope.");
+  }
   const hotelId = getSelectedBookingHotelId();
   if (hotelId) return hotelId;
   throw new Error("Booking hotel id is required.");
 }
 
-async function getTargetPropertySettings(): Promise<PropertySettings> {
-  const hotelId = await resolveBookingHotelId();
+async function getTargetPropertySettings(explicitHotelId?: string): Promise<PropertySettings> {
+  const hotelId = resolveBookingHotelId(explicitHotelId);
   return apiClient.get<PropertySettings>(
     `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/property`,
     omitHotelContext,
@@ -213,8 +220,9 @@ async function getTargetPropertySettings(): Promise<PropertySettings> {
 
 async function updateTargetPropertySettings(
   data: PropertySettingsUpdate,
+  explicitHotelId?: string,
 ): Promise<PropertySettings> {
-  const hotelId = await resolveBookingHotelId();
+  const hotelId = resolveBookingHotelId(explicitHotelId);
   return apiClient.patch<PropertySettings>(
     `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/property`,
     data,
@@ -336,9 +344,10 @@ export const settingsService = {
     return unavailableTargetRoute<void>("Hotel deletion");
   },
 
-  getPropertySettings: () => getTargetPropertySettings(),
+  getPropertySettings: (hotelId?: string) => getTargetPropertySettings(hotelId),
 
-  updatePropertySettings: (data: PropertySettingsUpdate) => updateTargetPropertySettings(data),
+  updatePropertySettings: (data: PropertySettingsUpdate, hotelId?: string) =>
+    updateTargetPropertySettings(data, hotelId),
 
   createHotel: (data: PropertySettingsUpdate) => {
     void data;

@@ -20,7 +20,7 @@ import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
-import { SELECTED_SHARED_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
+import { storeSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
 
 export function SharedHotelSetupPage({
   defaultEntryProduct,
@@ -77,7 +77,7 @@ export function SharedHotelSetupPage({
   const initialPropertyId = searchParams.get("propertyId");
 
   const handleProductContinue = (input: SharedFirstRunProductContinueInput) => {
-    localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, input.propertyId);
+    storeSelectedPmsPropertyId(input.propertyId);
     if (input.action === "complete_product_activation" && input.product === "pms") {
       router.push("/rooms");
       return;
@@ -126,6 +126,7 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
+      autoContinueToProduct
       accountContactEmail={accountContactEmail}
       accountContactPhone={accountContactPhone}
       onProductContinue={handleProductContinue}

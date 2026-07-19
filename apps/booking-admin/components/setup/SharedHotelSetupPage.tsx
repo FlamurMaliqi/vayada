@@ -20,6 +20,7 @@ import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
+import { settingsService } from "@/services/settings";
 
 export function SharedHotelSetupPage({
   defaultEntryProduct,
@@ -75,10 +76,21 @@ export function SharedHotelSetupPage({
   const initialAddProperty = searchParams.get("mode") === "add";
   const initialPropertyId = searchParams.get("propertyId");
 
-  const handleProductContinue = (input: SharedFirstRunProductContinueInput) => {
+  const handleProductContinue = async (input: SharedFirstRunProductContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
+    if (input.product === "booking") {
+      localStorage.removeItem("selectedHotelId");
+      try {
+        const hotels = await settingsService.listHotels();
+        const bookingHotel = hotels.find(
+          (hotel) => hotel.propertyId === input.propertyId || hotel.id === input.propertyId,
+        );
+        if (bookingHotel) localStorage.setItem("selectedHotelId", bookingHotel.id);
+      } catch {
+        // The legacy setup route retries the scoped mapping and handles missing access.
+      }
+    }
     if (input.action === "complete_product_activation" && input.product === "booking") {
-      localStorage.setItem("selectedHotelId", input.propertyId);
       window.location.href = `/setup?legacy=booking&propertyId=${encodeURIComponent(input.propertyId)}`;
       return;
     }
@@ -126,6 +138,7 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
+      autoContinueToProduct
       accountContactEmail={accountContactEmail}
       accountContactPhone={accountContactPhone}
       onProductContinue={handleProductContinue}
