@@ -48,6 +48,7 @@ export {
   MARKETPLACE_PROFILE_TOOL_STEPS,
   SHARED_HOTEL_SETUP_PRODUCTS,
   canOpenMarketplaceProfileTools,
+  isActionableSharedProductActivation,
   isSafeSharedHotelSetupReturnTo,
   isSharedHotelSetupProductSelectable,
   parseSharedHotelSetupEntryProduct,
@@ -78,7 +79,9 @@ export {
 } from "./sharedHotelSetupGuard";
 export {
   firstSearchParam,
+  handoffReturnToForOrganization,
   isSafeRelativeReturnTo,
+  missingOrganizationHandoffLoginPath,
   safeRelativeReturnTo,
   type ReturnToParam,
 } from "./returnTo";

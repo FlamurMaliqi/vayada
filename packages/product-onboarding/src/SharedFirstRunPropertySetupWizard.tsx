@@ -24,9 +24,7 @@ import {
   KeyIcon,
   MapPinIcon,
   PlusIcon,
-  RocketLaunchIcon,
   SparklesIcon,
-  Squares2X2Icon,
   SunIcon,
   UsersIcon,
 } from "@heroicons/react/24/outline";
@@ -37,7 +35,7 @@ import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
-  canOpenMarketplaceProfileTools,
+  isActionableSharedProductActivation,
   isSharedHotelSetupProductSelectable,
   resolveSharedFirstRunSetupView,
   type SharedFirstRunSetupViewModel,
@@ -57,6 +55,7 @@ type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 export type SharedFirstRunProductContinueInput = {
   product: SharedHotelSetupProduct;
   productStatus: SharedProductActivation<SharedHotelSetupProduct>["status"] | null;
+  organizationId: string;
   propertyId: string;
   missingSteps: string[];
   returnTo: string | null;
@@ -159,33 +158,6 @@ const DEFAULT_PRODUCT_LABELS: ProductLabels = {
   marketplace: "Creator Marketplace",
 };
 
-const MARKETPLACE_ACTIVATION_STEPS: Record<string, { title: string; description: string }> = {
-  productEntitlement: {
-    title: "Marketplace access",
-    description: "Confirm this property is enabled for Creator Marketplace.",
-  },
-  creatorPitch: {
-    title: "Creator-facing pitch",
-    description: "Add the message creators should see when evaluating this property.",
-  },
-  marketplaceOffer: {
-    title: "Collaboration offer",
-    description: "Create the offer creators can review and apply to.",
-  },
-  offerDeliverables: {
-    title: "Requested content",
-    description: "Describe the posts, photos, or videos you want from creators.",
-  },
-  compensationOptions: {
-    title: "Compensation options",
-    description: "Choose the collaboration terms you are open to considering.",
-  },
-  creatorRequirements: {
-    title: "Creator requirements",
-    description: "Set the platforms, audience, and creator profile you want to work with.",
-  },
-};
-
 const PRODUCT_DESCRIPTIONS: Record<SharedHotelSetupProduct, string> = {
   booking: "Direct booking pages, checkout, and guest-facing availability.",
   pms: "Rooms, calendar, reservations, and daily property operations.",
@@ -197,6 +169,58 @@ const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
   pms: "Run daily operations",
   marketplace: "Invite creator demand",
 };
+
+type ProductSetupTaskDefinition = {
+  id: string;
+  title: string;
+  description: string;
+  missingSteps: readonly string[];
+};
+
+const PRODUCT_SETUP_TASKS: Record<SharedHotelSetupProduct, readonly ProductSetupTaskDefinition[]> =
+  {
+    booking: [
+      {
+        id: "booking-settings",
+        title: "Configure booking settings",
+        description: "Review booking preferences, policies, and guest-facing details.",
+        missingSteps: ["bookingSettings"],
+      },
+      {
+        id: "booking-readiness",
+        title: "Prepare to accept direct bookings",
+        description: "Publish live availability and finish guest payment setup.",
+        missingSteps: ["publicBookability", "bookabilityFreshness", "paymentReadiness"],
+      },
+    ],
+    pms: [
+      {
+        id: "rooms-and-rates",
+        title: "Set up rooms & rates",
+        description: "Create a room type, add physical rooms, and set its first rate plan.",
+        missingSteps: ["roomTypes", "rooms", "ratePlans"],
+      },
+    ],
+    marketplace: [
+      {
+        id: "creator-profile",
+        title: "Introduce your hotel to creators",
+        description: "Write the creator-facing pitch shown on your hotel profile.",
+        missingSteps: ["creatorPitch"],
+      },
+      {
+        id: "collaboration-offer",
+        title: "Prepare your collaboration offer",
+        description: "Add or review requested content, compensation, and creator requirements.",
+        missingSteps: [
+          "marketplaceOffer",
+          "offerDeliverables",
+          "compensationOptions",
+          "creatorRequirements",
+        ],
+      },
+    ],
+  };
 
 const EMPTY_SELECTED_PRODUCTS: SharedHotelSetupProduct[] = [];
 
@@ -273,15 +297,33 @@ export default function SharedFirstRunPropertySetupWizard({
     () => resolveSharedFirstRunSetupView(status, { forceCreateProperty }),
     [forceCreateProperty, status],
   );
+  const productContinueReturnTo = status?.entry.returnTo ?? returnTo;
   const productContinueInput = useMemo(
-    () => buildProductContinueInput(view, status?.entry.returnTo ?? returnTo),
-    [returnTo, status?.entry.returnTo, view],
+    () =>
+      buildProductContinueInput(
+        view,
+        status?.hotelGroup.organizationId ?? null,
+        productContinueReturnTo,
+      ),
+    [productContinueReturnTo, status?.hotelGroup.organizationId, view],
   );
   const productContinueBlocked = isProductContinueBlocked(view);
-  const title =
-    view.screen === "property_profile" && profileStep === 1
-      ? "Where is your property?"
-      : view.title;
+  const isProductSetupScreen =
+    view.screen === "product_activation" || view.screen === "enter_product";
+  const productSetupHub = !autoContinueToProduct && isProductSetupScreen;
+  const productSetupProducts = productSetupHub
+    ? uniqueSelectedProducts([
+        ...(status?.hotelGroup.selectedProducts ?? []),
+        ...(view.product && view.selectedProperty?.products[view.product].status !== "not_selected"
+          ? [view.product]
+          : []),
+      ])
+    : view.product
+      ? [view.product]
+      : [];
+  const shellTitle = productSetupHub
+    ? `Finish setting up ${view.selectedProperty?.displayName ?? "your hotel"}`
+    : view.title;
 
   useEffect(() => {
     setForceCreateProperty(initialAddProperty);
@@ -461,8 +503,14 @@ export default function SharedFirstRunPropertySetupWizard({
     }
   };
 
-  const handleContinueProduct = () => {
-    if (productContinueInput) onProductContinue(productContinueInput);
+  const handleContinueProduct = (product: SharedHotelSetupProduct) => {
+    const input = buildProductContinueInput(
+      view,
+      status?.hotelGroup.organizationId ?? null,
+      productContinueReturnTo,
+      product,
+    );
+    if (input) onProductContinue(input);
   };
 
   if (loading || !status) {
@@ -484,9 +532,11 @@ export default function SharedFirstRunPropertySetupWizard({
 
   return (
     <WizardShell
-      title={title}
+      title={shellTitle}
       view={view}
       embedded={embedded}
+      mapFirst={view.screen === "property_profile" && profileStep === 1}
+      productSetupHub={productSetupHub}
       headingRef={view.screen === "property_profile" ? profileHeading : undefined}
     >
       {error && !(view.screen === "property_profile" && profileLoadFailed) && (
@@ -523,6 +573,7 @@ export default function SharedFirstRunPropertySetupWizard({
           step={profileStep}
           mode={view.profileMode ?? "create"}
           hasAccountSuggestions={Boolean(accountContactEmail || accountContactPhone)}
+          embedded={embedded}
           loading={!propertyTypeOptions}
           saving={saving}
           fieldErrors={fieldErrors}
@@ -562,7 +613,12 @@ export default function SharedFirstRunPropertySetupWizard({
           {autoContinueToProduct && productContinueInput && !productContinueBlocked ? (
             <ProductRedirecting labels={labels} product={productContinueInput.product} />
           ) : (
-            <ProductContinue labels={labels} view={view} onContinue={handleContinueProduct} />
+            <ProductContinue
+              labels={labels}
+              view={view}
+              selectedProducts={productSetupProducts}
+              onContinue={handleContinueProduct}
+            />
           )}
         </>
       )}
@@ -577,6 +633,8 @@ function WizardShell({
   headingRef,
   loading = false,
   embedded = false,
+  mapFirst = false,
+  productSetupHub = false,
 }: {
   children?: React.ReactNode;
   title: string;
@@ -584,6 +642,8 @@ function WizardShell({
   headingRef?: RefObject<HTMLHeadingElement>;
   loading?: boolean;
   embedded?: boolean;
+  mapFirst?: boolean;
+  productSetupHub?: boolean;
 }) {
   const progress =
     view.screen === "property_selection"
@@ -598,29 +658,37 @@ function WizardShell({
       ? "Pick an existing property or add a new one to this hotel group."
       : view.screen === "property_profile"
         ? null
-        : "We’ll ask for the basics once and keep them consistent across PMS, Booking Engine, and Marketplace.";
+        : view.screen === "product_selection"
+          ? "Choose one or more products to start with. You can add more later."
+          : productSetupHub
+            ? "Your hotel details are saved. Continue in each selected workspace to get every product ready."
+            : "Your hotel details are saved. Continue in this workspace to finish product setup.";
   const isProfileScreen = view.screen === "property_profile";
+  const isProductSelectionScreen = view.screen === "product_selection";
+  const useWideSetupLayout = isProductSelectionScreen || productSetupHub;
 
   if (embedded) {
     return (
       <section className="min-w-0">
-        <div className="mb-4 px-1 sm:px-2">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2
-                ref={headingRef}
-                tabIndex={headingRef ? -1 : undefined}
-                className="text-lg font-semibold text-gray-950 outline-none"
-              >
-                {title}
-              </h2>
-              {subtitle && <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>}
+        {!mapFirst && (
+          <div className="mb-4 px-1 sm:px-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2
+                  ref={headingRef}
+                  tabIndex={headingRef ? -1 : undefined}
+                  className="text-lg font-semibold text-gray-950 outline-none"
+                >
+                  {title}
+                </h2>
+                {subtitle && <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>}
+              </div>
+              <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
+                Step {progress} of 4
+              </span>
             </div>
-            <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
-              Step {progress} of 4
-            </span>
           </div>
-        </div>
+        )}
         {loading ? (
           <div className="overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]">
             <div className="flex min-h-80 items-center justify-center p-5 sm:p-6">
@@ -636,23 +704,41 @@ function WizardShell({
 
   return (
     <main
-      className={`flex min-h-screen items-center px-4 py-6 text-gray-900 sm:px-6 lg:px-8 ${
-        isProfileScreen ? "bg-gray-50" : "bg-white"
-      }`}
+      className={`flex min-h-screen text-gray-900 ${
+        mapFirst ? "" : "items-center px-4 py-6 sm:px-6 lg:px-8"
+      } ${isProfileScreen || useWideSetupLayout ? "bg-gray-50" : "bg-white"}`}
     >
-      <div className={`mx-auto w-full ${isProfileScreen ? "max-w-7xl" : "max-w-5xl"}`}>
-        <header
-          className={`mx-auto text-center ${isProfileScreen ? "mb-4 max-w-2xl" : "mb-5 max-w-xl"}`}
-        >
-          <h1
-            ref={headingRef}
-            tabIndex={headingRef ? -1 : undefined}
-            className="text-3xl font-semibold tracking-tight text-gray-950 outline-none"
+      <div
+        className={`mx-auto w-full ${
+          mapFirst
+            ? "max-w-none"
+            : isProfileScreen
+              ? "max-w-7xl"
+              : useWideSetupLayout
+                ? "max-w-6xl"
+                : "max-w-5xl"
+        }`}
+      >
+        {!mapFirst && (
+          <header
+            className={`mx-auto text-center ${
+              isProfileScreen
+                ? "mb-4 max-w-2xl"
+                : useWideSetupLayout
+                  ? "mb-8 max-w-2xl"
+                  : "mb-5 max-w-xl"
+            }`}
           >
-            {title}
-          </h1>
-          {subtitle && <p className="mt-2 text-sm text-gray-500">{subtitle}</p>}
-        </header>
+            <h1
+              ref={headingRef}
+              tabIndex={headingRef ? -1 : undefined}
+              className="text-3xl font-semibold tracking-tight text-gray-950 outline-none"
+            >
+              {title}
+            </h1>
+            {subtitle && <p className="mt-2 text-sm text-gray-500">{subtitle}</p>}
+          </header>
+        )}
 
         {loading ? (
           <div className="flex min-h-80 items-center justify-center">
@@ -794,6 +880,7 @@ function ProfileForm({
   step,
   mode,
   hasAccountSuggestions,
+  embedded,
   loading,
   saving,
   fieldErrors,
@@ -809,6 +896,7 @@ function ProfileForm({
   step: number;
   mode: "create" | "update";
   hasAccountSuggestions: boolean;
+  embedded: boolean;
   loading: boolean;
   saving: boolean;
   fieldErrors: Record<string, string[]>;
@@ -821,6 +909,7 @@ function ProfileForm({
   onSave: () => void;
 }) {
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
+  const LocationHeading = embedded ? "h2" : "h1";
   const [showAddressFields, setShowAddressFields] = useState(
     () =>
       !googleMapsApiKey ||
@@ -921,14 +1010,63 @@ function ProfileForm({
   const hasMappedLocation = hasCompleteLocation && hasMapCoordinates(draft);
   const timezoneMatchesBrowser =
     mode === "create" && draft.timezone && draft.timezone === browserTimezone();
+  const profileProgress = (
+    <div
+      className={
+        step === 1
+          ? "flex shrink-0 items-center gap-2 rounded-full bg-primary-50 px-3 py-1.5"
+          : "flex flex-col items-center gap-2"
+      }
+    >
+      <p
+        className={`shrink-0 font-semibold text-gray-500 ${step === 1 ? "text-xs" : "text-sm"}`}
+        aria-live="polite"
+      >
+        Step {step + 1} of {PROFILE_STEP_FIELDS.length}
+        {step !== 1 && ` · ${PROFILE_STEP_TITLES[step]}`}
+      </p>
+      <ol
+        className={`grid w-full grid-cols-3 ${
+          step === 1 ? "max-w-10 gap-1" : "max-w-[12rem] gap-2"
+        }`}
+        aria-label="Hotel setup progress"
+      >
+        {PROFILE_STEP_TITLES.map((title, index) => {
+          const isCurrent = index === step;
+          const isComplete = index < step;
+
+          return (
+            <li
+              key={title}
+              aria-current={isCurrent ? "step" : undefined}
+              title={title}
+              className={`h-1.5 rounded-full transition-colors duration-300 ${
+                isCurrent || isComplete ? "bg-primary-600" : "bg-primary-100"
+              }`}
+            >
+              <span className="sr-only">{title}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
   const actions = (
-    <div className="flex w-full flex-col-reverse items-center gap-3 sm:flex-row sm:justify-center">
+    <div
+      className={
+        step === 1
+          ? "grid w-full grid-cols-2 gap-3 sm:w-auto sm:grid-cols-[auto_auto]"
+          : "flex w-full flex-col-reverse items-center gap-3 sm:flex-row sm:justify-center"
+      }
+    >
       {(step > 0 || onCancel) && (
         <button
           type="button"
           disabled={saving}
           onClick={() => (step > 0 ? changeStep(step - 1) : onCancel?.())}
-          className="w-full rounded-full border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          className={`w-full rounded-full border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto ${
+            step === 1 ? "sm:min-w-32" : ""
+          }`}
         >
           {step > 0 ? "Back" : "Back to properties"}
         </button>
@@ -936,7 +1074,9 @@ function ProfileForm({
       <button
         type="submit"
         disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+        className={`inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto ${
+          step === 1 ? "sm:min-w-32" : ""
+        }`}
       >
         {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
           <span
@@ -967,35 +1107,9 @@ function ProfileForm({
         if (step === PROFILE_STEP_FIELDS.length - 1) onSave();
         else continueToNextStep();
       }}
-      className="mx-auto max-w-7xl space-y-8"
+      className={`mx-auto ${step === 1 ? "max-w-none" : "max-w-7xl space-y-8"}`}
     >
-      <div className="flex flex-col items-center gap-2">
-        <p className="text-sm font-semibold text-gray-600" aria-live="polite">
-          Step {step + 1} of {PROFILE_STEP_FIELDS.length} · {PROFILE_STEP_TITLES[step]}
-        </p>
-        <ol
-          className="grid w-full max-w-[12rem] grid-cols-3 gap-2"
-          aria-label="Hotel setup progress"
-        >
-          {PROFILE_STEP_TITLES.map((title, index) => {
-            const isCurrent = index === step;
-            const isComplete = index < step;
-
-            return (
-              <li
-                key={title}
-                aria-current={isCurrent ? "step" : undefined}
-                title={title}
-                className={`h-1.5 rounded-full transition-colors duration-300 ${
-                  isCurrent || isComplete ? "bg-primary-600" : "bg-primary-100"
-                }`}
-              >
-                <span className="sr-only">{title}</span>
-              </li>
-            );
-          })}
-        </ol>
-      </div>
+      {step !== 1 && profileProgress}
 
       <section
         inert={saving ? true : undefined}
@@ -1089,7 +1203,7 @@ function ProfileForm({
       </section>
 
       <section inert={saving ? true : undefined} className={step === 1 ? "block" : "hidden"}>
-        <div className="relative isolate min-h-[28rem] overflow-hidden rounded-[2rem] bg-slate-100 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:min-h-[34rem]">
+        <div className="relative isolate min-h-[100dvh] overflow-hidden bg-slate-100 text-left">
           {googleMapsApiKey && (
             <GoogleAddressMap
               active={step === 1}
@@ -1099,95 +1213,108 @@ function ProfileForm({
             />
           )}
 
-          <div className="pointer-events-none relative z-10 flex min-h-[28rem] flex-col p-4 sm:min-h-[34rem] sm:p-6 xl:p-8">
-            <div
-              data-testid="location-address-card"
-              className={`pointer-events-auto mx-auto w-full rounded-3xl border border-white/80 bg-white/95 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur ${
-                showAddressFields ? "max-w-3xl p-4 sm:p-5" : "max-w-xl p-3 sm:p-4"
-              }`}
-            >
-              {googleMapsApiKey && !showAddressFields && (
-                <GooglePlacesAddressField
-                  addressRevision={addressRevision}
-                  apiKey={googleMapsApiKey}
-                  onUnavailable={(autocompleteWasFocused) => {
-                    setAddressSearchUnavailable(true);
-                    if (!showAddressFields) focusAddressFieldsWhenShown.current = true;
-                    setShowAddressFields(true);
-                    if (showAddressFields && autocompleteWasFocused) {
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-end p-3 sm:block sm:p-0">
+            <div className="pointer-events-auto flex max-h-[calc(100dvh-1.5rem)] w-full flex-col rounded-3xl border border-white/80 bg-white/95 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur focus-within:self-start sm:contents">
+              <div
+                data-testid="location-search-panel"
+                className={`pointer-events-auto min-h-0 flex-1 p-4 sm:absolute sm:left-6 sm:top-6 sm:flex-none sm:rounded-2xl sm:border sm:border-white/80 sm:bg-white/95 sm:shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] sm:backdrop-blur lg:left-8 lg:top-8 ${
+                  showAddressFields
+                    ? "overflow-y-auto sm:max-h-[calc(100dvh-10rem)] sm:w-[calc(100%-3rem)] sm:max-w-md"
+                    : "sm:w-[calc(100%-3rem)] sm:max-w-lg"
+                }`}
+              >
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <LocationHeading
+                    ref={step === 1 ? pageHeadingRef : undefined}
+                    tabIndex={-1}
+                    className="text-xl font-semibold tracking-tight text-gray-950 outline-none"
+                  >
+                    Where is your property?
+                  </LocationHeading>
+                  {step === 1 && profileProgress}
+                </div>
+
+                {googleMapsApiKey && !showAddressFields && (
+                  <GooglePlacesAddressField
+                    addressRevision={addressRevision}
+                    apiKey={googleMapsApiKey}
+                    onUnavailable={(autocompleteWasFocused) => {
+                      setAddressSearchUnavailable(true);
+                      if (!showAddressFields) focusAddressFieldsWhenShown.current = true;
+                      setShowAddressFields(true);
+                      if (showAddressFields && autocompleteWasFocused) {
+                        requestAnimationFrame(() =>
+                          focusFirstIncompleteAddressField(addressFields.current),
+                        );
+                      }
+                    }}
+                    onSelect={(address, isExactAddress) => {
+                      setAddressSearchUnavailable(false);
+                      const nextDraft = { ...draft, ...address };
+                      const canCollapse =
+                        isExactAddress &&
+                        canConfirmLocation(nextDraft) &&
+                        hasMapCoordinates(nextDraft);
+                      onChange(nextDraft);
+                      setShowAddressFields(!canCollapse);
+                      if (!canCollapse) {
+                        requestAnimationFrame(() =>
+                          focusFirstIncompleteAddressField(addressFields.current),
+                        );
+                      }
+                    }}
+                  />
+                )}
+
+                {!showAddressFields && (
+                  <button
+                    ref={editAddressButton}
+                    type="button"
+                    aria-controls={addressFieldsId}
+                    aria-expanded={false}
+                    onClick={() => {
+                      setShowAddressFields(true);
                       requestAnimationFrame(() =>
                         focusFirstIncompleteAddressField(addressFields.current),
                       );
-                    }
-                  }}
-                  onSelect={(address, isExactAddress) => {
-                    setAddressSearchUnavailable(false);
-                    const nextDraft = { ...draft, ...address };
-                    const canCollapse =
-                      isExactAddress &&
-                      canConfirmLocation(nextDraft) &&
-                      hasMapCoordinates(nextDraft);
-                    onChange(nextDraft);
-                    setShowAddressFields(!canCollapse);
-                    if (!canCollapse) {
-                      requestAnimationFrame(() =>
-                        focusFirstIncompleteAddressField(addressFields.current),
-                      );
-                    }
-                  }}
-                />
-              )}
+                    }}
+                    className="mt-2 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                  >
+                    {hasCompleteLocation ? "Edit address details" : "Enter address manually"}
+                  </button>
+                )}
 
-              {!showAddressFields && (
-                <button
-                  ref={editAddressButton}
-                  type="button"
-                  aria-controls={addressFieldsId}
-                  aria-expanded={false}
-                  onClick={() => {
-                    setShowAddressFields(true);
-                    requestAnimationFrame(() =>
-                      focusFirstIncompleteAddressField(addressFields.current),
-                    );
-                  }}
-                  className="mt-2 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
-                >
-                  {hasCompleteLocation ? "Edit address details" : "Enter address manually"}
-                </button>
-              )}
-
-              {showAddressFields && (
-                <div
-                  ref={addressFields}
-                  id={addressFieldsId}
-                  className={googleMapsApiKey ? "border-t border-gray-100 pt-4" : undefined}
-                >
-                  {addressSearchUnavailable && (
-                    <p
-                      className="mb-4 rounded-xl bg-gray-50 px-3 py-2.5 text-sm text-gray-600"
-                      role="status"
-                    >
-                      Address suggestions are unavailable. Enter the address manually.
-                    </p>
-                  )}
-                  {googleMapsApiKey && hasCompleteLocation && (
-                    <div className="mb-3 flex justify-end">
-                      <button
-                        type="button"
-                        aria-controls={addressFieldsId}
-                        aria-expanded={true}
-                        onClick={() => {
-                          setShowAddressFields(false);
-                          requestAnimationFrame(() => editAddressButton.current?.focus());
-                        }}
-                        className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                {showAddressFields && (
+                  <div
+                    ref={addressFields}
+                    id={addressFieldsId}
+                    className="border-t border-gray-100 pt-4"
+                  >
+                    {addressSearchUnavailable && (
+                      <p
+                        className="mb-4 rounded-xl bg-gray-50 px-3 py-2.5 text-sm text-gray-600"
+                        role="status"
                       >
-                        Done editing
-                      </button>
-                    </div>
-                  )}
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="md:col-span-2">
+                        Address suggestions are unavailable. Enter the address manually.
+                      </p>
+                    )}
+                    {googleMapsApiKey && hasCompleteLocation && (
+                      <div className="mb-3 flex justify-end">
+                        <button
+                          type="button"
+                          aria-controls={addressFieldsId}
+                          aria-expanded={true}
+                          onClick={() => {
+                            setShowAddressFields(false);
+                            requestAnimationFrame(() => editAddressButton.current?.focus());
+                          }}
+                          className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                        >
+                          Done editing
+                        </button>
+                      </div>
+                    )}
+                    <div className="grid gap-4">
                       <TextField
                         label="Street address"
                         value={draft.streetAddress}
@@ -1196,47 +1323,45 @@ function ProfileForm({
                         error={fieldErrors["location.streetAddress"]?.[0]}
                         onChange={(value) => setField("streetAddress", value)}
                       />
-                    </div>
-                    <TextField
-                      label="Postal code"
-                      value={draft.postalCode}
-                      placeholder="80331"
-                      required={mode === "create"}
-                      error={fieldErrors["location.postalCode"]?.[0]}
-                      onChange={(value) => setField("postalCode", value)}
-                    />
-                    <TextField
-                      label="City"
-                      value={draft.city}
-                      placeholder="Munich"
-                      required
-                      error={fieldErrors["location.city"]?.[0]}
-                      onChange={(value) => setField("city", value)}
-                    />
-                    <SelectField
-                      label="Country"
-                      value={draft.countryCode}
-                      placeholder="Select a country"
-                      required
-                      error={fieldErrors["location.countryCode"]?.[0]}
-                      options={COUNTRY_OPTIONS.map((country) => ({
-                        value: country.code,
-                        label: `${country.flag} ${country.name}`,
-                      }))}
-                      onChange={(value) => setField("countryCode", value)}
-                    />
-                    <TextField
-                      label="Time zone"
-                      value={draft.timezone}
-                      placeholder="Europe/Berlin"
-                      helper="Detected automatically. Change it if needed."
-                      required={mode === "create"}
-                      error={fieldErrors["location.timezone"]?.[0]}
-                      listOptions={TIMEZONE_DATALIST_OPTIONS}
-                      onChange={(value) => setField("timezone", value)}
-                    />
-                    {showRawLocation && (
-                      <div className="md:col-span-2">
+                      <TextField
+                        label="Postal code"
+                        value={draft.postalCode}
+                        placeholder="80331"
+                        required={mode === "create"}
+                        error={fieldErrors["location.postalCode"]?.[0]}
+                        onChange={(value) => setField("postalCode", value)}
+                      />
+                      <TextField
+                        label="City"
+                        value={draft.city}
+                        placeholder="Munich"
+                        required
+                        error={fieldErrors["location.city"]?.[0]}
+                        onChange={(value) => setField("city", value)}
+                      />
+                      <SelectField
+                        label="Country"
+                        value={draft.countryCode}
+                        placeholder="Select a country"
+                        required
+                        error={fieldErrors["location.countryCode"]?.[0]}
+                        options={COUNTRY_OPTIONS.map((country) => ({
+                          value: country.code,
+                          label: `${country.flag} ${country.name}`,
+                        }))}
+                        onChange={(value) => setField("countryCode", value)}
+                      />
+                      <TextField
+                        label="Time zone"
+                        value={draft.timezone}
+                        placeholder="Europe/Berlin"
+                        helper="Detected automatically. Change it if needed."
+                        required={mode === "create"}
+                        error={fieldErrors["location.timezone"]?.[0]}
+                        listOptions={TIMEZONE_DATALIST_OPTIONS}
+                        onChange={(value) => setField("timezone", value)}
+                      />
+                      {showRawLocation && (
                         <TextField
                           label="Imported location"
                           value={draft.rawMarketplaceLocation}
@@ -1244,52 +1369,71 @@ function ProfileForm({
                           helper="Read-only location imported from the existing marketplace profile."
                           onChange={() => undefined}
                         />
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
 
-            {!showAddressFields && hasCompleteLocation && (
               <div
-                className="pointer-events-auto mx-auto mt-auto w-full max-w-xl pt-4"
-                aria-live="polite"
+                data-testid="location-action-bar"
+                className={`pointer-events-auto shrink-0 border-t border-gray-100 p-4 sm:absolute sm:bottom-8 sm:left-1/2 sm:flex sm:-translate-x-1/2 sm:items-center sm:justify-between sm:rounded-2xl sm:border sm:border-white/80 sm:bg-white/95 sm:shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] sm:backdrop-blur ${
+                  !showAddressFields && hasCompleteLocation
+                    ? "sm:w-[calc(100%-3rem)] sm:max-w-4xl"
+                    : "sm:w-auto sm:min-w-[19rem]"
+                }`}
               >
-                <div className="flex items-start gap-3 rounded-2xl border border-white/80 bg-white/95 p-4 shadow-[0_18px_50px_-20px_rgba(15,23,42,0.35)] backdrop-blur">
-                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
-                    <MapPinIcon className="h-4 w-4" aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-gray-950">
-                      {hasMappedLocation
-                        ? "Is this the right location?"
-                        : "Address details entered"}
-                    </p>
-                    {draft.streetAddress && (
-                      <p className="mt-1 text-sm text-gray-700">{draft.streetAddress}</p>
-                    )}
-                    <p className="text-sm text-gray-700">
-                      {[draft.postalCode, draft.city].filter(Boolean).join(" ")}
-                      {countryName ? `, ${countryName}` : ""}
-                    </p>
-                    {draft.timezone && (
-                      <p className="mt-1 text-xs text-gray-500">Time zone · {draft.timezone}</p>
-                    )}
-                    {timezoneMatchesBrowser && (
-                      <p className="mt-0.5 text-xs text-gray-500">
-                        This matches your device. Verify it if the hotel is elsewhere.
+                {!showAddressFields && hasCompleteLocation && (
+                  <div
+                    className="flex min-w-0 items-start gap-3 sm:flex-1 sm:items-center"
+                    aria-live="polite"
+                  >
+                    <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white sm:mt-0">
+                      <MapPinIcon className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-gray-950">
+                        {hasMappedLocation
+                          ? "Is this the right location?"
+                          : "Address details entered"}
                       </p>
-                    )}
+                      <p className="mt-0.5 text-sm text-gray-700 sm:truncate">
+                        {[
+                          draft.streetAddress,
+                          [draft.postalCode, draft.city].filter(Boolean).join(" "),
+                          countryName,
+                        ]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </p>
+                      {draft.timezone && (
+                        <p className="mt-0.5 text-xs text-gray-500">Time zone · {draft.timezone}</p>
+                      )}
+                      {timezoneMatchesBrowser && (
+                        <p className="mt-0.5 text-xs text-gray-500">
+                          This matches your device. Verify it if the hotel is elsewhere.
+                        </p>
+                      )}
+                    </div>
                   </div>
+                )}
+
+                <div
+                  className={
+                    !showAddressFields && hasCompleteLocation
+                      ? "mt-4 sm:ml-6 sm:mt-0 sm:shrink-0"
+                      : ""
+                  }
+                >
+                  {actions}
                 </div>
               </div>
-            )}
+            </div>
           </div>
         </div>
       </section>
 
-      {actions}
+      {step !== 1 && actions}
 
       <span className="sr-only" role="status" aria-live="polite">
         {saving ? "Saving hotel details." : ""}
@@ -1314,77 +1458,98 @@ function ProductSelection({
   onSave: () => void;
 }) {
   const needsSelection = selectedProducts.length === 0;
+  const statusDescriptionId = useId();
 
   return (
-    <div>
-      <div className="mb-5">
-        <h2 className="text-lg font-semibold text-gray-950">Choose account systems</h2>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          These systems apply to every property and listing in this hotel group.
-        </p>
+    <div className="mx-auto max-w-5xl">
+      <div className="mb-6 flex flex-col items-center text-center">
         {selectedProperty?.displayName && (
-          <p className="mt-2 text-sm font-medium text-gray-700">{selectedProperty.displayName}</p>
+          <span className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary-600 text-white">
+              <CheckIcon className="h-3 w-3" aria-hidden="true" />
+            </span>
+            {selectedProperty.displayName} details saved
+          </span>
         )}
+        <h2 className="mt-4 text-2xl font-semibold tracking-tight text-gray-950">
+          Choose account systems
+        </h2>
+        <p className="mt-2 max-w-xl text-sm leading-6 text-gray-600">
+          Your choices apply across this hotel group.
+        </p>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-5 lg:grid-cols-3">
         {SHARED_HOTEL_SETUP_PRODUCTS.map((product) => {
           const checked = selectedProducts.includes(product);
           const disabled = !isSharedHotelSetupProductSelectable(selectedProperty, product);
           const Icon = productIcon(product);
+          const statusLabel = productStatusLabel(selectedProperty, product, checked);
+          const showStatus = statusLabel !== "Selected" && statusLabel !== "Not selected";
+          const productStatusDescriptionId = `${statusDescriptionId}-${product}`;
           return (
             <label
               key={product}
-              className={`flex min-h-44 flex-col rounded-2xl border p-4 transition ${
-                disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
-              } ${
-                checked
-                  ? "border-primary-500 bg-primary-50/70 shadow-[0_18px_50px_-38px_rgba(29,78,216,0.9)]"
-                  : disabled
-                    ? "border-gray-100"
-                    : "border-gray-100 hover:border-primary-200 hover:bg-primary-50/30"
+              className={`group flex flex-col rounded-3xl bg-white p-5 text-left shadow-sm transition duration-200 focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-600 focus-within:ring-offset-2 focus-within:ring-offset-gray-50 ${
+                disabled
+                  ? "cursor-not-allowed opacity-60 ring-1 ring-gray-200"
+                  : checked
+                    ? "cursor-pointer ring-2 ring-primary-500 shadow-md motion-safe:hover:-translate-y-1"
+                    : "cursor-pointer ring-1 ring-gray-200 motion-safe:hover:-translate-y-1 motion-safe:hover:shadow-md motion-safe:hover:ring-primary-200"
               }`}
             >
-              <span className="flex items-start justify-between gap-3">
+              <span className="flex items-center justify-between">
                 <span
-                  className={`flex h-10 w-10 items-center justify-center rounded-full ${
+                  className={`flex h-12 w-12 items-center justify-center rounded-full transition-colors ${
                     checked ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
                   }`}
                 >
-                  <Icon className="h-5 w-5" aria-hidden="true" />
+                  <Icon className="h-6 w-6" aria-hidden="true" />
                 </span>
                 <input
                   type="checkbox"
-                  className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
+                  className="sr-only"
+                  aria-label={labels[product]}
+                  aria-describedby={showStatus ? productStatusDescriptionId : undefined}
                   checked={checked}
                   disabled={disabled}
                   onChange={() => {
                     if (!disabled) onToggle(product);
                   }}
                 />
+                <span
+                  className={`flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors ${
+                    checked
+                      ? "border-primary-600 bg-primary-600 text-white"
+                      : "border-gray-300 bg-white text-transparent"
+                  }`}
+                  aria-hidden="true"
+                >
+                  <CheckIcon className="h-3.5 w-3.5" />
+                </span>
               </span>
-              <span className="mt-4 min-w-0">
-                <span className="block text-sm font-semibold text-gray-950">{labels[product]}</span>
-                <span className="mt-2 block text-sm text-gray-500">
+              <span className="flex min-w-0 flex-1 flex-col pt-4">
+                <span className="block text-lg font-semibold text-gray-950">{labels[product]}</span>
+                <span className="mt-1.5 block text-sm leading-5 text-gray-600">
                   {PRODUCT_DESCRIPTIONS[product]}
                 </span>
-              </span>
-              <span className="mt-auto pt-4">
-                <span className="block text-xs font-medium uppercase tracking-wide text-gray-400">
-                  Unlocks
+                <span className="mt-auto flex items-center gap-2 pt-4 text-sm font-medium text-gray-800">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-700">
+                    <CheckIcon className="h-3 w-3" aria-hidden="true" />
+                  </span>
+                  <span>
+                    <span className="sr-only">Unlocks: </span>
+                    {PRODUCT_UNLOCKS[product]}
+                  </span>
                 </span>
-                <span className="mt-1 block text-sm font-medium text-gray-700">
-                  {PRODUCT_UNLOCKS[product]}
-                </span>
-                <span
-                  className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset ${
-                    checked
-                      ? "bg-white text-primary-700 ring-primary-200"
-                      : "bg-white text-gray-600 ring-gray-200"
-                  }`}
-                >
-                  {productStatusLabel(selectedProperty, product, checked)}
-                </span>
+                {showStatus && (
+                  <span
+                    id={productStatusDescriptionId}
+                    className="mt-3 w-fit rounded-full bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200"
+                  >
+                    {statusLabel}
+                  </span>
+                )}
               </span>
             </label>
           );
@@ -1392,20 +1557,20 @@ function ProductSelection({
       </div>
 
       {needsSelection && (
-        <p className="mt-3 text-sm text-red-600" role="alert">
+        <p className="mt-5 text-center text-sm text-red-600" role="alert">
           Select at least one available product to continue.
         </p>
       )}
 
-      <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-gray-500">
+      <div className="mt-6 flex flex-col items-center gap-3">
+        <p className="text-sm font-medium text-gray-600" aria-live="polite">
           {selectedProducts.length} system{selectedProducts.length === 1 ? "" : "s"} selected
         </p>
         <button
           type="button"
           disabled={saving || needsSelection}
           onClick={onSave}
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
         >
           {saving && (
             <span
@@ -1413,7 +1578,7 @@ function ProductSelection({
               aria-hidden="true"
             />
           )}
-          <span>{saving ? "Saving..." : "Save systems"}</span>
+          <span>{saving ? "Saving..." : "Continue setup"}</span>
           {!saving && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
         </button>
       </div>
@@ -1430,112 +1595,230 @@ function productIcon(product: SharedHotelSetupProduct): IconComponent {
 function ProductContinue({
   labels,
   view,
+  selectedProducts: products,
   onContinue,
 }: {
   labels: ProductLabels;
   view: SharedFirstRunSetupViewModel;
-  onContinue: () => void;
+  selectedProducts: SharedHotelSetupProduct[];
+  onContinue: (product: SharedHotelSetupProduct) => void;
 }) {
-  const product = view.product;
-  const isMarketplaceActivation = view.screen === "product_activation" && product === "marketplace";
-  const activation = product ? (view.selectedProperty?.products[product] ?? null) : null;
-  const missingSteps = activation?.missingSteps ?? [];
-  const isBlockedMarketplaceActivation = isMarketplaceActivation && isProductContinueBlocked(view);
-  const isBlockedActivation = isProductContinueBlocked(view);
-  const launchTitle = isBlockedActivation
-    ? "Launch blocked"
-    : view.screen === "enter_product"
-      ? "Ready to open"
-      : "Product setup needed";
-  const launchDescription = isBlockedActivation
-    ? blockedActivationCopy(product, activation?.status)
-    : isMarketplaceActivation
-      ? "Finish the Marketplace-specific profile tools next."
-      : view.screen === "enter_product"
-        ? "Open the selected workspace for this property."
-        : "Continue into the selected product setup.";
+  const property = view.selectedProperty;
+  if (!property) {
+    return (
+      <div
+        className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+        role="alert"
+      >
+        The selected hotel could not be loaded. Refresh the page to try again.
+      </div>
+    );
+  }
+  const readyCount = products.filter(
+    (product) => property.products[product].status === "active",
+  ).length;
+  const progress = products.length === 0 ? 0 : Math.round((readyCount / products.length) * 100);
 
   return (
     <div>
-      <div className="mb-5">
-        <h2 className="text-lg font-semibold text-gray-950">
-          {isBlockedMarketplaceActivation
-            ? "Marketplace activation unavailable"
-            : isMarketplaceActivation
-              ? "Activate Creator Marketplace"
-              : product
-                ? `Launch ${labels[product]}`
-                : "Launch product"}
-        </h2>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Profile and product selection are saved for{" "}
-          {view.selectedProperty?.displayName ?? "this property"}.
+      <section
+        aria-label="Shared hotel setup complete"
+        className="flex flex-col gap-3 rounded-2xl border border-primary-100 bg-primary-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white">
+            <CheckIcon className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold text-gray-950">Hotel details saved</h2>
+            <p className="mt-0.5 text-xs text-gray-600">
+              Name, location, and contact details are shared across your products.
+            </p>
+          </div>
+        </div>
+        <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-700 ring-1 ring-inset ring-primary-100">
+          {products.length} product{products.length === 1 ? "" : "s"} selected
+        </span>
+      </section>
+
+      <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-950">Your product setup</h2>
+          <p className="mt-1 max-w-2xl text-sm text-gray-500">
+            Complete the required steps in each workspace. Advanced settings can be configured
+            later.
+          </p>
+        </div>
+        <p className="shrink-0 text-sm font-semibold text-gray-700" aria-live="polite">
+          {readyCount} of {products.length} products ready
         </p>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
-        <ReadinessItem
-          icon={HotelIcon}
-          complete
-          title="Basics saved"
-          description="Hotel name and location are saved."
-        />
-        <ReadinessItem
-          icon={Squares2X2Icon}
-          complete
-          title="Products selected"
-          description={
-            product ? `${labels[product]} is the next workspace.` : "A product is selected."
-          }
-        />
-        <ReadinessItem
-          icon={RocketLaunchIcon}
-          complete={!isBlockedActivation && Boolean(product)}
-          title={launchTitle}
-          description={launchDescription}
+      <div
+        className="mt-3 h-2 overflow-hidden rounded-full bg-gray-200"
+        role="progressbar"
+        aria-label="Selected products ready"
+        aria-valuemin={0}
+        aria-valuemax={products.length}
+        aria-valuenow={readyCount}
+      >
+        <div
+          className="h-full rounded-full bg-primary-600 transition-[width] duration-300"
+          style={{ width: `${progress}%` }}
         />
       </div>
 
       <div
-        className={`mt-5 rounded-3xl border p-5 ${
-          isBlockedActivation ? "border-red-200 bg-red-50" : "border-gray-100 bg-gray-50"
+        className={`mt-5 grid gap-4 ${
+          products.length === 1 ? "mx-auto max-w-2xl" : "md:grid-cols-2 xl:grid-cols-3"
         }`}
       >
-        {(isBlockedActivation || !isMarketplaceActivation || missingSteps.length === 0) && (
-          <p className="text-sm text-gray-700">{launchDescription}</p>
-        )}
-        {isMarketplaceActivation && missingSteps.length > 0 && (
-          <div className={isBlockedActivation ? "mt-4 grid gap-3" : "grid gap-3"}>
-            {missingSteps.map((step) => {
-              const item = marketplaceActivationStepCopy(step);
-              return (
-                <div key={step} className="rounded-2xl border border-gray-100 bg-white p-4">
-                  <p className="text-sm font-medium text-gray-950">{item.title}</p>
-                  <p className="mt-1 text-xs text-gray-500">{item.description}</p>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        {products.map((product) => (
+          <ProductSetupCard
+            key={product}
+            product={product}
+            label={labels[product]}
+            activation={property.products[product]}
+            onContinue={() => onContinue(product)}
+          />
+        ))}
       </div>
-      <div className="mt-5 flex justify-end border-t border-gray-100 pt-5">
-        <button
-          type="button"
-          disabled={!product || isBlockedActivation}
-          onClick={onContinue}
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <span>
-            {isBlockedActivation
-              ? `${product ? labels[product] : "Product"} unavailable`
-              : isMarketplaceActivation
-                ? "Open Marketplace offer tools"
-                : "Continue"}
-          </span>
-          {!isBlockedActivation && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
-        </button>
-      </div>
+
+      {products.length === 0 && (
+        <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          Select at least one product to continue setup.
+        </div>
+      )}
     </div>
+  );
+}
+
+type ProductSetupTask = Omit<ProductSetupTaskDefinition, "missingSteps"> & {
+  complete: boolean;
+};
+
+export function productSetupTasks(
+  product: SharedHotelSetupProduct,
+  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
+): ProductSetupTask[] {
+  const definitions = PRODUCT_SETUP_TASKS[product];
+  const missingSteps = new Set(activation.missingSteps);
+  const tasks = definitions.map(({ missingSteps: taskSteps, ...task }) => ({
+    ...task,
+    complete: activation.status === "active" || !taskSteps.some((step) => missingSteps.has(step)),
+  }));
+  const knownSteps = new Set(definitions.flatMap((task) => task.missingSteps));
+  const hasUnknownStep = activation.missingSteps.some(
+    (step) => step !== "productEntitlement" && !knownSteps.has(step),
+  );
+
+  if (activation.status !== "active" && hasUnknownStep) {
+    tasks.push({
+      id: "additional-setup",
+      title: "Complete product setup",
+      description: "Review the remaining requirements in this product workspace.",
+      complete: false,
+    });
+  }
+
+  return tasks;
+}
+
+function ProductSetupCard({
+  product,
+  label,
+  activation,
+  onContinue,
+}: {
+  product: SharedHotelSetupProduct;
+  label: string;
+  activation: SharedProductActivation<SharedHotelSetupProduct>;
+  onContinue: () => void;
+}) {
+  const Icon = productIcon(product);
+  const tasks = productSetupTasks(product, activation);
+  const completedTasks = tasks.filter((task) => task.complete).length;
+  const canContinue = canContinueProductSetup(activation);
+  const statusLabel = productSetupStatusLabel(product, activation);
+  const notice = productSetupNotice(product, activation, canContinue);
+  const blocked = activation.status === "suspended" || activation.status === "unavailable";
+
+  return (
+    <article className="flex min-w-0 flex-col rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary-50 text-primary-700">
+          <Icon className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <span
+          className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+            activation.status === "active"
+              ? "bg-emerald-50 text-emerald-700"
+              : blocked
+                ? "bg-red-50 text-red-700"
+                : activation.missingSteps.includes("productEntitlement")
+                  ? "bg-amber-50 text-amber-800"
+                  : "bg-primary-50 text-primary-700"
+          }`}
+        >
+          {statusLabel}
+        </span>
+      </div>
+
+      <h2 className="mt-4 text-lg font-semibold text-gray-950">{label}</h2>
+      <p className="mt-1 text-sm leading-5 text-gray-600">{PRODUCT_DESCRIPTIONS[product]}</p>
+
+      {!blocked && (
+        <div className="mt-5 flex-1 border-t border-gray-100 pt-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+            {completedTasks} of {tasks.length} required step{tasks.length === 1 ? "" : "s"} complete
+          </p>
+          <ol className="mt-3 space-y-3">
+            {tasks.map((task, index) => (
+              <li key={task.id} className="flex gap-3">
+                <span
+                  className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                    task.complete
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "border border-gray-300 bg-white text-gray-600"
+                  }`}
+                >
+                  {task.complete ? (
+                    <CheckIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                  ) : (
+                    index + 1
+                  )}
+                </span>
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">{task.title}</h3>
+                  <p className="mt-0.5 text-xs leading-5 text-gray-500">{task.description}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {notice && (
+        <p
+          className={`mt-4 rounded-xl px-3 py-2.5 text-xs leading-5 ${
+            blocked ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-900"
+          }`}
+          role={blocked ? "alert" : undefined}
+        >
+          {notice}
+        </p>
+      )}
+
+      <button
+        type="button"
+        disabled={!canContinue}
+        onClick={onContinue}
+        className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
+      >
+        <span>{productSetupActionLabel(product, label, activation, canContinue)}</span>
+        {canContinue && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
+      </button>
+    </article>
   );
 }
 
@@ -1556,18 +1839,21 @@ function ProductRedirecting({
 
 function buildProductContinueInput(
   view: SharedFirstRunSetupViewModel,
+  organizationId: string | null,
   returnTo: string | null,
+  requestedProduct: SharedHotelSetupProduct | null = view.product,
 ): SharedFirstRunProductContinueInput | null {
-  if (!view.selectedPropertyId || !view.product) return null;
+  if (!view.selectedPropertyId || !organizationId || !requestedProduct) return null;
   if (view.screen !== "product_activation" && view.screen !== "enter_product") return null;
-  const activation = view.selectedProperty?.products[view.product] ?? null;
+  const activation = view.selectedProperty?.products[requestedProduct] ?? null;
   return {
-    product: view.product,
+    product: requestedProduct,
     productStatus: activation?.status ?? null,
+    organizationId,
     propertyId: view.selectedPropertyId,
     missingSteps: activation?.missingSteps ?? [],
     returnTo,
-    action: view.screen === "enter_product" ? "enter_product" : "complete_product_activation",
+    action: activation?.status === "active" ? "enter_product" : "complete_product_activation",
   };
 }
 
@@ -1575,76 +1861,83 @@ function isProductContinueBlocked(view: SharedFirstRunSetupViewModel): boolean {
   const product = view.product;
   if (!product) return true;
   const activation = view.selectedProperty?.products[product] ?? null;
-  if (activation?.status === "suspended" || activation?.status === "unavailable") return true;
-  return (
-    view.screen === "product_activation" &&
-    product === "marketplace" &&
-    !canOpenMarketplaceProfileTools({
-      product,
-      productStatus: activation?.status ?? null,
-      missingSteps: activation?.missingSteps ?? [],
-    })
-  );
+  return !activation || !canContinueProductSetup(activation);
 }
 
-function ReadinessItem({
-  icon: Icon,
-  complete,
-  title,
-  description,
-}: {
-  icon: IconComponent;
-  complete: boolean;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div
-      className={`rounded-2xl border p-4 ${
-        complete ? "border-gray-100 bg-white" : "border-red-200 bg-red-50"
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        <span
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
-            complete ? "bg-primary-600 text-white" : "bg-red-100 text-red-700"
-          }`}
-        >
-          {complete ? (
-            <CheckIcon className="h-4 w-4" aria-hidden="true" />
-          ) : (
-            <Icon className="h-4 w-4" aria-hidden="true" />
-          )}
-        </span>
-        <span className="min-w-0">
-          <span className="block text-sm font-semibold text-gray-950">{title}</span>
-          <span className="mt-1 block text-xs text-gray-500">{description}</span>
-        </span>
-      </div>
-    </div>
-  );
+export function canContinueProductSetup(
+  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
+): boolean {
+  if (activation.status === "active") return true;
+  return isActionableSharedProductActivation({
+    productStatus: activation.status,
+    missingSteps: activation.missingSteps,
+  });
 }
 
-function blockedActivationCopy(
-  product: SharedHotelSetupProduct | null,
-  status: SharedProductActivation<SharedHotelSetupProduct>["status"] | undefined,
+function productSetupStatusLabel(
+  product: SharedHotelSetupProduct,
+  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
 ): string {
-  const productName = product ? DEFAULT_PRODUCT_LABELS[product] : "This product";
-  if (status === "suspended") {
+  if (activation.status === "active") return "Ready";
+  if (activation.status === "suspended") return "Suspended";
+  if (activation.status === "unavailable") return "Unavailable";
+  if (activation.missingSteps.includes("productEntitlement")) return "Access pending";
+  if (isMarketplaceVerificationPending(product, activation)) return "Verification pending";
+  return "Setup needed";
+}
+
+function productSetupNotice(
+  product: SharedHotelSetupProduct,
+  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
+  canContinue: boolean,
+): string | null {
+  const productName = DEFAULT_PRODUCT_LABELS[product];
+  if (activation.status === "suspended") {
     return `${productName} access is currently suspended for this account. Contact support before continuing setup.`;
   }
-  if (status === "unavailable") {
+  if (activation.status === "unavailable") {
     return `${productName} is not available for this hotel. Contact support if this looks wrong.`;
   }
-  return `${productName} is not ready for this hotel yet.`;
+  if (activation.missingSteps.includes("productEntitlement")) {
+    return `${DEFAULT_PRODUCT_LABELS[product]} access is still being enabled for this hotel.`;
+  }
+  if (activation.status === "selected_incomplete" && !canContinue) {
+    return isMarketplaceVerificationPending(product, activation)
+      ? "Marketplace verification is still in progress. No action is needed right now."
+      : "This setup needs attention before it can continue. Please try again later.";
+  }
+  return null;
 }
 
-function marketplaceActivationStepCopy(step: string): { title: string; description: string } {
-  return (
-    MARKETPLACE_ACTIVATION_STEPS[step] ?? {
-      title: step,
-      description: "Complete this Marketplace activation item.",
+function productSetupActionLabel(
+  product: SharedHotelSetupProduct,
+  label: string,
+  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
+  canContinue: boolean,
+): string {
+  if (!canContinue) {
+    if (activation.status === "suspended" || activation.status === "unavailable") {
+      return `${label} unavailable`;
     }
+    if (isMarketplaceVerificationPending(product, activation)) return "Verification pending";
+    return activation.missingSteps.includes("productEntitlement")
+      ? "Access pending"
+      : "Setup pending";
+  }
+  if (activation.status === "active") return `Open ${label}`;
+  if (product === "booking") return "Continue in Booking Admin";
+  if (product === "pms") return "Continue in PMS";
+  return "Continue Marketplace setup";
+}
+
+function isMarketplaceVerificationPending(
+  product: SharedHotelSetupProduct,
+  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
+): boolean {
+  return (
+    product === "marketplace" &&
+    activation.status === "selected_incomplete" &&
+    activation.missingSteps.length === 0
   );
 }
 

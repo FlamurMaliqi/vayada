@@ -91,6 +91,29 @@ describe("resolveBookingSetupGuard", () => {
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-3");
   });
 
+  it("opens Booking Admin for an additive requirement it does not own yet", async () => {
+    const api = {
+      getStatus: vi.fn(async () =>
+        status({
+          productStatus: "selected_incomplete",
+          nextAction: {
+            action: "complete_product_activation",
+            propertyId: "property-3",
+            product: "booking",
+            missingSteps: ["futureBookingRequirement"],
+            reasonCodes: ["booking_activation_incomplete"],
+          },
+        }),
+      ),
+    };
+
+    await expect(resolveBookingSetupGuard("/dashboard", api, memoryStorage())).resolves.toEqual({
+      action: "enter_product",
+      propertyId: "property-3",
+      redirectPath: null,
+    });
+  });
+
   it("does not bypass an unavailable Booking activation", async () => {
     const api = {
       getStatus: vi.fn(async () =>

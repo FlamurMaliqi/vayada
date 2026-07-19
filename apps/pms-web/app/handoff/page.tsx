@@ -10,7 +10,11 @@ import {
   type PmsPropertySummary,
 } from "@/services/api/pmsPropertyClient";
 import { authService } from "@/services/auth";
-import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
+import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStore";
+import {
+  isSafeRelativeReturnTo,
+  missingOrganizationHandoffLoginPath,
+} from "@vayada/product-onboarding/returnTo";
 
 export default function HandoffPage() {
   useEffect(() => {
@@ -23,6 +27,8 @@ export default function HandoffPage() {
     const userData = hashParams.get("user");
     const handoffHotelId = hashParams.get("hotel_id");
     const propertyId = hashParams.get("property_id");
+    const organizationId = hashParams.get("organization_id")?.trim() || null;
+    const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
 
     // Optional `?redirect=...` query param — honored if it's a
     // same-origin relative path, else ignored. Used when another
@@ -36,9 +42,60 @@ export default function HandoffPage() {
       if (token && expiresAt) {
         localStorage.setItem("access_token", token);
         localStorage.setItem("token_expires_at", expiresAt);
-      } else if (!(await authService.ensureSession())) {
-        window.location.href = "/login";
-        return;
+      } else if (!authService.isAuthKitEnabled()) {
+        if (!(await authService.ensureSession())) {
+          window.location.href = "/login";
+          return;
+        }
+      } else {
+        try {
+          const session = await authService.refreshSession();
+          if (isAuthOrganizationSelectionResponse(session)) {
+            const organization = organizationId
+              ? session.organizations.find(
+                  (candidate) => candidate.organizationId === organizationId,
+                )
+              : workosOrganizationId
+                ? session.organizations.find(
+                    (candidate) => candidate.workosOrganizationId === workosOrganizationId,
+                  )
+                : session.organizations.length === 1
+                  ? session.organizations[0]
+                  : undefined;
+
+            if (!organization) {
+              window.location.href = organizationSelectionPath();
+              return;
+            }
+
+            const selectedSession = await authService.refreshSession(
+              organization.workosOrganizationId,
+            );
+            if (
+              isAuthOrganizationSelectionResponse(selectedSession) ||
+              (organizationId && selectedSession.organizationId !== organizationId)
+            ) {
+              window.location.href = organizationSelectionPath();
+              return;
+            }
+          } else if (organizationId && session.organizationId !== organizationId) {
+            if (!workosOrganizationId) {
+              window.location.href = missingOrganizationHandoffLoginPath();
+              return;
+            }
+            const selectedSession = await authService.refreshSession(workosOrganizationId);
+            if (
+              isAuthOrganizationSelectionResponse(selectedSession) ||
+              selectedSession.organizationId !== organizationId
+            ) {
+              window.location.href = organizationSelectionPath();
+              return;
+            }
+          }
+        } catch {
+          window.location.href = organizationSelectionPath();
+          return;
+        }
       }
 
       if (token && expiresAt && userData) {
@@ -61,12 +118,15 @@ export default function HandoffPage() {
         properties = await listPmsProperties();
       } catch {
         localStorage.setItem("pmsSetupComplete", "false");
-        window.location.href = "/setup";
+        const requestedPropertyId = propertyId?.trim() || handoffHotelId?.trim();
+        window.location.href = requestedPropertyId
+          ? `/setup?entryProduct=pms&propertyId=${encodeURIComponent(requestedPropertyId)}`
+          : "/setup";
         return;
       }
 
-      const requestedPropertyId =
-        propertyId?.trim() || handoffHotelId?.trim() || getStoredPmsPropertyId();
+      const explicitPropertyId = propertyId?.trim() || handoffHotelId?.trim() || null;
+      const requestedPropertyId = explicitPropertyId || getStoredPmsPropertyId();
       let selected = requestedPropertyId
         ? (properties.find((property) => property.id === requestedPropertyId) ?? null)
         : null;
@@ -74,7 +134,7 @@ export default function HandoffPage() {
       if (requestedPropertyId && !selected) {
         clearStoredPmsPropertyId();
       }
-      if (!selected && properties.length === 1) {
+      if (!explicitPropertyId && !selected && properties.length === 1) {
         selected = properties[0]!;
       }
       if (selected) {
@@ -83,6 +143,11 @@ export default function HandoffPage() {
 
       if (isExplicitSetupRedirect(safeRedirect)) {
         window.location.href = safeRedirect;
+        return;
+      }
+      if (explicitPropertyId && !selected) {
+        localStorage.setItem("pmsSetupComplete", "false");
+        window.location.href = `/setup?entryProduct=pms&propertyId=${encodeURIComponent(explicitPropertyId)}`;
         return;
       }
       if (properties.length === 0) {
@@ -122,4 +187,18 @@ export default function HandoffPage() {
 
 function isExplicitSetupRedirect(path: string | null): path is string {
   return path === "/setup" || path?.startsWith("/setup?") === true;
+}
+
+function organizationSelectionPath(): string {
+  const currentHash = new URLSearchParams(window.location.hash.slice(1));
+  const safeHash = new URLSearchParams();
+  for (const key of ["organization_id", "workos_organization_id", "property_id", "hotel_id"]) {
+    const value = currentHash.get(key)?.trim();
+    if (value) safeHash.set(key, value);
+  }
+  const returnTo = `${window.location.pathname}${window.location.search}${safeHash.size > 0 ? `#${safeHash.toString()}` : ""}`;
+  const loginParams = new URLSearchParams();
+  loginParams.set("auth", "callback");
+  loginParams.set("returnTo", returnTo);
+  return `/login?${loginParams.toString()}`;
 }

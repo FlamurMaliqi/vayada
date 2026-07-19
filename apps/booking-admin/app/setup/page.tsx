@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useEffect } from "react";
+import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/auth";
 import { settingsService } from "@/services/settings";
@@ -124,6 +124,7 @@ function BookingProductSetupPage() {
   const [appliedInviteCode, setAppliedInviteCode] = useState("");
   const [showWizard, setShowWizard] = useState(false);
   const [setupPromoCodes, setSetupPromoCodes] = useState<CreateBookingPromoCodeBody[]>([]);
+  const activationHotelIdRef = useRef<string | null>(null);
 
   const {
     propertyName,
@@ -212,6 +213,7 @@ function BookingProductSetupPage() {
 
   useEffect(() => {
     async function checkAuth() {
+      activationHotelIdRef.current = null;
       // Accept auth token passed via URL hash (cross-domain handoff from PMS)
       if (typeof window !== "undefined" && window.location.hash) {
         const params = new URLSearchParams(window.location.hash.slice(1));
@@ -252,18 +254,19 @@ function BookingProductSetupPage() {
 
       if (productActivationMode) {
         const hotels = await settingsService.listHotels();
-        if (
-          !activationPropertyId ||
-          !hotels.some(
-            (hotel) =>
-              hotel.propertyId === activationPropertyId || hotel.id === activationPropertyId,
-          )
-        ) {
+        const activationHotel = activationPropertyId
+          ? hotels.find(
+              (hotel) =>
+                hotel.propertyId === activationPropertyId || hotel.id === activationPropertyId,
+            )
+          : null;
+        if (!activationHotel) {
           localStorage.removeItem("selectedHotelId");
           router.replace("/setup?entryProduct=booking");
           return;
         }
-        localStorage.setItem("selectedHotelId", activationPropertyId);
+        activationHotelIdRef.current = activationHotel.id;
+        localStorage.setItem("selectedHotelId", activationHotel.id);
       }
 
       // Multi-hotel "Add Property" flow: the header's Add Property
@@ -289,7 +292,7 @@ function BookingProductSetupPage() {
       // setup — the user is creating a fresh property, so start blank.
       if (productActivationMode) {
         try {
-          const profile = await settingsService.getPropertySettings();
+          const profile = await settingsService.getPropertySettings(activationHotelIdRef.current!);
           if (profile.property_name) setPropertyName(profile.property_name);
           if (profile.city) setCity(profile.city);
           if (profile.country) setCountry(profile.country);
@@ -394,10 +397,9 @@ function BookingProductSetupPage() {
     setSaving(true);
     try {
       if (productActivationMode) {
-        if (!activationPropertyId) {
+        if (!activationPropertyId || !activationHotelIdRef.current) {
           throw new Error("Select a property before activating Booking.");
         }
-        localStorage.setItem("selectedHotelId", activationPropertyId);
       } else {
         localStorage.removeItem("selectedHotelId");
       }
@@ -435,10 +437,16 @@ function BookingProductSetupPage() {
       };
 
       const savedSettings = productActivationMode
-        ? await settingsService.updatePropertySettings(propertyPayload)
+        ? await settingsService.updatePropertySettings(
+            propertyPayload,
+            activationHotelIdRef.current!,
+          )
         : await settingsService.createHotel(propertyPayload);
       const createdHotelId =
-        savedSettings.booking_hotel_id ?? savedSettings.property_id ?? savedSettings.id;
+        savedSettings.booking_hotel_id ??
+        savedSettings.id ??
+        (productActivationMode ? activationHotelIdRef.current : null) ??
+        savedSettings.property_id;
       if (createdHotelId) {
         localStorage.setItem("selectedHotelId", createdHotelId);
       }

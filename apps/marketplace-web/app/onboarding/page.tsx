@@ -43,8 +43,8 @@ export default function OnboardingPage() {
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [selectedType, setSelectedType] = useState<AccountType | null>(null);
   const [provisionedType, setProvisionedType] = useState<AccountType | null>(null);
+  const [setupHandoffType, setSetupHandoffType] = useState<AccountType | null>(null);
   const [loading, setLoading] = useState(true);
-  const [welcomeComplete, setWelcomeComplete] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [creatorPhotoRequired, setCreatorPhotoRequired] = useState<boolean | null>(null);
@@ -86,13 +86,6 @@ export default function OnboardingPage() {
           setLoading(false);
           return;
         }
-        try {
-          setWelcomeComplete(
-            window.sessionStorage.getItem(onboardingWelcomeStorageKey()) === "complete",
-          );
-        } catch {
-          // The welcome remains available when browser storage is unavailable.
-        }
         setLoading(false);
       } catch (error) {
         if (cancelled) return;
@@ -105,19 +98,6 @@ export default function OnboardingPage() {
       requestController.abort();
     };
   }, [router, sessionAttempt]);
-
-  useEffect(() => {
-    if (welcomeComplete && !loading && !provisionedType) optionRefs.current[0]?.focus();
-  }, [loading, provisionedType, welcomeComplete]);
-
-  function handleWelcomeContinue() {
-    try {
-      window.sessionStorage.setItem(onboardingWelcomeStorageKey(), "complete");
-    } catch {
-      // The in-memory state is enough for the current page.
-    }
-    setWelcomeComplete(true);
-  }
 
   function retrySession() {
     setError("");
@@ -138,7 +118,7 @@ export default function OnboardingPage() {
       }
       setProvisionedType(canonicalType);
       if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
-        router.push(nextPathForType(canonicalType));
+        setSetupHandoffType(canonicalType);
         return;
       }
       setCreatorPhotoRequired(await creatorPhotoRequirement(canonicalType));
@@ -185,8 +165,6 @@ export default function OnboardingPage() {
     selectOptionAtIndex((nextIndex + options.length) % options.length);
   }
 
-  const showSignupWelcome = !loading && !welcomeComplete && !error;
-
   if (!loading && !sessionConfirmed) {
     return (
       <OnboardingShell
@@ -207,6 +185,22 @@ export default function OnboardingPage() {
             Retry session
           </button>
         </div>
+      </OnboardingShell>
+    );
+  }
+
+  if (!loading && setupHandoffType) {
+    return (
+      <OnboardingShell
+        currentStep={1}
+        title="Your profile is ready"
+        description=""
+        showProgress={false}
+      >
+        <SignupCompleteMoment
+          type={setupHandoffType}
+          onContinue={() => router.push(nextPathForType(setupHandoffType))}
+        />
       </OnboardingShell>
     );
   }
@@ -280,7 +274,7 @@ export default function OnboardingPage() {
             }
           }
           await authService.updateAccountDetails(accountDetails);
-          router.push(nextPathForType(provisionedType));
+          setSetupHandoffType(provisionedType);
         }}
       />
     );
@@ -289,31 +283,24 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell
       currentStep={1}
-      title={
-        loading
-          ? "Getting things ready"
-          : showSignupWelcome
-            ? "Thank you for signing up"
-            : "Which best describes you?"
-      }
+      title={loading ? "Getting things ready" : "Welcome to Vayada — what brings you here?"}
       description={
-        loading
-          ? "Loading your account details."
-          : showSignupWelcome
-            ? "Welcome to Vayada — where independent hotels and creators connect, build trusted partnerships, and grow together."
-            : "Choose your role so we can tailor your setup."
+        loading ? "Loading your account details." : "Choose your role so we can tailor your setup."
       }
       showProgress={false}
     >
-      <div className={`mx-auto w-full ${showSignupWelcome ? "max-w-4xl" : "max-w-3xl"}`}>
+      <div className="mx-auto w-full max-w-3xl">
         {loading ? (
           <div className="flex min-h-72 items-center justify-center">
             <p className="text-sm text-gray-600">Loading...</p>
           </div>
-        ) : showSignupWelcome ? (
-          <SignupWelcomeMoment onContinue={handleWelcomeContinue} />
         ) : (
           <div className="space-y-5 text-center">
+            <p className="mx-auto inline-flex items-center gap-2 rounded-full border border-primary-100 bg-primary-50 px-3 py-1.5 text-xs font-semibold text-primary-700">
+              <CheckIcon className="h-4 w-4" aria-hidden="true" />
+              Account created
+            </p>
+
             <PathChoice
               selectedType={selectedType}
               optionRefs={optionRefs}
@@ -449,60 +436,58 @@ async function creatorPhotoRequirement(type: AccountType, signal?: AbortSignal):
   }
 }
 
-function onboardingWelcomeStorageKey(): string {
-  const user = authService.getSessionUser();
-  return `vayada:onboarding-welcome:${user?.id ?? user?.email ?? "current"}`;
-}
-
-function SignupWelcomeMoment({ onContinue }: { onContinue: () => void }) {
+function SignupCompleteMoment({ type, onContinue }: { type: AccountType; onContinue: () => void }) {
+  const isHotel = type === "hotel";
   return (
-    <section aria-label="Welcome to Vayada" className="flex w-full flex-col items-center">
-      <div aria-hidden="true" className="relative h-56 w-full max-w-3xl sm:h-72">
-        <div className="absolute inset-x-5 bottom-0 top-5 rounded-[2.5rem] bg-gradient-to-r from-primary-50 via-white to-violet-50 sm:inset-x-14" />
-        <div className="absolute left-[8%] top-[4%] h-3 w-3 rounded-full bg-primary-300 sm:left-[13%] sm:h-4 sm:w-4" />
-        <div className="absolute right-[8%] top-[12%] h-5 w-5 rounded-full border-2 border-violet-200 sm:right-[14%]" />
-
-        <div className="absolute bottom-3 left-[2%] h-[78%] w-[55%] -rotate-3 overflow-hidden rounded-[1.6rem] border-4 border-white bg-white shadow-[0_24px_55px_-28px_rgba(15,23,42,0.5)] sm:bottom-4 sm:left-[5%] sm:w-[51%] sm:rounded-[2rem]">
+    <section aria-label="Profile ready" className="flex w-full flex-col items-center">
+      <div aria-hidden="true" className="relative h-56 w-full max-w-lg">
+        <div className="absolute inset-4 overflow-hidden rounded-[2rem] border-4 border-white bg-white shadow-[0_24px_55px_-28px_rgba(15,23,42,0.5)]">
           <Image
-            src="/hotel-hero.JPG"
+            src={isHotel ? "/hotel-hero.JPG" : "/creator-category-travel.jpg"}
             alt=""
             fill
-            priority
-            sizes="(min-width: 640px) 390px, 55vw"
-            className="object-cover object-[center_70%]"
+            sizes="(min-width: 640px) 480px, 90vw"
+            className={`object-cover ${isHotel ? "object-[center_70%]" : ""}`}
           />
-          <span className="absolute inset-0 bg-gradient-to-t from-gray-950/50 via-transparent to-transparent" />
-          <span className="absolute bottom-3 left-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm backdrop-blur-sm sm:bottom-4 sm:left-4">
-            Independent hotels
+          <span className="absolute inset-0 bg-gradient-to-t from-gray-950/55 via-gray-950/5 to-transparent" />
+          <span className="absolute bottom-4 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-white/90 px-4 py-1.5 text-xs font-semibold text-gray-950 shadow-sm backdrop-blur-sm">
+            {isHotel ? "Hotel account ready" : "Creator account ready"}
           </span>
         </div>
 
-        <div className="absolute right-[2%] top-3 h-[76%] w-[55%] rotate-3 overflow-hidden rounded-[1.6rem] border-4 border-white bg-white shadow-[0_24px_55px_-28px_rgba(15,23,42,0.5)] sm:right-[5%] sm:top-4 sm:w-[51%] sm:rounded-[2rem]">
-          <Image
-            src="/creator-category-travel.jpg"
-            alt=""
-            fill
-            priority
-            sizes="(min-width: 640px) 390px, 55vw"
-            className="object-cover"
+        <span className="absolute left-1/2 top-1/2 h-20 w-20 -translate-x-1/2 -translate-y-1/2">
+          <span
+            data-testid="signup-success-ring"
+            className="absolute inset-0 rounded-full bg-primary-300 opacity-60 motion-safe:animate-ping"
+            style={{ animationIterationCount: 2 }}
           />
-          <span className="absolute inset-0 bg-gradient-to-t from-gray-950/50 via-transparent to-transparent" />
-          <span className="absolute bottom-3 right-3 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-gray-950 shadow-sm backdrop-blur-sm sm:bottom-4 sm:right-4">
-            Creators
+          <span
+            data-testid="signup-success-check"
+            className="relative flex h-full w-full items-center justify-center rounded-full border-4 border-white bg-primary-600 text-white shadow-[0_18px_36px_-14px_rgba(37,99,235,0.9)] motion-safe:animate-bounce"
+            style={{ animationIterationCount: 1 }}
+          >
+            <CheckIcon className="h-10 w-10" strokeWidth={2.5} />
           </span>
-        </div>
-
-        <span className="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-4 border-white bg-white shadow-[0_14px_30px_-12px_rgba(37,99,235,0.55)] sm:h-16 sm:w-16">
-          <Image src="/vayada-logo.png" alt="" width={30} height={30} className="h-7 w-auto" />
         </span>
       </div>
 
+      <p
+        id="signup-complete-message"
+        className="mt-2 max-w-lg text-center text-sm leading-6 text-gray-600"
+      >
+        {isHotel
+          ? "Your account details are saved. Next, let’s set up your first hotel."
+          : "Your account details are saved. Next, let’s create the public creator profile hotels will see."}
+      </p>
+
       <button
         type="button"
+        autoFocus
+        aria-describedby="signup-complete-message"
         onClick={onContinue}
-        className="mt-8 inline-flex min-h-12 w-full max-w-xs items-center justify-center gap-2 rounded-full bg-primary-600 px-7 py-3 text-sm font-semibold text-white shadow-[0_16px_34px_-16px_rgba(37,99,235,0.9)] transition hover:-translate-y-0.5 hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 sm:mt-9"
+        className="mt-6 inline-flex min-h-12 w-full max-w-xs items-center justify-center gap-2 rounded-full bg-primary-600 px-7 py-3 text-sm font-semibold text-white shadow-[0_16px_34px_-16px_rgba(37,99,235,0.9)] transition hover:-translate-y-0.5 hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
       >
-        Continue to Vayada
+        {isHotel ? "Set up my first hotel" : "Create my public creator profile"}
         <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
       </button>
     </section>

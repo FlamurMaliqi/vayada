@@ -49,19 +49,23 @@ export const MARKETPLACE_PROFILE_TOOL_STEPS = [
   "creatorRequirements",
 ] as const;
 
-const MARKETPLACE_PROFILE_TOOL_STEP_SET = new Set<string>(MARKETPLACE_PROFILE_TOOL_STEPS);
+export function isActionableSharedProductActivation(input: {
+  productStatus: SharedProductActivation<SharedHotelSetupProduct>["status"] | null;
+  missingSteps: readonly string[];
+}): boolean {
+  return (
+    input.productStatus === "selected_incomplete" &&
+    input.missingSteps.length > 0 &&
+    !input.missingSteps.includes("productEntitlement")
+  );
+}
 
 export function canOpenMarketplaceProfileTools(input: {
   product: SharedHotelSetupProduct | null;
   productStatus: SharedProductActivation<SharedHotelSetupProduct>["status"] | null;
   missingSteps: readonly string[];
 }): boolean {
-  return (
-    input.product === "marketplace" &&
-    input.productStatus === "selected_incomplete" &&
-    input.missingSteps.length > 0 &&
-    input.missingSteps.every((step) => MARKETPLACE_PROFILE_TOOL_STEP_SET.has(step))
-  );
+  return input.product === "marketplace" && isActionableSharedProductActivation(input);
 }
 
 export type SharedSetupProperty = {

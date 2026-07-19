@@ -15,20 +15,33 @@ import {
 } from "@vayada/product-onboarding";
 
 import { ROUTES } from "@/lib/constants";
-import { canOpenMarketplaceProfileTools } from "@/lib/utils/sharedSetupGuard";
 import { authService } from "@/services/auth";
 import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
-import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { getAuthSessionUser, getAuthWorkosOrganizationId } from "@/services/auth/sessionStore";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
   process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
 
-function productHandoffUrl(baseUrl: string, propertyId: string): string {
-  return `${baseUrl}/handoff#${new URLSearchParams({ property_id: propertyId }).toString()}`;
+function productHandoffUrl(
+  baseUrl: string,
+  propertyId: string,
+  organizationId: string,
+  workosOrganizationId: string | null,
+  redirect?: string,
+): string {
+  const query = redirect ? `?${new URLSearchParams({ redirect }).toString()}` : "";
+  const fragment = new URLSearchParams({
+    property_id: propertyId,
+    organization_id: organizationId,
+  });
+  if (workosOrganizationId) {
+    fragment.set("workos_organization_id", workosOrganizationId);
+  }
+  return `${baseUrl}/handoff${query}#${fragment.toString()}`;
 }
 
 export function SharedHotelSetupPage({
@@ -87,15 +100,31 @@ export function SharedHotelSetupPage({
 
   const handleProductContinue = (input: SharedFirstRunProductContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
+    const workosOrganizationId = getAuthWorkosOrganizationId();
     if (input.product === "booking") {
-      window.location.href = productHandoffUrl(BOOKING_ADMIN_URL, input.propertyId);
+      const setupPath = `/setup?${new URLSearchParams({
+        entryProduct: "booking",
+        propertyId: input.propertyId,
+      }).toString()}`;
+      window.location.href = productHandoffUrl(
+        BOOKING_ADMIN_URL,
+        input.propertyId,
+        input.organizationId,
+        workosOrganizationId,
+        setupPath,
+      );
       return;
     }
     if (input.product === "pms") {
-      window.location.href = productHandoffUrl(PMS_FRONTEND_URL, input.propertyId);
+      window.location.href = productHandoffUrl(
+        PMS_FRONTEND_URL,
+        input.propertyId,
+        input.organizationId,
+        workosOrganizationId,
+      );
       return;
     }
-    if (input.action === "complete_product_activation" && canOpenMarketplaceProfileTools(input)) {
+    if (input.action === "complete_product_activation") {
       router.push(ROUTES.PROFILE);
       return;
     }

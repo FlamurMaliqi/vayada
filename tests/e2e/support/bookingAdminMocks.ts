@@ -254,7 +254,10 @@ export const defaultCustomDomain: BookingAdminCustomDomainFixture = {
   updatedAt: null,
 };
 
-export async function mockBookingAdminAuthenticatedSession(page: Page): Promise<void> {
+export async function mockBookingAdminAuthenticatedSession(
+  page: Page,
+  hotelIds: string[] = [BOOKING_ADMIN_HOTEL_ID],
+): Promise<void> {
   await page.addInitScript(
     ({ hotelId, token }) => {
       const oneHourFromNow = Date.now() + 60 * 60 * 1000;
@@ -277,8 +280,8 @@ export async function mockBookingAdminAuthenticatedSession(page: Page): Promise<
       );
     },
     {
-      hotelId: BOOKING_ADMIN_HOTEL_ID,
-      token: fakeBookingAdminJwt(),
+      hotelId: hotelIds[0] ?? BOOKING_ADMIN_HOTEL_ID,
+      token: fakeBookingAdminJwt(hotelIds),
     },
   );
 }
@@ -372,11 +375,11 @@ export async function mockBookingAdminShellRoutes(
   );
 }
 
-function fakeBookingAdminJwt(): string {
+function fakeBookingAdminJwt(hotelIds: string[] = [BOOKING_ADMIN_HOTEL_ID]): string {
   return `header.${Buffer.from(
     JSON.stringify({
       org: BOOKING_ADMIN_ORGANIZATION_ID,
-      resources: { "booking:booking_hotel": [BOOKING_ADMIN_HOTEL_ID] },
+      resources: { "booking:booking_hotel": hotelIds },
     }),
   ).toString("base64url")}.signature`;
 }

@@ -35,3 +35,31 @@ export function safeRelativeReturnTo(value: ReturnToParam, fallback: string): st
   const raw = firstSearchParam(value);
   return isSafeRelativeReturnTo(raw) ? raw : fallback;
 }
+
+export function handoffReturnToForOrganization(
+  returnTo: string,
+  organization: {
+    organizationId?: string;
+    workosOrganizationId?: string;
+  },
+): string {
+  if (!isSafeRelativeReturnTo(returnTo)) return returnTo;
+
+  const url = new URL(returnTo, SAME_ORIGIN_RETURN_TO_BASE);
+  if (url.pathname !== "/handoff") return returnTo;
+
+  const hash = new URLSearchParams(url.hash.slice(1));
+  const organizationId = organization.organizationId?.trim();
+  const workosOrganizationId = organization.workosOrganizationId?.trim();
+  if (organizationId) hash.set("organization_id", organizationId);
+  if (workosOrganizationId) hash.set("workos_organization_id", workosOrganizationId);
+
+  return `${url.pathname}${url.search}${hash.size > 0 ? `#${hash.toString()}` : ""}`;
+}
+
+export function missingOrganizationHandoffLoginPath(): string {
+  return `/login?${new URLSearchParams({
+    auth_error:
+      "This handoff is missing hotel-group context. Return to the previous app and try again.",
+  }).toString()}`;
+}

@@ -63,7 +63,7 @@ describe("resolvePmsSetupGuard", () => {
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
   });
 
-  it("allows the rooms area to own PMS room activation steps only", () => {
+  it("allows the rooms area to own actionable PMS activation steps", () => {
     expect(
       isPmsRoomSetupDecision({
         action: "redirect_to_setup",
@@ -73,6 +73,17 @@ describe("resolvePmsSetupGuard", () => {
         product: "pms",
         productStatus: "selected_incomplete",
         missingSteps: ["roomTypes", "rooms", "ratePlans"],
+      }),
+    ).toBe(true);
+    expect(
+      isPmsRoomSetupDecision({
+        action: "redirect_to_setup",
+        propertyId: "property-1",
+        redirectPath: "/setup?entryProduct=pms",
+        setupAction: "complete_product_activation",
+        product: "pms",
+        productStatus: "selected_incomplete",
+        missingSteps: ["futurePmsRequirement"],
       }),
     ).toBe(true);
     expect(

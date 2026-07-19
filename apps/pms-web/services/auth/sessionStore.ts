@@ -17,6 +17,7 @@ export type AuthKitSessionResponse = {
   accessToken: string;
   csrfToken?: string;
   organizationId?: string;
+  workosOrganizationId?: string;
   resources?: Record<string, string[]>;
   user: AuthUser;
 };

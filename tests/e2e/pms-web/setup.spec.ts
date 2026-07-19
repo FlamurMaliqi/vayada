@@ -5,12 +5,71 @@ import type {
   SharedHotelSetupStatus,
   SharedPropertyProfile,
 } from "@vayada/product-onboarding";
-import { mockPmsWebAuthenticatedSession } from "../support/pmsWebMocks";
+import {
+  PMS_WEB_PROPERTY_ID,
+  mockPmsWebAuthenticatedSession,
+  mockPmsWebTargetRoutes,
+} from "../support/pmsWebMocks";
 import { watchPageHealth } from "../support/pageHealth";
 
 const propertyId = "f6853000-0000-0000-0000-000000000970";
+const stalePropertyId = "f6853000-0000-0000-0000-000000000969";
 
 test.describe("pms-web shared setup", () => {
+  test("forwards actionable PMS setup to rooms without a second interstitial", async ({ page }) => {
+    await mockPmsWebAuthenticatedSession(page, stalePropertyId);
+    await mockPmsWebTargetRoutes(page);
+    await page.route("**/api/hotel-setup/status**", async (route) => {
+      if (route.request().method() === "OPTIONS" || new URL(page.url()).pathname !== "/setup") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({ json: pmsActivationStatus("selected_incomplete") });
+    });
+
+    await page.goto(`/setup?entryProduct=pms&propertyId=${PMS_WEB_PROPERTY_ID}`);
+
+    await expect(page).toHaveURL(/\/rooms$/);
+    expect(
+      await page.evaluate(() => ({
+        selectedHotelId: localStorage.getItem("selectedHotelId"),
+        selectedSharedPropertyId: localStorage.getItem("selectedSharedPropertyId"),
+      })),
+    ).toEqual({
+      selectedHotelId: PMS_WEB_PROPERTY_ID,
+      selectedSharedPropertyId: PMS_WEB_PROPERTY_ID,
+    });
+  });
+
+  test("keeps an additive PMS requirement in the Rooms workspace", async ({ page }) => {
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({
+        json: pmsActivationStatus("selected_incomplete", ["futurePmsRequirement"]),
+      }),
+    );
+
+    await page.goto(`/setup?entryProduct=pms&propertyId=${PMS_WEB_PROPERTY_ID}`);
+
+    await expect(page).toHaveURL(/\/rooms$/);
+    await expect(page.getByRole("heading", { name: "Rooms" })).toBeVisible();
+    await expect(page).toHaveURL(/\/rooms$/);
+  });
+
+  test("keeps a suspended PMS activation on setup with a disabled action", async ({ page }) => {
+    await mockPmsWebAuthenticatedSession(page);
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({ json: pmsActivationStatus("suspended") }),
+    );
+
+    await page.goto(`/setup?entryProduct=pms&propertyId=${PMS_WEB_PROPERTY_ID}`);
+
+    await expect(page).toHaveURL(/\/setup\?/);
+    await expect(page.getByText("Suspended", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "PMS unavailable" })).toBeDisabled();
+  });
+
   test("walks first-property setup into product selection", async ({ page }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
     let created = false;
@@ -127,8 +186,7 @@ test.describe("pms-web shared setup", () => {
     ).toBeVisible();
     await expect(page.getByText("Alpenrose Munich")).toBeVisible();
     await expect(page.getByLabel("PMS")).toBeChecked();
-    const pmsProductOption = page.getByLabel("PMS").locator("xpath=ancestor::label");
-    await expect(pmsProductOption.getByText("Selected", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue setup" })).toBeEnabled();
     expect(statusRequests.length).toBeGreaterThan(0);
     expect(
       statusRequests.every(
@@ -236,6 +294,47 @@ function completeStatus(): SharedHotelSetupStatus {
       },
     ],
     nextAction: { action: "select_products", propertyId, reasonCodes: ["no_products_selected"] },
+  };
+}
+
+function pmsActivationStatus(
+  status: "selected_incomplete" | "suspended",
+  requestedMissingSteps?: string[],
+): SharedHotelSetupStatus {
+  const base = completeStatus();
+  const missingSteps =
+    status === "selected_incomplete"
+      ? (requestedMissingSteps ?? ["roomTypes", "rooms", "ratePlans"])
+      : [];
+  return {
+    ...base,
+    selection: { state: "single_property", selectedPropertyId: PMS_WEB_PROPERTY_ID },
+    hotelGroup: { ...base.hotelGroup, selectedProducts: ["pms"] },
+    properties: [
+      {
+        ...base.properties[0]!,
+        propertyId: PMS_WEB_PROPERTY_ID,
+        products: {
+          ...base.properties[0]!.products,
+          pms: {
+            product: "pms",
+            status,
+            missingSteps,
+            statusReasons: [status === "suspended" ? "pms_suspended" : "pms_activation_incomplete"],
+            updatedAt: "2026-06-30T00:00:00.000Z",
+          },
+        },
+      },
+    ],
+    nextAction: {
+      action: "complete_product_activation",
+      propertyId: PMS_WEB_PROPERTY_ID,
+      product: "pms",
+      missingSteps,
+      reasonCodes: [
+        status === "suspended" ? "pms_suspended" : "entry_product_activation_incomplete",
+      ],
+    },
   };
 }
 

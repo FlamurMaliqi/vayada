@@ -88,7 +88,10 @@ const reservation = {
   additionalGuestCount: 0,
 };
 
-export async function mockPmsWebAuthenticatedSession(page: Page): Promise<void> {
+export async function mockPmsWebAuthenticatedSession(
+  page: Page,
+  propertyId = PMS_WEB_PROPERTY_ID,
+): Promise<void> {
   await page.addInitScript((propertyId) => {
     const oneHourFromNow = Date.now() + 60 * 60 * 1000;
     window.localStorage.setItem("access_token", "e2e-pms-token");
@@ -105,7 +108,7 @@ export async function mockPmsWebAuthenticatedSession(page: Page): Promise<void> 
       "user",
       JSON.stringify({ id: "user_pms_owner", email: "owner@example.com", type: "hotel" }),
     );
-  }, PMS_WEB_PROPERTY_ID);
+  }, propertyId);
 }
 
 export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {

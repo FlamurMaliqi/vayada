@@ -63,16 +63,19 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("radio", { name: "Hotel", exact: true })).toBeChecked();
     await page.getByRole("button", { name: "Continue" }).click();
 
-    const locationHeading = page.getByRole("heading", {
+    const locationSearchPanel = page.getByTestId("location-search-panel");
+    const locationActionBar = page.getByTestId("location-action-bar");
+    const locationHeading = locationSearchPanel.getByRole("heading", {
       name: "Where is your property?",
       level: 1,
     });
     await expect(locationHeading).toBeVisible();
     await expect(locationHeading).toBeFocused();
-    const locationAddressCard = page.getByTestId("location-address-card");
-    await expect(locationAddressCard.getByRole("heading")).toHaveCount(0);
-    const locationContinueButton = page.getByRole("button", { name: "Continue" });
+    const locationContinueButton = locationActionBar.getByRole("button", {
+      name: "Continue",
+    });
     await expect(locationContinueButton).toBeEnabled();
+    await expect(locationActionBar.getByText("Is this the right location?")).toHaveCount(0);
     await expect(page.getByText("Search for your hotel address", { exact: true })).toHaveCount(0);
     await expect(
       page.getByText(
@@ -80,7 +83,10 @@ test.describe("marketplace-web shared setup activation", () => {
         { exact: true },
       ),
     ).toHaveCount(0);
-    const manualAddressButton = page.getByRole("button", { name: "Enter address manually" });
+    const manualAddressButton = locationSearchPanel.getByRole("button", {
+      name: "Enter address manually",
+    });
+    const streetAddress = page.getByRole("textbox", { name: /Street address/ });
     const searchFirst = await manualAddressButton.isVisible();
     if (
       process.env.CI === "true" ||
@@ -90,29 +96,17 @@ test.describe("marketplace-web shared setup activation", () => {
       expect(searchFirst).toBe(true);
     }
     if (searchFirst) {
-      await expect(page.getByRole("textbox", { name: /Street address/ })).toHaveCount(0);
-      const addressSearch = page.getByPlaceholder("Search for an address");
+      await expect(streetAddress).toHaveCount(0);
+      const addressSearch = locationSearchPanel.getByPlaceholder("Search for an address");
       await expect(addressSearch).toBeVisible();
-      const editAddressButton = page.getByRole("button", { name: "Enter address manually" });
-      const [cardBox, searchBox, editButtonBox] = await Promise.all([
-        locationAddressCard.boundingBox(),
-        addressSearch.boundingBox(),
-        editAddressButton.boundingBox(),
-      ]);
-      expect(cardBox).not.toBeNull();
-      expect(searchBox).not.toBeNull();
-      expect(editButtonBox).not.toBeNull();
-      expect(searchBox!.y - cardBox!.y).toBeLessThanOrEqual(24);
-      expect(
-        cardBox!.y + cardBox!.height - (editButtonBox!.y + editButtonBox!.height),
-      ).toBeLessThanOrEqual(24);
       const googleAddressSearch = page.locator(".vayada-google-place-autocomplete");
       await expect(googleAddressSearch).toHaveAttribute(
         "data-included-primary-types",
         "street_address,route",
       );
       await selectExactGoogleAddress(googleAddressSearch);
-      await expect(page.getByText("Is this the right location?")).toBeVisible();
+      await expect(locationHeading).toBeInViewport();
+      await expect(locationActionBar.getByText("Is this the right location?")).toBeVisible();
       await expect(page.getByTestId("google-address-map-canvas")).toHaveAttribute(
         "data-center",
         "48.1373932,11.5754485",
@@ -133,11 +127,13 @@ test.describe("marketplace-web shared setup activation", () => {
           () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
         ),
       ).toBe(true);
+      await expect(locationContinueButton).toBeInViewport();
       await addressSearch.focus();
       await googleAddressSearch.dispatchEvent("gmp-error");
+      await expect(streetAddress).toBeFocused();
+      await expect(streetAddress).toBeInViewport();
     }
 
-    const streetAddress = page.getByRole("textbox", { name: /Street address/ });
     if (searchFirst) await expect(streetAddress).toBeFocused();
     await streetAddress.fill("Marienplatz 1");
     await page.getByRole("textbox", { name: /Postal code/ }).fill("80331");
@@ -148,12 +144,13 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(locationContinueButton).toBeEnabled();
 
     if (searchFirst) {
-      await page.getByRole("button", { name: "Done editing" }).click();
-      await expect(page.getByText("Address details entered")).toBeVisible();
-      await expect(page.getByText("Marienplatz 1")).toBeVisible();
-      await expect(page.getByText("80331 Munich, Germany")).toBeVisible();
-      await expect(page.getByText("This matches your device.")).toBeVisible();
-      await page.getByRole("button", { name: "Edit address details" }).click();
+      await locationSearchPanel.getByRole("button", { name: "Done editing" }).click();
+      await expect(locationActionBar.getByText("Address details entered")).toBeVisible();
+      await expect(
+        locationActionBar.getByText("Marienplatz 1, 80331 Munich, Germany"),
+      ).toBeVisible();
+      await expect(locationActionBar.getByText("This matches your device.")).toBeVisible();
+      await locationSearchPanel.getByRole("button", { name: "Edit address details" }).click();
       await expect(streetAddress).toBeFocused();
     }
 
@@ -172,27 +169,105 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(
       page.getByRole("heading", { name: "Choose account systems", level: 2 }),
     ).toBeVisible();
+    await expect(page.getByLabel("Booking Engine", { exact: true })).toHaveAccessibleDescription(
+      "Unavailable",
+    );
+    const marketplaceSystem = page.getByLabel("Creator Marketplace", { exact: true });
+    const marketplaceSystemCard = marketplaceSystem.locator("xpath=ancestor::label");
+    const continueSetup = page.getByRole("button", { name: "Continue setup" });
+    await expect(marketplaceSystem).toBeChecked();
+    await marketplaceSystemCard.click();
+    await expect(marketplaceSystem).not.toBeChecked();
+    await expect(
+      page.getByText("Select at least one available product to continue.", { exact: true }),
+    ).toBeVisible();
+    await expect(continueSetup).toBeDisabled();
+    await marketplaceSystemCard.click();
+    await expect(marketplaceSystem).toBeChecked();
+    await expect(page.getByText("1 system selected", { exact: true })).toBeVisible();
+    await expect(continueSetup).toBeEnabled();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
   });
 
-  test("shows the shared launch step before opening Marketplace tools", async ({
-    page,
-    baseURL,
-  }) => {
+  test("shows the selected products as an actionable setup roadmap", async ({ page, baseURL }) => {
     await primeBrowserState(page);
     await mockAuthSession(page);
-    await mockSharedSetupStatus(page, sharedSetupStatus());
+    await mockSharedSetupStatus(page, sharedRoadmapStatus());
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByRole("heading", { name: "Activate Creator Marketplace" })).toBeVisible();
-    await expect(page.getByText("Creator-facing pitch")).toBeVisible();
-    await expect(page.getByText("Collaboration offer")).toBeVisible();
-    await expect(page.getByText("Requested content")).toBeVisible();
-    await expect(page.getByText("Compensation options")).toBeVisible();
-    await expect(page.getByText("Creator requirements")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Finish setting up Alpenrose Munich" }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hotel details saved" })).toBeVisible();
+    await expect(page.getByText("0 of 3 products ready")).toBeVisible();
+    await expect(
+      page.getByRole("progressbar", { name: "Selected products ready" }),
+    ).toHaveAttribute("aria-valuenow", "0");
+
+    await expect(page.getByRole("heading", { level: 2, name: "Booking Engine" })).toBeVisible();
+    await expect(page.getByText("Configure booking settings")).toBeVisible();
+    await expect(page.getByText("Prepare to accept direct bookings")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue in Booking Admin" })).toBeVisible();
+
+    await expect(page.getByRole("heading", { level: 2, name: "PMS" })).toBeVisible();
+    await expect(page.getByText("Set up rooms & rates")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue in PMS" })).toBeVisible();
+
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Creator Marketplace" }),
+    ).toBeVisible();
+    await expect(page.getByText("Introduce your hotel to creators")).toBeVisible();
+    await expect(page.getByText("Prepare your collaboration offer")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue Marketplace setup" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Hotel Name" })).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Website" })).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Phone" })).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+  });
+
+  test("hands Booking and PMS tasks off with the selected property", async ({ page, baseURL }) => {
+    await primeBrowserState(page);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus());
+    await page.route(/\/handoff(?:\?.*)?$/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Handoff</title>" }),
+    );
+
+    await page.goto(setupUrl(baseURL));
+    await page.getByRole("button", { name: "Continue in Booking Admin" }).click();
+
+    let handoffUrl = new URL(page.url());
+    expect(handoffUrl.hostname).toContain("admin.booking");
+    expect(handoffUrl.pathname).toBe("/handoff");
+    expect(handoffUrl.searchParams.get("redirect")).toBe(
+      `/setup?entryProduct=booking&propertyId=${propertyId}`,
+    );
+    let handoffFragment = new URLSearchParams(handoffUrl.hash.slice(1));
+    expect(handoffFragment.get("property_id")).toBe(propertyId);
+    expect(handoffFragment.get("organization_id")).toBe("11111111-1111-4111-8111-111111111111");
+    expect(handoffFragment.get("workos_organization_id")).toBe("org_workos_hotel_group");
+
+    await page.goto(setupUrl(baseURL));
+    await page.getByRole("button", { name: "Continue in PMS" }).click();
+
+    handoffUrl = new URL(page.url());
+    expect(handoffUrl.hostname).toMatch(/^pms\./);
+    expect(handoffUrl.pathname).toBe("/handoff");
+    expect(handoffUrl.searchParams.has("redirect")).toBe(false);
+    handoffFragment = new URLSearchParams(handoffUrl.hash.slice(1));
+    expect(handoffFragment.get("property_id")).toBe(propertyId);
+    expect(handoffFragment.get("organization_id")).toBe("11111111-1111-4111-8111-111111111111");
+    expect(handoffFragment.get("workos_organization_id")).toBe("org_workos_hotel_group");
   });
 
   test("opens profile tools for creatorPitch even when legacy status reports profile missing", async ({
@@ -205,8 +280,29 @@ test.describe("marketplace-web shared setup activation", () => {
     await mockMarketplaceProfileApis(page);
 
     await page.goto(setupUrl(baseURL));
-    await page.getByRole("button", { name: "Open Marketplace offer tools" }).click();
+    await page.getByRole("button", { name: "Continue Marketplace setup" }).click();
 
+    await expect(page).toHaveURL(/\/profile$/);
+  });
+
+  test("opens profile tools for an additive Marketplace setup requirement", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus(["marketplaceListing"]));
+    await mockMarketplaceProfileApis(page);
+
+    await page.goto(setupUrl(baseURL));
+
+    await expect(page.getByText("Complete product setup")).toBeVisible();
+    const continueSetup = page.getByRole("button", { name: "Continue Marketplace setup" });
+    await expect(continueSetup).toBeEnabled();
+    await continueSetup.click();
+
+    await expect(page).toHaveURL(/\/profile$/);
+    await expect(page.getByRole("heading", { name: "Basic Information" })).toBeVisible();
     await expect(page).toHaveURL(/\/profile$/);
   });
 
@@ -216,18 +312,40 @@ test.describe("marketplace-web shared setup activation", () => {
   }) => {
     await primeBrowserState(page);
     await mockAuthSession(page);
-    await mockSharedSetupStatus(page, sharedSetupStatus([], "suspended"));
+    const setupStatus = sharedSetupStatus([], "suspended");
+    setupStatus.hotelGroup.selectedProducts = [];
+    await mockSharedSetupStatus(page, setupStatus);
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(
-      page.getByRole("heading", { name: "Marketplace activation unavailable" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Creator Marketplace" })).toBeVisible();
+    await expect(page.getByText("Suspended", { exact: true })).toBeVisible();
     await expect(
       page.locator("p", { hasText: "Marketplace access is currently suspended" }),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Marketplace unavailable" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Open Marketplace offer tools" })).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Creator Marketplace unavailable" }),
+    ).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Continue Marketplace setup" })).toHaveCount(0);
+  });
+
+  test("shows Marketplace verification as pending without asking for more setup", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus([], "selected_incomplete"));
+
+    await page.goto(setupUrl(baseURL));
+
+    await expect(page.getByText("Verification pending", { exact: true })).toHaveCount(2);
+    await expect(
+      page.getByText(
+        "Marketplace verification is still in progress. No action is needed right now.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Verification pending" })).toBeDisabled();
   });
 });
 
@@ -355,6 +473,7 @@ async function mockAuthSession(page: Page) {
         accessToken: "test-access-token",
         csrfToken: "test-csrf-token",
         organizationId: "11111111-1111-4111-8111-111111111111",
+        workosOrganizationId: "org_workos_hotel_group",
         organizationKind: "hotel_group",
         user: {
           id: "user-hotel-owner",
@@ -502,6 +621,22 @@ function sharedSetupStatus(
   };
 }
 
+function sharedRoadmapStatus() {
+  const status = sharedSetupStatus();
+  status.hotelGroup.selectedProducts = ["booking", "pms", "marketplace"];
+  status.properties[0]!.products.booking = activation("booking", "selected_incomplete", [
+    "bookingSettings",
+    "publicBookability",
+    "paymentReadiness",
+  ]);
+  status.properties[0]!.products.pms = activation("pms", "selected_incomplete", [
+    "roomTypes",
+    "rooms",
+    "ratePlans",
+  ]);
+  return status;
+}
+
 function activation(product: string, status: string, missingSteps: string[]) {
   return {
     product,
@@ -548,7 +683,7 @@ function sharedSetupStatusForProductSelection() {
           missingFields: ["description", "media"],
         },
         products: {
-          booking: activation("booking", "not_selected", []),
+          booking: activation("booking", "unavailable", []),
           pms: activation("pms", "not_selected", []),
           marketplace: activation("marketplace", "not_selected", []),
         },
