@@ -31,7 +31,7 @@ test.describe("pms-web handoff", () => {
     ]);
   });
 
-  test("switches a normal session to the organization hinted by the handoff", async ({ page }) => {
+  test("honors a WorkOS-only organization hint for a normal session", async ({ page }) => {
     await mockPmsWebTargetRoutes(page);
     const refreshRequests: unknown[] = [];
     await page.route("**/auth/session/refresh", (route) => {
@@ -49,7 +49,7 @@ test.describe("pms-web handoff", () => {
     );
 
     await page.goto(
-      `/handoff#organization_id=${TARGET_ORGANIZATION_ID}&workos_organization_id=${TARGET_WORKOS_ORGANIZATION_ID}&property_id=${PMS_WEB_PROPERTY_ID}`,
+      `/handoff#workos_organization_id=${TARGET_WORKOS_ORGANIZATION_ID}&property_id=${PMS_WEB_PROPERTY_ID}`,
     );
 
     await expect(page).toHaveURL(/\/dashboard$/);

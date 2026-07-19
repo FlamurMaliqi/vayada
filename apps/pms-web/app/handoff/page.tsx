@@ -69,22 +69,30 @@ export default function HandoffPage() {
                   ? session.organizations[0]
                   : undefined;
 
-            if (!organization) {
+            if (
+              !organization ||
+              (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
+            ) {
               window.location.href = organizationSelectionPath;
               return;
             }
 
             const selectedSession = await authService.refreshSession(
-              organization.workosOrganizationId,
+              workosOrganizationId ?? organization.workosOrganizationId,
             );
             if (
               isAuthOrganizationSelectionResponse(selectedSession) ||
-              (organizationId && selectedSession.organizationId !== organizationId)
+              (organizationId && selectedSession.organizationId !== organizationId) ||
+              (workosOrganizationId &&
+                selectedSession.workosOrganizationId !== workosOrganizationId)
             ) {
               window.location.href = organizationSelectionPath;
               return;
             }
-          } else if (organizationId && session.organizationId !== organizationId) {
+          } else if (
+            (organizationId && session.organizationId !== organizationId) ||
+            (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+          ) {
             if (!workosOrganizationId) {
               window.location.href = missingOrganizationHandoffLoginPath();
               return;
@@ -92,7 +100,8 @@ export default function HandoffPage() {
             const selectedSession = await authService.refreshSession(workosOrganizationId);
             if (
               isAuthOrganizationSelectionResponse(selectedSession) ||
-              selectedSession.organizationId !== organizationId
+              (organizationId && selectedSession.organizationId !== organizationId) ||
+              selectedSession.workosOrganizationId !== workosOrganizationId
             ) {
               window.location.href = organizationSelectionPath;
               return;

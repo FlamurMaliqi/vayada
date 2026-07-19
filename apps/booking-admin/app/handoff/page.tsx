@@ -75,12 +75,16 @@ export default function HandoffPage() {
             );
             if (
               isAuthOrganizationSelectionResponse(session) ||
-              (organizationId && session.organizationId !== organizationId)
+              (organizationId && session.organizationId !== organizationId) ||
+              (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
             ) {
               window.location.href = organizationSelectionPath;
               return;
             }
-          } else if (organizationId && session.organizationId !== organizationId) {
+          } else if (
+            (organizationId && session.organizationId !== organizationId) ||
+            (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+          ) {
             if (!workosOrganizationId) {
               window.location.href = missingOrganizationHandoffLoginPath();
               return;
@@ -88,7 +92,8 @@ export default function HandoffPage() {
             session = await authService.refreshSession(workosOrganizationId);
             if (
               isAuthOrganizationSelectionResponse(session) ||
-              session.organizationId !== organizationId
+              (organizationId && session.organizationId !== organizationId) ||
+              session.workosOrganizationId !== workosOrganizationId
             ) {
               window.location.href = organizationSelectionPath;
               return;

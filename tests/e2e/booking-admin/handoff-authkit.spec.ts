@@ -39,7 +39,7 @@ test.describe("booking-admin AuthKit handoff", () => {
     ).toEqual({ propertyId: BOOKING_ADMIN_PROPERTY_ID, hotelId: BOOKING_ADMIN_HOTEL_ID });
   });
 
-  test("switches a normal session that belongs to the wrong organization", async ({ page }) => {
+  test("honors a WorkOS-only organization hint for a normal session", async ({ page }) => {
     await mockBookingAdminShellRoutes(page);
     const refreshRequests: unknown[] = [];
     await page.route("**/auth/session/refresh", (route) => {
@@ -57,7 +57,7 @@ test.describe("booking-admin AuthKit handoff", () => {
     );
 
     await page.goto(
-      `/handoff#organization_id=${BOOKING_ADMIN_ORGANIZATION_ID}&workos_organization_id=${TARGET_WORKOS_ORGANIZATION_ID}&property_id=${BOOKING_ADMIN_PROPERTY_ID}`,
+      `/handoff#workos_organization_id=${TARGET_WORKOS_ORGANIZATION_ID}&property_id=${BOOKING_ADMIN_PROPERTY_ID}`,
     );
 
     await expect(page).toHaveURL(/\/dashboard$/);
