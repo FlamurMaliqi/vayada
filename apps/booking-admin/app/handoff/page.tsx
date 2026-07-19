@@ -7,6 +7,7 @@ import { settingsService, type HotelSummary } from "@/services/settings";
 import {
   isSafeRelativeReturnTo,
   missingOrganizationHandoffLoginPath,
+  organizationSelectionLoginPath,
 } from "@vayada/product-onboarding/returnTo";
 
 export default function HandoffPage() {
@@ -22,6 +23,11 @@ export default function HandoffPage() {
     const propertyId = hashParams.get("property_id");
     const organizationId = hashParams.get("organization_id")?.trim() || null;
     const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
+    const organizationSelectionPath = organizationSelectionLoginPath(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash,
+    );
 
     // Optional `?redirect=...` query param tells us where to go after
     // auth. Used by the PMS header's "Add Property" button which
@@ -37,7 +43,7 @@ export default function HandoffPage() {
         localStorage.setItem("token_expires_at", expiresAt);
       } else if (!authService.isAuthKitEnabled()) {
         if (!(await authService.ensureSession())) {
-          window.location.href = organizationSelectionPath();
+          window.location.href = organizationSelectionPath;
           return;
         }
       } else {
@@ -60,7 +66,7 @@ export default function HandoffPage() {
               !organization ||
               (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
             ) {
-              window.location.href = organizationSelectionPath();
+              window.location.href = organizationSelectionPath;
               return;
             }
 
@@ -71,7 +77,7 @@ export default function HandoffPage() {
               isAuthOrganizationSelectionResponse(session) ||
               (organizationId && session.organizationId !== organizationId)
             ) {
-              window.location.href = organizationSelectionPath();
+              window.location.href = organizationSelectionPath;
               return;
             }
           } else if (organizationId && session.organizationId !== organizationId) {
@@ -84,12 +90,12 @@ export default function HandoffPage() {
               isAuthOrganizationSelectionResponse(session) ||
               session.organizationId !== organizationId
             ) {
-              window.location.href = organizationSelectionPath();
+              window.location.href = organizationSelectionPath;
               return;
             }
           }
         } catch {
-          window.location.href = organizationSelectionPath();
+          window.location.href = organizationSelectionPath;
           return;
         }
       }
@@ -113,6 +119,7 @@ export default function HandoffPage() {
       try {
         hotels = await settingsService.listHotels();
       } catch {
+        localStorage.setItem("setupComplete", "false");
         const explicitId = propertyId?.trim() || handoffHotelId?.trim();
         window.location.href = explicitId
           ? `/setup?entryProduct=booking&propertyId=${encodeURIComponent(explicitId)}`
@@ -197,7 +204,7 @@ export default function HandoffPage() {
       localStorage.setItem("setupComplete", "true");
       window.location.href = "/dashboard";
     })().catch(() => {
-      window.location.href = organizationSelectionPath();
+      window.location.href = organizationSelectionPath;
     });
   }, []);
 
@@ -206,18 +213,4 @@ export default function HandoffPage() {
       <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
     </div>
   );
-}
-
-function organizationSelectionPath(): string {
-  const currentHash = new URLSearchParams(window.location.hash.slice(1));
-  const safeHash = new URLSearchParams();
-  for (const key of ["organization_id", "workos_organization_id", "property_id", "hotel_id"]) {
-    const value = currentHash.get(key)?.trim();
-    if (value) safeHash.set(key, value);
-  }
-  const returnTo = `${window.location.pathname}${window.location.search}${safeHash.size > 0 ? `#${safeHash.toString()}` : ""}`;
-  const loginParams = new URLSearchParams();
-  loginParams.set("auth", "callback");
-  loginParams.set("returnTo", returnTo);
-  return `/login?${loginParams.toString()}`;
 }

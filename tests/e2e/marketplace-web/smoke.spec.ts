@@ -188,6 +188,45 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByText("Which systems do you want to use?")).toHaveCount(0);
   });
 
+  test("restored profile-ready sessions still show the onboarding handoff", async ({ page }) => {
+    await primeBrowserState(page);
+    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          accessToken: "restored-hotel-token",
+          csrfToken: "restored-hotel-csrf",
+          organizationId: "11111111-1111-4111-8111-111111111111",
+          organizationKind: "hotel_group",
+          user: {
+            id: "user-restored-hotel",
+            email: "returning-owner@example.test",
+            name: "Returning Owner",
+            status: "active",
+          },
+        },
+      });
+    });
+    await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
+      accessToken: "restored-marketplace-token",
+      expiresIn: 900,
+    });
+
+    await page.goto("/onboarding");
+
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+    await expect(
+      page.getByText("Your account details are saved. Next, let’s set up your first hotel."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Set up my first hotel" })).toBeVisible();
+  });
+
   test("creator onboarding uses creator copy and requires a profile photo", async ({ page }) => {
     await page.setViewportSize({ width: 1512, height: 830 });
     await primeBrowserState(page);

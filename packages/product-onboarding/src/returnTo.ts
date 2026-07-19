@@ -57,6 +57,22 @@ export function handoffReturnToForOrganization(
   return `${url.pathname}${url.search}${hash.size > 0 ? `#${hash.toString()}` : ""}`;
 }
 
+export function organizationSelectionLoginPath(
+  pathname: string,
+  search: string,
+  hash: string,
+): string {
+  const currentHash = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+  const safeHash = new URLSearchParams();
+  for (const key of ["organization_id", "workos_organization_id", "property_id", "hotel_id"]) {
+    const value = currentHash.get(key)?.trim();
+    if (value) safeHash.set(key, value);
+  }
+
+  const returnTo = `${pathname}${search}${safeHash.size > 0 ? `#${safeHash.toString()}` : ""}`;
+  return `/login?${new URLSearchParams({ auth: "callback", returnTo }).toString()}`;
+}
+
 export function missingOrganizationHandoffLoginPath(): string {
   return `/login?${new URLSearchParams({
     auth_error:

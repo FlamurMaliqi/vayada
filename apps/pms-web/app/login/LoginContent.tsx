@@ -94,7 +94,7 @@ export function LoginContent({
   );
 
   useEffect(() => {
-    if (!resumeSession) return;
+    if (!resumeSession || !authService.isAuthKitEnabled()) return;
     let cancelled = false;
     setIsSubmitting(true);
     authService

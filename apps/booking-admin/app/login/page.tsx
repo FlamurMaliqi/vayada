@@ -89,7 +89,7 @@ function LoginContent() {
   );
 
   useEffect(() => {
-    if (searchParams.get("auth") !== "callback") return;
+    if (searchParams.get("auth") !== "callback" || !authService.isAuthKitEnabled()) return;
     let cancelled = false;
     setIsSubmitting(true);
     authService

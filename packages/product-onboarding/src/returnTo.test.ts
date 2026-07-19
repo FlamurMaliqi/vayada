@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { handoffReturnToForOrganization, missingOrganizationHandoffLoginPath } from "./returnTo";
+import {
+  handoffReturnToForOrganization,
+  missingOrganizationHandoffLoginPath,
+  organizationSelectionLoginPath,
+} from "./returnTo";
 
 describe("handoffReturnToForOrganization", () => {
   it("rewrites organization hints while preserving the property and redirect", () => {
@@ -34,5 +38,33 @@ describe("handoffReturnToForOrganization", () => {
     expect(path.pathname).toBe("/login");
     expect(path.searchParams.has("returnTo")).toBe(false);
     expect(path.searchParams.get("auth_error")).toContain("missing hotel-group context");
+  });
+});
+
+describe("organizationSelectionLoginPath", () => {
+  it("preserves handoff context while dropping credentials and unknown hash values", () => {
+    const path = new URL(
+      organizationSelectionLoginPath(
+        "/handoff",
+        "?redirect=%2Fsetup%3Fmode%3Dadd",
+        "#token=secret&organization_id=organization_1&workos_organization_id=org_workos_1&property_id=property_1&hotel_id=hotel_1&user=private",
+      ),
+      "https://vayada.local",
+    );
+
+    expect(path.pathname).toBe("/login");
+    expect(path.searchParams.get("auth")).toBe("callback");
+    expect(path.searchParams.get("returnTo")).toBe(
+      "/handoff?redirect=%2Fsetup%3Fmode%3Dadd#organization_id=organization_1&workos_organization_id=org_workos_1&property_id=property_1&hotel_id=hotel_1",
+    );
+  });
+
+  it("returns a callback to the current path when there is no safe hash context", () => {
+    const path = new URL(
+      organizationSelectionLoginPath("/handoff", "", "#token=secret"),
+      "https://vayada.local",
+    );
+
+    expect(path.searchParams.get("returnTo")).toBe("/handoff");
   });
 });

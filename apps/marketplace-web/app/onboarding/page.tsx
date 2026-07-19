@@ -77,7 +77,8 @@ export default function OnboardingPage() {
         if (userType === "creator" || userType === "hotel") {
           setProvisionedType(userType);
           if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
-            router.replace(nextPathForType(userType));
+            setSetupHandoffType(userType);
+            setLoading(false);
             return;
           }
           const photoRequired = await creatorPhotoRequirement(userType, requestController.signal);
