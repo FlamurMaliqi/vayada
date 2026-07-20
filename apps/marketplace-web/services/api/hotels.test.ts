@@ -166,6 +166,7 @@ describe("hotel target self-service client", () => {
   });
 
   it("combines canonical hotel facts with the selected Marketplace profile and offers", async () => {
+    localStorage.setItem("selectedSharedPropertyId", "stale-property");
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL | Request) => {
@@ -198,7 +199,7 @@ describe("hotel target self-service client", () => {
       }),
     );
 
-    await expect(hotelService.getMyProfile()).resolves.toMatchObject({
+    await expect(hotelService.getMyProfile(propertyId)).resolves.toMatchObject({
       id: propertyId,
       name: "Hotel Alpenrose",
       location: "Munich, Germany",
@@ -340,9 +341,29 @@ describe("hotel target self-service client", () => {
       method: "PUT",
       body: { hostSummary: "A personal stay in central Munich." },
     });
+
+    requests.length = 0;
+    localStorage.setItem("selectedSharedPropertyId", "stale-property");
+    await hotelService.updateMyProfile(
+      { about: "A creator-focused stay in central Munich." },
+      propertyId,
+    );
+
+    expect(requests).not.toContainEqual(
+      expect.objectContaining({
+        url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile`,
+        method: "PUT",
+      }),
+    );
+    expect(requests).toContainEqual({
+      url: `https://api.localhost/api/marketplace/properties/${propertyId}/profile`,
+      method: "PUT",
+      body: { hostSummary: "A creator-focused stay in central Munich." },
+    });
   });
 
   it("scopes offer create, update, and delete to the selected hotel", async () => {
+    localStorage.setItem("selectedSharedPropertyId", "stale-property");
     const requests: Array<{ url: string; method: string; body: unknown }> = [];
     vi.stubGlobal(
       "fetch",
@@ -357,6 +378,9 @@ describe("hotel target self-service client", () => {
         if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
           return jsonResponse(sharedProfile);
         }
+        if (method === "DELETE") {
+          expect(requestHeader(init, "Content-Type")).toBeNull();
+        }
         return method === "DELETE" ? emptyResponse() : jsonResponse(targetOffer);
       }),
     );
@@ -367,6 +391,14 @@ describe("hotel target self-service client", () => {
       description: "Stay close to the old town.",
       accommodation_type: "Boutique Hotel",
       images: ["https://images.example/room.jpg"],
+      deliverables: [
+        {
+          platform: "TikTok",
+          deliverable_type: "content",
+          quantity: 1,
+          timing_guidance: null,
+        },
+      ],
       collaboration_offerings: [
         {
           collaboration_type: "Free Stay" as const,
@@ -387,12 +419,16 @@ describe("hotel target self-service client", () => {
       },
     };
 
-    const created = await hotelService.createListing(createRequest);
-    const updated = await hotelService.updateListing("offer-resource-id", {
-      name: "Updated stay",
-      images: ["https://images.example/offer-one.jpg"],
-    });
-    await hotelService.deleteListing("offer-resource-id");
+    const created = await hotelService.createListing(createRequest, propertyId);
+    const updated = await hotelService.updateListing(
+      "offer-resource-id",
+      {
+        name: "Updated stay",
+        images: ["https://images.example/offer-one.jpg"],
+      },
+      propertyId,
+    );
+    await hotelService.deleteListing("offer-resource-id", propertyId);
 
     expect(requests).toContainEqual({
       url: `https://api.localhost/api/marketplace/properties/${propertyId}/offers`,
@@ -401,7 +437,7 @@ describe("hotel target self-service client", () => {
         title: "Two-night city stay",
         deliverables: [
           {
-            platform: "instagram",
+            platform: "tiktok",
             deliverableType: "content",
             quantity: 1,
             timingGuidance: null,
@@ -477,11 +513,16 @@ describe("hotel target self-service client", () => {
           mediaObjects: [
             {
               mediaId: "media-id",
-              storageKey: "listing/image.jpg",
+              storageKey: "private/marketplace/offers/media-id/original-safe.webp",
               contentType: "image/jpeg",
               sizeBytes: 3,
               originalFilename: "image.jpg",
-              variants: [{ publicCdnUrl: "https://cdn.example/image.jpg", storageKey: "large" }],
+              variants: [
+                {
+                  publicCdnUrl: null,
+                  storageKey: "private/marketplace/offers/media-id/original-safe.webp",
+                },
+              ],
             },
           ],
         });
@@ -496,7 +537,12 @@ describe("hotel target self-service client", () => {
         "offer-resource-id",
       ),
     ).resolves.toEqual({
-      images: [{ url: "https://cdn.example/image.jpg", mediaObjectId: "media-id" }],
+      images: [
+        {
+          url: "private/marketplace/offers/media-id/original-safe.webp",
+          mediaObjectId: "media-id",
+        },
+      ],
     });
   });
 });

@@ -13,7 +13,10 @@ import { hotelService } from "@/services/api/hotels";
 import { creatorService } from "@/services/api/creators";
 import { ApiErrorResponse } from "@/services/api/client";
 import { checkProfileStatus } from "@/lib/utils";
-import { resolveMarketplaceSetupGuard } from "@/lib/utils/sharedSetupGuard";
+import {
+  marketplaceGuardRedirectPath,
+  resolveMarketplaceSetupGuard,
+} from "@/lib/utils/sharedSetupGuard";
 import { authService } from "@/services/auth";
 
 export default function MarketplacePage() {
@@ -72,8 +75,9 @@ export default function MarketplacePage() {
             STORAGE_KEYS.PROFILE_COMPLETE,
             String(decision.action === "enter_product"),
           );
-          if (decision.action === "redirect_to_setup") {
-            router.replace(decision.redirectPath);
+          const redirectPath = marketplaceGuardRedirectPath(decision);
+          if (redirectPath) {
+            router.replace(redirectPath);
             return;
           }
           setProfileReady(true);

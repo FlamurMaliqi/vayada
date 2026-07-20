@@ -9,7 +9,9 @@ async function targetRequest<T>(endpoint: string, options: RequestInit = {}): Pr
   if (!token) throw new ApiErrorResponse(401, { detail: "Not authenticated" });
 
   const headers = new Headers(options.headers);
-  headers.set("Content-Type", "application/json");
+  if (options.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(`${TARGET_API_BASE_URL}${endpoint}`, {

@@ -230,6 +230,34 @@ describe("shared hotel setup status route", () => {
     });
   });
 
+  it("does not send first-run enrichment fields back through shared hotel setup", async () => {
+    app = buildSharedSetupApp({
+      repository: repositoryWith([
+        setupProperty(propertyId, {
+          sharedProfile: {
+            status: "incomplete",
+            source: "canonical",
+            completionPercent: 50,
+            missingFields: ["website", "description", "media"],
+          },
+        }),
+      ]),
+    });
+
+    const response = await injectJson<SharedHotelSetupStatus>(app, {
+      method: "GET",
+      url: "/api/hotel-setup/status?entryProduct=booking",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.nextAction).toEqual({
+      action: "select_products",
+      propertyId,
+      reasonCodes: ["entry_product_not_selected"],
+    });
+  });
+
   it("returns multiple authorized properties without leaking unrelated repository rows", async () => {
     app = buildSharedSetupApp({
       linkedResources: [propertyLink(propertyId), propertyLink(secondPropertyId)],
@@ -400,7 +428,7 @@ describe("shared hotel setup status route", () => {
       },
       website: null,
       contactEmail: "hello@alpenrose.example",
-      phone: "+49 123",
+      phone: "+49 89 123456",
       media: [],
       sharedProfile: {
         status: "incomplete",
@@ -719,6 +747,26 @@ describe("shared hotel setup status route", () => {
     ]);
   });
 
+  it("rejects phone text that only satisfies the former length check", async () => {
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: {
+        ...unusedStatusMethods(),
+        ...unusedPropertyProfileMethods(),
+      },
+    });
+
+    const response = await injectJson<{ fields: Record<string, string[]> }>(app, {
+      method: "POST",
+      url: "/api/hotel-setup/properties",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...minimalHotelInput(), phone: "sdfdsfsfsdfdsf" },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.fields.phone).toEqual(["phone must be a valid phone number."]);
+  });
+
   it("rejects non-object location payloads for shared property profile writes", async () => {
     app = buildSharedSetupApp({
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
@@ -984,6 +1032,7 @@ describe("shared hotel setup status route", () => {
             marketplaceProfileUpdatedAt: "2026-06-30T08:05:00.000Z",
             marketplaceOfferCount: 0,
             marketplaceVerifiedOfferCount: 0,
+            marketplacePublicOfferCount: 0,
             marketplaceOfferUpdatedAt: null,
             marketplaceDeliverableCount: 0,
             marketplaceCompensationCount: 0,
@@ -1082,8 +1131,111 @@ describe("shared hotel setup status route", () => {
       ),
     ).toHaveLength(1);
     expect(setupSql).toContain("WITH effective_product_entitlements AS");
+    expect(setupSql).toContain(
+      "count(*) FILTER (WHERE offer.offer_status IN ('pending', 'verified'))::int AS count",
+    );
+    expect(setupSql).toContain("projection.visibility_status = 'public'");
+    expect(setupSql).toContain(
+      'COALESCE(marketplace_offers_state.public_count, 0) AS "marketplacePublicOfferCount"',
+    );
+    expect(setupSql).toContain("offer.offer_status IN ('pending', 'verified')");
+    expect(setupSql).toContain("listing.offer_status IN ('pending', 'verified')");
     expect(setupSql).not.toContain("resource_id = property.id::text");
     expect(query.mock.calls[2]![1]).toEqual([organizationId, [propertyId]]);
+  });
+
+  it("distinguishes submitted, verified, and rejected Marketplace offers", async () => {
+    const activationFor = async (overrides: Record<string, unknown>) => {
+      const query = vi.fn(async (text: string) => {
+        if (text.includes("FROM identity.organizations")) {
+          return { rows: [{ displayName: "Alpenrose Hotel Group" }] };
+        }
+        return {
+          rows: [
+            {
+              propertyId,
+              publicId: "alpenrose-munich",
+              displayName: "Alpenrose Munich",
+              profileStatus: "complete",
+              location: { city: "Munich", countryCode: "DE" },
+              descriptions: { shortDescription: "City hotel" },
+              media: [{ url: "https://example.test/photo.jpg" }],
+              publicContacts: [
+                { type: "website", value: "https://alpenrose.example" },
+                { type: "phone", value: "+49 123" },
+              ],
+              bookingSelected: false,
+              pmsSelected: false,
+              marketplaceSelected: true,
+              marketplaceEntitlementActive: true,
+              marketplaceEntitlementSuspended: false,
+              marketplaceProfileStatus: "pending",
+              marketplaceProfileComplete: true,
+              marketplaceOfferCount: 1,
+              marketplaceVerifiedOfferCount: 0,
+              marketplacePublicOfferCount: 0,
+              marketplaceDeliverableCount: 1,
+              marketplaceCompensationCount: 1,
+              marketplaceRequirementCount: 1,
+              ...overrides,
+            },
+          ],
+        };
+      });
+      const repository = createPgSharedHotelSetupStatusRepository({
+        connectionString: "postgresql://target-db",
+        pool: {
+          query: async <T extends QueryResultRow = QueryResultRow>(text: string) => {
+            const result = await query(text);
+            return { rows: result.rows as unknown as T[] };
+          },
+          end: vi.fn(async () => undefined),
+        },
+      });
+      const status = await repository.getHotelSetupStatus({
+        organizationId,
+        propertyIds: [propertyId],
+      });
+      return status.properties[0]!.products.marketplace;
+    };
+
+    await expect(activationFor({})).resolves.toMatchObject({
+      status: "selected_incomplete",
+      missingSteps: [],
+    });
+    await expect(
+      activationFor({
+        marketplaceProfileStatus: "verified",
+        marketplaceVerifiedOfferCount: 1,
+        marketplacePublicOfferCount: 1,
+      }),
+    ).resolves.toMatchObject({ status: "active", missingSteps: [] });
+    await expect(
+      activationFor({
+        marketplaceProfileStatus: "verified",
+        marketplaceVerifiedOfferCount: 1,
+        marketplacePublicOfferCount: 0,
+      }),
+    ).resolves.toMatchObject({
+      status: "selected_incomplete",
+      missingSteps: ["marketplaceOffer"],
+    });
+    await expect(
+      activationFor({
+        marketplaceOfferCount: 0,
+        marketplaceDeliverableCount: 0,
+        marketplaceCompensationCount: 0,
+        marketplaceRequirementCount: 0,
+      }),
+    ).resolves.toMatchObject({
+      status: "selected_incomplete",
+      missingSteps: [
+        "marketplaceOffer",
+        "offerDeliverables",
+        "compensationOptions",
+        "creatorRequirements",
+      ],
+    });
   });
 
   it("prefills shared profile reads from target Booking public profile data", async () => {
@@ -1180,6 +1332,7 @@ describe("shared hotel setup status route", () => {
             marketplaceEntitlementSuspended: false,
             marketplaceOfferCount: 0,
             marketplaceVerifiedOfferCount: 0,
+            marketplacePublicOfferCount: 0,
             marketplaceDeliverableCount: 0,
             marketplaceCompensationCount: 0,
             marketplaceRequirementCount: 0,
@@ -1290,6 +1443,7 @@ describe("shared hotel setup status route", () => {
             marketplaceProfileComplete: true,
             marketplaceOfferCount: 1,
             marketplaceVerifiedOfferCount: 0,
+            marketplacePublicOfferCount: 0,
             marketplaceDeliverableCount: 0,
             marketplaceCompensationCount: 0,
             marketplaceRequirementCount: 0,
@@ -1654,6 +1808,7 @@ describe("shared hotel setup status route", () => {
             marketplaceProfileComplete: true,
             marketplaceOfferCount: 1,
             marketplaceVerifiedOfferCount: 1,
+            marketplacePublicOfferCount: 1,
             marketplaceDeliverableCount: 1,
             marketplaceCompensationCount: 1,
             marketplaceRequirementCount: 1,
@@ -1787,6 +1942,7 @@ describe("shared hotel setup status route", () => {
             marketplaceProfileComplete: true,
             marketplaceOfferCount: 1,
             marketplaceVerifiedOfferCount: 1,
+            marketplacePublicOfferCount: 1,
             marketplaceDeliverableCount: 1,
             marketplaceCompensationCount: 1,
             marketplaceRequirementCount: 1,
@@ -1933,6 +2089,7 @@ describe("shared hotel setup status route", () => {
             marketplaceProfileComplete: null,
             marketplaceOfferCount: 0,
             marketplaceVerifiedOfferCount: 0,
+            marketplacePublicOfferCount: 0,
             marketplaceDeliverableCount: 0,
             marketplaceCompensationCount: 0,
             marketplaceRequirementCount: 0,
@@ -2123,7 +2280,7 @@ function completeProfileInput(displayName = "Alpenrose Munich"): SharedPropertyP
     },
     website: "https://alpenrose.example/",
     contactEmail: "hello@alpenrose.example",
-    phone: "+49 123",
+    phone: "+49 89 123456",
     shortDescription: "A city hotel in Munich.",
     longDescription: null,
     media: [
@@ -2156,7 +2313,7 @@ function minimalHotelInput(): SharedPropertyProfileInput {
     },
     website: null,
     contactEmail: "hello@alpenrose.example",
-    phone: "+49 123",
+    phone: "+49 89 123456",
     shortDescription: null,
     longDescription: null,
     media: [],

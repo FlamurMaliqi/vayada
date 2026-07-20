@@ -1,10 +1,27 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildProductHandoffUrl,
   handoffReturnToForOrganization,
   missingOrganizationHandoffLoginPath,
   organizationSelectionLoginPath,
 } from "./returnTo";
+
+describe("buildProductHandoffUrl", () => {
+  it("carries product setup and hotel-group context between apps", () => {
+    expect(
+      buildProductHandoffUrl(
+        "https://pms.vayada.com",
+        "property_1",
+        "organization_1",
+        "org_workos_1",
+        "/setup?entryProduct=pms&propertyId=property_1",
+      ),
+    ).toBe(
+      "https://pms.vayada.com/handoff?redirect=%2Fsetup%3FentryProduct%3Dpms%26propertyId%3Dproperty_1#property_id=property_1&organization_id=organization_1&workos_organization_id=org_workos_1",
+    );
+  });
+});
 
 describe("handoffReturnToForOrganization", () => {
   it("rewrites organization hints while preserving the property and redirect", () => {

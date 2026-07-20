@@ -98,6 +98,8 @@ describe("AuthKit session routes", () => {
           email: "creator@example.test",
           name: "Creator Example",
           phone: "+49 30 123456",
+          profilePictureUrl: "https://media.example/creator.webp",
+          profilePictureMediaObjectId: "media_creator_profile",
           status: "active",
         }),
         organizationByWorkosOrgId: async () => ({
@@ -159,6 +161,8 @@ describe("AuthKit session routes", () => {
         email: "creator@example.test",
         name: "Creator Example",
         phone: "+49 30 123456",
+        profilePictureUrl: "https://media.example/creator.webp",
+        profilePictureMediaObjectId: "media_creator_profile",
         workosUserId: "user_workos_creator",
       },
     });
@@ -1897,6 +1901,23 @@ describe("AuthKit session routes", () => {
         }),
       }),
     ]);
+
+    const invalidPhone = await app.inject({
+      method: "POST",
+      url: "/auth/profile",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: {
+        surface: "marketplace-web",
+        phone: "sdfdsfsfsdfdsf",
+      },
+    });
+
+    expect(invalidPhone.statusCode).toBe(400);
+    expect(commands).toHaveLength(1);
 
     const clearedPhone = await app.inject({
       method: "POST",

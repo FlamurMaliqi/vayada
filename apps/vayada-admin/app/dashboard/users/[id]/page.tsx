@@ -161,6 +161,9 @@ function UserDetailContent() {
   const [listingToDelete, setListingToDelete] = useState<ListingResponse | null>(null);
   const [deletingListing, setDeletingListing] = useState(false);
   const [listingDeleteError, setListingDeleteError] = useState("");
+  const [verifyingListingId, setVerifyingListingId] = useState<string | null>(null);
+  const [listingVerifyError, setListingVerifyError] = useState("");
+  const [listingVerifySuccess, setListingVerifySuccess] = useState("");
 
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
@@ -898,6 +901,30 @@ function UserDetailContent() {
       }
     } finally {
       setDeletingListing(false);
+    }
+  };
+
+  const handleVerifyListing = async (listing: ListingResponse) => {
+    if (!userDetail) return;
+
+    try {
+      setVerifyingListingId(listing.id);
+      setListingVerifyError("");
+      setListingVerifySuccess("");
+
+      await usersService.verifyOffer(userDetail.id, listing.id);
+      const updatedUserDetail = await usersService.getUserById(userDetail.id);
+      setUserDetail(updatedUserDetail);
+      setSelectedListing(null);
+      setListingVerifySuccess(`Offer "${listing.name}" is live.`);
+    } catch (err) {
+      if (err instanceof ApiErrorResponse) {
+        setListingVerifyError((err.data.detail as string) || "Failed to publish offer.");
+      } else {
+        setListingVerifyError("Failed to publish offer. Please try again.");
+      }
+    } finally {
+      setVerifyingListingId(null);
     }
   };
 
@@ -2585,6 +2612,16 @@ function UserDetailContent() {
             {/* Offers Tab */}
             {activeTab === "listings" && isHotel && profile && (
               <div className="space-y-4">
+                {listingVerifyError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3" role="alert">
+                    <p className="text-sm text-red-800">{listingVerifyError}</p>
+                  </div>
+                )}
+                {listingVerifySuccess && (
+                  <div className="rounded-lg border border-green-200 bg-green-50 p-3" role="status">
+                    <p className="text-sm text-green-800">{listingVerifySuccess}</p>
+                  </div>
+                )}
                 <div className="flex justify-end">
                   <Button
                     variant="primary"
@@ -2638,6 +2675,22 @@ function UserDetailContent() {
                                 </span>
                               )}
                             </div>
+                            {listing.status === "pending" && (
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleVerifyListing(listing);
+                                }}
+                                disabled={verifyingListingId !== null}
+                                className="mt-4 w-full"
+                              >
+                                {verifyingListingId === listing.id
+                                  ? "Publishing..."
+                                  : "Verify & publish"}
+                              </Button>
+                            )}
                           </div>
                         </div>
                         <button

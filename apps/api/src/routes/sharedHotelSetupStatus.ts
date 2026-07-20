@@ -194,6 +194,7 @@ const SHARED_PROPERTY_TYPE_VALUES = new Set<string>(
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TIMEZONE_PATTERN = /^[A-Za-z_]+\/[A-Za-z0-9_+./-]+$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_PATTERN = /^\+?[0-9(][0-9\s().-]*$/;
 
 export async function registerSharedHotelSetupStatusRoutes(
   app: FastifyInstance,
@@ -526,8 +527,8 @@ function parseSharedPropertyProfile(
   const website = optionalUrl(input["website"], "website", errors);
   const contactEmail = optionalEmail(input["contactEmail"], "contactEmail", errors);
   const phone = optionalString(input["phone"], "phone", errors, { maxLength: 64 });
-  if (phone && phone.length < 5) {
-    addFieldError(errors, "phone", "phone is too short.");
+  if (phone && !isValidPhone(phone)) {
+    addFieldError(errors, "phone", "phone must be a valid phone number.");
   }
   const shortDescription = optionalString(input["shortDescription"], "shortDescription", errors, {
     maxLength: 500,
@@ -782,6 +783,12 @@ function isValidTimezone(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isValidPhone(value: string): boolean {
+  if (!PHONE_PATTERN.test(value)) return false;
+  const digitCount = value.replace(/\D/g, "").length;
+  return digitCount >= 7 && digitCount <= 15;
 }
 
 function optionalNumber(

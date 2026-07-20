@@ -1,4 +1,7 @@
-import { setApiBearerTokenProvider } from "@vayada/marketplace-shared/api/client";
+import {
+  setApiBearerTokenProvider,
+  setVayadaApiBearerTokenProvider,
+} from "@vayada/marketplace-shared/api/client";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
 
@@ -7,6 +10,8 @@ export type AuthUser = {
   email: string;
   name?: string | null;
   phone?: string | null;
+  profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
   status: string;
   workosUserId?: string;
 };
@@ -45,9 +50,10 @@ let authKitSession: AuthKitSessionResponse | null = null;
 let pendingOrganizationSelectionCsrfToken: string | null = null;
 let legacyCompatibilityToken: { token: string; expiresAt: number } | null = null;
 
-// Marketplace shared API calls need the in-memory AuthKit bearer token before
-// any page-level bootstrap code runs, so the provider is intentionally wired on import.
+// Legacy FastAPI calls use the compatibility token while migrated API calls use AuthKit.
+// Both providers are wired on import so requests are correct before page bootstrap runs.
 setApiBearerTokenProvider(() => getAuthBearerToken());
+setVayadaApiBearerTokenProvider(() => getAuthKitAccessToken());
 
 export function isAuthKitLoginEnabled(): boolean {
   return process.env.NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED !== "false";
@@ -87,6 +93,8 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
       email: session.user.email,
       name: userName,
       phone: session.user.phone ?? null,
+      profilePictureUrl: session.user.profilePictureUrl ?? null,
+      profilePictureMediaObjectId: session.user.profilePictureMediaObjectId ?? null,
       type: userType,
       status: session.user.status,
       is_superadmin: false,

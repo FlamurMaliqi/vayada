@@ -127,7 +127,12 @@ export type MarketplaceAdminOffer = {
   offerStatus: MarketplaceOfferStatus;
   title: string;
   offerSummary: string | null;
-  media: Array<{ mediaObjectId: string | null; url: string }>;
+  media: Array<{
+    mediaObjectId: string | null;
+    url: string | null;
+    approvalStatus: "pending_domain_approval" | "approved";
+    lifecycleStatus: "staged" | "active";
+  }>;
   deliverables: (MarketplaceOfferDeliverableWrite & { deliverableId: string })[];
   compensationOptions: (MarketplaceOfferCompensationOptionWrite & {
     compensationOptionId: string;
@@ -135,6 +140,24 @@ export type MarketplaceAdminOffer = {
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type MarketplaceAdminHotelReviewProfile = {
+  propertyId: string;
+  displayName: string;
+  location: string;
+  hostSummary: string | null;
+  profileStatus: "pending" | "verified" | "rejected" | "suspended" | "archived";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MarketplaceAdminHotelReviewResponse = {
+  contractVersion: MarketplaceAdminContractVersion;
+  authorizationMode: MarketplaceAdminAuthorizationMode;
+  userId: string;
+  profile: MarketplaceAdminHotelReviewProfile | null;
+  offers: MarketplaceAdminOffer[];
 };
 
 export type MarketplaceAdminDeleteOfferResponse = {
@@ -155,10 +178,16 @@ export const marketplaceAdminEndpoints = {
     `/api/marketplace/admin/collaborations/${encodeURIComponent(collaborationId)}/approve`,
   createOffer: (hotelUserId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/offers`,
+  hotelReview: (hotelUserId: string) =>
+    `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/review`,
   updateOffer: (hotelUserId: string, offerId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(
       hotelUserId,
     )}/offers/${encodeURIComponent(offerId)}`,
+  verifyOffer: (hotelUserId: string, offerId: string) =>
+    `/api/marketplace/admin/users/${encodeURIComponent(
+      hotelUserId,
+    )}/offers/${encodeURIComponent(offerId)}/verify`,
   deleteOffer: (hotelUserId: string, offerId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(
       hotelUserId,
@@ -205,6 +234,14 @@ export async function createMarketplaceAdminOffer(
   );
 }
 
+export async function getMarketplaceAdminHotelReview(
+  hotelUserId: string,
+): Promise<MarketplaceAdminHotelReviewResponse> {
+  return vayadaApiClient.get<MarketplaceAdminHotelReviewResponse>(
+    marketplaceAdminEndpoints.hotelReview(hotelUserId),
+  );
+}
+
 export async function updateMarketplaceAdminOffer(
   hotelUserId: string,
   offerId: string,
@@ -222,6 +259,15 @@ export async function deleteMarketplaceAdminOffer(
 ): Promise<MarketplaceAdminDeleteOfferResponse> {
   return vayadaApiClient.delete<MarketplaceAdminDeleteOfferResponse>(
     marketplaceAdminEndpoints.deleteOffer(hotelUserId, offerId),
+  );
+}
+
+export async function verifyMarketplaceAdminOffer(
+  hotelUserId: string,
+  offerId: string,
+): Promise<MarketplaceAdminOffer> {
+  return vayadaApiClient.post<MarketplaceAdminOffer>(
+    marketplaceAdminEndpoints.verifyOffer(hotelUserId, offerId),
   );
 }
 

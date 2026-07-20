@@ -215,12 +215,19 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
              read_model.public_id AS "offerPublicId",
              read_model.offer_title AS "offerTitle",
              read_model.offer_summary AS "offerSummary",
-             property_profile.display_name AS "hotelName",
-             property_profile.canonical_slug AS "hotelSlug",
+             COALESCE(property_profile.display_name, read_model.display_name, property.display_name)
+               AS "hotelName",
+             COALESCE(property_profile.canonical_slug, read_model.canonical_slug, property.public_id)
+               AS "hotelSlug",
              property.property_type AS "hotelAccommodationType",
-             property_profile.location AS "hotelLocation",
-             media.cover_image_url AS "hotelCoverImageUrl",
-             COALESCE(media.image_urls, '{}') AS "hotelImageUrls",
+             COALESCE(
+               NULLIF(property_profile.location, '{}'::jsonb),
+               read_model.location,
+               '{}'::jsonb
+             )
+               AS "hotelLocation",
+             COALESCE(media.cover_image_url, read_model.image_urls[1]) AS "hotelCoverImageUrl",
+             COALESCE(media.image_urls, read_model.image_urls, '{}') AS "hotelImageUrls",
              COALESCE(deliverables.items, '[]'::jsonb) AS deliverables,
              COALESCE(compensation.items, '[]'::jsonb) AS "compensationOptions",
              requirements.item AS "creatorRequirements",
@@ -232,7 +239,7 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
             AND offer.property_id = read_model.property_id
            JOIN hotel_catalog.properties property
              ON property.id = read_model.property_id
-           JOIN hotel_catalog.property_public_profile_read_model property_profile
+           LEFT JOIN hotel_catalog.property_public_profile_read_model property_profile
              ON property_profile.property_id = read_model.property_id
            LEFT JOIN LATERAL (
              SELECT
@@ -312,7 +319,7 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
            JOIN marketplace.marketplace_offers offer
              ON offer.id = read_model.offer_id
             AND offer.property_id = read_model.property_id
-           JOIN hotel_catalog.property_public_profile_read_model property_profile
+           LEFT JOIN hotel_catalog.property_public_profile_read_model property_profile
              ON property_profile.property_id = read_model.property_id
            WHERE read_model.visibility_status = 'public'
              AND offer.offer_status = 'verified'`,
@@ -465,14 +472,20 @@ function mapMarketplaceCreatorRow(
   };
 }
 
-function toMarketplaceLocation(value: unknown): MarketplaceOfferReadModel["hotelLocation"] {
+export function toMarketplaceLocation(value: unknown): MarketplaceOfferReadModel["hotelLocation"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { displayText: "" };
   }
   const location = value as Record<string, unknown>;
-  const displayText = readString(location.displayText) ?? readString(location.display) ?? "";
+  const rawMarketplaceLocation = readString(location.rawMarketplaceLocation);
   const countryCode = readString(location.countryCode);
   const city = readString(location.city);
+  const country = countryCode ?? readString(location.country);
+  const displayText =
+    readString(location.displayText) ??
+    readString(location.display) ??
+    rawMarketplaceLocation ??
+    [city, country].filter(Boolean).join(", ");
   return {
     displayText,
     ...(countryCode ? { countryCode } : {}),

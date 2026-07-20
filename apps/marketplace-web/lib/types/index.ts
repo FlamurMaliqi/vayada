@@ -386,10 +386,5 @@ export interface CreatorFormState {
 }
 
 export interface HotelFormState {
-  name: string;
-  location: string;
   about: string;
-  website: string;
-  phone: string;
-  picture: string;
 }

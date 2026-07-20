@@ -75,8 +75,22 @@ describe("marketplace hotel self-service routes", () => {
     const offers = await repository.listOffers("org-id", "property-id");
 
     expect(offers.map(({ offer: value }) => value.media)).toEqual([
-      [{ mediaObjectId: "media-one", url: "https://images.example/one.jpg" }],
-      [{ mediaObjectId: "media-two", url: "https://images.example/two.jpg" }],
+      [
+        {
+          mediaObjectId: "media-one",
+          url: "https://images.example/one.jpg",
+          approvalStatus: "approved",
+          lifecycleStatus: "active",
+        },
+      ],
+      [
+        {
+          mediaObjectId: "media-two",
+          url: "https://images.example/two.jpg",
+          approvalStatus: "approved",
+          lifecycleStatus: "active",
+        },
+      ],
     ]);
     const sql = query.mock.calls[0]![0];
     expect(sql).toContain("media_object.resource_id = offer.id::text");

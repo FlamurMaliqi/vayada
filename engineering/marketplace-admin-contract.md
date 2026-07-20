@@ -13,6 +13,7 @@ Contract version: `marketplace-admin.v1`.
 | Admin collaboration list | `GET`    | `/api/marketplace/admin/collaborations`                           |
 | Respond as hotel         | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/respond` |
 | Approve as hotel         | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/approve` |
+| Read hotel review        | `GET`    | `/api/marketplace/admin/users/{hotelUserId}/review`               |
 | Create hotel-user offer  | `POST`   | `/api/marketplace/admin/users/{hotelUserId}/offers`               |
 | Update hotel-user offer  | `PUT`    | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
 | Archive hotel-user offer | `DELETE` | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
@@ -38,6 +39,7 @@ primitive.
 This contract only covers marketplace-owned resources:
 
 - collaboration review actions that act as the hotel side;
+- the hotel review projection used to inspect the Marketplace profile and its offers;
 - collaboration-offer create/update/archive for a hotel user.
 
 Identity user CRUD remains out of scope and stays on the identity admin command
@@ -54,6 +56,12 @@ Offer writes accept only Marketplace-owned fields: `title`, `offerSummary`,
 classification, location, contacts, descriptions, and media remain in the
 shared hotel catalog and are not accepted by these routes.
 
+The hotel review read returns Marketplace profile status, pitch, and offers,
+plus the shared catalog name and location needed to identify the hotel. Identity
+account details remain on the identity admin route; the Vayada Admin client
+composes both owner-specific responses instead of making identity own product
+profiles.
+
 `offerId` is the target `marketplace.marketplace_offers.id`. Archive is a soft
 delete that sets `offerStatus = archived`.
 
@@ -63,6 +71,11 @@ organization's `marketplace_offer` operator link through the identity-owned
 access command port. Archive disables the projection and archives that link so
 discovery and hotel-side authorization cannot drift. Product entitlement stays
 account-scoped and is not duplicated for each offer.
+
+Verification publishes an offer when the Marketplace profile and offer are
+verified, at least one approved public offer image exists, and the shared
+catalog has a name and location. It does not depend on unrelated canonical
+Booking profile description or media completeness.
 
 Admin lifecycle actions use the same accepted-collaboration side effects as the
 hotel workflow. In particular, accepting an affiliate-enabled collaboration

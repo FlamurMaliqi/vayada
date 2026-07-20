@@ -5,15 +5,16 @@ import {
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
 import type { QueryResultRow } from "pg";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
-import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js";
+import { createPgMarketplaceAdminRepository, mapOfferRow } from "./routes/marketplaceAdmin.js";
 import type {
   MarketplaceAdminCollaborationsResponse,
   MarketplaceAdminCreateOfferRequest,
   MarketplaceAdminDeleteOfferResponse,
+  MarketplaceAdminHotelReviewResponse,
   MarketplaceAdminOffer,
   MarketplaceAdminInviteCode,
   MarketplaceAdminRepository,
@@ -265,6 +266,19 @@ describe("marketplace admin routes", () => {
       request: { title: "Updated suite" },
     });
 
+    const verified = await injectJson<MarketplaceAdminOffer>(app, {
+      method: "POST",
+      url: "/api/marketplace/admin/users/user_hotel/offers/offer_801/verify",
+      headers: { authorization: "Bearer platform-token" },
+    });
+
+    expect(verified.statusCode).toBe(200);
+    expect(verified.body.offerStatus).toBe("verified");
+    expect(repository.calls.verifyOffer[0]).toMatchObject({
+      hotelUserId: "user_hotel",
+      offerId: "offer_801",
+    });
+
     const deleted = await injectJson<MarketplaceAdminDeleteOfferResponse>(app, {
       method: "DELETE",
       url: "/api/marketplace/admin/users/user_hotel/offers/offer_801",
@@ -276,6 +290,33 @@ describe("marketplace admin routes", () => {
       offerId: "offer_801",
       title: "Creator suite",
     });
+  });
+
+  it("reads the Marketplace-owned hotel review separately from identity user detail", async () => {
+    const repository = createMemoryMarketplaceAdminRepository();
+    app = buildMarketplaceAdminApp(repository);
+
+    const response = await injectJson<MarketplaceAdminHotelReviewResponse>(app, {
+      method: "GET",
+      url: "/api/marketplace/admin/users/user_hotel/review",
+      headers: { authorization: "Bearer platform-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      userId: "user_hotel",
+      profile: {
+        propertyId: "property_801",
+        profileStatus: "pending",
+      },
+      offers: [{ offerId: "offer_801", offerStatus: "verified" }],
+    });
+    expect(repository.calls.readHotelReview).toEqual([
+      {
+        hotelUserId: "user_hotel",
+        authorizationMode: "platform_organization_membership",
+      },
+    ]);
   });
 
   it("updates creator and hotel profiles through marketplace admin target routes", async () => {
@@ -387,9 +428,16 @@ describe("marketplace admin routes", () => {
   it("keeps offer access and discovery projection in the same admin write transaction", async () => {
     const sql: string[] = [];
     const projectionModes: string[] = [];
+    const mediaPromotions: unknown[] = [];
     const repository = createPgMarketplaceAdminRepository({
       connectionString: "postgresql://target-db",
       identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      offerMediaPromotion: {
+        async promoteOfferMedia(input) {
+          mediaPromotions.push(input);
+          return 1;
+        },
+      },
       pool: createAdminPgPool(sql, { projectionModes }) as never,
     });
 
@@ -400,6 +448,17 @@ describe("marketplace admin routes", () => {
         authorizationMode: "platform_organization_membership",
       }),
     ).resolves.toMatchObject({ offerId: "f8015000-0000-0000-0000-000000000001" });
+
+    await expect(
+      repository.verifyOfferForUser({
+        hotelUserId: "user_hotel",
+        offerId: "f8015000-0000-0000-0000-000000000001",
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).resolves.toMatchObject({
+      offerId: "f8015000-0000-0000-0000-000000000001",
+      offerStatus: "verified",
+    });
 
     await expect(
       repository.updateOfferForUser({
@@ -424,15 +483,101 @@ describe("marketplace admin routes", () => {
     expect(statements).toContain("INSERT INTO identity.organization_resource_links");
     expect(statements).toContain("'marketplace_offer', $2, 'operator', 'active'");
     expect(statements.match(/INSERT INTO marketplace\.marketplace_offer_read_model/g)).toHaveLength(
-      3,
+      4,
     );
     expect(statements).toContain("ON CONFLICT (offer_id) DO UPDATE");
     expect(statements).toContain(
       "WHEN $2 = 'preserve' AND current_projection.visibility_status IS NOT NULL",
     );
     expect(statements).toContain("WHEN $2 = 'disable' THEN 'disabled'");
-    expect(projectionModes).toEqual(["initialize", "preserve", "disable"]);
+    expect(projectionModes).toEqual(["initialize", "initialize", "preserve", "disable"]);
+    expect(mediaPromotions).toEqual([
+      {
+        organizationId: "f8012000-0000-0000-0000-000000000001",
+        offerId: "f8015000-0000-0000-0000-000000000001",
+      },
+    ]);
+    expect(statements).toContain("SET offer_status = 'verified', updated_at = now()");
+    expect(statements).toContain("SET marketplace_profile_status = 'verified', updated_at = now()");
+    expect(statements).toContain("marketplace_profile.marketplace_profile_status = 'verified'");
+    expect(statements).toContain("COALESCE(cardinality(offer_media.urls), 0) > 0");
+    expect(statements).toContain("LEFT JOIN hotel_catalog.property_locations property_location");
+    expect(statements).toContain("THEN 'public'");
+    expect(statements).not.toContain(
+      "COALESCE(public_profile.profile_status, property.profile_status) = 'complete'",
+    );
     expect(statements).toContain("SET status = 'archived'");
+  });
+
+  it("loads pending offers for a hotel review without reading them through identity", async () => {
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql) as never,
+    });
+
+    await expect(
+      repository.readHotelReviewForUser({
+        hotelUserId: "user_hotel",
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).resolves.toMatchObject({
+      userId: "user_hotel",
+      profile: {
+        propertyId: "f8013000-0000-0000-0000-000000000001",
+        displayName: "Hotel Alpenrose",
+      },
+      offers: [{ offerId: "f8015000-0000-0000-0000-000000000001" }],
+    });
+    expect(sql.join("\n")).toContain('profile.host_summary AS "hostSummary"');
+    expect(sql.join("\n")).toContain("offer.offer_status <> 'archived'");
+  });
+
+  it("rejects offer verification when the offer has no pending or approved media", async () => {
+    const promoteOfferMedia = vi.fn(async () => 0);
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      offerMediaPromotion: { promoteOfferMedia },
+      pool: createAdminPgPool([], { hasEligibleMedia: false }) as never,
+    });
+
+    await expect(
+      repository.verifyOfferForUser({
+        hotelUserId: "user_hotel",
+        offerId: "f8015000-0000-0000-0000-000000000001",
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(promoteOfferMedia).not.toHaveBeenCalled();
+  });
+
+  it("retains pending offer media metadata for the owner without publishing a URL", () => {
+    const offer = mapOfferRow(
+      {
+        ...adminOfferRow("offer_801", "property_801"),
+        offerStatus: "pending",
+        media: [
+          {
+            mediaObjectId: "media_801",
+            url: null,
+            approvalStatus: "pending_domain_approval",
+            lifecycleStatus: "staged",
+          },
+        ],
+      },
+      "platform_organization_membership",
+    );
+
+    expect(offer.media).toEqual([
+      {
+        mediaObjectId: "media_801",
+        url: null,
+        approvalStatus: "pending_domain_approval",
+        lifecycleStatus: "staged",
+      },
+    ]);
   });
 
   it("requests affiliate provisioning when an admin approval accepts the collaboration", async () => {
@@ -464,7 +609,11 @@ describe("marketplace admin routes", () => {
 
 function createAdminPgPool(
   sql: string[],
-  options: { acceptedAffiliateCollaboration?: boolean; projectionModes?: string[] } = {},
+  options: {
+    acceptedAffiliateCollaboration?: boolean;
+    projectionModes?: string[];
+    hasEligibleMedia?: boolean;
+  } = {},
 ) {
   const offerId = "f8015000-0000-0000-0000-000000000001";
   const propertyId = "f8013000-0000-0000-0000-000000000001";
@@ -494,11 +643,31 @@ function createAdminPgPool(
       text.includes("FROM marketplace.marketplace_hotel_profiles profile") &&
       text.includes("identity.organization_memberships membership")
     ) {
-      rows = [{ propertyId, organizationId }];
+      rows = [
+        {
+          propertyId,
+          organizationId,
+          profileStatus: "pending",
+          displayName: "Hotel Alpenrose",
+          location: "Innsbruck, AT",
+          hostSummary: "Independent alpine hotel.",
+          createdAt: "2026-06-13T10:00:00.000Z",
+          updatedAt: "2026-06-13T10:00:00.000Z",
+        },
+      ];
+    } else if (
+      text.includes("SELECT EXISTS (") &&
+      text.includes("FROM platform.media_objects media")
+    ) {
+      rows = [{ exists: options.hasEligibleMedia ?? true }];
     } else if (text.includes("INSERT INTO marketplace.marketplace_offers")) {
       rows = [{ id: offerId }];
+    } else if (text.includes("SET marketplace_profile_status = 'verified'")) {
+      rows = [{ propertyId }];
+    } else if (text.includes("SET offer_status = 'verified'")) {
+      rows = [{ id: offerId }];
     } else if (text.includes('id::text AS "offerResourceId"')) {
-      rows = [{ offerResourceId: offerId, title: "Creator suite" }];
+      rows = [{ offerResourceId: offerId, title: "Creator suite", offerStatus: "pending" }];
     } else if (text.includes('offer.id::text AS "offerId"')) {
       rows = [adminOfferRow(offerId, propertyId)];
     }
@@ -669,8 +838,10 @@ function createMemoryMarketplaceAdminRepository(
     updateHotelProfile: [] as unknown[],
     createInviteCode: [] as unknown[],
     revokeInviteCode: [] as unknown[],
+    readHotelReview: [] as unknown[],
     createOffer: [] as unknown[],
     updateOffer: [] as unknown[],
+    verifyOffer: [] as unknown[],
     deleteOffer: [] as unknown[],
   };
   const repository: MarketplaceAdminRepository & { calls: typeof calls } = {
@@ -706,6 +877,24 @@ function createMemoryMarketplaceAdminRepository(
       calls.revokeInviteCode.push(inviteCodeId);
       return inviteCodeId === "invite_801";
     },
+    async readHotelReviewForUser(input) {
+      calls.readHotelReview.push(input);
+      return {
+        contractVersion: "marketplace-admin.v1",
+        authorizationMode: input.authorizationMode,
+        userId: input.hotelUserId,
+        profile: {
+          propertyId: "property_801",
+          displayName: "Hotel Alpenrose",
+          location: "Innsbruck, AT",
+          hostSummary: "Independent alpine hotel.",
+          profileStatus: "pending",
+          createdAt: "2026-06-13T10:00:00.000Z",
+          updatedAt: "2026-06-13T10:00:00.000Z",
+        },
+        offers: [offerResponse(input.authorizationMode)],
+      };
+    },
     async createOfferForUser(input) {
       calls.createOffer.push(input);
       return offerResponse(input.authorizationMode);
@@ -713,6 +902,10 @@ function createMemoryMarketplaceAdminRepository(
     async updateOfferForUser(input) {
       calls.updateOffer.push(input);
       return offerResponse(input.authorizationMode, input.request.title ?? "Creator suite");
+    },
+    async verifyOfferForUser(input) {
+      calls.verifyOffer.push(input);
+      return offerResponse(input.authorizationMode);
     },
     async deleteOfferForUser(input) {
       calls.deleteOffer.push(input);

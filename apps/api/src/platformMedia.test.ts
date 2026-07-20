@@ -215,7 +215,7 @@ describe("platform media upload routes", () => {
     }
   });
 
-  it("creates a signed property upload session and finalizes it with inspected private variants", async () => {
+  it("creates a signed property upload session and finalizes it with public variants", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     const app = buildMediaApp({ repository });
 
@@ -273,7 +273,9 @@ describe("platform media upload routes", () => {
       ...(propertyGalleryCase.expected.requiredVariants ?? []),
     ]);
     expect(
-      finalizeBody.mediaObject.variants.every((variant) => variant.publicCdnUrl === null),
+      finalizeBody.mediaObject.variants.every(
+        (variant) => variant.publicCdnUrl?.startsWith("https://") === true,
+      ),
     ).toBe(true);
     expect(finalizeBody.sideEffects).toEqual(propertyGalleryCase.expected.sideEffects);
     expect(repository.auditEvents).toHaveLength(2);
@@ -1084,6 +1086,7 @@ describe("platform media upload routes", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         purpose: "property.hero_image",
+        visibility: "public",
         resource: {
           product: "booking",
           resourceType: "booking_hotel",

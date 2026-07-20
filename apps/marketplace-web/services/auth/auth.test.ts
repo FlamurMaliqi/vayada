@@ -16,6 +16,7 @@ import {
   setLegacyCompatibilityToken,
 } from "./sessionStore";
 import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
+import { getMyMarketplaceCollaborations } from "@vayada/marketplace-shared/api/collaborations";
 
 const fetchMock = vi.fn();
 
@@ -100,6 +101,36 @@ describe("marketplace AuthKit compatibility token", () => {
     );
 
     await sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the AuthKit token for target Marketplace requests", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    setAuthKitSession({
+      accessToken: "hotel-workos-access-token",
+      organizationKind: "hotel_group",
+      user: { id: "user_hotel", email: "hotel@example.com", status: "active" },
+    });
+    setLegacyCompatibilityToken("legacy-marketplace-token", 900);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe(
+          "https://api.localhost/api/marketplace/collaborations/me?side=hotel",
+        );
+        expect((init?.headers as Record<string, string>)["Authorization"]).toBe(
+          "Bearer hotel-workos-access-token",
+        );
+        return jsonResponse({
+          contractVersion: "marketplace-collaboration-reads.v1",
+          authorizationMode: "hotel_group_resource_link",
+          items: [],
+        });
+      }),
+    );
+
+    await getMyMarketplaceCollaborations({ side: "hotel" });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

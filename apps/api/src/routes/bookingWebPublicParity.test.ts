@@ -108,7 +108,7 @@ const ACCEPTED_BOOTSTRAP_PARITY_DIFFERENCES = [
     reason: "Calendar fields are camel-cased and grouped under the target calendar projection.",
   },
   {
-    legacyField: "HotelResponse.contact/socialLinks/branding",
+    legacyField: "HotelResponse.contact/socialLinks",
     targetField: "omitted",
     reason:
       "These fields are not required by the read-only bootstrap adapters and remain outside this public-safe parity slice.",

@@ -118,10 +118,13 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
         accessToken: "e2e-pms-token",
         csrfToken: "e2e-pms-csrf-token",
         organizationId: "org_pms_owner",
+        workosOrganizationId: "org_workos_pms_owner",
         user: {
           id: "user_pms_owner",
           email: "owner@example.com",
           name: "PMS Owner",
+          profilePictureUrl: "https://media.example/pms-owner.webp",
+          profilePictureMediaObjectId: "media-pms-owner",
           status: "active",
           workosUserId: "workos_user_pms_owner",
         },

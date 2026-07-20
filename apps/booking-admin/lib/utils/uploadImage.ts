@@ -26,7 +26,6 @@ type UploadSessionResponse = {
 
 type FinalizeResponse = {
   mediaObjects: Array<{
-    storageKey: string;
     variants: Array<{ publicCdnUrl: string | null; storageKey: string }>;
   }>;
 };
@@ -34,6 +33,7 @@ type FinalizeResponse = {
 export async function uploadImages(
   files: File | File[],
   purpose: BookingMediaPurpose = "property.gallery_image",
+  explicitBookingHotelId?: string,
 ): Promise<string[]> {
   const fileList = Array.isArray(files) ? files : [files];
   if (fileList.length === 0) return [];
@@ -43,7 +43,7 @@ export async function uploadImages(
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
-  const bookingHotelId = getBookingHotelUploadResourceId();
+  const bookingHotelId = getBookingHotelUploadResourceId(explicitBookingHotelId);
 
   const create = await fetch(`${PLATFORM_MEDIA_API_BASE_URL}/api/media/upload-sessions`, {
     method: "POST",
@@ -103,18 +103,21 @@ export async function uploadImages(
 
   if (!finalized.ok) throw new Error(await readMediaError(finalized, "Upload finalize failed"));
   const finalizedBody = (await finalized.json()) as FinalizeResponse;
-  return finalizedBody.mediaObjects.map(
-    (mediaObject) =>
-      mediaObject.variants.find((variant) => variant.publicCdnUrl)?.publicCdnUrl ??
-      mediaObject.storageKey,
-  );
+  return finalizedBody.mediaObjects.map((mediaObject) => {
+    const publicUrl = mediaObject.variants.find((variant) =>
+      variant.publicCdnUrl?.startsWith("https://"),
+    )?.publicCdnUrl;
+    if (!publicUrl) throw new Error("Platform media did not return a public HTTPS image URL");
+    return publicUrl;
+  });
 }
 
 export async function uploadSingleImage(
   file: File,
   purpose: BookingMediaPurpose = "property.gallery_image",
+  explicitBookingHotelId?: string,
 ): Promise<string> {
-  const urls = await uploadImages(file, purpose);
+  const urls = await uploadImages(file, purpose, explicitBookingHotelId);
   if (!urls[0]) throw new Error("No image URL returned");
   return urls[0];
 }
@@ -123,7 +126,15 @@ function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {
   return uploadUrl.startsWith("https://uploads.vayada.localhost/");
 }
 
-function getBookingHotelUploadResourceId(): string {
+function getBookingHotelUploadResourceId(explicitBookingHotelId?: string): string {
+  const explicitId = explicitBookingHotelId?.trim();
+  if (explicitId) {
+    if (!getScopedBookingHotelIds().includes(explicitId)) {
+      throw new Error("Booking hotel is outside the active organization scope.");
+    }
+    return explicitId;
+  }
+
   if (typeof window !== "undefined") {
     const selectedHotelId = localStorage.getItem("selectedHotelId");
     if (selectedHotelId) return selectedHotelId;

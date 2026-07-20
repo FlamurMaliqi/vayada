@@ -8,9 +8,11 @@ export {
 } from "./SharedAccountDetailsStep";
 export {
   isSharedAccountDetailsComplete,
+  isValidSharedAccountPhone,
   normalizeSharedAccountName,
   splitSharedAccountName,
   type SharedAccountDetailsInput,
+  type SharedAccountDetailsProfile,
 } from "./sharedAccountDetails";
 export {
   createSharedAccountProfileImageUploader,
@@ -78,6 +80,7 @@ export {
   type SharedHotelSetupGuardDecision,
 } from "./sharedHotelSetupGuard";
 export {
+  buildProductHandoffUrl,
   firstSearchParam,
   handoffReturnToForOrganization,
   isSafeRelativeReturnTo,

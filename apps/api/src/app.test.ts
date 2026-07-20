@@ -603,6 +603,16 @@ const bookingSettingsRepository: BookingSettingsReadRepository = {
       },
     };
   },
+  async findDesignSettingsByHotelId(hotelId) {
+    if (hotelId !== "booking_hotel_alpenrose") return null;
+    return {
+      heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
+      heroHeading: "Stay above the clouds",
+      heroSubtext: "An independent alpine escape.",
+      primaryColor: "#2563EB",
+      fontPairing: "modern-minimalist",
+    };
+  },
   async findLastMinuteSettingsByHotelId(hotelId) {
     if (hotelId !== "booking_hotel_alpenrose") {
       return null;
@@ -672,6 +682,16 @@ const bookingSettingsWriteRepository: BookingSettingsWriteRepository = {
   async updateRoomFilterSettingsByHotelId(hotelId, settings) {
     expect(hotelId).toBe("booking_hotel_alpenrose");
     return settings;
+  },
+  async updateDesignSettingsByHotelId(hotelId, settings) {
+    expect(hotelId).toBe("booking_hotel_alpenrose");
+    return {
+      heroImage: settings.heroImage ?? "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
+      heroHeading: settings.heroHeading ?? "Stay above the clouds",
+      heroSubtext: settings.heroSubtext ?? "An independent alpine escape.",
+      primaryColor: settings.primaryColor ?? "#2563EB",
+      fontPairing: settings.fontPairing ?? "modern-minimalist",
+    };
   },
   async updateLastMinuteSettingsByHotelId(hotelId, settings) {
     expect(hotelId).toBe("booking_hotel_alpenrose");
@@ -2147,6 +2167,11 @@ function targetPublicHotelProfileRow(): QueryResultRow {
       supportedCurrencies: ["EUR", "USD"],
       supportedLocales: ["en", "de"],
     },
+    bookingHeroImage: "https://cdn.vayada.example/hotels/distribution-alpenrose/booking.jpg",
+    bookingHeroHeading: "Stay in the heart of the Alps",
+    bookingHeroSubtext: "Book direct for our best available rates.",
+    bookingPrimaryColor: "#3157D5",
+    bookingFontPairing: "grand-classic",
     publicSetupCompleteness: { status: "ready", missing: [] },
     sourceFreshness: {
       hotel_catalog: { status: "fresh", generatedAt: "2026-06-09T08:50:00.000Z" },
@@ -3694,6 +3719,60 @@ describe("vayada-api", () => {
         default_currency: "euro",
         check_in_time: "25:00",
       },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toMatchObject({
+      code: "invalid_payload",
+      category: "validation",
+    });
+  });
+
+  it("reads and updates Booking design settings independently from shared hotel fields", async () => {
+    app = buildAuthenticatedApp();
+    const url = "/api/booking/hotels/booking_hotel_alpenrose/settings/design";
+
+    const readResponse = await injectJson(app, {
+      method: "GET",
+      url,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(readResponse.statusCode).toBe(200);
+    expect(readResponse.body).toEqual({
+      heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
+      heroHeading: "Stay above the clouds",
+      heroSubtext: "An independent alpine escape.",
+      primaryColor: "#2563EB",
+      fontPairing: "modern-minimalist",
+    });
+
+    const writeResponse = await injectJson(app, {
+      method: "PATCH",
+      url,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        heroHeading: "Book the mountain directly",
+        primaryColor: "#0F766E",
+        fontPairing: "grand-classic",
+      },
+    });
+    expect(writeResponse.statusCode).toBe(200);
+    expect(writeResponse.body).toEqual({
+      heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
+      heroHeading: "Book the mountain directly",
+      heroSubtext: "An independent alpine escape.",
+      primaryColor: "#0F766E",
+      fontPairing: "grand-classic",
+    });
+  });
+
+  it("rejects invalid Booking design settings", async () => {
+    app = buildAuthenticatedApp();
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/design",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { primaryColor: "blue", fontPairing: "comic-sans" },
     });
 
     expect(response.statusCode).toBe(422);
@@ -5782,6 +5861,13 @@ describe("vayada-api", () => {
         bookingBaseUrl: "https://distribution-alpenrose.booking.localhost",
         defaultCurrency: "EUR",
         supportedCurrencies: ["EUR", "USD"],
+        branding: {
+          heroImage: "https://cdn.vayada.example/hotels/distribution-alpenrose/booking.jpg",
+          heroHeading: "Stay in the heart of the Alps",
+          heroSubtext: "Book direct for our best available rates.",
+          primaryColor: "#3157D5",
+          fontPairing: "grand-classic",
+        },
         capabilities: {
           instantBook: true,
           onlinePayment: true,
@@ -5809,8 +5895,16 @@ describe("vayada-api", () => {
     });
     expect(queries[0]?.text).toContain("distribution.public_hotel_bookability_profiles");
     expect(queries[0]?.text).toContain("hotel_catalog.property_slugs");
+    expect(queries[0]?.text).toContain('settings.hero_image_url AS "bookingHeroImage"');
     expect(queries[0]?.text).toContain("slug_alias.purpose = 'redirect'");
     expect(queries[0]?.values).toEqual(["distribution-alpenrose"]);
+    expect(serializePublicHotelProfileProjection(profile!).hotel.branding).toEqual({
+      heroImage: "https://cdn.vayada.example/hotels/distribution-alpenrose/booking.jpg",
+      heroHeading: "Stay in the heart of the Alps",
+      heroSubtext: "Book direct for our best available rates.",
+      primaryColor: "#3157D5",
+      fontPairing: "grand-classic",
+    });
     expect(findForbiddenPublicBookabilityKeys(profile)).toEqual([]);
   });
 
@@ -6450,6 +6544,11 @@ describe("vayada-api", () => {
       booking_filters: string[];
       custom_filters: Record<string, string>;
       filter_rooms: Record<string, string[]>;
+      hero_image_url: string | null;
+      hero_heading: string | null;
+      hero_subtext: string | null;
+      primary_color: string;
+      font_pairing: string;
       last_minute_discount: {
         enabled: boolean;
         stackWithPromo: boolean;
@@ -6477,6 +6576,11 @@ describe("vayada-api", () => {
       booking_filters: ["oceanView"],
       custom_filters: { oceanView: "Ocean view" },
       filter_rooms: { oceanView: ["room_101"] },
+      hero_image_url: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
+      hero_heading: "Stay above the clouds",
+      hero_subtext: "An independent alpine escape.",
+      primary_color: "#2563EB",
+      font_pairing: "modern-minimalist",
       last_minute_discount: {
         enabled: false,
         stackWithPromo: false,
@@ -6610,6 +6714,23 @@ describe("vayada-api", () => {
           state.booking_filters = JSON.parse(values?.[1] as string) as string[];
           state.custom_filters = JSON.parse(values?.[2] as string) as Record<string, string>;
           state.filter_rooms = JSON.parse(values?.[3] as string) as Record<string, string[]>;
+        } else if (
+          ["hero_image_url", "hero_heading", "hero_subtext", "primary_color", "font_pairing"].some(
+            (column) => text.includes(`${column} = $`),
+          )
+        ) {
+          for (const [column, stateKey] of [
+            ["hero_image_url", "hero_image_url"],
+            ["hero_heading", "hero_heading"],
+            ["hero_subtext", "hero_subtext"],
+            ["primary_color", "primary_color"],
+            ["font_pairing", "font_pairing"],
+          ] as const) {
+            const parameter = text.match(new RegExp(`${column} = \\$(\\d+)`));
+            if (parameter) {
+              Object.assign(state, { [stateKey]: values?.[Number(parameter[1]) - 1] });
+            }
+          }
         } else if (text.includes("last_minute_discount = $2::jsonb")) {
           state.last_minute_discount = JSON.parse(
             values?.[1] as string,
@@ -6683,6 +6804,29 @@ describe("vayada-api", () => {
       },
     });
 
+    const bookingOnlyPatchResponse = await injectJson(app, {
+      method: "PATCH",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/property",
+      headers: {
+        authorization: "Bearer valid-token",
+      },
+      payload: {
+        whatsapp_number: "+43 1 7777",
+        default_currency: "EUR",
+      },
+    });
+    expect(bookingOnlyPatchResponse.statusCode).toBe(200);
+    expect(bookingOnlyPatchResponse.body).toMatchObject({
+      property_name: "Hotel Alpenrose",
+      reservation_email: "reservations@alpenrose.example",
+      phone_number: "+43 1 2345",
+      whatsapp_number: "+43 1 7777",
+      address: "Alpenweg 1, Innsbruck, AT",
+      city: "Innsbruck",
+      country: "AT",
+      default_currency: "EUR",
+    });
+
     const propertyPatchResponse = await injectJson(app, {
       method: "PATCH",
       url: "/api/booking/hotels/booking_hotel_alpenrose/settings/property",
@@ -6743,6 +6887,56 @@ describe("vayada-api", () => {
     expect(propertyUpdateQuery?.text).toContain("contact.source_system = 'booking'");
     expect(propertyUpdateQuery?.text).toContain("existing.source_system <> 'booking'");
     expect(propertyUpdateQuery?.text).not.toContain("address_public = TRUE");
+
+    const designResponse = await injectJson(app, {
+      method: "PATCH",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/design",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        heroHeading: "Book the mountain directly",
+        primaryColor: "#0F766E",
+        fontPairing: "grand-classic",
+      },
+    });
+    expect(designResponse.statusCode).toBe(200);
+    expect(designResponse.body).toEqual({
+      heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
+      heroHeading: "Book the mountain directly",
+      heroSubtext: "An independent alpine escape.",
+      primaryColor: "#0F766E",
+      fontPairing: "grand-classic",
+    });
+    const firstDesignUpdateQuery = queries.find(
+      (query) =>
+        query.text.includes("UPDATE booking.booking_settings settings") &&
+        query.text.includes("hero_heading = $2"),
+    );
+    expect(firstDesignUpdateQuery?.text).toContain("primary_color = $3");
+    expect(firstDesignUpdateQuery?.text).toContain("font_pairing = $4");
+    expect(firstDesignUpdateQuery?.text).not.toContain("hero_image_url = $");
+    expect(firstDesignUpdateQuery?.text).not.toContain("hero_subtext = $");
+
+    const partialDesignResponse = await injectJson(app, {
+      method: "PATCH",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/design",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { heroSubtext: "Come for the mountains. Stay for the quiet." },
+    });
+    expect(partialDesignResponse.statusCode).toBe(200);
+    expect(partialDesignResponse.body).toEqual({
+      heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
+      heroHeading: "Book the mountain directly",
+      heroSubtext: "Come for the mountains. Stay for the quiet.",
+      primaryColor: "#0F766E",
+      fontPairing: "grand-classic",
+    });
+    const partialDesignUpdateQuery = queries.find(
+      (query) =>
+        query.text.includes("UPDATE booking.booking_settings settings") &&
+        query.text.includes("hero_subtext = $2"),
+    );
+    expect(partialDesignUpdateQuery?.text).not.toContain("hero_heading = $");
+    expect(partialDesignUpdateQuery?.text).not.toContain("primary_color = $");
 
     const cases = [
       {

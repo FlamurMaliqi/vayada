@@ -93,7 +93,7 @@ describe("product setup roadmap", () => {
         status: "selected_incomplete",
         missingSteps: [],
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       canContinueProductSetup({
         status: "suspended",
@@ -181,6 +181,29 @@ describe("validateProfileDraft", () => {
     expect(validateProfileDraft(draft, "update")["location.timezone"]).toEqual([
       "Enter a valid IANA time zone.",
     ]);
+  });
+
+  it("rejects arbitrary text and too-short phone numbers", () => {
+    const draft = {
+      displayName: "Hotel Alpenrose",
+      propertyType: "hotel",
+      countryCode: "DE",
+      city: "Munich",
+      streetAddress: "Marienplatz 1",
+      postalCode: "80331",
+      timezone: "Europe/Berlin",
+      website: "",
+      contactEmail: "owner@alpenrose.example",
+      phone: "not a phone",
+    } as Parameters<typeof validateProfileDraft>[0];
+
+    expect(validateProfileDraft(draft, "create").phone).toEqual(["Enter a valid phone number."]);
+    expect(validateProfileDraft({ ...draft, phone: "+49 12" }, "create").phone).toEqual([
+      "Enter a valid phone number.",
+    ]);
+    expect(validateProfileDraft({ ...draft, phone: "+49 89 123456" }, "create").phone).toBe(
+      undefined,
+    );
   });
 });
 

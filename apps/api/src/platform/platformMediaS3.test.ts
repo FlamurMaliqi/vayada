@@ -24,6 +24,7 @@ const sessionId = "session_01J_TEST";
 const uploadTargetId = "target_01J_TEST";
 const stagingKey = `staging/${sessionId}/1/profile.jpg`;
 const cacheControl = "public, max-age=31536000, immutable";
+const privateCacheControl = "private, no-store";
 
 const policy: PlatformMediaPurposePolicy = {
   purpose: "identity.user.profile_image",
@@ -35,6 +36,7 @@ const policy: PlatformMediaPurposePolicy = {
   maxFileSizeBytes: 5 * 1024 * 1024,
   maxFileCount: 1,
   maxImagePixels: 60_000_000,
+  autoApprovePublicOnFinalize: true,
   privateOnly: false,
   targetResourceProduct: "platform",
   targetResourceType: "user_profile",
@@ -77,6 +79,34 @@ describe("S3 platform profile media adapter", () => {
     expect(signingOptions?.expiresIn).toBeGreaterThan(0);
     expect(signingOptions?.expiresIn).toBeLessThanOrEqual(15 * 60);
     expect(signingOptions?.signableHeaders).toEqual(new Set(["content-type"]));
+  });
+
+  it("signs images up to the offer limit while rejecting larger uploads", async () => {
+    vi.mocked(getSignedUrl).mockResolvedValue("https://signed-upload.example/offer");
+    const { client } = fakeS3(async () => ({}));
+    const adapter = createAdapter(client);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+    await expect(
+      adapter.signUploadTarget({
+        sessionId,
+        uploadTargetId,
+        stagingKey,
+        contentType: "image/jpeg",
+        sizeBytes: 10 * 1024 * 1024,
+        expiresAt,
+      }),
+    ).resolves.toMatchObject({ uploadTargetId });
+    await expect(
+      adapter.signUploadTarget({
+        sessionId,
+        uploadTargetId,
+        stagingKey,
+        contentType: "image/jpeg",
+        sizeBytes: 10 * 1024 * 1024 + 1,
+        expiresAt,
+      }),
+    ).rejects.toThrow("between 1 byte and 10 MB");
   });
 
   it("decodes actual bytes and writes stripped immutable WebP variants", async () => {
@@ -178,6 +208,124 @@ describe("S3 platform profile media adapter", () => {
     });
   });
 
+  it("keeps pending marketplace offer variants private and uncached", async () => {
+    const source = await validJpeg();
+    const { client, send } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = offerSession(source.length);
+    const sessionFile = session.files[0]!;
+    const uploadTarget = session.uploadTargets[0]!;
+    const inspected = await adapter.inspectUploadedFile({
+      session,
+      sessionFile,
+      uploadTarget,
+      clientFile: { uploadTargetId },
+      policy: offerPolicy,
+    });
+    if (!inspected.ok) throw new Error("Expected offer image inspection to succeed");
+
+    const variants = await adapter.generateVariants({
+      session,
+      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+      fileIndex: 0,
+      policy: offerPolicy,
+    });
+
+    expect(variants).toHaveLength(offerPolicy.requiredVariants.length);
+    for (const variant of variants) {
+      expect(variant).toMatchObject({ visibility: "private", publicCdnUrl: null });
+      expect(variant.storageKey).toMatch(/^private\/media\//);
+    }
+    const puts = send.mock.calls
+      .map(([command]) => command)
+      .filter((command): command is PutObjectCommand => command instanceof PutObjectCommand);
+    expect(puts).toHaveLength(offerPolicy.requiredVariants.length);
+    for (const put of puts) {
+      expect(put.input.CacheControl).toBe(privateCacheControl);
+    }
+  });
+
+  it.each(["property.hero_image", "property.gallery_image"] as const)(
+    "publishes approved Booking %s variants through the configured CDN",
+    async (purpose) => {
+      const source = await validJpeg();
+      const { client, send } = fakeS3(async (command) =>
+        command instanceof GetObjectCommand
+          ? { ContentLength: source.length, Body: Readable.from([source]) }
+          : {},
+      );
+      const adapter = createAdapter(client);
+      const bookingPolicy = propertyPolicy(purpose);
+      const session = propertySession(source.length, purpose);
+      const sessionFile = session.files[0]!;
+      const uploadTarget = session.uploadTargets[0]!;
+      const inspected = await adapter.inspectUploadedFile({
+        session,
+        sessionFile,
+        uploadTarget,
+        clientFile: { uploadTargetId },
+        policy: bookingPolicy,
+      });
+      if (!inspected.ok) throw new Error("Expected Booking image inspection to succeed");
+
+      const variants = await adapter.generateVariants({
+        session,
+        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+        fileIndex: 0,
+        policy: bookingPolicy,
+      });
+
+      expect(variants).toHaveLength(bookingPolicy.requiredVariants.length);
+      expect(
+        variants.every(
+          (variant) =>
+            variant.visibility === "public" &&
+            variant.publicCdnUrl?.startsWith("https://cdn.vayada.test/") === true,
+        ),
+      ).toBe(true);
+      const puts = send.mock.calls
+        .map(([command]) => command)
+        .filter((command): command is PutObjectCommand => command instanceof PutObjectCommand);
+      expect(puts).toHaveLength(bookingPolicy.requiredVariants.length);
+      expect(puts.every((put) => put.input.CacheControl === cacheControl)).toBe(true);
+    },
+  );
+
+  it("rejects marketplace offer variants that bypass pending approval", async () => {
+    const source = await validJpeg();
+    const { client, send } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = offerSession(source.length);
+    const sessionFile = session.files[0]!;
+    const uploadTarget = session.uploadTargets[0]!;
+    const inspected = await adapter.inspectUploadedFile({
+      session,
+      sessionFile,
+      uploadTarget,
+      clientFile: { uploadTargetId },
+      policy: offerPolicy,
+    });
+    if (!inspected.ok) throw new Error("Expected offer image inspection to succeed");
+
+    await expect(
+      adapter.generateVariants({
+        session: { ...session, effectiveVisibility: "public" },
+        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+        fileIndex: 0,
+        policy: offerPolicy,
+      }),
+    ).rejects.toThrow("Images awaiting domain approval must stay private");
+    expect(send.mock.calls.some(([command]) => command instanceof PutObjectCommand)).toBe(false);
+  });
+
   it("decodes PNG and WebP bytes using their signed content types", async () => {
     const image = sharp({
       create: { width: 20, height: 20, channels: 3, background: "#334455" },
@@ -248,7 +396,7 @@ describe("S3 platform profile media adapter", () => {
 
     await expect(adapter.cleanupUploadedFile!({ session, file })).rejects.toBe(cleanupError);
     await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
-      "Profile image must be inspected before variants are generated",
+      "Image must be inspected before variants are generated",
     );
   });
 
@@ -267,7 +415,7 @@ describe("S3 platform profile media adapter", () => {
     void adapter.cleanupUploadedFile!({ session, file });
 
     await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
-      "Profile image must be inspected before variants are generated",
+      "Image must be inspected before variants are generated",
     );
   });
 
@@ -288,9 +436,9 @@ describe("S3 platform profile media adapter", () => {
         fileIndex: 0,
         policy,
       }),
-    ).rejects.toThrow("Profile image variants require public visibility");
+    ).rejects.toThrow("Auto-approved image variants require public visibility");
     await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
-      "Profile image must be inspected before variants are generated",
+      "Image must be inspected before variants are generated",
     );
   });
 
@@ -553,11 +701,11 @@ describe("S3 platform profile media adapter", () => {
     const session = profileSession(100);
     const unsupportedPolicy = {
       ...policy,
-      purpose: "property.hero_image" as const,
+      purpose: "property.logo" as const,
     };
     const unsupportedSession = {
       ...session,
-      purpose: "property.hero_image" as const,
+      purpose: "property.logo" as const,
     };
     await expect(
       adapter.inspectUploadedFile({
@@ -664,5 +812,74 @@ function profileSession(
     status: "signed",
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     createdAt: new Date().toISOString(),
+  };
+}
+
+const offerPolicy: PlatformMediaPurposePolicy = {
+  ...policy,
+  purpose: "marketplace.offer.media",
+  actorOwned: false,
+  allowedRelationships: ["owner", "operator"],
+  allowedResources: [{ product: "marketplace", resourceType: "marketplace_offer" }],
+  maxFileSizeBytes: 10 * 1024 * 1024,
+  maxFileCount: 12,
+  autoApprovePublicOnFinalize: undefined,
+  targetResourceProduct: "marketplace",
+  targetResourceType: "marketplace_offer",
+};
+
+function propertyPolicy(
+  purpose: "property.hero_image" | "property.gallery_image",
+): PlatformMediaPurposePolicy {
+  return {
+    ...offerPolicy,
+    purpose,
+    allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
+    maxFileCount: purpose === "property.hero_image" ? 1 : 25,
+    autoApprovePublicOnFinalize: true,
+    targetResourceProduct: "hotel_catalog",
+    targetResourceType: "property",
+  };
+}
+
+function offerSession(sizeBytes: number): PlatformMediaSessionRecord {
+  return {
+    ...profileSession(sizeBytes),
+    purpose: "marketplace.offer.media",
+    requestedVisibility: "public",
+    effectiveVisibility: "private",
+    resource: {
+      product: "marketplace",
+      resourceType: "marketplace_offer",
+      resourceId: "offer_01J_TEST",
+    },
+    target: {
+      resourceProduct: "marketplace",
+      resourceType: "marketplace_offer",
+      resourceId: "offer_01J_TEST",
+    },
+  };
+}
+
+function propertySession(
+  sizeBytes: number,
+  purpose: "property.hero_image" | "property.gallery_image",
+): PlatformMediaSessionRecord {
+  return {
+    ...profileSession(sizeBytes),
+    purpose,
+    requestedVisibility: "public",
+    effectiveVisibility: "public",
+    resource: {
+      product: "booking",
+      resourceType: "booking_hotel",
+      resourceId: "booking_hotel_01J_TEST",
+    },
+    target: {
+      resourceProduct: "hotel_catalog",
+      resourceType: "property",
+      resourceId: "property_01J_TEST",
+      propertyId: "property_01J_TEST",
+    },
   };
 }

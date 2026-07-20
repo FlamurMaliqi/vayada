@@ -279,21 +279,24 @@ export async function resolveApprovedPublicProfileImage(input: {
   }
 
   const mediaObject = await repository.findMediaObject(input.mediaId);
-  const targetAllowed = input.allowedTargets.some(
+  const matchedTarget = input.allowedTargets.find(
     (target) =>
       mediaObject?.purpose === target.purpose &&
       mediaObject.resourceProduct === target.resourceProduct &&
       mediaObject.resourceType === target.resourceType &&
       mediaObject.resourceId === target.resourceId,
   );
+  const organizationAllowed =
+    matchedTarget?.purpose === "identity.user.profile_image" ||
+    mediaObject?.ownerOrganizationId === input.ownerOrganizationId;
   const canonicalVariant = mediaObject?.variants.find(
     (variant) => variant.variantName === "original_safe",
   );
   const publicCdnUrl = canonicalVariant?.publicCdnUrl ?? null;
   const isApprovedPublicImage =
     mediaObject?.actorUserId === input.actorUserId &&
-    mediaObject.ownerOrganizationId === input.ownerOrganizationId &&
-    targetAllowed &&
+    organizationAllowed &&
+    matchedTarget !== undefined &&
     mediaObject.storageKind === "vayada_managed" &&
     mediaObject.requestedVisibility === "public" &&
     mediaObject.visibility === "public" &&
@@ -449,6 +452,7 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
     maxFileSizeBytes: 10 * 1024 * 1024,
     maxFileCount: 1,
     maxImagePixels: defaultMaxImagePixels,
+    autoApprovePublicOnFinalize: true,
     privateOnly: false,
     targetResourceProduct: "hotel_catalog",
     targetResourceType: "property",
@@ -464,6 +468,7 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
     maxFileSizeBytes: 10 * 1024 * 1024,
     maxFileCount: 25,
     maxImagePixels: defaultMaxImagePixels,
+    autoApprovePublicOnFinalize: true,
     privateOnly: false,
     targetResourceProduct: "hotel_catalog",
     targetResourceType: "property",
@@ -1065,15 +1070,19 @@ export function createDeterministicPlatformMediaFinalizer(
           input.file.inspection.heightPx,
           input.policy.resizeOversizedPublicImages === true,
         );
+        const storageKey = `${input.session.stagingPrefix}/${input.fileIndex + 1}/variants/${variantName}`;
         return {
           variantName,
           visibility: input.session.effectiveVisibility,
-          storageKey: `${input.session.stagingPrefix}/${input.fileIndex + 1}/variants/${variantName}`,
+          storageKey,
           contentType: normalizeContentType(input.file.inspection.contentType),
           widthPx: dimensions?.widthPx,
           heightPx: dimensions?.heightPx,
           sizeBytes: resizedVariantSize(input.file.inspection, dimensions),
-          publicCdnUrl: null,
+          publicCdnUrl:
+            input.session.effectiveVisibility === "public"
+              ? `https://cdn.vayada.localhost/${storageKey}`
+              : null,
         };
       });
     },
@@ -1094,12 +1103,16 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
     importJobs,
     auditEvents,
     async createUploadSession(input) {
+      const requestedVisibility = input.request.visibility ?? "private";
       const session: PlatformMediaSessionRecord = {
         sessionId: input.sessionId,
         uploadSessionKey: input.uploadSessionKey,
         purpose: input.request.purpose,
-        requestedVisibility: input.request.visibility ?? "private",
-        effectiveVisibility: "private",
+        requestedVisibility,
+        effectiveVisibility:
+          requestedVisibility === "public" && input.policy.autoApprovePublicOnFinalize === true
+            ? "public"
+            : "private",
         actorUserId: input.context.actor.internalUserId,
         ownerOrganizationId: input.context.selectedOrganization.organizationId,
         resource: input.request.resource,

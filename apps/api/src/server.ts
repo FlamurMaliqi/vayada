@@ -402,6 +402,7 @@ const app = buildApp({
       ? createPgMarketplaceAdminRepository({
           connectionString: config.targetDatabaseUrl!,
           identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+          offerMediaPromotion: platformMediaRuntime?.offerMediaPromotion,
         })
       : undefined,
   marketplaceAdminLegacySuperadminFallbackEnabled:

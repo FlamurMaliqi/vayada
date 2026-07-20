@@ -136,6 +136,14 @@ export type PublicBookabilitySupportedQuoteParameters = {
   supportedLocales: string[];
 };
 
+export type PublicBookabilityBranding = {
+  heroImage: string | null;
+  heroHeading: string | null;
+  heroSubtext: string | null;
+  primaryColor: string | null;
+  fontPairing: string | null;
+};
+
 export type PublicBookabilityHotelProfile = {
   propertyId: string;
   slug: string;
@@ -150,6 +158,7 @@ export type PublicBookabilityHotelProfile = {
   supportedCurrencies: string[];
   location: PublicBookabilityLocation;
   summary?: string | null;
+  branding?: PublicBookabilityBranding;
   images: PublicBookabilityImage[];
   amenities: string[];
   policies: PublicBookabilityPolicies;
@@ -302,6 +311,7 @@ export type PublicBookabilityProducerInputs = {
     profileVerified: boolean;
   } & PublicBookabilityProducerSourceInput;
   booking: PublicBookabilityProducerSourceInput & {
+    branding?: PublicBookabilityBranding;
     policies: PublicBookabilityPolicies;
     capabilities: Pick<
       PublicBookabilityCapabilities,
@@ -402,6 +412,7 @@ export function buildPublicBookabilityProfileProjection(
       supportedCurrencies: copyStrings(inputs.finance.supportedCurrencies),
       location: sanitizeLocation(inputs.hotelCatalog.location),
       summary: inputs.hotelCatalog.summary,
+      branding: inputs.booking.branding ? { ...inputs.booking.branding } : undefined,
       images: inputs.hotelCatalog.images.map(sanitizeImage),
       amenities: copyStrings(inputs.hotelCatalog.amenities),
       policies: sanitizePolicies(inputs.booking.policies),

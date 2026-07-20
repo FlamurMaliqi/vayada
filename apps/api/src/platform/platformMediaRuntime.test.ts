@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { PlatformMediaServingConfig } from "./mediaServing.js";
+import { createPgS3MarketplaceOfferMediaPromotion } from "./marketplaceOfferMediaPromotion.js";
 import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
 import {
   composePlatformMediaRuntime,
@@ -36,11 +37,12 @@ describe("platform media runtime composition", () => {
       ).toBeUndefined();
       expect(factories.createRepository).not.toHaveBeenCalled();
       expect(factories.createAdapter).not.toHaveBeenCalled();
+      expect(factories.createOfferMediaPromotion).not.toHaveBeenCalled();
     }
   });
 
   it("shares production resources across profile validation and the restricted routes", () => {
-    const { repository, adapter, factories } = fakeFactories();
+    const { repository, adapter, offerMediaPromotion, factories } = fakeFactories();
     const runtime = composePlatformMediaRuntime(completeInput, factories);
     if (!runtime) throw new Error("Expected complete media configuration to compose a runtime");
 
@@ -56,14 +58,26 @@ describe("platform media runtime composition", () => {
       publicPathPrefix: "profile-media",
       publicCacheControl: "public, max-age=31536000, immutable",
     });
+    expect(factories.createOfferMediaPromotion).toHaveBeenCalledOnce();
+    expect(factories.createOfferMediaPromotion).toHaveBeenCalledWith({
+      connectionString: "postgresql://target-db",
+      serving: platformMediaServing,
+    });
 
     expect(runtime.profileMediaRepository).toBe(repository);
+    expect(runtime.offerMediaPromotion).toBe(offerMediaPromotion);
     expect(runtime.routes.repository).toBe(repository);
     expect(runtime.routes.signer).toBe(adapter);
     expect(runtime.routes.finalizer).toBe(adapter);
-    expect(runtime.routes.targetResolver.resolveTarget).toBeTypeOf("function");
+    expect(runtime.routes.targetResolver).toBe(repository);
     expect(runtime.routes).toMatchObject({
-      enabledPurposes: ["identity.user.profile_image", "marketplace.creator.profile_image"],
+      enabledPurposes: [
+        "identity.user.profile_image",
+        "property.hero_image",
+        "property.gallery_image",
+        "marketplace.creator.profile_image",
+        "marketplace.offer.media",
+      ],
       bucketName: "vayada-media-production",
       allowedOrigins: ["https://marketplace.vayada.com"],
     });
@@ -73,9 +87,11 @@ describe("platform media runtime composition", () => {
 function fakeFactories() {
   const repository = {} as ReturnType<typeof createPgPlatformMediaRepository>;
   const adapter = {} as ReturnType<typeof createS3PlatformMediaAdapter>;
+  const offerMediaPromotion = {} as ReturnType<typeof createPgS3MarketplaceOfferMediaPromotion>;
   const factories: PlatformMediaRuntimeFactories = {
     createRepository: vi.fn(() => repository),
     createAdapter: vi.fn(() => adapter),
+    createOfferMediaPromotion: vi.fn(() => offerMediaPromotion),
   };
-  return { repository, adapter, factories };
+  return { repository, adapter, offerMediaPromotion, factories };
 }

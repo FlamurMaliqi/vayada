@@ -1,8 +1,6 @@
 "use client";
 
-import { Input, Textarea, HotelBadgeIcon } from "@/components/ui";
-import { MapPinIcon, GlobeAltIcon, PhoneIcon } from "@heroicons/react/24/outline";
-import { HotelIcon } from "@vayada/product-onboarding";
+import { Textarea, HotelBadgeIcon } from "@/components/ui";
 import type { HotelFormState } from "@/lib/types";
 
 interface HotelBasicInfoStepProps {
@@ -17,86 +15,34 @@ export function HotelBasicInfoStep({ form, onFormChange, error }: HotelBasicInfo
       <div className="flex items-center gap-3 pb-1">
         <HotelBadgeIcon active={false} />
         <div>
-          <h3 className="text-lg font-bold text-gray-900">Hotel profile</h3>
-          <p className="text-xs text-gray-500">
-            Shared hotel details are prefilled; edits update them across Vayada.
+          <h3 className="text-base font-semibold text-gray-950">
+            Introduce your hotel to creators
+          </h3>
+          <p className="mt-1 text-sm leading-5 text-gray-500">
+            Your shared hotel details are already saved. Add only the pitch creators should see.
           </p>
-        </div>
-      </div>
-
-      <div className="flex flex-col-reverse md:flex-row gap-5">
-        {/* Left Column: Name & Location */}
-        <div className="flex-1 space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input
-              label="Hotel Name"
-              type="text"
-              value={form.name}
-              onChange={(e) => onFormChange({ name: e.target.value })}
-              required
-              placeholder="Your hotel name"
-              leadingIcon={<HotelIcon className="w-5 h-5" />}
-            />
-
-            <Input
-              label="Creator-facing location"
-              type="text"
-              value={form.location}
-              onChange={(e) => onFormChange({ location: e.target.value })}
-              required
-              placeholder="City, Country"
-              error={error && error.includes("Location") ? error : undefined}
-              helperText="A recognizable destination for creators, e.g. Bali, Indonesia."
-              leadingIcon={<MapPinIcon className="w-5 h-5 text-gray-400" />}
-            />
-          </div>
         </div>
       </div>
 
       <div className="space-y-3">
         <Textarea
-          label="About"
+          label="Creator-facing introduction"
+          aria-label="Creator-facing introduction"
           value={form.about}
           onChange={(e) => onFormChange({ about: e.target.value })}
-          placeholder="Tell potential creators about your properties"
+          placeholder="Tell creators what makes your hotel and collaboration opportunity special."
           rows={4}
           maxLength={5000}
           required
-          helperText={`${form.about.length}/5000 characters`}
-          className="resize-none"
+          helperText={`Minimum 50 characters · ${form.about.length}/5000`}
+          className="min-h-36 resize-none rounded-xl border-gray-200 bg-gray-50 px-4 py-3 focus:bg-white focus:ring-primary-100"
           error={
-            (error && error.includes("About") ? error : undefined) ||
+            (error && error.includes("introduction") ? error : undefined) ||
             (form.about.trim().length > 0 && form.about.trim().length < 50
-              ? `About section must be at least 50 characters (${form.about.length}/5000)`
+              ? `Introduction must be at least 50 characters (${form.about.length}/5000)`
               : undefined)
           }
         />
-      </div>
-
-      <div className="space-y-2">
-        <p className="text-sm font-semibold text-gray-900">Shared hotel contact</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Input
-            label="Website"
-            type="url"
-            value={form.website}
-            onChange={(e) => onFormChange({ website: e.target.value })}
-            placeholder="https://your-hotel.com"
-            required
-            error={error && error.includes("Website") ? error : undefined}
-            leadingIcon={<GlobeAltIcon className="w-5 h-5 text-gray-400" />}
-          />
-
-          <Input
-            label="Phone"
-            type="tel"
-            value={form.phone}
-            onChange={(e) => onFormChange({ phone: e.target.value })}
-            placeholder="+1-555-123-4567"
-            required
-            leadingIcon={<PhoneIcon className="w-5 h-5 text-gray-400" />}
-          />
-        </div>
       </div>
     </div>
   );

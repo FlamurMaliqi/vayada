@@ -102,6 +102,7 @@ export function useSetupWizardState({
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const previousImage = heroImage;
     const previewUrl = URL.createObjectURL(file);
     setHeroImage(previewUrl);
     try {
@@ -111,6 +112,8 @@ export function useSetupWizardState({
       setHeroImage(s3Url);
     } catch (err) {
       console.error("Image upload failed:", err);
+      URL.revokeObjectURL(previewUrl);
+      setHeroImage(previousImage);
     } finally {
       setUploading(false);
     }

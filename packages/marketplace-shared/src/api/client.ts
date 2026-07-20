@@ -8,9 +8,14 @@ export const VAYADA_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   "https://api.localhost";
 let bearerTokenProvider: (() => string | null) | null = null;
+let vayadaBearerTokenProvider: (() => string | null) | null = null;
 
 export function setApiBearerTokenProvider(provider: (() => string | null) | null): void {
   bearerTokenProvider = provider;
+}
+
+export function setVayadaApiBearerTokenProvider(provider: (() => string | null) | null): void {
+  vayadaBearerTokenProvider = provider;
 }
 
 export function getApiBearerToken(): string | null {
@@ -19,6 +24,10 @@ export function getApiBearerToken(): string | null {
     if (token) return token;
   }
   return getStoredLegacyToken();
+}
+
+function getVayadaApiBearerToken(): string | null {
+  return vayadaBearerTokenProvider ? vayadaBearerTokenProvider() : getApiBearerToken();
 }
 
 function getStoredLegacyToken(): string | null {
@@ -58,6 +67,17 @@ export class ApiErrorResponse extends Error {
     this.status = status;
     this.data = data;
   }
+}
+
+function wasRequestAborted(error: unknown, signal?: AbortSignal | null): boolean {
+  return (
+    signal?.aborted === true &&
+    (error === signal.reason ||
+      (typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        error.name === "AbortError"))
+  );
 }
 
 export class ApiClient {
@@ -111,7 +131,7 @@ export class ApiClient {
     const token = !endpoint.startsWith("/auth/") ? this.getToken() : null;
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
+      ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
       ...(options.headers as Record<string, string>),
     };
 
@@ -175,7 +195,9 @@ export class ApiClient {
         // This handles edge cases where response is empty but status is OK
         return undefined as T;
       }
-      console.error("API request failed:", error);
+      if (!wasRequestAborted(error, config.signal)) {
+        console.error("API request failed:", error);
+      }
       throw error;
     }
   }
@@ -253,11 +275,13 @@ export class ApiClient {
       if (error instanceof ApiErrorResponse) {
         throw error;
       }
-      console.error("API upload failed:", error);
+      if (!wasRequestAborted(error, config.signal)) {
+        console.error("API upload failed:", error);
+      }
       throw error;
     }
   }
 }
 
 export const apiClient = new ApiClient();
-export const vayadaApiClient = new ApiClient(VAYADA_API_BASE_URL);
+export const vayadaApiClient = new ApiClient(VAYADA_API_BASE_URL, getVayadaApiBearerToken);

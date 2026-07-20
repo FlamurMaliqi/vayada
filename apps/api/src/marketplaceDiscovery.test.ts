@@ -8,6 +8,7 @@ import { loadConfig } from "./config.js";
 import {
   createPgMarketplaceDiscoveryReadRepository,
   findForbiddenMarketplaceDiscoveryKeys,
+  toMarketplaceLocation,
   type MarketplaceCreatorPage,
   type MarketplaceCreatorReadModel,
   type MarketplaceDiscoveryError,
@@ -779,9 +780,37 @@ describe("pg marketplace discovery repository", () => {
     expect(pool.sql.join("\n")).toContain("offer.offer_status = 'verified'");
     expect(pool.sql.join("\n")).toContain('offer.id::text AS "offerId"');
     expect(pool.sql.join("\n")).toContain("marketplace.offer_compensation_options");
-    expect(pool.sql.join("\n")).toContain("property_public_profile_read_model");
+    expect(
+      pool.sql
+        .join("\n")
+        .match(/LEFT JOIN hotel_catalog\.property_public_profile_read_model property_profile/g),
+    ).toHaveLength(2);
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(property_profile.display_name, read_model.display_name, property.display_name)",
+    );
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(property_profile.canonical_slug, read_model.canonical_slug, property.public_id)",
+    );
+    expect(pool.sql.join("\n")).toContain("NULLIF(property_profile.location, '{}'::jsonb)");
     expect(pool.sql.join("\n")).toContain("platformMediaObjectId");
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(media.cover_image_url, read_model.image_urls[1])",
+    );
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(media.image_urls, read_model.image_urls, '{}')",
+    );
     expect(pool.sql.join("\n")).not.toMatch(/\bauth\b|users/i);
+  });
+
+  it("maps read-model location fallbacks when the optional public profile is absent or empty", () => {
+    expect(toMarketplaceLocation({ rawMarketplaceLocation: "Innsbruck, Austria" })).toEqual({
+      displayText: "Innsbruck, Austria",
+    });
+    expect(toMarketplaceLocation({ city: "Innsbruck", countryCode: "AT" })).toEqual({
+      displayText: "Innsbruck, AT",
+      city: "Innsbruck",
+      countryCode: "AT",
+    });
   });
 
   it("maps active creator rows with source IDs, platforms, and rounded ratings", async () => {

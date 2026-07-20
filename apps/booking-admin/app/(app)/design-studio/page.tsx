@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { EyeIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { settingsService } from "@/services/settings";
+import { requireSelectedBookingHotelId } from "@/services/api/bookingHotelScope";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { FeedbackAlert, SaveButton } from "@/components/ui";
 import { uploadSingleImage } from "@/lib/utils/uploadImage";
@@ -21,20 +22,20 @@ export default function DesignStudioPage() {
   const [activeTab, setActiveTab] = useState<Tab>("media");
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
 
   // Media & Content state
-  const [heroImage, setHeroImage] = useState<string>(
-    "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=1920&q=80",
-  );
-  const [heroHeading, setHeroHeading] = useState("Sundancer Lombok");
-  const [heroSubtext, setHeroSubtext] = useState(
-    "A boutique escape featuring private pools, ocean views, and tranquil luxury in the pristine shores of Sekotong.",
-  );
+  const [heroImage, setHeroImage] = useState("");
+  const [heroHeading, setHeroHeading] = useState("");
+  const [heroSubtext, setHeroSubtext] = useState("");
+  const [propertyName, setPropertyName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const designHotelIdRef = useRef<string | null>(null);
 
   // Colors state
   const [primaryColor, setPrimaryColor] = useState("#4F46E5");
@@ -57,26 +58,39 @@ export default function DesignStudioPage() {
   }, [primaryColor, loading]);
 
   useEffect(() => {
-    settingsService
-      .getDesignSettings()
-      .then((settings) => {
+    setLoadFailed(false);
+    try {
+      designHotelIdRef.current ??= requireSelectedBookingHotelId();
+    } catch {
+      setLoadFailed(true);
+      setLoading(false);
+      return;
+    }
+    Promise.all([
+      settingsService.getDesignSettings(designHotelIdRef.current),
+      settingsService.getPropertySettings(designHotelIdRef.current).catch(() => null),
+    ])
+      .then(([settings, property]) => {
         if (settings.hero_image) setHeroImage(settings.hero_image);
         if (settings.hero_heading) setHeroHeading(settings.hero_heading);
         if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
         if (settings.primary_color) setPrimaryColor(settings.primary_color);
         if (settings.font_pairing) setSelectedFont(settings.font_pairing);
+        if (property?.property_name) setPropertyName(property.property_name);
       })
       .catch(() => {
-        // Keep attractive defaults on error
+        setLoadFailed(true);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [loadAttempt]);
 
   const [uploading, setUploading] = useState(false);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const hotelId = designHotelIdRef.current;
+    if (!hotelId) return;
 
     const previousImage = heroImage;
     const previewUrl = URL.createObjectURL(file);
@@ -84,12 +98,12 @@ export default function DesignStudioPage() {
 
     try {
       setUploading(true);
-      const s3Url = await uploadSingleImage(file, "property.hero_image");
+      const s3Url = await uploadSingleImage(file, "property.hero_image", hotelId);
       URL.revokeObjectURL(previewUrl);
       setHeroImage(s3Url);
 
       try {
-        await settingsService.updateDesignSettings({ hero_image: s3Url });
+        await settingsService.updateDesignSettings({ hero_image: s3Url }, hotelId);
       } catch {
         console.error("Failed to auto-save hero image");
       }
@@ -109,24 +123,26 @@ export default function DesignStudioPage() {
   };
 
   const resetContent = () => {
-    setHeroHeading("Sundancer Lombok");
-    setHeroSubtext(
-      "A boutique escape featuring private pools, ocean views, and tranquil luxury in the pristine shores of Sekotong.",
-    );
+    setHeroHeading("");
+    setHeroSubtext("");
   };
 
   const handleSave = async () => {
+    const hotelId = designHotelIdRef.current;
+    if (!hotelId) return;
     try {
       setSaving(true);
       setFeedback(null);
-      const imageToSave = heroImage.startsWith("blob:") ? "" : heroImage;
-      await settingsService.updateDesignSettings({
-        hero_image: imageToSave,
-        hero_heading: heroHeading,
-        hero_subtext: heroSubtext,
-        primary_color: primaryColor,
-        font_pairing: selectedFont,
-      });
+      await settingsService.updateDesignSettings(
+        {
+          hero_image: heroImage,
+          hero_heading: heroHeading,
+          hero_subtext: heroSubtext,
+          primary_color: primaryColor,
+          font_pairing: selectedFont,
+        },
+        hotelId,
+      );
       setFeedback({ type: "success", message: "Design settings saved successfully" });
     } catch {
       setFeedback({ type: "error", message: "Failed to save design settings" });
@@ -152,6 +168,32 @@ export default function DesignStudioPage() {
       <div className="p-4 md:p-6 h-full flex items-center justify-center">
         <link rel="stylesheet" href={GOOGLE_FONTS_URL} />
         <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (loadFailed) {
+    return (
+      <div className="p-4 md:p-6 h-full flex items-center justify-center">
+        <link rel="stylesheet" href={GOOGLE_FONTS_URL} />
+        <div className="w-full max-w-md text-center">
+          <h1 className="text-xl font-bold text-gray-900">Design Studio</h1>
+          <FeedbackAlert
+            type="error"
+            message="Failed to load design settings. Your saved design has not been changed."
+            className="mt-4 text-left"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              setLoadAttempt((attempt) => attempt + 1);
+            }}
+            className="mt-4 inline-flex items-center justify-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700"
+          >
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
@@ -300,7 +342,7 @@ export default function DesignStudioPage() {
                     className="text-[11px] font-semibold text-white"
                     style={{ fontFamily: currentFont.bodyFamily }}
                   >
-                    {heroHeading || "Your Hotel"}
+                    {propertyName || "Your Hotel"}
                   </span>
                   <div className="flex items-center gap-1.5">
                     <span className="px-2.5 py-0.5 text-[9px] font-semibold text-white rounded-full bg-primary-600">

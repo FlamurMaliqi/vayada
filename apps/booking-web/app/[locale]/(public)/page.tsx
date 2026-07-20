@@ -383,6 +383,9 @@ function HomePageContent() {
   };
 
   const mapViewEnabled = hotel.mapViewEnabled === true;
+  const heroImage = hotel.heroImage;
+  const heroHeading = hotel.branding?.heroHeading || hotel.name;
+  const heroSubtext = hotel.branding?.heroSubtext || hotel.description;
 
   return (
     <div className="min-h-screen bg-white overflow-x-hidden">
@@ -391,7 +394,7 @@ function HomePageContent() {
       {/* Hero Section */}
       <div className="relative h-[520px] w-full">
         <Image
-          src={hotel.heroImage}
+          src={heroImage}
           alt={hotel.name}
           fill
           className="object-cover"
@@ -406,10 +409,10 @@ function HomePageContent() {
         {/* Hero Content */}
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-4">
           <h1 className="text-5xl md:text-6xl lg:text-7xl font-heading italic text-white mb-4">
-            {hotel.name}
+            {heroHeading}
           </h1>
           <p className="text-white/90 text-lg md:text-xl max-w-2xl leading-relaxed">
-            {hotel.description}
+            {heroSubtext}
           </p>
         </div>
       </div>

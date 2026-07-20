@@ -91,8 +91,10 @@ export default function MediaTab({
             <label className="block text-[12px] font-medium text-gray-700 mb-0.5">Heading</label>
             <input
               type="text"
+              aria-label="Hero heading"
               value={heroHeading}
               onChange={(e) => setHeroHeading(e.target.value)}
+              maxLength={160}
               className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="Enter hero heading"
             />
@@ -100,15 +102,15 @@ export default function MediaTab({
           <div>
             <label className="block text-[12px] font-medium text-gray-700 mb-0.5">Subtext</label>
             <textarea
+              aria-label="Hero subtext"
               value={heroSubtext}
-              onChange={(e) => {
-                if (e.target.value.length <= 200) setHeroSubtext(e.target.value);
-              }}
+              onChange={(e) => setHeroSubtext(e.target.value)}
+              maxLength={1000}
               rows={3}
               className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
               placeholder="Enter hero subtext"
             />
-            <p className="text-[11px] text-gray-400 mt-0.5">{heroSubtext.length}/200 characters</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">{heroSubtext.length}/1000 characters</p>
           </div>
           <button
             onClick={resetContent}

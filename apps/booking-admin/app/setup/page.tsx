@@ -4,11 +4,8 @@ import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/auth";
 import { settingsService } from "@/services/settings";
-import { createBookingAddonItem } from "@/services/api/bookingAddonItemsClient";
-import {
-  createBookingPromoCode,
-  type CreateBookingPromoCodeBody,
-} from "@/services/api/bookingPromoCodesClient";
+import type { CreateBookingAddonItemBody } from "@/services/api/bookingAddonItemsClient";
+import type { CreateBookingPromoCodeBody } from "@/services/api/bookingPromoCodesClient";
 import { updateBookingBenefitsSettings } from "@/services/api/bookingBenefitsSettingsClient";
 import { updateBookingLastMinuteSettings } from "@/services/api/bookingLastMinuteSettingsClient";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
@@ -27,11 +24,14 @@ import {
 import { CheckIcon } from "@heroicons/react/24/outline";
 import { uploadSingleImage, uploadImages } from "@/lib/utils/uploadImage";
 import { getCurrencySymbol } from "@/lib/utils";
+import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { SharedHotelSetupPage } from "@/components/setup/SharedHotelSetupPage";
+import { reconcileSetupAddons, reconcileSetupPromoCodes } from "@/lib/utils/reconcileSetupCatalog";
 
 import {
   AddonsStep,
   BenefitsStep,
+  BrandMediaStep,
   LastMinuteStep,
   PoliciesStep,
   PropertyStep,
@@ -39,6 +39,7 @@ import {
   useSetupWizardState,
 } from "@vayada/product-onboarding";
 
+const BRANDING_STEP = 6;
 const STEPS = [
   { number: 1, label: "Your Property" },
   { number: 2, label: "Add-ons" },
@@ -46,6 +47,14 @@ const STEPS = [
   { number: 4, label: "Last-Minute" },
   { number: 5, label: "Policies" },
 ];
+const ACTIVATION_STEPS = [
+  STEPS[0]!,
+  { number: BRANDING_STEP, label: "Brand & Media" },
+  ...STEPS.slice(1),
+];
+
+const GOOGLE_FONTS_URL =
+  "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Sans+Pro:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,700;1,400&family=Cinzel:wght@400;600;700&family=Italiana&display=swap";
 
 function toAddonPricingModel(addon: { perPerson?: boolean; perNight?: boolean }) {
   if (addon.perPerson && addon.perNight) return "per_guest_night";
@@ -117,14 +126,16 @@ function BookingProductSetupPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [prefilled, setPrefilled] = useState(false);
-  const [sharedBasicsReadOnly, setSharedBasicsReadOnly] = useState(false);
+  const [activationSettingsLoaded, setActivationSettingsLoaded] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [inviteError, setInviteError] = useState("");
   const [applyingInvite, setApplyingInvite] = useState(false);
   const [appliedInviteCode, setAppliedInviteCode] = useState("");
   const [showWizard, setShowWizard] = useState(false);
   const [setupPromoCodes, setSetupPromoCodes] = useState<CreateBookingPromoCodeBody[]>([]);
+  const [heroHeading, setHeroHeading] = useState("");
   const activationHotelIdRef = useRef<string | null>(null);
+  const setupSteps = productActivationMode ? ACTIVATION_STEPS : STEPS;
 
   const {
     propertyName,
@@ -153,6 +164,17 @@ function BookingProductSetupPage() {
     setSupportedCurrencies,
     supportedLanguages,
     setSupportedLanguages,
+    heroImage,
+    setHeroImage,
+    primaryColor,
+    setPrimaryColor,
+    selectedFont,
+    setSelectedFont,
+    propertyDescription,
+    setPropertyDescription,
+    fileInputRef,
+    uploading,
+    handleImageUpload,
     setupAddons,
     setSetupAddons,
     benefits,
@@ -198,8 +220,10 @@ function BookingProductSetupPage() {
     xenditAccountHolderName,
     setXenditAccountHolderName,
   } = useSetupWizardState({
-    uploadSingleImage,
-    uploadImages,
+    uploadSingleImage: (file) =>
+      uploadSingleImage(file, "property.hero_image", activationHotelIdRef.current ?? undefined),
+    uploadImages: (files) =>
+      uploadImages(files, "property.gallery_image", activationHotelIdRef.current ?? undefined),
     defaultCurrency: "USD",
     defaultCheckInFrom: "14:00",
     defaultBookingFilters: [
@@ -291,8 +315,13 @@ function BookingProductSetupPage() {
       // In add mode we intentionally DON'T prefill from the existing
       // setup — the user is creating a fresh property, so start blank.
       if (productActivationMode) {
+        setActivationSettingsLoaded(false);
         try {
-          const profile = await settingsService.getPropertySettings(activationHotelIdRef.current!);
+          const activationHotelId = activationHotelIdRef.current!;
+          const [profile, design] = await Promise.all([
+            settingsService.getPropertySettings(activationHotelId),
+            settingsService.getDesignSettings(activationHotelId),
+          ]);
           if (profile.property_name) setPropertyName(profile.property_name);
           if (profile.city) setCity(profile.city);
           if (profile.country) setCountry(profile.country);
@@ -345,22 +374,15 @@ function BookingProductSetupPage() {
           if (profile.guest_count_enabled !== undefined) {
             setNumberOfGuests(profile.guest_count_enabled);
           }
-          // New hotels have already passed the stricter shared-property creation form.
-          // Legacy hotels are deliberately not retroactively blocked by those new fields;
-          // keep only the Booking-editable shared subset open when it needs repair.
-          setSharedBasicsReadOnly(
-            Boolean(
-              profile.property_name?.trim() &&
-              profile.city?.trim() &&
-              profile.country?.trim() &&
-              profile.address?.trim() &&
-              profile.reservation_email?.trim() &&
-              profile.phone_number?.trim(),
-            ),
-          );
+          setHeroImage(design.hero_image);
+          setHeroHeading(design.hero_heading);
+          setPropertyDescription(design.hero_subtext);
+          setPrimaryColor(design.primary_color);
+          setSelectedFont(design.font_pairing);
+          setActivationSettingsLoaded(true);
           setPrefilled(true);
         } catch {
-          setSharedBasicsReadOnly(false);
+          setError("We couldn't load your Booking settings. Refresh the page to try again.");
           setShowWizard(true);
         }
       } else if (!addMode) {
@@ -380,6 +402,9 @@ function BookingProductSetupPage() {
 
   const canProceed = (): boolean => {
     if (step === 1) {
+      if (productActivationMode) {
+        return activationSettingsLoaded && Boolean(currency && defaultLanguage);
+      }
       return !!(
         propertyName.trim() &&
         city.trim() &&
@@ -387,6 +412,14 @@ function BookingProductSetupPage() {
         address.trim() &&
         reservationEmail.trim() &&
         phoneNumber.trim()
+      );
+    }
+    if (step === BRANDING_STEP) {
+      return (
+        activationSettingsLoaded &&
+        !uploading &&
+        /^#[0-9A-Fa-f]{6}$/.test(primaryColor) &&
+        FONT_PAIRINGS.some((pairing) => pairing.id === selectedFont)
       );
     }
     return true;
@@ -400,17 +433,24 @@ function BookingProductSetupPage() {
         if (!activationPropertyId || !activationHotelIdRef.current) {
           throw new Error("Select a property before activating Booking.");
         }
+        if (!activationSettingsLoaded) {
+          throw new Error("Booking settings must load before activation can continue.");
+        }
       } else {
         localStorage.removeItem("selectedHotelId");
       }
       const propertyPayload = {
-        property_name: propertyName,
-        reservation_email: reservationEmail,
-        phone_number: phoneNumber,
+        ...(productActivationMode
+          ? {}
+          : {
+              property_name: propertyName,
+              reservation_email: reservationEmail,
+              phone_number: phoneNumber,
+              address,
+              city,
+              country,
+            }),
         whatsapp_number: whatsapp,
-        address,
-        city,
-        country,
         instagram,
         facebook,
         default_currency: currency,
@@ -451,45 +491,49 @@ function BookingProductSetupPage() {
         localStorage.setItem("selectedHotelId", createdHotelId);
       }
 
+      if (productActivationMode) {
+        await settingsService.updateDesignSettings(
+          {
+            hero_image: heroImage,
+            hero_heading: heroHeading,
+            hero_subtext: propertyDescription,
+            primary_color: primaryColor,
+            font_pairing: selectedFont,
+          },
+          activationHotelIdRef.current!,
+        );
+      }
+
       if (setupAddons.length > 0) {
         if (!createdHotelId) {
           throw new Error("Booking hotel id is required before saving add-ons.");
         }
-        for (const addon of setupAddons) {
+        const addonBodies: CreateBookingAddonItemBody[] = setupAddons.map((addon, index) => {
           const parsedPrice = Number(addon.price);
           if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
             throw new Error(`Invalid add-on price for "${addon.name}".`);
           }
-
-          await createBookingAddonItem({
-            hotelId: createdHotelId,
-            body: {
-              name: addon.name,
-              description: addon.description,
-              price: parsedPrice.toFixed(2),
-              currency: addon.currency || currency,
-              category: toAddonCategory(addon.category),
-              imageUrl: addon.image || null,
-              duration: addon.duration || null,
-              pricingModel: toAddonPricingModel(addon),
-              publicVisible: true,
-              status: "active",
-            },
-          });
-        }
+          return {
+            name: addon.name,
+            description: addon.description,
+            price: parsedPrice.toFixed(2),
+            currency: addon.currency || currency,
+            category: toAddonCategory(addon.category),
+            imageUrl: addon.image || null,
+            duration: addon.duration || null,
+            pricingModel: toAddonPricingModel(addon),
+            publicVisible: true,
+            status: "active",
+            sortOrder: index,
+          };
+        });
+        await reconcileSetupAddons({ hotelId: createdHotelId, addons: addonBodies });
       }
       if (setupPromoCodes.length > 0 && createdHotelId) {
-        const failedPromoCodes: string[] = [];
-        for (const promoCode of setupPromoCodes) {
-          try {
-            await createBookingPromoCode({
-              hotelId: createdHotelId,
-              body: promoCode,
-            });
-          } catch {
-            failedPromoCodes.push(promoCode.code);
-          }
-        }
+        const failedPromoCodes = await reconcileSetupPromoCodes({
+          hotelId: createdHotelId,
+          promoCodes: setupPromoCodes,
+        });
         if (failedPromoCodes.length > 0) {
           localStorage.setItem(
             "setupWarning",
@@ -598,41 +642,49 @@ function BookingProductSetupPage() {
     }
   };
 
-  const currentStepIdx = STEPS.findIndex((s) => s.number === step);
+  const currentStepIdx = setupSteps.findIndex((s) => s.number === step);
   const stepIndicators = (
-    <div className="flex items-center justify-center mb-6 sm:mb-8">
-      {STEPS.map((s, idx) => {
+    <ol
+      className="mb-4 flex items-center justify-center sm:mb-5"
+      aria-label="Booking Engine setup progress"
+    >
+      {setupSteps.map((s, idx) => {
         const isCompleted = currentStepIdx > idx;
         const isActive = currentStepIdx === idx;
         return (
-          <div key={s.number} className="flex items-center">
-            <div className="flex items-center gap-1.5 shrink-0">
-              <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-colors shrink-0 ${
+          <li
+            key={s.number}
+            className="flex items-center"
+            aria-current={isActive ? "step" : undefined}
+          >
+            <span className="flex shrink-0 items-center gap-1.5">
+              <span
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-colors ${
                   isCompleted || isActive
-                    ? "bg-primary-500 text-white"
+                    ? "bg-primary-600 text-white"
                     : "bg-gray-200 text-gray-500"
                 }`}
               >
-                {isCompleted ? <CheckIcon className="w-3.5 h-3.5" /> : idx + 1}
-              </div>
+                {isCompleted ? <CheckIcon className="h-3.5 w-3.5" aria-hidden="true" /> : idx + 1}
+              </span>
               <span
-                className={`hidden sm:inline text-[12px] font-medium whitespace-nowrap ${
+                className={`sr-only whitespace-nowrap text-xs font-medium xl:not-sr-only ${
                   isCompleted || isActive ? "text-gray-900" : "text-gray-400"
                 }`}
               >
                 {s.label}
               </span>
-            </div>
-            {idx < STEPS.length - 1 && (
-              <div
-                className={`w-6 sm:w-12 h-px mx-2 sm:mx-3 shrink-0 ${isCompleted ? "bg-primary-500" : "bg-gray-300"}`}
+            </span>
+            {idx < setupSteps.length - 1 && (
+              <span
+                className={`mx-1.5 h-px w-5 shrink-0 sm:mx-2 sm:w-8 xl:mx-3 xl:w-10 ${isCompleted ? "bg-primary-600" : "bg-gray-300"}`}
+                aria-hidden="true"
               />
             )}
-          </div>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 
   const API_URL =
@@ -775,7 +827,7 @@ function BookingProductSetupPage() {
                 strokeLinejoin="round"
               />
             </svg>
-            <span className="font-semibold text-gray-900 text-[15px]">Property Setup</span>
+            <span className="text-[15px] font-semibold text-gray-900">Booking Engine Setup</span>
           </div>
         </div>
 
@@ -848,9 +900,10 @@ function BookingProductSetupPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="flex min-h-screen flex-col bg-gray-50">
+      <link rel="stylesheet" href={GOOGLE_FONTS_URL} />
       {/* Top bar */}
-      <div className="bg-white border-b border-gray-200 px-4 sm:px-8 py-3 shrink-0">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3 sm:px-8">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <svg
@@ -869,20 +922,20 @@ function BookingProductSetupPage() {
                 strokeLinejoin="round"
               />
             </svg>
-            <span className="font-semibold text-gray-900 text-[15px]">Property Setup</span>
+            <span className="text-[15px] font-semibold text-gray-900">Booking Engine Setup</span>
           </div>
-          <span className="text-[12px] sm:text-[13px] text-gray-500 whitespace-nowrap">
-            Step {STEPS.findIndex((s) => s.number === step) + 1} of {STEPS.length}
+          <span className="whitespace-nowrap text-xs text-gray-500 sm:text-[13px]">
+            Step {setupSteps.findIndex((s) => s.number === step) + 1} of {setupSteps.length}
           </span>
         </div>
       </div>
 
       {/* Progress bar */}
-      <div className="h-[3px] bg-gray-100 shrink-0">
+      <div className="h-[3px] shrink-0 bg-gray-100">
         <div
           className="h-full bg-primary-600 transition-all duration-300"
           style={{
-            width: `${((STEPS.findIndex((s) => s.number === step) + 1) / STEPS.length) * 100}%`,
+            width: `${((setupSteps.findIndex((s) => s.number === step) + 1) / setupSteps.length) * 100}%`,
           }}
         />
       </div>
@@ -916,12 +969,12 @@ function BookingProductSetupPage() {
           supportedLanguages={supportedLanguages}
           setSupportedLanguages={setSupportedLanguages}
           prefilled={prefilled}
-          sharedBasicsReadOnly={sharedBasicsReadOnly}
+          hideSharedHotelFields={productActivationMode}
           error={error}
           canProceed={canProceed()}
           onContinue={() => {
             setError("");
-            setStep(2);
+            setStep(productActivationMode ? BRANDING_STEP : 2);
           }}
           stepIndicators={stepIndicators}
           countryOptions={COUNTRY_OPTIONS}
@@ -932,6 +985,39 @@ function BookingProductSetupPage() {
         />
       )}
 
+      {productActivationMode && step === BRANDING_STEP && (
+        <BrandMediaStep
+          heroImage={heroImage}
+          setHeroImage={setHeroImage}
+          heroImageRequired={false}
+          heroHeading={heroHeading}
+          setHeroHeading={setHeroHeading}
+          primaryColor={primaryColor}
+          setPrimaryColor={setPrimaryColor}
+          selectedFont={selectedFont}
+          setSelectedFont={setSelectedFont}
+          propertyDescription={propertyDescription}
+          setPropertyDescription={setPropertyDescription}
+          uploading={uploading}
+          fileInputRef={fileInputRef}
+          handleImageUpload={handleImageUpload}
+          propertyName={propertyName}
+          currency={currency}
+          defaultLanguage={defaultLanguage}
+          error={error}
+          canProceed={canProceed()}
+          onBack={() => setStep(1)}
+          onContinue={() => {
+            setError("");
+            setStep(2);
+          }}
+          stepIndicators={stepIndicators}
+          colorPresets={COLOR_PRESETS}
+          fontPairings={FONT_PAIRINGS}
+          formatPrice={(amount, code) => `${getCurrencySymbol(code)}${amount.toFixed(2)}`}
+        />
+      )}
+
       {step === 2 && (
         <AddonsStep
           addons={setupAddons}
@@ -939,7 +1025,7 @@ function BookingProductSetupPage() {
           currency={currency}
           error={error}
           canProceed={canProceed()}
-          onBack={() => setStep(1)}
+          onBack={() => setStep(productActivationMode ? BRANDING_STEP : 1)}
           onContinue={() => {
             setError("");
             setStep(3);

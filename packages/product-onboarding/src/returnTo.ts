@@ -36,6 +36,26 @@ export function safeRelativeReturnTo(value: ReturnToParam, fallback: string): st
   return isSafeRelativeReturnTo(raw) ? raw : fallback;
 }
 
+export function buildProductHandoffUrl(
+  baseUrl: string,
+  propertyId: string,
+  organizationId: string,
+  workosOrganizationId: string | null,
+  redirect?: string,
+): string {
+  const url = new URL("/handoff", baseUrl);
+  if (redirect) url.searchParams.set("redirect", redirect);
+  const fragment = new URLSearchParams({
+    property_id: propertyId,
+    organization_id: organizationId,
+  });
+  if (workosOrganizationId) {
+    fragment.set("workos_organization_id", workosOrganizationId);
+  }
+  url.hash = fragment.toString();
+  return url.toString();
+}
+
 export function handoffReturnToForOrganization(
   returnTo: string,
   organization: {

@@ -150,7 +150,9 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
         booking_filters,
         custom_filters,
         filter_rooms,
-        source_freshness
+        source_freshness,
+        primary_color,
+        font_pairing
       )
     SELECT
       property_id,
@@ -176,7 +178,42 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
       COALESCE(booking_settings -> 'bookingFilters', '[]'::jsonb),
       COALESCE(booking_settings -> 'customFilters', '{}'::jsonb),
       COALESCE(booking_settings -> 'filterRooms', '{}'::jsonb),
-      COALESCE(booking_settings -> 'sourceFreshness', '{}'::jsonb)
+      COALESCE(booking_settings -> 'sourceFreshness', '{}'::jsonb),
+      CASE
+        WHEN BTRIM(COALESCE(
+          booking_settings ->> 'primaryColor',
+          booking_settings ->> 'branding_primary_color',
+          booking_settings #>> '{branding,primaryColor}',
+          ''
+        )) ~ '^#[0-9A-Fa-f]{6}$'
+          THEN UPPER(BTRIM(COALESCE(
+            booking_settings ->> 'primaryColor',
+            booking_settings ->> 'branding_primary_color',
+            booking_settings #>> '{branding,primaryColor}',
+            ''
+          )))
+        ELSE '#4F46E5'
+      END,
+      CASE REGEXP_REPLACE(LOWER(BTRIM(COALESCE(
+        booking_settings ->> 'fontPairing',
+        booking_settings ->> 'branding_font_pairing',
+        booking_settings #>> '{branding,fontPairing}',
+        ''
+      ))), '[^a-z0-9]+', '-', 'g')
+        WHEN 'high-end-serif' THEN 'high-end-serif'
+        WHEN 'playfair-display-source-sans-pro' THEN 'high-end-serif'
+        WHEN 'modern-minimalist' THEN 'modern-minimalist'
+        WHEN 'inter-inter' THEN 'modern-minimalist'
+        WHEN 'inter-merriweather' THEN 'modern-minimalist'
+        WHEN 'grand-classic' THEN 'grand-classic'
+        WHEN 'cormorant-garamond-lato' THEN 'grand-classic'
+        WHEN 'lora-source-sans-pro' THEN 'grand-classic'
+        WHEN 'imperial-serif' THEN 'imperial-serif'
+        WHEN 'cinzel-source-sans-pro' THEN 'imperial-serif'
+        WHEN 'italiana-serif' THEN 'italiana-serif'
+        WHEN 'italiana-source-sans-pro' THEN 'italiana-serif'
+        ELSE 'high-end-serif'
+      END
     FROM migration_source_booking.checkout_flow_inputs
   `);
 

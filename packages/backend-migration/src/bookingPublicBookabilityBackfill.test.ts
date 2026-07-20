@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   addDays,
+  bookingBrandingSettingsForLegacyHotel,
   bookingBaseUrlFor,
   firstDayOfUtcMonth,
+  normalizeLegacyBookingFontPairing,
+  normalizeLegacyBookingPrimaryColor,
   normalizeTimezone,
   occupancyForLegacyRoom,
 } from "./bookingPublicBookabilityBackfill.js";
@@ -24,5 +27,36 @@ describe("booking public bookability backfill helpers", () => {
       maxAdults: 3,
       maxOccupancy: 3,
     });
+  });
+
+  it("preserves legacy branding without duplicating canonical hotel content", () => {
+    expect(
+      bookingBrandingSettingsForLegacyHotel({
+        name: "Shared hotel name",
+        description: "Shared hotel description",
+        hero_image: "https://cdn.example.test/shared-hero.jpg",
+        branding: {
+          primaryColor: "#0f766e",
+          fontPairing: "Inter / Merriweather",
+        },
+      }),
+    ).toEqual({
+      primaryColor: "#0F766E",
+      fontPairing: "modern-minimalist",
+    });
+  });
+
+  it("falls back for unsupported legacy branding", () => {
+    expect(
+      bookingBrandingSettingsForLegacyHotel({
+        branding_primary_color: "not-a-color",
+        branding_font_pairing: "Papyrus",
+      }),
+    ).toEqual({
+      primaryColor: "#4F46E5",
+      fontPairing: "high-end-serif",
+    });
+    expect(normalizeLegacyBookingPrimaryColor(" #336699 ")).toBe("#336699");
+    expect(normalizeLegacyBookingFontPairing("Cormorant Garamond + Lato")).toBe("grand-classic");
   });
 });

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { CheckIcon } from "@heroicons/react/24/outline";
 import { splitSharedAccountName } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants/routes";
@@ -11,6 +12,8 @@ import type {
   UserType,
   CreatorProfileStatus,
   HotelProfileStatus,
+  HotelProfile,
+  ListingFormData,
   Creator,
   PlatformFormData,
 } from "@/lib/types";
@@ -22,11 +25,15 @@ import { authService } from "@/services/auth";
 import { useCreatorProfileForm } from "@/hooks/useCreatorProfileForm";
 import { useHotelProfileForm } from "@/hooks/useHotelProfileForm";
 import { formatErrorDetail } from "@/hooks/useErrorModal";
-import { marketplaceSetupRedirectPath } from "@/lib/utils/sharedSetupGuard";
+import {
+  isMarketplaceActivationDecision,
+  marketplaceSetupRedirectPath,
+  resolveMarketplaceActivationGuard,
+  SELECTED_SHARED_PROPERTY_ID_KEY,
+} from "@/lib/utils/sharedSetupGuard";
 import {
   LoadingScreen,
   ProfileCompletionScreen,
-  ProfileCompletionProgress,
   StepIndicators,
   CreatorProfileForm,
   HotelProfileForm,
@@ -43,8 +50,11 @@ export default function ProfileCompletePage() {
   const [profileStatusLoadFailed, setProfileStatusLoadFailed] = useState(false);
   const [error, setError] = useState("");
   const [profileCompleted, setProfileCompleted] = useState(false);
+  const [hasExistingMarketplaceOffer, setHasExistingMarketplaceOffer] = useState(false);
+  const marketplacePropertyIdRef = useRef<string | null>(null);
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [creatorPhotoPersisted, setCreatorPhotoPersisted] = useState(false);
+  const [creatorPhotoMediaObjectId, setCreatorPhotoMediaObjectId] = useState<string | null>(null);
   const [uploadedCreatorPhoto, setUploadedCreatorPhoto] = useState<{
     file: File;
     url: string;
@@ -56,7 +66,14 @@ export default function ProfileCompletePage() {
     (profileStatus as CreatorProfileStatus | null)?.profile_photo_required ?? false;
 
   const creatorSteps = ["Creator category", "About your work", "Audience & platforms"];
-  const hotelSteps = ["Basic Information", "Collaboration Offers"];
+  const hotelSteps = hasExistingMarketplaceOffer
+    ? ["Introduce your hotel"]
+    : [
+        "Introduce your hotel",
+        "Describe your offer",
+        "What are you offering?",
+        "Who are you looking for?",
+      ];
 
   // Initialize hooks with error handler
   const creatorForm = useCreatorProfileForm({
@@ -72,8 +89,74 @@ export default function ProfileCompletePage() {
 
       if (storedUserType === "hotel") {
         localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
-        router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE));
-        return;
+        const activationParams = new URLSearchParams(window.location.search);
+        const isMarketplaceActivation = activationParams.get("activation") === "marketplace";
+        const requestedPropertyId = activationParams.get("propertyId")?.trim() || null;
+        if (!isMarketplaceActivation || !requestedPropertyId) {
+          router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE));
+          return;
+        }
+
+        const hydrationController = new AbortController();
+        const hydrationTimeout = window.setTimeout(() => hydrationController.abort(), 5_000);
+        let cancelled = false;
+        let navigatingAway = false;
+        setLoading(true);
+        void (async () => {
+          try {
+            const decision = await resolveMarketplaceActivationGuard(
+              ROUTES.MARKETPLACE,
+              requestedPropertyId,
+              { signal: hydrationController.signal },
+            );
+            if (cancelled) return;
+
+            if (decision.propertyId !== requestedPropertyId) {
+              navigatingAway = true;
+              router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE));
+              return;
+            }
+            if (decision.action === "enter_product") {
+              localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, requestedPropertyId);
+              navigatingAway = true;
+              router.replace(ROUTES.MARKETPLACE);
+              return;
+            }
+            if (!isMarketplaceActivationDecision(decision)) {
+              navigatingAway = true;
+              router.replace(decision.redirectPath);
+              return;
+            }
+
+            marketplacePropertyIdRef.current = requestedPropertyId;
+            localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, requestedPropertyId);
+            const profile = await hotelService.getMyProfile(requestedPropertyId, {
+              signal: hydrationController.signal,
+            });
+            if (cancelled) return;
+
+            hydrateHotelMarketplaceProfile(
+              profile,
+              !decision.missingSteps.some((step) => MARKETPLACE_OFFER_SETUP_STEPS.has(step)),
+            );
+          } catch {
+            if (cancelled) return;
+            setProfileStatusLoadFailed(true);
+            setError(
+              hydrationController.signal.aborted
+                ? "Loading Marketplace setup took too long. Please refresh and try again."
+                : "Failed to load Marketplace setup. Please refresh and try again.",
+            );
+          }
+        })().finally(() => {
+          window.clearTimeout(hydrationTimeout);
+          if (!cancelled && !navigatingAway) setLoading(false);
+        });
+        return () => {
+          cancelled = true;
+          window.clearTimeout(hydrationTimeout);
+          hydrationController.abort();
+        };
       }
 
       if (storedUserType === "admin") {
@@ -116,15 +199,14 @@ export default function ProfileCompletePage() {
             const creatorStatus = statusResult.value as CreatorProfileStatus | null;
             if (
               creatorStatus?.profile_photo_required &&
-              !hydrationResult.value.profilePictureMediaObjectId?.trim()
+              !hydrationResult.value.effectiveProfilePictureMediaObjectId
             ) {
               creatorForm.setForm((prev) => ({ ...prev, profile_image: "" }));
             }
             if (
               creatorStatus?.profile_complete &&
               creatorStatus.profile_photo_required &&
-              (!hydrationResult.value.profilePicture?.trim() ||
-                !hydrationResult.value.profilePictureMediaObjectId?.trim())
+              !hydrationResult.value.creatorPhotoPersisted
             ) {
               setCurrentStep(2);
             }
@@ -150,7 +232,25 @@ export default function ProfileCompletePage() {
 
   const hydrateCreatorProfile = async (fallbackName: string, signal: AbortSignal) => {
     const profile = await creatorService.getMyProfile({ signal });
-    const profilePicture = profile.profilePicture?.trim() || "";
+    const account = authService.getSessionUser();
+    const creatorProfilePicture = profile.profilePicture?.trim() || "";
+    const creatorProfilePictureMediaObjectId = profile.profilePictureMediaObjectId?.trim() || "";
+    const creatorPhotoPersisted = Boolean(
+      creatorProfilePicture && creatorProfilePictureMediaObjectId,
+    );
+    const sharedProfilePicture = account?.profilePictureUrl?.trim() || "";
+    const sharedProfilePictureMediaObjectId = account?.profilePictureMediaObjectId?.trim() || "";
+    const sharedPhotoComplete = Boolean(sharedProfilePicture && sharedProfilePictureMediaObjectId);
+    const effectiveProfilePicture = creatorPhotoPersisted
+      ? creatorProfilePicture
+      : sharedPhotoComplete
+        ? sharedProfilePicture
+        : creatorProfilePicture;
+    const effectiveProfilePictureMediaObjectId = creatorPhotoPersisted
+      ? creatorProfilePictureMediaObjectId
+      : sharedPhotoComplete
+        ? sharedProfilePictureMediaObjectId
+        : creatorProfilePictureMediaObjectId;
     const hasStartedCreatorProfile = Boolean(
       profile.location.trim() ||
       profile.shortDescription?.trim() ||
@@ -163,8 +263,8 @@ export default function ProfileCompletePage() {
       location: profile.location.trim() || prev.location,
       short_description: profile.shortDescription?.trim() || prev.short_description,
       portfolio_link: profile.portfolioLink?.trim() || prev.portfolio_link,
-      phone: profile.phone?.trim() || prev.phone,
-      profile_image: profilePicture || prev.profile_image,
+      phone: profile.phone?.trim() || account?.phone?.trim() || prev.phone,
+      profile_image: effectiveProfilePicture || prev.profile_image,
       creator_type: hasStartedCreatorProfile ? profile.creatorType : prev.creator_type,
     }));
     const hydratedPlatforms = profile.platforms.map((platform) => ({
@@ -181,10 +281,28 @@ export default function ProfileCompletePage() {
     setInitialCreatorPlatformsSignature(
       JSON.stringify(hydratedPlatforms.map(toCreatorPlatformUpdate)),
     );
-    setCreatorPhotoPersisted(
-      Boolean(profilePicture && profile.profilePictureMediaObjectId?.trim()),
+    setCreatorPhotoPersisted(creatorPhotoPersisted);
+    setCreatorPhotoMediaObjectId(effectiveProfilePictureMediaObjectId || null);
+    return {
+      ...profile,
+      creatorPhotoPersisted,
+      effectiveProfilePictureMediaObjectId,
+    };
+  };
+
+  const hydrateHotelMarketplaceProfile = (
+    profile: HotelProfile,
+    canReuseExistingOffer: boolean,
+  ) => {
+    const hasExistingOffer = profile.listings.some(
+      (listing) =>
+        canReuseExistingOffer && (listing.status === "pending" || listing.status === "verified"),
     );
-    return profile;
+    hotelForm.setForm({
+      about: profile.about ?? "",
+    });
+    setHasExistingMarketplaceOffer(hasExistingOffer);
+    hotelForm.setListings(hasExistingOffer ? [] : [newMarketplaceOffer(profile)]);
   };
 
   const loadProfileStatus = async (
@@ -220,6 +338,7 @@ export default function ProfileCompletePage() {
   const nextStep = () => {
     const steps = userType === "creator" ? creatorSteps : hotelSteps;
     if (currentStep < steps.length) {
+      if (userType === "hotel") hotelForm.expandAllListings();
       setCurrentStep(currentStep + 1);
       setError("");
     }
@@ -227,6 +346,7 @@ export default function ProfileCompletePage() {
 
   const prevStep = () => {
     if (currentStep > 1) {
+      if (userType === "hotel") hotelForm.expandAllListings();
       setCurrentStep(currentStep - 1);
       setError("");
     }
@@ -239,7 +359,10 @@ export default function ProfileCompletePage() {
       return true;
     }
     if (userType === "hotel") {
-      return currentStep === 1 ? hotelForm.canProceedStep1() : true;
+      if (currentStep === 1) return hotelForm.canProceedStep1();
+      if (currentStep === 2) return hotelForm.canProceedListingStep("details");
+      if (currentStep === 3) return hotelForm.canProceedListingStep("offerings");
+      return hotelForm.canProceedListingStep("requirements");
     }
     return false;
   };
@@ -254,7 +377,9 @@ export default function ProfileCompletePage() {
       const platforms = creatorForm.platforms.map(toCreatorPlatformUpdate);
       const platformsChanged = JSON.stringify(platforms) !== initialCreatorPlatformsSignature;
 
-      let profilePictureMediaObjectId: string | undefined;
+      let profilePictureMediaObjectId = creatorPhotoPersisted
+        ? undefined
+        : (creatorPhotoMediaObjectId ?? undefined);
       if (creatorForm.profilePictureFile) {
         try {
           let uploaded =
@@ -285,6 +410,7 @@ export default function ProfileCompletePage() {
             setUploadedCreatorPhoto(uploaded);
           }
           profilePictureMediaObjectId = uploaded.mediaObjectId;
+          setCreatorPhotoMediaObjectId(uploaded.mediaObjectId);
           creatorForm.setForm((prev) => ({ ...prev, profile_image: uploaded.url }));
         } catch (err) {
           if (err instanceof ApiErrorResponse) {
@@ -321,6 +447,7 @@ export default function ProfileCompletePage() {
       const persistedPictureUrl = pictureUrl?.trim() || "";
       if (persistedPictureUrl && updatedProfile.profilePictureMediaObjectId?.trim()) {
         creatorForm.setForm((prev) => ({ ...prev, profile_image: persistedPictureUrl }));
+        setCreatorPhotoMediaObjectId(updatedProfile.profilePictureMediaObjectId.trim());
         setCreatorPhotoPersisted(true);
       }
       if (platformsChanged) setInitialCreatorPlatformsSignature(JSON.stringify(platforms));
@@ -347,57 +474,21 @@ export default function ProfileCompletePage() {
   const handleHotelSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!hotelForm.validateForm()) return;
+    if (!hotelForm.validateForm(hasExistingMarketplaceOffer)) return;
+    const propertyId = marketplacePropertyIdRef.current;
+    if (!propertyId) {
+      setError("Marketplace setup is missing its hotel. Return to setup and try again.");
+      return;
+    }
 
     setSubmitting(true);
     try {
-      const userEmail = localStorage.getItem(STORAGE_KEYS.USER_EMAIL);
-      if (!userEmail) {
-        setError("Email is required. Please log in again.");
-        setSubmitting(false);
-        return;
-      }
-
-      let profilePictureUrl: string | undefined;
-      let profilePictureMediaObjectId: string | undefined;
-      if (hotelForm.profilePictureFile) {
-        try {
-          const currentProfile = await hotelService.getMyProfile();
-          const uploadResponse = await hotelService.uploadProfileImage(
-            hotelForm.profilePictureFile,
-            currentProfile.id,
-          );
-          profilePictureUrl = uploadResponse.url;
-          profilePictureMediaObjectId = uploadResponse.mediaObjectId;
-        } catch (err) {
-          if (err instanceof ApiErrorResponse) {
-            setError(formatErrorDetail(err.data.detail) || "Failed to upload profile picture");
-          } else {
-            setError("Failed to upload profile picture. Please try again.");
-          }
-          setSubmitting(false);
-          return;
-        }
-      }
-
-      const updatePayload = {
-        name: hotelForm.form.name.trim(),
-        location: hotelForm.form.location.trim(),
-        about: hotelForm.form.about.trim(),
-        website: hotelForm.form.website.trim(),
-        phone: hotelForm.form.phone.trim(),
-        email: userEmail,
-        ...(profilePictureUrl && { picture: profilePictureUrl }),
-        ...(profilePictureMediaObjectId && {
-          pictureMediaObjectId: profilePictureMediaObjectId,
-          picture_media_object_id: profilePictureMediaObjectId,
-        }),
-      };
-
-      const updatedProfile = await hotelService.updateMyProfile(updatePayload);
-      if (updatedProfile?.picture) {
-        hotelForm.setForm((prev) => ({ ...prev, picture: updatedProfile.picture || "" }));
-      }
+      await hotelService.updateMyProfile(
+        {
+          about: hotelForm.form.about.trim(),
+        },
+        propertyId,
+      );
 
       // Create listings
       for (const listing of hotelForm.listings) {
@@ -411,16 +502,25 @@ export default function ProfileCompletePage() {
           return;
         }
 
-        const createdListing = await hotelService.createListing({
-          name: listing.name,
-          location: listing.location,
-          description: listing.description,
-          accommodation_type: listing.accommodation_type || undefined,
-          images: imageUrls,
-          image_media_object_ids: imageMediaObjectIds,
-          collaboration_offerings: offerings,
-          creator_requirements: buildCreatorRequirements(listing),
-        });
+        const createdListing = await hotelService.createListing(
+          {
+            name: listing.name,
+            location: listing.location,
+            description: listing.description,
+            accommodation_type: listing.accommodation_type || undefined,
+            images: imageUrls,
+            image_media_object_ids: imageMediaObjectIds,
+            deliverables: listing.platforms.map((platform) => ({
+              platform,
+              deliverable_type: "content",
+              quantity: 1,
+              timing_guidance: null,
+            })),
+            collaboration_offerings: offerings,
+            creator_requirements: buildCreatorRequirements(listing),
+          },
+          propertyId,
+        );
 
         if (listing.imageFiles?.length) {
           try {
@@ -437,12 +537,16 @@ export default function ProfileCompletePage() {
               ...uploadResponse.images.map((img) => img.mediaObjectId),
             ];
 
-            await hotelService.updateListing(createdListing.id, {
-              images: imageUrls,
-              image_media_object_ids: imageMediaObjectIds,
-            });
+            await hotelService.updateListing(
+              createdListing.id,
+              {
+                images: imageUrls,
+                image_media_object_ids: imageMediaObjectIds,
+              },
+              propertyId,
+            );
           } catch (err) {
-            await hotelService.deleteListing(createdListing.id).catch((deleteError) => {
+            await hotelService.deleteListing(createdListing.id, propertyId).catch((deleteError) => {
               console.error("Failed to clean up offer after media upload failure:", deleteError);
             });
             if (err instanceof ApiErrorResponse) {
@@ -459,14 +563,7 @@ export default function ProfileCompletePage() {
         }
       }
 
-      const complete = await isProfileComplete("hotel");
-      if (complete) {
-        setProfileCompleted(true);
-        localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "true");
-      } else {
-        const updatedStatus = await loadProfileStatus("hotel", true);
-        handleIncompleteProfile(updatedStatus as HotelProfileStatus);
-      }
+      router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE, propertyId));
     } catch (err) {
       if (err instanceof ApiErrorResponse) {
         setError(formatErrorDetail(err.data.detail) || "Failed to update profile");
@@ -593,6 +690,8 @@ export default function ProfileCompletePage() {
       target_countries: listing.targetGroupCountries,
       target_age_min: targetAgeMin,
       target_age_max: targetAgeMax,
+      target_age_groups: ageGroups,
+      creator_types: listing.lookingForCreatorTypes ?? [],
     };
   };
 
@@ -600,6 +699,19 @@ export default function ProfileCompletePage() {
   if (!userType) return null;
   if (userType !== "creator" && userType !== "hotel") return null;
   if (profileStatusLoadFailed) {
+    if (userType === "hotel") {
+      return (
+        <HotelMarketplaceSetupLayout steps={hotelSteps} currentStep={currentStep}>
+          <div
+            role="alert"
+            className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+          >
+            {error || "Failed to load Marketplace setup. Please refresh the page."}
+          </div>
+        </HotelMarketplaceSetupLayout>
+      );
+    }
+
     return (
       <OnboardingShell
         currentStep={2}
@@ -643,23 +755,40 @@ export default function ProfileCompletePage() {
       ? "Your account details are already saved. Add what hotels need to understand your content."
       : "Add the audience and platform details hotels use to assess a collaboration.";
 
+  if (userType === "hotel") {
+    return (
+      <HotelMarketplaceSetupLayout steps={hotelSteps} currentStep={currentStep}>
+        <HotelProfileForm
+          form={hotelForm.form}
+          listings={hotelForm.listings}
+          currentStep={currentStep}
+          totalSteps={totalSteps}
+          error={error}
+          submitting={submitting}
+          canProceed={canProceedToNextStep()}
+          collapsedCards={hotelForm.collapsedCards}
+          countryInputs={hotelForm.countryInputs}
+          countries={hotelForm.countries}
+          imageInputRefs={hotelForm.listingImageInputRefs}
+          onFormChange={hotelForm.handleFormChange}
+          onToggleCollapse={hotelForm.toggleListingCollapse}
+          onUpdateListing={hotelForm.updateListing}
+          onImageChange={hotelForm.handleListingImageChange}
+          onRemoveImage={hotelForm.removeListingImage}
+          onCountryInputChange={hotelForm.handleCountryInputChange}
+          onPrevStep={prevStep}
+          onNextStep={nextStep}
+          onSubmit={handleHotelSubmit}
+        />
+      </HotelMarketplaceSetupLayout>
+    );
+  }
+
   return (
     <OnboardingShell
       currentStep={2}
-      title={
-        isCreatorCategoryStep
-          ? creatorCategoryTitle
-          : userType === "creator"
-            ? creatorProfileTitle
-            : profileShellTitle(userType)
-      }
-      description={
-        isCreatorCategoryStep
-          ? ""
-          : userType === "creator"
-            ? creatorProfileDescription
-            : profileShellDescription(userType)
-      }
+      title={isCreatorCategoryStep ? creatorCategoryTitle : creatorProfileTitle}
+      description={isCreatorCategoryStep ? "" : creatorProfileDescription}
       compact={!isCreatorCategoryStep}
       showProgress={false}
       wideContent={isCreatorCategoryStep}
@@ -674,71 +803,154 @@ export default function ProfileCompletePage() {
               : "overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)]"
           }
         >
-          {!isCreatorCategoryStep && userType === "hotel" && (
-            <ProfileCompletionProgress percentage={hotelForm.calculateProgress()} />
-          )}
-
           {/* Forms */}
-          {userType === "creator" && (
-            <CreatorProfileForm
-              form={creatorForm.form}
-              platforms={creatorForm.platforms}
-              currentStep={currentStep}
-              totalSteps={totalSteps}
-              error={error}
-              submitting={submitting}
-              canProceed={canProceedToNextStep()}
-              expandedPlatforms={creatorForm.expandedPlatforms}
-              platformCountryInputs={creatorForm.platformCountryInputs}
-              imageInputRef={creatorForm.imageInputRef}
-              onFormChange={creatorForm.handleFormChange}
-              onImageChange={creatorForm.handleImageChange}
-              onAddPlatform={creatorForm.addPlatform}
-              onRemovePlatform={creatorForm.removePlatform}
-              onUpdatePlatform={creatorForm.updatePlatform}
-              onTogglePlatformExpanded={creatorForm.togglePlatformExpanded}
-              onCountryInputChange={creatorForm.handleCountryInputChange}
-              onAddCountry={creatorForm.addCountryFromInput}
-              onRemoveCountry={creatorForm.removeCountry}
-              onUpdateCountryPercentage={creatorForm.updateCountryPercentage}
-              getAvailableCountries={creatorForm.getAvailableCountries}
-              onToggleAgeGroup={creatorForm.toggleAgeGroup}
-              onUpdateGenderSplit={creatorForm.updateGenderSplit}
-              onPrevStep={prevStep}
-              onNextStep={nextStep}
-              onSubmit={handleCreatorSubmit}
-            />
-          )}
-
-          {userType === "hotel" && (
-            <HotelProfileForm
-              form={hotelForm.form}
-              listings={hotelForm.listings}
-              currentStep={currentStep}
-              totalSteps={totalSteps}
-              error={error}
-              submitting={submitting}
-              canProceed={canProceedToNextStep()}
-              collapsedCards={hotelForm.collapsedCards}
-              countryInputs={hotelForm.countryInputs}
-              countries={hotelForm.countries}
-              imageInputRefs={hotelForm.listingImageInputRefs}
-              onFormChange={hotelForm.handleFormChange}
-              onAddListing={hotelForm.addListing}
-              onRemoveListing={hotelForm.removeListing}
-              onToggleCollapse={hotelForm.toggleListingCollapse}
-              onUpdateListing={hotelForm.updateListing}
-              onImageChange={hotelForm.handleListingImageChange}
-              onRemoveImage={hotelForm.removeListingImage}
-              onCountryInputChange={hotelForm.handleCountryInputChange}
-              onPrevStep={prevStep}
-              onNextStep={nextStep}
-              onSubmit={handleHotelSubmit}
-            />
-          )}
+          <CreatorProfileForm
+            form={creatorForm.form}
+            platforms={creatorForm.platforms}
+            currentStep={currentStep}
+            totalSteps={totalSteps}
+            error={error}
+            submitting={submitting}
+            canProceed={canProceedToNextStep()}
+            expandedPlatforms={creatorForm.expandedPlatforms}
+            platformCountryInputs={creatorForm.platformCountryInputs}
+            imageInputRef={creatorForm.imageInputRef}
+            onFormChange={creatorForm.handleFormChange}
+            onImageChange={creatorForm.handleImageChange}
+            onAddPlatform={creatorForm.addPlatform}
+            onRemovePlatform={creatorForm.removePlatform}
+            onUpdatePlatform={creatorForm.updatePlatform}
+            onTogglePlatformExpanded={creatorForm.togglePlatformExpanded}
+            onCountryInputChange={creatorForm.handleCountryInputChange}
+            onAddCountry={creatorForm.addCountryFromInput}
+            onRemoveCountry={creatorForm.removeCountry}
+            onUpdateCountryPercentage={creatorForm.updateCountryPercentage}
+            getAvailableCountries={creatorForm.getAvailableCountries}
+            onToggleAgeGroup={creatorForm.toggleAgeGroup}
+            onUpdateGenderSplit={creatorForm.updateGenderSplit}
+            onPrevStep={prevStep}
+            onNextStep={nextStep}
+            onSubmit={handleCreatorSubmit}
+          />
         </div>
       </div>
     </OnboardingShell>
+  );
+}
+
+function HotelMarketplaceSetupLayout({
+  steps,
+  currentStep,
+  children,
+}: {
+  steps: string[];
+  currentStep: number;
+  children: React.ReactNode;
+}) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const currentTitle = steps[currentStep - 1] ?? steps[0];
+  const currentDescription =
+    currentStep === 1
+      ? "Write the short introduction creators will see on your Marketplace profile."
+      : currentStep === 2
+        ? "Give creators a clear title, short description, and photos of the experience."
+        : currentStep === 3
+          ? "Choose how you want to collaborate, when the offer is available, and where creators should publish content."
+          : "Choose the creator platforms and audience fit that best match this collaboration.";
+
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [currentStep]);
+
+  return (
+    <main className="min-h-screen bg-gray-50 text-gray-900">
+      <header className="border-b border-gray-200 bg-white px-4 py-3 sm:px-8">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary-600 text-white">
+              <CheckIcon className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <span className="text-[15px] font-semibold text-gray-900">
+              Creator Marketplace Setup
+            </span>
+          </div>
+          <span className="whitespace-nowrap text-xs text-gray-500 sm:text-[13px]">
+            Step {currentStep} of {steps.length}
+          </span>
+        </div>
+      </header>
+
+      <div className="h-[3px] bg-gray-100" aria-hidden="true">
+        <div
+          className="h-full bg-primary-600 transition-all duration-300"
+          style={{ width: `${(currentStep / steps.length) * 100}%` }}
+        />
+      </div>
+
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+        <HotelMarketplaceStepIndicators steps={steps} currentStep={currentStep} />
+        <header className="mx-auto max-w-2xl text-center">
+          <h1
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+          >
+            {currentTitle}
+          </h1>
+          <p className="mt-2 text-sm text-gray-500">{currentDescription}</p>
+        </header>
+        <div className="mx-auto mt-4 max-w-3xl">{children}</div>
+      </div>
+    </main>
+  );
+}
+
+function HotelMarketplaceStepIndicators({
+  steps,
+  currentStep,
+}: {
+  steps: string[];
+  currentStep: number;
+}) {
+  return (
+    <ol
+      className="mb-5 flex items-center justify-center sm:mb-6"
+      aria-label="Creator Marketplace setup progress"
+    >
+      {steps.map((step, index) => {
+        const stepNumber = index + 1;
+        const isComplete = currentStep > stepNumber;
+        const isActive = currentStep === stepNumber;
+        return (
+          <li key={step} className="flex items-center" aria-current={isActive ? "step" : undefined}>
+            <span className="flex shrink-0 items-center gap-1.5">
+              <span
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-colors ${
+                  isComplete || isActive ? "bg-primary-600 text-white" : "bg-gray-200 text-gray-500"
+                }`}
+              >
+                {isComplete ? <CheckIcon className="h-3.5 w-3.5" aria-hidden="true" /> : stepNumber}
+              </span>
+              <span
+                className={`sr-only whitespace-nowrap text-xs font-medium lg:not-sr-only ${
+                  isComplete || isActive ? "text-gray-900" : "text-gray-400"
+                }`}
+              >
+                {step}
+              </span>
+            </span>
+            {index < steps.length - 1 && (
+              <span
+                className={`mx-2 h-px w-8 shrink-0 sm:mx-3 sm:w-10 lg:w-14 ${
+                  isComplete ? "bg-primary-600" : "bg-gray-300"
+                }`}
+                aria-hidden="true"
+              />
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -768,14 +980,39 @@ function toCreatorPlatformUpdate(platform: PlatformFormData) {
 }
 
 function profileShellTitle(userType: "creator" | "hotel"): string {
-  return userType === "creator" ? "Create your creator profile" : "Create your first offer";
+  return userType === "creator" ? "Create your creator profile" : "Set up Creator Marketplace";
 }
 
 function profileShellDescription(userType: "creator" | "hotel"): string {
   return userType === "creator"
     ? "Build the profile hotels use to decide whether to collaborate with you."
-    : "Build the collaboration offer creators use to understand your offer.";
+    : "Introduce your hotel to creators, then create your first collaboration offer.";
 }
+
+function newMarketplaceOffer(profile: HotelProfile): ListingFormData {
+  return {
+    name: "",
+    location: profile.location,
+    description: "",
+    accommodation_type: profile.propertyType ?? "",
+    images: [],
+    imageMediaObjectIds: [],
+    imageFiles: [],
+    collaborationTypes: [],
+    availability: [],
+    platforms: [],
+    lookingForPlatforms: [],
+    targetGroupCountries: [],
+    targetGroupAgeGroups: [],
+  };
+}
+
+const MARKETPLACE_OFFER_SETUP_STEPS = new Set([
+  "marketplaceOffer",
+  "offerDeliverables",
+  "compensationOptions",
+  "creatorRequirements",
+]);
 
 function emptyProfileStatus(
   userType: "creator" | "hotel",

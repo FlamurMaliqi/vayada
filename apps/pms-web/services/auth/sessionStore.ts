@@ -9,6 +9,8 @@ export type AuthUser = {
   email: string;
   name?: string | null;
   phone?: string | null;
+  profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
   status: string;
   workosUserId?: string;
 };
@@ -41,6 +43,7 @@ export type AuthSessionResponse = AuthKitSessionResponse | AuthOrganizationSelec
 const LEGACY_TOKEN_KEY = "access_token";
 const LEGACY_EXPIRES_AT_KEY = "token_expires_at";
 const PMS_PROPERTY_RESOURCE_KEY = "pms:pms_property";
+const SELECTED_WORKOS_ORGANIZATION_ID_KEY = "selectedWorkosOrganizationId";
 
 let authKitSession: AuthKitSessionResponse | null = null;
 let pendingOrganizationSelectionCsrfToken: string | null = null;
@@ -61,6 +64,11 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   const userName = session.user.name ?? "";
   clearSharedPropertySelectionIfOrganizationChanged(session.organizationId);
   persistPmsResourceSelection(session);
+  if (session.workosOrganizationId) {
+    localStorage.setItem(SELECTED_WORKOS_ORGANIZATION_ID_KEY, session.workosOrganizationId);
+  } else {
+    localStorage.removeItem(SELECTED_WORKOS_ORGANIZATION_ID_KEY);
+  }
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_EXPIRES_AT_KEY);
   localStorage.setItem("isLoggedIn", "true");
@@ -76,6 +84,8 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
       email: session.user.email,
       name: userName,
       phone: session.user.phone ?? null,
+      profilePictureUrl: session.user.profilePictureUrl ?? null,
+      profilePictureMediaObjectId: session.user.profilePictureMediaObjectId ?? null,
       type: "hotel",
       status: session.user.status,
       workos_user_id: session.user.workosUserId,
@@ -112,6 +122,7 @@ export function setLegacyPasswordSession(input: {
 }): void {
   if (typeof window === "undefined") return;
 
+  localStorage.removeItem(SELECTED_WORKOS_ORGANIZATION_ID_KEY);
   localStorage.setItem(LEGACY_TOKEN_KEY, input.token);
   localStorage.setItem(LEGACY_EXPIRES_AT_KEY, String(Date.now() + input.expiresIn * 1000));
   localStorage.setItem("isLoggedIn", "true");
@@ -140,6 +151,7 @@ export function clearAuthData(): void {
   localStorage.removeItem(SELECTED_PMS_PROPERTY_ID_KEY);
   localStorage.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY);
   localStorage.removeItem(SELECTED_SHARED_PROPERTY_ORG_ID_KEY);
+  localStorage.removeItem(SELECTED_WORKOS_ORGANIZATION_ID_KEY);
   localStorage.setItem("isLoggedIn", "false");
 }
 
@@ -148,14 +160,21 @@ export function getAuthCsrfToken(): string | null {
 }
 
 export function getAuthBearerToken(): string | null {
+  if (authKitSession?.accessToken) return authKitSession.accessToken;
+  if (isAuthKitLoginEnabled()) return null;
   const compatibilityToken = currentCompatibilityToken();
   if (isCompatibilityTokenEnabled() && compatibilityToken) return compatibilityToken;
-  if (authKitSession?.accessToken) return authKitSession.accessToken;
   return getLegacyPasswordToken();
 }
 
 export function getAuthSessionUser(): AuthUser | null {
   return authKitSession?.user ?? null;
+}
+
+export function getAuthWorkosOrganizationId(): string | null {
+  if (authKitSession?.workosOrganizationId) return authKitSession.workosOrganizationId;
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(SELECTED_WORKOS_ORGANIZATION_ID_KEY)?.trim() || null;
 }
 
 export function getLegacyPasswordToken(): string | null {
@@ -175,9 +194,8 @@ export function getLegacyPasswordToken(): string | null {
 }
 
 export function hasAuthenticatedSession(): boolean {
-  if (authKitSession?.accessToken) {
-    return Boolean(getAuthBearerToken());
-  }
+  if (authKitSession?.accessToken) return true;
+  if (isAuthKitLoginEnabled()) return false;
   return Boolean(getLegacyPasswordToken());
 }
 

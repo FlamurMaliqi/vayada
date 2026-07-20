@@ -1779,7 +1779,7 @@ function parseProfileBody(body: unknown):
           !lastName ||
           lastName.length > 60 ||
           name.length > 120)) ||
-      (phone && (phone.length < 5 || phone.length > 64)) ||
+      !isValidOptionalPhone(phone) ||
       profilePictureUrl.length > 2048 ||
       profilePictureMediaObjectId.length > 2048 ||
       Boolean(profilePictureUrl) !== Boolean(profilePictureMediaObjectId) ||
@@ -1812,6 +1812,13 @@ function parseProfileBody(body: unknown):
       error: { state: "auth_failed", message: "Enter valid profile details to continue." },
     };
   }
+}
+
+function isValidOptionalPhone(phone: string): boolean {
+  if (!phone) return true;
+  if (phone.length > 64 || !/^\+?[0-9(][0-9\s().-]*$/.test(phone)) return false;
+  const digitCount = phone.replace(/\D/g, "").length;
+  return digitCount >= 7 && digitCount <= 15;
 }
 
 function parseEmailVerificationConfirmBody(body: unknown):
@@ -2594,6 +2601,8 @@ function sendOrganizationSelectionResponse(
       email: error.user.email,
       name: error.user.name ?? null,
       phone: error.user.phone ?? null,
+      profilePictureUrl: error.user.profilePictureUrl ?? null,
+      profilePictureMediaObjectId: error.user.profilePictureMediaObjectId ?? null,
       status: error.user.status,
       workosUserId: error.session.user.id,
     },
@@ -2728,6 +2737,8 @@ function toSessionResponse(
       email: user.email,
       name: user.name ?? null,
       phone: user.phone ?? null,
+      profilePictureUrl: user.profilePictureUrl ?? null,
+      profilePictureMediaObjectId: user.profilePictureMediaObjectId ?? null,
       status: user.status,
       workosUserId: session.user.id,
     },

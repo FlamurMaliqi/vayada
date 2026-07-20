@@ -53,6 +53,7 @@ jobs:
             --build-arg NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=https://target-api.vayada.com \
             --build-arg NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_BROWSER_API_KEY }} \
             --build-arg NEXT_PUBLIC_PMS_URL=https://target-api.vayada.com \
+            --build-arg NEXT_PUBLIC_PMS_FRONTEND_URL=https://pms.vayada.com \
             -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest \
             -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }} \
             -f ${{ env.APP_DIR }}/Dockerfile \

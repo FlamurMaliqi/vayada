@@ -4,7 +4,12 @@ import { useEffect } from "react";
 import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
 import { authService } from "@/services/auth";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
-import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
+import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStore";
+import {
+  isSafeRelativeReturnTo,
+  missingOrganizationHandoffLoginPath,
+  organizationSelectionLoginPath,
+} from "@vayada/product-onboarding/returnTo";
 
 // Cross-app auth handoff landing page.
 //
@@ -28,6 +33,13 @@ export default function HandoffPage() {
     const userData = hashParams.get("user");
     const handoffHotelId = hashParams.get("hotel_id");
     const propertyId = hashParams.get("property_id");
+    const organizationId = hashParams.get("organization_id")?.trim() || null;
+    const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
+    const organizationSelectionPath = organizationSelectionLoginPath(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash,
+    );
 
     // Optional `?redirect=...` — honored only if it's a same-origin
     // relative path, so another app can hand off onto a specific page.
@@ -39,9 +51,68 @@ export default function HandoffPage() {
       if (token && expiresAt) {
         localStorage.setItem("access_token", token);
         localStorage.setItem("token_expires_at", expiresAt);
-      } else if (!(await authService.ensureSession())) {
-        window.location.href = ROUTES.LOGIN;
-        return;
+      } else if (!authService.isAuthKitEnabled()) {
+        if (!(await authService.ensureSession())) {
+          window.location.href = organizationSelectionPath;
+          return;
+        }
+      } else {
+        try {
+          let session = await authService.refreshSession();
+          if (isAuthOrganizationSelectionResponse(session)) {
+            const organization = organizationId
+              ? session.organizations.find(
+                  (candidate) => candidate.organizationId === organizationId,
+                )
+              : workosOrganizationId
+                ? session.organizations.find(
+                    (candidate) => candidate.workosOrganizationId === workosOrganizationId,
+                  )
+                : session.organizations.length === 1
+                  ? session.organizations[0]
+                  : undefined;
+
+            if (
+              !organization ||
+              (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+
+            session = await authService.refreshSession(
+              workosOrganizationId ?? organization.workosOrganizationId,
+            );
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          } else if (
+            (organizationId && session.organizationId !== organizationId) ||
+            (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+          ) {
+            if (!workosOrganizationId) {
+              window.location.href = missingOrganizationHandoffLoginPath();
+              return;
+            }
+            session = await authService.refreshSession(workosOrganizationId);
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              session.workosOrganizationId !== workosOrganizationId
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          }
+        } catch {
+          window.location.href = organizationSelectionPath;
+          return;
+        }
       }
 
       if (token && expiresAt && userData) {
@@ -59,9 +130,19 @@ export default function HandoffPage() {
         }
       }
 
-      const status = await sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" });
+      let status;
+      try {
+        status = await sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" });
+      } catch {
+        const explicitPropertyId = propertyId?.trim() || handoffHotelId?.trim();
+        window.location.href = explicitPropertyId
+          ? `/setup?entryProduct=marketplace&propertyId=${encodeURIComponent(explicitPropertyId)}`
+          : "/setup";
+        return;
+      }
       const storedPropertyId = localStorage.getItem("selectedSharedPropertyId")?.trim();
-      const requestedPropertyId = propertyId?.trim() || handoffHotelId?.trim() || storedPropertyId;
+      const explicitPropertyId = propertyId?.trim() || handoffHotelId?.trim() || null;
+      const requestedPropertyId = explicitPropertyId || storedPropertyId;
       let selectedProperty = requestedPropertyId
         ? (status.properties.find((property) => property.propertyId === requestedPropertyId) ??
           null)
@@ -70,16 +151,20 @@ export default function HandoffPage() {
       if (requestedPropertyId && !selectedProperty) {
         localStorage.removeItem("selectedSharedPropertyId");
       }
-      if (!selectedProperty && status.properties.length === 1) {
+      if (!explicitPropertyId && !selectedProperty && status.properties.length === 1) {
         selectedProperty = status.properties[0]!;
       }
       if (selectedProperty) {
         localStorage.setItem("selectedSharedPropertyId", selectedProperty.propertyId);
       }
 
+      if (explicitPropertyId && !selectedProperty) {
+        window.location.href = `/setup?entryProduct=marketplace&propertyId=${encodeURIComponent(explicitPropertyId)}`;
+        return;
+      }
       window.location.href = safeRedirect || ROUTES.MARKETPLACE;
     })().catch(() => {
-      window.location.href = ROUTES.LOGIN;
+      window.location.href = organizationSelectionPath;
     });
   }, []);
 

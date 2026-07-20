@@ -307,6 +307,11 @@ async function checkBookingSettings(
     custom_filters: unknown;
     filter_rooms: unknown;
     source_freshness: unknown;
+    hero_image_url: string | null;
+    hero_heading: string | null;
+    hero_subtext: string | null;
+    primary_color: string;
+    font_pairing: string;
   }>(
     `SELECT
        source.source_id AS booking_hotel_resource_id,
@@ -328,7 +333,12 @@ async function checkBookingSettings(
        settings.booking_filters,
        settings.custom_filters,
        settings.filter_rooms,
-       settings.source_freshness
+       settings.source_freshness,
+       settings.hero_image_url,
+       settings.hero_heading,
+       settings.hero_subtext,
+       settings.primary_color,
+       settings.font_pairing
      FROM booking.booking_settings settings
      LEFT JOIN hotel_catalog.property_source_links source
        ON source.property_id = settings.property_id
@@ -363,7 +373,12 @@ async function checkBookingSettings(
     sameJsonValue(row.booking_filters, settings.bookingFilters) &&
     sameJsonValue(row.custom_filters, settings.customFilters) &&
     sameJsonValue(row.filter_rooms, settings.filterRooms) &&
-    sameJsonValue(row.source_freshness, settings.sourceFreshness);
+    sameJsonValue(row.source_freshness, settings.sourceFreshness) &&
+    row.hero_image_url === settings.heroImageUrl &&
+    row.hero_heading === settings.heroHeading &&
+    row.hero_subtext === settings.heroSubtext &&
+    row.primary_color === settings.primaryColor &&
+    row.font_pairing === settings.fontPairing;
 
   if (!matches) {
     findings.push({

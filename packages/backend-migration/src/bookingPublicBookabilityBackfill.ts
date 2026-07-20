@@ -25,6 +25,11 @@ type LegacyHotel = {
   free_cancellation_days?: unknown;
   terms_text?: unknown;
   cancellation_policy_text?: unknown;
+  primaryColor?: unknown;
+  branding_primary_color?: unknown;
+  fontPairing?: unknown;
+  branding_font_pairing?: unknown;
+  branding?: unknown;
 };
 
 type LegacyRoom = {
@@ -50,6 +55,29 @@ type LegacyRoom = {
 type RoomSnapshot = {
   stayDate: string;
   room: LegacyRoom;
+};
+
+type BookingBrandingSettingsSnapshot = {
+  primaryColor: string;
+  fontPairing: string;
+};
+
+const DEFAULT_PRIMARY_COLOR = "#4F46E5";
+const DEFAULT_FONT_PAIRING = "high-end-serif";
+
+const LEGACY_FONT_PAIRINGS: Record<string, string> = {
+  "high-end-serif": "high-end-serif",
+  "playfair-display-source-sans-pro": "high-end-serif",
+  "modern-minimalist": "modern-minimalist",
+  "inter-inter": "modern-minimalist",
+  "inter-merriweather": "modern-minimalist",
+  "grand-classic": "grand-classic",
+  "cormorant-garamond-lato": "grand-classic",
+  "lora-source-sans-pro": "grand-classic",
+  "imperial-serif": "imperial-serif",
+  "cinzel-source-sans-pro": "imperial-serif",
+  "italiana-serif": "italiana-serif",
+  "italiana-source-sans-pro": "italiana-serif",
 };
 
 export type BookingPublicBookabilityBackfillResult = {
@@ -169,6 +197,7 @@ async function upsertTargetRows(
   const media = mediaFrom(input.hotel, name);
   const amenities = arrayValue(input.hotel.amenities);
   const policy = publicPolicy(input.hotel, bookingBaseUrl, defaultLocale);
+  const brandingSettings = bookingBrandingSettingsForLegacyHotel(input.hotel);
   const freshness = {
     booking: { status: "fresh", generatedAt: input.generatedAt },
     pms: { status: "fresh", generatedAt: input.generatedAt },
@@ -269,14 +298,17 @@ async function upsertTargetRows(
 
   await client.query(
     `INSERT INTO booking.booking_settings
-       (property_id, default_currency, default_language, supported_currencies, supported_languages, source_freshness)
-     VALUES ($1, $2, $3, $4, $5, $6)
+       (property_id, default_currency, default_language, supported_currencies, supported_languages,
+        source_freshness, primary_color, font_pairing)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (property_id) DO UPDATE SET
        default_currency = EXCLUDED.default_currency,
        default_language = EXCLUDED.default_language,
        supported_currencies = EXCLUDED.supported_currencies,
        supported_languages = EXCLUDED.supported_languages,
        source_freshness = EXCLUDED.source_freshness,
+       primary_color = EXCLUDED.primary_color,
+       font_pairing = EXCLUDED.font_pairing,
        updated_at = now()`,
     [
       input.propertyId,
@@ -285,6 +317,8 @@ async function upsertTargetRows(
       supportedCurrencies,
       supportedLocales,
       JSON.stringify(freshness),
+      brandingSettings.primaryColor,
+      brandingSettings.fontPairing,
     ],
   );
 
@@ -594,6 +628,39 @@ function mediaFrom(hotel: LegacyHotel, name: string): { url: string; alt: string
   return [...new Set(urls)].map((url) => ({ url, alt: name }));
 }
 
+export function bookingBrandingSettingsForLegacyHotel(
+  hotel: LegacyHotel,
+): BookingBrandingSettingsSnapshot {
+  const branding = recordValue(hotel.branding);
+  return {
+    primaryColor: normalizeLegacyBookingPrimaryColor(
+      branding?.["primaryColor"] ??
+        branding?.["primary_color"] ??
+        hotel.primaryColor ??
+        hotel.branding_primary_color,
+    ),
+    fontPairing: normalizeLegacyBookingFontPairing(
+      branding?.["fontPairing"] ??
+        branding?.["font_pairing"] ??
+        hotel.fontPairing ??
+        hotel.branding_font_pairing,
+    ),
+  };
+}
+
+export function normalizeLegacyBookingPrimaryColor(value: unknown): string {
+  const color = stringValue(value);
+  return color && /^#[0-9A-Fa-f]{6}$/.test(color) ? color.toUpperCase() : DEFAULT_PRIMARY_COLOR;
+}
+
+export function normalizeLegacyBookingFontPairing(value: unknown): string {
+  const key = stringValue(value)
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return (key && LEGACY_FONT_PAIRINGS[key]) || DEFAULT_FONT_PAIRING;
+}
+
 function maxAdults(snapshots: RoomSnapshot[]): number {
   return Math.max(
     1,
@@ -649,6 +716,12 @@ function arrayValue(value: unknown): string[] {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function numberValue(value: unknown): number | null {

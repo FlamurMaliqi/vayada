@@ -52,6 +52,60 @@ describe("PMS AuthKit session refresh", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes a persisted compatibility session and keeps using the WorkOS token", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.stubGlobal("window", { localStorage: storage });
+    localStorage.setItem("access_token", "persisted-compatibility-token");
+    localStorage.setItem("token_expires_at", String(Date.now() + 3_600_000));
+    localStorage.setItem("userType", "hotel");
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/auth/session?surface=pms-web")) {
+        return jsonResponse({
+          accessToken: "workos-access-token",
+          csrfToken: "csrf-token",
+          organizationId: "org_hotel_group",
+          user: {
+            id: "user_hotel_admin",
+            email: "hotel@example.com",
+            status: "active",
+          },
+        });
+      }
+      if (url.endsWith("/auth/compat/pms-web-token")) {
+        return jsonResponse({
+          accessToken: "new-compatibility-token",
+          expiresIn: 3600,
+          tokenType: "Bearer",
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authService.ensureSession()).resolves.toBe(true);
+    expect(getAuthBearerToken()).toBe("workos-access-token");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an in-memory WorkOS session usable when the AuthKit login UI is disabled", () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED", "false");
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      user: {
+        id: "user_hotel_admin",
+        email: "hotel@example.com",
+        status: "active",
+      },
+    });
+
+    expect(getAuthBearerToken()).toBe("workos-access-token");
+    expect(authService.isLoggedIn()).toBe(true);
+  });
+
   it("preserves verification-required auth state for the verification page", async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse(
@@ -177,6 +231,7 @@ describe("PMS AuthKit session refresh", () => {
     setAuthKitSession({
       accessToken: "authkit-token",
       organizationId: "org_hotel_a",
+      workosOrganizationId: "org_workos_hotel_a",
       resources: {
         "pms:pms_property": [" property_a "],
       },
@@ -190,6 +245,7 @@ describe("PMS AuthKit session refresh", () => {
     expect(localStorage.getItem("selectedSharedPropertyId")).toBe("property_a");
     expect(localStorage.getItem("selectedHotelId")).toBe("property_a");
     expect(localStorage.getItem("selectedSharedPropertyOrganizationId")).toBe("org_hotel_a");
+    expect(localStorage.getItem("selectedWorkosOrganizationId")).toBe("org_workos_hotel_a");
   });
 
   it("preserves a valid non-first PMS property selection", () => {

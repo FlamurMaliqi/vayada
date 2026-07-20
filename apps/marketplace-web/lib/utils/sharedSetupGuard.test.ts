@@ -4,9 +4,51 @@ import {
   type SharedHotelSetupStatus,
 } from "@vayada/product-onboarding";
 
-import { isMarketplaceActivationDecision, resolveMarketplaceSetupGuard } from "./sharedSetupGuard";
+import {
+  isMarketplaceActivationDecision,
+  marketplaceGuardRedirectPath,
+  resolveMarketplaceActivationGuard,
+  resolveMarketplaceSetupGuard,
+} from "./sharedSetupGuard";
 
 describe("resolveMarketplaceSetupGuard", () => {
+  it("validates Marketplace activation against the property from the activation URL", async () => {
+    const api = {
+      getStatus: vi.fn(async () =>
+        status({
+          properties: [marketplaceActivationProperty("property-from-url")],
+          nextAction: {
+            action: "complete_product_activation",
+            propertyId: "property-from-url",
+            product: "marketplace",
+            missingSteps: ["creatorPitch", "marketplaceOffer"],
+            reasonCodes: ["product_activation_incomplete"],
+          },
+        }),
+      ),
+    };
+
+    const decision = await resolveMarketplaceActivationGuard(
+      "/marketplace",
+      " property-from-url ",
+      { api },
+    );
+
+    expect(api.getStatus).toHaveBeenCalledWith(
+      {
+        entryProduct: "marketplace",
+        returnTo: "/marketplace",
+        propertyId: "property-from-url",
+      },
+      { signal: undefined },
+    );
+    expect(decision).toMatchObject({
+      action: "redirect_to_setup",
+      propertyId: "property-from-url",
+      product: "marketplace",
+    });
+  });
+
   it("redirects incomplete setup to the shared wizard with the marketplace entry product", async () => {
     const api = {
       getStatus: vi.fn(async () =>
@@ -80,6 +122,33 @@ describe("resolveMarketplaceSetupGuard", () => {
       redirectPath: null,
     });
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
+  });
+
+  it("allows hotel operators into Marketplace while their completed profile is under review", async () => {
+    const api = {
+      getStatus: vi.fn(async () =>
+        status({
+          properties: [marketplaceActivationProperty("property-1", "selected_incomplete", [])],
+          nextAction: {
+            action: "complete_product_activation",
+            propertyId: "property-1",
+            product: "marketplace",
+            missingSteps: [],
+            reasonCodes: ["marketplace_verification_pending"],
+          },
+        }),
+      ),
+    };
+    const storage = memoryStorage({ selectedSharedPropertyId: "property-1" });
+
+    const decision = await resolveMarketplaceSetupGuard("/marketplace", api, storage);
+
+    expect(decision).toEqual({
+      action: "enter_product",
+      propertyId: "property-1",
+      redirectPath: null,
+    });
+    expect(storage.getItem("selectedSharedPropertyId")).toBe("property-1");
   });
 
   it("clears a stale property selection and retries with the authorized hotel list", async () => {
@@ -179,17 +248,20 @@ describe("resolveMarketplaceSetupGuard", () => {
   });
 
   it("keeps additive Marketplace requirements profile-editable", () => {
-    expect(
-      isMarketplaceActivationDecision({
-        action: "redirect_to_setup",
-        propertyId: "property-1",
-        redirectPath: "/setup?entryProduct=marketplace&propertyId=property-1",
-        setupAction: "complete_product_activation",
-        product: "marketplace",
-        productStatus: "selected_incomplete",
-        missingSteps: ["marketplaceListing"],
-      }),
-    ).toBe(true);
+    const decision = {
+      action: "redirect_to_setup" as const,
+      propertyId: "property-1",
+      redirectPath: "/setup?entryProduct=marketplace&propertyId=property-1",
+      setupAction: "complete_product_activation" as const,
+      product: "marketplace" as const,
+      productStatus: "selected_incomplete" as const,
+      missingSteps: ["marketplaceListing"],
+    };
+
+    expect(isMarketplaceActivationDecision(decision)).toBe(true);
+    expect(marketplaceGuardRedirectPath(decision)).toBe(
+      "/profile/complete?activation=marketplace&propertyId=property-1",
+    );
   });
 
   it("labels incomplete Marketplace activation for the selected shared property", () => {

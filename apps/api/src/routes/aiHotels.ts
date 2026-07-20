@@ -80,6 +80,11 @@ type TargetPublicHotelProfileRow = {
   supportedQuoteParameters: unknown;
   bookingAdultAgeThreshold: number | null;
   bookingChildrenEnabled: boolean | null;
+  bookingHeroImage: string | null;
+  bookingHeroHeading: string | null;
+  bookingHeroSubtext: string | null;
+  bookingPrimaryColor: string | null;
+  bookingFontPairing: string | null;
   publicSetupCompleteness: unknown;
   sourceFreshness: unknown;
   freshnessStatus: string;
@@ -386,6 +391,17 @@ function serializeHotelProfile(
       longitude: hotel.location.longitude ?? null,
     },
     summary: hotel.summary ?? null,
+    ...(hotel.branding
+      ? {
+          branding: {
+            heroImage: hotel.branding.heroImage ?? null,
+            heroHeading: hotel.branding.heroHeading ?? null,
+            heroSubtext: hotel.branding.heroSubtext ?? null,
+            primaryColor: hotel.branding.primaryColor ?? null,
+            fontPairing: hotel.branding.fontPairing ?? null,
+          },
+        }
+      : {}),
     images: hotel.images.map((image) => ({
       url: image.url,
       alt: image.alt ?? null,
@@ -520,6 +536,11 @@ const TARGET_PUBLIC_PROFILE_SELECT = `SELECT
            profile.supported_quote_parameters AS "supportedQuoteParameters",
            settings.adult_age_threshold AS "bookingAdultAgeThreshold",
            settings.children_enabled AS "bookingChildrenEnabled",
+           settings.hero_image_url AS "bookingHeroImage",
+           settings.hero_heading AS "bookingHeroHeading",
+           settings.hero_subtext AS "bookingHeroSubtext",
+           settings.primary_color AS "bookingPrimaryColor",
+           settings.font_pairing AS "bookingFontPairing",
            profile.public_setup_completeness AS "publicSetupCompleteness",
            profile.source_freshness AS "sourceFreshness",
            profile.freshness_status AS "freshnessStatus",
@@ -565,6 +586,13 @@ function toTargetPublicHotelProfileProjection(
         longitude: numberValue(location["longitude"]),
       },
       summary: stringValue(identity["summary"]),
+      branding: {
+        heroImage: stringValue(row.bookingHeroImage),
+        heroHeading: stringValue(row.bookingHeroHeading),
+        heroSubtext: stringValue(row.bookingHeroSubtext),
+        primaryColor: stringValue(row.bookingPrimaryColor),
+        fontPairing: stringValue(row.bookingFontPairing),
+      },
       images: imageArray(row.media),
       amenities: amenityArray(row.amenities),
       policies: {
