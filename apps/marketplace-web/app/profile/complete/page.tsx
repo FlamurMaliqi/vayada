@@ -9,20 +9,25 @@ import { STORAGE_KEYS } from "@/lib/constants";
 import { checkProfileStatus, isProfileComplete } from "@/lib/utils";
 import type {
   UserType,
+  CreatorFormState,
+  CreatorPlatformConnection,
+  CreatorPlatformPendingAuthorization,
+  CreatorPlatformProvider,
   CreatorProfileStatus,
   HotelProfileStatus,
-  Creator,
+  Platform,
   PlatformFormData,
 } from "@/lib/types";
 import { creatorService } from "@/services/api/creators";
 import { hotelService } from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
-import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
 import { authService } from "@/services/auth";
 import { useCreatorProfileForm } from "@/hooks/useCreatorProfileForm";
 import { useHotelProfileForm } from "@/hooks/useHotelProfileForm";
 import { formatErrorDetail } from "@/hooks/useErrorModal";
 import { marketplaceSetupRedirectPath } from "@/lib/utils/sharedSetupGuard";
+import { hasRequiredCreatorAccountDetails } from "@/lib/utils/creatorAccountRequirements";
+import { mergeCreatorPlatformDraft } from "@/lib/utils/mergeCreatorPlatformDraft";
 import {
   LoadingScreen,
   ProfileCompletionScreen,
@@ -31,6 +36,23 @@ import {
   CreatorProfileForm,
   HotelProfileForm,
 } from "@/components/profile-complete";
+
+const CREATOR_PLATFORM_DRAFT_KEY = "vayada_creator_platform_connection_draft";
+const PLATFORM_CONNECTIONS_LOAD_ERROR =
+  "Connected accounts could not be loaded. Retry before changing platform details.";
+
+type CreatorPlatformCallback = {
+  status: "success" | "select" | "error";
+  platform: CreatorPlatformProvider;
+  authorizationId: string | null;
+  connectionId: string | null;
+};
+
+type CreatorPlatformDraft = {
+  form: CreatorFormState;
+  platforms: PlatformFormData[];
+  managePlatforms?: boolean;
+};
 
 export default function ProfileCompletePage() {
   const router = useRouter();
@@ -43,26 +65,31 @@ export default function ProfileCompletePage() {
   const [profileStatusLoadFailed, setProfileStatusLoadFailed] = useState(false);
   const [error, setError] = useState("");
   const [profileCompleted, setProfileCompleted] = useState(false);
+  const [managingPlatforms, setManagingPlatforms] = useState(false);
   const [currentStep, setCurrentStep] = useState<number>(1);
-  const [creatorPhotoPersisted, setCreatorPhotoPersisted] = useState(false);
-  const [uploadedCreatorPhoto, setUploadedCreatorPhoto] = useState<{
-    file: File;
-    url: string;
-    mediaObjectId: string;
-    identitySynced: boolean;
-  } | null>(null);
   const [initialCreatorPlatformsSignature, setInitialCreatorPlatformsSignature] = useState("[]");
-  const creatorPhotoRequired =
-    (profileStatus as CreatorProfileStatus | null)?.profile_photo_required ?? false;
+  const [platformConnections, setPlatformConnections] = useState<
+    CreatorPlatformConnection[] | null
+  >(null);
+  const [platformConnectionsError, setPlatformConnectionsError] = useState("");
+  const [pendingAuthorization, setPendingAuthorization] =
+    useState<CreatorPlatformPendingAuthorization | null>(null);
+  const [connectionNotice, setConnectionNotice] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [connectingPlatform, setConnectingPlatform] = useState<CreatorPlatformProvider | null>(
+    null,
+  );
+  const [busyConnectionId, setBusyConnectionId] = useState<string | null>(null);
+  const [selectingExternalAccountId, setSelectingExternalAccountId] = useState<string | null>(null);
+  const [reviewingConnectionCallback, setReviewingConnectionCallback] = useState(false);
 
   const creatorSteps = ["Creator category", "About your work", "Audience & platforms"];
   const hotelSteps = ["Basic Information", "Collaboration Offers"];
 
   // Initialize hooks with error handler
-  const creatorForm = useCreatorProfileForm({
-    onError: setError,
-    profileImageRequired: creatorPhotoRequired,
-  });
+  const creatorForm = useCreatorProfileForm({ onError: setError });
   const hotelForm = useHotelProfileForm({ onError: setError });
 
   useEffect(() => {
@@ -84,17 +111,45 @@ export default function ProfileCompletePage() {
       const userName = localStorage.getItem(STORAGE_KEYS.USER_NAME) || "";
 
       if (storedUserType === "creator") {
+        const connectionCallback = readCreatorPlatformCallback();
+        const connectionDraft = connectionCallback ? readCreatorPlatformDraft() : null;
+        const managementRequested =
+          new URLSearchParams(window.location.search).get("manage-platforms") === "1" ||
+          connectionDraft?.managePlatforms === true;
+        if (managementRequested) {
+          setManagingPlatforms(true);
+          setCurrentStep(3);
+        }
+        if (connectionCallback) {
+          setCurrentStep(3);
+          setReviewingConnectionCallback(true);
+        }
         creatorForm.setForm((prev) => ({ ...prev, name: userName }));
         const hydrationController = new AbortController();
         const hydrationTimeout = window.setTimeout(() => hydrationController.abort(), 5_000);
         let cancelled = false;
         setLoading(true);
-        void Promise.allSettled([
-          hydrateCreatorProfile(userName, hydrationController.signal),
-          loadProfileStatus("creator", true, false, hydrationController.signal),
-        ])
-          .then(([hydrationResult, statusResult]) => {
+        void (async () => {
+          try {
+            const authenticated = await authService.ensureSession(hydrationController.signal);
             if (cancelled) return;
+            if (!authenticated) {
+              router.replace(ROUTES.LOGIN);
+              return;
+            }
+            const [hydrationResult, statusResult, connectionsResult] = await Promise.allSettled([
+              hydrateCreatorProfile(userName, hydrationController.signal),
+              loadProfileStatus("creator", true, false, hydrationController.signal),
+              creatorService.getPlatformConnections({ signal: hydrationController.signal }),
+            ]);
+            if (cancelled) return;
+            if (connectionsResult.status === "fulfilled") {
+              setPlatformConnections(connectionsResult.value);
+              setPlatformConnectionsError("");
+            } else {
+              setPlatformConnections(null);
+              setPlatformConnectionsError(PLATFORM_CONNECTIONS_LOAD_ERROR);
+            }
             if (hydrationResult.status === "rejected") {
               setProfileStatusLoadFailed(true);
               setError(
@@ -102,6 +157,12 @@ export default function ProfileCompletePage() {
                   ? "Loading your creator profile took too long. Please refresh and try again."
                   : "Failed to load your creator profile. Please refresh and try again.",
               );
+              return;
+            }
+            if (
+              !hasRequiredCreatorAccountDetails(authService.getSessionUser(), hydrationResult.value)
+            ) {
+              router.replace(ROUTES.ONBOARDING);
               return;
             }
             if (statusResult.status === "rejected") {
@@ -113,26 +174,41 @@ export default function ProfileCompletePage() {
               );
               return;
             }
-            const creatorStatus = statusResult.value as CreatorProfileStatus | null;
-            if (
-              creatorStatus?.profile_photo_required &&
-              !hydrationResult.value.profilePictureMediaObjectId?.trim()
-            ) {
-              creatorForm.setForm((prev) => ({ ...prev, profile_image: "" }));
+            if (connectionDraft) {
+              creatorForm.setForm(connectionDraft.form);
+              creatorForm.setPlatforms(
+                connectionsResult.status === "fulfilled"
+                  ? mergeCreatorPlatformDraft(
+                      connectionDraft.platforms,
+                      hydrationResult.value.platforms.map(toPlatformFormData),
+                      connectionsResult.value,
+                    )
+                  : connectionDraft.platforms,
+              );
             }
-            if (
-              creatorStatus?.profile_complete &&
-              creatorStatus.profile_photo_required &&
-              (!hydrationResult.value.profilePicture?.trim() ||
-                !hydrationResult.value.profilePictureMediaObjectId?.trim())
-            ) {
-              setCurrentStep(2);
+            if (connectionCallback) {
+              if (connectionsResult.status === "rejected") return;
+              await handleCreatorPlatformCallback(
+                connectionCallback,
+                connectionsResult.value,
+                hydrationController.signal,
+              );
+              clearCreatorPlatformCallback(managementRequested);
+              sessionStorage.removeItem(CREATOR_PLATFORM_DRAFT_KEY);
             }
-          })
-          .finally(() => {
+          } catch {
+            if (cancelled) return;
+            setProfileStatusLoadFailed(true);
+            setError(
+              hydrationController.signal.aborted
+                ? "Loading your creator profile took too long. Please refresh and try again."
+                : "Failed to load your session. Please refresh and try again.",
+            );
+          } finally {
             window.clearTimeout(hydrationTimeout);
             if (!cancelled) setLoading(false);
-          });
+          }
+        })();
         return () => {
           cancelled = true;
           window.clearTimeout(hydrationTimeout);
@@ -150,7 +226,6 @@ export default function ProfileCompletePage() {
 
   const hydrateCreatorProfile = async (fallbackName: string, signal: AbortSignal) => {
     const profile = await creatorService.getMyProfile({ signal });
-    const profilePicture = profile.profilePicture?.trim() || "";
     const hasStartedCreatorProfile = Boolean(
       profile.location.trim() ||
       profile.shortDescription?.trim() ||
@@ -164,27 +239,210 @@ export default function ProfileCompletePage() {
       short_description: profile.shortDescription?.trim() || prev.short_description,
       portfolio_link: profile.portfolioLink?.trim() || prev.portfolio_link,
       phone: profile.phone?.trim() || prev.phone,
-      profile_image: profilePicture || prev.profile_image,
       creator_type: hasStartedCreatorProfile ? profile.creatorType : prev.creator_type,
     }));
-    const hydratedPlatforms = profile.platforms.map((platform) => ({
-      id: platform.id,
-      name: platform.name,
-      handle: platform.handle,
-      followers: platform.followers,
-      engagement_rate: platform.engagementRate,
-      top_countries: platform.topCountries,
-      top_age_groups: platform.topAgeGroups,
-      gender_split: platform.genderSplit,
-    }));
+    const hydratedPlatforms = profile.platforms.map(toPlatformFormData);
     creatorForm.setPlatforms(hydratedPlatforms);
     setInitialCreatorPlatformsSignature(
       JSON.stringify(hydratedPlatforms.map(toCreatorPlatformUpdate)),
     );
-    setCreatorPhotoPersisted(
-      Boolean(profilePicture && profile.profilePictureMediaObjectId?.trim()),
-    );
     return profile;
+  };
+
+  const refreshCreatorPlatformData = async () => {
+    const draftForm = creatorForm.form;
+    const draftPlatforms = creatorForm.platforms;
+    setPlatformConnections(null);
+    setPlatformConnectionsError("");
+    try {
+      const [profile, connections] = await Promise.all([
+        creatorService.getMyProfile(),
+        creatorService.getPlatformConnections(),
+      ]);
+      const hydratedPlatforms = profile.platforms.map(toPlatformFormData);
+      creatorForm.setForm(draftForm);
+      creatorForm.setPlatforms(
+        mergeCreatorPlatformDraft(draftPlatforms, hydratedPlatforms, connections),
+      );
+      setInitialCreatorPlatformsSignature(
+        JSON.stringify(hydratedPlatforms.map(toCreatorPlatformUpdate)),
+      );
+      setPlatformConnections(connections);
+      return profile;
+    } catch (err) {
+      setPlatformConnections(null);
+      setPlatformConnectionsError(PLATFORM_CONNECTIONS_LOAD_ERROR);
+      throw err;
+    }
+  };
+
+  const handleCreatorPlatformCallback = async (
+    callback: CreatorPlatformCallback,
+    connections: CreatorPlatformConnection[],
+    signal: AbortSignal,
+  ) => {
+    const platformName = creatorPlatformDisplayName(callback.platform);
+    if (callback.status === "error") {
+      setConnectionNotice({
+        tone: "error",
+        message: `${platformName} could not be connected. Try again or enter the account manually.`,
+      });
+      return;
+    }
+
+    if (callback.status === "success") {
+      const connectedAccount = connections.find(
+        (connection) =>
+          connection.connectionId === callback.connectionId &&
+          connection.platform === callback.platform &&
+          connection.status === "active",
+      );
+      if (!connectedAccount) {
+        setConnectionNotice({
+          tone: "error",
+          message: `${platformName} returned to Vayada, but the connected account could not be confirmed. Try connecting it again.`,
+        });
+        return;
+      }
+      setConnectionNotice({
+        tone: "success",
+        message: `${platformName} is connected. Vayada is importing the available statistics.`,
+      });
+      return;
+    }
+
+    const authorization = await creatorService.getPendingPlatformAuthorization({ signal });
+    if (!authorization || authorization.authorizationId !== callback.authorizationId) {
+      setConnectionNotice({
+        tone: "error",
+        message: `The ${platformName} account selection expired. Start the connection again.`,
+      });
+      return;
+    }
+    setPendingAuthorization(authorization);
+  };
+
+  const handleRetryPlatformConnections = async () => {
+    if (readCreatorPlatformCallback()) {
+      window.location.reload();
+      return;
+    }
+    setConnectionNotice(null);
+    try {
+      await refreshCreatorPlatformData();
+    } catch {
+      // The persistent connection error provides the retry state.
+    }
+  };
+
+  const handleConnectPlatform = async (platform: CreatorPlatformProvider, platformId?: string) => {
+    if (platformConnections === null) return;
+    setError("");
+    setConnectionNotice(null);
+    setConnectingPlatform(platform);
+    sessionStorage.setItem(
+      CREATOR_PLATFORM_DRAFT_KEY,
+      JSON.stringify({
+        form: creatorForm.form,
+        platforms: creatorForm.platforms,
+        managePlatforms: managingPlatforms,
+      }),
+    );
+    try {
+      const { authorizationUrl } = await creatorService.startPlatformAuthorization(
+        platform,
+        platformId,
+      );
+      window.location.assign(authorizationUrl);
+    } catch (err) {
+      sessionStorage.removeItem(CREATOR_PLATFORM_DRAFT_KEY);
+      setConnectionNotice({
+        tone: "error",
+        message: creatorPlatformErrorMessage(
+          err,
+          "The platform connection could not be started. Try again or enter it manually.",
+        ),
+      });
+      setConnectingPlatform(null);
+    }
+  };
+
+  const handleSelectAuthorizedAccount = async (externalAccountId: string) => {
+    if (!pendingAuthorization || platformConnections === null) return;
+    const pendingPlatform = pendingAuthorization.platform;
+    setSelectingExternalAccountId(externalAccountId);
+    setConnectionNotice(null);
+    try {
+      await creatorService.selectPlatformAuthorizationAccount(
+        pendingAuthorization.authorizationId,
+        externalAccountId,
+      );
+      setPendingAuthorization(null);
+      await refreshCreatorPlatformData();
+      setConnectionNotice({
+        tone: "success",
+        message: `${creatorPlatformDisplayName(pendingPlatform)} is connected. The available statistics were imported.`,
+      });
+    } catch (err) {
+      setConnectionNotice({
+        tone: "error",
+        message: creatorPlatformErrorMessage(
+          err,
+          "The account could not be connected. Please try again.",
+        ),
+      });
+    } finally {
+      setSelectingExternalAccountId(null);
+    }
+  };
+
+  const handleSyncConnection = async (connectionId: string) => {
+    if (platformConnections === null) return;
+    setBusyConnectionId(connectionId);
+    setConnectionNotice(null);
+    try {
+      await creatorService.syncPlatformConnection(connectionId);
+      await refreshCreatorPlatformData();
+      setConnectionNotice({
+        tone: "success",
+        message: "The latest available statistics were imported.",
+      });
+    } catch (err) {
+      setConnectionNotice({
+        tone: "error",
+        message: creatorPlatformErrorMessage(
+          err,
+          "The account could not be synced. Please try again.",
+        ),
+      });
+    } finally {
+      setBusyConnectionId(null);
+    }
+  };
+
+  const handleDisconnectConnection = async (connectionId: string) => {
+    if (platformConnections === null) return;
+    if (!window.confirm("Disconnect this account and stop importing its statistics?")) return;
+    setBusyConnectionId(connectionId);
+    setConnectionNotice(null);
+    try {
+      await creatorService.disconnectPlatformConnection(connectionId);
+      setPlatformConnections(
+        (current) =>
+          current?.filter((connection) => connection.connectionId !== connectionId) ?? null,
+      );
+      setConnectionNotice({ tone: "success", message: "The account was disconnected." });
+    } catch (err) {
+      setConnectionNotice({
+        tone: "error",
+        message: creatorPlatformErrorMessage(
+          err,
+          "The account could not be disconnected. Please try again.",
+        ),
+      });
+    } finally {
+      setBusyConnectionId(null);
+    }
   };
 
   const loadProfileStatus = async (
@@ -226,6 +484,10 @@ export default function ProfileCompletePage() {
   };
 
   const prevStep = () => {
+    if (managingPlatforms && currentStep === 3) {
+      router.push(ROUTES.PROFILE);
+      return;
+    }
     if (currentStep > 1) {
       setCurrentStep(currentStep - 1);
       setError("");
@@ -247,57 +509,16 @@ export default function ProfileCompletePage() {
   const handleCreatorSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    if (platformConnections === null) {
+      setPlatformConnectionsError(PLATFORM_CONNECTIONS_LOAD_ERROR);
+      return;
+    }
     if (!creatorForm.validateForm()) return;
 
     setSubmitting(true);
     try {
       const platforms = creatorForm.platforms.map(toCreatorPlatformUpdate);
       const platformsChanged = JSON.stringify(platforms) !== initialCreatorPlatformsSignature;
-
-      let profilePictureMediaObjectId: string | undefined;
-      if (creatorForm.profilePictureFile) {
-        try {
-          let uploaded =
-            uploadedCreatorPhoto?.file === creatorForm.profilePictureFile
-              ? uploadedCreatorPhoto
-              : null;
-          if (!uploaded) {
-            const user = authService.getSessionUser();
-            if (!user?.id) throw new Error("Your session has expired. Please sign in again.");
-            const uploadResponse = await sharedAccountProfileImageUploader(
-              user.id,
-              creatorForm.profilePictureFile,
-            );
-            uploaded = {
-              file: creatorForm.profilePictureFile,
-              url: uploadResponse.profilePictureUrl,
-              mediaObjectId: uploadResponse.profilePictureMediaObjectId,
-              identitySynced: false,
-            };
-            setUploadedCreatorPhoto(uploaded);
-          }
-          if (!uploaded.identitySynced) {
-            await authService.updateAccountDetails({
-              profilePictureUrl: uploaded.url,
-              profilePictureMediaObjectId: uploaded.mediaObjectId,
-            });
-            uploaded = { ...uploaded, identitySynced: true };
-            setUploadedCreatorPhoto(uploaded);
-          }
-          profilePictureMediaObjectId = uploaded.mediaObjectId;
-          creatorForm.setForm((prev) => ({ ...prev, profile_image: uploaded.url }));
-        } catch (err) {
-          if (err instanceof ApiErrorResponse) {
-            setError(formatErrorDetail(err.data.detail) || "Failed to upload profile picture");
-          } else {
-            setError(
-              err instanceof Error ? err.message : "Failed to upload profile picture. Try again.",
-            );
-          }
-          setSubmitting(false);
-          return;
-        }
-      }
 
       const updatePayload = {
         name: creatorForm.form.name,
@@ -309,26 +530,20 @@ export default function ProfileCompletePage() {
           shortDescription: creatorForm.form.short_description.trim(),
         }),
         ...(creatorForm.form.phone?.trim() && { phone: creatorForm.form.phone.trim() }),
-        ...(profilePictureMediaObjectId && {
-          profilePictureMediaObjectId,
-          profile_picture_media_object_id: profilePictureMediaObjectId,
-        }),
       };
 
-      const updatedProfile = await creatorService.updateMyProfile(updatePayload);
-      const responseWithSnakeCase = updatedProfile as Creator & { profile_picture?: string | null };
-      const pictureUrl = updatedProfile.profilePicture || responseWithSnakeCase.profile_picture;
-      const persistedPictureUrl = pictureUrl?.trim() || "";
-      if (persistedPictureUrl && updatedProfile.profilePictureMediaObjectId?.trim()) {
-        creatorForm.setForm((prev) => ({ ...prev, profile_image: persistedPictureUrl }));
-        setCreatorPhotoPersisted(true);
-      }
+      await creatorService.updateMyProfile(updatePayload);
       if (platformsChanged) setInitialCreatorPlatformsSignature(JSON.stringify(platforms));
 
       const complete = await isProfileComplete("creator");
       if (complete) {
-        setProfileCompleted(true);
         localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "true");
+        if (managingPlatforms) {
+          router.push(ROUTES.PROFILE);
+          return;
+        }
+        setReviewingConnectionCallback(false);
+        setProfileCompleted(true);
       } else {
         const updatedStatus = await loadProfileStatus("creator", true);
         handleIncompleteProfile(updatedStatus as CreatorProfileStatus);
@@ -617,8 +832,8 @@ export default function ProfileCompletePage() {
   const effectiveProfileStatus = profileStatus ?? emptyProfileStatus(userType);
 
   if (
-    (profileCompleted || effectiveProfileStatus.profile_complete) &&
-    (userType !== "creator" || !creatorPhotoRequired || creatorPhotoPersisted)
+    profileCompleted ||
+    (effectiveProfileStatus.profile_complete && !reviewingConnectionCallback && !managingPlatforms)
   ) {
     return (
       <ProfileCompletionScreen
@@ -632,6 +847,13 @@ export default function ProfileCompletePage() {
   const steps = userType === "creator" ? creatorSteps : hotelSteps;
   const totalSteps = steps.length;
   const isCreatorCategoryStep = userType === "creator" && currentStep === 1;
+  const isCreatorAboutStep = userType === "creator" && currentStep === 2;
+  const isCreatorPlatformsStep = userType === "creator" && currentStep === 3;
+  const platformActionsDisabled =
+    platformConnections === null ||
+    connectingPlatform !== null ||
+    busyConnectionId !== null ||
+    selectingExternalAccountId !== null;
   const creatorFirstName = splitSharedAccountName(creatorForm.form.name).firstName;
   const creatorCategoryTitle = creatorFirstName
     ? `Hi, ${creatorFirstName}! What kind of creator are you?`
@@ -640,7 +862,7 @@ export default function ProfileCompletePage() {
     currentStep === 2 ? "Tell hotels about your work" : "Show hotels your reach";
   const creatorProfileDescription =
     currentStep === 2
-      ? "Your account details are already saved. Add what hotels need to understand your content."
+      ? ""
       : "Add the audience and platform details hotels use to assess a collaboration.";
 
   return (
@@ -661,10 +883,21 @@ export default function ProfileCompletePage() {
             : profileShellDescription(userType)
       }
       compact={!isCreatorCategoryStep}
+      centerContent={isCreatorAboutStep || isCreatorPlatformsStep}
       showProgress={false}
       wideContent={isCreatorCategoryStep}
     >
-      <div className={isCreatorCategoryStep ? "mx-auto w-full xl:pt-5" : "space-y-2"}>
+      <div
+        className={
+          isCreatorCategoryStep
+            ? "mx-auto w-full xl:pt-5"
+            : isCreatorAboutStep
+              ? "mx-auto w-full max-w-2xl space-y-2"
+              : isCreatorPlatformsStep
+                ? "mx-auto w-full max-w-2xl space-y-2"
+                : "space-y-2"
+        }
+      >
         {!isCreatorCategoryStep && <StepIndicators steps={steps} currentStep={currentStep} />}
 
         <div
@@ -690,10 +923,22 @@ export default function ProfileCompletePage() {
               canProceed={canProceedToNextStep()}
               expandedPlatforms={creatorForm.expandedPlatforms}
               platformCountryInputs={creatorForm.platformCountryInputs}
-              imageInputRef={creatorForm.imageInputRef}
+              connections={platformConnections ?? []}
+              connectionsLoading={platformConnections === null && !platformConnectionsError}
+              connectionsError={platformConnectionsError}
+              platformActionsDisabled={platformActionsDisabled}
+              pendingAuthorization={pendingAuthorization}
+              connectionNotice={connectionNotice}
+              connectingPlatform={connectingPlatform}
+              busyConnectionId={busyConnectionId}
+              selectingExternalAccountId={selectingExternalAccountId}
               onFormChange={creatorForm.handleFormChange}
-              onImageChange={creatorForm.handleImageChange}
               onAddPlatform={creatorForm.addPlatform}
+              onConnectPlatform={handleConnectPlatform}
+              onSyncConnection={handleSyncConnection}
+              onDisconnectConnection={handleDisconnectConnection}
+              onSelectAuthorizedAccount={handleSelectAuthorizedAccount}
+              onRetryConnections={handleRetryPlatformConnections}
               onRemovePlatform={creatorForm.removePlatform}
               onUpdatePlatform={creatorForm.updatePlatform}
               onTogglePlatformExpanded={creatorForm.togglePlatformExpanded}
@@ -707,6 +952,7 @@ export default function ProfileCompletePage() {
               onPrevStep={prevStep}
               onNextStep={nextStep}
               onSubmit={handleCreatorSubmit}
+              submitLabel={managingPlatforms ? "Save platform changes" : undefined}
             />
           )}
 
@@ -752,6 +998,9 @@ function toCreatorPlatformUpdate(platform: PlatformFormData) {
     id: platform.id ?? null,
     name: platform.name,
     handle: platform.handle,
+    ...(platform.profile_url !== undefined
+      ? { profileUrl: platform.profile_url.trim() || null }
+      : {}),
     followers: Number(platform.followers),
     engagementRate: Number(platform.engagement_rate),
     ...(platform.top_countries !== undefined
@@ -765,6 +1014,76 @@ function toCreatorPlatformUpdate(platform: PlatformFormData) {
     ...(platform.top_age_groups !== undefined ? { topAgeGroups: validAgeGroups } : {}),
     ...(platform.gender_split !== undefined ? { genderSplit: platform.gender_split } : {}),
   };
+}
+
+function toPlatformFormData(platform: Platform): PlatformFormData {
+  return {
+    id: platform.id,
+    name: platform.name,
+    handle: platform.handle,
+    profile_url: platform.profileUrl ?? "",
+    followers: platform.followers,
+    engagement_rate: platform.engagementRate,
+    top_countries: platform.topCountries,
+    top_age_groups: platform.topAgeGroups,
+    gender_split: platform.genderSplit,
+  };
+}
+
+function readCreatorPlatformCallback(): CreatorPlatformCallback | null {
+  const params = new URLSearchParams(window.location.search);
+  const status = params.get("connection");
+  const platform = params.get("platform");
+  if (status !== "success" && status !== "select" && status !== "error") {
+    return null;
+  }
+  if (
+    platform !== "instagram" &&
+    platform !== "tiktok" &&
+    platform !== "youtube" &&
+    platform !== "facebook"
+  ) {
+    return null;
+  }
+  return {
+    status,
+    platform,
+    authorizationId: params.get("authorization_id"),
+    connectionId: params.get("connection_id"),
+  };
+}
+
+function clearCreatorPlatformCallback(managePlatforms: boolean): void {
+  const url = new URL(window.location.href);
+  for (const key of ["connection", "platform", "authorization_id", "connection_id", "error_code"]) {
+    url.searchParams.delete(key);
+  }
+  if (managePlatforms) url.searchParams.set("manage-platforms", "1");
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function readCreatorPlatformDraft(): CreatorPlatformDraft | null {
+  const stored = sessionStorage.getItem(CREATOR_PLATFORM_DRAFT_KEY);
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored) as Partial<CreatorPlatformDraft>;
+    if (!parsed.form || !Array.isArray(parsed.platforms)) return null;
+    return parsed as CreatorPlatformDraft;
+  } catch {
+    return null;
+  }
+}
+
+function creatorPlatformDisplayName(platform: CreatorPlatformProvider): string {
+  if (platform === "instagram") return "Instagram";
+  if (platform === "tiktok") return "TikTok";
+  if (platform === "youtube") return "YouTube";
+  return "Facebook";
+}
+
+function creatorPlatformErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof ApiErrorResponse)) return fallback;
+  return formatErrorDetail(error.data.detail) || fallback;
 }
 
 function profileShellTitle(userType: "creator" | "hotel"): string {
@@ -782,7 +1101,7 @@ function emptyProfileStatus(
 ): CreatorProfileStatus | HotelProfileStatus {
   if (userType === "creator") {
     return {
-      profile_photo_required: false,
+      profile_photo_required: true,
       profile_complete: false,
       missing_fields: [],
       missing_platforms: true,

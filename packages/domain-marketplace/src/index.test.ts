@@ -5,6 +5,17 @@ import {
   AFFILIATE_PROVISIONING_ERROR_CODES,
   AFFILIATE_PROVISIONING_STATUSES,
   COLLABORATION_STATUSES,
+  CONNECTABLE_CREATOR_PLATFORMS,
+  CREATOR_PLATFORM_AUTHORIZATION_STATUSES,
+  CREATOR_PLATFORM_CONNECTION_CONTRACT_VERSION,
+  CREATOR_PLATFORM_CONNECTION_STATUSES,
+  CREATOR_PLATFORM_ENGAGEMENT_FORMULA_VERSION,
+  CREATOR_PLATFORM_ENGAGEMENT_WINDOW_DAYS,
+  CREATOR_PLATFORM_IMPORT_FIELDS,
+  CREATOR_PLATFORM_PROVIDERS,
+  CREATOR_PLATFORM_UNAVAILABLE_REASONS,
+  CREATOR_PROFILE_COMPLETION_STEPS,
+  CREATOR_PROFILE_MISSING_FIELDS,
   CREATOR_PROFILE_RESOURCE_POLICY,
   CREATOR_PROFILE_SELF_SERVICE_PRIVATE_KEYS,
   MARKETPLACE_COLLABORATION_AUTHORIZATION_SIDES,
@@ -35,6 +46,7 @@ import {
   MARKETPLACE_PLATFORM_NAMES,
   buildAffiliateProvisioningCommandId,
   buildAffiliateProvisioningIdempotencyKey,
+  calculateCreatorPlatformEngagementRate,
   type AffiliateProvisionedEvent,
   type AffiliateProvisioningResult,
   type CollaborationAcceptedEvent,
@@ -56,6 +68,117 @@ import {
 } from "./index.js";
 
 describe("@vayada/domain-marketplace", () => {
+  it("defines the provider connection contract without unsupported platforms", () => {
+    expect(CREATOR_PLATFORM_CONNECTION_CONTRACT_VERSION).toBe(
+      "marketplace-creator-platform-connections.v1",
+    );
+    expect(CREATOR_PLATFORM_PROVIDERS).toEqual(["meta", "tiktok", "google"]);
+    expect(CONNECTABLE_CREATOR_PLATFORMS).toEqual(["instagram", "facebook", "tiktok", "youtube"]);
+    expect(CREATOR_PLATFORM_AUTHORIZATION_STATUSES).toEqual([
+      "authorizing",
+      "processing",
+      "pending_account_selection",
+      "active",
+      "failed",
+      "expired",
+    ]);
+    expect(CREATOR_PLATFORM_CONNECTION_STATUSES).toEqual([
+      "active",
+      "reconnect_required",
+      "revoked",
+      "sync_failed",
+    ]);
+    expect(CREATOR_PLATFORM_IMPORT_FIELDS).toContain("audienceCountries");
+    expect(CREATOR_PLATFORM_UNAVAILABLE_REASONS).toContain("privacy_threshold");
+  });
+
+  it("keeps creator profile completion fields and steps in contract order", () => {
+    expect(CREATOR_PROFILE_MISSING_FIELDS).toEqual([
+      "displayName",
+      "locationText",
+      "shortDescription",
+      "phone",
+      "profilePicture",
+      "platforms",
+    ]);
+    expect(CREATOR_PROFILE_COMPLETION_STEPS).toEqual([
+      "add_display_name",
+      "set_location",
+      "add_short_description",
+      "add_phone",
+      "add_profile_picture",
+      "add_platform",
+    ]);
+  });
+
+  it("calculates the versioned 30-day engagement rate and keeps zero interactions valid", () => {
+    expect(CREATOR_PLATFORM_ENGAGEMENT_WINDOW_DAYS).toBe(30);
+    expect(CREATOR_PLATFORM_ENGAGEMENT_FORMULA_VERSION).toBe("creator-platform-engagement.v1");
+    expect(
+      calculateCreatorPlatformEngagementRate({
+        followerCount: 10_000,
+        contentItemCount: 4,
+        likes: 1_000,
+        comments: 100,
+        shares: 100,
+      }),
+    ).toBe(3);
+    expect(
+      calculateCreatorPlatformEngagementRate({
+        followerCount: 10_000,
+        contentItemCount: 4,
+        likes: 0,
+        comments: 0,
+        shares: 0,
+      }),
+    ).toBe(0);
+    expect(
+      calculateCreatorPlatformEngagementRate({
+        followerCount: 3,
+        contentItemCount: 1,
+        likes: 1,
+        comments: 0,
+        shares: 0,
+      }),
+    ).toBe(33.3333);
+    expect(
+      calculateCreatorPlatformEngagementRate({
+        followerCount: 1,
+        contentItemCount: 1,
+        likes: 10,
+        comments: 0,
+        shares: 0,
+      }),
+    ).toBe(1_000);
+    expect(
+      calculateCreatorPlatformEngagementRate({
+        followerCount: 10_000,
+        contentItemCount: 4,
+        likes: null,
+        comments: 0,
+        shares: 0,
+      }),
+    ).toBeNull();
+    expect(
+      calculateCreatorPlatformEngagementRate({
+        followerCount: 0,
+        contentItemCount: 4,
+        likes: 0,
+        comments: 0,
+        shares: 0,
+      }),
+    ).toBeNull();
+    expect(
+      calculateCreatorPlatformEngagementRate({
+        followerCount: 10_000,
+        contentItemCount: 4,
+        likes: -1,
+        comments: 0,
+        shares: 0,
+      }),
+    ).toBeNull();
+  });
+
   it("exports the creator self-service contract version and endpoint paths", () => {
     expect(MARKETPLACE_CREATOR_SELF_SERVICE_CONTRACT_VERSION).toBe(
       "marketplace-creator-self-service.v1",

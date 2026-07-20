@@ -239,6 +239,7 @@ interface CreatorMarketplaceResponse {
     id: string;
     name: string;
     handle: string;
+    profile_url: string | null;
     followers: number;
     engagement_rate: number;
     top_countries: Array<{ country: string; percentage: number }> | null;
@@ -301,6 +302,7 @@ export function transformCreatorMarketplaceResponse(
   const platforms: Platform[] = apiCreator.platforms.map((platform) => ({
     name: platform.name,
     handle: platform.handle,
+    profileUrl: platform.profile_url,
     followers: platform.followers,
     engagementRate: typeof platform.engagement_rate === "number" ? platform.engagement_rate : 0,
     topCountries: platform.top_countries || undefined,

@@ -226,6 +226,7 @@ export interface Platform {
   id?: string | null;
   name: string;
   handle: string;
+  profileUrl?: string | null;
   followers: number;
   engagementRate: number;
   topCountries?: PlatformCountry[];
@@ -343,11 +344,74 @@ export interface PlatformFormData {
   id?: string | null;
   name: string;
   handle: string;
+  profile_url?: string;
   followers: number | "";
   engagement_rate: number | "";
   top_countries?: Array<{ country: string; percentage: number }>;
   top_age_groups?: Array<{ ageRange: string; percentage: number }>;
   gender_split?: PlatformGenderSplit;
+}
+
+export type CreatorPlatformProvider = "instagram" | "tiktok" | "youtube" | "facebook";
+
+export type CreatorPlatformConnectionStatus =
+  | "active"
+  | "reconnect_required"
+  | "revoked"
+  | "sync_failed";
+
+export type CreatorPlatformImportedField =
+  | "followerCount"
+  | "reach"
+  | "views"
+  | "contentItemCount"
+  | "likes"
+  | "comments"
+  | "shares"
+  | "engagementRate"
+  | "audienceCountries"
+  | "audienceAgeGroups"
+  | "audienceGenderSplit";
+
+export type CreatorPlatformUnavailableReason =
+  | "unsupported"
+  | "privacy_threshold"
+  | "permission_missing"
+  | "insufficient_data"
+  | "account_type_ineligible"
+  | "provider_omitted";
+
+export interface CreatorPlatformUnavailableField {
+  field: CreatorPlatformImportedField;
+  reason: CreatorPlatformUnavailableReason;
+}
+
+export interface CreatorPlatformConnection {
+  connectionId: string;
+  platformId: string | null;
+  platform: CreatorPlatformProvider;
+  provider: "meta" | "tiktok" | "google";
+  externalAccountId: string;
+  status: CreatorPlatformConnectionStatus;
+  lastSyncAttemptAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  lastErrorCode: string | null;
+  capabilities: CreatorPlatformImportedField[];
+  importedFields: CreatorPlatformImportedField[];
+  unavailableFields: CreatorPlatformUnavailableField[];
+}
+
+export interface CreatorPlatformAuthorizationAccount {
+  externalAccountId: string;
+  displayName: string;
+  handle: string | null;
+  profileUrl: string | null;
+}
+
+export interface CreatorPlatformPendingAuthorization {
+  authorizationId: string;
+  platform: CreatorPlatformProvider;
+  accounts: CreatorPlatformAuthorizationAccount[];
 }
 
 export interface ListingFormData {
@@ -381,7 +445,6 @@ export interface CreatorFormState {
   short_description: string;
   portfolio_link: string;
   phone: string;
-  profile_image: string;
   creator_type?: CreatorType;
 }
 

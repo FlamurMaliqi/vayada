@@ -45,7 +45,7 @@ const targetProfile = {
       platformId: "platform_instagram",
       platform: "instagram",
       handle: "lina",
-      profileUrl: null,
+      profileUrl: "https://instagram.com/lina",
       followerCount: 1200,
       engagementRate: 4.2,
       audienceCountries: [],
@@ -253,6 +253,7 @@ describe("creator target self-service client", () => {
           id: "platform_instagram",
           name: "Instagram",
           handle: "lina",
+          profileUrl: "https://instagram.com/lina",
           followers: 1200,
           engagementRate: 4.2,
         },
@@ -269,6 +270,7 @@ describe("creator target self-service client", () => {
           platformId: "platform_instagram",
           platform: "instagram",
           handle: "lina",
+          profileUrl: "https://instagram.com/lina",
           followerCount: 1200,
           engagementRate: 4.2,
         },
@@ -286,7 +288,184 @@ describe("creator target self-service client", () => {
       name: "Lina Creator",
       creatorType: "Travel",
       audienceSize: 1200,
+      platforms: [expect.objectContaining({ profileUrl: "https://instagram.com/lina" })],
     });
+  });
+
+  it("starts platform authorization and reads connection availability", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
+      const href = String(url);
+      if (href.endsWith("/platform-connections")) {
+        return jsonResponse({
+          connections: [
+            {
+              connectionId: "connection-instagram",
+              platformId: "platform-instagram",
+              platform: "instagram",
+              provider: "meta",
+              externalAccountId: "instagram-account-1",
+              status: "active",
+              lastSyncAttemptAt: "2026-07-19T12:00:00.000Z",
+              lastSuccessfulSyncAt: "2026-07-19T12:00:00.000Z",
+              lastErrorCode: null,
+              capabilities: ["followerCount", "audienceCountries"],
+              importedFields: ["followerCount"],
+              unavailableFields: [{ field: "audienceCountries", reason: "privacy_threshold" }],
+            },
+          ],
+        });
+      }
+      if (href.endsWith("/platform-connections/instagram/authorize")) {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toEqual({ platformId: "platform-instagram" });
+        return jsonResponse({ authorizationUrl: "https://instagram.com/oauth/authorize" });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(creatorService.getPlatformConnections()).resolves.toEqual([
+      expect.objectContaining({
+        connectionId: "connection-instagram",
+        status: "active",
+        unavailableFields: [{ field: "audienceCountries", reason: "privacy_threshold" }],
+      }),
+    ]);
+    await expect(
+      creatorService.startPlatformAuthorization("instagram", "platform-instagram"),
+    ).resolves.toEqual({ authorizationUrl: "https://instagram.com/oauth/authorize" });
+  });
+
+  it("starts a new platform authorization without sending an empty JSON body", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("POST");
+        expect(init?.body).toBeUndefined();
+        expect(requestHeader(init, "Content-Type")).toBeNull();
+        return jsonResponse({ authorizationUrl: "https://instagram.com/oauth/authorize" });
+      }),
+    );
+
+    await expect(creatorService.startPlatformAuthorization("instagram")).resolves.toEqual({
+      authorizationUrl: "https://instagram.com/oauth/authorize",
+    });
+  });
+
+  it("selects, syncs, and disconnects a connected platform account", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        requests.push({
+          url: href,
+          method: init?.method ?? "GET",
+          ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+        });
+        if (href.endsWith("/platform-authorizations/pending")) {
+          return jsonResponse({
+            authorizationId: "authorization-1",
+            platform: "facebook",
+            accounts: [
+              {
+                externalAccountId: "page-1",
+                displayName: "Vayada Travel",
+                handle: "vayada.travel",
+                profileUrl: "https://facebook.com/vayada.travel",
+              },
+            ],
+          });
+        }
+        return jsonResponse(null, init?.method === "DELETE" ? 204 : 200);
+      }),
+    );
+
+    await expect(creatorService.getPendingPlatformAuthorization()).resolves.toMatchObject({
+      authorizationId: "authorization-1",
+      platform: "facebook",
+    });
+    await creatorService.selectPlatformAuthorizationAccount("authorization-1", "page-1");
+    await creatorService.syncPlatformConnection("connection-1");
+    await creatorService.disconnectPlatformConnection("connection-1");
+
+    expect(requests).toEqual([
+      expect.objectContaining({
+        url: "https://api.localhost/api/marketplace/creators/me/platform-authorizations/pending",
+        method: "GET",
+      }),
+      {
+        url: "https://api.localhost/api/marketplace/creators/me/platform-authorizations/authorization-1/accounts",
+        method: "POST",
+        body: { externalAccountId: "page-1" },
+      },
+      {
+        url: "https://api.localhost/api/marketplace/creators/me/platform-connections/connection-1/sync",
+        method: "POST",
+      },
+      {
+        url: "https://api.localhost/api/marketplace/creators/me/platform-connections/connection-1",
+        method: "DELETE",
+      },
+    ]);
+  });
+
+  it("maps a custom platform to other while preserving its name and profile link", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    let body: { platforms?: unknown[] } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body)) as { platforms?: unknown[] };
+        return jsonResponse(targetProfile);
+      }),
+    );
+
+    await creatorService.updateMyProfile({
+      platforms: [
+        {
+          name: "Other",
+          handle: "LinkedIn",
+          profileUrl: "https://www.linkedin.com/in/lina",
+          followers: 900,
+          engagementRate: 2.8,
+        },
+      ],
+    });
+
+    expect(body.platforms).toEqual([
+      expect.objectContaining({
+        platform: "other",
+        handle: "LinkedIn",
+        profileUrl: "https://www.linkedin.com/in/lina",
+        followerCount: 900,
+        engagementRate: 2.8,
+      }),
+    ]);
   });
 
   it("preserves stable IDs and demographics for a multi-platform edit", async () => {

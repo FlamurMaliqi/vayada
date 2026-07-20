@@ -150,7 +150,9 @@ describe("marketplace creator self-service routes", () => {
         },
         async getCreatorProfile() {
           return profileDocument({
-            profileComplete: true,
+            profileComplete: false,
+            profilePictureUrl: "https://cdn.example.com/unowned.jpg",
+            profilePictureMediaObjectId: "media_not_owned",
             platforms: [
               {
                 platformId: "platform_instagram",
@@ -189,6 +191,53 @@ describe("marketplace creator self-service routes", () => {
     expect(response.body.profileComplete).toBe(false);
     expect(response.body.missingFields).toContain("profilePicture");
     expect(response.body.completionSteps).toContain("add_profile_picture");
+  });
+
+  it("always reports a missing phone before a creator profile can be complete", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: {
+        async ensureCreatorProfile() {
+          throw new Error("existing profile link should not bootstrap");
+        },
+        async getCreatorProfile() {
+          return profileDocument({
+            phone: null,
+            platforms: [
+              {
+                platformId: "platform_instagram",
+                platform: "instagram",
+                handle: "lina",
+                profileUrl: null,
+                followerCount: 1200,
+                engagementRate: 4.2,
+                audienceCountries: [],
+                audienceAgeGroups: [],
+                audienceGenderSplit: null,
+                verificationStatus: "unverified",
+              },
+            ],
+          });
+        },
+        async updateCreatorProfile() {
+          throw new Error("profile status should not update");
+        },
+      },
+    });
+
+    const response = await injectJson<{
+      profileComplete: boolean;
+      missingFields: string[];
+      completionSteps: string[];
+    }>(app, {
+      method: "GET",
+      url: "/api/marketplace/creators/me/profile-status",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.profileComplete).toBe(false);
+    expect(response.body.missingFields).toEqual(["phone"]);
+    expect(response.body.completionSteps).toEqual(["add_phone"]);
   });
 
   it("forwards valid profile updates to the target repository", async () => {
@@ -265,6 +314,52 @@ describe("marketplace creator self-service routes", () => {
         },
       ],
     });
+  });
+
+  it("rejects raw profile updates that inflate connected provider metrics", async () => {
+    const target = creatorPlatformRepositoryTarget(
+      ["platform-1"],
+      [
+        {
+          platformId: "platform-1",
+          platform: "instagram",
+          importedFields: ["followerCount", "engagementRate"],
+        },
+      ],
+    );
+    const repository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+    });
+    app = buildMarketplaceCreatorApp({ repository });
+
+    const response = await injectJson<{ code: string; detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        platforms: [
+          {
+            platformId: "platform-1",
+            platform: "instagram",
+            handle: "lina",
+            followerCount: 9_999_999,
+            engagementRate: 99,
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({
+      code: "profile_conflict",
+      detail: expect.stringContaining("Synced platform data"),
+    });
+    expect(
+      target.queries.some((query) =>
+        query.text.trim().startsWith("UPDATE marketplace.creator_platforms"),
+      ),
+    ).toBe(false);
   });
 
   it("rejects profile picture URLs without an issued media object", async () => {
@@ -465,6 +560,31 @@ describe("marketplace creator self-service routes", () => {
     expect(response.body.detail).toBe("platforms[1].platformId must be unique");
   });
 
+  it("requires a profile link for custom creator platforms", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        platforms: [
+          {
+            platform: "other",
+            handle: "LinkedIn",
+            followerCount: 1200,
+            engagementRate: 4.2,
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe("platforms[0].profileUrl is required when platform is other");
+  });
+
   it("rejects creator profile updates with too many audience entries", async () => {
     app = buildMarketplaceCreatorApp({
       repository: repositoryThatShouldNotBeCalled(),
@@ -610,7 +730,7 @@ describe("marketplace creator platform persistence", () => {
     expect(deletion?.values?.[2]).toEqual(["platform-1", "platform-new-1"]);
   });
 
-  it("persists base completeness independently of the profile photo policy", async () => {
+  it("persists and reads completeness through the shared profile policy", async () => {
     const target = creatorPlatformRepositoryTarget(["platform-1"]);
     const photoRequiredRepository = createPgMarketplaceCreatorSelfServiceRepository({
       connectionString: "postgres://unused",
@@ -626,14 +746,14 @@ describe("marketplace creator platform persistence", () => {
 
     expect(photoRequiredProfile?.profileComplete).toBe(false);
     const completion = target.queries.find((query) => query.text.includes("WITH completion AS"));
-    expect(completion?.text).not.toContain("profile_picture");
-    expect(completion?.values).toEqual([creatorProfileId, "org_creator_workspace"]);
+    expect(completion?.text).toContain("marketplace.creator_profile_is_complete");
+    expect(completion?.values).toEqual([creatorProfileId, "org_creator_workspace", true]);
 
     const profileRead = target.queries.find(
       (query) =>
         query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
     );
-    expect(profileRead?.text).toContain("FROM marketplace.creator_platforms completion_platform");
+    expect(profileRead?.text).toContain("marketplace.creator_profile_is_complete");
     expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", true]);
   });
 
@@ -657,7 +777,7 @@ describe("marketplace creator platform persistence", () => {
         query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
     );
     expect(profileRead?.text).not.toContain("(profile.profile_complete");
-    expect(profileRead?.text).toContain("FROM marketplace.creator_platforms completion_platform");
+    expect(profileRead?.text).toContain("marketplace.creator_profile_is_complete");
     expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", false]);
   });
 
@@ -738,9 +858,41 @@ describe("marketplace creator platform persistence", () => {
       expect(target.queries.some((query) => query.text === "ROLLBACK")).toBe(true);
     }
   });
+
+  it("requires the disconnect route before a connected account can be removed", async () => {
+    const target = creatorPlatformRepositoryTarget(
+      ["platform-1"],
+      [{ platformId: "platform-1", platform: "instagram" }],
+    );
+    const repository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+    });
+
+    await expect(
+      repository.updateCreatorProfile({
+        organizationId: "org_creator_workspace",
+        creatorProfileId,
+        patch: { platforms: [] },
+      }),
+    ).rejects.toThrow("Disconnect a connected account");
+
+    expect(
+      target.queries.some((query) =>
+        query.text.trim().startsWith("DELETE FROM marketplace.creator_platforms"),
+      ),
+    ).toBe(false);
+  });
 });
 
-function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
+function creatorPlatformRepositoryTarget(
+  existingPlatformIds: string[],
+  connectedPlatforms: Array<{
+    platformId: string;
+    platform: "instagram";
+    importedFields?: string[];
+  }> = [],
+) {
   const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
   let insertedPlatformCount = 0;
   let persistedProfileComplete = false;
@@ -751,7 +903,31 @@ function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
       normalized.startsWith('SELECT id::text AS "platformId"') &&
       normalized.includes("FROM marketplace.creator_platforms")
     ) {
-      return { rows: existingPlatformIds.map((platformId) => ({ platformId })) };
+      return {
+        rows: existingPlatformIds.map((platformId) => ({
+          platformId,
+          platform: "instagram",
+          handle: "lina",
+          profileUrl: null,
+          profileUrlImported: false,
+          followerCount: 1_500,
+          engagementRate: 4.5,
+          audienceCountries: [],
+          audienceAgeGroups: [],
+          audienceGenderSplit: {},
+        })),
+      };
+    }
+    if (
+      normalized.startsWith('SELECT platform_id::text AS "platformId"') &&
+      normalized.includes("FROM marketplace.creator_platform_connections")
+    ) {
+      return {
+        rows: connectedPlatforms.map((platform) => ({
+          ...platform,
+          importedFields: platform.importedFields ?? [],
+        })),
+      };
     }
     if (normalized.startsWith("UPDATE marketplace.creator_platforms")) {
       const platformId = String(values?.[14] ?? "");
@@ -764,14 +940,13 @@ function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
       return { rows: [{ platformId: `platform-new-${insertedPlatformCount}` }] };
     }
     if (normalized.startsWith("WITH completion AS")) {
-      persistedProfileComplete =
-        existingPlatformIds.length > 0 && !normalized.includes("profile_picture");
+      persistedProfileComplete = existingPlatformIds.length > 0 && values?.[2] !== true;
       return { rows: [] };
     }
     if (normalized.startsWith("SELECT") && normalized.includes("LEFT JOIN LATERAL")) {
       const profilePhotoRequired = values?.[2] === true;
       const derivesBaseCompleteness = normalized.includes(
-        "FROM marketplace.creator_platforms completion_platform",
+        "marketplace.creator_profile_is_complete",
       );
       const baseProfileComplete = derivesBaseCompleteness
         ? existingPlatformIds.length > 0
@@ -787,7 +962,7 @@ function creatorPlatformRepositoryTarget(existingPlatformIds: string[]) {
             locationText: "Berlin",
             shortDescription: "Travel creator",
             portfolioUrl: null,
-            phone: null,
+            phone: "+49 30 123456",
             profilePictureUrl: null,
             profilePictureMediaObjectId: null,
             profileComplete: baseProfileComplete && !profilePhotoRequired,
@@ -1008,7 +1183,7 @@ function profileDocument(overrides: Partial<CreatorProfileDocument> = {}): Creat
     locationText: "Berlin",
     shortDescription: "Travel creator",
     portfolioUrl: null,
-    phone: null,
+    phone: "+49 30 123456",
     profilePictureUrl: null,
     profilePictureMediaObjectId: null,
     profileComplete: false,

@@ -20,6 +20,7 @@ export interface ProfilePlatform {
   id?: string;
   name: string;
   handle: string;
+  profileUrl?: string | null;
   followers: number;
   engagementRate: number;
   topCountries?: PlatformCountry[];
@@ -38,6 +39,8 @@ export interface ApiPlatformResponse {
   id?: string;
   name: string;
   handle?: string;
+  profileUrl?: string | null;
+  profile_url?: string | null;
   followers?: number;
   engagementRate?: number;
   engagement_rate?: number;
@@ -90,8 +93,9 @@ export interface CreatorUpdatePayload {
   creator_type?: CreatorType;
   platforms?: Array<{
     id?: string | null;
-    name: "Instagram" | "TikTok" | "YouTube" | "Facebook";
+    name: "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Other";
     handle: string;
+    profileUrl?: string | null;
     followers: number;
     engagementRate: number;
     topCountries?: Array<{ country: string; percentage: number }>;

@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1088.0",
+    "@aws-sdk/client-secrets-manager": "^3.1090.0",
     "@aws-sdk/s3-request-presigner": "^3.1088.0",
     "@openai/agents": "^0.11.6",
     "@vayada/backend-auth": "0.0.0",
@@ -29,8 +30,8 @@
     "@vayada/backend-config": "0.0.0",
     "@vayada/backend-db": "0.0.0",
     "@vayada/backend-http": "0.0.0",
-    "@vayada/domain-distribution": "0.0.0",
     "@vayada/domain-booking": "0.0.0",
+    "@vayada/domain-distribution": "0.0.0",
     "@vayada/domain-finance": "0.0.0",
     "@vayada/domain-hotels": "0.0.0",
     "@vayada/domain-intelligence": "0.0.0",

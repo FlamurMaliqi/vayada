@@ -13,6 +13,7 @@ type OnboardingShellProps = {
   description: string;
   currentStep: number;
   compact?: boolean;
+  centerContent?: boolean;
   showProgress?: boolean;
   wideContent?: boolean;
   children: ReactNode;
@@ -38,6 +39,7 @@ export function OnboardingShell({
   description,
   currentStep,
   compact = false,
+  centerContent = false,
   showProgress = true,
   wideContent = false,
   children,
@@ -66,7 +68,7 @@ export function OnboardingShell({
       <main
         className={`relative z-10 mx-auto flex min-h-[calc(100vh-60px)] w-full flex-col items-center px-5 sm:px-8 ${
           wideContent ? "max-w-6xl" : "max-w-5xl"
-        } ${compact ? "justify-start pb-8 sm:pb-12" : "justify-center py-6"}`}
+        } ${compact && !centerContent ? "justify-start pb-8 sm:pb-12" : "justify-center py-6"}`}
       >
         <section className="w-full text-center">
           <h1
