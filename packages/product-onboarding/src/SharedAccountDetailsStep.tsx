@@ -24,6 +24,7 @@ export type SharedAccountDetailsStepProps = {
   initialPhone?: string | null;
   initialProfilePictureUrl?: string | null;
   initialProfilePictureMediaObjectId?: string | null;
+  initialProfileImage?: SharedAccountProfileImageUpload | null;
   onUploadProfileImage: (file: File) => Promise<SharedAccountProfileImageUpload>;
   onSubmit: (input: SharedAccountDetailsInput) => Promise<void>;
 };
@@ -35,13 +36,24 @@ export default function SharedAccountDetailsStep({
   initialPhone,
   initialProfilePictureUrl,
   initialProfilePictureMediaObjectId,
+  initialProfileImage,
   onUploadProfileImage,
   onSubmit,
 }: SharedAccountDetailsStepProps) {
   const initial = splitSharedAccountName(initialName);
+  const existingProfileImage =
+    initialProfileImage ??
+    (initialProfilePictureUrl && initialProfilePictureMediaObjectId
+      ? {
+          profilePictureUrl: initialProfilePictureUrl,
+          profilePictureMediaObjectId: initialProfilePictureMediaObjectId,
+        }
+      : null);
   const hasInitialProfileImage = Boolean(
-    initialProfilePictureUrl?.trim() && initialProfilePictureMediaObjectId?.trim(),
+    existingProfileImage?.profilePictureUrl.trim() &&
+      existingProfileImage.profilePictureMediaObjectId.trim(),
   );
+  const phoneRequired = accountType === "creator";
   const description =
     accountType === "hotel"
       ? "Start with your details. Next, we’ll set up your first hotel."
@@ -63,7 +75,7 @@ export default function SharedAccountDetailsStep({
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [profileImagePreviewUrl, setProfileImagePreviewUrl] = useState<string | null>(
-    hasInitialProfileImage ? (initialProfilePictureUrl ?? null) : null,
+    hasInitialProfileImage ? (existingProfileImage?.profilePictureUrl ?? null) : null,
   );
 
   useEffect(() => {
@@ -73,13 +85,15 @@ export default function SharedAccountDetailsStep({
   useEffect(() => {
     uploadedProfileImageRef.current = null;
     if (!profileImage) {
-      setProfileImagePreviewUrl(hasInitialProfileImage ? (initialProfilePictureUrl ?? null) : null);
+      setProfileImagePreviewUrl(
+        hasInitialProfileImage ? (existingProfileImage?.profilePictureUrl ?? null) : null,
+      );
       return;
     }
     const previewUrl = URL.createObjectURL(profileImage);
     setProfileImagePreviewUrl(previewUrl);
     return () => URL.revokeObjectURL(previewUrl);
-  }, [hasInitialProfileImage, initialProfilePictureUrl, profileImage]);
+  }, [existingProfileImage?.profilePictureUrl, hasInitialProfileImage, profileImage]);
 
   async function uploadProfileImage(file: File) {
     const cached = uploadedProfileImageRef.current;
@@ -92,7 +106,7 @@ export default function SharedAccountDetailsStep({
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError("");
-    const errors = accountDetailsErrors({ firstName, lastName, phone });
+    const errors = accountDetailsErrors({ firstName, lastName, phone }, phoneRequired);
     const missingRequiredProfileImage = !profileImage && !hasInitialProfileImage;
     setFieldErrors(errors);
     if (missingRequiredProfileImage && !profileImageError) {
@@ -132,7 +146,7 @@ export default function SharedAccountDetailsStep({
           >
             Let’s create your profile
           </h1>
-          <p className="mt-2 text-sm text-gray-500">{description}</p>
+          {description && <p className="mt-2 text-sm text-gray-500">{description}</p>}
         </header>
 
         <form
@@ -169,7 +183,7 @@ export default function SharedAccountDetailsStep({
               {profileImagePreviewUrl ? (
                 <img
                   src={profileImagePreviewUrl}
-                  alt="Selected profile preview"
+                  alt={profileImage ? "Selected profile preview" : "Existing profile photo"}
                   className="h-full w-full rounded-full object-cover"
                 />
               ) : (
@@ -190,7 +204,7 @@ export default function SharedAccountDetailsStep({
               ref={profileImageInputRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              required
+              required={!hasInitialProfileImage}
               className="hidden"
               aria-label="Profile photo file"
               onChange={(event) => {
@@ -263,12 +277,13 @@ export default function SharedAccountDetailsStep({
               <AccountField
                 id="account-phone"
                 label="Phone number"
-                optional
+                optional={!phoneRequired}
                 type="tel"
                 value={phone}
                 autoComplete="tel"
                 maxLength={64}
                 placeholder="+49 89 123456"
+                required={phoneRequired}
                 error={fieldErrors.phone}
                 onChange={(value) => {
                   setPhone(value);
@@ -354,18 +369,23 @@ function AccountField({
   );
 }
 
-function accountDetailsErrors(input: {
-  firstName: string;
-  lastName: string;
-  phone: string;
-}): Record<string, string> {
+function accountDetailsErrors(
+  input: {
+    firstName: string;
+    lastName: string;
+    phone: string;
+  },
+  phoneRequired = false,
+): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!input.firstName.trim()) errors.firstName = "Enter your first name.";
   if (!input.lastName.trim()) errors.lastName = "Enter your last name.";
   if (normalizeSharedAccountName(input.firstName, input.lastName).length > 120) {
     errors.lastName = "Enter a shorter name.";
   }
-  if (!isValidSharedAccountPhone(input.phone)) {
+  if (phoneRequired && !input.phone.trim()) {
+    errors.phone = "Enter your phone number.";
+  } else if (!isValidSharedAccountPhone(input.phone)) {
     errors.phone = "Enter a valid phone number.";
   }
   return errors;

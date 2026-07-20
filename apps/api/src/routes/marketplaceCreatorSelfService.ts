@@ -65,7 +65,7 @@ type MarketplaceCreatorSelfServicePool = MarketplaceCreatorSelfServiceClient & {
   end(): Promise<void>;
 };
 
-type CreatorProfileAccess = {
+export type CreatorProfileAccess = {
   organizationId: string;
   creatorProfileId: string;
   actorUserId: string;
@@ -377,7 +377,11 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
             platforms: patch.platforms,
           });
         }
-        await recalculateProfileCompletion(client, { organizationId, creatorProfileId });
+        await recalculateProfileCompletion(
+          client,
+          { organizationId, creatorProfileId },
+          profilePhotoRequired,
+        );
         const profile = await readCreatorProfile(
           client,
           { organizationId, creatorProfileId },
@@ -399,11 +403,12 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
   };
 }
 
-async function resolveCreatorProfileAccess(
+export async function resolveCreatorProfileAccess(
   request: FastifyRequest,
   reply: FastifyReply,
   repository: MarketplaceCreatorSelfServiceRepository,
   lifecycleCommandBus: IdentityLifecycleCommandBus,
+  options: { provisionIfMissing?: boolean } = {},
 ): Promise<CreatorProfileAccess | null> {
   try {
     const context = enforceRoutePolicy(request, { permission: "marketplace.profile.manage" });
@@ -433,6 +438,13 @@ async function resolveCreatorProfileAccess(
 
     let creatorProfileId = creatorProfileIds[0];
     if (!creatorProfileId) {
+      if (options.provisionIfMissing === false) {
+        reply.status(403).send({
+          code: "marketplace_creator_profile_access_required",
+          detail: "An active creator profile owner link is required",
+        });
+        return null;
+      }
       const created = await repository.ensureCreatorProfile({
         organizationId: context.selectedOrganization.organizationId,
         ownerUserId: context.actor.internalUserId,
@@ -552,24 +564,11 @@ async function readCreatorProfile(
        profile.phone,
        profile.profile_picture_url AS "profilePictureUrl",
        profile.profile_metadata ->> 'profilePictureMediaObjectId' AS "profilePictureMediaObjectId",
-       (NULLIF(BTRIM(profile.display_name), '') IS NOT NULL
-         AND NULLIF(BTRIM(profile.location_text), '') IS NOT NULL
-         AND NULLIF(BTRIM(profile.short_description), '') IS NOT NULL
-         AND EXISTS (
-           SELECT 1
-           FROM marketplace.creator_platforms completion_platform
-           WHERE completion_platform.creator_profile_id = profile.id
-             AND completion_platform.organization_id = profile.organization_id
-             AND NULLIF(BTRIM(completion_platform.handle), '') IS NOT NULL
-             AND completion_platform.follower_count > 0
-         )
-         AND (
-           NOT $3::boolean
-           OR (
-             NULLIF(BTRIM(profile.profile_picture_url), '') IS NOT NULL
-             AND NULLIF(BTRIM(profile.profile_metadata ->> 'profilePictureMediaObjectId'), '') IS NOT NULL
-           )
-         )) AS "profileComplete",
+       marketplace.creator_profile_is_complete(
+         profile.id,
+         profile.organization_id,
+         $3::boolean
+       ) AS "profileComplete",
        profile.profile_completed_at AS "profileCompletedAt",
        profile.profile_status AS "profileStatus",
        COALESCE(platforms.platforms, '[]'::jsonb) AS platforms,
@@ -706,8 +705,27 @@ async function replaceCreatorPlatforms(
      FOR UPDATE`,
     [input.creatorProfileId, input.organizationId],
   );
-  const existing = await client.query<{ platformId: string }>(
-    `SELECT id::text AS "platformId"
+  const existing = await client.query<{
+    platformId: string;
+    platform: MarketplacePlatformName;
+    handle: string;
+    profileUrl: string | null;
+    profileUrlImported: boolean;
+    followerCount: number;
+    engagementRate: number | string;
+    audienceCountries: unknown;
+    audienceAgeGroups: unknown;
+    audienceGenderSplit: unknown;
+  }>(
+    `SELECT id::text AS "platformId", platform, handle,
+            profile_url AS "profileUrl",
+            COALESCE((platform_metadata ->> 'profileUrlImported')::boolean, false)
+              AS "profileUrlImported",
+            follower_count AS "followerCount",
+            engagement_rate AS "engagementRate",
+            audience_countries AS "audienceCountries",
+            audience_age_groups AS "audienceAgeGroups",
+            audience_gender_split AS "audienceGenderSplit"
      FROM marketplace.creator_platforms
      WHERE creator_profile_id::text = $1
        AND organization_id::text = $2
@@ -716,6 +734,22 @@ async function replaceCreatorPlatforms(
     [input.creatorProfileId, input.organizationId],
   );
   const existingPlatformIds = new Set(existing.rows.map((row) => row.platformId));
+  const existingPlatforms = new Map(existing.rows.map((row) => [row.platformId, row] as const));
+  const connected = await client.query<{
+    platformId: string;
+    platform: MarketplacePlatformName;
+    importedFields: string[];
+  }>(
+    `SELECT platform_id::text AS "platformId", platform,
+            imported_fields AS "importedFields"
+     FROM marketplace.creator_platform_connections
+     WHERE creator_profile_id::text = $1
+       AND organization_id::text = $2
+       AND status <> 'revoked'
+     FOR UPDATE`,
+    [input.creatorProfileId, input.organizationId],
+  );
+  const connectedPlatforms = new Map(connected.rows.map((row) => [row.platformId, row] as const));
   const includesLegacyRows = input.platforms.some((platform) => !has(platform, "platformId"));
 
   if (includesLegacyRows && input.platforms.length > 0 && existingPlatformIds.size > 0) {
@@ -729,10 +763,41 @@ async function replaceCreatorPlatforms(
         "A creator platform changed while you were editing. Refresh and try again.",
       );
     }
+    if (
+      typeof platform.platformId === "string" &&
+      connectedPlatforms.has(platform.platformId) &&
+      connectedPlatforms.get(platform.platformId)?.platform !== platform.platform
+    ) {
+      throw new CreatorPlatformConflictError(
+        "A connected account cannot be changed to another platform. Disconnect it first.",
+      );
+    }
+  }
+
+  const requestedPlatformIds = new Set(
+    input.platforms.flatMap((platform) =>
+      typeof platform.platformId === "string" ? [platform.platformId] : [],
+    ),
+  );
+  if ([...connectedPlatforms.keys()].some((platformId) => !requestedPlatformIds.has(platformId))) {
+    throw new CreatorPlatformConflictError(
+      "Disconnect a connected account before removing it from your profile.",
+    );
   }
 
   for (const platform of input.platforms) {
     if (typeof platform.platformId === "string") {
+      const persistedPlatform = existingPlatforms.get(platform.platformId);
+      const connection = connectedPlatforms.get(platform.platformId);
+      if (
+        persistedPlatform &&
+        connection &&
+        connectedPlatformFieldsChanged(platform, persistedPlatform, connection.importedFields)
+      ) {
+        throw new CreatorPlatformConflictError(
+          "Synced platform data cannot be edited manually. Disconnect it or refresh the account.",
+        );
+      }
       const includesProfileUrl = has(platform, "profileUrl");
       const includesAudienceCountries = has(platform, "audienceCountries");
       const includesAudienceAgeGroups = has(platform, "audienceAgeGroups");
@@ -740,7 +805,7 @@ async function replaceCreatorPlatforms(
       const updated = await client.query<{ platformId: string }>(
         `UPDATE marketplace.creator_platforms
          SET verification_status = CASE
-               WHEN verification_status = 'verified' AND (
+               WHEN NOT $16::boolean AND verification_status = 'verified' AND (
                  platform IS DISTINCT FROM $3::text
                  OR handle IS DISTINCT FROM $4::text
                  OR follower_count IS DISTINCT FROM $5::integer
@@ -787,6 +852,7 @@ async function replaceCreatorPlatforms(
           includesAudienceGenderSplit,
           JSON.stringify(platform.audienceGenderSplit ?? {}),
           platform.platformId,
+          Boolean(connection),
         ],
       );
       const platformId = updated.rows[0]?.platformId;
@@ -851,25 +917,15 @@ async function replaceCreatorPlatforms(
 async function recalculateProfileCompletion(
   client: MarketplaceCreatorSelfServiceClient,
   input: { organizationId: string; creatorProfileId: string },
+  profilePhotoRequired: boolean,
 ): Promise<void> {
   await client.query(
     `WITH completion AS (
-       SELECT (
-         NULLIF(BTRIM(profile.display_name), '') IS NOT NULL
-         AND NULLIF(BTRIM(profile.location_text), '') IS NOT NULL
-         AND NULLIF(BTRIM(profile.short_description), '') IS NOT NULL
-         AND EXISTS (
-           SELECT 1
-           FROM marketplace.creator_platforms platform
-           WHERE platform.creator_profile_id = profile.id
-             AND platform.organization_id = profile.organization_id
-             AND NULLIF(BTRIM(platform.handle), '') IS NOT NULL
-             AND platform.follower_count > 0
-         )
+       SELECT marketplace.creator_profile_is_complete(
+         $1::uuid,
+         $2::uuid,
+         $3::boolean
        ) AS profile_complete
-       FROM marketplace.creator_profiles profile
-       WHERE profile.id::text = $1
-         AND profile.organization_id::text = $2
      )
      UPDATE marketplace.creator_profiles profile
      SET profile_complete = completion.profile_complete,
@@ -881,7 +937,7 @@ async function recalculateProfileCompletion(
      FROM completion
      WHERE profile.id::text = $1
        AND profile.organization_id::text = $2`,
-    [input.creatorProfileId, input.organizationId],
+    [input.creatorProfileId, input.organizationId, profilePhotoRequired],
   );
 }
 
@@ -891,6 +947,14 @@ function creatorProfileStatus(
 ): CreatorProfileStatusResult {
   const missingFields = creatorProfileMissingFields(profile, profilePhotoRequired);
   const missingPlatforms = !hasCompletePlatform(profile.platforms);
+  if (
+    profilePhotoRequired &&
+    missingFields.length === 0 &&
+    !missingPlatforms &&
+    !profile.profileComplete
+  ) {
+    missingFields.push("profilePicture");
+  }
   return {
     creatorProfileId: profile.creatorProfileId,
     organizationId: profile.organizationId,
@@ -914,6 +978,7 @@ function creatorProfileMissingFields(
   if (!profile.displayName?.trim()) missingFields.push("displayName");
   if (!profile.locationText?.trim()) missingFields.push("locationText");
   if (!profile.shortDescription?.trim()) missingFields.push("shortDescription");
+  if (!profile.phone?.trim()) missingFields.push("phone");
   if (
     profilePhotoRequired &&
     (!profile.profilePictureUrl?.trim() || !profile.profilePictureMediaObjectId?.trim())
@@ -931,13 +996,19 @@ function creatorProfileCompletionSteps(
   if (missingFields.includes("displayName")) steps.push("add_display_name");
   if (missingFields.includes("locationText")) steps.push("set_location");
   if (missingFields.includes("shortDescription")) steps.push("add_short_description");
+  if (missingFields.includes("phone")) steps.push("add_phone");
   if (missingFields.includes("profilePicture")) steps.push("add_profile_picture");
   if (missingPlatforms) steps.push("add_platform");
   return steps;
 }
 
 function hasCompletePlatform(platforms: CreatorProfilePlatform[]): boolean {
-  return platforms.some((platform) => platform.handle.trim() && platform.followerCount > 0);
+  return platforms.some(
+    (platform) =>
+      platform.handle.trim() &&
+      platform.followerCount > 0 &&
+      (platform.platform !== "other" || Boolean(platform.profileUrl?.trim())),
+  );
 }
 
 function parseUpdateCreatorProfileRequest(
@@ -1055,6 +1126,12 @@ function parsePlatformInput(
   const includesProfileUrl = has(raw, "profileUrl");
   const profileUrl = nullableHttpsUrl(raw.profileUrl, `platforms[${index}].profileUrl`);
   if (!profileUrl.ok) return profileUrl;
+  if (raw.platform === "other" && (!includesProfileUrl || !profileUrl.value)) {
+    return {
+      ok: false,
+      error: `platforms[${index}].profileUrl is required when platform is other`,
+    };
+  }
   const includesAudienceCountries = has(raw, "audienceCountries");
   const audienceCountries = audienceCountryArray(
     raw.audienceCountries,
@@ -1248,6 +1325,66 @@ function parseCreatorPlatforms(raw: unknown): CreatorProfilePlatform[] {
       },
     ];
   });
+}
+
+function connectedPlatformFieldsChanged(
+  platform: CreatorProfilePlatformInput,
+  persisted: {
+    platform: MarketplacePlatformName;
+    handle: string;
+    profileUrl: string | null;
+    profileUrlImported: boolean;
+    followerCount: number;
+    engagementRate: number | string;
+    audienceCountries: unknown;
+    audienceAgeGroups: unknown;
+    audienceGenderSplit: unknown;
+  },
+  importedFields: string[],
+): boolean {
+  const imported = new Set(importedFields);
+  if (platform.platform !== persisted.platform || platform.handle !== persisted.handle) return true;
+  if (
+    persisted.profileUrlImported &&
+    has(platform, "profileUrl") &&
+    (platform.profileUrl ?? null) !== persisted.profileUrl
+  ) {
+    return true;
+  }
+  if (imported.has("followerCount") && platform.followerCount !== Number(persisted.followerCount)) {
+    return true;
+  }
+  if (
+    imported.has("engagementRate") &&
+    platform.engagementRate !== Number(persisted.engagementRate)
+  ) {
+    return true;
+  }
+  return (
+    (imported.has("audienceCountries") &&
+      has(platform, "audienceCountries") &&
+      !sameJson(platform.audienceCountries ?? [], persisted.audienceCountries)) ||
+    (imported.has("audienceAgeGroups") &&
+      has(platform, "audienceAgeGroups") &&
+      !sameJson(platform.audienceAgeGroups ?? [], persisted.audienceAgeGroups)) ||
+    (imported.has("audienceGenderSplit") &&
+      has(platform, "audienceGenderSplit") &&
+      !sameJson(platform.audienceGenderSplit ?? {}, persisted.audienceGenderSplit))
+  );
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(sortJson(left)) === JSON.stringify(sortJson(right));
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJson(entry)]),
+  );
 }
 
 function parseAudienceCountries(raw: unknown): Array<{ country: string; percentage: number }> {

@@ -12,7 +12,6 @@ export {
   getPlatformGradient,
   PlatformCardView,
   CreatorOverviewTab,
-  CreatorPlatformsTab,
   CreatorReviewsTab,
   formatFollowersDE,
   getCountryFlag,

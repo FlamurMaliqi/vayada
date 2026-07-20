@@ -2,7 +2,14 @@
  * Creator API service
  */
 
-import type { Creator, PaginatedResponse, CreatorProfileStatus } from "@/lib/types";
+import type {
+  Creator,
+  CreatorPlatformConnection,
+  CreatorPlatformPendingAuthorization,
+  CreatorPlatformProvider,
+  PaginatedResponse,
+  CreatorProfileStatus,
+} from "@/lib/types";
 import { transformCreatorMarketplaceResponse } from "@/lib/utils";
 import {
   getAllMarketplaceCreators,
@@ -26,6 +33,7 @@ interface CreatorMarketplaceResponse {
     id: string;
     name: string;
     handle: string;
+    profile_url: string | null;
     followers: number;
     engagement_rate: number;
     top_countries: Array<{ country: string; percentage: number }> | null;
@@ -156,6 +164,59 @@ export const creatorService = {
     );
   },
 
+  getPlatformConnections: async (options?: RequestInit): Promise<CreatorPlatformConnection[]> => {
+    const result = await targetApiClient.get<{ connections: CreatorPlatformConnection[] }>(
+      "/api/marketplace/creators/me/platform-connections",
+      options,
+    );
+    return result.connections;
+  },
+
+  startPlatformAuthorization: async (
+    platform: CreatorPlatformProvider,
+    platformId?: string,
+  ): Promise<{ authorizationUrl: string }> => {
+    const result = await targetApiClient.post<{ authorizationUrl: string }>(
+      `/api/marketplace/creators/me/platform-connections/${platform}/authorize`,
+      platformId ? { platformId } : undefined,
+    );
+    if (!isAbsoluteHttpsUrl(result.authorizationUrl)) {
+      throw new Error("The platform authorization URL is invalid");
+    }
+    return result;
+  },
+
+  getPendingPlatformAuthorization: async (
+    options?: RequestInit,
+  ): Promise<CreatorPlatformPendingAuthorization | null> => {
+    return targetApiClient.get<CreatorPlatformPendingAuthorization | null>(
+      "/api/marketplace/creators/me/platform-authorizations/pending",
+      options,
+    );
+  },
+
+  selectPlatformAuthorizationAccount: async (
+    authorizationId: string,
+    externalAccountId: string,
+  ): Promise<void> => {
+    await targetApiClient.post(
+      `/api/marketplace/creators/me/platform-authorizations/${encodeURIComponent(authorizationId)}/accounts`,
+      { externalAccountId },
+    );
+  },
+
+  syncPlatformConnection: async (connectionId: string): Promise<void> => {
+    await targetApiClient.post(
+      `/api/marketplace/creators/me/platform-connections/${encodeURIComponent(connectionId)}/sync`,
+    );
+  },
+
+  disconnectPlatformConnection: async (connectionId: string): Promise<void> => {
+    await targetApiClient.delete(
+      `/api/marketplace/creators/me/platform-connections/${encodeURIComponent(connectionId)}`,
+    );
+  },
+
   /**
    * Upload creator profile picture through platform media.
    */
@@ -264,6 +325,7 @@ function toTargetCreatorUpdate(data: Partial<Creator>): TargetUpdateCreatorProfi
             platformId: platform.id ?? null,
             platform: toTargetPlatformName(platform.name),
             handle: platform.handle,
+            ...(platform.profileUrl !== undefined ? { profileUrl: platform.profileUrl } : {}),
             followerCount: Number(platform.followers) || 0,
             engagementRate: Number(platform.engagementRate) || 0,
             ...(platform.topCountries !== undefined
@@ -290,6 +352,7 @@ function toLegacyCreator(profile: TargetCreatorProfile): Creator {
       id: platform.platformId,
       name: toLegacyPlatformName(platform.platform),
       handle: platform.handle,
+      profileUrl: platform.profileUrl,
       followers: platform.followerCount,
       engagementRate: platform.engagementRate,
       ...(platform.audienceCountries.length > 0
@@ -374,6 +437,7 @@ function toLegacyCreatorMarketplaceResponse(
       id: platform.platformId,
       name: toLegacyPlatformName(platform.platform),
       handle: platform.handle,
+      profile_url: platform.profileUrl,
       followers: platform.followerCount,
       engagement_rate: platform.engagementRate,
       top_countries: platform.audienceCountries,

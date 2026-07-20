@@ -70,6 +70,7 @@ export type MarketplaceCreatorPlatform = {
   platformId: string;
   platform: MarketplacePlatformName;
   handle: string;
+  profileUrl: string | null;
   followerCount: number;
   engagementRate: number;
   audienceCountries: { country: string; percentage: number }[];

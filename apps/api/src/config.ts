@@ -66,6 +66,32 @@ export type ProviderWebhookConfig = {
   channexMode: ProviderWebhookIntakeMode;
 };
 
+export type CreatorPlatformConnectionsConfig = {
+  callbackBaseUrl: string;
+  webReturnUrl: string;
+  credentialVault:
+    | { provider: "aws-secrets-manager"; secretPrefix: string; region?: string }
+    | { provider: "memory"; secretPrefix: string };
+  instagram?: {
+    clientId: string;
+    clientSecret: string;
+    apiVersion: string;
+  };
+  facebook?: {
+    clientId: string;
+    clientSecret: string;
+    apiVersion: string;
+  };
+  tiktok?: {
+    clientKey: string;
+    clientSecret: string;
+  };
+  youtube?: {
+    clientId: string;
+    clientSecret: string;
+  };
+};
+
 export type ApiConfig = {
   host: string;
   port: number;
@@ -95,6 +121,7 @@ export type ApiConfig = {
   bookingWebEventSink: BookingWebEventSink;
   bookingHostBase?: string;
   platformMediaServing?: PlatformMediaServingConfig;
+  creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
   xenditSecretKey?: string;
 };
@@ -315,6 +342,103 @@ function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfi
   };
 }
 
+function loadCreatorPlatformConnectionsConfig(
+  env: NodeJS.ProcessEnv,
+): CreatorPlatformConnectionsConfig | undefined {
+  const instagram = readCompleteConfigGroup(env, "Instagram creator platform", {
+    clientId: "INSTAGRAM_CLIENT_ID",
+    clientSecret: "INSTAGRAM_CLIENT_SECRET",
+    apiVersion: "INSTAGRAM_API_VERSION",
+  });
+  const facebook = readCompleteConfigGroup(env, "Facebook creator platform", {
+    clientId: "FACEBOOK_CLIENT_ID",
+    clientSecret: "FACEBOOK_CLIENT_SECRET",
+    apiVersion: "FACEBOOK_GRAPH_API_VERSION",
+  });
+  const tiktok = readCompleteConfigGroup(env, "TikTok creator platform", {
+    clientKey: "TIKTOK_CLIENT_KEY",
+    clientSecret: "TIKTOK_CLIENT_SECRET",
+  });
+  const youtube = readCompleteConfigGroup(env, "YouTube creator platform", {
+    clientId: "GOOGLE_YOUTUBE_CLIENT_ID",
+    clientSecret: "GOOGLE_YOUTUBE_CLIENT_SECRET",
+  });
+
+  if (!instagram && !facebook && !tiktok && !youtube) return undefined;
+
+  const callbackBaseUrl = readOptionalEnv(env, "CREATOR_PLATFORM_CALLBACK_BASE_URL");
+  const webReturnUrl = readOptionalEnv(env, "CREATOR_PLATFORM_WEB_RETURN_URL");
+  const secretPrefix = readOptionalEnv(env, "CREATOR_PLATFORM_SECRET_PREFIX");
+  const vaultProvider =
+    readOptionalEnv(env, "CREATOR_PLATFORM_CREDENTIAL_VAULT") ?? "aws-secrets-manager";
+  const missing = [
+    !callbackBaseUrl && "CREATOR_PLATFORM_CALLBACK_BASE_URL",
+    !webReturnUrl && "CREATOR_PLATFORM_WEB_RETURN_URL",
+    !secretPrefix && "CREATOR_PLATFORM_SECRET_PREFIX",
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    throw new Error(`Incomplete creator platform connection config; missing ${missing.join(", ")}`);
+  }
+  assertOAuthUrl(callbackBaseUrl!, "CREATOR_PLATFORM_CALLBACK_BASE_URL", env);
+  assertOAuthUrl(webReturnUrl!, "CREATOR_PLATFORM_WEB_RETURN_URL", env);
+  if (vaultProvider !== "aws-secrets-manager" && vaultProvider !== "memory") {
+    throw new Error("CREATOR_PLATFORM_CREDENTIAL_VAULT must be aws-secrets-manager or memory");
+  }
+  if (vaultProvider === "memory" && env.NODE_ENV === "production") {
+    throw new Error("CREATOR_PLATFORM_CREDENTIAL_VAULT=memory is not allowed in production");
+  }
+
+  return {
+    callbackBaseUrl: callbackBaseUrl!.replace(/\/$/, ""),
+    webReturnUrl: webReturnUrl!,
+    credentialVault:
+      vaultProvider === "memory"
+        ? { provider: "memory", secretPrefix: secretPrefix! }
+        : {
+            provider: "aws-secrets-manager",
+            secretPrefix: secretPrefix!,
+            region: readOptionalEnv(env, "AWS_REGION"),
+          },
+    ...(instagram ? { instagram } : {}),
+    ...(facebook ? { facebook } : {}),
+    ...(tiktok ? { tiktok } : {}),
+    ...(youtube ? { youtube } : {}),
+  };
+}
+
+function readCompleteConfigGroup<T extends Record<string, string>>(
+  env: NodeJS.ProcessEnv,
+  label: string,
+  keys: T,
+): { [K in keyof T]: string } | undefined {
+  const entries = Object.entries(keys).map(
+    ([property, key]) => [property, readOptionalEnv(env, key), key] as const,
+  );
+  const configured = entries.filter(([, value]) => Boolean(value));
+  if (configured.length === 0) return undefined;
+  const missing = entries.filter(([, value]) => !value).map(([, , key]) => key);
+  if (missing.length > 0) {
+    throw new Error(`Incomplete ${label} config; missing ${missing.join(", ")}`);
+  }
+  return Object.fromEntries(entries.map(([property, value]) => [property, value!])) as {
+    [K in keyof T]: string;
+  };
+}
+
+function assertOAuthUrl(value: string, key: string, env: NodeJS.ProcessEnv): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${key} must be an absolute URL`);
+  }
+  const localHttp =
+    url.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(env.NODE_ENV !== "production" && localHttp)) {
+    throw new Error(`${key} must use HTTPS`);
+  }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   assertRemovedLegacyPythonIntegrationEnv(env);
 
@@ -398,6 +522,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   );
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
+  const creatorPlatformConnections = loadCreatorPlatformConnectionsConfig(env);
   const creatorProfilePhotoRequired = readBooleanEnv(env, "CREATOR_PROFILE_PHOTO_REQUIRED");
   const platformMediaServing = loadPlatformMediaServingConfig(env, {
     incomplete: creatorProfilePhotoRequired ? "error" : "disabled",
@@ -460,6 +585,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       "CREATOR_PROFILE_PHOTO_REQUIRED=true requires TARGET_DATABASE_URL, complete auth config, and complete PLATFORM_MEDIA_* config",
     );
   }
+  if (creatorPlatformConnections && (!targetDatabaseUrl || !auth)) {
+    throw new Error(
+      "Creator platform connections require TARGET_DATABASE_URL and complete auth config",
+    );
+  }
 
   return {
     ...server,
@@ -497,6 +627,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     bookingWebEventSink,
     bookingHostBase: readOptionalEnv(env, "BOOKING_HOST_BASE"),
     platformMediaServing,
+    creatorPlatformConnections,
     providerWebhooks: loadProviderWebhookConfig(env),
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };

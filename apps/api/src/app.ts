@@ -70,6 +70,10 @@ import {
   type MarketplaceCreatorSelfServiceRepository,
 } from "./routes/marketplaceCreatorSelfService.js";
 import {
+  registerMarketplaceCreatorPlatformConnectionRoutes,
+  type MarketplaceCreatorPlatformConnectionRoutesOptions,
+} from "./routes/marketplaceCreatorPlatformConnections.js";
+import {
   registerSharedHotelSetupStatusRoutes,
   type SharedHotelSetupStatusRepository,
 } from "./routes/sharedHotelSetupStatus.js";
@@ -157,6 +161,10 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceHotelProfileStatusRepository?: MarketplaceHotelProfileStatusRepository;
   marketplaceHotelSelfServiceRepository?: MarketplaceHotelSelfServiceRepository;
   marketplaceCreatorSelfServiceRepository?: MarketplaceCreatorSelfServiceRepository;
+  marketplaceCreatorPlatformConnections?: Omit<
+    MarketplaceCreatorPlatformConnectionRoutesOptions,
+    "profileRepository" | "lifecycleCommandBus"
+  >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   creatorProfilePhotoRequired?: boolean;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
@@ -198,6 +206,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     logger: options.logger ?? {
       level: process.env.LOG_LEVEL ?? "info",
     },
+    disableRequestLogging: (request) =>
+      request.url.startsWith("/api/marketplace/creator-platform-oauth/"),
   });
 
   registerBrowserCors(app, options.browserAllowedOrigins ?? []);
@@ -321,6 +331,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.marketplaceCreatorSelfServiceRepository,
       lifecycleCommandBus: options.identityLifecycleCommandBus,
       mediaRepository: options.marketplaceCreatorProfileMediaRepository,
+      profilePhotoRequired: options.creatorProfilePhotoRequired,
+    });
+  }
+  if (
+    options.marketplaceCreatorPlatformConnections &&
+    options.marketplaceCreatorSelfServiceRepository &&
+    options.identityLifecycleCommandBus
+  ) {
+    app.register(registerMarketplaceCreatorPlatformConnectionRoutes, {
+      prefix: "/api/marketplace",
+      ...options.marketplaceCreatorPlatformConnections,
+      profileRepository: options.marketplaceCreatorSelfServiceRepository,
+      lifecycleCommandBus: options.identityLifecycleCommandBus,
       profilePhotoRequired: options.creatorProfilePhotoRequired,
     });
   }

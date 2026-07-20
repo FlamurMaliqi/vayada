@@ -11,6 +11,5 @@ export { useErrorModal, formatErrorDetail, formatErrorForModal } from "./useErro
 export { useCreatorProfile } from "./useCreatorProfile";
 export { useHotelProfile } from "./useHotelProfile";
 export { useListingManagement } from "./useListingManagement";
-export { usePlatformManagement } from "./usePlatformManagement";
 export { usePlatformDeliverables } from "./usePlatformDeliverables";
 export type { AuthState, UseAuthReturn } from "./useAuth";

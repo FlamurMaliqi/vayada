@@ -8,11 +8,17 @@ import {
   HotelIcon,
   SharedAccountDetailsStep,
   isSharedAccountDetailsComplete,
+  type SharedAccountProfileImageUpload,
 } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
+import { creatorService } from "@/services/api/creators";
 import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
+import {
+  hasRequiredCreatorAccountDetails,
+  hasRequiredCreatorPhoto,
+} from "@/lib/utils/creatorAccountRequirements";
 
 type AccountType = "hotel" | "creator";
 const ONBOARDING_REQUEST_TIMEOUT_MS = 5_000;
@@ -46,6 +52,9 @@ export default function OnboardingPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [existingCreatorPhoto, setExistingCreatorPhoto] =
+    useState<SharedAccountProfileImageUpload | null>(null);
+  const [accountDetailsLoadError, setAccountDetailsLoadError] = useState("");
   const [sessionConfirmed, setSessionConfirmed] = useState(false);
   const [sessionAttempt, setSessionAttempt] = useState(0);
 
@@ -74,7 +83,21 @@ export default function OnboardingPage() {
         const userType = authService.getUserType();
         if (userType === "creator" || userType === "hotel") {
           setProvisionedType(userType);
-          if (isSharedAccountDetailsComplete(authService.getSessionUser())) {
+          let accountDetailsStatus;
+          try {
+            accountDetailsStatus = await loadSharedAccountDetailsStatus(
+              userType,
+              requestController.signal,
+            );
+          } catch (error) {
+            if (cancelled) return;
+            setAccountDetailsLoadError(accountDetailsErrorMessage(error));
+            setLoading(false);
+            return;
+          }
+          if (cancelled) return;
+          setExistingCreatorPhoto(accountDetailsStatus.existingCreatorPhoto ?? null);
+          if (accountDetailsStatus.complete) {
             setSetupHandoffType(userType);
             setLoading(false);
             return;
@@ -113,7 +136,15 @@ export default function OnboardingPage() {
         throw new Error("Your account role could not be confirmed. Please sign in again.");
       }
       setProvisionedType(canonicalType);
-      if (isSharedAccountDetailsComplete(authService.getSessionUser())) {
+      let accountDetailsStatus;
+      try {
+        accountDetailsStatus = await loadSharedAccountDetailsStatus(canonicalType);
+      } catch (error) {
+        setAccountDetailsLoadError(accountDetailsErrorMessage(error));
+        return;
+      }
+      setExistingCreatorPhoto(accountDetailsStatus.existingCreatorPhoto ?? null);
+      if (accountDetailsStatus.complete) {
         setSetupHandoffType(canonicalType);
         return;
       }
@@ -124,6 +155,20 @@ export default function OnboardingPage() {
     }
   }
 
+  async function retryAccountDetailsStatus() {
+    if (!provisionedType) return;
+    setAccountDetailsLoadError("");
+    setSubmitting(true);
+    try {
+      const accountDetailsStatus = await loadSharedAccountDetailsStatus(provisionedType);
+      setExistingCreatorPhoto(accountDetailsStatus.existingCreatorPhoto ?? null);
+      if (accountDetailsStatus.complete) setSetupHandoffType(provisionedType);
+    } catch (error) {
+      setAccountDetailsLoadError(accountDetailsErrorMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
   function selectOptionAtIndex(index: number) {
     const option = options[index];
     if (!option) return;
@@ -187,6 +232,30 @@ export default function OnboardingPage() {
     );
   }
 
+  if (!loading && provisionedType && accountDetailsLoadError) {
+    return (
+      <OnboardingShell
+        currentStep={1}
+        title="Finish setting up your account"
+        description="We couldn’t load your current account details."
+        showProgress={false}
+      >
+        <div className="mx-auto max-w-xl rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+          <p role="alert" className="text-sm text-red-700">
+            {accountDetailsLoadError}
+          </p>
+          <button
+            type="button"
+            onClick={() => void retryAccountDetailsStatus()}
+            disabled={submitting}
+            className="mt-5 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {submitting ? "Retrying…" : "Retry account details"}
+          </button>
+        </div>
+      </OnboardingShell>
+    );
+  }
   if (!loading && provisionedType) {
     const user = authService.getSessionUser();
     return (
@@ -195,13 +264,44 @@ export default function OnboardingPage() {
         email={user?.email ?? ""}
         initialName={user?.name}
         initialPhone={user?.phone}
-        initialProfilePictureUrl={user?.profilePictureUrl}
-        initialProfilePictureMediaObjectId={user?.profilePictureMediaObjectId}
+        initialProfileImage={
+          existingCreatorPhoto ??
+          (user?.profilePictureUrl && user.profilePictureMediaObjectId
+            ? {
+                profilePictureUrl: user.profilePictureUrl,
+                profilePictureMediaObjectId: user.profilePictureMediaObjectId,
+              }
+            : null)
+        }
         onUploadProfileImage={(file) => {
           if (!user?.id) throw new Error("Your session has expired. Please sign in again.");
           return sharedAccountProfileImageUploader(user.id, file);
         }}
         onSubmit={async (accountDetails) => {
+          if (provisionedType === "creator") {
+            const currentProfile = await creatorService.getMyProfile();
+            const accountName = `${accountDetails.firstName} ${accountDetails.lastName}`.trim();
+            const accountPhone = accountDetails.phone?.trim();
+            const shouldProjectPhoto =
+              Boolean(accountDetails.profilePictureMediaObjectId) &&
+              (!currentProfile.profilePicture?.trim() ||
+                accountDetails.profilePictureMediaObjectId !==
+                  currentProfile.profilePictureMediaObjectId?.trim());
+            const creatorUpdate = {
+              ...(!currentProfile.name.trim() ? { name: accountName } : {}),
+              ...(!currentProfile.phone?.trim() && accountPhone ? { phone: accountPhone } : {}),
+              ...(shouldProjectPhoto
+                ? {
+                    profilePictureMediaObjectId: accountDetails.profilePictureMediaObjectId,
+                  }
+                : {}),
+            };
+
+            // Project only missing creator fields before marking shared identity details complete.
+            if (Object.keys(creatorUpdate).length > 0) {
+              await creatorService.updateMyProfile(creatorUpdate);
+            }
+          }
           await authService.updateAccountDetails(accountDetails);
           setSetupHandoffType(provisionedType);
         }}
@@ -348,6 +448,45 @@ function nextPathForType(type: AccountType): string {
   return type === "creator" ? ROUTES.PROFILE_COMPLETE : `${ROUTES.SETUP}?entryProduct=marketplace`;
 }
 
+async function loadSharedAccountDetailsStatus(
+  type: AccountType,
+  signal?: AbortSignal,
+): Promise<{
+  complete: boolean;
+  existingCreatorPhoto?: SharedAccountProfileImageUpload;
+}> {
+  const user = authService.getSessionUser();
+  if (type !== "creator") {
+    return { complete: isSharedAccountDetailsComplete(user) };
+  }
+
+  const timeoutSignal = AbortSignal.timeout(ONBOARDING_REQUEST_TIMEOUT_MS);
+  try {
+    const profile = await creatorService.getMyProfile({
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+    });
+    return {
+      complete: hasRequiredCreatorAccountDetails(user, profile),
+      ...(hasRequiredCreatorPhoto(profile)
+        ? {
+            existingCreatorPhoto: {
+              profilePictureUrl: profile.profilePicture!.trim(),
+              profilePictureMediaObjectId: profile.profilePictureMediaObjectId!.trim(),
+            },
+          }
+        : {}),
+    };
+  } catch (error) {
+    if (timeoutSignal.aborted && !signal?.aborted) {
+      throw new Error("Loading your account details took too long. Please try again.");
+    }
+    throw error;
+  }
+}
+
+function accountDetailsErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Failed to load your account details.";
+}
 function SignupCompleteMoment({ type, onContinue }: { type: AccountType; onContinue: () => void }) {
   const isHotel = type === "hotel";
   return (

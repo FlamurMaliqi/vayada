@@ -13,56 +13,39 @@ export function ProfileCompletionScreen({
   return (
     <OnboardingShell
       currentStep={3}
-      title={userType === "creator" ? "Start matching with hotels" : "Start matching with creators"}
+      title={userType === "creator" ? "Your profile is complete" : "Your offer is complete"}
       description={
         userType === "creator"
-          ? "Your profile is ready for review before you apply to properties."
-          : "Your offer is ready for review before creators can discover it."
+          ? "We’ll review it and email you when you can start matching with hotels."
+          : "We’ll review it and email you when creators can discover it."
       }
+      compact
+      centerContent
       showProgress={false}
     >
       <div className="mx-auto w-full max-w-3xl">
-        <div className="rounded-3xl border border-gray-100 bg-white p-6 text-center shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)] sm:p-9">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
-            <CheckCircleIcon className="h-9 w-9" />
+        <div className="rounded-3xl border border-gray-100 bg-white p-5 text-center shadow-[0_24px_80px_-50px_rgba(15,23,42,0.55)] sm:p-6">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+            <CheckCircleIcon className="h-7 w-7" />
           </div>
-          <h2 className="text-2xl font-semibold leading-tight text-gray-950">
-            {userType === "creator" ? "Your profile is complete" : "Your offer is complete"}
-          </h2>
-          <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-gray-600">
-            Thank you for completing your vayada {userType === "creator" ? "creator" : "hotel"}{" "}
-            profile. We will review your submission and connect you with{" "}
-            {userType === "creator" ? "high-quality hotels" : "talented creators"}.
-          </p>
 
-          {/* Email Confirmation Notice */}
-          <div className="mt-7 rounded-2xl border border-primary-100 bg-primary-50/70 p-4 text-left">
+          <div className="rounded-2xl border border-primary-100 bg-primary-50/70 p-3 text-left">
             <div className="flex items-start gap-3">
               <EnvelopeIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-primary-600" />
               <div>
-                <p className="mb-1 text-sm font-semibold text-gray-950">Check your email</p>
-                <p className="mb-2 text-sm text-gray-700">
-                  You should have received a confirmation email with details about your profile
-                  submission and next steps.
-                </p>
-                <p className="mt-2 border-t border-primary-100 pt-2 text-xs leading-5 text-gray-600">
-                  <strong>Email Verification:</strong> If your email is not yet verified, please
-                  check your inbox for a verification link. Click the link to verify your email
-                  address and activate your account. The link expires in 48 hours.
+                <p className="mb-1 text-sm font-semibold text-gray-950">Verify your email</p>
+                <p className="text-sm leading-5 text-gray-700">
+                  Check your inbox for the verification link. It expires in 48 hours.
                 </p>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 space-y-3 rounded-2xl border border-gray-100 bg-gray-50 p-4 text-left">
+          <div className="mt-3 space-y-2 rounded-2xl border border-gray-100 bg-gray-50 p-3 text-left">
             <div className="flex items-center gap-2">
               <CheckCircleIcon className="h-5 w-5 text-primary-600" />
               <p className="text-sm font-semibold text-gray-950">Profile review</p>
             </div>
-            <p className="text-sm text-gray-600">
-              Your profile is now in review by the vayada team. This process ensures the quality and
-              authenticity of our {userType === "creator" ? "creator" : "hotel partner"} network.
-            </p>
             <div className="flex items-start gap-2 text-sm text-gray-700">
               <ClockIcon className="mt-0.5 h-5 w-5 text-primary-600" />
               <p>
@@ -79,17 +62,9 @@ export function ProfileCompletionScreen({
                 .
               </p>
             </div>
-            <div className="flex items-start gap-2 text-sm text-gray-700">
-              <CheckCircleIcon className="mt-0.5 h-5 w-5 text-primary-600" />
-              <p>
-                <span className="font-semibold">Email Verification:</span> Make sure to verify your
-                email address first. Your account must be verified before your profile can be fully
-                activated.
-              </p>
-            </div>
           </div>
 
-          <div className="mt-7 flex flex-col gap-3 sm:flex-row-reverse sm:justify-center">
+          <div className="mt-5 flex flex-col gap-3 sm:flex-row-reverse sm:justify-center">
             <Button
               type="button"
               variant="primary"
@@ -108,7 +83,7 @@ export function ProfileCompletionScreen({
             </Button>
           </div>
 
-          <p className="mt-6 text-xs text-gray-500">
+          <p className="mt-4 text-xs text-gray-500">
             Questions? Contact us at{" "}
             <a href="mailto:support@vayada.com" className="text-primary-600 hover:underline">
               support@vayada.com

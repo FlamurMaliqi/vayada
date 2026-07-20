@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { countries } from "countries-list";
-import { sharedAccountProfileImageError } from "@vayada/product-onboarding";
 import type { CreatorFormState, PlatformFormData } from "@/lib/types";
 import { CREATOR_TYPE_OPTIONS } from "@/lib/constants/options";
 
@@ -13,11 +12,10 @@ const COUNTRIES = Object.values(countries)
 interface UseCreatorProfileFormOptions {
   initialName?: string;
   onError?: (message: string) => void;
-  profileImageRequired?: boolean;
 }
 
 export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}) {
-  const { initialName = "", onError, profileImageRequired = false } = options;
+  const { initialName = "", onError } = options;
 
   // Form state
   const [form, setForm] = useState<CreatorFormState>({
@@ -26,7 +24,6 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
     short_description: "",
     portfolio_link: "",
     phone: "",
-    profile_image: "",
     creator_type: undefined,
   });
 
@@ -36,40 +33,10 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
   const [expandedPlatforms, setExpandedPlatforms] = useState<Set<number>>(new Set());
   const [collapsedPlatformCards, setCollapsedPlatformCards] = useState<Set<number>>(new Set());
 
-  // Image state
-  const [profilePictureFile, setProfilePictureFile] = useState<File | null>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null!);
-
   // Form change handler
   const handleFormChange = useCallback((updates: Partial<CreatorFormState>) => {
     setForm((prev) => ({ ...prev, ...updates }));
   }, []);
-
-  // Image handler
-  const handleImageChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
-
-      const file = files[0];
-      const validationError = sharedAccountProfileImageError(file);
-      if (validationError) {
-        onError?.(validationError);
-        e.target.value = "";
-        return;
-      }
-
-      onError?.("");
-      setProfilePictureFile(file);
-
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setForm((prev) => ({ ...prev, profile_image: reader.result as string }));
-      };
-      reader.readAsDataURL(file);
-    },
-    [onError],
-  );
 
   // Platform handlers
   const addPlatform = useCallback((name: string) => {
@@ -292,10 +259,6 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
       onError?.("Short description must be at most 500 characters");
       return false;
     }
-    if (profileImageRequired && !form.profile_image) {
-      onError?.("Profile picture is required");
-      return false;
-    }
     if (platforms.length === 0) {
       onError?.("At least one platform is required");
       return false;
@@ -308,21 +271,35 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
         return false;
       }
       if (!platform.handle.trim()) {
-        onError?.(`Platform ${i + 1}: Handle is required`);
+        onError?.(
+          `Platform ${i + 1}: ${platform.name === "Other" ? "Platform name" : "Handle"} is required`,
+        );
         return false;
+      }
+      if (platform.name === "Other") {
+        const profileUrl = platform.profile_url?.trim();
+        if (!profileUrl) {
+          onError?.(`Platform ${i + 1}: Profile link is required`);
+          return false;
+        }
+        try {
+          if (new URL(profileUrl).protocol !== "https:") throw new Error();
+        } catch {
+          onError?.(`Platform ${i + 1}: Profile link must be a valid HTTPS URL`);
+          return false;
+        }
       }
       if (platform.followers === "" || Number(platform.followers) <= 0) {
         onError?.(`Platform ${i + 1}: Followers must be greater than 0`);
         return false;
       }
+      const engagementRate = Number(platform.engagement_rate);
       if (
         platform.engagement_rate === "" ||
-        Number(platform.engagement_rate) <= 0 ||
-        Number(platform.engagement_rate) > 100
+        !Number.isFinite(engagementRate) ||
+        engagementRate < 0
       ) {
-        onError?.(
-          `Platform ${i + 1}: Engagement rate must be greater than 0 and less than or equal to 100`,
-        );
+        onError?.(`Platform ${i + 1}: Engagement rate must be a non-negative number`);
         return false;
       }
       if (platform.top_age_groups && platform.top_age_groups.length > 0) {
@@ -337,7 +314,7 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
     }
 
     return true;
-  }, [form, platforms, onError, profileImageRequired]);
+  }, [form, platforms, onError]);
 
   // Can proceed to next step - Step 1: Creator Type
   const canProceedCreatorType = useCallback((): boolean => {
@@ -350,10 +327,9 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
       form.name.trim() &&
       form.location.trim() &&
       form.short_description.trim() &&
-      form.short_description.trim().length >= 10 &&
-      (!profileImageRequired || form.profile_image)
+      form.short_description.trim().length >= 10
     );
-  }, [form, profileImageRequired]);
+  }, [form]);
 
   return {
     // State
@@ -362,12 +338,9 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
     platformCountryInputs,
     expandedPlatforms,
     collapsedPlatformCards,
-    profilePictureFile,
-    imageInputRef,
 
     // Form handlers
     handleFormChange,
-    handleImageChange,
 
     // Platform handlers
     addPlatform,
@@ -394,6 +367,5 @@ export function useCreatorProfileForm(options: UseCreatorProfileFormOptions = {}
     // State setters for external control
     setForm,
     setPlatforms,
-    setProfilePictureFile,
   };
 }

@@ -192,6 +192,7 @@ export function transformCreatorProfile(apiCreator: ApiCreatorResponse): Creator
       id: platform.id,
       name: platform.name,
       handle: platform.handle || "",
+      profileUrl: platform.profileUrl ?? platform.profile_url ?? null,
       followers: platform.followers ?? 0,
       engagementRate: (platform.engagementRate || platform.engagement_rate) ?? 0,
       topCountries: topCountries,

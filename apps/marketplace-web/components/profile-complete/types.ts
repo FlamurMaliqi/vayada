@@ -34,6 +34,7 @@ export interface FormNavigationButtonsProps {
   submitLabel?: string;
   prominentFirstStep?: boolean;
   stackOnMobile?: boolean;
+  disabled?: boolean;
 }
 
 export interface ProfileCompletionProgressProps {

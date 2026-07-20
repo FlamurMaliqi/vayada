@@ -17,6 +17,7 @@ export {
 export {
   createSharedAccountProfileImageUploader,
   sharedAccountProfileImageError,
+  type SharedAccountProfileImageUpload,
 } from "./sharedAccountProfileImage";
 export {
   default as LastMinuteStep,
