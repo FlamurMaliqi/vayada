@@ -907,6 +907,24 @@ describe("pg marketplace discovery repository", () => {
               audienceAgeGroups: [{ ageRange: "25-34", percentage: 40 }],
               audienceGenderSplit: { male: 30, female: 70 },
             },
+            {
+              platformId: "platform-2",
+              platform: "tiktok",
+              handle: "@unsafe-http",
+              profileUrl: "http://tiktok.com/unsafe-http",
+            },
+            {
+              platformId: "platform-3",
+              platform: "youtube",
+              handle: "@unsafe-relative",
+              profileUrl: "/unsafe-relative",
+            },
+            {
+              platformId: "platform-4",
+              platform: "facebook",
+              handle: "@unsafe-script",
+              profileUrl: "javascript:alert(1)",
+            },
           ],
           averageRating: "4.33",
           totalReviews: "3",
@@ -938,6 +956,9 @@ describe("pg marketplace discovery repository", () => {
           followerCount: 12000,
           engagementRate: 4.2,
         },
+        { platformId: "platform-2", profileUrl: null },
+        { platformId: "platform-3", profileUrl: null },
+        { platformId: "platform-4", profileUrl: null },
       ],
     });
     const sql = pool.sql.join("\n");

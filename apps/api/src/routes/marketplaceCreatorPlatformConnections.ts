@@ -2224,7 +2224,7 @@ async function insertMetricSnapshot(
        likes, comments, shares, reach, views, engagement_rate, audience_countries,
        audience_age_groups, audience_gender_split, imported_fields, unavailable_fields,
        formula_version, provider_metrics
-     ) VALUES ($1, $2, $3, $4, $5, 30, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+     ) VALUES ($1, $2, $3, $4, $5, $23, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                $15, $16::jsonb, $17::jsonb, $18::jsonb, $19::text[], $20::jsonb, $21,
                $22::jsonb)`,
     [
@@ -2250,6 +2250,7 @@ async function insertMetricSnapshot(
       JSON.stringify(input.projection.unavailableFields),
       CREATOR_PLATFORM_ENGAGEMENT_FORMULA_VERSION,
       JSON.stringify(imported.providerMetrics ?? {}),
+      CREATOR_PLATFORM_ENGAGEMENT_WINDOW_DAYS,
     ],
   );
 }

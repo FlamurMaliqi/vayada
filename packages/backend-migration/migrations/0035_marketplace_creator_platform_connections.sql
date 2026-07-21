@@ -87,23 +87,11 @@ AS $$
            AND variant.variant_name = 'original_safe'
            AND variant.visibility = 'public'
           WHERE media.id::text = profile.profile_metadata ->> 'profilePictureMediaObjectId'
-            AND (
-              (
-                media.owner_organization_id = profile.organization_id
-                AND media.resource_product = 'marketplace'
-                AND media.resource_type = 'creator_profile'
-                AND media.resource_id = profile.id::text
-                AND media.purpose = 'marketplace.creator.profile_image'
-              )
-              OR (
-                profile.owner_user_id IS NOT NULL
-                AND media.resource_product = 'platform'
-                AND media.resource_type = 'user_profile'
-                AND media.resource_id = profile.owner_user_id::text
-                AND media.created_by_user_id = profile.owner_user_id
-                AND media.purpose = 'identity.user.profile_image'
-              )
-            )
+            AND media.owner_organization_id = profile.organization_id
+            AND media.resource_product = 'marketplace'
+            AND media.resource_type = 'creator_profile'
+            AND media.resource_id = profile.id::text
+            AND media.purpose = 'marketplace.creator.profile_image'
             AND media.storage_kind = 'vayada_managed'
             AND media.visibility = 'public'
             AND media.public_approved = TRUE

@@ -97,6 +97,23 @@ describe("getMarketplacePostLoginRedirect", () => {
     expect(storage.getItem(STORAGE_KEYS.PROFILE_COMPLETE)).toBe("false");
   });
 
+  it("treats a failed creator profile fetch as incomplete account details", async () => {
+    vi.mocked(creatorService.getMyProfile).mockRejectedValue(new Error("profile unavailable"));
+    vi.mocked(checkProfileStatus).mockResolvedValue({
+      profile_complete: true,
+      profile_photo_required: false,
+      missing_fields: [],
+      missing_platforms: false,
+      completion_steps: [],
+    });
+    const storage = memoryStorage({ [STORAGE_KEYS.USER_TYPE]: "creator" });
+
+    await expect(getMarketplacePostLoginRedirect(ROUTES.MARKETPLACE, storage)).resolves.toBe(
+      ROUTES.ONBOARDING,
+    );
+    expect(storage.getItem(STORAGE_KEYS.PROFILE_COMPLETE)).toBe("false");
+  });
+
   it("uses the marketplace setup guard for hotel users", async () => {
     vi.mocked(resolveMarketplaceSetupGuard).mockResolvedValue({
       action: "redirect_to_setup",

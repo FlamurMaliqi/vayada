@@ -48,13 +48,14 @@ const getMonthsInRange = (fromStr: string, toStr: string): string[] => {
   if (isNaN(from.getTime()) || isNaN(to.getTime())) return [];
 
   const months = [];
-  const current = new Date(from.getFullYear(), from.getMonth(), 1);
+  const current = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1));
+  const end = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 1);
 
   // Use a limit to prevent infinite loops if dates are somehow broken
   let safetyCounter = 0;
-  while (current <= to && safetyCounter < 24) {
-    months.push(MONTHS_ABBR[current.getMonth()]);
-    current.setMonth(current.getMonth() + 1);
+  while (current.getTime() <= end && safetyCounter < 24) {
+    months.push(MONTHS_ABBR[current.getUTCMonth()]);
+    current.setUTCMonth(current.getUTCMonth() + 1);
     safetyCounter++;
   }
   return Array.from(new Set(months));
@@ -121,10 +122,21 @@ export function CollaborationApplicationModal({
   const selectedCompensationOption = compensationOptions.find(
     (option) => option.id === selectedCompensationOptionId,
   );
-  const availableMonths = selectedCompensationOption?.availability_months ?? [];
-  const requiredPlatforms = selectedCompensationOption?.platforms ?? [];
-  const maxNights = selectedCompensationOption?.free_stay_max_nights ?? undefined;
-  const minNights = selectedCompensationOption?.free_stay_min_nights ?? undefined;
+  const fallbackStayOption = compensationOptions.find(
+    (option) => option.free_stay_min_nights || option.free_stay_max_nights,
+  );
+  const availableMonths =
+    selectedCompensationOption?.availability_months ??
+    Array.from(new Set(compensationOptions.flatMap((option) => option.availability_months)));
+  const requiredPlatforms =
+    selectedCompensationOption?.platforms ??
+    Array.from(new Set(compensationOptions.flatMap((option) => option.platforms)));
+  const maxNights = selectedCompensationOption
+    ? (selectedCompensationOption.free_stay_max_nights ?? undefined)
+    : (fallbackStayOption?.free_stay_max_nights ?? undefined);
+  const minNights = selectedCompensationOption
+    ? (selectedCompensationOption.free_stay_min_nights ?? undefined)
+    : (fallbackStayOption?.free_stay_min_nights ?? undefined);
   const normalizedAvailable = availableMonths.map((m) => getMonthAbbr(m));
 
   const handleMonthToggle = (month: string) => {
@@ -205,6 +217,11 @@ export function CollaborationApplicationModal({
 
       if (travelDateFrom && travelDateTo) {
         requestedMonths = getMonthsInRange(travelDateFrom, travelDateTo);
+      } else if (travelDateFrom || travelDateTo) {
+        const date = new Date(travelDateFrom || travelDateTo);
+        if (!isNaN(date.getTime())) {
+          requestedMonths = [MONTHS_ABBR[date.getUTCMonth()]];
+        }
       } else if (preferredMonths.length > 0) {
         requestedMonths = preferredMonths;
       }
@@ -308,32 +325,40 @@ export function CollaborationApplicationModal({
           </div>
 
           {/* Compensation option */}
-          <div>
-            <label className="block text-base font-medium text-gray-900 mb-3">
-              Choose your compensation <span className="text-red-500">*</span>
-            </label>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {compensationOptions.map((option) => {
-                const selected = option.id === selectedCompensationOptionId;
-                return (
-                  <button
+          {compensationOptions.length > 1 && (
+            <fieldset>
+              <legend className="mb-3 text-base font-medium text-gray-900">
+                Choose your compensation <span className="text-red-500">*</span>
+              </legend>
+              <div className="space-y-3">
+                {compensationOptions.map((option) => (
+                  <label
                     key={option.id}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => {
-                      setErrorMessage(null);
-                      setSelectedCompensationOptionId(option.id);
-                      setPreferredMonths([]);
-                      resetDeliverables();
-                    }}
-                    className={`rounded-xl border px-4 py-3 text-left transition-colors ${
-                      selected
-                        ? "border-primary-600 bg-primary-50 text-primary-900"
-                        : "border-gray-200 bg-white text-gray-700 hover:border-gray-300"
+                    className={`block w-full cursor-pointer rounded-xl border p-4 transition-colors focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2 ${
+                      selectedCompensationOptionId === option.id
+                        ? "border-primary-600 bg-primary-50"
+                        : "border-gray-200 hover:border-primary-300"
                     }`}
                   >
-                    <span className="block font-semibold">{option.collaboration_type}</span>
-                    <span className="mt-1 block text-sm text-gray-500">
+                    <input
+                      type="radio"
+                      name="compensationOption"
+                      value={option.id}
+                      checked={selectedCompensationOptionId === option.id}
+                      onChange={() => {
+                        setErrorMessage(null);
+                        setSelectedCompensationOptionId(option.id);
+                        setTravelDateFrom("");
+                        setTravelDateTo("");
+                        setPreferredMonths([]);
+                        resetDeliverables();
+                      }}
+                      className="sr-only"
+                    />
+                    <span className="block font-semibold text-gray-900">
+                      {option.collaboration_type}
+                    </span>
+                    <span className="mt-1 block text-sm text-gray-600">
                       {formatCompensationOption(option)}
                     </span>
                     {option.terms_summary && (
@@ -341,11 +366,11 @@ export function CollaborationApplicationModal({
                         {option.terms_summary}
                       </span>
                     )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           {/* Stay length hint */}
           {(maxNights || minNights) && (

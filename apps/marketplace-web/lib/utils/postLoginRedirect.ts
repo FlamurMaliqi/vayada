@@ -25,9 +25,9 @@ export async function getMarketplacePostLoginRedirect(
   if (userType === "creator") {
     const [profileStatus, profile] = await Promise.all([
       checkProfileStatus(userType),
-      creatorService.getMyProfile(),
+      creatorService.getMyProfile().catch(() => null),
     ]);
-    if (!hasRequiredCreatorAccountDetails(authService.getSessionUser(), profile)) {
+    if (!profile || !hasRequiredCreatorAccountDetails(authService.getSessionUser(), profile)) {
       storage?.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
       return ROUTES.ONBOARDING;
     }

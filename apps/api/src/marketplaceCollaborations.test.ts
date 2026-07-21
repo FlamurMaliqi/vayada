@@ -1123,6 +1123,77 @@ describe("marketplace collaboration read routes", () => {
     });
   });
 
+  it("denies creator applications without an owned creator-profile resource link", async () => {
+    const repository = createCollaborationRepository({
+      async executeLifecycleWrite() {
+        throw new Error("repository should not be called");
+      },
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      resources: [],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer_001:test:v1",
+        side: "creator",
+        offerId: "offer_001",
+        creatorId: "creator_profile_not_owned",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.body).toMatchObject({
+      code: "missing_creator_resource_link",
+    });
+  });
+
+  it("allows existing collaboration writes when the workspace owns multiple creator profiles", async () => {
+    let writes = 0;
+    const repository = createCollaborationRepository({
+      async executeLifecycleWrite(input) {
+        writes += 1;
+        return lifecycleWriteResponse(input);
+      },
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_001",
+          relationship: "owner",
+        },
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_002",
+          relationship: "owner",
+        },
+      ],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations/collab_001/approve",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.approve_terms:collab_001:multi-profile:v1",
+        side: "creator",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(writes).toBe(1);
+  });
+
   it("requires hotel-profile and listing resource links for hotel lifecycle writes", async () => {
     const repository = createCollaborationRepository({
       async executeLifecycleWrite() {

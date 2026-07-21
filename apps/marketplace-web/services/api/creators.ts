@@ -283,7 +283,7 @@ export const creatorService = {
   },
 };
 
-function isAbsoluteHttpsUrl(value: string): boolean {
+export function isAbsoluteHttpsUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return url.protocol === "https:" && Boolean(url.hostname);

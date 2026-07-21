@@ -6,7 +6,7 @@ import {
   setAuthKitSession,
   setLegacyCompatibilityToken,
 } from "@/services/auth/sessionStore";
-import { creatorService } from "./creators";
+import { creatorService, isAbsoluteHttpsUrl } from "./creators";
 
 const uploadPlatformMediaMock = vi.hoisted(() => vi.fn());
 
@@ -61,6 +61,13 @@ const targetProfile = {
 };
 
 describe("creator target self-service client", () => {
+  it("accepts only absolute HTTPS URLs", () => {
+    expect(isAbsoluteHttpsUrl("https://instagram.com/lina")).toBe(true);
+    expect(isAbsoluteHttpsUrl("http://instagram.com/lina")).toBe(false);
+    expect(isAbsoluteHttpsUrl("/lina")).toBe(false);
+    expect(isAbsoluteHttpsUrl("javascript:alert(1)")).toBe(false);
+  });
+
   afterEach(() => {
     clearAuthData();
     uploadPlatformMediaMock.mockReset();

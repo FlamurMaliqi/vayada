@@ -266,6 +266,12 @@ export function registerMarketplaceCollaborationRoutes(
     if (!parsed.ok) return sendMarketplaceCollaborationError(reply, parsed.error);
     const authorization = authorizeOptionalSideCollaborationWrite(request, undefined);
     if (!authorization.ok) return sendMarketplaceCollaborationError(reply, authorization.error);
+    if (authorization.side === "creator") {
+      const creatorProfile = resolveSingleOwnedCreatorProfileId(authorization.context);
+      if (!creatorProfile.ok) {
+        return sendMarketplaceCollaborationError(reply, creatorProfile.error);
+      }
+    }
     const createPayload = parseCreatePayload(authorization.side, request.body ?? {});
     if (!createPayload.ok) return sendMarketplaceCollaborationError(reply, createPayload.error);
     if (!options.repository.executeLifecycleWrite) {
@@ -1538,33 +1544,39 @@ async function resolveCreatorProfileForCreate(
   client: MarketplaceCollaborationQueryable,
   input: MarketplaceCollaborationLifecycleWriteInput,
 ): Promise<{ id: string; organizationId: string } | null> {
-  const creatorId = input.side === "hotel" ? readString(input.payload.creatorId) : null;
-  const values: unknown[] = [];
-  const clauses: string[] = [];
-  if (creatorId) {
-    values.push(creatorId);
-    clauses.push(`source_creator_id = $${values.length}`);
-  }
   if (input.side === "creator") {
-    const creatorProfileIds = activeResourceIds(input.context, "creator_profile", "owner");
-    if (creatorProfileIds.length > 1) {
-      throw ambiguousCreatorResourceLink();
+    const creatorProfile = resolveSingleOwnedCreatorProfileId(input.context);
+    if (!creatorProfile.ok) {
+      throw new MarketplaceCollaborationWriteError(
+        creatorProfile.error.statusCode,
+        creatorProfile.error.code,
+        creatorProfile.error.message,
+      );
     }
-    if (creatorProfileIds.length === 0) return null;
-    values.push(creatorProfileIds[0]);
-    clauses.push(`id::text = $${values.length}`);
-    values.push(input.context.selectedOrganization.organizationId);
-    clauses.push(`organization_id::text = $${values.length}`);
+    if (!creatorProfile.value) return null;
+
+    const result = await client.query<{ id: string; organizationId: string }>(
+      `SELECT id::text AS id,
+              organization_id::text AS "organizationId"
+       FROM marketplace.creator_profiles
+       WHERE id::text = $1
+         AND organization_id::text = $2
+       LIMIT 1`,
+      [creatorProfile.value, input.context.selectedOrganization.organizationId],
+    );
+    return result.rows[0] ?? null;
   }
-  if (clauses.length === 0) return null;
+
+  const creatorId = readString(input.payload.creatorId);
+  if (!creatorId) return null;
 
   const result = await client.query<{ id: string; organizationId: string }>(
     `SELECT id::text AS id,
             organization_id::text AS "organizationId"
      FROM marketplace.creator_profiles
-     WHERE ${clauses.join(" AND ")}
+     WHERE source_creator_id = $1
      LIMIT 1`,
-    values,
+    [creatorId],
   );
   return result.rows[0] ?? null;
 }
@@ -2160,16 +2172,29 @@ function activeResourceIds(
   resourceType: "creator_profile" | "marketplace_offer",
   relationship: "owner" | "operator",
 ): string[] {
-  return context.linkedResources
-    .filter(
-      (resource) =>
-        resource.status === "active" &&
-        resource.product === "marketplace" &&
-        resource.resourceType === resourceType &&
-        resource.relationship === relationship,
-    )
-    .map((resource) => resource.resourceId)
-    .filter((resourceId, index, resourceIds) => resourceIds.indexOf(resourceId) === index);
+  return [
+    ...new Set(
+      context.linkedResources
+        .filter(
+          (resource) =>
+            resource.status === "active" &&
+            resource.product === "marketplace" &&
+            resource.resourceType === resourceType &&
+            resource.relationship === relationship,
+        )
+        .map((resource) => resource.resourceId),
+    ),
+  ];
+}
+
+function resolveSingleOwnedCreatorProfileId(
+  context: RequestContext,
+): ParseResult<string | undefined> {
+  const creatorProfileIds = activeResourceIds(context, "creator_profile", "owner");
+  if (creatorProfileIds.length > 1) {
+    return { ok: false, error: ambiguousCreatorResourceLink() };
+  }
+  return { ok: true, value: creatorProfileIds[0] };
 }
 
 function mapCollaborationRow(
@@ -2484,10 +2509,6 @@ function readCurrency(value: unknown): string | null {
   return text && /^[A-Za-z]{3}$/.test(text) ? text.toUpperCase() : null;
 }
 
-function readCollaborationSide(value: unknown): MarketplaceCollaborationAuthorizationSide | null {
-  return typeof value === "string" && isCollaborationSide(value) ? value : null;
-}
-
 function readCompensationType(value: unknown): MarketplaceCollaborationRead["compensationType"] {
   return typeof value === "string" ? toCompensationType(value) : null;
 }
@@ -2731,10 +2752,6 @@ function checkRequiredWriteResourceLinks(
     };
   }
 
-  if (side === "creator" && activeResourceIds(context, "creator_profile", "owner").length > 1) {
-    return { ok: false, error: ambiguousCreatorResourceLink() };
-  }
-
   return { ok: true };
 }
 
@@ -2914,8 +2931,8 @@ type MarketplaceCollaborationRouteError = {
   code:
     | "invalid_query"
     | "forbidden"
-    | "missing_creator_resource_link"
     | "ambiguous_marketplace_creator_profile"
+    | "missing_creator_resource_link"
     | "missing_hotel_resource_link"
     | "collaboration_not_found"
     | "invalid_transition"
