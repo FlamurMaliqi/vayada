@@ -107,7 +107,7 @@ const targetOffer = {
       commissionPercentage: null,
       minFollowers: 1000,
       currency: null,
-      termsSummary: null,
+      termsSummary: "Breakfast and local taxes are included.",
     },
   ],
   creatorRequirements: {
@@ -218,6 +218,7 @@ describe("hotel target self-service client", () => {
             expect.objectContaining({
               collaboration_type: "Free Stay",
               platforms: ["Instagram"],
+              terms_summary: "Breakfast and local taxes are included.",
             }),
           ],
         },

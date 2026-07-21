@@ -153,7 +153,8 @@
         "https://media.localhost/public-cdn/marketplace/listings/f8226100-0000-0000-0000-000000000001/f8224000-0000-0000-0000-000000000003/original_safe.webp"
       ],
       "chatMessageId": "f8226300-0000-0000-0000-000000000001",
-      "chatMediaObjectId": "f8224000-0000-0000-0000-000000000005"
+      "chatMediaObjectId": "f8224000-0000-0000-0000-000000000005",
+      "chatRetainedUntil": "2028-06-01T12:00:00.000Z"
     },
     "pms": {
       "roomTypeId": "f8227000-0000-0000-0000-000000000001",

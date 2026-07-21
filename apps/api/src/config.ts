@@ -121,6 +121,8 @@ export type ApiConfig = {
   bookingWebEventSink: BookingWebEventSink;
   bookingHostBase?: string;
   platformMediaServing?: PlatformMediaServingConfig;
+  platformMediaCleanupEnabled: boolean;
+  platformMediaCleanupIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
   xenditSecretKey?: string;
@@ -222,6 +224,16 @@ function readBooleanEnv(env: NodeJS.ProcessEnv, key: string, defaultValue = fals
   if (/^(1|true|yes)$/i.test(value)) return true;
   if (/^(0|false|no)$/i.test(value)) return false;
   throw new Error(`${key} must be true or false`);
+}
+
+function readPositiveIntegerEnv(env: NodeJS.ProcessEnv, key: string, defaultValue: number): number {
+  const value = readOptionalEnv(env, key);
+  if (value === undefined) return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${key} must be a positive integer`);
+  }
+  return parsed;
 }
 
 function readSourceEnv<T extends string>(
@@ -627,6 +639,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     bookingWebEventSink,
     bookingHostBase: readOptionalEnv(env, "BOOKING_HOST_BASE"),
     platformMediaServing,
+    platformMediaCleanupEnabled: readBooleanEnv(env, "PLATFORM_MEDIA_CLEANUP_ENABLED", true),
+    platformMediaCleanupIntervalMs: readPositiveIntegerEnv(
+      env,
+      "PLATFORM_MEDIA_CLEANUP_INTERVAL_MS",
+      15 * 60 * 1000,
+    ),
     creatorPlatformConnections,
     providerWebhooks: loadProviderWebhookConfig(env),
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),

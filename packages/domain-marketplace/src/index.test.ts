@@ -666,6 +666,7 @@ describe("@vayada/domain-marketplace", () => {
           senderUserId: null,
           senderName: "Hotel Alpenrose",
           senderAvatarUrl: null,
+          senderSide: "hotel",
           content: "We confirmed the September dates.",
           contentType: "text",
           metadata: null,

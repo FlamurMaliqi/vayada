@@ -653,7 +653,7 @@ test.describe("marketplace-web shared setup activation", () => {
     expect(loadedMarketplaceProfile).toBe(false);
   });
 
-  test("keeps a direct pending activation on the verification status screen", async ({
+  test("opens a direct pending activation without asking for more setup", async ({
     page,
     baseURL,
   }) => {
@@ -668,8 +668,7 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(profileActivationUrl(baseURL));
 
-    await expect(page).toHaveURL(new RegExp(`/setup\\?.*propertyId=${propertyId}`));
-    await expect(page.getByRole("button", { name: "Verification pending" })).toBeDisabled();
+    await expect(page).toHaveURL(/\/marketplace$/);
     expect(loadedMarketplaceProfile).toBe(false);
   });
 
@@ -683,13 +682,13 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByText("Verification pending", { exact: true })).toHaveCount(2);
+    await expect(page.getByText("Verification pending", { exact: true })).toBeVisible();
     await expect(
       page.getByText(
-        "Marketplace verification is still in progress. No action is needed right now.",
+        "Your Marketplace profile is under review. You can still open the workspace and manage it.",
       ),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Verification pending" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Open Creator Marketplace" })).toBeEnabled();
   });
 });
 

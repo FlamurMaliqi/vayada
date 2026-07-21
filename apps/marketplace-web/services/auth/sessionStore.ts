@@ -1,6 +1,7 @@
 import {
   setApiBearerTokenProvider,
   setVayadaApiBearerTokenProvider,
+  setVayadaApiSessionRecoveryHandlers,
 } from "@vayada/marketplace-shared/api/client";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
@@ -52,8 +53,20 @@ let legacyCompatibilityToken: { token: string; expiresAt: number } | null = null
 
 // Legacy FastAPI calls use the compatibility token while migrated API calls use AuthKit.
 // Both providers are wired on import so requests are correct before page bootstrap runs.
-setApiBearerTokenProvider(() => getAuthBearerToken());
+setApiBearerTokenProvider(() =>
+  isCompatibilityTokenEnabled() ? getLegacyCompatibilityToken() : null,
+);
 setVayadaApiBearerTokenProvider(() => getAuthKitAccessToken());
+setVayadaApiSessionRecoveryHandlers({
+  async refresh() {
+    const { authService } = await import("./auth");
+    await authService.refreshSession();
+  },
+  async signOut() {
+    const { authService } = await import("./auth");
+    await authService.logout();
+  },
+});
 
 export function isAuthKitLoginEnabled(): boolean {
   return process.env.NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED !== "false";

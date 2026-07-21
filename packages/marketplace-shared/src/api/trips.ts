@@ -67,6 +67,7 @@ export type MarketplaceExternalCollaborationListResponse = {
 };
 
 export type CreateMarketplaceTripRequest = {
+  idempotencyKey: string;
   name: string;
   locationText?: string | null;
   startDate: string;
@@ -74,9 +75,12 @@ export type CreateMarketplaceTripRequest = {
   notes?: string | null;
 };
 
-export type UpdateMarketplaceTripRequest = Partial<CreateMarketplaceTripRequest>;
+export type UpdateMarketplaceTripRequest = Partial<
+  Omit<CreateMarketplaceTripRequest, "idempotencyKey">
+> & { idempotencyKey: string };
 
 export type CreateMarketplaceExternalCollaborationRequest = {
+  idempotencyKey: string;
   tripId?: string | null;
   title: string;
   hotelName?: string | null;
@@ -88,8 +92,19 @@ export type CreateMarketplaceExternalCollaborationRequest = {
   notes?: string | null;
 };
 
-export type UpdateMarketplaceExternalCollaborationRequest =
-  Partial<CreateMarketplaceExternalCollaborationRequest>;
+export type UpdateMarketplaceExternalCollaborationRequest = Partial<
+  Omit<CreateMarketplaceExternalCollaborationRequest, "idempotencyKey">
+> & {
+  idempotencyKey: string;
+};
+
+export type MarketplaceTripWriteAction =
+  | "trip.create"
+  | "trip.update"
+  | "trip.delete"
+  | "external-collaboration.create"
+  | "external-collaboration.update"
+  | "external-collaboration.delete";
 
 export const marketplaceTripEndpoints = {
   trips: () => "/api/marketplace/trips",
@@ -110,18 +125,31 @@ export async function getMarketplaceTrip(tripId: string): Promise<MarketplaceTri
 export async function createMarketplaceTrip(
   request: CreateMarketplaceTripRequest,
 ): Promise<MarketplaceTrip> {
-  return vayadaApiClient.post<MarketplaceTrip>(marketplaceTripEndpoints.trips(), request);
+  const { idempotencyKey, ...payload } = request;
+  return vayadaApiClient.post<MarketplaceTrip>(
+    marketplaceTripEndpoints.trips(),
+    payload,
+    toIdempotencyOptions(idempotencyKey),
+  );
 }
 
 export async function updateMarketplaceTrip(
   tripId: string,
   request: UpdateMarketplaceTripRequest,
 ): Promise<MarketplaceTrip> {
-  return vayadaApiClient.put<MarketplaceTrip>(marketplaceTripEndpoints.trip(tripId), request);
+  const { idempotencyKey, ...payload } = request;
+  return vayadaApiClient.put<MarketplaceTrip>(
+    marketplaceTripEndpoints.trip(tripId),
+    payload,
+    toIdempotencyOptions(idempotencyKey),
+  );
 }
 
-export async function deleteMarketplaceTrip(tripId: string): Promise<void> {
-  return vayadaApiClient.delete<void>(marketplaceTripEndpoints.trip(tripId));
+export async function deleteMarketplaceTrip(tripId: string, idempotencyKey: string): Promise<void> {
+  return vayadaApiClient.delete<void>(
+    marketplaceTripEndpoints.trip(tripId),
+    toIdempotencyOptions(idempotencyKey),
+  );
 }
 
 export async function listMarketplaceExternalCollaborations(): Promise<MarketplaceExternalCollaborationListResponse> {
@@ -133,9 +161,11 @@ export async function listMarketplaceExternalCollaborations(): Promise<Marketpla
 export async function createMarketplaceExternalCollaboration(
   request: CreateMarketplaceExternalCollaborationRequest,
 ): Promise<MarketplaceExternalCollaboration> {
+  const { idempotencyKey, ...payload } = request;
   return vayadaApiClient.post<MarketplaceExternalCollaboration>(
     marketplaceTripEndpoints.externalCollaborations(),
-    request,
+    payload,
+    toIdempotencyOptions(idempotencyKey),
   );
 }
 
@@ -143,16 +173,43 @@ export async function updateMarketplaceExternalCollaboration(
   externalCollaborationId: string,
   request: UpdateMarketplaceExternalCollaborationRequest,
 ): Promise<MarketplaceExternalCollaboration> {
+  const { idempotencyKey, ...payload } = request;
   return vayadaApiClient.put<MarketplaceExternalCollaboration>(
     marketplaceTripEndpoints.externalCollaboration(externalCollaborationId),
-    request,
+    payload,
+    toIdempotencyOptions(idempotencyKey),
   );
 }
 
 export async function deleteMarketplaceExternalCollaboration(
   externalCollaborationId: string,
+  idempotencyKey: string,
 ): Promise<void> {
   return vayadaApiClient.delete<void>(
     marketplaceTripEndpoints.externalCollaboration(externalCollaborationId),
+    toIdempotencyOptions(idempotencyKey),
+  );
+}
+
+export function buildMarketplaceTripIdempotencyKey(input: {
+  action: MarketplaceTripWriteAction;
+  resourceId: string;
+  nonce: string;
+}): string {
+  return `marketplace.${input.action}:${sanitizeIdempotencySegment(
+    input.resourceId,
+  )}:${sanitizeIdempotencySegment(input.nonce)}:v1`;
+}
+
+function toIdempotencyOptions(idempotencyKey: string): RequestInit {
+  return { headers: { "Idempotency-Key": idempotencyKey } };
+}
+
+function sanitizeIdempotencySegment(value: string): string {
+  return (
+    value
+      .trim()
+      .replace(/[^A-Za-z0-9._-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "unknown"
   );
 }

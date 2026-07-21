@@ -7,7 +7,11 @@ import {
   type ResourceRelationship,
   type ResourceType,
 } from "@vayada/backend-auth";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import {
+  MARKETPLACE_COLLABORATION_CREATOR_WRITE_POLICY,
+  MARKETPLACE_COLLABORATION_HOTEL_WRITE_POLICY,
+} from "@vayada/domain-marketplace";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -159,6 +163,8 @@ export type PlatformMediaObjectRecord = {
   widthPx?: number;
   heightPx?: number;
   originalFilename: string;
+  sourceMetadata?: Record<string, unknown>;
+  retainedUntil?: string | null;
   variants: PlatformMediaVariantRecord[];
   createdAt: string;
 };
@@ -522,7 +528,7 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
   },
   "marketplace.collaboration_chat.attachment": {
     purpose: "marketplace.collaboration_chat.attachment",
-    permission: "marketplace.collaboration.review",
+    permission: "marketplace.collaboration.write",
     allowedRelationships: ["owner", "operator"],
     allowedResources: [
       { product: "marketplace", resourceType: "marketplace_offer" },
@@ -641,17 +647,11 @@ export async function registerPlatformMediaRoutes(
         return sendMediaError(reply, 400, resourceError.code, resourceError.message);
       }
 
-      const context = policy.actorOwned
-        ? requireAuthContext(request)
-        : enforceRoutePolicy(request, {
-            permission: permissionForResource(policy, request.body.resource),
-            resource: {
-              product: request.body.resource.product,
-              resourceType: request.body.resource.resourceType,
-              resourceId: request.body.resource.resourceId,
-              allowedRelationships: policy.allowedRelationships,
-            },
-          });
+      const authorization = authorizeMediaResource(request, policy, request.body.resource);
+      if (!authorization.ok) {
+        return sendMediaError(reply, 403, "media_resource_forbidden", authorization.message);
+      }
+      const context = authorization.context;
       if (policy.actorOwned && request.body.resource.resourceId !== context.actor.internalUserId) {
         return sendMediaError(
           reply,
@@ -774,6 +774,8 @@ export async function registerPlatformMediaRoutes(
         },
       });
 
+      reply.header("Cache-Control", "private, no-store");
+      reply.header("Vary", "Origin, Authorization");
       return reply.code(201).send({
         contractVersion: PLATFORM_MEDIA_UPLOAD_CONTRACT_VERSION,
         uploadSession: serializeSession(session),
@@ -794,17 +796,11 @@ export async function registerPlatformMediaRoutes(
         return sendPurposeUnavailable(reply);
       }
       const policy = purposePolicies[session.purpose];
-      const context = policy.actorOwned
-        ? requireAuthContext(request)
-        : enforceRoutePolicy(request, {
-            permission: permissionForResource(policy, session.resource),
-            resource: {
-              product: session.resource.product,
-              resourceType: session.resource.resourceType,
-              resourceId: session.resource.resourceId,
-              allowedRelationships: policy.allowedRelationships,
-            },
-          });
+      const authorization = authorizeMediaResource(request, policy, session.resource);
+      if (!authorization.ok) {
+        return sendMediaError(reply, 403, "media_resource_forbidden", authorization.message);
+      }
+      const context = authorization.context;
       if (policy.actorOwned && session.resource.resourceId !== context.actor.internalUserId) {
         return sendMediaError(
           reply,
@@ -841,6 +837,7 @@ export async function registerPlatformMediaRoutes(
             );
           },
         });
+        setPrivateMediaResponseHeaders(reply, session);
         return reply.code(200).send({
           contractVersion: PLATFORM_MEDIA_UPLOAD_CONTRACT_VERSION,
           uploadSession: serializeSession(session),
@@ -924,6 +921,7 @@ export async function registerPlatformMediaRoutes(
         },
       });
 
+      setPrivateMediaResponseHeaders(reply, completedSession);
       return reply.code(200).send({
         contractVersion: PLATFORM_MEDIA_UPLOAD_CONTRACT_VERSION,
         uploadSession: serializeSession(completedSession),
@@ -1018,6 +1016,15 @@ export async function registerPlatformMediaRoutes(
       audit: serializeAudit(context),
     });
   });
+}
+
+function setPrivateMediaResponseHeaders(
+  reply: FastifyReply,
+  session: PlatformMediaSessionRecord,
+): void {
+  if (session.effectiveVisibility !== "private") return;
+  reply.header("Cache-Control", "private, no-store");
+  reply.header("Vary", "Origin, Authorization");
 }
 
 export function createDeterministicPlatformMediaUploadSigner(
@@ -1152,6 +1159,14 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
       const effectiveVisibility = autoApproved ? "public" : input.session.effectiveVisibility;
       const mediaObjects = input.files.map((finalized, index) => {
         const sessionFile = finalized.sessionFile;
+        const variants = input.variantSets[index]!.map((variant) => ({
+          ...variant,
+          visibility: effectiveVisibility,
+        }));
+        const canonicalVariant =
+          variants.find(({ variantName }) => variantName === "original_safe") ??
+          variants.find(({ variantName }) => variantName === "provider_original");
+        if (!canonicalVariant) throw new Error("Platform media requires a canonical variant");
         return {
           mediaId: sessionFile.mediaId,
           purpose: input.session.purpose,
@@ -1162,10 +1177,16 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
             : input.session.requestedVisibility === "public"
               ? "pending_domain_approval"
               : "private",
-          lifecycleStatus: autoApproved ? "active" : "staged",
+          lifecycleStatus:
+            autoApproved || input.session.purpose === "marketplace.collaboration_chat.attachment"
+              ? "active"
+              : "staged",
           storageKind: "vayada_managed",
           bucket: input.bucketName,
-          storageKey: `${input.session.stagingPrefix}/${index + 1}/active/${sessionFile.filename}`,
+          storageKey:
+            input.session.purpose === "marketplace.collaboration_chat.attachment"
+              ? canonicalVariant.storageKey
+              : `${input.session.stagingPrefix}/${index + 1}/active/${sessionFile.filename}`,
           ownerOrganizationId: input.session.ownerOrganizationId,
           actorUserId: input.session.actorUserId,
           resourceProduct: input.session.target.resourceProduct,
@@ -1178,10 +1199,11 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
           widthPx: finalized.inspection.widthPx,
           heightPx: finalized.inspection.heightPx,
           originalFilename: sessionFile.filename,
-          variants: input.variantSets[index]!.map((variant) => ({
-            ...variant,
-            visibility: effectiveVisibility,
-          })),
+          retainedUntil:
+            input.session.purpose === "marketplace.collaboration_chat.attachment"
+              ? new Date(Date.parse(input.now) + 60 * 60 * 1000).toISOString()
+              : null,
+          variants,
           createdAt: input.now,
         } satisfies PlatformMediaObjectRecord;
       });
@@ -1330,6 +1352,80 @@ function validateImportRequest(
     };
   }
   return { ok: true };
+}
+
+function authorizeMediaResource(
+  request: FastifyRequest,
+  policy: PlatformMediaPurposePolicy,
+  resource: PlatformMediaResourceScope,
+): { ok: true; context: RequestContext } | { ok: false; message: string } {
+  if (policy.actorOwned) {
+    return { ok: true, context: requireAuthContext(request) };
+  }
+  if (policy.purpose !== "marketplace.collaboration_chat.attachment") {
+    return {
+      ok: true,
+      context: enforceRoutePolicy(request, {
+        permission: permissionForResource(policy, resource),
+        resource: {
+          product: resource.product,
+          resourceType: resource.resourceType,
+          resourceId: resource.resourceId,
+          allowedRelationships: policy.allowedRelationships,
+        },
+      }),
+    };
+  }
+
+  const context = enforceRoutePolicy(request, {
+    permission: permissionForResource(policy, resource),
+  });
+  const collaborationPolicy =
+    context.selectedOrganization.kind === "creator_workspace"
+      ? MARKETPLACE_COLLABORATION_CREATOR_WRITE_POLICY
+      : context.selectedOrganization.kind === "hotel_group"
+        ? MARKETPLACE_COLLABORATION_HOTEL_WRITE_POLICY
+        : null;
+  if (!collaborationPolicy) {
+    return { ok: false, message: "Selected organization cannot write marketplace chat." };
+  }
+
+  const expectedSource =
+    collaborationPolicy.side === "creator"
+      ? { resourceType: "creator_profile", relationship: "owner" }
+      : { resourceType: "marketplace_offer", relationship: "operator" };
+  const activeLinks = context.linkedResources.filter(
+    (linked) => linked.status === "active" && linked.product === "marketplace",
+  );
+  const sourceIsExact = activeLinks.some(
+    (linked) =>
+      resource.product === "marketplace" &&
+      resource.resourceType === expectedSource.resourceType &&
+      linked.resourceType === expectedSource.resourceType &&
+      linked.resourceId === resource.resourceId &&
+      linked.relationship === expectedSource.relationship,
+  );
+  const hasRequiredLinks = collaborationPolicy.requiredResources.every((required) =>
+    activeLinks.some(
+      (linked) =>
+        linked.resourceType === required.resourceType &&
+        linked.relationship === required.relationship,
+    ),
+  );
+  const creatorProfileLinks = activeLinks.filter(
+    (linked) => linked.resourceType === "creator_profile" && linked.relationship === "owner",
+  );
+  if (
+    !sourceIsExact ||
+    !hasRequiredLinks ||
+    (collaborationPolicy.side === "creator" && creatorProfileLinks.length !== 1)
+  ) {
+    return {
+      ok: false,
+      message: "Chat attachment source does not satisfy collaboration write access.",
+    };
+  }
+  return { ok: true, context };
 }
 
 function permissionForResource(

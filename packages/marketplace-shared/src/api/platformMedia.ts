@@ -1,16 +1,17 @@
-import { ApiClient, ApiErrorResponse } from "./client";
+import { ApiErrorResponse, createVayadaApiClient } from "./client";
 
 const PLATFORM_MEDIA_API_BASE_URL =
   process.env.NEXT_PUBLIC_PLATFORM_MEDIA_API_URL ??
   process.env.NEXT_PUBLIC_AUTH_API_URL ??
   "https://api.localhost";
-const platformMediaApiClient = new ApiClient(PLATFORM_MEDIA_API_BASE_URL);
+const platformMediaApiClient = createVayadaApiClient(PLATFORM_MEDIA_API_BASE_URL);
 
 export type PlatformMediaPurpose =
   | "identity.user.profile_image"
   | "property.hero_image"
   | "marketplace.offer.media"
-  | "marketplace.creator.profile_image";
+  | "marketplace.creator.profile_image"
+  | "marketplace.collaboration_chat.attachment";
 
 export type PlatformMediaResourceScope = {
   product: "platform" | "booking" | "marketplace";

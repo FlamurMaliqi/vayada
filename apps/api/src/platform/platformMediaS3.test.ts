@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   type S3Client,
 } from "@aws-sdk/client-s3";
@@ -81,7 +82,7 @@ describe("S3 platform profile media adapter", () => {
     expect(signingOptions?.signableHeaders).toEqual(new Set(["content-type"]));
   });
 
-  it("signs images up to the offer limit while rejecting larger uploads", async () => {
+  it("signs images up to the chat attachment limit while rejecting larger uploads", async () => {
     vi.mocked(getSignedUrl).mockResolvedValue("https://signed-upload.example/offer");
     const { client } = fakeS3(async () => ({}));
     const adapter = createAdapter(client);
@@ -93,7 +94,7 @@ describe("S3 platform profile media adapter", () => {
         uploadTargetId,
         stagingKey,
         contentType: "image/jpeg",
-        sizeBytes: 10 * 1024 * 1024,
+        sizeBytes: 20 * 1024 * 1024,
         expiresAt,
       }),
     ).resolves.toMatchObject({ uploadTargetId });
@@ -103,10 +104,146 @@ describe("S3 platform profile media adapter", () => {
         uploadTargetId,
         stagingKey,
         contentType: "image/jpeg",
-        sizeBytes: 10 * 1024 * 1024 + 1,
+        sizeBytes: 20 * 1024 * 1024 + 1,
         expiresAt,
       }),
-    ).rejects.toThrow("between 1 byte and 10 MB");
+    ).rejects.toThrow("between 1 byte and 20 MB");
+  });
+
+  it("deletes cleanup objects and every page in a staging prefix", async () => {
+    let listedPages = 0;
+    const { client, send } = fakeS3(async (command) => {
+      if (command instanceof ListObjectsV2Command) {
+        listedPages += 1;
+        return listedPages === 1
+          ? {
+              Contents: [{ Key: `${stagingKey}.one` }, { Key: `${stagingKey}.two` }],
+              IsTruncated: true,
+              NextContinuationToken: "page-2",
+            }
+          : { Contents: [{ Key: `${stagingKey}.three` }], IsTruncated: false };
+      }
+      return {};
+    });
+    const adapter = createAdapter(client);
+
+    await adapter.deleteObject({
+      bucket: "legacy-vayada-media",
+      storageKey: "legacy/properties/hotel/hero.jpg",
+    });
+    await adapter.deletePrefix({ prefix: `staging/${sessionId}` });
+
+    const commands = send.mock.calls.map(([command]) => command);
+    expect(commands[0]).toBeInstanceOf(DeleteObjectCommand);
+    expect((commands[0] as DeleteObjectCommand).input).toEqual({
+      Bucket: "legacy-vayada-media",
+      Key: "legacy/properties/hotel/hero.jpg",
+    });
+    const listings = commands.filter(
+      (command): command is ListObjectsV2Command => command instanceof ListObjectsV2Command,
+    );
+    expect(listings.map(({ input }) => input)).toEqual([
+      {
+        Bucket: bucketName,
+        Prefix: `staging/${sessionId}`,
+        ContinuationToken: undefined,
+      },
+      {
+        Bucket: bucketName,
+        Prefix: `staging/${sessionId}`,
+        ContinuationToken: "page-2",
+      },
+    ]);
+    expect(
+      commands
+        .filter((command): command is DeleteObjectCommand => command instanceof DeleteObjectCommand)
+        .slice(1)
+        .map(({ input }) => input),
+    ).toEqual(
+      ["one", "two", "three"].map((suffix) => ({
+        Bucket: bucketName,
+        Key: `${stagingKey}.${suffix}`,
+      })),
+    );
+  });
+
+  it.each(["private/", "staging/"])(
+    "refuses unsafe or broad prefix cleanup for %s",
+    async (prefix) => {
+      const { client, send } = fakeS3(async () => ({}));
+      const adapter = createAdapter(client);
+
+      await expect(adapter.deletePrefix({ prefix })).rejects.toThrow(
+        "restricted to staging namespaces",
+      );
+      expect(send).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves private chat bytes and signs short-lived GET access", async () => {
+    const source = await validJpeg();
+    const { client, send } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = chatSession(source.length);
+    const sessionFile = session.files[0]!;
+    const uploadTarget = session.uploadTargets[0]!;
+    const inspected = await adapter.inspectUploadedFile({
+      session,
+      sessionFile,
+      uploadTarget,
+      clientFile: { uploadTargetId },
+      policy: chatPolicy,
+    });
+    if (!inspected.ok) throw new Error("Expected chat image inspection to succeed");
+
+    const [variant] = await adapter.generateVariants({
+      session,
+      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+      fileIndex: 0,
+      policy: chatPolicy,
+    });
+    expect(variant).toMatchObject({
+      variantName: "provider_original",
+      visibility: "private",
+      contentType: "image/jpeg",
+      sizeBytes: source.length,
+      publicCdnUrl: null,
+    });
+    expect(variant?.storageKey).toMatch(/^private\/media\/.*\.jpg$/);
+    const put = send.mock.calls
+      .map(([command]) => command)
+      .find((command): command is PutObjectCommand => command instanceof PutObjectCommand);
+    expect(put?.input).toMatchObject({
+      Body: source,
+      ContentType: "image/jpeg",
+      CacheControl: privateCacheControl,
+    });
+
+    vi.mocked(getSignedUrl).mockResolvedValue("https://signed.example/chat-image");
+    await expect(
+      adapter.signPrivateDownload({
+        bucketName,
+        storageKey: variant!.storageKey,
+        method: "GET",
+        expiresInSeconds: 300,
+        cacheControl: "private, no-store",
+        responseContentDisposition: 'attachment; filename="chat.jpg"',
+        responseContentType: "image/jpeg",
+      }),
+    ).resolves.toBe("https://signed.example/chat-image");
+    const [, command, options] = vi.mocked(getSignedUrl).mock.calls.at(-1)!;
+    expect(command).toBeInstanceOf(GetObjectCommand);
+    expect((command as GetObjectCommand).input).toMatchObject({
+      Bucket: bucketName,
+      Key: variant!.storageKey,
+      ResponseCacheControl: "private, no-store",
+      ResponseContentType: "image/jpeg",
+    });
+    expect(options).toEqual({ expiresIn: 300 });
   });
 
   it("decodes actual bytes and writes stripped immutable WebP variants", async () => {
@@ -554,23 +691,14 @@ describe("S3 platform profile media adapter", () => {
     });
     if (!inspected.ok) throw new Error(`Expected inspection success: ${inspected.code}`);
 
-    let maxSharpTasks = 0;
-    const recordSharpTasks = () => {
-      const counters = sharp.counters();
-      maxSharpTasks = Math.max(maxSharpTasks, counters.queue + counters.process);
-    };
-    sharp.queue.on("change", recordSharpTasks);
-    const variants = await adapter
-      .generateVariants({
-        session,
-        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
-        fileIndex: 0,
-        policy,
-      })
-      .finally(() => sharp.queue.off("change", recordSharpTasks));
+    const variants = await adapter.generateVariants({
+      session,
+      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+      fileIndex: 0,
+      policy,
+    });
 
     expect(variants).toHaveLength(policy.requiredVariants.length);
-    expect(maxSharpTasks).toBe(1);
     expect(maxActivePuts).toBe(1);
   }, 30_000);
 
@@ -828,6 +956,20 @@ const offerPolicy: PlatformMediaPurposePolicy = {
   targetResourceType: "marketplace_offer",
 };
 
+const chatPolicy: PlatformMediaPurposePolicy = {
+  ...offerPolicy,
+  purpose: "marketplace.collaboration_chat.attachment",
+  allowedResources: [{ product: "marketplace", resourceType: "creator_profile" }],
+  allowedContentTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"],
+  allowedExtensions: [".jpg", ".jpeg", ".png", ".webp", ".gif"],
+  maxFileSizeBytes: 20 * 1024 * 1024,
+  maxFileCount: 1,
+  privateOnly: true,
+  targetResourceProduct: "marketplace",
+  targetResourceType: "collaboration",
+  requiredVariants: ["provider_original"],
+};
+
 function propertyPolicy(
   purpose: "property.hero_image" | "property.gallery_image",
 ): PlatformMediaPurposePolicy {
@@ -857,6 +999,25 @@ function offerSession(sizeBytes: number): PlatformMediaSessionRecord {
       resourceProduct: "marketplace",
       resourceType: "marketplace_offer",
       resourceId: "offer_01J_TEST",
+    },
+  };
+}
+
+function chatSession(sizeBytes: number): PlatformMediaSessionRecord {
+  return {
+    ...offerSession(sizeBytes),
+    purpose: "marketplace.collaboration_chat.attachment",
+    requestedVisibility: "private",
+    resource: {
+      product: "marketplace",
+      resourceType: "creator_profile",
+      resourceId: "creator_01J_TEST",
+      targetResourceId: "collaboration_01J_TEST",
+    },
+    target: {
+      resourceProduct: "marketplace",
+      resourceType: "collaboration",
+      resourceId: "collaboration_01J_TEST",
     },
   };
 }

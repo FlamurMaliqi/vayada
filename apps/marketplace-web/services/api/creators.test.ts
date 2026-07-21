@@ -21,6 +21,7 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: {
       get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null),
     },
+    text: async () => JSON.stringify(body),
     json: async () => body,
   } as Response;
 }

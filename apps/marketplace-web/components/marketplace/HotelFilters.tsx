@@ -122,8 +122,8 @@ export function HotelFilters({
         />
 
         <RangeSliderDropdown
-          label="Budget"
-          title="Budget Range"
+          label="Min. paid amount (EUR)"
+          title="Minimum paid compensation in EUR"
           min={BUDGET_RANGE.min}
           max={BUDGET_RANGE.max}
           step={BUDGET_RANGE.step}
@@ -178,7 +178,7 @@ export function HotelFilters({
           ))}
           {filters.budget !== undefined && filters.budget > BUDGET_RANGE.min && (
             <FilterChip
-              label={formatBudget(filters.budget)}
+              label={`Paid from ${formatBudget(filters.budget)}`}
               onRemove={() => handleBudgetChange(BUDGET_RANGE.min)}
             />
           )}

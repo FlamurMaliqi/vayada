@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { createPgPlatformMediaCleanupStore } from "../jobs/platformMediaCleanup.js";
 import type { PlatformMediaServingConfig } from "./mediaServing.js";
 import { createPgS3MarketplaceOfferMediaPromotion } from "./marketplaceOfferMediaPromotion.js";
 import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
@@ -38,11 +39,12 @@ describe("platform media runtime composition", () => {
       expect(factories.createRepository).not.toHaveBeenCalled();
       expect(factories.createAdapter).not.toHaveBeenCalled();
       expect(factories.createOfferMediaPromotion).not.toHaveBeenCalled();
+      expect(factories.createCleanupStore).not.toHaveBeenCalled();
     }
   });
 
   it("shares production resources across profile validation and the restricted routes", () => {
-    const { repository, adapter, offerMediaPromotion, factories } = fakeFactories();
+    const { repository, adapter, offerMediaPromotion, cleanupStore, factories } = fakeFactories();
     const runtime = composePlatformMediaRuntime(completeInput, factories);
     if (!runtime) throw new Error("Expected complete media configuration to compose a runtime");
 
@@ -63,9 +65,20 @@ describe("platform media runtime composition", () => {
       connectionString: "postgresql://target-db",
       serving: platformMediaServing,
     });
+    expect(factories.createCleanupStore).toHaveBeenCalledOnce();
+    expect(factories.createCleanupStore).toHaveBeenCalledWith({
+      connectionString: "postgresql://target-db",
+      objectDeleter: adapter,
+    });
 
     expect(runtime.profileMediaRepository).toBe(repository);
     expect(runtime.offerMediaPromotion).toBe(offerMediaPromotion);
+    expect(runtime.cleanupStore).toBe(cleanupStore);
+    expect(runtime.collaborationAttachments).toEqual({
+      repository,
+      signer: adapter,
+      serving: platformMediaServing,
+    });
     expect(runtime.routes.repository).toBe(repository);
     expect(runtime.routes.signer).toBe(adapter);
     expect(runtime.routes.finalizer).toBe(adapter);
@@ -77,6 +90,7 @@ describe("platform media runtime composition", () => {
         "property.gallery_image",
         "marketplace.creator.profile_image",
         "marketplace.offer.media",
+        "marketplace.collaboration_chat.attachment",
       ],
       bucketName: "vayada-media-production",
       allowedOrigins: ["https://marketplace.vayada.com"],
@@ -88,10 +102,12 @@ function fakeFactories() {
   const repository = {} as ReturnType<typeof createPgPlatformMediaRepository>;
   const adapter = {} as ReturnType<typeof createS3PlatformMediaAdapter>;
   const offerMediaPromotion = {} as ReturnType<typeof createPgS3MarketplaceOfferMediaPromotion>;
+  const cleanupStore = {} as ReturnType<typeof createPgPlatformMediaCleanupStore>;
   const factories: PlatformMediaRuntimeFactories = {
     createRepository: vi.fn(() => repository),
     createAdapter: vi.fn(() => adapter),
     createOfferMediaPromotion: vi.fn(() => offerMediaPromotion),
+    createCleanupStore: vi.fn(() => cleanupStore),
   };
-  return { repository, adapter, offerMediaPromotion, factories };
+  return { repository, adapter, offerMediaPromotion, cleanupStore, factories };
 }

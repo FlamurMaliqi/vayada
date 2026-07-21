@@ -413,6 +413,7 @@ export type ExpectedTarget = {
       offerImageUrls: string[];
       chatMessageId: string;
       chatMediaObjectId: string;
+      chatRetainedUntil: string;
     };
     pms?: {
       roomTypeId: string;

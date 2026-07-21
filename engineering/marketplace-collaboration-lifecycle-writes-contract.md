@@ -8,10 +8,23 @@ The API supports create, respond, update terms, approve terms, cancel, toggle a
 deliverable, and rate a creator. Every command requires an idempotency key and
 the same creator-profile or `marketplace_offer` authorization used by reads.
 
-Create accepts `offerId`, `creatorId`, initiator side, optional message, proposed
-terms, and proposed deliverables. Pending and negotiating rows are creator
+Create accepts `offerId`, optional message, proposed terms, and proposed
+deliverables. Hotel invitations identify their target with `creatorId`.
+Creator applications derive the creator from the authenticated creator-profile
+resource link and require a nonblank `whyGreatFit`, explicit boolean
+`consent: true`, and a `compensationOptionId` belonging to the offer. The
+authenticated organization exclusively determines the initiator side;
+`side`/`initiatorSide` request fields are ignored and are not part of the typed
+create contract. Creators may apply only to verified offers, while hotel operators
+may invite creators from pending or verified offers they operate. The selected
+option's terms, summary, eligibility fields, and metadata are copied into an
+immutable collaboration snapshot. Pending and negotiating rows are creator
 proposals. Once both sides approve, the collaboration becomes the frozen
 agreement; later edits to the source offer do not mutate it.
+
+Lifecycle idempotency records are scoped to the selected organization. A replay
+is returned only after the stored collaboration is re-authorized against the
+caller's current creator-profile or Marketplace-offer resource links.
 
 Primary compensation is one of `free_stay`, `paid`, `discount`, or `custom`.
 Affiliate participation is represented separately by `affiliateEnabled` and

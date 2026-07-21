@@ -313,6 +313,20 @@ describe("platform media upload routes", () => {
     ]);
   });
 
+  it("marks signed upload URL responses private and authorization-varying", async () => {
+    const app = buildMediaApp();
+    const response = await app.inject({
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.headers.vary).toBe("Origin, Authorization");
+  });
+
   it("does not clean staging when durable completion fails", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     repository.completeUploadSession = async () => {
@@ -628,7 +642,8 @@ describe("platform media upload routes", () => {
 
   it("rejects public visibility for private-only chat attachments", async () => {
     const app = buildMediaApp({
-      permissions: ["marketplace.collaboration.review"],
+      organizationKind: "creator_workspace",
+      permissions: ["marketplace.collaboration.write"],
       resources: [
         {
           product: "marketplace",
@@ -650,6 +665,152 @@ describe("platform media upload routes", () => {
     expect((response.body as ErrorResponse).code).toBe(
       privateChatVisibilityCase.expected.errorCode,
     );
+  });
+
+  it.each([
+    {
+      name: "creator participant",
+      organizationKind: "creator_workspace" as const,
+      resource: {
+        product: "marketplace" as const,
+        resourceType: "creator_profile" as const,
+        resourceId: "creator_profile_lina",
+        relationship: "owner" as const,
+      },
+      resources: [
+        {
+          product: "marketplace" as const,
+          resourceType: "creator_profile" as const,
+          resourceId: "creator_profile_lina",
+          relationship: "owner" as const,
+        },
+      ],
+      expectedStatus: 201,
+    },
+    {
+      name: "hotel participant with profile and offer links",
+      organizationKind: "hotel_group" as const,
+      resource: {
+        product: "marketplace" as const,
+        resourceType: "marketplace_offer" as const,
+        resourceId: "offer_alpenrose",
+        relationship: "operator" as const,
+      },
+      resources: [
+        {
+          product: "marketplace" as const,
+          resourceType: "hotel_profile" as const,
+          resourceId: "hotel_profile_alpenrose",
+          relationship: "owner" as const,
+        },
+        {
+          product: "marketplace" as const,
+          resourceType: "marketplace_offer" as const,
+          resourceId: "offer_alpenrose",
+          relationship: "operator" as const,
+        },
+      ],
+      expectedStatus: 201,
+    },
+    {
+      name: "hotel missing its profile-owner link",
+      organizationKind: "hotel_group" as const,
+      resource: {
+        product: "marketplace" as const,
+        resourceType: "marketplace_offer" as const,
+        resourceId: "offer_alpenrose",
+        relationship: "operator" as const,
+      },
+      resources: [
+        {
+          product: "marketplace" as const,
+          resourceType: "marketplace_offer" as const,
+          resourceId: "offer_alpenrose",
+          relationship: "operator" as const,
+        },
+      ],
+      expectedStatus: 403,
+    },
+  ])("enforces exact chat-write upload policy for $name", async (testCase) => {
+    const app = buildMediaApp({
+      organizationKind: testCase.organizationKind,
+      permissions: ["marketplace.collaboration.write"],
+      resources: testCase.resources,
+    });
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        ...privateChatVisibilityCase.request.body,
+        visibility: "private",
+        resource: {
+          product: testCase.resource.product,
+          resourceType: testCase.resource.resourceType,
+          resourceId: testCase.resource.resourceId,
+          targetResourceId: "collaboration-source-001",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(testCase.expectedStatus);
+  });
+
+  it("marks private media finalize and replay responses private and authorization-varying", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const app = buildMediaApp({
+      repository,
+      organizationKind: "creator_workspace",
+      permissions: ["marketplace.collaboration.write"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_lina",
+          relationship: "owner",
+        },
+      ],
+    });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        ...privateChatVisibilityCase.request.body,
+        visibility: "private",
+        resource: {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_lina",
+          targetResourceId: "collaboration-source-001",
+        },
+      },
+    });
+    const created = create.body as MediaCreateResponse;
+    const finalizeRequest = {
+      method: "POST" as const,
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: [
+          {
+            uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+            contentType: "image/gif",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    };
+
+    const finalize = await app.inject(finalizeRequest);
+    const replay = await app.inject(finalizeRequest);
+
+    for (const response of [finalize, replay]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["cache-control"]).toBe("private, no-store");
+      expect(response.headers.vary).toBe("Origin, Authorization");
+    }
+    expect(replay.json<MediaFinalizeResponse>().sideEffects).toEqual(["idempotency_replay"]);
   });
 
   it("requires explicit public visibility for public profile images", async () => {
@@ -1266,6 +1427,7 @@ function buildMediaApp(
     cleanupTimeoutMs?: number;
     organizationId?: string;
     workosOrgId?: string;
+    organizationKind?: "creator_workspace" | "hotel_group";
   } = {},
 ): ReturnType<typeof buildApp> {
   const workosOrgId = options.workosOrgId ?? session.workosOrgId ?? "workos_media_org";
@@ -1286,6 +1448,7 @@ function buildMediaApp(
       repository: identityRepository(options.resources, {
         organizationId: options.organizationId ?? "org_media",
         workosOrgId,
+        kind: options.organizationKind ?? "hotel_group",
       }),
       rolePermissionRepository: {
         async findPermissionsForRole() {
@@ -1347,9 +1510,14 @@ function identityRepository(
       relationship: "owner",
     },
   ],
-  organization = {
+  organization: {
+    organizationId: string;
+    workosOrgId: string;
+    kind: "creator_workspace" | "hotel_group";
+  } = {
     organizationId: "org_media",
     workosOrgId: "workos_media_org",
+    kind: "hotel_group",
   },
 ): IdentityRepository {
   return {
@@ -1363,7 +1531,6 @@ function identityRepository(
     async findOrganizationByWorkosOrgId() {
       return {
         ...organization,
-        kind: "hotel_group",
         status: "active",
       };
     },

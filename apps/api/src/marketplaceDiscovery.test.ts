@@ -277,6 +277,75 @@ describe("marketplace discovery offers route", () => {
     }
   });
 
+  it("preserves the canonical fields used by Marketplace discovery filters", async () => {
+    const server = await buildDiscoveryApp({
+      offers: [
+        offerSeed({
+          hotelAccommodationType: "boutique_hotel",
+          compensationOptions: [
+            {
+              compensationOptionId: "paid-option",
+              compensationType: "paid",
+              availabilityMonths: ["July"],
+              platforms: ["instagram"],
+              freeStayMinNights: null,
+              freeStayMaxNights: null,
+              paidMaxAmount: "2000.00",
+              currency: "EUR",
+              discountPercentage: null,
+              commissionPercentage: null,
+              minFollowers: null,
+              termsSummary: null,
+            },
+            {
+              compensationOptionId: "discount-option",
+              compensationType: "discount",
+              availabilityMonths: ["July"],
+              platforms: ["instagram"],
+              freeStayMinNights: null,
+              freeStayMaxNights: null,
+              paidMaxAmount: null,
+              currency: null,
+              discountPercentage: 20,
+              commissionPercentage: null,
+              minFollowers: null,
+              termsSummary: null,
+            },
+            {
+              compensationOptionId: "affiliate-option",
+              compensationType: "affiliate",
+              availabilityMonths: ["July"],
+              platforms: ["instagram"],
+              freeStayMinNights: null,
+              freeStayMaxNights: null,
+              paidMaxAmount: null,
+              currency: null,
+              discountPercentage: null,
+              commissionPercentage: 12,
+              minFollowers: null,
+              termsSummary: null,
+            },
+          ],
+        }),
+      ],
+    });
+
+    const response = await injectJson<MarketplaceOfferPage>(server, {
+      method: "GET",
+      url: "/api/marketplace/offers",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.items[0]).toMatchObject({
+      hotelAccommodationType: "boutique_hotel",
+      compensationOptions: [
+        { compensationType: "paid", paidMaxAmount: "2000.00", currency: "EUR" },
+        { compensationType: "discount", discountPercentage: 20 },
+        { compensationType: "affiliate", commissionPercentage: 12 },
+      ],
+    });
+  });
+
   it("excludes non-public offers (offers-excludes-non-public)", async () => {
     const server = await buildDiscoveryApp({
       offers: [

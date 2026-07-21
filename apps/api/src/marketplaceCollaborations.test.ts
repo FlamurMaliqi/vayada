@@ -3,6 +3,7 @@ import {
   type IdentityRepository,
   type PermissionKey,
   type Product,
+  type RequestContext,
   type ResourceRelationship,
   type ResourceType,
   type VerifiedSession,
@@ -14,16 +15,22 @@ import {
   type MarketplaceCollaborationMessage,
   type MarketplaceCollaborationRead,
 } from "@vayada/domain-marketplace";
-import { describe, expect, it } from "vitest";
+import { createHash, randomUUID } from "node:crypto";
+import pg from "pg";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { createPgPlatformMediaRepository } from "./platform/platformMediaRepository.js";
+import type { PlatformMediaPrivateDownloadSigner } from "./platform/platformMediaS3.js";
 import {
+  createPgMarketplaceCollaborationReadRepository,
   toMarketplaceCollaborationListResponse,
   type MarketplaceCollaborationListFilters,
   type MarketplaceCollaborationLifecycleWriteInput,
   type MarketplaceCollaborationLifecycleWriteResponse,
   type MarketplaceCollaborationReadRepository,
 } from "./routes/marketplaceCollaborations.js";
+import type { PlatformMediaObjectRecord } from "./routes/platformMedia.js";
 
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
 
@@ -188,14 +195,16 @@ describe("marketplace collaboration read routes", () => {
       ],
     });
 
-    const response = await injectJson(app, {
+    const response = await app.inject({
       method: "GET",
       url: "/api/marketplace/collaborations/conversations",
       headers: { authorization: "Bearer valid-token" },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.body).toEqual([]);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.headers.vary).toBe("Authorization");
+    expect(response.json()).toEqual([]);
     expect(calls).toEqual(["hotel"]);
   });
 
@@ -263,6 +272,469 @@ describe("marketplace collaboration read routes", () => {
     });
   });
 
+  it("derives creator identity and initiator side from auth and snapshots the selected compensation option", async () => {
+    const pool = createCreatorApplicationPool();
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer-001:test:v1",
+        side: "hotel",
+        initiatorSide: "hotel",
+        offerId: "offer-001",
+        creatorId: "account-user-id-that-is-not-a-creator-id",
+        message: "A stale client must not override the creator's fit statement.",
+        compensationOptionId: "compensation-paid-001",
+        whyGreatFit: "My audience is a strong fit.",
+        consent: true,
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.body).toMatchObject({
+      collaboration: {
+        creator: { profileId: "creator-profile-target-001" },
+        compensationType: "paid",
+        terms: { paidAmount: "450.00", currency: "EUR" },
+      },
+    });
+
+    const creatorLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.creator_profiles"),
+    );
+    expect(creatorLookup?.text).not.toContain("source_creator_id");
+    expect(creatorLookup?.values).toEqual(["creator_profile_001", "org_creator"]);
+
+    const optionLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.offer_compensation_options"),
+    );
+    expect(optionLookup?.values).toEqual(["compensation-paid-001", "offer-001"]);
+
+    const insert = pool.calls.find((call) =>
+      call.text.includes("INSERT INTO marketplace.collaborations"),
+    );
+    expect(insert?.text).toContain("selectedCompensationOptionId");
+    expect(insert?.values[6]).toBe("creator");
+    expect(insert?.values[8]).toBe("My audience is a strong fit.");
+    expect(insert?.values[21]).toBe(true);
+    expect(insert?.values[22]).toBe("My audience is a strong fit.");
+    expect(insert?.values).toEqual(
+      expect.arrayContaining([
+        "creator-profile-target-001",
+        "paid",
+        "450.00",
+        "EUR",
+        "compensation-paid-001",
+      ]),
+    );
+    expect(JSON.parse(String(insert?.values[24]))).toEqual({
+      compensationOptionId: "compensation-paid-001",
+      compensationType: "paid",
+      availabilityMonths: ["July", "August"],
+      platforms: ["instagram"],
+      freeStayMinNights: null,
+      freeStayMaxNights: null,
+      paidMaxAmount: "450.00",
+      currency: "EUR",
+      discountPercentage: null,
+      commissionPercentage: null,
+      minFollowers: 5000,
+      termsSummary: "One Reel and three Stories",
+      metadata: { approvalWindowDays: 7 },
+    });
+
+    const idempotencyLookup = pool.calls.find((call) =>
+      call.text.includes("FROM platform.idempotency_keys"),
+    );
+    expect(idempotencyLookup?.text).toContain("tenant_scope = 'organization'");
+    expect(idempotencyLookup?.values[2]).toBe("org_creator");
+    const idempotencyReservation = pool.calls.find((call) =>
+      call.text.includes("INSERT INTO platform.idempotency_keys"),
+    );
+    expect(idempotencyReservation?.values[2]).toBe(
+      testSha256(
+        testStableJson({
+          action: "create",
+          side: "creator",
+          collaborationId: null,
+          deliverableId: null,
+          payload: {
+            idempotencyKey: "marketplace.collaboration.create:offer-001:test:v1",
+            offerId: "offer-001",
+            compensationOptionId: "compensation-paid-001",
+            whyGreatFit: "My audience is a strong fit.",
+            consent: true,
+          },
+        }),
+      ),
+    );
+
+    const offerLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.marketplace_offers"),
+    );
+    expect(offerLookup?.text).toContain("FOR SHARE");
+
+    const lifecycleRead = pool.calls.find(
+      (call) =>
+        call.text.includes("FROM marketplace.collaborations collaboration") &&
+        call.text.includes("WHERE collaboration.id::text = $1"),
+    );
+    expect(lifecycleRead?.text).toContain(
+      `COALESCE(NULLIF(creator.source_creator_id, ''), creator.id::text) AS "creatorId"`,
+    );
+  });
+
+  it.each([
+    {
+      label: "a nonblank fit statement",
+      payload: { whyGreatFit: "   ", consent: true },
+      message: "Creator applications require whyGreatFit.",
+    },
+    {
+      label: "explicit consent",
+      payload: { whyGreatFit: "My audience is a strong fit.", consent: false },
+      message: "Creator applications require explicit consent.",
+    },
+    {
+      label: "boolean consent rather than a truthy stale value",
+      payload: { whyGreatFit: "My audience is a strong fit.", consent: "true" },
+      message: "Creator applications require explicit consent.",
+    },
+  ])("requires $label for creator applications", async ({ payload, message }) => {
+    const executeLifecycleWrite = vi.fn();
+    const app = buildMarketplaceCollaborationsApp({
+      repository: createCollaborationRepository({ executeLifecycleWrite }),
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: `marketplace.collaboration.create:offer-001:${payload.consent}:v1`,
+        offerId: "offer-001",
+        compensationOptionId: "compensation-paid-001",
+        ...payload,
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toMatchObject({ code: "invalid_query", message });
+    expect(executeLifecycleWrite).not.toHaveBeenCalled();
+  });
+
+  it("rejects ambiguous active creator profile owner links", async () => {
+    const executeLifecycleWrite = vi.fn();
+    const app = buildMarketplaceCollaborationsApp({
+      repository: createCollaborationRepository({ executeLifecycleWrite }),
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_001",
+          relationship: "owner",
+        },
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_002",
+          relationship: "owner",
+        },
+      ],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer-001:ambiguous:v1",
+        offerId: "offer-001",
+        compensationOptionId: "compensation-paid-001",
+        whyGreatFit: "My audience is a strong fit.",
+        consent: true,
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({ code: "ambiguous_marketplace_creator_profile" });
+    expect(executeLifecycleWrite).not.toHaveBeenCalled();
+  });
+
+  it("rejects a linked creator profile owned by another organization", async () => {
+    const pool = createCreatorApplicationPool({ creatorProfileOrganizationMatches: false });
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer-001:cross-tenant-creator:v1",
+        offerId: "offer-001",
+        compensationOptionId: "compensation-paid-001",
+        whyGreatFit: "My audience is a strong fit.",
+        consent: true,
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const creatorLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.creator_profiles"),
+    );
+    expect(creatorLookup?.text).toContain("organization_id::text = $2");
+    expect(creatorLookup?.values).toEqual(["creator_profile_001", "org_creator"]);
+    expect(
+      pool.calls.some((call) => call.text.includes("INSERT INTO marketplace.collaborations")),
+    ).toBe(false);
+  });
+
+  it("rejects a compensation option that does not belong to the selected offer", async () => {
+    const pool = createCreatorApplicationPool({ compensationOptionExists: false });
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer-001:invalid-option:v1",
+        initiatorSide: "creator",
+        offerId: "offer-001",
+        compensationOptionId: "compensation-from-another-offer",
+        whyGreatFit: "My audience is a strong fit.",
+        consent: true,
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_query",
+      message: "The selected compensation option does not belong to this offer.",
+    });
+    expect(
+      pool.calls.some((call) => call.text.includes("INSERT INTO marketplace.collaborations")),
+    ).toBe(false);
+  });
+
+  it("does not let creators apply to pending offers", async () => {
+    const pool = createCreatorApplicationPool({ offerStatus: "pending" });
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer-001:pending:v1",
+        initiatorSide: "creator",
+        offerId: "offer-001",
+        compensationOptionId: "compensation-paid-001",
+        whyGreatFit: "My audience is a strong fit.",
+        consent: true,
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const offerLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.marketplace_offers"),
+    );
+    expect(offerLookup?.text).toContain("offer_status = 'verified'");
+    expect(
+      pool.calls.some((call) => call.text.includes("INSERT INTO marketplace.collaborations")),
+    ).toBe(false);
+  });
+
+  it("lets hotels invite creators from pending offers", async () => {
+    const pool = createCreatorApplicationPool({ offerStatus: "pending" });
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      organizationKind: "hotel_group",
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel-profile-001",
+          relationship: "owner",
+        },
+        {
+          product: "marketplace",
+          resourceType: "marketplace_offer",
+          resourceId: "offer-001",
+          relationship: "operator",
+        },
+      ],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer-001:hotel-pending:v1",
+        initiatorSide: "hotel",
+        offerId: "offer-001",
+        creatorId: "creator-source-001",
+        terms: {
+          compensationType: "free_stay",
+          freeStayMinNights: 1,
+          freeStayMaxNights: 2,
+        },
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const offerLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.marketplace_offers"),
+    );
+    expect(offerLookup?.text).toContain("offer_status IN ('pending', 'verified')");
+    const insert = pool.calls.find((call) =>
+      call.text.includes("INSERT INTO marketplace.collaborations"),
+    );
+    expect(insert?.values[6]).toBe("hotel");
+  });
+
+  it("rejects a linked hotel offer owned by another organization", async () => {
+    const pool = createCreatorApplicationPool({ hotelOfferOrganizationMatches: false });
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      organizationKind: "hotel_group",
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel-profile-001",
+          relationship: "owner",
+        },
+        {
+          product: "marketplace",
+          resourceType: "marketplace_offer",
+          resourceId: "offer-001",
+          relationship: "operator",
+        },
+      ],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer-001:cross-tenant-offer:v1",
+        offerId: "offer-001",
+        creatorId: "creator-source-001",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const offerLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.marketplace_offers"),
+    );
+    expect(offerLookup?.text).toContain("organization_id::text = $3");
+    expect(offerLookup?.values).toEqual(["offer-001", ["offer-001"], "org_creator"]);
+    expect(
+      pool.calls.some((call) => call.text.includes("INSERT INTO marketplace.collaborations")),
+    ).toBe(false);
+  });
+
+  it("does not replay a completed lifecycle response to an unrelated creator resource", async () => {
+    const idempotencyKey = "marketplace.collaboration.respond:collab_001:replay:v1";
+    const payload = { idempotencyKey, side: "creator", status: "accepted" };
+    const fingerprint = testSha256(
+      testStableJson({
+        action: "respond",
+        side: "creator",
+        collaborationId: "collab_001",
+        deliverableId: null,
+        payload,
+      }),
+    );
+    const pool = createUnauthorizedReplayPool(
+      fingerprint,
+      lifecycleWriteResponse({ action: "respond", idempotencyKey, side: "creator" }),
+    );
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_unrelated",
+          relationship: "owner",
+        },
+      ],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations/collab_001/respond",
+      payload,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const replayLookup = pool.calls.find((call) =>
+      call.text.includes("FROM platform.idempotency_keys"),
+    );
+    expect(replayLookup?.text).toContain("organization_id = $3::uuid");
+    expect(replayLookup?.values[2]).toBe("org_creator");
+    const authorizationLookup = pool.calls.find((call) =>
+      call.text.includes("FROM marketplace.collaborations collaboration"),
+    );
+    expect(authorizationLookup?.values[0]).toEqual(["creator_profile_unrelated"]);
+    expect(pool.calls.some((call) => call.text.includes("UPDATE marketplace.collaborations"))).toBe(
+      false,
+    );
+  });
+
   it("routes chat message writes through the V4 write repository", async () => {
     const messages: string[] = [];
     const repository = createCollaborationRepository({
@@ -290,6 +762,337 @@ describe("marketplace collaboration read routes", () => {
       contentType: "text",
     });
     expect(messages).toEqual(["creator:Looks good to me.:text"]);
+  });
+
+  it("persists private chat media IDs and returns signed attachment URLs", async () => {
+    const pool = createChatAttachmentPool();
+    const signPrivateDownload = vi.fn(async () => "https://signed.example/chat-image");
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+      attachmentMedia: {
+        repository: {
+          async findMediaObject(mediaId) {
+            return mediaId === "00000000-0000-4000-8000-000000000099" ? chatMediaObject() : null;
+          },
+        },
+        signer: { signPrivateDownload },
+        serving: {
+          bucketName: "vayada-media-test",
+          cdnBaseUrl: "https://cdn.example.com",
+          cdnOriginHost: "vayada-media-test.s3.amazonaws.com",
+          publicPathPrefix: "media",
+          publicCacheControl: "public, max-age=31536000, immutable",
+          privateDownloadTtlSeconds: 300,
+          privateDownloadMaxTtlSeconds: 900,
+        },
+      },
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const sentResponse = await app.inject({
+      method: "POST",
+      url: "/api/marketplace/collaborations/collab_001/messages",
+      payload: {
+        content: "Poolside breakfast at sunrise",
+        contentType: "image",
+        mediaObjectId: "00000000-0000-4000-8000-000000000099",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const sent = {
+      statusCode: sentResponse.statusCode,
+      headers: sentResponse.headers,
+      body: sentResponse.json<Record<string, unknown>>(),
+    };
+
+    expect(sent.statusCode).toBe(201);
+    expect(sent.headers["cache-control"]).toBe("private, no-store");
+    expect(sent.headers.vary).toBe("Authorization");
+    expect(sent.body).toMatchObject({
+      content: "Poolside breakfast at sunrise",
+      contentType: "image",
+      senderSide: "creator",
+      metadata: {
+        mediaObjectId: "00000000-0000-4000-8000-000000000099",
+        attachmentUrl: "https://signed.example/chat-image",
+        attachmentValidated: true,
+        fileName: "lobby.jpg",
+        fileSize: 1200,
+        contentType: "image/jpeg",
+      },
+    });
+    expect(pool.insertedMetadata).toEqual({
+      mediaObjectId: "00000000-0000-4000-8000-000000000099",
+    });
+    expect(pool.insertedContent).toBe("Poolside breakfast at sunrise");
+    const claim = pool.calls.find((call) =>
+      call.text.includes("UPDATE platform.media_objects AS media"),
+    );
+    expect(claim?.text).toContain("media.created_by_user_id = $3::uuid");
+    expect(claim?.text).toContain("media.owner_organization_id = $9::uuid");
+    expect(claim?.text).toContain("media.retained_until > now()");
+    expect(claim?.text).toContain("'attachmentState', 'orphan'");
+    expect(claim?.values.slice(7, 10)).toEqual([
+      "00000000-0000-4000-8000-000000000099",
+      "org_creator",
+      "2 years",
+    ]);
+
+    const messagesResponse = await app.inject({
+      method: "GET",
+      url: "/api/marketplace/collaborations/collab_001/messages",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const messages = {
+      statusCode: messagesResponse.statusCode,
+      headers: messagesResponse.headers,
+      body: messagesResponse.json<Record<string, unknown>>(),
+    };
+    expect(messages.statusCode).toBe(200);
+    expect(messages.headers["cache-control"]).toBe("private, no-store");
+    expect(messages.headers.vary).toBe("Authorization");
+    expect(messages.body).toMatchObject({
+      items: [
+        {
+          metadata: {
+            mediaObjectId: "00000000-0000-4000-8000-000000000099",
+            attachmentUrl: "https://signed.example/chat-image",
+            attachmentValidated: true,
+          },
+        },
+      ],
+    });
+    expect(signPrivateDownload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        expiresInSeconds: 300,
+        cacheControl: "private, no-store",
+        responseContentDisposition: undefined,
+      }),
+    );
+  });
+
+  it("serves fixture-shaped migrated chat media only for its exact message and owner", async () => {
+    const messageId = "00000000-0000-4000-8000-000000000123";
+    const pool = createChatAttachmentPool({
+      messageId,
+      collaborationId: "collab_001",
+      senderUserId: "user_creator",
+      senderName: "creator",
+      senderAvatarUrl: null,
+      senderSide: "creator",
+      content: "[image attachment migrated]",
+      contentType: "image",
+      metadata: {
+        mediaObjectId: "00000000-0000-4000-8000-000000000099",
+        attachmentSource: "platform_media_migration",
+        attachmentUrl: "https://tracking.example/poisoned.jpg",
+        attachmentValidated: true,
+        fileName: "poisoned.jpg",
+        legacySourceUrl: "https://legacy-private.example/chat.jpg",
+        storageKey: "private/chat/secret.jpg",
+        providerSecret: "must-not-leak",
+      },
+      createdAt: "2026-07-21T08:00:00.000Z",
+    });
+    const signPrivateDownload = vi.fn(async () => "https://signed.example/migrated-image");
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+      attachmentMedia: attachmentMediaForTest({
+        signPrivateDownload,
+        mediaObject: chatMediaObject({
+          resourceType: "collaboration_chat_message",
+          resourceId: messageId,
+          sourceMetadata: { migrationCase: "media-url-migration" },
+          retainedUntil: "2026-07-21T09:05:00.000Z",
+        }),
+        now: () => new Date("2026-07-21T09:00:00.000Z"),
+      }),
+    });
+    const app = buildMarketplaceCollaborationsApp({ repository });
+
+    const response = await injectJson<Record<string, unknown>>(app, {
+      method: "GET",
+      url: "/api/marketplace/collaborations/collab_001/messages",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      items: [
+        {
+          messageId,
+          metadata: {
+            mediaObjectId: "00000000-0000-4000-8000-000000000099",
+            attachmentSource: "platform_media_migration",
+            attachmentUrl: "https://signed.example/migrated-image",
+            attachmentValidated: true,
+            fileName: "lobby.jpg",
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(response.body)).not.toContain("tracking.example");
+    expect(JSON.stringify(response.body)).not.toContain("legacy-private.example");
+    expect(JSON.stringify(response.body)).not.toContain("private/chat/secret.jpg");
+    expect(JSON.stringify(response.body)).not.toContain("must-not-leak");
+    expect(signPrivateDownload).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      name: "different migrated message",
+      mediaOverrides: {
+        resourceType: "collaboration_chat_message",
+        resourceId: "00000000-0000-4000-8000-000000000999",
+        sourceMetadata: { migrationCase: "media-url-migration" },
+      },
+    },
+    {
+      name: "different migrated owner",
+      mediaOverrides: {
+        resourceType: "collaboration_chat_message",
+        resourceId: "00000000-0000-4000-8000-000000000123",
+        ownerOrganizationId: "org_unrelated",
+        sourceMetadata: { migrationCase: "media-url-migration" },
+      },
+    },
+    {
+      name: "missing retention",
+      mediaOverrides: {
+        retainedUntil: null,
+      },
+    },
+    {
+      name: "expired canonical attachment",
+      mediaOverrides: {
+        retainedUntil: "2026-07-21T09:00:00.000Z",
+      },
+    },
+  ])("returns unavailable metadata for $name", async ({ mediaOverrides }) => {
+    const messageId = "00000000-0000-4000-8000-000000000123";
+    const pool = createChatAttachmentPool({
+      messageId,
+      collaborationId: "collab_001",
+      senderUserId: "user_creator",
+      senderName: "creator",
+      senderAvatarUrl: null,
+      senderSide: "creator",
+      content: "Sent an image",
+      contentType: "image",
+      metadata: {
+        mediaObjectId: "00000000-0000-4000-8000-000000000099",
+        attachmentSource: "platform_media_migration",
+        attachmentUrl: "https://tracking.example/poisoned.jpg",
+        attachmentValidated: true,
+      },
+      createdAt: "2026-07-21T08:00:00.000Z",
+    });
+    const signPrivateDownload = vi.fn(async () => "unused");
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+      attachmentMedia: attachmentMediaForTest({
+        signPrivateDownload,
+        mediaObject: chatMediaObject(mediaOverrides),
+        now: () => new Date("2026-07-21T09:00:00.000Z"),
+      }),
+    });
+    const app = buildMarketplaceCollaborationsApp({ repository });
+
+    const response = await injectJson<{ items: Array<{ metadata: Record<string, unknown> }> }>(
+      app,
+      {
+        method: "GET",
+        url: "/api/marketplace/collaborations/collab_001/messages",
+        headers: { authorization: "Bearer valid-token" },
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.items[0]?.metadata).toEqual({
+      mediaObjectId: "00000000-0000-4000-8000-000000000099",
+      attachmentSource: "platform_media_migration",
+    });
+    expect(signPrivateDownload).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { actorUserId: "another_user" },
+    { ownerOrganizationId: "another_organization" },
+  ] satisfies Array<Partial<PlatformMediaObjectRecord>>)(
+    "rejects chat attachments uploaded outside the sender identity: %j",
+    async (mediaOverrides) => {
+      const pool = createChatAttachmentPool();
+      const repository = createPgMarketplaceCollaborationReadRepository({
+        connectionString: "postgresql://target-db",
+        pool: pool as never,
+        attachmentMedia: {
+          repository: {
+            async findMediaObject(mediaId) {
+              return mediaId === "00000000-0000-4000-8000-000000000099"
+                ? chatMediaObject(mediaOverrides)
+                : null;
+            },
+          },
+          signer: { signPrivateDownload: vi.fn() },
+          serving: {
+            bucketName: "vayada-media-test",
+            cdnBaseUrl: "https://cdn.example.com",
+            cdnOriginHost: "vayada-media-test.s3.amazonaws.com",
+            publicPathPrefix: "media",
+            publicCacheControl: "public, max-age=31536000, immutable",
+            privateDownloadTtlSeconds: 300,
+            privateDownloadMaxTtlSeconds: 900,
+          },
+        },
+      });
+      const app = buildMarketplaceCollaborationsApp({
+        repository,
+        permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      });
+
+      const response = await injectJson(app, {
+        method: "POST",
+        url: "/api/marketplace/collaborations/collab_001/messages",
+        payload: {
+          contentType: "image",
+          mediaObjectId: "00000000-0000-4000-8000-000000000099",
+        },
+        headers: { authorization: "Bearer valid-token" },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.body).toMatchObject({ code: "invalid_query" });
+      expect(
+        pool.calls.some((call) =>
+          call.text.includes("INSERT INTO marketplace.marketplace_chat_messages"),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("rejects image messages without a private media object ID", async () => {
+    const app = buildMarketplaceCollaborationsApp({
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations/collab_001/messages",
+      payload: { contentType: "image", content: "https://public.example/image.jpg" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_query",
+      message: "image messages require mediaObjectId.",
+    });
   });
 
   it("denies lifecycle writes without the required marketplace resource link", async () => {
@@ -354,6 +1157,237 @@ describe("marketplace collaboration read routes", () => {
     expect(response.body).toMatchObject({
       code: "missing_hotel_resource_link",
     });
+  });
+});
+
+const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
+
+describe.skipIf(!TEST_DATABASE_URL)("marketplace chat attachment persistence", () => {
+  it("atomically claims an orphan once and rejects claimed, expired, and wrong-owner media", async () => {
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    const mediaRepository = createPgPlatformMediaRepository({
+      connectionString: TEST_DATABASE_URL!,
+      publicCdnBaseUrl: "https://cdn.example.com",
+    });
+    const signPrivateDownload = vi.fn(async () => "https://signed.example/chat-image");
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: TEST_DATABASE_URL!,
+      attachmentMedia: {
+        repository: mediaRepository,
+        signer: { signPrivateDownload },
+        serving: {
+          bucketName: "vayada-media-test",
+          cdnBaseUrl: "https://cdn.example.com",
+          cdnOriginHost: "vayada-media-test.s3.amazonaws.com",
+          publicPathPrefix: "media",
+          publicCacheControl: "public, max-age=31536000, immutable",
+          privateDownloadTtlSeconds: 300,
+          privateDownloadMaxTtlSeconds: 900,
+        },
+      },
+    });
+    const userId = randomUUID();
+    const creatorOrganizationId = randomUUID();
+    const hotelOrganizationId = randomUUID();
+    const creatorProfileId = randomUUID();
+    const propertyId = randomUUID();
+    const offerId = randomUUID();
+    const collaborationId = randomUUID();
+    const sourceCollaborationId = `integration-${collaborationId}`;
+    const mediaIds = {
+      orphan: randomUUID(),
+      claimed: randomUUID(),
+      expired: randomUUID(),
+      wrongOwner: randomUUID(),
+    };
+    const allMediaIds = Object.values(mediaIds);
+    const context: RequestContext = {
+      actor: {
+        internalUserId: userId,
+        providerIdentity: { provider: "workos", providerUserId: `workos-${userId}` },
+        email: `${userId}@example.com`,
+        status: "active",
+      },
+      selectedOrganization: {
+        organizationId: creatorOrganizationId,
+        kind: "creator_workspace",
+        status: "active",
+      },
+      membership: {
+        membershipId: randomUUID(),
+        status: "active",
+        roleKey: "creator_owner",
+        workosRoleSlugs: [],
+        permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      },
+      linkedResources: [
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: creatorProfileId,
+          relationship: "owner",
+          status: "active",
+        },
+      ],
+      entitlements: [],
+      locale: "en",
+      currency: "USD",
+      audit: {
+        requestId: randomUUID(),
+        source: "web",
+        receivedAt: new Date().toISOString(),
+      },
+    };
+
+    await client.connect();
+    try {
+      await client.query(`INSERT INTO identity.users (id, email) VALUES ($1, $2)`, [
+        userId,
+        context.actor.email,
+      ]);
+      await client.query(
+        `INSERT INTO identity.organizations (id, kind, name, slug)
+         VALUES ($1, 'creator_workspace', 'Chat Creator', $2),
+                ($3, 'hotel_group', 'Chat Hotel', $4)`,
+        [
+          creatorOrganizationId,
+          `chat-creator-${creatorOrganizationId}`,
+          hotelOrganizationId,
+          `chat-hotel-${hotelOrganizationId}`,
+        ],
+      );
+      await client.query(
+        `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
+         VALUES ($1, $2, 'Chat Test Hotel')`,
+        [propertyId, `chat-property-${propertyId}`],
+      );
+      await client.query(
+        `INSERT INTO marketplace.creator_profiles
+           (id, organization_id, owner_user_id, display_name)
+         VALUES ($1, $2, $3, 'Chat Test Creator')`,
+        [creatorProfileId, creatorOrganizationId, userId],
+      );
+      await client.query(
+        `INSERT INTO marketplace.marketplace_hotel_profiles (property_id, organization_id)
+         VALUES ($1, $2)`,
+        [propertyId, hotelOrganizationId],
+      );
+      await client.query(
+        `INSERT INTO marketplace.marketplace_offers (id, property_id, organization_id, title)
+         VALUES ($1, $2, $3, 'Chat Test Offer')`,
+        [offerId, propertyId, hotelOrganizationId],
+      );
+      await client.query(
+        `INSERT INTO marketplace.collaborations
+           (id, creator_profile_id, creator_organization_id, property_id,
+            hotel_organization_id, offer_id, source_collaboration_id,
+            initiator_type, lifecycle_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'hotel', 'accepted')`,
+        [
+          collaborationId,
+          creatorProfileId,
+          creatorOrganizationId,
+          propertyId,
+          hotelOrganizationId,
+          offerId,
+          sourceCollaborationId,
+        ],
+      );
+
+      for (const [state, mediaId] of Object.entries(mediaIds)) {
+        const ownerOrganizationId =
+          state === "wrongOwner" ? hotelOrganizationId : creatorOrganizationId;
+        const attachmentState = state === "claimed" ? "claimed" : "orphan";
+        const retainedUntil = new Date(
+          Date.now() + (state === "expired" ? -60_000 : 60_000),
+        ).toISOString();
+        const storageKey = `private/media/chat/provider_original/${mediaId}.jpg`;
+        await client.query(
+          `INSERT INTO platform.media_objects
+             (id, bucket, storage_key, visibility, purpose, owner_organization_id,
+              property_id, resource_product, resource_type, resource_id,
+              lifecycle_status, content_type, size_bytes, original_filename,
+              source_metadata, retained_until, created_by_user_id)
+           VALUES ($1, 'vayada-media-test', $2, 'private',
+                   'marketplace.collaboration_chat.attachment', $3, $4,
+                   'marketplace', 'collaboration', $5, 'active', 'image/jpeg',
+                   1200, 'chat.jpg', $6::jsonb, $7::timestamptz, $8)`,
+          [
+            mediaId,
+            storageKey,
+            ownerOrganizationId,
+            propertyId,
+            collaborationId,
+            JSON.stringify({ attachmentState, requestedVisibility: "private" }),
+            retainedUntil,
+            userId,
+          ],
+        );
+        await client.query(
+          `INSERT INTO platform.media_variants
+             (media_object_id, variant_name, visibility, storage_key,
+              content_type, size_bytes)
+           VALUES ($1, 'provider_original', 'private', $2, 'image/jpeg', 1200)`,
+          [mediaId, storageKey],
+        );
+      }
+
+      const send = (mediaObjectId: string) =>
+        repository.sendMessage!({
+          context,
+          side: "creator",
+          collaborationId: sourceCollaborationId,
+          content: "Sent an image",
+          contentType: "image",
+          mediaObjectId,
+        });
+      const concurrentResults = await Promise.allSettled([
+        send(mediaIds.orphan),
+        send(mediaIds.orphan),
+      ]);
+      expect(concurrentResults.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      expect(concurrentResults.filter(({ status }) => status === "rejected")).toHaveLength(1);
+      const inserted = await client.query<{
+        count: string;
+        claimedByMessageId: string | null;
+      }>(
+        `SELECT count(message.id)::text AS count,
+                max(media.source_metadata ->> 'claimedByMessageId') AS "claimedByMessageId"
+         FROM platform.media_objects media
+         LEFT JOIN marketplace.marketplace_chat_messages message
+           ON message.id::text = media.source_metadata ->> 'claimedByMessageId'
+         WHERE media.id = $1`,
+        [mediaIds.orphan],
+      );
+      expect(inserted.rows[0]).toMatchObject({
+        count: "1",
+        claimedByMessageId: expect.any(String),
+      });
+
+      for (const mediaObjectId of [mediaIds.claimed, mediaIds.expired, mediaIds.wrongOwner]) {
+        await expect(send(mediaObjectId)).rejects.toMatchObject({
+          statusCode: 400,
+          code: "invalid_query",
+        });
+      }
+      expect(signPrivateDownload).toHaveBeenCalledTimes(3);
+    } finally {
+      await client.query(`DELETE FROM marketplace.collaborations WHERE id = $1`, [collaborationId]);
+      await client.query(`DELETE FROM platform.media_objects WHERE id = ANY($1::uuid[])`, [
+        allMediaIds,
+      ]);
+      await client.query(`DELETE FROM marketplace.creator_profiles WHERE id = $1`, [
+        creatorProfileId,
+      ]);
+      await client.query(`DELETE FROM hotel_catalog.properties WHERE id = $1`, [propertyId]);
+      await client.query(`DELETE FROM identity.organizations WHERE id = ANY($1::uuid[])`, [
+        [creatorOrganizationId, hotelOrganizationId],
+      ]);
+      await client.query(`DELETE FROM identity.users WHERE id = $1`, [userId]);
+      await repository.close?.();
+      await mediaRepository.close?.();
+      await client.end();
+    }
   });
 });
 
@@ -451,6 +1485,7 @@ function messageRead(
     senderUserId: "user_creator",
     senderName: "creator",
     senderAvatarUrl: null,
+    senderSide: "creator",
     content,
     contentType,
     metadata: null,
@@ -555,5 +1590,310 @@ function identityRepository(
     async findLinkedResources() {
       return resources.map((resource) => ({ ...resource, status: "active" }));
     },
+  };
+}
+
+function createCreatorApplicationPool(
+  options: {
+    compensationOptionExists?: boolean;
+    offerStatus?: "pending" | "verified";
+    creatorProfileOrganizationMatches?: boolean;
+    hotelOfferOrganizationMatches?: boolean;
+  } = {},
+) {
+  const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+  const query = async (text: string, values: readonly unknown[] = []) => {
+    calls.push({ text, values });
+    let rows: unknown[] = [];
+    if (text.includes("FROM platform.idempotency_keys")) {
+      rows = [];
+    } else if (text.includes("INSERT INTO platform.idempotency_keys")) {
+      rows = [{ id: "idempotency-001" }];
+    } else if (text.includes("FROM marketplace.creator_profiles")) {
+      const crossTenantCreatorLink =
+        options.creatorProfileOrganizationMatches === false &&
+        text.includes("AND organization_id::text");
+      rows = crossTenantCreatorLink
+        ? []
+        : [
+            {
+              id: "creator-profile-target-001",
+              organizationId: "org_creator",
+            },
+          ];
+    } else if (text.includes("FROM marketplace.marketplace_offers")) {
+      const creatorCannotSeePending =
+        options.offerStatus === "pending" && text.includes("offer_status = 'verified'");
+      const crossTenantHotelOffer =
+        options.hotelOfferOrganizationMatches === false &&
+        text.includes("AND organization_id::text");
+      rows =
+        creatorCannotSeePending || crossTenantHotelOffer
+          ? []
+          : [
+              {
+                id: "offer-001",
+                propertyId: "property-001",
+                organizationId: "org_creator",
+              },
+            ];
+    } else if (text.includes("FROM marketplace.offer_compensation_options")) {
+      rows =
+        options.compensationOptionExists === false
+          ? []
+          : [
+              {
+                compensationOptionId: "compensation-paid-001",
+                compensationType: "paid",
+                availabilityMonths: ["July", "August"],
+                platforms: ["instagram"],
+                freeStayMinNights: null,
+                freeStayMaxNights: null,
+                paidMaxAmount: "450.00",
+                currency: "EUR",
+                discountPercentage: null,
+                commissionPercentage: null,
+                minFollowers: 5000,
+                termsSummary: "One Reel and three Stories",
+                metadata: { approvalWindowDays: 7 },
+              },
+            ];
+    } else if (text.includes("SELECT gen_random_uuid()")) {
+      rows = [{ id: "collaboration-target-001" }];
+    } else if (text.includes("INSERT INTO marketplace.collaborations")) {
+      rows = [{ id: "collaboration-target-001" }];
+    } else if (
+      text.includes("FROM marketplace.collaborations collaboration") &&
+      text.includes("WHERE collaboration.id::text = $1")
+    ) {
+      rows = [creatorApplicationRow()];
+    }
+    return { rows };
+  };
+  const client = { query, release() {} };
+  return {
+    calls,
+    query,
+    async connect() {
+      return client;
+    },
+    async end() {},
+  };
+}
+
+function creatorApplicationRow() {
+  return {
+    collaborationId: "collaboration-target-001",
+    authorizationMode: "creator_workspace_resource_link",
+    offerId: "offer-001",
+    creatorId: "creator-source-001",
+    hotelProfileId: "property-001",
+    side: "creator",
+    initiatorSide: "creator",
+    status: "pending",
+    compensationType: "paid",
+    offerTitle: "City hotel launch",
+    hotelLocation: "Munich, Germany",
+    creatorProfileId: "creator-profile-target-001",
+    creatorOrganizationId: "creator-org-target-001",
+    creatorDisplayName: "Ari Creator",
+    creatorAvatarUrl: null,
+    hotelProfileResourceId: "property-001",
+    hotelOrganizationId: "hotel-org-001",
+    hotelDisplayName: "City Hotel",
+    hotelAvatarUrl: null,
+    freeStayMinNights: null,
+    freeStayMaxNights: null,
+    paidAmount: "450.00",
+    currency: "EUR",
+    discountPercentage: null,
+    affiliateEnabled: false,
+    affiliateCommissionPercentage: null,
+    travelDateFrom: null,
+    travelDateTo: null,
+    preferredDateFrom: null,
+    preferredDateTo: null,
+    preferredMonths: [],
+    deliverables: [],
+    lastMessageAt: null,
+    createdAt: "2026-07-21T08:00:00.000Z",
+    updatedAt: "2026-07-21T08:00:00.000Z",
+  };
+}
+
+function createUnauthorizedReplayPool(
+  requestFingerprintHash: string,
+  response: MarketplaceCollaborationLifecycleWriteResponse,
+) {
+  const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+  const query = async (text: string, values: readonly unknown[] = []) => {
+    calls.push({ text, values });
+    if (text.includes("FROM platform.idempotency_keys")) {
+      return {
+        rows: [
+          {
+            status: "completed",
+            requestFingerprintHash,
+            metadata: { response },
+          },
+        ],
+      };
+    }
+    if (text.includes("FROM marketplace.collaborations collaboration")) {
+      return { rows: [] };
+    }
+    return { rows: [] };
+  };
+  const client = { query, release() {} };
+  return {
+    calls,
+    query,
+    async connect() {
+      return client;
+    },
+    async end() {},
+  };
+}
+
+function testSha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function testStableJson(value: unknown): string {
+  return JSON.stringify(testSortJson(value));
+}
+
+function testSortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(testSortJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, testSortJson(entry)]),
+  );
+}
+
+function createChatAttachmentPool(initialMessage: Record<string, unknown> | null = null) {
+  let message: Record<string, unknown> | null = initialMessage;
+  const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+  const pool = {
+    calls,
+    insertedMetadata: null as Record<string, unknown> | null,
+    insertedContent: null as string | null,
+    async query(text: string, values: readonly unknown[] = []) {
+      calls.push({ text, values });
+      if (text.includes("INSERT INTO marketplace.marketplace_chat_messages")) {
+        pool.insertedMetadata = JSON.parse(String(values[6])) as Record<string, unknown>;
+        pool.insertedContent = String(values[5]);
+        message = {
+          messageId: "message-target-001",
+          collaborationId: "collab_001",
+          senderUserId: "user_creator",
+          senderName: "creator",
+          senderAvatarUrl: null,
+          senderSide: "creator",
+          content: values[5],
+          contentType: values[4],
+          metadata: pool.insertedMetadata,
+          createdAt: "2026-07-21T08:00:00.000Z",
+        };
+        return { rows: [message] };
+      }
+      if (text.includes("FROM marketplace.collaborations collaboration")) {
+        return {
+          rows: [
+            {
+              id: "collaboration-target-001",
+              propertyId: "property-target-001",
+              lifecycleStatus: "accepted",
+              initiatorSide: "creator",
+              sourceCollaborationId: "collab_001",
+              compensationType: "free_stay",
+              affiliateEnabled: false,
+              creatorProfileId: "creator_profile_001",
+              creatorOrganizationId: "org_creator",
+              hotelOrganizationId: "org_hotel",
+              creatorAgreedAt: null,
+              hotelAgreedAt: null,
+            },
+          ],
+        };
+      }
+      if (text.includes("FROM marketplace.marketplace_chat_messages message")) {
+        return { rows: message ? [message] : [] };
+      }
+      return { rows: [] };
+    },
+    async end() {},
+  };
+  return pool;
+}
+
+function attachmentMediaForTest(input: {
+  mediaObject: PlatformMediaObjectRecord;
+  signPrivateDownload: PlatformMediaPrivateDownloadSigner["signPrivateDownload"];
+  now?: () => Date;
+}) {
+  return {
+    repository: {
+      async findMediaObject(mediaId: string) {
+        return mediaId === input.mediaObject.mediaId ? input.mediaObject : null;
+      },
+    },
+    signer: { signPrivateDownload: input.signPrivateDownload },
+    serving: {
+      bucketName: "vayada-media-test",
+      cdnBaseUrl: "https://cdn.example.com",
+      cdnOriginHost: "vayada-media-test.s3.amazonaws.com",
+      publicPathPrefix: "media",
+      publicCacheControl: "public, max-age=31536000, immutable",
+      privateDownloadTtlSeconds: 300,
+      privateDownloadMaxTtlSeconds: 900,
+    },
+    now: input.now,
+  };
+}
+
+function chatMediaObject(
+  overrides: Partial<PlatformMediaObjectRecord> = {},
+): PlatformMediaObjectRecord {
+  return {
+    mediaId: "00000000-0000-4000-8000-000000000099",
+    purpose: "marketplace.collaboration_chat.attachment" as const,
+    visibility: "private" as const,
+    requestedVisibility: "private" as const,
+    approvalStatus: "private" as const,
+    lifecycleStatus: "active" as const,
+    storageKind: "vayada_managed" as const,
+    bucket: "vayada-media-test",
+    storageKey: "private/media/chat/provider_original/lobby.jpg",
+    ownerOrganizationId: "org_creator",
+    actorUserId: "user_creator",
+    resourceProduct: "marketplace",
+    resourceType: "collaboration",
+    resourceId: "collaboration-target-001",
+    propertyId: "property-target-001",
+    contentType: "image/jpeg",
+    sizeBytes: 1200,
+    widthPx: 1200,
+    heightPx: 800,
+    checksumSha256: "a".repeat(64),
+    originalFilename: "lobby.jpg",
+    variants: [
+      {
+        variantName: "provider_original" as const,
+        visibility: "private" as const,
+        storageKey: "private/media/chat/provider_original/lobby.jpg",
+        contentType: "image/jpeg",
+        widthPx: 1200,
+        heightPx: 800,
+        sizeBytes: 1200,
+        checksumSha256: "a".repeat(64),
+        publicCdnUrl: null,
+      },
+    ],
+    createdAt: "2026-07-21T08:00:00.000Z",
+    retainedUntil: "2099-01-01T00:00:00.000Z",
+    ...overrides,
   };
 }

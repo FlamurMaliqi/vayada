@@ -30,19 +30,18 @@ Reads land before writes:
 5. Remove fallback once the TypeScript read and write routes are fully wired to
    the target read/write model.
 
-This PR intentionally implements slice 1-3 only. Write commands stay in a
-follow-up V5 slice because they need idempotency, validation, and audit behavior
-that should not be hidden inside a read-route PR.
+Slices 1-4 are implemented. The frontend keeps the legacy fallback until the
+TypeScript routes are fully deployed and verified.
 
 ## Endpoints
 
-| Surface                       | Method                  | Target path                                       | Frontend typed client                             |
-| ----------------------------- | ----------------------- | ------------------------------------------------- | ------------------------------------------------- |
-| Trip list                     | `GET`                   | `/api/marketplace/trips`                          | `listMarketplaceTrips()`                          |
-| Trip detail                   | `GET`                   | `/api/marketplace/trips/{tripId}`                 | `getMarketplaceTrip(tripId)`                      |
-| External collaboration list   | `GET`                   | `/api/marketplace/trips/external-collaborations`  | `listMarketplaceExternalCollaborations()`         |
-| Trip create/update/delete     | `POST`, `PUT`, `DELETE` | `/api/marketplace/trips*`                         | typed client exists; route implementation follows |
-| External collaboration writes | `POST`, `PUT`, `DELETE` | `/api/marketplace/trips/external-collaborations*` | typed client exists; route implementation follows |
+| Surface                       | Method                  | Target path                                       | Frontend typed client                                    |
+| ----------------------------- | ----------------------- | ------------------------------------------------- | -------------------------------------------------------- |
+| Trip list                     | `GET`                   | `/api/marketplace/trips`                          | `listMarketplaceTrips()`                                 |
+| Trip detail                   | `GET`                   | `/api/marketplace/trips/{tripId}`                 | `getMarketplaceTrip(tripId)`                             |
+| External collaboration list   | `GET`                   | `/api/marketplace/trips/external-collaborations`  | `listMarketplaceExternalCollaborations()`                |
+| Trip create/update/delete     | `POST`, `PUT`, `DELETE` | `/api/marketplace/trips*`                         | `create/update/deleteMarketplaceTrip()`                  |
+| External collaboration writes | `POST`, `PUT`, `DELETE` | `/api/marketplace/trips/external-collaborations*` | `create/update/deleteMarketplaceExternalCollaboration()` |
 
 ## Authorization
 
@@ -79,8 +78,11 @@ creator-workspace resource-link model and prevents cross-workspace trip access.
 
 `tripId` and `externalCollaborationId` are stable UI identifiers. For migrated
 rows they use the legacy source IDs where available; target-native rows may use
-the target UUID. Internal WorkOS organization IDs, membership IDs, email, and
-legacy owner columns are not exposed.
+the target UUID. Detail and write routes accept either the stable source ID or
+the target UUID without casting an opaque source ID to UUID. Nested external
+collaborations expose the same public `tripId` as their parent. Internal WorkOS
+organization IDs, membership IDs, email, and legacy owner columns are not
+exposed.
 
 ## Response
 
@@ -132,6 +134,7 @@ Write routes accept target camelCase fields:
 
 ```ts
 type CreateMarketplaceTripRequest = {
+  idempotencyKey: string; // sent as the Idempotency-Key header, not in the JSON body
   name: string;
   locationText?: string | null;
   startDate: string;
@@ -140,6 +143,7 @@ type CreateMarketplaceTripRequest = {
 };
 
 type CreateMarketplaceExternalCollaborationRequest = {
+  idempotencyKey: string; // sent as the Idempotency-Key header, not in the JSON body
   tripId?: string | null;
   title: string;
   hotelName?: string | null;
@@ -161,11 +165,34 @@ Validation rules for the write slice:
   creator profile and organization.
 - Unknown collaboration types are rejected instead of silently persisted.
 
+Every write requires a non-empty caller-generated `Idempotency-Key` header (at
+most 200 characters). Keys are scoped by organization and action. Reusing a key
+with the same normalized action, resource ID, and payload replays the completed
+response. Reusing it with a different fingerprint returns `409
+idempotency_conflict`.
+
+Completed responses are also bound to the creator profile selected when the
+command was first accepted. Cached create/update responses are returned only
+after the target row is reauthorized for that profile and organization. Cached
+delete responses cannot re-read the deleted row, so the stored creator-profile
+identity is the required replay guard. The frontend write facade accepts a
+caller-owned key so a form submission can retain it across an ambiguous network
+failure and a later retry.
+
+Database `DATE` columns are selected and returned as `YYYY-MM-DD` text. They
+must not pass through JavaScript UTC conversion, which can shift a local
+calendar date by one day.
+
+The write, idempotency completion, and one `platform.product_audit_events` row
+are committed in the same database transaction. The audit row records the
+organization, actor, action, target public resource ID, request/correlation
+metadata, and idempotency record. A failed mutation commits none of them.
+
 ## Errors
 
 ```ts
 type MarketplaceTripError = {
-  statusCode: 401 | 403 | 404 | 409 | 422 | 500;
+  statusCode: 400 | 401 | 403 | 404 | 409 | 500;
   code:
     | "unauthorized"
     | "missing_permission"
@@ -173,8 +200,8 @@ type MarketplaceTripError = {
     | "missing_creator_resource_link"
     | "trip_not_found"
     | "external_collaboration_not_found"
-    | "invalid_body"
-    | "trip_conflict"
+    | "invalid_request"
+    | "idempotency_conflict"
     | "read_model_unavailable"
     | "write_model_unavailable";
   category:
@@ -211,7 +238,7 @@ defines the contract cases:
 | `trips-deny-wrong-org-kind`     | Hotel group cannot use the creator trips route.                                |
 | `trips-deny-missing-link`       | Permission without creator-profile resource link is denied.                    |
 | `trips-deny-missing-permission` | Resource link without `marketplace.trip.read` is denied.                       |
-| `trip-write-validation`         | Follow-up write slice rejects invalid dates and unknown collaboration types.   |
+| `trip-write-validation`         | Write routes reject invalid dates and unknown collaboration types.             |
 
 ## References
 

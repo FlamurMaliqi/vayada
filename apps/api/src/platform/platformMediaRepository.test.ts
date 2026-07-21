@@ -123,6 +123,84 @@ describe("PostgreSQL platform media repository", () => {
     });
   });
 
+  it("persists private collaboration attachments as active provider originals", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "marketplace.collaboration_chat.attachment");
+
+    const completed = await repository.completeUploadSession(completionInput(session));
+
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose: "marketplace.collaboration_chat.attachment",
+      visibility: "private",
+      approvalStatus: "private",
+      lifecycleStatus: "active",
+      resourceProduct: "marketplace",
+      resourceType: "collaboration",
+      variants: [
+        expect.objectContaining({
+          variantName: "provider_original",
+          visibility: "private",
+          publicCdnUrl: null,
+        }),
+      ],
+    });
+
+    const objectInsert = database.clientQueries.find(({ text }) =>
+      text.includes("INSERT INTO platform.media_objects"),
+    );
+    expect(objectInsert?.text).toContain("retained_until");
+    expect(objectInsert?.text).toContain("interval '1 hour'");
+    expect(JSON.parse(String(objectInsert?.values?.[17]))).toMatchObject({
+      requestedVisibility: "private",
+      attachmentState: "orphan",
+    });
+  });
+
+  it("resolves a chat target only when the source resource belongs to the collaboration", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{ collaborationId: "collaboration-target-001", propertyId: PROPERTY_ID }],
+    }));
+    const repository = createPgPlatformMediaRepository({
+      connectionString: "postgresql://target.test/vayada",
+      publicCdnBaseUrl: "https://cdn.example.com",
+      pool: { query, connect: vi.fn(), end: vi.fn() } as never,
+    });
+
+    await expect(
+      repository.resolveTarget({
+        request: {
+          purpose: "marketplace.collaboration_chat.attachment",
+          visibility: "private",
+          resource: {
+            product: "marketplace",
+            resourceType: "creator_profile",
+            resourceId: "creator-profile-001",
+            targetResourceId: "collaboration-source-001",
+          },
+          files: [],
+        },
+        policy: {
+          targetResourceProduct: "marketplace",
+          targetResourceType: "collaboration",
+        } as never,
+        context: {} as never,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      target: {
+        resourceProduct: "marketplace",
+        resourceType: "collaboration",
+        resourceId: "collaboration-target-001",
+        propertyId: PROPERTY_ID,
+      },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("creator_profile_id"), [
+      "collaboration-source-001",
+      "creator-profile-001",
+    ]);
+  });
+
   it.each(["property.hero_image", "property.gallery_image"] as const)(
     "resolves and persists requested-public %s against the canonical property",
     async (purpose) => {
@@ -294,19 +372,33 @@ async function createSession(
   purpose:
     | "identity.user.profile_image"
     | "marketplace.offer.media"
+    | "marketplace.collaboration_chat.attachment"
     | "property.hero_image"
     | "property.gallery_image" = "identity.user.profile_image",
 ) {
   const isProfile = purpose === "identity.user.profile_image";
   const isOffer = purpose === "marketplace.offer.media";
-  const product = isProfile ? "platform" : isOffer ? "marketplace" : "booking";
-  const resourceType = isProfile ? "user_profile" : isOffer ? "marketplace_offer" : "booking_hotel";
+  const isChat = purpose === "marketplace.collaboration_chat.attachment";
+  const product = isProfile ? "platform" : isOffer || isChat ? "marketplace" : "booking";
+  const resourceType = isProfile
+    ? "user_profile"
+    : isOffer
+      ? "marketplace_offer"
+      : isChat
+        ? "creator_profile"
+        : "booking_hotel";
   const resourceId = isProfile
     ? "00000000-0000-4000-8000-000000000001"
-    : isOffer
+    : isOffer || isChat
       ? "00000000-0000-4000-8000-000000000020"
       : BOOKING_HOTEL_ID;
-  const filename = isProfile ? "profile.jpg" : isOffer ? "offer.jpg" : "property.jpg";
+  const filename = isProfile
+    ? "profile.jpg"
+    : isOffer
+      ? "offer.jpg"
+      : isChat
+        ? "chat.jpg"
+        : "property.jpg";
   return repository.createUploadSession({
     sessionId: "00000000-0000-4000-8000-000000000010",
     uploadSessionKey: "media.upload_session:session-1",
@@ -319,7 +411,7 @@ async function createSession(
     } as never,
     request: {
       purpose,
-      visibility: "public",
+      visibility: isChat ? "private" : "public",
       resource: {
         product,
         resourceType,
@@ -336,13 +428,23 @@ async function createSession(
     },
     policy: {
       purpose,
-      autoApprovePublicOnFinalize: isOffer ? undefined : true,
+      autoApprovePublicOnFinalize: isOffer || isChat ? undefined : true,
     } as never,
     target: {
-      resourceProduct: isProfile ? "platform" : isOffer ? "marketplace" : "hotel_catalog",
-      resourceType: isProfile ? "user_profile" : isOffer ? "marketplace_offer" : "property",
-      resourceId: isProfile || isOffer ? resourceId : PROPERTY_ID,
-      propertyId: isProfile || isOffer ? undefined : PROPERTY_ID,
+      resourceProduct: isProfile ? "platform" : isOffer || isChat ? "marketplace" : "hotel_catalog",
+      resourceType: isProfile
+        ? "user_profile"
+        : isOffer
+          ? "marketplace_offer"
+          : isChat
+            ? "collaboration"
+            : "property",
+      resourceId: isChat
+        ? "collaboration-target-001"
+        : isProfile || isOffer
+          ? resourceId
+          : PROPERTY_ID,
+      propertyId: isChat ? PROPERTY_ID : isProfile || isOffer ? undefined : PROPERTY_ID,
     },
     uploadTargets: [
       {
@@ -372,6 +474,7 @@ async function createSession(
 
 function completionInput(session: PlatformMediaSessionRecord) {
   const isPrivate = session.effectiveVisibility === "private";
+  const isChat = session.purpose === "marketplace.collaboration_chat.attachment";
   const storageKey = isPrivate
     ? "private/media/offer/original-safe.webp"
     : "media/profile/original-safe.webp";
@@ -393,7 +496,7 @@ function completionInput(session: PlatformMediaSessionRecord) {
     variantSets: [
       [
         {
-          variantName: "original_safe" as const,
+          variantName: isChat ? ("provider_original" as const) : ("original_safe" as const),
           visibility: session.effectiveVisibility,
           storageKey,
           contentType: "image/webp",

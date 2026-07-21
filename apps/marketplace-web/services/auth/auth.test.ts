@@ -16,7 +16,10 @@ import {
   setLegacyCompatibilityToken,
 } from "./sessionStore";
 import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
+import { targetApiClient } from "../api/targetClient";
+import { apiClient } from "../api/client";
 import { getMyMarketplaceCollaborations } from "@vayada/marketplace-shared/api/collaborations";
+import { uploadPlatformMedia } from "@vayada/marketplace-shared/api/platformMedia";
 
 const fetchMock = vi.fn();
 
@@ -132,6 +135,233 @@ describe("marketplace AuthKit compatibility token", () => {
 
     await getMyMarketplaceCollaborations({ side: "hotel" });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("never sends an AuthKit access token to the legacy Marketplace API", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe("https://api.marketplace.localhost/public-bootstrap");
+        expect(new Headers(init?.headers).get("Authorization")).toBeNull();
+        return jsonResponse({ ok: true });
+      }),
+    );
+
+    await expect(apiClient.get("/public-bootstrap")).resolves.toEqual({ ok: true });
+  });
+
+  it("shares one refresh while each actual client retries with its own token family", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    setAuthKitSession({
+      accessToken: "expired-across-clients",
+      csrfToken: "expired-csrf-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+    setLegacyCompatibilityToken("expired-legacy-token", 900);
+    let sessionRefreshes = 0;
+    let compatibilityRefreshes = 0;
+    const requests: Array<{ href: string; token: string | null }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+          sessionRefreshes += 1;
+          return jsonResponse({
+            accessToken: "fresh-across-clients",
+            csrfToken: "fresh-csrf-token",
+            organizationKind: "creator_workspace",
+            user: { id: "user_creator", email: "creator@example.com", status: "active" },
+          });
+        }
+        if (href === "https://api.localhost/auth/compat/marketplace-web-token") {
+          compatibilityRefreshes += 1;
+          expect(new Headers(init?.headers).get("x-vayada-csrf")).toBe("fresh-csrf-token");
+          return jsonResponse({ accessToken: "fresh-legacy-token", expiresIn: 900 });
+        }
+
+        const token = new Headers(init?.headers).get("Authorization");
+        requests.push({ href, token });
+        if (token === "Bearer expired-across-clients" || token === "Bearer expired-legacy-token") {
+          return jsonResponse({ detail: "expired" }, 401);
+        }
+        if (href === "https://api.localhost/api/media/upload-sessions") {
+          return jsonResponse({
+            uploadSession: { sessionId: "upload-session" },
+            uploadTargets: [
+              {
+                uploadTargetId: "upload-target",
+                clientFileId: "file_1",
+                method: "PUT",
+                uploadUrl: "https://uploads.vayada.localhost/upload-target",
+                headers: { "content-type": "image/jpeg" },
+              },
+            ],
+          });
+        }
+        if (href.endsWith("/api/media/upload-sessions/upload-session/finalize")) {
+          return jsonResponse({
+            mediaObjects: [
+              {
+                mediaId: "media-001",
+                storageKey: "media/offer.jpg",
+                contentType: "image/jpeg",
+                sizeBytes: 5,
+                originalFilename: "offer.jpg",
+                variants: [{ publicCdnUrl: "https://cdn.example/offer.jpg", storageKey: "x" }],
+              },
+            ],
+          });
+        }
+        if (href.includes("/api/hotel-setup/status")) {
+          return jsonResponse({ contractVersion: "shared-hotel-setup-status.v1" });
+        }
+        if (href.includes("/api/marketplace/collaborations/me")) {
+          return jsonResponse({
+            contractVersion: "marketplace-collaboration-reads.v1",
+            authorizationMode: "creator_workspace_resource_link",
+            items: [],
+          });
+        }
+        return jsonResponse({ ok: true });
+      }),
+    );
+
+    const [, , , , uploaded] = await Promise.all([
+      targetApiClient.get("/api/target-bootstrap"),
+      sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" }),
+      getMyMarketplaceCollaborations({ side: "creator" }),
+      apiClient.get("/legacy-bootstrap"),
+      uploadPlatformMedia({
+        purpose: "marketplace.offer.media",
+        resource: {
+          product: "marketplace",
+          resourceType: "marketplace_offer",
+          resourceId: "offer-001",
+        },
+        files: [new File(["photo"], "offer.jpg", { type: "image/jpeg" })],
+      }),
+    ]);
+
+    expect(sessionRefreshes).toBe(1);
+    expect(compatibilityRefreshes).toBe(1);
+    expect(uploaded).toEqual([
+      expect.objectContaining({ mediaId: "media-001", url: "https://cdn.example/offer.jpg" }),
+    ]);
+    expect(requests.filter(({ token }) => token === "Bearer expired-across-clients")).toHaveLength(
+      4,
+    );
+    expect(requests.filter(({ token }) => token === "Bearer fresh-across-clients")).toHaveLength(5);
+    expect(requests.filter(({ token }) => token === "Bearer expired-legacy-token")).toHaveLength(1);
+    expect(requests.filter(({ token }) => token === "Bearer fresh-legacy-token")).toHaveLength(1);
+    expect(
+      requests
+        .filter(({ href }) => href.startsWith("https://api.marketplace.localhost"))
+        .map(({ token }) => token),
+    ).toEqual(["Bearer expired-legacy-token", "Bearer fresh-legacy-token"]);
+    expect(
+      requests.some(
+        ({ href, token }) =>
+          href.startsWith("https://api.marketplace.localhost") &&
+          token === "Bearer fresh-across-clients",
+      ),
+    ).toBe(false);
+  });
+
+  it("shares one cold-session check across concurrent target requests", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    const sessionStarted = Promise.withResolvers<void>();
+    const sessionResponse = Promise.withResolvers<Response>();
+    let sessionRequests = 0;
+    let targetRequests = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+          sessionRequests += 1;
+          sessionStarted.resolve();
+          return sessionResponse.promise;
+        }
+        targetRequests += 1;
+        expect(new Headers(init?.headers).get("Authorization")).toBe(
+          "Bearer fresh-cold-session-token",
+        );
+        return jsonResponse({ ok: true });
+      }),
+    );
+
+    const first = targetApiClient.get<{ ok: boolean }>("/api/cold-one");
+    const second = targetApiClient.get<{ ok: boolean }>("/api/cold-two");
+    await sessionStarted.promise;
+    sessionResponse.resolve(
+      jsonResponse({
+        accessToken: "fresh-cold-session-token",
+        organizationKind: "creator_workspace",
+        user: { id: "user_creator", email: "creator@example.com", status: "active" },
+      }),
+    );
+
+    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }]);
+    expect(sessionRequests).toBe(1);
+    expect(targetRequests).toBe(2);
+  });
+
+  it("does not let an aborted cold-session owner sign out or poison another request", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    const firstSessionStarted = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    let sessionRequests = 0;
+    let logoutRequests = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+          sessionRequests += 1;
+          if (sessionRequests === 1) {
+            firstSessionStarted.resolve();
+            return new Promise<Response>((_resolve, reject) => {
+              const signal = init?.signal;
+              const rejectAborted = () =>
+                reject(
+                  signal?.reason ?? new DOMException("The operation was aborted", "AbortError"),
+                );
+              if (signal?.aborted) rejectAborted();
+              else signal?.addEventListener("abort", rejectAborted, { once: true });
+            });
+          }
+          return jsonResponse({
+            accessToken: "fresh-after-abort",
+            organizationKind: "creator_workspace",
+            user: { id: "user_creator", email: "creator@example.com", status: "active" },
+          });
+        }
+        if (href === "https://api.localhost/auth/logout") {
+          logoutRequests += 1;
+          return jsonResponse({ logoutUrl: "/login" });
+        }
+        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer fresh-after-abort");
+        return jsonResponse({ ok: true });
+      }),
+    );
+
+    const owner = targetApiClient.get("/api/aborted-owner", { signal: controller.signal });
+    await firstSessionStarted.promise;
+    const waitingRequest = targetApiClient.get<{ ok: boolean }>("/api/waiting-request");
+    controller.abort(new DOMException("The operation was aborted", "AbortError"));
+
+    await expect(owner).rejects.toMatchObject({ name: "AbortError" });
+    await expect(waitingRequest).resolves.toEqual({ ok: true });
+    expect(sessionRequests).toBe(2);
+    expect(logoutRequests).toBe(0);
   });
 
   it("retries session hydration after compatibility token loading is canceled", async () => {

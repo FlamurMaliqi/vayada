@@ -309,7 +309,7 @@ test.describe("marketplace-web smoke", () => {
       page.getByText(
         "Start with your details. Next, we’ll build the creator profile hotels will see.",
       ),
-    ).toHaveCount(0);
+    ).toBeVisible();
     await expect(page.getByText("Personal account", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/Marketplace, Booking Admin, and PMS/)).toHaveCount(0);
     await expect(page.getByLabel("Email address")).toHaveValue("owner@example.test");
@@ -408,7 +408,7 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByText("Name", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Email", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Phone", { exact: true })).toHaveCount(0);
-    expect(creatorProfileUpdates).toBe(0);
+    expect(creatorProfileUpdates).toBe(1);
 
     await page.setViewportSize({ width: 390, height: 844 });
     expect(
@@ -1127,6 +1127,9 @@ test.describe("marketplace-web smoke", () => {
         },
       });
     });
+    await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
+      connections: [],
+    });
     await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
@@ -1151,11 +1154,8 @@ test.describe("marketplace-web smoke", () => {
     ).toBeVisible();
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("heading", { name: "Tell hotels about your work" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Change photo" })).toBeVisible();
-    await expect(page.getByRole("img", { name: "Lina Creator profile photo" })).toHaveAttribute(
-      "src",
-      sharedProfilePicture,
-    );
+    await expect(page.getByRole("button", { name: "Change photo" })).toHaveCount(0);
+    await expect(page.getByLabel("Creator profile photo file")).toHaveCount(0);
     await expect(page.getByLabel("Location")).toHaveValue("Berlin, Germany");
     await page.getByLabel("Portfolio link").clear();
     await page.getByRole("button", { name: "Continue" }).click();

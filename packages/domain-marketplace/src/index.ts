@@ -782,6 +782,7 @@ export type MarketplaceCollaborationMessage = {
   senderUserId: string | null;
   senderName: string | null;
   senderAvatarUrl: string | null;
+  senderSide: MarketplaceCollaborationAuthorizationSide | null;
   content: string;
   contentType: MarketplaceMessageContentType;
   metadata: Record<string, unknown> | null;

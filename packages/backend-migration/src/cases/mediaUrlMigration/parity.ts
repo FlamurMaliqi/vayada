@@ -22,6 +22,7 @@ type MediaUrlMigrationChecks = {
     offerImageUrls: string[];
     chatMessageId: string;
     chatMediaObjectId: string;
+    chatRetainedUntil: string;
   };
   pms?: {
     roomTypeId: string;
@@ -161,18 +162,25 @@ export async function checkMediaUrlMigrationParity({
       offer_image_urls: string[];
       read_model_image_urls: string[];
       chat_media_object_id: string | null;
+      chat_retained_until: string | null;
     }>(
       `
         SELECT
           creator.profile_picture_url,
           offer.image_urls AS offer_image_urls,
           read_model.image_urls AS read_model_image_urls,
-          chat.message_metadata ->> 'mediaObjectId' AS chat_media_object_id
+          chat.message_metadata ->> 'mediaObjectId' AS chat_media_object_id,
+          to_char(
+            chat_media.retained_until AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+          ) AS chat_retained_until
         FROM marketplace.creator_profiles creator
         CROSS JOIN marketplace.marketplace_offers offer
         JOIN marketplace.marketplace_offer_read_model read_model
           ON read_model.offer_id = offer.id
         CROSS JOIN marketplace.marketplace_chat_messages chat
+        JOIN platform.media_objects chat_media
+          ON chat_media.id::text = chat.message_metadata ->> 'mediaObjectId'
         WHERE creator.id = $1
           AND offer.id = $2
           AND chat.id = $3
@@ -189,7 +197,8 @@ export async function checkMediaUrlMigrationParity({
       actual.profile_picture_url !== config.marketplace.profilePictureUrl ||
       !sameStringArray(actual.offer_image_urls, config.marketplace.offerImageUrls) ||
       !sameStringArray(actual.read_model_image_urls, config.marketplace.offerImageUrls) ||
-      actual.chat_media_object_id !== config.marketplace.chatMediaObjectId
+      actual.chat_media_object_id !== config.marketplace.chatMediaObjectId ||
+      actual.chat_retained_until !== config.marketplace.chatRetainedUntil
     ) {
       addMediaUrlFinding(
         findings,

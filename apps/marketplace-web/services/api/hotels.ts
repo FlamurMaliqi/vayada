@@ -56,6 +56,7 @@ interface ListingMarketplaceResponse {
     discount_percentage: number | null;
     commission_percentage: number | null;
     min_followers: number | null;
+    terms_summary?: string | null;
     created_at: string;
     updated_at: string;
   }>;
@@ -659,6 +660,7 @@ function toLegacyHotelListing(
       discount_percentage: option.discountPercentage,
       commission_percentage: option.commissionPercentage,
       min_followers: option.minFollowers,
+      terms_summary: option.termsSummary,
       created_at: offer.createdAt,
       updated_at: offer.updatedAt,
     })),
@@ -805,6 +807,7 @@ function toLegacyCompensationOption(
     discount_percentage: option.discountPercentage,
     commission_percentage: option.commissionPercentage,
     min_followers: option.minFollowers,
+    terms_summary: option.termsSummary,
     created_at: offer.createdAt,
     updated_at: offer.projectedAt,
   };

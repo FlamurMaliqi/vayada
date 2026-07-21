@@ -9,6 +9,19 @@ export const VAYADA_API_BASE_URL =
   "https://api.localhost";
 let bearerTokenProvider: (() => string | null) | null = null;
 let vayadaBearerTokenProvider: (() => string | null) | null = null;
+let vayadaSessionRecoveryHandlers: ApiSessionRecoveryHandlers | null = null;
+
+type ApiSessionRecoveryState = {
+  refreshPromise: Promise<void> | null;
+  signOutPromise: Promise<void> | null;
+};
+
+const sessionRecoveryStates = new WeakMap<ApiSessionRecoveryHandlers, ApiSessionRecoveryState>();
+
+export type ApiSessionRecoveryHandlers = {
+  refresh: () => Promise<void>;
+  signOut: () => Promise<void> | void;
+};
 
 export function setApiBearerTokenProvider(provider: (() => string | null) | null): void {
   bearerTokenProvider = provider;
@@ -16,6 +29,12 @@ export function setApiBearerTokenProvider(provider: (() => string | null) | null
 
 export function setVayadaApiBearerTokenProvider(provider: (() => string | null) | null): void {
   vayadaBearerTokenProvider = provider;
+}
+
+export function setVayadaApiSessionRecoveryHandlers(
+  handlers: ApiSessionRecoveryHandlers | null,
+): void {
+  vayadaSessionRecoveryHandlers = handlers;
 }
 
 export function getApiBearerToken(): string | null {
@@ -48,13 +67,15 @@ function getStoredLegacyToken(): string | null {
 }
 
 export interface ApiError {
-  detail:
+  detail?:
     | string
     | Array<{
         loc: (string | number)[];
         msg: string;
         type: string;
       }>;
+  message?: string;
+  error?: string;
 }
 
 export class ApiErrorResponse extends Error {
@@ -62,7 +83,12 @@ export class ApiErrorResponse extends Error {
   data: ApiError;
 
   constructor(status: number, data: ApiError) {
-    super((data.detail as string) || `API Error: ${status}`);
+    super(
+      (typeof data.detail === "string" ? data.detail : null) ||
+        data.message ||
+        data.error ||
+        `API Error: ${status}`,
+    );
     this.name = "ApiErrorResponse";
     this.status = status;
     this.data = data;
@@ -83,10 +109,16 @@ function wasRequestAborted(error: unknown, signal?: AbortSignal | null): boolean
 export class ApiClient {
   private baseURL: string;
   private tokenProvider?: () => string | null;
+  private sessionRecoveryProvider?: () => ApiSessionRecoveryHandlers | null;
 
-  constructor(baseURL: string = API_BASE_URL, tokenProvider?: () => string | null) {
+  constructor(
+    baseURL: string = API_BASE_URL,
+    tokenProvider?: () => string | null,
+    sessionRecoveryProvider?: () => ApiSessionRecoveryHandlers | null,
+  ) {
     this.baseURL = baseURL;
     this.tokenProvider = tokenProvider;
+    this.sessionRecoveryProvider = sessionRecoveryProvider;
   }
 
   /**
@@ -124,14 +156,83 @@ export class ApiClient {
     }
   }
 
+  private async fetchWithSessionRecovery(
+    url: string,
+    endpoint: string,
+    config: RequestInit,
+    failedToken: string | null,
+  ): Promise<Response> {
+    const response = await fetch(url, config);
+    const handlers = this.sessionRecoveryProvider?.() ?? null;
+    if (response.status !== 401 || endpoint.startsWith("/auth/") || !handlers) {
+      return response;
+    }
+
+    const refreshedToken = await this.recoverSession(failedToken, handlers);
+    if (!refreshedToken) {
+      await this.signOut(handlers);
+      return response;
+    }
+
+    const retryResponse = await fetch(url, {
+      ...config,
+      headers: {
+        ...(config.headers as Record<string, string>),
+        Authorization: `Bearer ${refreshedToken}`,
+      },
+    });
+    if (retryResponse.status === 401) {
+      await this.signOut(handlers);
+    }
+    return retryResponse;
+  }
+
+  private async recoverSession(
+    failedToken: string | null,
+    handlers: ApiSessionRecoveryHandlers,
+  ): Promise<string | null> {
+    const state = getSessionRecoveryState(handlers);
+    const currentToken = this.getToken();
+    if (currentToken && currentToken !== failedToken) return currentToken;
+
+    if (!state.refreshPromise) {
+      state.refreshPromise = Promise.resolve()
+        .then(() => handlers.refresh())
+        .finally(() => {
+          state.refreshPromise = null;
+        });
+    }
+    try {
+      await state.refreshPromise;
+    } catch {
+      return null;
+    }
+    const refreshedToken = this.getToken();
+    return refreshedToken && refreshedToken !== failedToken ? refreshedToken : null;
+  }
+
+  private async signOut(handlers: ApiSessionRecoveryHandlers): Promise<void> {
+    const state = getSessionRecoveryState(handlers);
+    if (!state.signOutPromise) {
+      state.signOutPromise = Promise.resolve()
+        .then(() => handlers.signOut())
+        .catch(() => undefined)
+        .finally(() => {
+          state.signOutPromise = null;
+        });
+    }
+    await state.signOutPromise;
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.baseURL}${endpoint}`;
 
     // Get token for authenticated requests (skip for auth endpoints)
     const token = !endpoint.startsWith("/auth/") ? this.getToken() : null;
 
+    const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
     const headers: Record<string, string> = {
-      ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(options.body !== undefined && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...(options.headers as Record<string, string>),
     };
 
@@ -146,7 +247,7 @@ export class ApiClient {
     };
 
     try {
-      const response = await fetch(url, config);
+      const response = await this.fetchWithSessionRecovery(url, endpoint, config, token);
 
       // Handle 204 No Content responses (no body to parse)
       if (response.status === 204) {
@@ -177,7 +278,11 @@ export class ApiClient {
 
         // Handle 401 errors (token expired/invalid)
         // Skip redirect for auth endpoints (login/register) - let them handle errors
-        if (response.status === 401 && !endpoint.startsWith("/auth/")) {
+        if (
+          response.status === 401 &&
+          !endpoint.startsWith("/auth/") &&
+          !this.sessionRecoveryProvider?.()
+        ) {
           this.handleUnauthorized(error);
         }
 
@@ -231,57 +336,35 @@ export class ApiClient {
    * Supports POST, PUT, and PATCH methods
    */
   async upload<T>(endpoint: string, formData: FormData, options?: RequestInit): Promise<T> {
-    const url = `${this.baseURL}${endpoint}`;
-
-    // Get token for authenticated requests
-    const token = !endpoint.startsWith("/auth/") ? this.getToken() : null;
-
-    const headers: Record<string, string> = {
-      // Don't set Content-Type for FormData - browser will set it with boundary
-      ...(options?.headers as Record<string, string>),
-    };
-
-    // Add Authorization header if token exists
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-
-    const config: RequestInit = {
+    return this.request<T>(endpoint, {
       ...options,
       method: options?.method || "POST",
-      headers,
       body: formData,
-    };
-
-    try {
-      const response = await fetch(url, config);
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        const error = new ApiErrorResponse(response.status, data as ApiError);
-
-        // Handle 401 errors (token expired/invalid)
-        // Skip redirect for auth endpoints (login/register) - let them handle errors
-        if (response.status === 401 && !endpoint.startsWith("/auth/")) {
-          this.handleUnauthorized(error);
-        }
-
-        throw error;
-      }
-
-      return data as T;
-    } catch (error) {
-      if (error instanceof ApiErrorResponse) {
-        throw error;
-      }
-      if (!wasRequestAborted(error, config.signal)) {
-        console.error("API upload failed:", error);
-      }
-      throw error;
-    }
+    });
   }
 }
 
-export const apiClient = new ApiClient();
-export const vayadaApiClient = new ApiClient(VAYADA_API_BASE_URL, getVayadaApiBearerToken);
+function getSessionRecoveryState(handlers: ApiSessionRecoveryHandlers): ApiSessionRecoveryState {
+  const existing = sessionRecoveryStates.get(handlers);
+  if (existing) return existing;
+  const created: ApiSessionRecoveryState = {
+    refreshPromise: null,
+    signOutPromise: null,
+  };
+  sessionRecoveryStates.set(handlers, created);
+  return created;
+}
+
+export function createVayadaApiClient(
+  baseURL: string = VAYADA_API_BASE_URL,
+  tokenProvider: () => string | null = getVayadaApiBearerToken,
+): ApiClient {
+  return new ApiClient(baseURL, tokenProvider, () => vayadaSessionRecoveryHandlers);
+}
+
+export const apiClient = new ApiClient(
+  API_BASE_URL,
+  getApiBearerToken,
+  () => vayadaSessionRecoveryHandlers,
+);
+export const vayadaApiClient = createVayadaApiClient();

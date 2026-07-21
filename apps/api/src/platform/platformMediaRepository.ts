@@ -39,6 +39,7 @@ type SessionRow = {
 };
 type MediaObjectRow = { record: PlatformMediaObjectRecord };
 type PropertyTargetRow = { propertyId: string };
+type CollaborationTargetRow = { collaborationId: string; propertyId: string };
 
 const supportedPurposes = new Set([
   "identity.user.profile_image",
@@ -46,6 +47,7 @@ const supportedPurposes = new Set([
   "property.gallery_image",
   "marketplace.creator.profile_image",
   "marketplace.offer.media",
+  "marketplace.collaboration_chat.attachment",
 ]);
 const autoApprovedPublicPurposes = new Set([
   "identity.user.profile_image",
@@ -189,6 +191,48 @@ async function resolveTarget(
   queryable: Queryable,
   input: Parameters<PlatformMediaTargetResolver["resolveTarget"]>[0],
 ): ReturnType<PlatformMediaTargetResolver["resolveTarget"]> {
+  if (input.request.purpose === "marketplace.collaboration_chat.attachment") {
+    const targetResourceId = input.request.resource.targetResourceId?.trim();
+    if (!targetResourceId) {
+      return {
+        ok: false,
+        statusCode: 403,
+        code: "media_target_forbidden",
+        message: "Chat attachments require a collaboration target.",
+      };
+    }
+
+    const sourceColumn =
+      input.request.resource.resourceType === "creator_profile" ? "creator_profile_id" : "offer_id";
+    const result = await queryable.query<CollaborationTargetRow>(
+      `SELECT collaboration.id::text AS "collaborationId",
+              collaboration.property_id::text AS "propertyId"
+       FROM marketplace.collaborations collaboration
+       WHERE collaboration.source_collaboration_id = $1
+         AND collaboration.${sourceColumn}::text = $2
+       LIMIT 1`,
+      [targetResourceId, input.request.resource.resourceId],
+    );
+    const collaboration = result.rows[0];
+    if (!collaboration) {
+      return {
+        ok: false,
+        statusCode: 403,
+        code: "media_target_forbidden",
+        message: "Chat attachment source is not linked to this collaboration.",
+      };
+    }
+    return {
+      ok: true,
+      target: {
+        resourceProduct: "marketplace",
+        resourceType: "collaboration",
+        resourceId: collaboration.collaborationId,
+        propertyId: collaboration.propertyId,
+      },
+    };
+  }
+
   if (input.policy.targetResourceProduct !== "hotel_catalog") {
     return {
       ok: true,
@@ -331,8 +375,10 @@ function mediaObjectFor(
   bucketName: string,
   now: string,
 ): PlatformMediaObjectRecord {
-  const originalSafe = variants.find(({ variantName }) => variantName === "original_safe");
-  if (!originalSafe) throw new Error("Platform images require an original_safe variant");
+  const originalSafe =
+    variants.find(({ variantName }) => variantName === "original_safe") ??
+    variants.find(({ variantName }) => variantName === "provider_original");
+  if (!originalSafe) throw new Error("Platform images require a canonical media variant");
   if (
     variants.some(
       (variant) =>
@@ -359,7 +405,10 @@ function mediaObjectFor(
       : session.requestedVisibility === "public"
         ? "pending_domain_approval"
         : "private",
-    lifecycleStatus: autoApproved ? "active" : "staged",
+    lifecycleStatus:
+      autoApproved || session.purpose === "marketplace.collaboration_chat.attachment"
+        ? "active"
+        : "staged",
     storageKind: "vayada_managed",
     bucket: bucketName,
     storageKey: originalSafe.storageKey,
@@ -375,6 +424,10 @@ function mediaObjectFor(
     heightPx: originalSafe.heightPx,
     checksumSha256: originalSafe.checksumSha256,
     originalFilename: file.sessionFile.filename,
+    retainedUntil:
+      session.purpose === "marketplace.collaboration_chat.attachment"
+        ? new Date(Date.parse(now) + 60 * 60 * 1000).toISOString()
+        : null,
     variants,
     createdAt: now,
   };
@@ -384,17 +437,29 @@ async function insertMediaObject(
   client: Queryable,
   mediaObject: PlatformMediaObjectRecord,
 ): Promise<void> {
+  const sourceMetadata = {
+    requestedVisibility: mediaObject.requestedVisibility,
+    ...(mediaObject.purpose === "marketplace.collaboration_chat.attachment"
+      ? { attachmentState: "orphan" }
+      : {}),
+  };
   await client.query(
     `INSERT INTO platform.media_objects
        (id, bucket, storage_key, storage_kind, visibility, purpose,
         owner_organization_id, property_id, resource_product, resource_type,
         resource_id, lifecycle_status, content_type, size_bytes, checksum_sha256,
         width_px, height_px, original_filename, source_metadata, public_approved,
-        created_by_user_id, created_at, updated_at)
+        retained_until, created_by_user_id, created_at, updated_at)
      VALUES
        ($1::uuid, $2, $3, 'vayada_managed', $4, $5, $6::uuid, $7::uuid,
         $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb,
-        $19, $20::uuid, $21::timestamptz, $21::timestamptz)`,
+        $19,
+        CASE
+          WHEN $5 = 'marketplace.collaboration_chat.attachment'
+            THEN $21::timestamptz + interval '1 hour'
+          ELSE NULL
+        END,
+        $20::uuid, $21::timestamptz, $21::timestamptz)`,
     [
       mediaObject.mediaId,
       mediaObject.bucket,
@@ -413,7 +478,7 @@ async function insertMediaObject(
       mediaObject.widthPx ?? null,
       mediaObject.heightPx ?? null,
       mediaObject.originalFilename,
-      JSON.stringify({ requestedVisibility: mediaObject.requestedVisibility }),
+      JSON.stringify(sourceMetadata),
       mediaObject.approvalStatus === "approved",
       mediaObject.actorUserId,
       mediaObject.createdAt,
@@ -588,6 +653,14 @@ async function readMediaObject(
        'widthPx', media.width_px,
        'heightPx', media.height_px,
        'originalFilename', media.original_filename,
+       'sourceMetadata', media.source_metadata,
+       'retainedUntil', CASE
+         WHEN media.retained_until IS NULL THEN NULL
+         ELSE to_char(
+           media.retained_until AT TIME ZONE 'UTC',
+           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+         )
+       END,
        'variants', COALESCE((
          SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
            'variantName', variant.variant_name,

@@ -1,9 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { XMarkIcon, CalendarIcon } from "@heroicons/react/24/outline";
-import { tripService } from "@/services/api/trips";
+import { useState, useEffect, useRef } from "react";
+import { XMarkIcon } from "@heroicons/react/24/outline";
+import { createTripWriteIdempotencyKey, tripService } from "@/services/api/trips";
 import type { TripResponse, ExternalCollaborationResponse } from "@/services/api/trips";
+import {
+  resolveSubmissionIdempotencyState,
+  type SubmissionIdempotencyState,
+} from "@/lib/utils/submissionIdempotency";
 
 interface AddCollaborationModalProps {
   isOpen: boolean;
@@ -30,14 +34,17 @@ export function AddCollaborationModal({
   const [trips, setTrips] = useState<TripResponse[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const submissionRef = useRef<SubmissionIdempotencyState | null>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      tripService
-        .listTrips()
-        .then(setTrips)
-        .catch(() => {});
+    if (!isOpen) {
+      submissionRef.current = null;
+      return;
     }
+    tripService
+      .listTrips()
+      .then(setTrips)
+      .catch(() => {});
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -54,6 +61,12 @@ export function AddCollaborationModal({
       notes: "",
     });
     setError("");
+    submissionRef.current = null;
+  };
+
+  const handleClose = () => {
+    resetForm();
+    onClose();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -62,7 +75,7 @@ export function AddCollaborationModal({
     setSaving(true);
 
     try {
-      const collab = await tripService.createExternalCollaboration({
+      const request = {
         title: formData.title,
         trip_id: formData.tripId || undefined,
         hotel_name: formData.hotelName || undefined,
@@ -71,6 +84,16 @@ export function AddCollaborationModal({
         end_date: formData.endDate,
         deliverables: formData.deliverables || undefined,
         notes: formData.notes || undefined,
+      };
+      const submission = resolveSubmissionIdempotencyState(
+        submissionRef.current,
+        JSON.stringify(request),
+        ["collaboration"],
+        () => createTripWriteIdempotencyKey("external-collaboration.create", "new"),
+      );
+      submissionRef.current = submission;
+      const collab = await tripService.createExternalCollaboration(request, {
+        idempotencyKey: submission.keys.collaboration,
       });
 
       onCollaborationCreated?.(collab);
@@ -89,7 +112,7 @@ export function AddCollaborationModal({
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity backdrop-blur-sm"
-        onClick={onClose}
+        onClick={handleClose}
       />
 
       {/* Modal Content */}
@@ -100,7 +123,7 @@ export function AddCollaborationModal({
               <button
                 type="button"
                 className="rounded-full p-2 text-gray-400 hover:text-gray-500 hover:bg-gray-100 transition-colors focus:outline-none"
-                onClick={onClose}
+                onClick={handleClose}
               >
                 <span className="sr-only">Close</span>
                 <XMarkIcon className="h-6 w-6" aria-hidden="true" />
@@ -309,7 +332,7 @@ export function AddCollaborationModal({
               <div className="flex gap-3 mt-8">
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
                 >
                   Cancel

@@ -1,11 +1,14 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import pg from "pg";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   PLATFORM_MEDIA_CLEANUP_CONTRACT_VERSION,
   PLATFORM_MEDIA_CLEANUP_QUEUE,
   buildPlatformMediaCleanupJobKey,
   buildPlatformMediaCleanupKey,
+  createPgPlatformMediaCleanupStore,
+  distinctPlatformMediaStorageKeys,
   runPlatformMediaCleanupJobs,
   type PlatformMediaCleanupAction,
   type PlatformMediaCleanupCandidate,
@@ -156,6 +159,103 @@ describe("platform media cleanup jobs", () => {
     expect(store.jobs).toHaveLength(0);
   });
 
+  it("deletes a private attachment exactly at its retained-until deadline", async () => {
+    const mediaObjectId = "00000000-0000-0000-0000-000000000303";
+    const retainedUntil = "2026-06-20T00:00:00.000Z";
+    const storageKey = `private/media/${mediaObjectId}/provider_original/image.jpg`;
+    const store = new MemoryPlatformMediaCleanupStore([
+      {
+        mediaObjectId,
+        resourceProduct: "marketplace",
+        resourceType: "collaboration",
+        resourceId: "collaboration_expired",
+        purpose: "marketplace.collaboration_chat.attachment",
+        visibility: "private",
+        lifecycleStatus: "active",
+        bucket: "vayada-media-local",
+        storageKey,
+        retainedUntil,
+      },
+    ]);
+
+    const result = await runPlatformMediaCleanupJobs(store, {
+      now: new Date(retainedUntil),
+      run: ["privateAttachmentRetention"],
+    });
+
+    expect(result).toMatchObject({ scanned: 1, applied: 1, failed: 0 });
+    expect(store.media(mediaObjectId)).toMatchObject({
+      lifecycleStatus: "deleted",
+      deletedAt: retainedUntil,
+    });
+    expect(store.storageDeletes).toEqual([
+      { kind: "object", bucket: "vayada-media-local", key: storageKey },
+    ]);
+  });
+
+  it("rechecks retention under lock before deleting a selected chat attachment", async () => {
+    const retainedUntil = "2026-06-20T00:00:00.000Z";
+    const query = vi.fn(async (statement: string) => {
+      if (statement === "BEGIN" || statement === "COMMIT") return { rows: [] };
+      if (statement.includes("FOR UPDATE")) {
+        expect(statement).toContain("media.retained_until <= $2::timestamptz");
+        expect(statement).toContain("marketplace.collaboration_chat.attachment");
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected cleanup query: ${statement}`);
+    });
+    const connect = vi
+      .spyOn(pg.Pool.prototype, "connect")
+      .mockResolvedValue({ query, release: vi.fn() } as never);
+    const end = vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const objectDeleter = {
+      deleteObject: vi.fn(async () => undefined),
+      deletePrefix: vi.fn(async () => undefined),
+    };
+    const store = createPgPlatformMediaCleanupStore({
+      connectionString: "postgresql://cleanup-race.invalid/vayada",
+      objectDeleter,
+    });
+
+    try {
+      const result = await store.applyCleanupMutation(
+        {
+          mediaObjectId: "00000000-0000-0000-0000-000000000304",
+          resourceProduct: "marketplace",
+          resourceType: "collaboration",
+          resourceId: "collaboration_claimed_during_cleanup",
+          purpose: "marketplace.collaboration_chat.attachment",
+          visibility: "private",
+          lifecycleStatus: "active",
+          bucket: "vayada-media-local",
+          storageKey: "private/chat/claimed.webp",
+          retainedUntil,
+        },
+        {
+          action: "delete-private-attachment-after-retention",
+          runName: "privateAttachmentRetention",
+          jobType: "platform.media.cleanup.private-attachment-retention",
+          eventType: "platform_media.private_attachment.deleted_after_retention",
+          auditAction: "platform_media.cleanup.private_attachment_deleted_after_retention",
+          deadlineOrWindow: retainedUntil,
+        },
+        {
+          now: new Date(retainedUntil),
+          correlationId: "cleanup-race-regression",
+          workerId: "cleanup-test",
+        },
+      );
+
+      expect(result.applied).toBe(false);
+      expect(objectDeleter.deleteObject).not.toHaveBeenCalled();
+      expect(query).toHaveBeenCalledTimes(3);
+    } finally {
+      await store.close();
+      connect.mockRestore();
+      end.mockRestore();
+    }
+  });
+
   it("records failure visibility without deleting the candidate and without duplicate dead letters", async () => {
     const replaced = contractCase("replaced-public-image-deletes-after-request");
     const store = new MemoryPlatformMediaCleanupStore([replaced.candidate], {
@@ -216,6 +316,23 @@ describe("platform media cleanup jobs", () => {
     ).toBe(
       "platform.media.cleanup:job:media_123:delete-private-attachment-after-retention:2026-06-12T00:00:00.000Z:v1",
     );
+  });
+
+  it("includes every recorded variant key and deduplicates the canonical object key", () => {
+    const originalSafe = "media/object/original_safe.webp";
+    expect(
+      distinctPlatformMediaStorageKeys(originalSafe, [
+        originalSafe,
+        "media/object/large.webp",
+        "media/object/thumbnail.webp",
+        "media/object/blur_preview.webp",
+      ]),
+    ).toEqual([
+      originalSafe,
+      "media/object/large.webp",
+      "media/object/thumbnail.webp",
+      "media/object/blur_preview.webp",
+    ]);
   });
 });
 

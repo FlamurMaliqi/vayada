@@ -3,6 +3,7 @@
  */
 import { apiClient } from "./client";
 import {
+  buildMarketplaceTripIdempotencyKey,
   createMarketplaceExternalCollaboration,
   createMarketplaceTrip,
   deleteMarketplaceExternalCollaboration,
@@ -15,6 +16,7 @@ import {
   type MarketplaceExternalCollaboration,
   type MarketplaceExternalCollaborationType,
   type MarketplaceTrip,
+  type MarketplaceTripWriteAction,
 } from "@vayada/marketplace-shared/api/trips";
 
 export interface TripResponse {
@@ -86,14 +88,23 @@ export interface UpdateExternalCollaborationRequest {
   notes?: string;
 }
 
+export interface TripWriteOptions {
+  idempotencyKey?: string;
+}
+
 export const tripService = {
   /**
    * Create a new trip
    */
-  createTrip: async (data: CreateTripRequest): Promise<TripResponse> => {
+  createTrip: async (
+    data: CreateTripRequest,
+    options: TripWriteOptions = {},
+  ): Promise<TripResponse> => {
+    const idempotencyKey = resolveTripWriteIdempotencyKey("trip.create", "new", options);
     try {
       return toLegacyTripResponse(
         await createMarketplaceTrip({
+          idempotencyKey,
           name: data.name,
           locationText: data.location,
           startDate: data.start_date,
@@ -103,7 +114,11 @@ export const tripService = {
       );
     } catch (error) {
       if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.post<TripResponse>("/trips", data);
+      return apiClient.post<TripResponse>(
+        "/trips",
+        data,
+        toLegacyIdempotencyOptions(idempotencyKey),
+      );
     }
   },
 
@@ -135,10 +150,16 @@ export const tripService = {
   /**
    * Update a trip
    */
-  updateTrip: async (tripId: string, data: UpdateTripRequest): Promise<TripResponse> => {
+  updateTrip: async (
+    tripId: string,
+    data: UpdateTripRequest,
+    options: TripWriteOptions = {},
+  ): Promise<TripResponse> => {
+    const idempotencyKey = resolveTripWriteIdempotencyKey("trip.update", tripId, options);
     try {
       return toLegacyTripResponse(
         await updateMarketplaceTrip(tripId, {
+          idempotencyKey,
           name: data.name,
           locationText: data.location,
           startDate: data.start_date,
@@ -148,19 +169,24 @@ export const tripService = {
       );
     } catch (error) {
       if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.put<TripResponse>(`/trips/${tripId}`, data);
+      return apiClient.put<TripResponse>(
+        `/trips/${tripId}`,
+        data,
+        toLegacyIdempotencyOptions(idempotencyKey),
+      );
     }
   },
 
   /**
    * Delete a trip
    */
-  deleteTrip: async (tripId: string): Promise<void> => {
+  deleteTrip: async (tripId: string, options: TripWriteOptions = {}): Promise<void> => {
+    const idempotencyKey = resolveTripWriteIdempotencyKey("trip.delete", tripId, options);
     try {
-      return await deleteMarketplaceTrip(tripId);
+      return await deleteMarketplaceTrip(tripId, idempotencyKey);
     } catch (error) {
       if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.delete<void>(`/trips/${tripId}`);
+      return apiClient.delete<void>(`/trips/${tripId}`, toLegacyIdempotencyOptions(idempotencyKey));
     }
   },
 
@@ -169,10 +195,17 @@ export const tripService = {
    */
   createExternalCollaboration: async (
     data: CreateExternalCollaborationRequest,
+    options: TripWriteOptions = {},
   ): Promise<ExternalCollaborationResponse> => {
+    const idempotencyKey = resolveTripWriteIdempotencyKey(
+      "external-collaboration.create",
+      "new",
+      options,
+    );
     try {
       return toLegacyExternalCollaborationResponse(
         await createMarketplaceExternalCollaboration({
+          idempotencyKey,
           tripId: data.trip_id,
           title: data.title,
           hotelName: data.hotel_name,
@@ -186,7 +219,11 @@ export const tripService = {
       );
     } catch (error) {
       if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.post<ExternalCollaborationResponse>("/trips/external-collaborations", data);
+      return apiClient.post<ExternalCollaborationResponse>(
+        "/trips/external-collaborations",
+        data,
+        toLegacyIdempotencyOptions(idempotencyKey),
+      );
     }
   },
 
@@ -209,10 +246,17 @@ export const tripService = {
   updateExternalCollaboration: async (
     collabId: string,
     data: UpdateExternalCollaborationRequest,
+    options: TripWriteOptions = {},
   ): Promise<ExternalCollaborationResponse> => {
+    const idempotencyKey = resolveTripWriteIdempotencyKey(
+      "external-collaboration.update",
+      collabId,
+      options,
+    );
     try {
       return toLegacyExternalCollaborationResponse(
         await updateMarketplaceExternalCollaboration(collabId, {
+          idempotencyKey,
           tripId: data.trip_id,
           title: data.title,
           hotelName: data.hotel_name,
@@ -229,6 +273,7 @@ export const tripService = {
       return apiClient.put<ExternalCollaborationResponse>(
         `/trips/external-collaborations/${collabId}`,
         data,
+        toLegacyIdempotencyOptions(idempotencyKey),
       );
     }
   },
@@ -236,12 +281,23 @@ export const tripService = {
   /**
    * Delete an external collaboration
    */
-  deleteExternalCollaboration: async (collabId: string): Promise<void> => {
+  deleteExternalCollaboration: async (
+    collabId: string,
+    options: TripWriteOptions = {},
+  ): Promise<void> => {
+    const idempotencyKey = resolveTripWriteIdempotencyKey(
+      "external-collaboration.delete",
+      collabId,
+      options,
+    );
     try {
-      return await deleteMarketplaceExternalCollaboration(collabId);
+      return await deleteMarketplaceExternalCollaboration(collabId, idempotencyKey);
     } catch (error) {
       if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.delete<void>(`/trips/external-collaborations/${collabId}`);
+      return apiClient.delete<void>(
+        `/trips/external-collaborations/${collabId}`,
+        toLegacyIdempotencyOptions(idempotencyKey),
+      );
     }
   },
 };
@@ -334,4 +390,27 @@ function isMissingMarketplaceTripRoute(error: unknown): boolean {
     fastifyError.message.startsWith("Route ") &&
     fastifyError.message.includes("/api/marketplace/trips")
   );
+}
+
+function resolveTripWriteIdempotencyKey(
+  action: MarketplaceTripWriteAction,
+  resourceId: string,
+  options: TripWriteOptions,
+): string {
+  const provided = options.idempotencyKey?.trim();
+  if (provided) return provided;
+  return createTripWriteIdempotencyKey(action, resourceId);
+}
+
+export function createTripWriteIdempotencyKey(
+  action: MarketplaceTripWriteAction,
+  resourceId: string,
+): string {
+  const nonce =
+    globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return buildMarketplaceTripIdempotencyKey({ action, resourceId, nonce });
+}
+
+function toLegacyIdempotencyOptions(idempotencyKey: string): RequestInit {
+  return { headers: { "Idempotency-Key": idempotencyKey } };
 }

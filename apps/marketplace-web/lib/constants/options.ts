@@ -80,12 +80,16 @@ export const DAYS_IN_MONTH = Array.from({ length: 31 }, (_, i) => i + 1);
 // Hotel/Accommodation types for filters
 export const HOTEL_TYPES = [
   "Hotel",
-  "Boutiques Hotel",
-  "City Hotel",
-  "Luxury Hotel",
+  "Resort",
+  "Hostel",
   "Apartment",
+  "Aparthotel",
+  "Guesthouse",
+  "Bed and breakfast",
   "Villa",
-  "Lodge",
+  "Vacation rental",
+  "Motel",
+  "Other",
 ] as const;
 
 // Offering types for filters (display names)

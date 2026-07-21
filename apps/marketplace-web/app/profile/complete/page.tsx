@@ -34,7 +34,11 @@ import {
   resolveMarketplaceActivationGuard,
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/sharedSetupGuard";
-import { hasRequiredCreatorAccountDetails } from "@/lib/utils/creatorAccountRequirements";
+import {
+  creatorIdentityPhotoPatch,
+  hasRequiredCreatorAccountDetails,
+  resolveCreatorContactDetails,
+} from "@/lib/utils/creatorAccountRequirements";
 import { mergeCreatorPlatformDraft } from "@/lib/utils/mergeCreatorPlatformDraft";
 import {
   LoadingScreen,
@@ -74,6 +78,10 @@ export default function ProfileCompletePage() {
   const [profileCompleted, setProfileCompleted] = useState(false);
   const [hasExistingMarketplaceOffer, setHasExistingMarketplaceOffer] = useState(false);
   const marketplacePropertyIdRef = useRef<string | null>(null);
+  const creatorProfilePhotoRef = useRef<{
+    profilePicture?: string | null;
+    profilePictureMediaObjectId?: string | null;
+  }>({});
   const [managingPlatforms, setManagingPlatforms] = useState(false);
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [initialCreatorPlatformsSignature, setInitialCreatorPlatformsSignature] = useState("[]");
@@ -220,7 +228,11 @@ export default function ProfileCompletePage() {
               return;
             }
             const [hydrationResult, statusResult, connectionsResult] = await Promise.allSettled([
-              hydrateCreatorProfile(userName, hydrationController.signal),
+              hydrateCreatorProfile(
+                userName,
+                authService.getSessionUser(),
+                hydrationController.signal,
+              ),
               loadProfileStatus("creator", true, false, hydrationController.signal),
               creatorService.getPlatformConnections({ signal: hydrationController.signal }),
             ]);
@@ -306,8 +318,13 @@ export default function ProfileCompletePage() {
     }
   }, [router]);
 
-  const hydrateCreatorProfile = async (fallbackName: string, signal: AbortSignal) => {
+  const hydrateCreatorProfile = async (
+    fallbackName: string,
+    identity: ReturnType<typeof authService.getSessionUser>,
+    signal: AbortSignal,
+  ) => {
     const profile = await creatorService.getMyProfile({ signal });
+    const contact = resolveCreatorContactDetails(identity, profile);
     const hasStartedCreatorProfile = Boolean(
       profile.location.trim() ||
       profile.shortDescription?.trim() ||
@@ -316,11 +333,11 @@ export default function ProfileCompletePage() {
     );
     creatorForm.setForm((prev) => ({
       ...prev,
-      name: profile.name.trim() || fallbackName || prev.name,
+      name: contact.name || fallbackName || prev.name,
       location: profile.location.trim() || prev.location,
       short_description: profile.shortDescription?.trim() || prev.short_description,
       portfolio_link: profile.portfolioLink?.trim() || prev.portfolio_link,
-      phone: profile.phone?.trim() || prev.phone,
+      phone: contact.phone || prev.phone,
       creator_type: hasStartedCreatorProfile ? profile.creatorType : prev.creator_type,
     }));
     const hydratedPlatforms = profile.platforms.map(toPlatformFormData);
@@ -328,6 +345,10 @@ export default function ProfileCompletePage() {
     setInitialCreatorPlatformsSignature(
       JSON.stringify(hydratedPlatforms.map(toCreatorPlatformUpdate)),
     );
+    creatorProfilePhotoRef.current = {
+      profilePicture: profile.profilePicture,
+      profilePictureMediaObjectId: profile.profilePictureMediaObjectId,
+    };
     return profile;
   };
 
@@ -621,6 +642,10 @@ export default function ProfileCompletePage() {
     try {
       const platforms = creatorForm.platforms.map(toCreatorPlatformUpdate);
       const platformsChanged = JSON.stringify(platforms) !== initialCreatorPlatformsSignature;
+      const identityPhotoPatch = creatorIdentityPhotoPatch(
+        authService.getSessionUser(),
+        creatorProfilePhotoRef.current,
+      );
       const updatePayload = {
         name: creatorForm.form.name,
         location: creatorForm.form.location,
@@ -631,9 +656,14 @@ export default function ProfileCompletePage() {
           shortDescription: creatorForm.form.short_description.trim(),
         }),
         ...(creatorForm.form.phone?.trim() && { phone: creatorForm.form.phone.trim() }),
+        ...identityPhotoPatch,
       };
 
-      await creatorService.updateMyProfile(updatePayload);
+      const updatedProfile = await creatorService.updateMyProfile(updatePayload);
+      creatorProfilePhotoRef.current = {
+        profilePicture: updatedProfile.profilePicture,
+        profilePictureMediaObjectId: updatedProfile.profilePictureMediaObjectId,
+      };
       if (platformsChanged) setInitialCreatorPlatformsSignature(JSON.stringify(platforms));
 
       const complete = await isProfileComplete("creator");

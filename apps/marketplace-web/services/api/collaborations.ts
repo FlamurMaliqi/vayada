@@ -15,10 +15,13 @@ import {
   getMarketplaceConversations,
   getMarketplaceMessages,
   getMyMarketplaceCollaborations,
+  markMarketplaceMessagesRead,
   rateMarketplaceCollaborationCreator,
   respondToMarketplaceCollaboration,
+  sendMarketplaceMessage,
   toggleMarketplaceCollaborationDeliverable,
   updateMarketplaceCollaborationTerms,
+  type CreateMarketplaceCollaborationLifecycleWriteRequest,
   type MarketplaceCollaborationMessage,
   type MarketplaceCollaborationLifecycleWriteAction,
   type MarketplaceCollaborationRead,
@@ -29,6 +32,7 @@ import {
   type MarketplaceConversationSummary,
   toLegacyCollaborationType,
 } from "@vayada/marketplace-shared/api/collaborations";
+import { uploadPlatformMedia } from "@vayada/marketplace-shared/api/platformMedia";
 
 // Platform deliverable types
 export interface PlatformDeliverable {
@@ -49,9 +53,16 @@ export interface PlatformDeliverablesItem {
 export interface CreateCreatorCollaborationRequest {
   initiator_type: "creator";
   listing_id: string;
-  creator_id: string;
+  compensation_option_id: string;
   why_great_fit: string;
   consent: true;
+  collaboration_type?: "Free Stay" | "Paid" | "Discount" | "Affiliate";
+  free_stay_min_nights?: number;
+  free_stay_max_nights?: number;
+  paid_amount?: number;
+  currency?: string;
+  discount_percentage?: number;
+  creator_fee?: number;
   travel_date_from?: string;
   travel_date_to?: string;
   preferred_months?: string[];
@@ -139,6 +150,10 @@ export interface CreateHotelCollaborationRequest {
 export type CreateCollaborationRequest =
   | CreateCreatorCollaborationRequest
   | CreateHotelCollaborationRequest;
+
+export interface CollaborationWriteOptions {
+  idempotencyKey?: string;
+}
 
 // Backend collaboration response (snake_case)
 export interface CollaborationResponse {
@@ -292,9 +307,12 @@ export interface ConversationResponse {
 }
 
 export interface MessageMetadata {
-  imageUrl?: string;
+  attachmentUrl?: string;
+  attachmentValidated?: true;
+  mediaObjectId?: string;
   fileName?: string;
   fileSize?: number;
+  contentType?: string;
   [key: string]: unknown;
 }
 
@@ -304,10 +322,57 @@ export interface MessageResponse {
   sender_id: string | null;
   sender_name: string | null;
   sender_avatar: string | null;
+  sender_side: MarketplaceCollaborationSide | null;
   content: string;
   content_type: "text" | "image" | "system";
   metadata: MessageMetadata | null;
   created_at: string;
+  legacy_adapted?: true;
+}
+
+async function uploadChatImage(
+  collaborationId: string,
+  side: MarketplaceCollaborationSide,
+  file: File,
+): Promise<{ mediaObjectId: string }> {
+  const collaboration = await getMarketplaceCollaboration(collaborationId, side);
+  const source =
+    side === "creator"
+      ? {
+          product: "marketplace" as const,
+          resourceType: "creator_profile" as const,
+          resourceId: collaboration.creator.profileId,
+        }
+      : {
+          product: "marketplace" as const,
+          resourceType: "marketplace_offer" as const,
+          resourceId: collaboration.offerId,
+        };
+  const [uploaded] = await uploadPlatformMedia({
+    purpose: "marketplace.collaboration_chat.attachment",
+    resource: { ...source, targetResourceId: collaborationId },
+    files: [file],
+    visibility: "private",
+  });
+  if (!uploaded) throw new Error("Chat image upload did not return a media object.");
+  return { mediaObjectId: uploaded.mediaId };
+}
+
+async function sendChatImage(
+  collaborationId: string,
+  side: MarketplaceCollaborationSide,
+  file: File,
+  caption?: string,
+): Promise<MessageResponse> {
+  const { mediaObjectId } = await uploadChatImage(collaborationId, side, file);
+  return toLegacyMessageResponse(
+    await sendMarketplaceMessage(
+      collaborationId,
+      caption?.trim() || "Sent an image",
+      "image",
+      mediaObjectId,
+    ),
+  );
 }
 
 export const collaborationService = {
@@ -414,8 +479,11 @@ export const collaborationService = {
   /**
    * Create collaboration request (creator application or hotel invitation)
    */
-  create: async (data: CreateCollaborationRequest): Promise<Collaboration> => {
-    const idempotencyKey = buildLifecycleWriteIdempotencyKey("create", data.listing_id);
+  create: async (
+    data: CreateCollaborationRequest,
+    options: CollaborationWriteOptions = {},
+  ): Promise<Collaboration> => {
+    const idempotencyKey = resolveLifecycleWriteIdempotencyKey("create", data.listing_id, options);
     try {
       const response = await createMarketplaceCollaboration(
         toTargetCreateCollaborationRequest(data, idempotencyKey),
@@ -461,7 +529,12 @@ export const collaborationService = {
    * Mark all messages in a collaboration as read
    */
   markAsRead: async (collaborationId: string): Promise<void> => {
-    return apiClient.post<void>(`/collaborations/${collaborationId}/read`);
+    try {
+      return await markMarketplaceMessagesRead(collaborationId);
+    } catch (error) {
+      if (!isMissingMarketplaceCollaborationRoute(error)) throw error;
+      return apiClient.post<void>(`/collaborations/${collaborationId}/read`);
+    }
   },
 
   /**
@@ -474,9 +547,10 @@ export const collaborationService = {
       return response.items.map(toLegacyMessageResponse);
     } catch (error) {
       if (!isMissingMarketplaceCollaborationRoute(error)) throw error;
-      return apiClient.get<MessageResponse[]>(
+      const legacyMessages = await apiClient.get<MessageResponse[]>(
         `/collaborations/${collaborationId}/messages${query}`,
       );
+      return legacyMessages.map(sanitizeLegacyMessageResponse);
     }
   },
 
@@ -487,11 +561,19 @@ export const collaborationService = {
     collaborationId: string,
     content: string,
     contentType: "text" | "image" = "text",
+    mediaObjectId?: string,
   ): Promise<MessageResponse> => {
-    return apiClient.post<MessageResponse>(`/collaborations/${collaborationId}/messages`, {
-      content,
-      message_type: contentType,
-    });
+    try {
+      return toLegacyMessageResponse(
+        await sendMarketplaceMessage(collaborationId, content, contentType, mediaObjectId),
+      );
+    } catch (error) {
+      if (contentType === "image" || !isMissingMarketplaceCollaborationRoute(error)) throw error;
+      return apiClient.post<MessageResponse>(`/collaborations/${collaborationId}/messages`, {
+        content,
+        message_type: contentType,
+      });
+    }
   },
 
   /**
@@ -654,11 +736,8 @@ export const collaborationService = {
   /**
    * Upload an image for chat messages
    */
-  uploadChatImage: async (file: File): Promise<{ url: string }> => {
-    const formData = new FormData();
-    formData.append("file", file);
-    return apiClient.upload<{ url: string }>("/upload/image/chat", formData);
-  },
+  uploadChatImage,
+  sendChatImage,
 };
 
 type LegacyCollaborationTermsSource = {
@@ -686,6 +765,23 @@ type LegacyDeliverablesItem = {
 };
 
 function buildLifecycleWriteIdempotencyKey(
+  action: MarketplaceCollaborationLifecycleWriteAction,
+  resourceId: string,
+): string {
+  return createCollaborationWriteIdempotencyKey(action, resourceId);
+}
+
+function resolveLifecycleWriteIdempotencyKey(
+  action: MarketplaceCollaborationLifecycleWriteAction,
+  resourceId: string,
+  options: CollaborationWriteOptions,
+): string {
+  return (
+    options.idempotencyKey?.trim() || createCollaborationWriteIdempotencyKey(action, resourceId)
+  );
+}
+
+export function createCollaborationWriteIdempotencyKey(
   action: MarketplaceCollaborationLifecycleWriteAction,
   resourceId: string,
 ): string {
@@ -718,18 +814,25 @@ function withIdempotencyKey<T extends object>(
 function toTargetCreateCollaborationRequest(
   data: CreateCollaborationRequest,
   idempotencyKey: string,
-) {
-  return {
+): CreateMarketplaceCollaborationLifecycleWriteRequest {
+  const common = {
     idempotencyKey,
     offerId: data.listing_id,
-    creatorId: data.creator_id ?? undefined,
-    initiatorSide: data.initiator_type,
-    whyGreatFit: data.initiator_type === "creator" ? data.why_great_fit : undefined,
-    consent: data.initiator_type === "creator" ? data.consent : undefined,
-    message: data.initiator_type === "hotel" ? data.message : undefined,
     terms: toTargetTerms(data),
     deliverables: toTargetDeliverables(data.platform_deliverables),
   };
+  return data.initiator_type === "creator"
+    ? {
+        ...common,
+        compensationOptionId: data.compensation_option_id,
+        whyGreatFit: data.why_great_fit,
+        consent: data.consent,
+      }
+    : {
+        ...common,
+        creatorId: data.creator_id,
+        message: data.message,
+      };
 }
 
 function toTargetUpdateTermsRequest(data: UpdateCollaborationTermsRequest, idempotencyKey: string) {
@@ -1050,15 +1153,64 @@ function toLegacyConversationResponse(
 }
 
 function toLegacyMessageResponse(message: MarketplaceCollaborationMessage): MessageResponse {
+  const metadata = safeChatMessageMetadata(message.metadata);
+  if (
+    message.contentType === "image" &&
+    metadata &&
+    message.metadata?.attachmentValidated === true &&
+    typeof message.metadata.mediaObjectId === "string" &&
+    typeof message.metadata.attachmentUrl === "string"
+  ) {
+    Object.assign(metadata, {
+      attachmentValidated: true,
+      mediaObjectId: message.metadata.mediaObjectId,
+      attachmentUrl: message.metadata.attachmentUrl,
+      ...(typeof message.metadata.fileName === "string"
+        ? { fileName: message.metadata.fileName }
+        : {}),
+      ...(typeof message.metadata.fileSize === "number"
+        ? { fileSize: message.metadata.fileSize }
+        : {}),
+      ...(typeof message.metadata.contentType === "string"
+        ? { contentType: message.metadata.contentType }
+        : {}),
+    });
+  }
   return {
     id: message.messageId,
     collaboration_id: message.collaborationId,
     sender_id: message.senderUserId,
     sender_name: message.senderName,
     sender_avatar: message.senderAvatarUrl,
+    sender_side: message.senderSide,
     content: message.content,
     content_type: message.contentType,
-    metadata: message.metadata,
+    metadata,
     created_at: message.createdAt,
   };
+}
+
+function sanitizeLegacyMessageResponse(message: MessageResponse): MessageResponse {
+  return {
+    ...message,
+    metadata: safeChatMessageMetadata(message.metadata),
+    legacy_adapted: true,
+  };
+}
+
+function safeChatMessageMetadata(
+  metadata: MessageMetadata | Record<string, unknown> | null,
+): MessageMetadata | null {
+  if (!metadata) return null;
+  const safe: MessageMetadata = {};
+  if (
+    typeof metadata.mediaObjectId === "string" &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(metadata.mediaObjectId)
+  ) {
+    safe.mediaObjectId = metadata.mediaObjectId;
+  }
+  if (metadata.attachmentSource === "platform_media_migration") {
+    safe.attachmentSource = metadata.attachmentSource;
+  }
+  return Object.keys(safe).length > 0 ? safe : null;
 }

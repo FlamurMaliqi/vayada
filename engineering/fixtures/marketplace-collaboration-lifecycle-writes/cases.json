@@ -42,8 +42,9 @@
         "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator:v1",
         "body": {
           "offerId": "legacy_offer_688",
-          "creatorId": "legacy_creator_lina",
-          "initiatorSide": "creator"
+          "compensationOptionId": "compensation_free_stay_688",
+          "whyGreatFit": "My travel audience is a strong fit for this stay.",
+          "consent": true
         }
       },
       "expected": {
@@ -65,8 +66,7 @@
         "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_hotel:v1",
         "body": {
           "offerId": "legacy_offer_688",
-          "creatorId": "legacy_creator_lina",
-          "initiatorSide": "hotel"
+          "creatorId": "legacy_creator_lina"
         }
       },
       "expected": {
@@ -86,8 +86,9 @@
         "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator_missing_link:v1",
         "body": {
           "offerId": "legacy_offer_688",
-          "creatorId": "legacy_creator_lina",
-          "initiatorSide": "creator"
+          "compensationOptionId": "compensation_free_stay_688",
+          "whyGreatFit": "My travel audience is a strong fit for this stay.",
+          "consent": true
         }
       },
       "expected": { "status": 403, "errorCode": "missing_creator_resource_link" }
@@ -103,8 +104,9 @@
         "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator:v1",
         "body": {
           "offerId": "legacy_offer_688",
-          "creatorId": "legacy_creator_lina",
-          "initiatorSide": "creator"
+          "compensationOptionId": "compensation_free_stay_688",
+          "whyGreatFit": "My travel audience is a strong fit for this stay.",
+          "consent": true
         }
       },
       "expected": {
@@ -125,8 +127,9 @@
         "idempotencyKey": "marketplace.collaboration.create:legacy_offer_688:nonce_creator:v1",
         "body": {
           "offerId": "legacy_offer_999",
-          "creatorId": "legacy_creator_lina",
-          "initiatorSide": "creator"
+          "compensationOptionId": "compensation_free_stay_999",
+          "whyGreatFit": "My travel audience is a strong fit for this stay.",
+          "consent": true
         }
       },
       "expected": {

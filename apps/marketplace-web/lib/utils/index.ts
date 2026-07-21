@@ -276,6 +276,7 @@ interface ListingMarketplaceResponse {
     discount_percentage: number | null;
     commission_percentage: number | null;
     min_followers: number | null;
+    terms_summary?: string | null;
     created_at: string;
     updated_at: string;
   }>;
@@ -391,6 +392,7 @@ export function transformListingMarketplaceResponse(apiListing: ListingMarketpla
     discount_percentage: o.discount_percentage,
     commission_percentage: o.commission_percentage,
     min_followers: o.min_followers ?? null,
+    terms_summary: o.terms_summary ?? null,
     created_at: o.created_at,
     updated_at: o.updated_at,
   }));

@@ -228,7 +228,7 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
       { provisionIfMissing: false },
     );
 
-  let cleanupRunning = false;
+  let cleanupPromise: Promise<void> | null = null;
   const cleanCredential = async (
     credentialRef: string,
     authorizationId: string,
@@ -254,26 +254,28 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
       return false;
     }
   };
-  const cleanCredentials = async () => {
-    if (cleanupRunning) return;
-    cleanupRunning = true;
-    try {
-      const candidates = await options.repository.listCredentialCleanupCandidates({
-        now: now().toISOString(),
-        limit: 50,
-      });
-      for (const candidate of candidates) {
-        await cleanCredential(
-          candidate.credentialRef,
-          candidate.authorizationId,
-          candidate.claimId,
-        );
+  const cleanCredentials = (): Promise<void> => {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+      try {
+        const candidates = await options.repository.listCredentialCleanupCandidates({
+          now: now().toISOString(),
+          limit: 50,
+        });
+        for (const candidate of candidates) {
+          await cleanCredential(
+            candidate.credentialRef,
+            candidate.authorizationId,
+            candidate.claimId,
+          );
+        }
+      } catch (error) {
+        app.log.warn({ err: safeProviderError(error) }, "Creator credential cleanup failed");
       }
-    } catch (error) {
-      app.log.warn({ err: safeProviderError(error) }, "Creator credential cleanup failed");
-    } finally {
-      cleanupRunning = false;
-    }
+    })().finally(() => {
+      cleanupPromise = null;
+    });
+    return cleanupPromise;
   };
   void cleanCredentials();
   const cleanupTimer = setInterval(
@@ -284,6 +286,7 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
 
   app.addHook("onClose", async () => {
     clearInterval(cleanupTimer);
+    await cleanupPromise;
     await options.repository.close?.();
   });
 

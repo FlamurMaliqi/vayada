@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   type GetObjectCommandOutput,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -17,6 +18,8 @@ import type {
   PlatformMediaVariantName,
   PlatformMediaVariantRecord,
 } from "../routes/platformMedia.js";
+import type { PlatformMediaObjectDeleter } from "../jobs/platformMediaCleanup.js";
+import type { PrivateDownloadPolicy } from "./mediaServing.js";
 
 const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "identity.user.profile_image",
@@ -24,9 +27,10 @@ const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "property.gallery_image",
   "marketplace.creator.profile_image",
   "marketplace.offer.media",
+  "marketplace.collaboration_chat.attachment",
 ]);
-const IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const MAX_SIGNED_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+const IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const MAX_SIGNED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 25_000_000;
 const PRIVATE_CACHE_CONTROL = "private, no-store";
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -49,7 +53,14 @@ export type S3PlatformMediaAdapterOptions = {
   s3Client?: S3Client;
 };
 
-export type S3PlatformMediaAdapter = PlatformMediaUploadSigner & PlatformMediaUploadFinalizer;
+export type PlatformMediaPrivateDownloadSigner = {
+  signPrivateDownload(policy: PrivateDownloadPolicy): Promise<string>;
+};
+
+export type S3PlatformMediaAdapter = PlatformMediaUploadSigner &
+  PlatformMediaUploadFinalizer &
+  PlatformMediaPrivateDownloadSigner &
+  PlatformMediaObjectDeleter;
 
 type CachedUpload = {
   bytes: Buffer;
@@ -69,6 +80,59 @@ export function createS3PlatformMediaAdapter(
   const uploads = new Map<string, CachedUpload>();
 
   return {
+    async deleteObject(input) {
+      await s3.send(
+        new DeleteObjectCommand({
+          Bucket: required(input.bucket, "bucket"),
+          Key: required(input.storageKey, "storageKey"),
+        }),
+      );
+    },
+
+    async deletePrefix(input) {
+      const bucket = required(input.bucket ?? bucketName, "bucket");
+      const prefix = required(input.prefix, "prefix");
+      const [namespace, sessionId, ...extraSegments] = prefix.split("/");
+      if (namespace !== "staging" || !sessionId || extraSegments.length > 0) {
+        throw new Error("Platform media prefix cleanup is restricted to staging namespaces");
+      }
+      assertSegment(sessionId, "staging session ID");
+
+      let continuationToken: string | undefined;
+      do {
+        const page = await s3.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            ContinuationToken: continuationToken,
+          }),
+        );
+        for (const object of page.Contents ?? []) {
+          if (object.Key) {
+            await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: object.Key }));
+          }
+        }
+        if (page.IsTruncated && !page.NextContinuationToken) {
+          throw new Error("S3 prefix listing was truncated without a continuation token");
+        }
+        continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+      } while (continuationToken);
+    },
+
+    async signPrivateDownload(policy) {
+      if (policy.bucketName !== bucketName) {
+        throw new Error("Private download bucket must match the S3 platform media bucket");
+      }
+      const command = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: policy.storageKey,
+        ResponseCacheControl: policy.cacheControl,
+        ResponseContentDisposition: policy.responseContentDisposition,
+        ResponseContentType: policy.responseContentType,
+      });
+      return getSignedUrl(s3, command, { expiresIn: policy.expiresInSeconds });
+    },
+
     async signUploadTarget(input) {
       const contentType = normalizeContentType(input.contentType);
       if (!IMAGE_CONTENT_TYPES.has(contentType)) {
@@ -79,7 +143,7 @@ export function createS3PlatformMediaAdapter(
         input.sizeBytes < 1 ||
         input.sizeBytes > MAX_SIGNED_IMAGE_SIZE_BYTES
       ) {
-        throw new Error("Image upload size must be between 1 byte and 10 MB");
+        throw new Error("Image upload size must be between 1 byte and 20 MB");
       }
       assertStagingKey(input.stagingKey, input.sessionId);
 
@@ -166,7 +230,7 @@ export function createS3PlatformMediaAdapter(
           return {
             ok: false,
             code: "unsupported_media_type",
-            message: "Images must contain valid JPG, PNG, or WebP bytes.",
+            message: "Images must contain valid JPG, PNG, WebP, or GIF bytes.",
           };
         }
         if (contentType !== normalizeContentType(input.sessionFile.contentType)) {
@@ -277,7 +341,7 @@ export function createS3PlatformMediaAdapter(
               Bucket: bucketName,
               Key: record.storageKey,
               Body: bytes,
-              ContentType: "image/webp",
+              ContentType: record.contentType,
               CacheControl:
                 input.session.effectiveVisibility === "public"
                   ? publicCacheControl
@@ -323,7 +387,29 @@ async function createVariant(
   visibility: "private" | "public",
 ): Promise<{ record: PlatformMediaVariantRecord; bytes: Buffer }> {
   if (variantName === "provider_original") {
-    throw new Error("Private provider media is not supported by this S3 adapter slice");
+    if (visibility !== "private") {
+      throw new Error("Provider-original media must stay private");
+    }
+    assertSegment(mediaId, "mediaId");
+    const metadata = await sharp(source, { failOn: "error" }).metadata();
+    const contentType = imageContentType(metadata.format);
+    if (!contentType) throw new Error("Provider-original media has an unsupported image type");
+    const checksumSha256 = sha256(source);
+    const extension = contentType === "image/jpeg" ? "jpg" : contentType.slice("image/".length);
+    return {
+      bytes: source,
+      record: {
+        variantName,
+        visibility,
+        storageKey: `private/${publicPathPrefix}/${mediaId}/${variantName}/sha256-${checksumSha256}.${extension}`,
+        contentType,
+        widthPx: metadata.autoOrient.width,
+        heightPx: metadata.autoOrient.height,
+        sizeBytes: source.length,
+        checksumSha256,
+        publicCdnUrl: null,
+      },
+    };
   }
   assertSegment(mediaId, "mediaId");
   const variant = VARIANTS[variantName];
@@ -390,7 +476,7 @@ function checkedBuffer(value: Uint8Array, maxBytes: number): Buffer {
 
 function imageContentType(format?: string): string | null {
   if (format === "jpeg") return "image/jpeg";
-  if (format === "png" || format === "webp") return `image/${format}`;
+  if (format === "png" || format === "webp" || format === "gif") return `image/${format}`;
   return null;
 }
 
