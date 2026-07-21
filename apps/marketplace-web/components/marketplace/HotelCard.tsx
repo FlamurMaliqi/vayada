@@ -17,6 +17,7 @@ import {
 } from "./CollaborationApplicationModal";
 import {
   collaborationService,
+  toCreatorCompensationTerms,
   type CreateCreatorCollaborationRequest,
 } from "@/services/api/collaborations";
 import { getCurrentUserInfo } from "@/lib/utils/accessControl";
@@ -60,12 +61,12 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
       const request: CreateCreatorCollaborationRequest = {
         initiator_type: "creator",
         listing_id: hotel.id,
-        creator_id: userInfo.userId,
         why_great_fit: data.whyGreatFit,
         consent: true,
         travel_date_from: data.travelDateFrom || undefined,
         travel_date_to: data.travelDateTo || undefined,
         preferred_months: data.preferredMonths.length > 0 ? data.preferredMonths : undefined,
+        ...toCreatorCompensationTerms(data.compensationOption),
         platform_deliverables: (data.platformDeliverables || []).map((pd) => ({
           platform: pd.platform as "Instagram" | "TikTok" | "YouTube",
           deliverables: pd.deliverables.map((d) => ({
@@ -319,6 +320,7 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
         creatorPlatforms={creatorPlatforms}
         maxNights={hotel.numberOfNights}
         minNights={hotel.minNumberOfNights}
+        compensationOptions={hotel.collaborationOfferings}
       />
 
       {/* Success Modal */}

@@ -3,8 +3,13 @@
  */
 
 import { apiClient } from "./client";
-import type { Collaboration, PaginatedResponse } from "@/lib/types";
-import type { Hotel, Creator } from "@/lib/types";
+import type {
+  Collaboration,
+  CollaborationOffering,
+  Creator,
+  Hotel,
+  PaginatedResponse,
+} from "@/lib/types";
 import { buildQueryString } from "@/lib/utils";
 import {
   approveMarketplaceCollaborationTerms,
@@ -49,12 +54,18 @@ export interface PlatformDeliverablesItem {
 export interface CreateCreatorCollaborationRequest {
   initiator_type: "creator";
   listing_id: string;
-  creator_id: string;
   why_great_fit: string;
   consent: true;
   travel_date_from?: string;
   travel_date_to?: string;
   preferred_months?: string[];
+  collaboration_type?: "Free Stay" | "Paid" | "Discount" | "Affiliate";
+  free_stay_min_nights?: number;
+  free_stay_max_nights?: number;
+  paid_amount?: number;
+  currency?: string;
+  discount_percentage?: number;
+  creator_fee?: number;
   platform_deliverables: Array<{
     platform:
       | "Instagram"
@@ -139,6 +150,29 @@ export interface CreateHotelCollaborationRequest {
 export type CreateCollaborationRequest =
   | CreateCreatorCollaborationRequest
   | CreateHotelCollaborationRequest;
+
+export function toCreatorCompensationTerms(
+  option?: CollaborationOffering,
+): Pick<
+  CreateCreatorCollaborationRequest,
+  | "collaboration_type"
+  | "free_stay_min_nights"
+  | "free_stay_max_nights"
+  | "paid_amount"
+  | "currency"
+  | "discount_percentage"
+  | "creator_fee"
+> {
+  return {
+    collaboration_type: option?.collaboration_type,
+    free_stay_min_nights: option?.free_stay_min_nights ?? undefined,
+    free_stay_max_nights: option?.free_stay_max_nights ?? undefined,
+    paid_amount: option?.paid_max_amount ?? undefined,
+    currency: option?.currency ?? undefined,
+    discount_percentage: option?.discount_percentage ?? undefined,
+    creator_fee: option?.commission_percentage ?? undefined,
+  };
+}
 
 // Backend collaboration response (snake_case)
 export interface CollaborationResponse {
@@ -722,7 +756,7 @@ function toTargetCreateCollaborationRequest(
   return {
     idempotencyKey,
     offerId: data.listing_id,
-    creatorId: data.creator_id ?? undefined,
+    creatorId: data.initiator_type === "hotel" ? data.creator_id : undefined,
     initiatorSide: data.initiator_type,
     whyGreatFit: data.initiator_type === "creator" ? data.why_great_fit : undefined,
     consent: data.initiator_type === "creator" ? data.consent : undefined,
