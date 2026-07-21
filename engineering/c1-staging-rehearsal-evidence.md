@@ -5,10 +5,7 @@ VAY-794 rehearsal evidence is appended below as each staging gate is executed._
 
 ## Dashboard/check command
 
-Before running VAY-794, use the
-[target DB snapshot lifecycle](provider-rehearsal-secret-ownership.md#target-db-snapshot-lifecycle)
-runbook to create or rebuild the disposable target database. Run the dashboard
-checks against that rehearsal-specific target database:
+VAY-794 used a disposable rehearsal-specific target database for these checks:
 
 ```bash
 TARGET_DATABASE_URL=<target-staging-database-url> \
@@ -128,17 +125,6 @@ Dry-run a provider:
 ```bash
 C1_REHEARSAL_WEBHOOK_BASE_URL=https://api.staging.example.test \
   node scripts/c1-rehearsal-replay-fixtures.mjs --provider stripe --twice
-```
-
-Send to staging target intake:
-
-```bash
-C1_REHEARSAL_WEBHOOK_BASE_URL=https://target-api.vayada.com \
-C1_REHEARSAL_ALLOW_SEND_TO_HOST=target-api.vayada.com \
-STRIPE_WEBHOOK_SECRET=<target-stripe-webhook-secret> \
-XENDIT_WEBHOOK_SECRET=<target-xendit-callback-token> \
-CHANNEX_WEBHOOK_SECRET=<target-channex-token> \
-  node scripts/c1-rehearsal-replay-fixtures.mjs --all --twice --send
 ```
 
 `--send` is guarded so synthetic fixtures cannot be posted to arbitrary hosts.
@@ -481,11 +467,9 @@ target-dashboard-after-freeze-2026-06-16.json
 xendit-webhook-export-2026-06-15.json
 ```
 
-The staging provider secret sources and replay/go-no-go constraints are
-summarized in
-[`provider-rehearsal-secret-ownership.md`](provider-rehearsal-secret-ownership.md#provider-secret-source-status).
-Post-rehearsal cleanup for VAY-794 must follow the
-[`vayada-platform` C1 staging rehearsal secret cleanup runbook](https://github.com/vayada-marketplace/vayada-platform/blob/main/docs/environments.md#c1-staging-rehearsal-secret-cleanup).
+The staging provider secret sources, replay results, and go/no-go constraints
+are recorded in the evidence below. The retired target staging lane and its
+replay secrets were removed under VAY-868 after the rehearsal was accepted.
 
 Stripe export:
 

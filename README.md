@@ -401,22 +401,22 @@ runtime configuration are owned in the
 repository. Its environment documentation is the canonical source for the
 current service and hostname inventory.
 
-The application-repository delivery flow is service-specific:
+The active application-repository delivery flow is service-specific:
 
 1. Pull requests run the shared check workflow.
-2. App deploy workflows build Docker images and publish them to ECR. All are
-   manually dispatchable; all except the canonical `deploy-pms-web.yml` also
-   run when their configured paths change on `main`.
+2. Legacy Python API and parallel `deploy-next-*` workflows build Docker images
+   and publish them to ECR.
 3. ECS-backed workflows send an `app-image-published` repository-dispatch event
    to `vayada-platform`, which owns the deployment after that handoff.
-4. The current landing and marketplace-web workflows publish images for App
-   Runner auto-deployment rather than dispatching an ECS deployment.
 
 Parallel `deploy-next-*` workflows and `next-*` hostnames are used to validate
-the target stack before canonical routing is cut over. Current product
-frontends also use `target-api.vayada.com` for migrated API/AuthKit surfaces.
-Exact host routing is deliberately not duplicated here; use the platform
-environment documentation as the authoritative mapping.
+the target stack before canonical routing is cut over. Canonical product
+frontends remain frozen on their legacy API builds and have no active deploy
+workflow in this repository; only the parallel `next-*` services use the
+TypeScript backend. Restoring canonical frontend delivery requires an explicit
+rollback-compatibility or cutover change. Exact host routing is deliberately not
+duplicated here; use the platform environment documentation as the authoritative
+mapping.
 
 ## Development workflow
 

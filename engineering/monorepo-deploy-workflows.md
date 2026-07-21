@@ -1,72 +1,37 @@
-# Monorepo Deploy Workflows
+# Monorepo deploy workflows
 
-Date: 2026-05-21
+Updated: 2026-07-21
 
-## Scope
+## Active delivery lanes
 
-The app monorepo keeps one root GitHub Actions deploy workflow per app. Each
-workflow is triggered by:
+The monorepo keeps deploy workflows only for the production Python APIs and the
+parallel `next-*` validation stack. They are manually dispatchable and also run
+on relevant pushes to `main`.
 
-- manual `workflow_dispatch`
-- pushes to `main` that touch the app path
-- pushes to `main` that touch `packages/**`
-- changes to that workflow file
+| Runtime | Workflow |
+| --- | --- |
+| Marketplace API | `.github/workflows/deploy-marketplace-api.yml` |
+| Booking API | `.github/workflows/deploy-booking-api.yml` |
+| PMS API | `.github/workflows/deploy-pms-api.yml` |
+| Next TypeScript API | `.github/workflows/deploy-next-api.yml` |
+| Next Marketplace Web | `.github/workflows/deploy-next-marketplace-web.yml` |
+| Next Vayada Admin | `.github/workflows/deploy-next-vayada-admin.yml` |
+| Next Booking Web | `.github/workflows/deploy-next-booking-web.yml` |
+| Next Booking Admin | `.github/workflows/deploy-next-booking-admin.yml` |
+| Next PMS Web | `.github/workflows/deploy-next-pms-web.yml` |
+| Next Affiliate Dashboard | `.github/workflows/deploy-next-affiliate-dashboard.yml` |
 
-Docs-only changes should not deploy apps.
+ECS-backed workflows publish a SHA-pinned image and send an
+`app-image-published` repository dispatch to `vayada-platform`, which owns the
+service update. GitHub Actions authenticates through
+`arn:aws:iam::269416271598:role/vayada-github-actions-deploy`.
 
-## Workflow Map
+## Frozen canonical frontends
 
-| App                        | Workflow                                           | Trigger paths                                               |
-| -------------------------- | -------------------------------------------------- | ----------------------------------------------------------- |
-| `apps/marketplace-api`     | `.github/workflows/deploy-marketplace-api.yml`     | `apps/marketplace-api/**`, `packages/**`, workflow file     |
-| `apps/marketplace-web`     | `.github/workflows/deploy-marketplace-web.yml`     | `apps/marketplace-web/**`, `packages/**`, workflow file     |
-| `apps/vayada-admin`        | `.github/workflows/deploy-vayada-admin.yml`        | `apps/vayada-admin/**`, `packages/**`, workflow file        |
-| `apps/booking-api`         | `.github/workflows/deploy-booking-api.yml`         | `apps/booking-api/**`, `packages/**`, workflow file         |
-| `apps/booking-web`         | `.github/workflows/deploy-booking-web.yml`         | `apps/booking-web/**`, `packages/**`, workflow file         |
-| `apps/booking-admin`       | `.github/workflows/deploy-booking-admin.yml`       | `apps/booking-admin/**`, `packages/**`, workflow file       |
-| `apps/pms-api`             | `.github/workflows/deploy-pms-api.yml`             | `apps/pms-api/**`, `packages/**`, workflow file             |
-| `apps/pms-web`             | `.github/workflows/deploy-pms-web.yml`             | `apps/pms-web/**`, `packages/**`, workflow file             |
-| `apps/affiliate-dashboard` | `.github/workflows/deploy-affiliate-dashboard.yml` | `apps/affiliate-dashboard/**`, `packages/**`, workflow file |
-| `apps/landing`             | `.github/workflows/deploy-landing.yml`             | `apps/landing/**`, `packages/**`, workflow file             |
+Canonical frontend services continue to run their existing legacy-API images.
+Their stale, disabled target-backend workflows were removed under VAY-868 so an
+unrelated change cannot accidentally rebuild them against the retired staging
+API. Reintroducing canonical frontend delivery requires a dedicated change that
+proves either legacy rollback compatibility or the intended TypeScript cutover.
 
-## Preserved Deployment Behavior
-
-The initial migration preserves existing deployment targets:
-
-- existing ECR repository names
-- existing ECS clusters, services, task families, and App Runner image behavior
-- GitHub OIDC authentication through `arn:aws:iam::269416271598:role/vayada-github-actions-deploy`
-- existing frontend build arguments and backend test setup
-
-The only intended behavior change is that workflows now run from the monorepo
-root and use app-specific path filters.
-
-## Cutover Verification
-
-Before merging the monorepo migration branch:
-
-1. Confirm the AWS IAM role trust policy allows `repo:vayada-marketplace/vayada:ref:refs/heads/main`.
-2. Confirm `actionlint .github/workflows/*.yml` passes.
-3. Manually run one low-risk frontend workflow with `workflow_dispatch`.
-4. Manually run one backend workflow with tests using `workflow_dispatch`.
-5. Confirm a docs-only change does not trigger app deploy workflows.
-6. Confirm a single app path change triggers only that app's workflow.
-7. Confirm a `packages/**` change triggers the intended app workflows.
-
-## Rollback
-
-Do not disable the old standalone app repository workflows until the monorepo
-deploy workflows have completed at least one successful production deploy per app.
-
-Rollback options before old workflows are disabled:
-
-1. Revert or pause the monorepo deploy workflow that failed.
-2. Keep shipping from the old app repository workflow for that app.
-3. Re-run the previous successful GitHub Actions deployment in the old app repo.
-4. If the monorepo migration branch has not merged, keep it unmerged and continue
-   from the existing standalone app repositories.
-5. If OIDC role assumption fails, fix or temporarily revert the affected workflow
-   to the old app repo deploy path while the trust policy or role permissions are corrected.
-
-After old workflows are disabled, rollback requires either re-enabling the old
-workflow in the standalone app repo or reverting the monorepo workflow change.
+Documentation-only changes do not deploy applications.
