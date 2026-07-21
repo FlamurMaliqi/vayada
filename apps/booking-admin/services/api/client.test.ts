@@ -50,7 +50,7 @@ describe("ApiClient hotel context header", () => {
         status: "active",
       },
     });
-    const client = new ApiClient("https://target-api.vayada.com");
+    const client = new ApiClient("https://next-api.vayada.com");
 
     await client.get("/api/booking/hotels/booking_hotel_alpenrose/settings/addons");
     expect(fetchHeaders()).toMatchObject({
@@ -60,7 +60,7 @@ describe("ApiClient hotel context header", () => {
 
   it("only treats explicit legacy booking API hosts as non-target", () => {
     expect(isNextApiTarget("https://api.localhost")).toBe(true);
-    expect(isNextApiTarget("https://target-api.vayada.com")).toBe(true);
+    expect(isNextApiTarget("https://next-api.vayada.com")).toBe(true);
     expect(isNextApiTarget("https://api.booking.localhost")).toBe(false);
     expect(isNextApiTarget("http://localhost:8001")).toBe(false);
   });

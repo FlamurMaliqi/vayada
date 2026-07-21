@@ -33,11 +33,11 @@ third-party runner fleet.
 
 ## Current Workflow Inventory
 
-| Workflow                                 | Trigger                                | Jobs                                                                                                                  | Current runner  | Runner sensitivity                                                                                                                                                                                                                 |
-| ---------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/pr-checks.yml`        | PRs to `main`                          | Frontend typecheck/lint/build; backend matrix for `marketplace-api`, `booking-api`, `pms-api`; required aggregate job | `ubuntu-latest` | Best pilot target if public-repo runner behavior is still too slow or queue-prone. Backend jobs use two PostgreSQL service containers each. Frontend is CPU/cache heavy because it runs root `npm ci`, typecheck, lint, and build. |
-| `deploy-*.yml`                           | `push` to `main` with app path filters | One Docker/ECR build job per app                                                                                      | `ubuntu-latest` | Promising later candidate because most workflows use Docker Buildx and `cache-from/cache-to: type=gha`, but deployment credentials and rollback risk make this a second phase.                                                     |
-| `.github/workflows/migrate-auth-db.yml`  | `push` to `main` for auth DB paths     | Applies auth DB migrations to prod RDS                                                                                | `ubuntu-latest` | Keep on GitHub-hosted runners for now. It is production-sensitive, low-frequency, and depends on AWS access.                                                                                                                       |
+| Workflow                                | Trigger                                | Jobs                                                                                                                  | Current runner  | Runner sensitivity                                                                                                                                                                                                                 |
+| --------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/pr-checks.yml`       | PRs to `main`                          | Frontend typecheck/lint/build; backend matrix for `marketplace-api`, `booking-api`, `pms-api`; required aggregate job | `ubuntu-latest` | Best pilot target if public-repo runner behavior is still too slow or queue-prone. Backend jobs use two PostgreSQL service containers each. Frontend is CPU/cache heavy because it runs root `npm ci`, typecheck, lint, and build. |
+| `deploy-*.yml`                          | `push` to `main` with app path filters | One Docker/ECR build job per app                                                                                      | `ubuntu-latest` | Promising later candidate because most workflows use Docker Buildx and `cache-from/cache-to: type=gha`, but deployment credentials and rollback risk make this a second phase.                                                     |
+| `.github/workflows/migrate-auth-db.yml` | `push` to `main` for auth DB paths     | Applies auth DB migrations to prod RDS                                                                                | `ubuntu-latest` | Keep on GitHub-hosted runners for now. It is production-sensitive, low-frequency, and depends on AWS access.                                                                                                                       |
 
 Recent successful `PR Checks` run
 [`27406874542`](https://github.com/vayada-marketplace/vayada/actions/runs/27406874542)
@@ -217,7 +217,8 @@ Only after PR checks are proven, test one low-risk Docker deploy workflow on
 Blacksmith. Prefer a frontend workflow with existing Buildx usage, not
 `migrate-auth-db.yml`.
 
-Candidate: `deploy-landing.yml` or `deploy-affiliate-dashboard.yml`.
+Candidate: `deploy-next-marketplace-web.yml` or
+`deploy-next-affiliate-dashboard.yml`.
 
 Measure before changing Docker actions:
 
