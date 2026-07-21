@@ -1286,15 +1286,15 @@ async function resolveCreatorProfileForCreate(
   input: MarketplaceCollaborationLifecycleWriteInput,
 ): Promise<{ id: string; organizationId: string } | null> {
   if (input.side === "creator") {
-    const creatorProfileIds = activeResourceIds(input.context, "creator_profile", "owner");
-    if (creatorProfileIds.length > 1) {
+    const creatorProfile = resolveSingleOwnedCreatorProfileId(input.context);
+    if (!creatorProfile.ok) {
       throw new MarketplaceCollaborationWriteError(
-        409,
-        "ambiguous_marketplace_creator_profile",
-        "Selected organization has multiple active marketplace creator profile links.",
+        creatorProfile.error.statusCode,
+        creatorProfile.error.code,
+        creatorProfile.error.message,
       );
     }
-    if (!creatorProfileIds[0]) return null;
+    if (!creatorProfile.value) return null;
 
     const result = await client.query<{ id: string; organizationId: string }>(
       `SELECT id::text AS id,
@@ -1303,7 +1303,7 @@ async function resolveCreatorProfileForCreate(
        WHERE id::text = $1
          AND organization_id::text = $2
        LIMIT 1`,
-      [creatorProfileIds[0], input.context.selectedOrganization.organizationId],
+      [creatorProfile.value, input.context.selectedOrganization.organizationId],
     );
     return result.rows[0] ?? null;
   }
@@ -1814,6 +1814,23 @@ function activeResourceIds(
   ];
 }
 
+function resolveSingleOwnedCreatorProfileId(
+  context: RequestContext,
+): ParseResult<string | undefined> {
+  const creatorProfileIds = activeResourceIds(context, "creator_profile", "owner");
+  if (creatorProfileIds.length > 1) {
+    return {
+      ok: false,
+      error: {
+        statusCode: 409,
+        code: "ambiguous_marketplace_creator_profile",
+        message: "Selected organization has multiple active marketplace creator profile links.",
+      },
+    };
+  }
+  return { ok: true, value: creatorProfileIds[0] };
+}
+
 function mapCollaborationRow(
   row: MarketplaceCollaborationRow,
   side: MarketplaceCollaborationAuthorizationSide,
@@ -2120,15 +2137,9 @@ function authorizeRequiredSideCollaborationWrite(
   }
   const resourceCheck = checkRequiredWriteResourceLinks(context, side);
   if (!resourceCheck.ok) return resourceCheck;
-  if (side === "creator" && activeResourceIds(context, "creator_profile", "owner").length > 1) {
-    return {
-      ok: false,
-      error: {
-        statusCode: 409,
-        code: "ambiguous_marketplace_creator_profile",
-        message: "Selected organization has multiple active marketplace creator profile links.",
-      },
-    };
+  if (side === "creator") {
+    const creatorProfile = resolveSingleOwnedCreatorProfileId(context);
+    if (!creatorProfile.ok) return creatorProfile;
   }
   return { ok: true, context, side };
 }
