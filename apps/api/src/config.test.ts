@@ -14,6 +14,14 @@ const completeRequiredCreatorPhotoEnv = {
   PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
 };
 
+const completeCreatorPlatformConnectionEnv = {
+  TARGET_DATABASE_URL: "postgresql://target-db",
+  AUTH_DATABASE_URL: "postgresql://auth-db",
+  WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
+  WORKOS_ISSUER: "https://api.workos.com",
+  WORKOS_AUDIENCE: "client",
+};
+
 describe("api config", () => {
   it("keeps auth disabled when auth env values are absent", () => {
     expect(loadConfig({}).auth).toBeUndefined();
@@ -107,6 +115,50 @@ describe("api config", () => {
         WORKOS_CLIENT_ID: "client",
       }),
     ).toThrow("Incomplete auth session config");
+  });
+
+  it("loads independently configured creator platform providers", () => {
+    expect(
+      loadConfig({
+        ...completeCreatorPlatformConnectionEnv,
+        NODE_ENV: "test",
+        CREATOR_PLATFORM_CALLBACK_BASE_URL: "https://creator.api.localhost:1356",
+        CREATOR_PLATFORM_WEB_RETURN_URL: "https://marketplace.localhost:1356/profile/complete",
+        CREATOR_PLATFORM_CREDENTIAL_VAULT: "memory",
+        CREATOR_PLATFORM_SECRET_PREFIX: "vayada/test/creator-platforms",
+        TIKTOK_CLIENT_KEY: "client-key",
+        TIKTOK_CLIENT_SECRET: "client-secret",
+      }).creatorPlatformConnections,
+    ).toEqual({
+      callbackBaseUrl: "https://creator.api.localhost:1356",
+      webReturnUrl: "https://marketplace.localhost:1356/profile/complete",
+      credentialVault: {
+        provider: "memory",
+        secretPrefix: "vayada/test/creator-platforms",
+      },
+      tiktok: { clientKey: "client-key", clientSecret: "client-secret" },
+    });
+  });
+
+  it("rejects partial creator platform provider config", () => {
+    expect(() => loadConfig({ INSTAGRAM_CLIENT_ID: "instagram-client" })).toThrow(
+      "Incomplete Instagram creator platform config; missing INSTAGRAM_CLIENT_SECRET, INSTAGRAM_API_VERSION",
+    );
+  });
+
+  it("rejects the in-memory creator credential vault in production", () => {
+    expect(() =>
+      loadConfig({
+        ...completeCreatorPlatformConnectionEnv,
+        NODE_ENV: "production",
+        CREATOR_PLATFORM_CALLBACK_BASE_URL: "https://api.example.com",
+        CREATOR_PLATFORM_WEB_RETURN_URL: "https://marketplace.example.com/profile/complete",
+        CREATOR_PLATFORM_CREDENTIAL_VAULT: "memory",
+        CREATOR_PLATFORM_SECRET_PREFIX: "vayada/production/creator-platforms",
+        TIKTOK_CLIENT_KEY: "client-key",
+        TIKTOK_CLIENT_SECRET: "client-secret",
+      }),
+    ).toThrow("CREATOR_PLATFORM_CREDENTIAL_VAULT=memory is not allowed in production");
   });
 
   it("loads optional booking database config", () => {

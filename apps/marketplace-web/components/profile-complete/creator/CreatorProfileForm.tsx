@@ -1,8 +1,14 @@
 "use client";
 
-import { RefObject } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
-import type { CreatorFormState, PlatformFormData, CreatorType } from "@/lib/types";
+import type {
+  CreatorFormState,
+  CreatorPlatformConnection,
+  CreatorPlatformPendingAuthorization,
+  CreatorPlatformProvider,
+  PlatformFormData,
+  CreatorType,
+} from "@/lib/types";
 import { FormNavigationButtons } from "../FormNavigationButtons";
 import { CreatorTypeStep } from "./CreatorTypeStep";
 import { CreatorBasicInfoStep } from "./CreatorBasicInfoStep";
@@ -23,16 +29,26 @@ interface CreatorProfileFormProps {
   canProceed: boolean;
   expandedPlatforms: Set<number>;
   platformCountryInputs: Record<number, string>;
-
-  // Refs
-  imageInputRef: RefObject<HTMLInputElement>;
+  connections: CreatorPlatformConnection[];
+  connectionsLoading: boolean;
+  connectionsError: string;
+  platformActionsDisabled: boolean;
+  pendingAuthorization: CreatorPlatformPendingAuthorization | null;
+  connectionNotice: { tone: "success" | "error"; message: string } | null;
+  connectingPlatform: CreatorPlatformProvider | null;
+  busyConnectionId: string | null;
+  selectingExternalAccountId: string | null;
 
   // Form handlers
   onFormChange: (updates: Partial<CreatorFormState>) => void;
-  onImageChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 
   // Platform handlers
   onAddPlatform: (name: string) => void;
+  onConnectPlatform: (platform: CreatorPlatformProvider, platformId?: string) => void;
+  onSyncConnection: (connectionId: string) => void;
+  onDisconnectConnection: (connectionId: string) => void;
+  onSelectAuthorizedAccount: (externalAccountId: string) => void;
+  onRetryConnections: () => void;
   onRemovePlatform: (index: number) => void;
   onUpdatePlatform: (
     index: number,
@@ -60,6 +76,7 @@ interface CreatorProfileFormProps {
   onPrevStep: () => void;
   onNextStep: () => void;
   onSubmit: (e: React.FormEvent) => void;
+  submitLabel?: string;
 }
 
 export function CreatorProfileForm({
@@ -72,10 +89,22 @@ export function CreatorProfileForm({
   canProceed,
   expandedPlatforms,
   platformCountryInputs,
-  imageInputRef,
+  connections,
+  connectionsLoading,
+  connectionsError,
+  platformActionsDisabled,
+  pendingAuthorization,
+  connectionNotice,
+  connectingPlatform,
+  busyConnectionId,
+  selectingExternalAccountId,
   onFormChange,
-  onImageChange,
   onAddPlatform,
+  onConnectPlatform,
+  onSyncConnection,
+  onDisconnectConnection,
+  onSelectAuthorizedAccount,
+  onRetryConnections,
   onRemovePlatform,
   onUpdatePlatform,
   onTogglePlatformExpanded,
@@ -89,6 +118,7 @@ export function CreatorProfileForm({
   onPrevStep,
   onNextStep,
   onSubmit,
+  submitLabel,
 }: CreatorProfileFormProps) {
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,7 +132,7 @@ export function CreatorProfileForm({
   return (
     <form
       onSubmit={handleFormSubmit}
-      className={currentStep === 1 ? "space-y-5 xl:space-y-7" : "space-y-4 p-5 sm:p-6"}
+      className={currentStep === 1 ? "space-y-5 xl:space-y-7" : "space-y-3 p-4"}
     >
       {/* Step 1: Creator Type Selection */}
       {currentStep === 1 && (
@@ -114,13 +144,7 @@ export function CreatorProfileForm({
 
       {/* Step 2: Basic Information */}
       {currentStep === 2 && (
-        <CreatorBasicInfoStep
-          form={form}
-          onFormChange={onFormChange}
-          error={error}
-          imageInputRef={imageInputRef}
-          onImageChange={onImageChange}
-        />
+        <CreatorBasicInfoStep form={form} onFormChange={onFormChange} error={error} />
       )}
 
       {/* Step 3: Platforms Section */}
@@ -129,7 +153,21 @@ export function CreatorProfileForm({
           platforms={platforms}
           expandedPlatforms={expandedPlatforms}
           platformCountryInputs={platformCountryInputs}
+          connections={connections}
+          connectionsLoading={connectionsLoading}
+          connectionsError={connectionsError}
+          actionsDisabled={platformActionsDisabled}
+          pendingAuthorization={pendingAuthorization}
+          connectionNotice={connectionNotice}
+          connectingPlatform={connectingPlatform}
+          busyConnectionId={busyConnectionId}
+          selectingExternalAccountId={selectingExternalAccountId}
           onAddPlatform={onAddPlatform}
+          onConnectPlatform={onConnectPlatform}
+          onSyncConnection={onSyncConnection}
+          onDisconnectConnection={onDisconnectConnection}
+          onSelectAuthorizedAccount={onSelectAuthorizedAccount}
+          onRetryConnections={onRetryConnections}
           onRemovePlatform={onRemovePlatform}
           onUpdatePlatform={onUpdatePlatform}
           onTogglePlatformExpanded={onTogglePlatformExpanded}
@@ -159,8 +197,9 @@ export function CreatorProfileForm({
         submitting={submitting}
         canProceed={canProceed}
         onPrevious={onPrevStep}
-        submitLabel="Submit for review"
+        submitLabel={submitLabel ?? "Submit for review"}
         prominentFirstStep
+        disabled={currentStep === totalSteps && platformActionsDisabled}
       />
     </form>
   );

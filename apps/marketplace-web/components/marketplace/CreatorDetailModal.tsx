@@ -17,6 +17,7 @@ import {
   collaborationService,
   type CreateHotelCollaborationRequest,
 } from "@/services/api/collaborations";
+import { isAbsoluteHttpsUrl } from "@/services/api/creators";
 import { hotelService } from "@/services/api/hotels";
 import { getCurrentUserInfo } from "@/lib/utils/accessControl";
 import { ROUTES } from "@/lib/constants/routes";
@@ -357,11 +358,15 @@ export function CreatorDetailModal({
               {creator.platforms.map((platform, index) => (
                 <a
                   key={index}
-                  href={`https://${platform.name.toLowerCase()}.com/${platform.handle.replace("@", "")}`}
+                  href={
+                    platform.profileUrl && isAbsoluteHttpsUrl(platform.profileUrl)
+                      ? platform.profileUrl
+                      : `https://${platform.name.toLowerCase()}.com/${platform.handle.replace("@", "")}`
+                  }
                   target="_blank"
                   rel="noopener noreferrer"
                   className="w-10 h-10 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-700 transition-colors"
-                  title={platform.name}
+                  title={platform.name === "Other" ? platform.handle : platform.name}
                 >
                   <PlatformIcon platform={platform.name} className="w-5 h-5" />
                 </a>

@@ -80,6 +80,7 @@ export type MarketplaceCreatorPlatform = {
   platformId: string;
   platform: MarketplacePlatformName;
   handle: string;
+  profileUrl: string | null;
   followerCount: number;
   engagementRate: number;
   audienceCountries: { country: string; percentage: number }[];
@@ -346,6 +347,7 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
                         'platformId', platform.id::text,
                         'platform', platform.platform,
                         'handle', platform.handle,
+                        'profileUrl', platform.profile_url,
                         'followerCount', platform.follower_count,
                         'engagementRate', platform.engagement_rate,
                         'audienceCountries', platform.audience_countries,
@@ -365,23 +367,10 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
              WHERE rating.creator_profile_id = creator.id
                AND rating.creator_organization_id = creator.organization_id
            ) ratings ON TRUE
-           WHERE NULLIF(BTRIM(creator.display_name), '') IS NOT NULL
-             AND NULLIF(BTRIM(creator.location_text), '') IS NOT NULL
-             AND NULLIF(BTRIM(creator.short_description), '') IS NOT NULL
-             AND EXISTS (
-               SELECT 1
-               FROM marketplace.creator_platforms completion_platform
-               WHERE completion_platform.creator_profile_id = creator.id
-                 AND completion_platform.organization_id = creator.organization_id
-                 AND NULLIF(BTRIM(completion_platform.handle), '') IS NOT NULL
-                 AND completion_platform.follower_count > 0
-             )
-             AND (
-               NOT $3::boolean
-               OR (
-                 NULLIF(BTRIM(creator.profile_picture_url), '') IS NOT NULL
-                 AND NULLIF(BTRIM(creator.profile_metadata ->> 'profilePictureMediaObjectId'), '') IS NOT NULL
-               )
+           WHERE marketplace.creator_profile_is_complete(
+               creator.id,
+               creator.organization_id,
+               $3::boolean
              )
              AND creator.profile_status = 'active'
              AND creator.source_creator_id IS NOT NULL
@@ -392,23 +381,10 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
         pool.query<{ total: string }>(
           `SELECT COUNT(*)::text AS total
            FROM marketplace.creator_profiles creator
-           WHERE NULLIF(BTRIM(creator.display_name), '') IS NOT NULL
-             AND NULLIF(BTRIM(creator.location_text), '') IS NOT NULL
-             AND NULLIF(BTRIM(creator.short_description), '') IS NOT NULL
-             AND EXISTS (
-               SELECT 1
-               FROM marketplace.creator_platforms completion_platform
-               WHERE completion_platform.creator_profile_id = creator.id
-                 AND completion_platform.organization_id = creator.organization_id
-                 AND NULLIF(BTRIM(completion_platform.handle), '') IS NOT NULL
-                 AND completion_platform.follower_count > 0
-             )
-             AND (
-               NOT $1::boolean
-               OR (
-                 NULLIF(BTRIM(creator.profile_picture_url), '') IS NOT NULL
-                 AND NULLIF(BTRIM(creator.profile_metadata ->> 'profilePictureMediaObjectId'), '') IS NOT NULL
-               )
+           WHERE marketplace.creator_profile_is_complete(
+               creator.id,
+               creator.organization_id,
+               $1::boolean
              )
              AND creator.profile_status = 'active'
              AND creator.source_creator_id IS NOT NULL`,
@@ -544,6 +520,7 @@ function toMarketplaceCreatorPlatforms(value: unknown): MarketplaceCreatorPlatfo
       platformId: readString(row.platformId) ?? readString(row.id) ?? "",
       platform: toPlatformName(platformName),
       handle: readString(row.handle) ?? "",
+      profileUrl: toAbsoluteHttpsUrl(row.profileUrl ?? row.profile_url),
       followerCount: toNumber(row.followerCount ?? row.followers),
       engagementRate: toNumber(row.engagementRate ?? row.engagement_rate),
       audienceCountries: toAudienceCountries(row.audienceCountries ?? row.top_countries),
@@ -649,6 +626,18 @@ function toCompensationType(
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function toAbsoluteHttpsUrl(value: unknown): string | null {
+  const rawUrl = readString(value);
+  if (!rawUrl) return null;
+
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "https:" && Boolean(url.hostname) ? rawUrl : null;
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -848,6 +837,7 @@ function serializeCreatorPlatform(
     platformId: platform.platformId,
     platform: platform.platform,
     handle: platform.handle,
+    profileUrl: platform.profileUrl ?? null,
     followerCount: platform.followerCount,
     engagementRate: platform.engagementRate,
     audienceCountries: platform.audienceCountries.map((entry) => ({

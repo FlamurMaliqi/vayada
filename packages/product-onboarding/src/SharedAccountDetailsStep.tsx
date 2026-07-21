@@ -21,7 +21,7 @@ export type SharedAccountDetailsStepProps = {
   email: string;
   initialName?: string | null;
   initialPhone?: string | null;
-  requireProfileImage?: boolean;
+  initialProfileImage?: SharedAccountProfileImageUpload | null;
   onUploadProfileImage: (file: File) => Promise<SharedAccountProfileImageUpload>;
   onSubmit: (input: SharedAccountDetailsInput) => Promise<void>;
 };
@@ -31,18 +31,19 @@ export default function SharedAccountDetailsStep({
   email,
   initialName,
   initialPhone,
-  requireProfileImage = false,
+  initialProfileImage,
   onUploadProfileImage,
   onSubmit,
 }: SharedAccountDetailsStepProps) {
   const initial = splitSharedAccountName(initialName);
-  const profileImageRequired = accountType === "creator" && requireProfileImage;
+  const profileImageRequired = accountType === "creator";
+  const phoneRequired = accountType === "creator";
   const isGuidedOnboarding = accountType === "hotel" || accountType === "creator";
   const description =
     accountType === "hotel"
       ? "Start with your details. Next, we’ll set up your first hotel."
       : accountType === "creator"
-        ? "Start with your details. Next, we’ll build the creator profile hotels will see."
+        ? ""
         : "Add your details once. We’ll use them across Marketplace, Booking Admin, and PMS.";
   const submitLabel =
     accountType === "hotel"
@@ -65,6 +66,7 @@ export default function SharedAccountDetailsStep({
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [profileImagePreviewUrl, setProfileImagePreviewUrl] = useState<string | null>(null);
+  const hasProfileImage = Boolean(profileImage || initialProfileImage);
 
   useEffect(() => {
     if (isGuidedOnboarding) headingRef.current?.focus();
@@ -92,8 +94,8 @@ export default function SharedAccountDetailsStep({
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError("");
-    const errors = accountDetailsErrors({ firstName, lastName, phone });
-    const missingRequiredProfileImage = profileImageRequired && !profileImage;
+    const errors = accountDetailsErrors({ firstName, lastName, phone }, phoneRequired);
+    const missingRequiredProfileImage = profileImageRequired && !hasProfileImage;
     setFieldErrors(errors);
     if (missingRequiredProfileImage && !profileImageError) {
       setProfileImageError("Profile photo is required.");
@@ -137,7 +139,7 @@ export default function SharedAccountDetailsStep({
           >
             {isGuidedOnboarding ? "Let’s create your profile" : "Tell us about you"}
           </h1>
-          <p className="mt-2 text-sm text-gray-500">{description}</p>
+          {description && <p className="mt-2 text-sm text-gray-500">{description}</p>}
         </header>
 
         <form
@@ -156,16 +158,18 @@ export default function SharedAccountDetailsStep({
               type="button"
               onClick={() => profileImageInputRef.current?.click()}
               disabled={submitting}
-              aria-label={profileImage ? "Change profile photo" : "Upload profile photo"}
-              title={profileImage ? "Change profile photo" : "Upload profile photo"}
+              aria-label={hasProfileImage ? "Change profile photo" : "Upload profile photo"}
+              title={hasProfileImage ? "Change profile photo" : "Upload profile photo"}
               aria-invalid={profileImageError ? true : undefined}
               aria-describedby={profileImageError ? "account-profile-image-error" : undefined}
               className="group relative mt-3 flex h-36 w-36 items-center justify-center rounded-full bg-primary-50 text-primary-600 outline-none ring-1 ring-gray-100 transition hover:bg-primary-100 focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:h-40 sm:w-40"
             >
-              {profileImagePreviewUrl ? (
+              {profileImagePreviewUrl || initialProfileImage?.profilePictureUrl ? (
                 <img
-                  src={profileImagePreviewUrl}
-                  alt="Selected profile preview"
+                  src={profileImagePreviewUrl ?? initialProfileImage?.profilePictureUrl}
+                  alt={
+                    profileImagePreviewUrl ? "Selected profile preview" : "Existing profile photo"
+                  }
                   className="h-full w-full rounded-full object-cover"
                 />
               ) : (
@@ -186,7 +190,7 @@ export default function SharedAccountDetailsStep({
               ref={profileImageInputRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              required={profileImageRequired}
+              required={profileImageRequired && !initialProfileImage}
               className="hidden"
               aria-label="Profile photo file"
               onChange={(event) => {
@@ -273,12 +277,13 @@ export default function SharedAccountDetailsStep({
               <AccountField
                 id="account-phone"
                 label="Phone number"
-                optional
+                optional={!phoneRequired}
                 type="tel"
                 value={phone}
                 autoComplete="tel"
                 maxLength={64}
                 placeholder="+49 89 123456"
+                required={phoneRequired}
                 error={fieldErrors.phone}
                 onChange={(value) => {
                   setPhone(value);
@@ -364,18 +369,23 @@ function AccountField({
   );
 }
 
-function accountDetailsErrors(input: {
-  firstName: string;
-  lastName: string;
-  phone: string;
-}): Record<string, string> {
+function accountDetailsErrors(
+  input: {
+    firstName: string;
+    lastName: string;
+    phone: string;
+  },
+  phoneRequired = false,
+): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!input.firstName.trim()) errors.firstName = "Enter your first name.";
   if (!input.lastName.trim()) errors.lastName = "Enter your last name.";
   if (normalizeSharedAccountName(input.firstName, input.lastName).length > 120) {
     errors.lastName = "Enter a shorter name.";
   }
-  if (input.phone.trim() && input.phone.trim().length < 5) {
+  if (phoneRequired && !input.phone.trim()) {
+    errors.phone = "Enter your phone number.";
+  } else if (input.phone.trim() && input.phone.trim().length < 5) {
     errors.phone = "Enter a valid phone number.";
   }
   return errors;

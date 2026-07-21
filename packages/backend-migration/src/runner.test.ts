@@ -1113,6 +1113,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       expect(marketplaceTableRows.map((row) => row.table_name)).toEqual([
         "collaboration_deliverables",
         "collaborations",
+        "creator_platform_authorizations",
+        "creator_platform_connections",
+        "creator_platform_credential_cleanup_jobs",
+        "creator_platform_metric_snapshots",
         "creator_platforms",
         "creator_profiles",
         "creator_ratings",
@@ -1128,6 +1132,56 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "offer_creator_requirements",
         "offer_deliverables",
         "trips",
+      ]);
+
+      const { rows: creatorEngagementColumns } = await verifyClient.query<{
+        table_name: string;
+        numeric_precision: number;
+        numeric_scale: number;
+      }>(
+        `SELECT table_name, numeric_precision, numeric_scale
+         FROM information_schema.columns
+         WHERE table_schema = 'marketplace'
+           AND column_name = 'engagement_rate'
+           AND table_name IN ('creator_platforms', 'creator_platform_metric_snapshots')
+         ORDER BY table_name`,
+      );
+      expect(creatorEngagementColumns).toEqual([
+        {
+          table_name: "creator_platform_metric_snapshots",
+          numeric_precision: 24,
+          numeric_scale: 6,
+        },
+        { table_name: "creator_platforms", numeric_precision: 24, numeric_scale: 6 },
+      ]);
+
+      const { rows: creatorCompletionFunctions } = await verifyClient.query<{
+        argument_count: number;
+        default_count: number;
+        language: string;
+        result: string;
+        volatility: string;
+      }>(
+        `SELECT
+           procedure.pronargs AS argument_count,
+           procedure.pronargdefaults AS default_count,
+           language.lanname AS language,
+           pg_get_function_result(procedure.oid) AS result,
+           procedure.provolatile AS volatility
+         FROM pg_proc AS procedure
+         JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+         JOIN pg_language AS language ON language.oid = procedure.prolang
+         WHERE namespace.nspname = 'marketplace'
+           AND procedure.proname = 'creator_profile_is_complete'`,
+      );
+      expect(creatorCompletionFunctions).toEqual([
+        {
+          argument_count: 3,
+          default_count: 1,
+          language: "sql",
+          result: "boolean",
+          volatility: "s",
+        },
       ]);
 
       const { rows: marketplaceIntegrityConstraints } = await verifyClient.query<{
@@ -1544,7 +1598,105 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       await verifyClient.query(
         `INSERT INTO marketplace.creator_platforms
            (creator_profile_id, organization_id, platform, handle, follower_count, engagement_rate)
-         VALUES ($1, $2, 'instagram', '@marketplace_creator', 125000, 3.2)`,
+         VALUES ($1, $2, 'instagram', '@marketplace_creator', 125000, 1000.123456)`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      const { rows: storedEngagementRates } = await verifyClient.query<{ engagement_rate: string }>(
+        `SELECT engagement_rate::text
+         FROM marketplace.creator_platforms
+         WHERE creator_profile_id = $1 AND organization_id = $2`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      expect(storedEngagementRates).toEqual([{ engagement_rate: "1000.123456" }]);
+
+      const { rows: incompleteProfiles } = await verifyClient.query<{ complete: boolean }>(
+        `SELECT marketplace.creator_profile_is_complete($1, $2) AS complete`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      expect(incompleteProfiles).toEqual([{ complete: false }]);
+
+      await verifyClient.query(
+        `UPDATE marketplace.creator_profiles
+         SET location_text = 'Berlin',
+             short_description = 'Independent travel creator',
+             phone = '+49123456789'
+         WHERE id = $1 AND organization_id = $2`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      const { rows: completedProfiles } = await verifyClient.query<{
+        complete: boolean;
+        photo_complete: boolean;
+        wrong_organization_complete: boolean;
+      }>(
+        `SELECT
+           marketplace.creator_profile_is_complete($1, $2) AS complete,
+           marketplace.creator_profile_is_complete($1, $2, TRUE) AS photo_complete,
+           marketplace.creator_profile_is_complete($1, $3) AS wrong_organization_complete`,
+        [creatorProfileId, creatorOrganizationId, wrongOrganizationId],
+      );
+      expect(completedProfiles).toEqual([
+        { complete: true, photo_complete: false, wrong_organization_complete: false },
+      ]);
+
+      await verifyClient.query(
+        `UPDATE marketplace.creator_profiles
+         SET profile_picture_url = 'https://images.example.test/creator.jpg',
+             profile_metadata = jsonb_build_object(
+               'profilePictureMediaObjectId',
+               '99999999-8888-4888-8888-999999999991'
+             )
+         WHERE id = $1 AND organization_id = $2`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      const { rows: unownedPhotoProfiles } = await verifyClient.query<{ complete: boolean }>(
+        `SELECT marketplace.creator_profile_is_complete($1, $2, TRUE) AS complete`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      expect(unownedPhotoProfiles).toEqual([{ complete: false }]);
+
+      await verifyClient.query(
+        `INSERT INTO platform.media_objects (
+           id, bucket, storage_key, visibility, purpose, owner_organization_id,
+           resource_product, resource_type, resource_id, lifecycle_status,
+           content_type, public_approved, created_by_user_id
+         ) VALUES (
+           '99999999-8888-4888-8888-999999999991', 'creator-media',
+           'creator-profiles/owned.jpg', 'public', 'marketplace.creator.profile_image',
+           $1, 'marketplace', 'creator_profile', $2, 'active', 'image/jpeg', TRUE, $3
+         )`,
+        [creatorOrganizationId, creatorProfileId, creatorUserId],
+      );
+      await verifyClient.query(
+        `INSERT INTO platform.media_variants (
+           media_object_id, variant_name, visibility, storage_key, content_type,
+           public_cdn_url
+         ) VALUES (
+           '99999999-8888-4888-8888-999999999991', 'original_safe', 'public',
+           'creator-profiles/owned.jpg', 'image/jpeg',
+           'https://images.example.test/creator.jpg'
+         )`,
+      );
+      const { rows: photoCompleteProfiles } = await verifyClient.query<{ complete: boolean }>(
+        `SELECT marketplace.creator_profile_is_complete($1, $2, TRUE) AS complete`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      expect(photoCompleteProfiles).toEqual([{ complete: true }]);
+
+      await verifyClient.query(
+        `UPDATE marketplace.creator_platforms
+         SET platform = 'other', profile_url = NULL
+         WHERE creator_profile_id = $1 AND organization_id = $2`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      const { rows: otherPlatformWithoutUrls } = await verifyClient.query<{ complete: boolean }>(
+        `SELECT marketplace.creator_profile_is_complete($1, $2) AS complete`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      expect(otherPlatformWithoutUrls).toEqual([{ complete: false }]);
+      await verifyClient.query(
+        `UPDATE marketplace.creator_platforms
+         SET platform = 'instagram', profile_url = NULL
+         WHERE creator_profile_id = $1 AND organization_id = $2`,
         [creatorProfileId, creatorOrganizationId],
       );
       await verifyClient.query(

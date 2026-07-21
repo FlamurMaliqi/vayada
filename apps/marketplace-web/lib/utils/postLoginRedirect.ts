@@ -1,6 +1,9 @@
 import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
+import { creatorService } from "@/services/api/creators";
+import { authService } from "@/services/auth";
 
+import { hasRequiredCreatorAccountDetails } from "./creatorAccountRequirements";
 import { getPostLoginProfileRedirect } from "./profileRedirect";
 import { checkProfileStatus } from "./profileStatus";
 import { resolveMarketplaceSetupGuard } from "./sharedSetupGuard";
@@ -20,7 +23,14 @@ export async function getMarketplacePostLoginRedirect(
   }
 
   if (userType === "creator") {
-    const profileStatus = await checkProfileStatus(userType);
+    const [profileStatus, profile] = await Promise.all([
+      checkProfileStatus(userType),
+      creatorService.getMyProfile().catch(() => null),
+    ]);
+    if (!profile || !hasRequiredCreatorAccountDetails(authService.getSessionUser(), profile)) {
+      storage?.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
+      return ROUTES.ONBOARDING;
+    }
     const decision = getPostLoginProfileRedirect(userType, profileStatus);
     if (decision.profileComplete !== null) {
       storage?.setItem(STORAGE_KEYS.PROFILE_COMPLETE, String(decision.profileComplete));

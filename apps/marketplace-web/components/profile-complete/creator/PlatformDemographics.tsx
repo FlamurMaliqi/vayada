@@ -17,6 +17,9 @@ interface PlatformDemographicsProps {
   onUpdateCountryPercentage: (countryIndex: number, percentage: number) => void;
   onToggleAgeGroup: (ageRange: string) => void;
   onUpdateGenderSplit: (field: "male" | "female", value: string) => void;
+  countriesLocked?: boolean;
+  ageGroupsLocked?: boolean;
+  genderSplitLocked?: boolean;
 }
 
 export function PlatformDemographics({
@@ -31,6 +34,9 @@ export function PlatformDemographics({
   onUpdateCountryPercentage,
   onToggleAgeGroup,
   onUpdateGenderSplit,
+  countriesLocked = false,
+  ageGroupsLocked = false,
+  genderSplitLocked = false,
 }: PlatformDemographicsProps) {
   return (
     <div className="rounded-2xl border border-gray-100 bg-white p-4">
@@ -61,7 +67,9 @@ export function PlatformDemographics({
               <div>
                 <p className="text-sm font-semibold text-gray-800">Top Countries</p>
                 <p className="text-xs text-gray-500">
-                  Select up to 3 countries with their audience percentage
+                  {countriesLocked
+                    ? "Synced from the connected account"
+                    : "Select up to 3 countries with their audience percentage"}
                 </p>
               </div>
             </div>
@@ -70,6 +78,7 @@ export function PlatformDemographics({
                 <input
                   type="text"
                   value={countryInput}
+                  disabled={countriesLocked}
                   onChange={(e) => onCountryInputChange(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
@@ -78,10 +87,10 @@ export function PlatformDemographics({
                     }
                   }}
                   placeholder="Search countries..."
-                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-primary-300 focus:ring-2 focus:ring-primary-200"
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-primary-300 focus:ring-2 focus:ring-primary-200 disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 {/* Dropdown suggestions */}
-                {availableCountries.length > 0 && (
+                {!countriesLocked && availableCountries.length > 0 && (
                   <div className="max-h-40 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-sm">
                     {availableCountries.map((country) => (
                       <button
@@ -115,6 +124,7 @@ export function PlatformDemographics({
                           <input
                             type="text"
                             inputMode="decimal"
+                            disabled={countriesLocked}
                             value={
                               country.percentage && country.percentage > 0 ? country.percentage : ""
                             }
@@ -124,14 +134,15 @@ export function PlatformDemographics({
                               onUpdateCountryPercentage(countryIndex, parsed);
                             }}
                             placeholder="0"
-                            className="w-16 bg-transparent text-sm text-gray-800 outline-none"
+                            className="w-16 bg-transparent text-sm text-gray-800 outline-none disabled:cursor-not-allowed"
                           />
                           <span className="text-sm text-gray-500">%</span>
                         </div>
                         <button
                           type="button"
                           onClick={() => onRemoveCountry(countryIndex)}
-                          className="p-1 text-gray-500 hover:text-primary-700"
+                          disabled={countriesLocked}
+                          className="p-1 text-gray-500 hover:text-primary-700 disabled:cursor-not-allowed disabled:opacity-40"
                           aria-label={`Remove ${country.country}`}
                         >
                           <XMarkIcon className="w-4 h-4" />
@@ -153,7 +164,9 @@ export function PlatformDemographics({
             <div>
               <p className="text-sm font-semibold text-gray-800">Age Groups</p>
               <p className="text-xs text-gray-500">
-                Select up to 3 age groups with their audience percentage
+                {ageGroupsLocked
+                  ? "Synced from the connected account"
+                  : "Select up to 3 age groups with their audience percentage"}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -164,11 +177,12 @@ export function PlatformDemographics({
                     key={range}
                     type="button"
                     onClick={() => onToggleAgeGroup(range)}
+                    disabled={ageGroupsLocked}
                     className={`px-3 py-1.5 rounded-full border text-sm font-semibold transition-colors ${
                       isSelected
                         ? "bg-primary-50 text-primary-700 border-primary-200"
                         : "bg-white text-gray-700 border-gray-200 hover:border-primary-200 hover:text-primary-700"
-                    }`}
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
                   >
                     {range}
                   </button>
@@ -179,7 +193,12 @@ export function PlatformDemographics({
 
           {/* Gender Split */}
           <div className="space-y-2">
-            <p className="text-sm font-semibold text-gray-800">Gender Split</p>
+            <div>
+              <p className="text-sm font-semibold text-gray-800">Gender Split</p>
+              {genderSplitLocked && (
+                <p className="text-xs text-gray-500">Synced from the connected account</p>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <Input
                 label="Male %"
@@ -198,6 +217,7 @@ export function PlatformDemographics({
                 min={0}
                 max={100}
                 step="0.1"
+                disabled={genderSplitLocked}
                 className="rounded-xl border-gray-200 bg-gray-50"
               />
               <Input
@@ -217,6 +237,7 @@ export function PlatformDemographics({
                 min={0}
                 max={100}
                 step="0.1"
+                disabled={genderSplitLocked}
                 className="rounded-xl border-gray-200 bg-gray-50"
               />
             </div>

@@ -56,11 +56,6 @@ export function useCreatorProfile(
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const creatorImageInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Platform management state (co-located for edit sync)
-  const [expandedPlatforms, setExpandedPlatforms] = useState<Set<number>>(new Set());
-  const [platformCountryInputs, setPlatformCountryInputs] = useState<Record<number, string>>({});
-  const [platformSaveStatus, setPlatformSaveStatus] = useState<Record<number, string>>({});
-
   const [editFormData, setEditFormData] = useState({
     name: "",
     profilePicture: "",
@@ -133,8 +128,6 @@ export function useCreatorProfile(
         creatorType: creatorProfile.creatorType || "Lifestyle",
         platforms: normalizeProfilePlatforms(creatorProfile.platforms || []),
       });
-      setExpandedPlatforms(new Set());
-      setPlatformCountryInputs({});
     }
   }, [creatorProfile]);
 
@@ -184,18 +177,27 @@ export function useCreatorProfile(
       const platform = editFormData.platforms[i];
       if (
         !platform.name ||
-        !["Instagram", "TikTok", "YouTube", "Facebook"].includes(platform.name)
+        !["Instagram", "TikTok", "YouTube", "Facebook", "Other"].includes(platform.name)
       ) {
-        return `Platform ${i + 1}: Platform name must be one of: Instagram, TikTok, YouTube, Facebook`;
+        return `Platform ${i + 1}: Platform name is not supported`;
       }
       if (!platform.handle || !platform.handle.trim()) {
-        return `Platform ${i + 1}: Handle is required`;
+        return `Platform ${i + 1}: ${platform.name === "Other" ? "Platform name" : "Handle"} is required`;
+      }
+      if (platform.name === "Other") {
+        const profileUrl = platform.profileUrl?.trim();
+        if (!profileUrl) return `Platform ${i + 1}: Profile link is required`;
+        try {
+          if (new URL(profileUrl).protocol !== "https:") throw new Error();
+        } catch {
+          return `Platform ${i + 1}: Profile link must be a valid HTTPS URL`;
+        }
       }
       if (!platform.followers || platform.followers <= 0) {
         return `Platform ${i + 1}: Followers must be greater than 0`;
       }
-      if (!platform.engagementRate || platform.engagementRate <= 0) {
-        return `Platform ${i + 1}: Engagement rate must be greater than 0`;
+      if (!Number.isFinite(platform.engagementRate) || platform.engagementRate < 0) {
+        return `Platform ${i + 1}: Engagement rate must be a non-negative number`;
       }
       if (platform.topAgeGroups && platform.topAgeGroups.length > 0) {
         const invalidAgeGroups = platform.topAgeGroups.filter((tag) => {
@@ -235,8 +237,11 @@ export function useCreatorProfile(
 
         return {
           id: platform.id ?? null,
-          name: platform.name as "Instagram" | "TikTok" | "YouTube" | "Facebook",
+          name: platform.name as "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Other",
           handle: platform.handle.trim(),
+          ...(platform.profileUrl !== undefined
+            ? { profileUrl: platform.profileUrl?.trim() || null }
+            : {}),
           followers: platform.followers,
           engagementRate: platform.engagementRate,
           ...(platform.topCountries !== undefined
@@ -441,12 +446,6 @@ export function useCreatorProfile(
     setEditFormData,
     fileInputRef,
     creatorImageInputRef,
-    expandedPlatforms,
-    setExpandedPlatforms,
-    platformCountryInputs,
-    setPlatformCountryInputs,
-    platformSaveStatus,
-    setPlatformSaveStatus,
     loadProfile,
     handleSaveContact,
     handleSaveProfile,

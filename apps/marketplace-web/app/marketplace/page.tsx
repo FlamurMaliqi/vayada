@@ -14,6 +14,7 @@ import { creatorService } from "@/services/api/creators";
 import { ApiErrorResponse } from "@/services/api/client";
 import { checkProfileStatus } from "@/lib/utils";
 import { resolveMarketplaceSetupGuard } from "@/lib/utils/sharedSetupGuard";
+import { hasRequiredCreatorAccountDetails } from "@/lib/utils/creatorAccountRequirements";
 import { authService } from "@/services/auth";
 
 export default function MarketplacePage() {
@@ -84,8 +85,16 @@ export default function MarketplacePage() {
           setProfileReady(true);
           return;
         }
-        const status = await checkProfileStatus(refreshedUserType);
+        const [status, profile] = await Promise.all([
+          checkProfileStatus(refreshedUserType),
+          creatorService.getMyProfile(),
+        ]);
         if (cancelled) return;
+        if (!hasRequiredCreatorAccountDetails(authService.getSessionUser(), profile)) {
+          localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
+          router.replace(ROUTES.ONBOARDING);
+          return;
+        }
         if (!status || !status.profile_complete) {
           localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
           router.replace(ROUTES.PROFILE_COMPLETE);

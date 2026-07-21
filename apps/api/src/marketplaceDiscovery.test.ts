@@ -159,6 +159,7 @@ function creatorSeed(overrides: Partial<CreatorSeed>): CreatorSeed {
         platformId: "plat-1",
         platform: "instagram",
         handle: "@annaalps",
+        profileUrl: "https://instagram.com/annaalps",
         followerCount: 12000,
         engagementRate: 4.2,
         audienceCountries: [{ country: "AT", percentage: 45 }],
@@ -441,6 +442,7 @@ describe("marketplace discovery creators route", () => {
     expect(anna.creatorType).toBe("travel");
     expect(anna.platforms[0].platform).toBe("instagram");
     expect(anna.platforms[0].handle).toBe("@annaalps");
+    expect(anna.platforms[0].profileUrl).toBe("https://instagram.com/annaalps");
     expect(anna.platforms[0].followerCount).toBe(12000);
     expect(anna.platforms[0].engagementRate).toBe(4.2);
     expect(anna.audienceSize).toBe(12000);
@@ -800,11 +802,30 @@ describe("pg marketplace discovery repository", () => {
               platformId: "platform-1",
               platform: "instagram",
               handle: "@annaalps",
+              profileUrl: "https://instagram.com/annaalps",
               followerCount: 12000,
               engagementRate: "4.20",
               audienceCountries: [{ country: "AT", percentage: 45 }],
               audienceAgeGroups: [{ ageRange: "25-34", percentage: 40 }],
               audienceGenderSplit: { male: 30, female: 70 },
+            },
+            {
+              platformId: "platform-2",
+              platform: "tiktok",
+              handle: "@unsafe-http",
+              profileUrl: "http://tiktok.com/unsafe-http",
+            },
+            {
+              platformId: "platform-3",
+              platform: "youtube",
+              handle: "@unsafe-relative",
+              profileUrl: "/unsafe-relative",
+            },
+            {
+              platformId: "platform-4",
+              platform: "facebook",
+              handle: "@unsafe-script",
+              profileUrl: "javascript:alert(1)",
             },
           ],
           averageRating: "4.33",
@@ -833,19 +854,23 @@ describe("pg marketplace discovery repository", () => {
           platformId: "platform-1",
           platform: "instagram",
           handle: "@annaalps",
+          profileUrl: "https://instagram.com/annaalps",
           followerCount: 12000,
           engagementRate: 4.2,
         },
+        { platformId: "platform-2", profileUrl: null },
+        { platformId: "platform-3", profileUrl: null },
+        { platformId: "platform-4", profileUrl: null },
       ],
     });
     const sql = pool.sql.join("\n");
     expect(sql).not.toContain("creator.profile_complete");
-    expect(sql).toContain("FROM marketplace.creator_platforms completion_platform");
-    expect(sql).toContain("profilePictureMediaObjectId");
-    expect(sql).toContain("NOT $3::boolean");
-    expect(sql).toContain("NOT $1::boolean");
+    expect(sql).toContain("marketplace.creator_profile_is_complete");
+    expect(sql).toContain("$3::boolean");
+    expect(sql).toContain("$1::boolean");
     expect(sql).toContain("creator.profile_status = 'active'");
     expect(sql).toContain('creator.source_creator_id AS "creatorId"');
+    expect(sql).toContain("'profileUrl', platform.profile_url");
     expect(sql).toContain("creator.source_creator_id IS NOT NULL");
     expect(sql).not.toContain("COALESCE(creator.source_creator_id");
     expect(sql).not.toMatch(/\bauth\b|users/i);
@@ -857,12 +882,7 @@ describe("pg marketplace discovery repository", () => {
     const pool: MarketplaceDiscoveryReadPool = {
       async query(text, values) {
         sql.push(text);
-        const derivesBaseCompleteness = [
-          "NULLIF(BTRIM(creator.display_name)",
-          "NULLIF(BTRIM(creator.location_text)",
-          "NULLIF(BTRIM(creator.short_description)",
-          "FROM marketplace.creator_platforms completion_platform",
-        ].every((fragment) => text.includes(fragment));
+        const derivesBaseCompleteness = text.includes("marketplace.creator_profile_is_complete");
         const profilePhotoRequired = values ? values[values.length - 1] === true : false;
         const eligible =
           (storedProfile.profileComplete || derivesBaseCompleteness) && !profilePhotoRequired;

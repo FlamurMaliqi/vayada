@@ -12,6 +12,7 @@ export function FormNavigationButtons({
   onPrevious,
   submitLabel = "Complete Profile",
   prominentFirstStep = false,
+  disabled = false,
 }: FormNavigationButtonsProps) {
   const isLastStep = currentStep === totalSteps;
   const isFirstStep = currentStep === 1;
@@ -42,7 +43,7 @@ export function FormNavigationButtons({
         className={`gap-2 rounded-full font-semibold shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 ${
           useProminentButton ? "px-8" : "px-6 py-3"
         }`}
-        disabled={submitting || (!isLastStep && !canProceed)}
+        disabled={disabled || submitting || (!isLastStep && !canProceed)}
       >
         {submitting ? (
           <span className="flex items-center justify-center gap-2">

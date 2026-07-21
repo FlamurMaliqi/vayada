@@ -9,6 +9,7 @@ import { usePlatformDeliverables } from "@/hooks/usePlatformDeliverables";
 import { PlatformDeliverablesSelector } from "./PlatformDeliverablesSelector";
 import { DateMonthPicker } from "./DateMonthPicker";
 import type { PlatformDeliverable } from "./types";
+import type { CollaborationOffering } from "@/lib/types";
 
 interface CollaborationApplicationModalProps {
   isOpen: boolean;
@@ -20,6 +21,7 @@ interface CollaborationApplicationModalProps {
   creatorPlatforms?: string[];
   maxNights?: number;
   minNights?: number;
+  compensationOptions?: CollaborationOffering[];
 }
 
 export interface CollaborationApplicationData {
@@ -29,6 +31,30 @@ export interface CollaborationApplicationData {
   preferredMonths: string[];
   platformDeliverables: PlatformDeliverable[];
   consent: boolean;
+  compensationOption?: CollaborationOffering;
+}
+
+function describeCompensation(option: CollaborationOffering): string {
+  switch (option.collaboration_type) {
+    case "Free Stay":
+      return option.free_stay_min_nights && option.free_stay_max_nights
+        ? `${option.free_stay_min_nights}–${option.free_stay_max_nights} nights`
+        : option.free_stay_max_nights
+          ? `Up to ${option.free_stay_max_nights} nights`
+          : "Complimentary stay";
+    case "Paid":
+      return option.paid_max_amount != null
+        ? `Up to ${option.paid_max_amount} ${option.currency ?? "USD"}`
+        : "Paid collaboration";
+    case "Discount":
+      return option.discount_percentage != null
+        ? `${option.discount_percentage}% discount`
+        : "Discounted stay";
+    case "Affiliate":
+      return option.commission_percentage != null
+        ? `${option.commission_percentage}% commission`
+        : "Affiliate commission";
+  }
 }
 
 const getMonthsInRange = (fromStr: string, toStr: string): string[] => {
@@ -37,13 +63,14 @@ const getMonthsInRange = (fromStr: string, toStr: string): string[] => {
   if (isNaN(from.getTime()) || isNaN(to.getTime())) return [];
 
   const months = [];
-  const current = new Date(from.getFullYear(), from.getMonth(), 1);
+  const current = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1));
+  const end = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 1);
 
   // Use a limit to prevent infinite loops if dates are somehow broken
   let safetyCounter = 0;
-  while (current <= to && safetyCounter < 24) {
-    months.push(MONTHS_ABBR[current.getMonth()]);
-    current.setMonth(current.getMonth() + 1);
+  while (current.getTime() <= end && safetyCounter < 24) {
+    months.push(MONTHS_ABBR[current.getUTCMonth()]);
+    current.setUTCMonth(current.getUTCMonth() + 1);
     safetyCounter++;
   }
   return Array.from(new Set(months));
@@ -59,6 +86,7 @@ export function CollaborationApplicationModal({
   creatorPlatforms = [],
   maxNights,
   minNights,
+  compensationOptions = [],
 }: CollaborationApplicationModalProps) {
   const [whyGreatFit, setWhyGreatFit] = useState("");
   const [travelDateFrom, setTravelDateFrom] = useState("");
@@ -67,6 +95,7 @@ export function CollaborationApplicationModal({
   const [consent, setConsent] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectedCompensationOptionId, setSelectedCompensationOptionId] = useState("");
 
   const {
     platformDeliverables,
@@ -83,7 +112,23 @@ export function CollaborationApplicationModal({
 
   if (!isOpen) return null;
 
-  const normalizedAvailable = availableMonths.map((m) => getMonthAbbr(m));
+  const selectedCompensationOption =
+    compensationOptions.length === 1
+      ? compensationOptions[0]
+      : compensationOptions.find((option) => option.id === selectedCompensationOptionId);
+  const activeAvailableMonths = selectedCompensationOption
+    ? selectedCompensationOption.availability_months
+    : availableMonths;
+  const activeRequiredPlatforms = selectedCompensationOption
+    ? selectedCompensationOption.platforms
+    : requiredPlatforms;
+  const activeMaxNights = selectedCompensationOption
+    ? (selectedCompensationOption.free_stay_max_nights ?? undefined)
+    : maxNights;
+  const activeMinNights = selectedCompensationOption
+    ? (selectedCompensationOption.free_stay_min_nights ?? undefined)
+    : minNights;
+  const normalizedAvailable = activeAvailableMonths.map((m) => getMonthAbbr(m));
 
   const handleMonthToggle = (month: string) => {
     setErrorMessage(null);
@@ -93,7 +138,7 @@ export function CollaborationApplicationModal({
   };
 
   const isMonthAvailable = (month: string): boolean => {
-    return availableMonths.length === 0 || normalizedAvailable.includes(month);
+    return activeAvailableMonths.length === 0 || normalizedAvailable.includes(month);
   };
 
   const filterPlatforms = (p: string): boolean => {
@@ -102,7 +147,7 @@ export function CollaborationApplicationModal({
       list.includes(key) ||
       list.some((item) => item.toLowerCase() === key.toLowerCase()) ||
       (key === "YouTube" && list.includes("YT"));
-    const isHotelDesired = platformMatch(requiredPlatforms, p);
+    const isHotelDesired = platformMatch(activeRequiredPlatforms, p);
     const isCreatorActive = creatorPlatforms.length === 0 || platformMatch(creatorPlatforms, p);
     return isHotelDesired && isCreatorActive;
   };
@@ -114,7 +159,12 @@ export function CollaborationApplicationModal({
       (pd) => pd.deliverables.length > 0,
     );
 
-    if (!whyGreatFit.trim() || validPlatformDeliverables.length === 0 || !consent) {
+    if (
+      !whyGreatFit.trim() ||
+      validPlatformDeliverables.length === 0 ||
+      !consent ||
+      (compensationOptions.length > 0 && !selectedCompensationOption)
+    ) {
       return;
     }
 
@@ -124,15 +174,15 @@ export function CollaborationApplicationModal({
       const to = new Date(travelDateTo);
       if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
         const nights = Math.round((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
-        if (maxNights && nights > maxNights) {
+        if (activeMaxNights && nights > activeMaxNights) {
           setErrorMessage(
-            `This hotel offers a maximum of ${maxNights} night${maxNights === 1 ? "" : "s"}. Please shorten your stay.`,
+            `This hotel offers a maximum of ${activeMaxNights} night${activeMaxNights === 1 ? "" : "s"}. Please shorten your stay.`,
           );
           return;
         }
-        if (minNights && nights > 0 && nights < minNights) {
+        if (activeMinNights && nights > 0 && nights < activeMinNights) {
           setErrorMessage(
-            `This hotel requires a minimum of ${minNights} night${minNights === 1 ? "" : "s"}. Please extend your stay.`,
+            `This hotel requires a minimum of ${activeMinNights} night${activeMinNights === 1 ? "" : "s"}. Please extend your stay.`,
           );
           return;
         }
@@ -140,11 +190,16 @@ export function CollaborationApplicationModal({
     }
 
     // Availability Validation
-    if (availableMonths.length > 0 && availableMonths.length < 12) {
+    if (activeAvailableMonths.length > 0 && activeAvailableMonths.length < 12) {
       let requestedMonths: string[] = [];
 
       if (travelDateFrom && travelDateTo) {
         requestedMonths = getMonthsInRange(travelDateFrom, travelDateTo);
+      } else if (travelDateFrom || travelDateTo) {
+        const date = new Date(travelDateFrom || travelDateTo);
+        if (!isNaN(date.getTime())) {
+          requestedMonths = [MONTHS_ABBR[date.getUTCMonth()]];
+        }
       } else if (preferredMonths.length > 0) {
         requestedMonths = preferredMonths;
       }
@@ -169,12 +224,14 @@ export function CollaborationApplicationModal({
         preferredMonths,
         platformDeliverables: validPlatformDeliverables,
         consent,
+        compensationOption: selectedCompensationOption,
       });
       // Reset form
       setWhyGreatFit("");
       setTravelDateFrom("");
       setTravelDateTo("");
       setPreferredMonths([]);
+      setSelectedCompensationOptionId("");
       resetDeliverables();
       setConsent(true);
       setIsSubmitting(false);
@@ -187,8 +244,10 @@ export function CollaborationApplicationModal({
     setTravelDateFrom("");
     setTravelDateTo("");
     setPreferredMonths([]);
+    setSelectedCompensationOptionId("");
     resetDeliverables();
     setConsent(true);
+    setErrorMessage(null);
     onClose();
   };
 
@@ -242,13 +301,55 @@ export function CollaborationApplicationModal({
             />
           </div>
 
+          {compensationOptions.length > 1 && (
+            <fieldset>
+              <legend className="mb-3 text-base font-medium text-gray-900">
+                Choose your compensation <span className="text-red-500">*</span>
+              </legend>
+              <div className="space-y-3">
+                {compensationOptions.map((option) => (
+                  <label
+                    key={option.id}
+                    className={`block w-full cursor-pointer rounded-xl border p-4 transition-colors focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2 ${
+                      selectedCompensationOptionId === option.id
+                        ? "border-primary-600 bg-primary-50"
+                        : "border-gray-200 hover:border-primary-300"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="compensationOption"
+                      value={option.id}
+                      checked={selectedCompensationOptionId === option.id}
+                      onChange={() => {
+                        setErrorMessage(null);
+                        setSelectedCompensationOptionId(option.id);
+                        setTravelDateFrom("");
+                        setTravelDateTo("");
+                        setPreferredMonths([]);
+                        resetDeliverables();
+                      }}
+                      className="sr-only"
+                    />
+                    <span className="block font-semibold text-gray-900">
+                      {option.collaboration_type}
+                    </span>
+                    <span className="mt-1 block text-sm text-gray-600">
+                      {describeCompensation(option)}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
+
           {/* Stay length hint */}
-          {(maxNights || minNights) && (
+          {(activeMaxNights || activeMinNights) && (
             <div className="px-4 py-3 rounded-xl bg-blue-50 border border-blue-100 text-sm text-blue-900">
               Stay length offered:{" "}
-              {minNights && maxNights && minNights !== maxNights
-                ? `${minNights}–${maxNights} nights`
-                : `up to ${maxNights || minNights} night${(maxNights || minNights) === 1 ? "" : "s"}`}
+              {activeMinNights && activeMaxNights && activeMinNights !== activeMaxNights
+                ? `${activeMinNights}–${activeMaxNights} nights`
+                : `up to ${activeMaxNights || activeMinNights} night${(activeMaxNights || activeMinNights) === 1 ? "" : "s"}`}
             </div>
           )}
 
@@ -323,7 +424,8 @@ export function CollaborationApplicationModal({
               disabled={
                 !whyGreatFit.trim() ||
                 platformDeliverables.filter((pd) => pd.deliverables.length > 0).length === 0 ||
-                !consent
+                !consent ||
+                (compensationOptions.length > 0 && !selectedCompensationOption)
               }
             >
               Submit Application

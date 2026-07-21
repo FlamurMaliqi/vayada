@@ -54,8 +54,22 @@ import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/market
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
+import { createPgMarketplaceCreatorPlatformConnectionRepository } from "./routes/marketplaceCreatorPlatformConnections.js";
 import { createTargetPlatformAdminDashboardRepository } from "./routes/platform/admin/dashboard/bookingCompatible.js";
 import { createPgPlatformContactIntakeRepository } from "./routes/platformContactIntake.js";
+import {
+  createCreatorPlatformAdapterRegistry,
+  createFacebookCreatorPlatformAdapter,
+  createInstagramCreatorPlatformAdapter,
+  createTikTokCreatorPlatformAdapter,
+  createYouTubeCreatorPlatformAdapter,
+  type CreatorPlatformAdapter,
+} from "./integrations/creatorPlatforms/index.js";
+import {
+  createMemoryProviderCredentialVault,
+  createSecretsManagerProviderCredentialVault,
+  createUnavailableProviderCredentialVault,
+} from "./platform/providerCredentialVault.js";
 
 const config = loadConfig();
 
@@ -253,6 +267,52 @@ const platformMediaRuntime = composePlatformMediaRuntime({
   allowedOrigins: config.authSession?.authAllowedOrigins,
 });
 
+const marketplaceCreatorSelfServiceRepository = config.targetDatabaseUrl
+  ? createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: config.targetDatabaseUrl,
+      profilePhotoRequired: config.creatorProfilePhotoRequired,
+    })
+  : undefined;
+
+const creatorPlatformConnectionRuntime = (() => {
+  const connectionConfig = config.creatorPlatformConnections;
+  if (!config.targetDatabaseUrl || !marketplaceCreatorSelfServiceRepository) {
+    return undefined;
+  }
+  const adapters: CreatorPlatformAdapter[] = [];
+  if (connectionConfig?.instagram) {
+    adapters.push(createInstagramCreatorPlatformAdapter(connectionConfig.instagram));
+  }
+  if (connectionConfig?.facebook) {
+    adapters.push(createFacebookCreatorPlatformAdapter(connectionConfig.facebook));
+  }
+  if (connectionConfig?.tiktok) {
+    adapters.push(createTikTokCreatorPlatformAdapter(connectionConfig.tiktok));
+  }
+  if (connectionConfig?.youtube) {
+    adapters.push(createYouTubeCreatorPlatformAdapter(connectionConfig.youtube));
+  }
+  const credentialVault = !connectionConfig
+    ? createUnavailableProviderCredentialVault()
+    : connectionConfig.credentialVault.provider === "memory"
+      ? createMemoryProviderCredentialVault()
+      : createSecretsManagerProviderCredentialVault({
+          region: connectionConfig.credentialVault.region,
+        });
+  return {
+    repository: createPgMarketplaceCreatorPlatformConnectionRepository({
+      connectionString: config.targetDatabaseUrl,
+    }),
+    credentialVault,
+    adapters: createCreatorPlatformAdapterRegistry(adapters),
+    callbackBaseUrl: connectionConfig?.callbackBaseUrl ?? "https://creator.api.localhost",
+    webReturnUrl:
+      connectionConfig?.webReturnUrl ?? "https://marketplace.localhost/profile/complete",
+    credentialSecretPrefix:
+      connectionConfig?.credentialVault.secretPrefix ?? "vayada/unconfigured/creator-platforms",
+  };
+})();
+
 const app = buildApp({
   auth: buildAuthOptions(config.auth),
   browserAllowedOrigins: config.authSession?.authAllowedOrigins ?? [],
@@ -417,12 +477,8 @@ const app = buildApp({
         connectionString: config.targetDatabaseUrl,
       })
     : undefined,
-  marketplaceCreatorSelfServiceRepository: config.targetDatabaseUrl
-    ? createPgMarketplaceCreatorSelfServiceRepository({
-        connectionString: config.targetDatabaseUrl,
-        profilePhotoRequired: config.creatorProfilePhotoRequired,
-      })
-    : undefined,
+  marketplaceCreatorSelfServiceRepository,
+  marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   creatorProfilePhotoRequired: config.creatorProfilePhotoRequired,
   sharedHotelSetupStatusRepository,

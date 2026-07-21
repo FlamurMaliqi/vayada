@@ -138,6 +138,7 @@ export const CREATOR_PROFILE_MISSING_FIELDS = [
   "displayName",
   "locationText",
   "shortDescription",
+  "phone",
   "profilePicture",
   "platforms",
 ] as const;
@@ -148,6 +149,7 @@ export const CREATOR_PROFILE_COMPLETION_STEPS = [
   "add_display_name",
   "set_location",
   "add_short_description",
+  "add_phone",
   "add_profile_picture",
   "add_platform",
 ] as const;
@@ -194,6 +196,112 @@ export type CreatorProfilePlatformInput = {
   audienceAgeGroups?: CreatorProfileAudienceAgeGroup[];
   audienceGenderSplit?: CreatorProfileAudienceGenderSplit | null;
 };
+
+export const CREATOR_PLATFORM_CONNECTION_CONTRACT_VERSION =
+  "marketplace-creator-platform-connections.v1" as const;
+
+export const CREATOR_PLATFORM_PROVIDERS = ["meta", "tiktok", "google"] as const;
+export type CreatorPlatformProvider = (typeof CREATOR_PLATFORM_PROVIDERS)[number];
+
+export const CONNECTABLE_CREATOR_PLATFORMS = [
+  "instagram",
+  "facebook",
+  "tiktok",
+  "youtube",
+] as const;
+export type ConnectableCreatorPlatform = (typeof CONNECTABLE_CREATOR_PLATFORMS)[number];
+
+export const CREATOR_PLATFORM_AUTHORIZATION_STATUSES = [
+  "authorizing",
+  "processing",
+  "pending_account_selection",
+  "active",
+  "failed",
+  "expired",
+] as const;
+export type CreatorPlatformAuthorizationStatus =
+  (typeof CREATOR_PLATFORM_AUTHORIZATION_STATUSES)[number];
+
+export const CREATOR_PLATFORM_CONNECTION_STATUSES = [
+  "active",
+  "reconnect_required",
+  "revoked",
+  "sync_failed",
+] as const;
+export type CreatorPlatformConnectionStatus = (typeof CREATOR_PLATFORM_CONNECTION_STATUSES)[number];
+
+export const CREATOR_PLATFORM_IMPORT_FIELDS = [
+  "followerCount",
+  "reach",
+  "views",
+  "contentItemCount",
+  "likes",
+  "comments",
+  "shares",
+  "engagementRate",
+  "audienceCountries",
+  "audienceAgeGroups",
+  "audienceGenderSplit",
+] as const;
+export type CreatorPlatformImportField = (typeof CREATOR_PLATFORM_IMPORT_FIELDS)[number];
+
+export const CREATOR_PLATFORM_UNAVAILABLE_REASONS = [
+  "unsupported",
+  "privacy_threshold",
+  "permission_missing",
+  "insufficient_data",
+  "account_type_ineligible",
+  "provider_omitted",
+] as const;
+export type CreatorPlatformUnavailableReason =
+  (typeof CREATOR_PLATFORM_UNAVAILABLE_REASONS)[number];
+
+export type CreatorPlatformUnavailableField = {
+  field: CreatorPlatformImportField;
+  reason: CreatorPlatformUnavailableReason;
+};
+
+export type CreatorPlatformConnectionSummary = {
+  connectionId: string;
+  platformId: string;
+  platform: ConnectableCreatorPlatform;
+  provider: CreatorPlatformProvider;
+  externalAccountId: string;
+  status: CreatorPlatformConnectionStatus;
+  capabilities: CreatorPlatformImportField[];
+  importedFields: CreatorPlatformImportField[];
+  unavailableFields: CreatorPlatformUnavailableField[];
+  lastSyncAttemptAt: MarketplaceUtcDateTime | null;
+  lastSuccessfulSyncAt: MarketplaceUtcDateTime | null;
+  lastErrorCode: string | null;
+};
+
+export const CREATOR_PLATFORM_ENGAGEMENT_WINDOW_DAYS = 30 as const;
+export const CREATOR_PLATFORM_ENGAGEMENT_FORMULA_VERSION =
+  "creator-platform-engagement.v1" as const;
+
+export function calculateCreatorPlatformEngagementRate(input: {
+  followerCount: number | null;
+  contentItemCount: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+}): number | null {
+  const values = [
+    input.followerCount,
+    input.contentItemCount,
+    input.likes,
+    input.comments,
+    input.shares,
+  ];
+  if (values.some((value) => value === null || !Number.isFinite(value) || value < 0)) return null;
+
+  const [followers, contentItems, likes, comments, shares] = values as number[];
+  if (followers === 0 || contentItems === 0) return null;
+
+  const rate = ((likes + comments + shares) / contentItems / followers) * 100;
+  return Math.round((rate + Number.EPSILON) * 10_000) / 10_000;
+}
 
 export type CreatorProfileRatingSummary = {
   averageRating: number;

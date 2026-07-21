@@ -8,12 +8,17 @@ import {
   HotelIcon,
   SharedAccountDetailsStep,
   isSharedAccountDetailsComplete,
+  type SharedAccountProfileImageUpload,
 } from "@vayada/product-onboarding";
 import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 import { creatorService } from "@/services/api/creators";
 import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
+import {
+  hasRequiredCreatorAccountDetails,
+  hasRequiredCreatorPhoto,
+} from "@/lib/utils/creatorAccountRequirements";
 
 type AccountType = "hotel" | "creator";
 const ONBOARDING_REQUEST_TIMEOUT_MS = 5_000;
@@ -47,7 +52,9 @@ export default function OnboardingPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [creatorPhotoRequired, setCreatorPhotoRequired] = useState<boolean | null>(null);
+  const [existingCreatorPhoto, setExistingCreatorPhoto] =
+    useState<SharedAccountProfileImageUpload | null>(null);
+  const [accountDetailsLoadError, setAccountDetailsLoadError] = useState("");
   const [sessionConfirmed, setSessionConfirmed] = useState(false);
   const [sessionAttempt, setSessionAttempt] = useState(0);
 
@@ -76,14 +83,25 @@ export default function OnboardingPage() {
         const userType = authService.getUserType();
         if (userType === "creator" || userType === "hotel") {
           setProvisionedType(userType);
-          if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
+          let accountDetailsStatus;
+          try {
+            accountDetailsStatus = await loadSharedAccountDetailsStatus(
+              userType,
+              requestController.signal,
+            );
+          } catch (error) {
+            if (cancelled) return;
+            setAccountDetailsLoadError(accountDetailsErrorMessage(error));
+            setLoading(false);
+            return;
+          }
+          if (cancelled) return;
+          setExistingCreatorPhoto(accountDetailsStatus.existingCreatorPhoto ?? null);
+          if (accountDetailsStatus.complete) {
             setSetupHandoffType(userType);
             setLoading(false);
             return;
           }
-          const photoRequired = await creatorPhotoRequirement(userType, requestController.signal);
-          if (cancelled) return;
-          setCreatorPhotoRequired(photoRequired);
           setLoading(false);
           return;
         }
@@ -118,11 +136,18 @@ export default function OnboardingPage() {
         throw new Error("Your account role could not be confirmed. Please sign in again.");
       }
       setProvisionedType(canonicalType);
-      if (isSharedAccountDetailsComplete(authService.getSessionUser()?.name)) {
+      let accountDetailsStatus;
+      try {
+        accountDetailsStatus = await loadSharedAccountDetailsStatus(canonicalType);
+      } catch (error) {
+        setAccountDetailsLoadError(accountDetailsErrorMessage(error));
+        return;
+      }
+      setExistingCreatorPhoto(accountDetailsStatus.existingCreatorPhoto ?? null);
+      if (accountDetailsStatus.complete) {
         setSetupHandoffType(canonicalType);
         return;
       }
-      setCreatorPhotoRequired(await creatorPhotoRequirement(canonicalType));
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to continue onboarding.");
     } finally {
@@ -130,14 +155,16 @@ export default function OnboardingPage() {
     }
   }
 
-  async function retryCreatorPhotoRequirement() {
-    if (provisionedType !== "creator") return;
-    setError("");
+  async function retryAccountDetailsStatus() {
+    if (!provisionedType) return;
+    setAccountDetailsLoadError("");
     setSubmitting(true);
     try {
-      setCreatorPhotoRequired(await creatorPhotoRequirement(provisionedType));
+      const accountDetailsStatus = await loadSharedAccountDetailsStatus(provisionedType);
+      setExistingCreatorPhoto(accountDetailsStatus.existingCreatorPhoto ?? null);
+      if (accountDetailsStatus.complete) setSetupHandoffType(provisionedType);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Failed to load creator requirements.");
+      setAccountDetailsLoadError(accountDetailsErrorMessage(error));
     } finally {
       setSubmitting(false);
     }
@@ -206,32 +233,26 @@ export default function OnboardingPage() {
     );
   }
 
-  if (!loading && provisionedType === "creator" && creatorPhotoRequired === null) {
+  if (!loading && provisionedType && accountDetailsLoadError) {
     return (
       <OnboardingShell
         currentStep={1}
-        title="Finish setting up your creator profile"
-        description="We need the current creator profile requirements before continuing."
+        title="Finish setting up your account"
+        description="We couldn’t load your current account details."
         showProgress={false}
       >
         <div className="mx-auto max-w-xl rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
-          {error ? (
-            <p role="alert" className="text-sm text-red-700">
-              {error}
-            </p>
-          ) : (
-            <p className="text-sm text-gray-600">Loading creator profile requirements…</p>
-          )}
-          {error && (
-            <button
-              type="button"
-              onClick={() => void retryCreatorPhotoRequirement()}
-              disabled={submitting}
-              className="mt-5 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {submitting ? "Retrying…" : "Retry creator requirements"}
-            </button>
-          )}
+          <p role="alert" className="text-sm text-red-700">
+            {accountDetailsLoadError}
+          </p>
+          <button
+            type="button"
+            onClick={() => void retryAccountDetailsStatus()}
+            disabled={submitting}
+            className="mt-5 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {submitting ? "Retrying…" : "Retry account details"}
+          </button>
         </div>
       </OnboardingShell>
     );
@@ -242,10 +263,10 @@ export default function OnboardingPage() {
     return (
       <SharedAccountDetailsStep
         accountType={provisionedType}
-        requireProfileImage={creatorPhotoRequired === true}
         email={user?.email ?? ""}
         initialName={user?.name}
         initialPhone={user?.phone}
+        initialProfileImage={existingCreatorPhoto}
         onUploadProfileImage={(file) => {
           if (!user?.id) throw new Error("Your session has expired. Please sign in again.");
           return sharedAccountProfileImageUploader(user.id, file);
@@ -256,9 +277,10 @@ export default function OnboardingPage() {
             const accountName = `${accountDetails.firstName} ${accountDetails.lastName}`.trim();
             const accountPhone = accountDetails.phone?.trim();
             const shouldProjectPhoto =
-              !currentProfile.profilePicture?.trim() &&
-              !currentProfile.profilePictureMediaObjectId &&
-              Boolean(accountDetails.profilePictureMediaObjectId);
+              Boolean(accountDetails.profilePictureMediaObjectId) &&
+              (!currentProfile.profilePicture?.trim() ||
+                accountDetails.profilePictureMediaObjectId !==
+                  currentProfile.profilePictureMediaObjectId?.trim());
             const creatorUpdate = {
               ...(!currentProfile.name.trim() ? { name: accountName } : {}),
               ...(!currentProfile.phone?.trim() && accountPhone ? { phone: accountPhone } : {}),
@@ -420,21 +442,44 @@ function nextPathForType(type: AccountType): string {
   return type === "creator" ? ROUTES.PROFILE_COMPLETE : `${ROUTES.SETUP}?entryProduct=marketplace`;
 }
 
-async function creatorPhotoRequirement(type: AccountType, signal?: AbortSignal): Promise<boolean> {
-  if (type !== "creator") return false;
+async function loadSharedAccountDetailsStatus(
+  type: AccountType,
+  signal?: AbortSignal,
+): Promise<{
+  complete: boolean;
+  existingCreatorPhoto?: SharedAccountProfileImageUpload;
+}> {
+  const user = authService.getSessionUser();
+  if (type !== "creator") {
+    return { complete: isSharedAccountDetailsComplete(user?.name) };
+  }
+
   const timeoutSignal = AbortSignal.timeout(ONBOARDING_REQUEST_TIMEOUT_MS);
   try {
-    return (
-      await creatorService.getProfileStatus({
-        signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
-      })
-    ).profile_photo_required;
+    const profile = await creatorService.getMyProfile({
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+    });
+    return {
+      complete: hasRequiredCreatorAccountDetails(user, profile),
+      ...(hasRequiredCreatorPhoto(profile)
+        ? {
+            existingCreatorPhoto: {
+              profilePictureUrl: profile.profilePicture!.trim(),
+              profilePictureMediaObjectId: profile.profilePictureMediaObjectId!.trim(),
+            },
+          }
+        : {}),
+    };
   } catch (error) {
     if (timeoutSignal.aborted && !signal?.aborted) {
-      throw new Error("Loading the creator photo requirement took too long. Please try again.");
+      throw new Error("Loading your account details took too long. Please try again.");
     }
     throw error;
   }
+}
+
+function accountDetailsErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Failed to load your account details.";
 }
 
 function SignupCompleteMoment({ type, onContinue }: { type: AccountType; onContinue: () => void }) {
