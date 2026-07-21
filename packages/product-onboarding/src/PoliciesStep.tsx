@@ -178,17 +178,15 @@ export default function PoliciesStep({
 }: PoliciesStepProps) {
   return (
     <div className="flex-1 overflow-auto">
-      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 sm:py-5">
         {stepIndicators}
-        <div className="text-center mb-6">
-          <h2 className="text-lg font-bold text-gray-900">Policies & Operations</h2>
-          <p className="text-[13px] text-gray-500 mt-1">
-            Configure payment methods and guest options
-          </p>
+        <div className="text-center mb-5">
+          <h2 className="text-2xl font-semibold text-gray-900">Policies &amp; Operations</h2>
+          <p className="text-sm text-gray-500 mt-1">Configure payment methods and guest options</p>
         </div>
 
         {/* Check-in & Check-out */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 mb-4">
           <h3 className="text-[13px] font-semibold text-gray-900 mb-1">Check-in & Check-out</h3>
           <p className="text-[11px] text-gray-500 mb-4">
             Set the time windows for guest arrivals and departures.
@@ -242,7 +240,7 @@ export default function PoliciesStep({
         </div>
 
         {/* Payment Methods — new card-based UI */}
-        <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5 mb-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 mb-4">
           <h3 className="text-sm font-semibold text-gray-900">Payment Methods</h3>
           <p className="text-[12px] text-gray-500 mt-0.5 mb-4">
             Choose which payment options are available to guests. Enable multiple to give guests
@@ -594,7 +592,7 @@ export default function PoliciesStep({
 
         {/* Payment Provider — shown when Online Card Payment is enabled */}
         {onlineCardPayment && (
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5 mb-4">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 mb-4">
             <h3 className="text-sm font-semibold text-gray-900">Payment Provider</h3>
             <p className="text-[12px] text-gray-500 mt-0.5 mb-4">
               Choose how you want to accept online card payments from guests.
@@ -776,7 +774,7 @@ export default function PoliciesStep({
 
         {/* Payout Details — shown when pay-at-hotel or bank transfer is enabled */}
         {(payAtHotel || bankTransfer) && (
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5 mb-4 space-y-3">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 mb-4 space-y-3">
             <div>
               <h3 className="text-sm font-semibold text-gray-900">Payout Details</h3>
               <p className="text-[12px] text-gray-500 mt-0.5">
@@ -888,7 +886,7 @@ export default function PoliciesStep({
         )}
 
         {/* Guest Information Form */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5 space-y-3 mb-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 space-y-3 mb-4">
           <h3 className="text-[13px] font-semibold text-gray-900">Guest Information Form</h3>
           <p className="text-[12px] text-gray-500 mb-2">
             Additional fields shown to guests during the booking process
@@ -943,7 +941,7 @@ export default function PoliciesStep({
         </div>
 
         {enableReferAGuest !== undefined && setEnableReferAGuest && (
-          <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 mb-4">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-[13px] font-semibold text-gray-900">
@@ -967,22 +965,22 @@ export default function PoliciesStep({
         )}
 
         {error && (
-          <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
+          <div className="mt-4 bg-red-50 border border-red-200 rounded-xl p-3">
             <p className="text-[12px] text-red-700 font-medium">{error}</p>
           </div>
         )}
 
-        <div className="mt-6 flex items-center justify-between">
+        <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
           <button
             onClick={onBack}
-            className="px-5 py-2 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            className="w-full sm:w-auto px-6 py-2.5 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-full hover:bg-gray-50 transition-colors"
           >
             Back
           </button>
           <button
             onClick={onComplete}
             disabled={saving}
-            className="px-5 py-2 bg-primary-500 text-white text-[13px] font-semibold rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
+            className="inline-flex w-full sm:w-auto items-center justify-center gap-2 px-6 py-2.5 bg-primary-500 text-white text-[13px] font-semibold rounded-full hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? (
               <>

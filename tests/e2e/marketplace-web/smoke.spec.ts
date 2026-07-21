@@ -137,11 +137,20 @@ test.describe("marketplace-web smoke", () => {
     ).toBeVisible();
     await expect(page.getByLabel("Email address")).toHaveValue("owner@example.test");
     await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
+    await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByText("Enter your first name.")).toBeVisible();
     await expect(page.getByText("Enter your last name.")).toBeVisible();
+    await expect(page.getByText("Profile photo is required.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Upload profile photo" })).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
     await page.getByLabel("First name").fill("Mary Jane");
     await page.getByLabel("Last name").fill("Watson");
+    await page.getByLabel("Phone number").fill("sdfdsfsfsdfdsf");
+    await page.getByRole("button", { name: "Continue to hotel setup" }).click();
+    await expect(page.getByText("Enter a valid phone number.")).toBeVisible();
     await page.getByLabel("Phone number").clear();
     await page.getByLabel("Profile photo file").setInputFiles({
       name: "ada.png",
@@ -149,7 +158,7 @@ test.describe("marketplace-web smoke", () => {
       buffer: Buffer.from("profile-image"),
     });
     await expect(page.getByRole("img", { name: "Selected profile preview" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Remove photo" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove photo" })).toHaveCount(0);
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
 
     await expect(page).toHaveURL(/\/onboarding$/);
@@ -207,6 +216,8 @@ test.describe("marketplace-web smoke", () => {
             id: "user-restored-hotel",
             email: "returning-owner@example.test",
             name: "Returning Owner",
+            profilePictureUrl: "https://media.example/returning-owner.webp",
+            profilePictureMediaObjectId: "media-returning-owner",
             status: "active",
           },
         },
@@ -233,7 +244,7 @@ test.describe("marketplace-web smoke", () => {
     await page.setViewportSize({ width: 1512, height: 830 });
     await primeBrowserState(page);
     await mockOnboardingAuth(page, "creator", "Mary");
-    let creatorProfile = {
+    const creatorProfile = {
       creatorProfileId: "creator-profile-e2e",
       displayName: null as string | null,
       creatorType: "lifestyle",
@@ -251,38 +262,35 @@ test.describe("marketplace-web smoke", () => {
       createdAt: "2026-07-15T10:00:00.000Z",
       updatedAt: "2026-07-15T10:00:00.000Z",
     };
+    let creatorProfileUpdates = 0;
     await page.route(/\/api\/marketplace\/creators\/me(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
         return;
       }
       if (route.request().method() === "PUT") {
-        const payload = route.request().postDataJSON() as {
-          displayName?: string;
-          phone?: string;
-          profilePictureMediaObjectId?: string;
-        };
-        expect(payload).toEqual({
-          displayName: "Mary Watson",
-          phone: "+49 89 123456",
-          profilePictureMediaObjectId: "media-profile-e2e",
-        });
-        creatorProfile = {
-          ...creatorProfile,
-          displayName: payload.displayName ?? null,
-          phone: payload.phone ?? null,
-          profilePictureUrl: "https://media.example/profile.png",
-          profilePictureMediaObjectId: payload.profilePictureMediaObjectId ?? null,
-        };
+        creatorProfileUpdates += 1;
       }
       await route.fulfill({ status: 200, headers: corsHeaders(route), json: creatorProfile });
     });
-    await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
-      profilePhotoRequired: false,
-      profileComplete: false,
-      missingFields: [],
-      missingPlatforms: true,
-      completionSteps: [],
+    let creatorStatusRequests = 0;
+    await page.route(/\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      creatorStatusRequests += 1;
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          profilePhotoRequired: true,
+          profileComplete: false,
+          missingFields: [],
+          missingPlatforms: true,
+          completionSteps: [],
+        },
+      });
     });
     await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
       connections: [],
@@ -301,13 +309,16 @@ test.describe("marketplace-web smoke", () => {
       page.getByText(
         "Start with your details. Next, we’ll build the creator profile hotels will see.",
       ),
-    ).toHaveCount(0);
+    ).toBeVisible();
     await expect(page.getByText("Personal account", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/Marketplace, Booking Admin, and PMS/)).toHaveCount(0);
+    await expect(page.getByLabel("Email address")).toHaveValue("owner@example.test");
+    await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
     await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
     await expect(page.getByLabel("Phone number")).toHaveAttribute("required", "");
     await expect(page.getByText("Optional", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Upload profile photo" })).toBeVisible();
+    expect(creatorStatusRequests).toBe(0);
 
     await page.getByLabel("First name").fill("Mary");
     await page.getByLabel("Last name").fill("Watson");
@@ -397,6 +408,7 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByText("Name", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Email", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Phone", { exact: true })).toHaveCount(0);
+    expect(creatorProfileUpdates).toBe(1);
 
     await page.setViewportSize({ width: 390, height: 844 });
     expect(
@@ -1011,6 +1023,159 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.locator('input[placeholder="0.00"]')).toHaveValue("4.6");
   });
 
+  test("legacy URL-only creators reuse the shared account photo without another upload", async ({
+    page,
+  }) => {
+    await primeBrowserState(page);
+    await primeCreatorProfileState(page, "Lina Creator");
+    const sharedProfilePicture = "https://media.example/shared-creator.png";
+    const sharedProfileMediaObjectId = "media-shared-creator";
+    await mockCreatorSession(page, "Lina Creator", {
+      phone: "+49 30 123456",
+      profilePictureUrl: sharedProfilePicture,
+      profilePictureMediaObjectId: sharedProfileMediaObjectId,
+    });
+
+    let updateAttempts = 0;
+    let uploadSessionRequests = 0;
+    let identityPhotoUpdates = 0;
+    let creatorProfile = {
+      creatorProfileId: "creator-profile-legacy",
+      displayName: "Lina Creator",
+      creatorType: "travel",
+      locationText: "Berlin, Germany",
+      shortDescription: "I create thoughtful city guides for independent travelers.",
+      portfolioUrl: "https://creator.example/portfolio" as string | null,
+      phone: null,
+      profilePictureUrl: "https://legacy.example/creator.png" as string | null,
+      profilePictureMediaObjectId: null as string | null,
+      profileComplete: true,
+      profileStatus: "active",
+      platforms: [
+        {
+          platformId: "platform-instagram",
+          platform: "instagram",
+          handle: "@lina",
+          profileUrl: null,
+          followerCount: 1200,
+          engagementRate: 4.2,
+          audienceCountries: [],
+          audienceAgeGroups: [],
+          audienceGenderSplit: null,
+        },
+      ],
+      audienceSize: 1200,
+      rating: { averageRating: 0, totalReviews: 0 },
+      createdAt: "2026-07-01T10:00:00.000Z",
+      updatedAt: "2026-07-15T10:00:00.000Z",
+    };
+
+    await page.route(/\/api\/marketplace\/creators\/me(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      if (route.request().method() === "PUT") {
+        updateAttempts += 1;
+        const payload = route.request().postDataJSON() as {
+          creatorType?: string;
+          portfolioUrl?: string | null;
+          phone?: string;
+          profilePictureMediaObjectId?: string;
+          platforms?: Array<{ platform: string; handle: string; followerCount: number }>;
+        };
+        expect(payload).toMatchObject({
+          creatorType: "travel",
+          portfolioUrl: null,
+          phone: "+49 30 123456",
+          profilePictureMediaObjectId: sharedProfileMediaObjectId,
+        });
+        expect(payload.platforms).toBeUndefined();
+        if (updateAttempts === 1) {
+          await route.fulfill({
+            status: 503,
+            headers: corsHeaders(route),
+            json: { detail: "Temporary profile update failure" },
+          });
+          return;
+        }
+        creatorProfile = {
+          ...creatorProfile,
+          portfolioUrl: payload.portfolioUrl ?? null,
+          phone: "+49 30 123456",
+          profilePictureUrl: sharedProfilePicture,
+          profilePictureMediaObjectId: payload.profilePictureMediaObjectId ?? null,
+        };
+      }
+      await route.fulfill({ status: 200, headers: corsHeaders(route), json: creatorProfile });
+    });
+    await page.route(/\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      const profileComplete = Boolean(creatorProfile.profilePictureMediaObjectId);
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          profilePhotoRequired: true,
+          profileComplete,
+          missingFields: profileComplete ? [] : ["profilePicture"],
+          missingPlatforms: false,
+          completionSteps: profileComplete ? [] : ["add_profile_picture"],
+        },
+      });
+    });
+    await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
+      connections: [],
+    });
+    await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      uploadSessionRequests += 1;
+      await route.abort();
+    });
+    await page.route(/\/auth\/profile$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      identityPhotoUpdates += 1;
+      await route.fulfill({ status: 200, headers: corsHeaders(route), json: { updated: true } });
+    });
+
+    await page.goto("/profile/complete");
+
+    await expect(
+      page.getByRole("heading", { name: "Hi, Lina! What kind of creator are you?" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByRole("heading", { name: "Tell hotels about your work" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Change photo" })).toHaveCount(0);
+    await expect(page.getByLabel("Creator profile photo file")).toHaveCount(0);
+    await expect(page.getByLabel("Location")).toHaveValue("Berlin, Germany");
+    await page.getByLabel("Portfolio link").clear();
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(page.getByPlaceholder("@ username")).toHaveValue("@lina");
+    await expect(page.getByRole("spinbutton").first()).toHaveValue("1200");
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Temporary profile update failure" }),
+    ).toBeVisible();
+    expect(uploadSessionRequests).toBe(0);
+    expect(identityPhotoUpdates).toBe(0);
+
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(page.getByRole("heading", { name: "Your profile is complete" })).toBeVisible();
+    expect(updateAttempts).toBe(2);
+    expect(uploadSessionRequests).toBe(0);
+    expect(identityPhotoUpdates).toBe(0);
+  });
+
   test("legacy creators must save a missing photo even when the old policy says optional", async ({
     page,
   }) => {
@@ -1495,7 +1660,15 @@ async function primeCreatorProfileState(page: Page, name: string) {
 async function mockCreatorSession(
   page: Page,
   name: string,
-  phone: string | null | (() => string | null) = "+49 89 123456",
+  account:
+    | string
+    | null
+    | (() => string | null)
+    | {
+        phone?: string | null;
+        profilePictureUrl?: string | null;
+        profilePictureMediaObjectId?: string | null;
+      } = "+49 89 123456",
 ) {
   await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
     if (route.request().method() === "OPTIONS") {
@@ -1514,7 +1687,20 @@ async function mockCreatorSession(
           id: "user-legacy-creator",
           email: "creator@example.test",
           name,
-          phone: typeof phone === "function" ? phone() : phone,
+          phone:
+            typeof account === "function"
+              ? account()
+              : typeof account === "object" && account !== null
+                ? (account.phone ?? null)
+                : account,
+          profilePictureUrl:
+            typeof account === "object" && account !== null
+              ? (account.profilePictureUrl ?? null)
+              : null,
+          profilePictureMediaObjectId:
+            typeof account === "object" && account !== null
+              ? (account.profilePictureMediaObjectId ?? null)
+              : null,
           status: "active",
         },
       },
@@ -1535,6 +1721,8 @@ async function mockOnboardingAuth(
   let onboarded = false;
   let accountName: string | null = null;
   let accountPhone: string | null = "+49 89 123456";
+  let accountProfilePictureUrl: string | null = null;
+  let accountProfilePictureMediaObjectId: string | null = null;
   const guestSession = {
     accessToken: "test-access-token",
     csrfToken: "test-csrf-token",
@@ -1564,6 +1752,8 @@ async function mockOnboardingAuth(
           ...(onboarded ? onboardedSession.user : guestSession.user),
           name: accountName,
           phone: accountPhone,
+          profilePictureUrl: accountProfilePictureUrl,
+          profilePictureMediaObjectId: accountProfilePictureMediaObjectId,
         },
       },
     });
@@ -1611,6 +1801,8 @@ async function mockOnboardingAuth(
     accountName =
       payload.firstName && payload.lastName ? `${payload.firstName} ${payload.lastName}` : null;
     accountPhone = payload.phone?.trim() || null;
+    accountProfilePictureUrl = payload.profilePictureUrl?.trim() || null;
+    accountProfilePictureMediaObjectId = payload.profilePictureMediaObjectId?.trim() || null;
     await route.fulfill({ status: 200, headers: corsHeaders(route), json: { updated: true } });
   });
   await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {

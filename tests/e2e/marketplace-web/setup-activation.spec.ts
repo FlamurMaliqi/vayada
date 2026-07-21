@@ -4,6 +4,62 @@ import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 test.describe("marketplace-web shared setup activation", () => {
+  test("uses the shared hotel personal-account step when the saved photo is missing", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          accessToken: "test-access-token",
+          csrfToken: "test-csrf-token",
+          organizationId: "11111111-1111-4111-8111-111111111111",
+          organizationKind: "hotel_group",
+          user: {
+            id: "user-hotel-owner",
+            email: "owner@alpenrose.example",
+            name: "Hotel Owner",
+            phone: "+49 89 123456",
+            profilePictureUrl: null,
+            profilePictureMediaObjectId: null,
+            status: "active",
+          },
+        },
+      });
+    });
+    await page.route(/\/auth\/compat\/marketplace-web-token/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: { accessToken: "legacy-marketplace-token", expiresIn: 900 },
+      });
+    });
+
+    await page.goto(setupUrl(baseURL));
+
+    await expect(page.getByRole("heading", { name: "Let’s create your profile" })).toBeVisible();
+    await expect(
+      page.getByText("Start with your details. Next, we’ll set up your first hotel."),
+    ).toBeVisible();
+    await expect(page.getByLabel("First name")).toHaveValue("Hotel");
+    await expect(page.getByLabel("Last name")).toHaveValue("Owner");
+    await expect(page.getByLabel("Email address")).toHaveValue("owner@alpenrose.example");
+    await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
+    await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
+    await expect(page.getByRole("button", { name: "Continue to hotel setup" })).toBeVisible();
+  });
+
   test("creates the first hotel with the complete shared minimum", async ({ page, baseURL }) => {
     await mockGooglePlaces(page);
     await primeBrowserState(page);
@@ -184,7 +240,6 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(continueSetup).toBeDisabled();
     await marketplaceSystemCard.click();
     await expect(marketplaceSystem).toBeChecked();
-    await expect(page.getByText("1 system selected", { exact: true })).toBeVisible();
     await expect(continueSetup).toBeEnabled();
     expect(
       await page.evaluate(
@@ -277,33 +332,280 @@ test.describe("marketplace-web shared setup activation", () => {
     await primeBrowserState(page);
     await mockAuthSession(page);
     await mockSharedSetupStatus(page, sharedSetupStatus(["creatorPitch"]));
-    await mockMarketplaceProfileApis(page);
+    await mockMarketplaceProfileApis(page, [marketplaceOffer("pending")]);
 
     await page.goto(setupUrl(baseURL));
     await page.getByRole("button", { name: "Continue Marketplace setup" }).click();
 
-    await expect(page).toHaveURL(/\/profile$/);
+    await expectMarketplaceActivationIntro(page, 1);
+
+    const introduction = page.getByLabel("Creator-facing introduction", { exact: true });
+    await introduction.fill(
+      "Tell creators why an independent stay at Alpenrose makes a memorable collaboration.",
+    );
+    await expect(page.getByRole("button", { name: "Complete Marketplace setup" })).toBeEnabled();
+    await expect(page.getByLabel("Offer title", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Hotel location", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Property type", { exact: true })).toHaveCount(0);
   });
 
-  test("opens profile tools for an additive Marketplace setup requirement", async ({
+  test("routes protected Marketplace pages into the activation form", async ({ page, baseURL }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus(["creatorPitch"]));
+    await mockMarketplaceProfileApis(page, [marketplaceOffer("pending")]);
+    await routeJson(page, /\/api\/marketplace\/collaborations\/me/, {
+      contractVersion: "marketplace-collaboration-reads.v1",
+      authorizationMode: "hotel_group_resource_link",
+      items: [],
+    });
+
+    await page.goto(calendarUrl(baseURL));
+
+    await expectMarketplaceActivationIntro(page, 1);
+  });
+
+  test("requires a replacement offer when a verified offer is missing activation details", async ({
+    page,
+    baseURL,
+  }) => {
+    await page.setViewportSize({ width: 2048, height: 1125 });
+    await primeBrowserState(page);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus(["offerDeliverables"]));
+    await mockMarketplaceProfileApis(page, [marketplaceOffer("verified")]);
+    let createdOfferPayload: Record<string, unknown> | null = null;
+    let updatedOfferPayload: Record<string, unknown> | null = null;
+    let uploadFinalized = false;
+    await page.route(
+      new RegExp(`/api/marketplace/properties/${propertyId}/offers(?:\\?|$)`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        if (route.request().method() === "POST") {
+          createdOfferPayload = route.request().postDataJSON() as Record<string, unknown>;
+          await route.fulfill({
+            status: 201,
+            headers: corsHeaders(route),
+            json: createdMarketplaceOffer(createdOfferPayload),
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: { offers: [marketplaceOffer("verified")] },
+        });
+      },
+    );
+    await page.route(
+      new RegExp(`/api/marketplace/properties/${propertyId}/offers/created-offer$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        updatedOfferPayload = route.request().postDataJSON() as Record<string, unknown>;
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            ...createdMarketplaceOffer(createdOfferPayload ?? {}),
+            media: [
+              {
+                mediaObjectId: "offer-media-e2e",
+                url: "https://media.example/offer.png",
+              },
+            ],
+          },
+        });
+      },
+    );
+    await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      if (route.request().url().endsWith("/finalize")) {
+        uploadFinalized = true;
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            mediaObjects: [
+              {
+                mediaId: "offer-media-e2e",
+                storageKey: "private/marketplace/offers/offer-media-e2e/original-safe.webp",
+                contentType: "image/png",
+                sizeBytes: 11,
+                originalFilename: "offer.png",
+                variants: [
+                  {
+                    publicCdnUrl: null,
+                    storageKey: "private/marketplace/offers/offer-media-e2e/original-safe.webp",
+                  },
+                ],
+              },
+            ],
+          },
+        });
+        return;
+      }
+      expect(route.request().postDataJSON()).toMatchObject({
+        purpose: "marketplace.offer.media",
+        resource: {
+          product: "marketplace",
+          resourceType: "marketplace_offer",
+          resourceId: "created-offer",
+        },
+      });
+      await route.fulfill({
+        status: 201,
+        headers: corsHeaders(route),
+        json: {
+          uploadSession: { sessionId: "offer-e2e" },
+          uploadTargets: [
+            {
+              uploadTargetId: "offer-target-e2e",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/offer-e2e",
+              headers: {},
+            },
+          ],
+        },
+      });
+    });
+
+    await page.goto(setupUrl(baseURL));
+
+    await expect(page.getByText("Prepare your collaboration offer")).toBeVisible();
+    const continueSetup = page.getByRole("button", { name: "Continue Marketplace setup" });
+    await expect(continueSetup).toBeEnabled();
+    await continueSetup.click();
+
+    await expectMarketplaceActivationIntro(page);
+    await page
+      .getByLabel("Creator-facing introduction", { exact: true })
+      .fill("Tell creators why a stay at Alpenrose makes a memorable collaboration experience.");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(page.getByText("Step 2 of 4", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Describe your offer" }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Offer details" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Offerings" })).toHaveCount(0);
+    await expect(page.getByText("Your collaboration offer is already saved")).toHaveCount(0);
+    const continueButton = page.getByRole("button", { name: "Continue", exact: true });
+    await expect(continueButton).toBeDisabled();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollHeight <= document.documentElement.clientHeight,
+      ),
+    ).toBe(true);
+
+    await page.getByLabel("Offer title", { exact: true }).fill("Three-night creator stay");
+    await page
+      .getByLabel(/Description/)
+      .fill("A memorable city stay with breakfast and a guided local experience.");
+    const offerPhotos = page.getByLabel(/Offer photos/);
+    await offerPhotos.setInputFiles({
+      name: "too-large.png",
+      mimeType: "image/png",
+      buffer: Buffer.alloc(10 * 1024 * 1024 + 1),
+    });
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Image must be 10 MB or smaller" }),
+    ).toBeVisible();
+    await expect(continueButton).toBeDisabled();
+    await offerPhotos.setInputFiles({
+      name: "offer.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("offer-photo"),
+    });
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
+
+    await expect(page.getByText("Step 3 of 4", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "What are you offering?" }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Offerings" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Offer details" })).toHaveCount(0);
+    await expect(continueButton).toBeDisabled();
+    await page.getByText("Affiliate", { exact: true }).click();
+    await page.getByRole("button", { name: "Select All Year" }).click();
+    await page.getByText("Instagram", { exact: true }).click();
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
+
+    await expect(page.getByText("Step 4 of 4", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Who are you looking for?" }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Looking For", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Offerings" })).toHaveCount(0);
+    const completeSetup = page.getByRole("button", { name: "Complete Marketplace setup" });
+    await expect(completeSetup).toBeDisabled();
+    await page.getByText("TikTok", { exact: true }).click();
+    await expect(completeSetup).toBeEnabled();
+
+    await page.getByRole("button", { name: "Previous" }).click();
+    await expect(page.getByLabel("Affiliate", { exact: true })).toBeChecked();
+    await expect(page.getByLabel("Instagram", { exact: true })).toBeChecked();
+    await continueButton.click();
+    await expect(page.getByLabel("TikTok", { exact: true })).toBeChecked();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+
+    await completeSetup.click();
+    await expect.poll(() => createdOfferPayload).not.toBeNull();
+    expect(createdOfferPayload).toMatchObject({
+      deliverables: [
+        {
+          platform: "instagram",
+          deliverableType: "content",
+          quantity: 1,
+          timingGuidance: null,
+        },
+      ],
+      compensationOptions: [expect.objectContaining({ platforms: ["instagram"] })],
+      creatorRequirements: expect.objectContaining({ platforms: ["tiktok"] }),
+    });
+    await expect.poll(() => uploadFinalized).toBe(true);
+    await expect.poll(() => updatedOfferPayload).not.toBeNull();
+  });
+
+  test("asks for a replacement offer when the existing Marketplace offer was rejected", async ({
     page,
     baseURL,
   }) => {
     await primeBrowserState(page);
     await mockAuthSession(page);
-    await mockSharedSetupStatus(page, sharedSetupStatus(["marketplaceListing"]));
-    await mockMarketplaceProfileApis(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus(["marketplaceOffer"]));
+    await mockMarketplaceProfileApis(page, [marketplaceOffer("rejected")]);
 
     await page.goto(setupUrl(baseURL));
+    await page.getByRole("button", { name: "Continue Marketplace setup" }).click();
+    await page
+      .getByLabel("Creator-facing introduction", { exact: true })
+      .fill("Tell creators why a stay at Alpenrose makes a memorable collaboration experience.");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
 
-    await expect(page.getByText("Complete product setup")).toBeVisible();
-    const continueSetup = page.getByRole("button", { name: "Continue Marketplace setup" });
-    await expect(continueSetup).toBeEnabled();
-    await continueSetup.click();
-
-    await expect(page).toHaveURL(/\/profile$/);
-    await expect(page.getByRole("heading", { name: "Basic Information" })).toBeVisible();
-    await expect(page).toHaveURL(/\/profile$/);
+    await expect(page.getByLabel("Offer title", { exact: true })).toBeVisible();
+    await expect(page.getByText("Your collaboration offer is already saved")).toHaveCount(0);
   });
 
   test("blocks suspended Marketplace activation instead of opening profile tools", async ({
@@ -329,6 +631,47 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("button", { name: "Continue Marketplace setup" })).toHaveCount(0);
   });
 
+  test("blocks a direct suspended activation URL before loading Marketplace profile data", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    const setupStatus = sharedSetupStatus([], "suspended");
+    setupStatus.hotelGroup.selectedProducts = [];
+    await mockSharedSetupStatus(page, setupStatus);
+    let loadedMarketplaceProfile = false;
+    await page.route(/\/api\/marketplace\/properties\/.*\/(?:profile|offers)/, async (route) => {
+      loadedMarketplaceProfile = true;
+      await route.abort();
+    });
+
+    await page.goto(profileActivationUrl(baseURL));
+
+    await expect(page).toHaveURL(new RegExp(`/setup\\?.*propertyId=${propertyId}`));
+    await expect(page.getByText("Suspended", { exact: true })).toBeVisible();
+    expect(loadedMarketplaceProfile).toBe(false);
+  });
+
+  test("opens a direct pending activation without asking for more setup", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus([], "selected_incomplete"));
+    let loadedMarketplaceProfile = false;
+    await page.route(/\/api\/marketplace\/properties\/.*\/(?:profile|offers)/, async (route) => {
+      loadedMarketplaceProfile = true;
+      await route.abort();
+    });
+
+    await page.goto(profileActivationUrl(baseURL));
+
+    await expect(page).toHaveURL(/\/marketplace$/);
+    expect(loadedMarketplaceProfile).toBe(false);
+  });
+
   test("shows Marketplace verification as pending without asking for more setup", async ({
     page,
     baseURL,
@@ -339,15 +682,28 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByText("Verification pending", { exact: true })).toHaveCount(2);
+    await expect(page.getByText("Verification pending", { exact: true })).toBeVisible();
     await expect(
       page.getByText(
-        "Marketplace verification is still in progress. No action is needed right now.",
+        "Your Marketplace profile is under review. You can still open the workspace and manage it.",
       ),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Verification pending" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Open Creator Marketplace" })).toBeEnabled();
   });
 });
+
+async function expectMarketplaceActivationIntro(page: Page, totalSteps = 4) {
+  await expect(page).toHaveURL(
+    new RegExp(`/profile/complete\\?activation=marketplace&propertyId=${propertyId}$`),
+  );
+  await expect(page.getByText("Creator Marketplace Setup", { exact: true })).toBeVisible();
+  await expect(page.getByText(`Step 1 of ${totalSteps}`, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Introduce your hotel" })).toBeVisible();
+  await expect(page.getByLabel("Creator-facing introduction", { exact: true })).toBeVisible();
+  for (const field of ["Hotel Name", "Creator-facing location", "Location", "Website", "Phone"]) {
+    await expect(page.getByLabel(field, { exact: true })).toHaveCount(0);
+  }
+}
 
 async function mockGooglePlaces(page: Page) {
   await page.route(/https:\/\/maps\.googleapis\.com\/maps\/api\/js/, async (route) => {
@@ -451,13 +807,36 @@ function setupUrl(baseURL: string | undefined) {
   return path;
 }
 
-async function primeBrowserState(page: Page) {
-  await page.addInitScript(() => {
+function profileActivationUrl(baseURL: string | undefined) {
+  const path = `/profile/complete?activation=marketplace&propertyId=${propertyId}`;
+  if (!baseURL) return path;
+
+  const url = new URL(baseURL);
+  if (url.hostname === "127.0.0.1" && url.port === "3000") {
+    url.hostname = "localhost";
+    url.pathname = "/profile/complete";
+    url.search = `?activation=marketplace&propertyId=${propertyId}`;
+    return url.toString();
+  }
+  return path;
+}
+
+function calendarUrl(baseURL: string | undefined) {
+  if (!baseURL) return "/calendar";
+
+  const url = new URL(baseURL);
+  url.pathname = "/calendar";
+  return url.toString();
+}
+
+async function primeBrowserState(page: Page, hotelProfile = false) {
+  await page.addInitScript((primeHotelProfile) => {
     localStorage.setItem(
       "vayada_cookie_consent",
       JSON.stringify({ necessary: true, functional: true, analytics: false, marketing: false }),
     );
-  });
+    if (primeHotelProfile) localStorage.setItem("userType", "hotel");
+  }, hotelProfile);
 }
 
 async function mockAuthSession(page: Page) {
@@ -480,6 +859,8 @@ async function mockAuthSession(page: Page) {
           email: "owner@alpenrose.example",
           name: "Owner Example",
           phone: "+49 89 123456",
+          profilePictureUrl: "https://media.example/owner.webp",
+          profilePictureMediaObjectId: "media-owner",
           status: "active",
           workosUserId: "user_workos_hotel_owner",
         },
@@ -513,7 +894,7 @@ async function mockSharedSetupStatus(page: Page, status: ReturnType<typeof share
   });
 }
 
-async function mockMarketplaceProfileApis(page: Page) {
+async function mockMarketplaceProfileApis(page: Page, offers: unknown[] = []) {
   await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile-status`), {
     profile_complete: false,
     missing_fields: ["profile"],
@@ -558,7 +939,7 @@ async function mockMarketplaceProfileApis(page: Page) {
     updatedAt: "2026-06-30T00:00:00.000Z",
   });
   await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/offers`), {
-    offers: [],
+    offers,
   });
 }
 
@@ -647,6 +1028,44 @@ function activation(product: string, status: string, missingSteps: string[]) {
         ? [`${product}_activation_incomplete`]
         : [`${product}_${status}`],
     updatedAt: status === "not_selected" ? null : "2026-06-30T00:00:00.000Z",
+  };
+}
+
+function marketplaceOffer(status: "pending" | "verified" | "rejected") {
+  return {
+    offerId: `${status}-offer`,
+    mediaResourceId: `${status}-offer`,
+    propertyId,
+    offerStatus: status,
+    title: `${status} offer`,
+    offerSummary: "A creator collaboration offer.",
+    media: [],
+    deliverables: [],
+    compensationOptions: [],
+    creatorRequirements: null,
+    createdAt: "2026-06-30T00:00:00.000Z",
+    updatedAt: "2026-06-30T00:00:00.000Z",
+  };
+}
+
+function createdMarketplaceOffer(payload: Record<string, unknown>) {
+  const compensationOptions = (payload.compensationOptions ?? []) as Array<Record<string, unknown>>;
+  return {
+    offerId: "created-offer",
+    mediaResourceId: "created-offer",
+    propertyId,
+    offerStatus: "pending",
+    title: payload.title ?? "Created offer",
+    offerSummary: payload.offerSummary ?? null,
+    media: [],
+    deliverables: payload.deliverables ?? [],
+    compensationOptions: compensationOptions.map((option, index) => ({
+      compensationOptionId: `compensation-${index + 1}`,
+      ...option,
+    })),
+    creatorRequirements: payload.creatorRequirements ?? null,
+    createdAt: "2026-06-30T00:00:00.000Z",
+    updatedAt: "2026-06-30T00:00:00.000Z",
   };
 }
 

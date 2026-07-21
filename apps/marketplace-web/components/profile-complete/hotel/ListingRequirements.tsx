@@ -1,6 +1,5 @@
 "use client";
 
-import { Input } from "@/components/ui";
 import { XMarkIcon, SparklesIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
 import { PLATFORM_OPTIONS, AGE_GROUP_OPTIONS, CREATOR_TYPE_OPTIONS } from "@/lib/constants";
 import type { ListingFormData, CreatorType } from "@/lib/types";
@@ -35,27 +34,27 @@ export function ListingRequirements({
     : [];
 
   return (
-    <div className="pt-2 border-t border-gray-100">
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-1.5 h-5 bg-orange-500 rounded-full"></div>
-        <h5 className="text-lg font-semibold text-gray-900">Looking For</h5>
+    <section className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
+      <div className="flex items-center gap-2">
+        <div className="h-5 w-1 rounded-full bg-primary-600" />
+        <h5 className="text-base font-semibold text-gray-900">Looking For</h5>
       </div>
-      <div className="space-y-5 bg-gray-50 border border-gray-200 rounded-2xl p-4">
+      <div className="space-y-4">
         {/* Platforms */}
         <div>
-          <label className="block text-base font-semibold text-gray-900 mb-1">
-            Creator's platforms
+          <label className="mb-1 block text-sm font-semibold text-gray-900">
+            Creator&apos;s platforms <span className="text-red-500">*</span>
           </label>
-          <p className="text-sm text-gray-600 mb-3">Which platforms should the creator have?</p>
+          <p className="mb-2 text-xs text-gray-600">Which platforms should the creator have?</p>
           <div className="flex flex-wrap gap-2">
             {PLATFORM_OPTIONS.map((platform) => {
               const isSelected = listing.lookingForPlatforms.includes(platform);
               return (
                 <label
                   key={platform}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium cursor-pointer transition-all ${
+                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors focus-within:ring-2 focus-within:ring-primary-600 focus-within:ring-offset-2 ${
                     isSelected
-                      ? "border-[#2F54EB] bg-blue-50 text-[#2F54EB]"
+                      ? "border-primary-500 bg-primary-50 text-primary-700"
                       : "border-gray-200 bg-white text-gray-700 hover:border-gray-300"
                   }`}
                 >
@@ -79,13 +78,13 @@ export function ListingRequirements({
                     className="sr-only"
                   />
                   <span
-                    className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                      isSelected ? "border-[#2F54EB] bg-[#2F54EB]" : "border-gray-400 bg-white"
+                    className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                      isSelected ? "border-primary-600 bg-primary-600" : "border-gray-400 bg-white"
                     }`}
                   >
                     {isSelected && <span className="w-2 h-2 rounded-full bg-white"></span>}
                   </span>
-                  <span className={isSelected ? "text-[#2F54EB]" : "text-gray-700"}>
+                  <span className={isSelected ? "text-primary-700" : "text-gray-700"}>
                     {platform}
                   </span>
                 </label>
@@ -96,10 +95,10 @@ export function ListingRequirements({
 
         {/* Creator Types */}
         <div>
-          <label className="block text-base font-semibold text-gray-900 mb-1">
+          <label className="mb-1 block text-sm font-semibold text-gray-900">
             Creator Type (optional)
           </label>
-          <p className="text-sm text-gray-600 mb-3">What type of creators are you looking for?</p>
+          <p className="mb-2 text-xs text-gray-600">What type of creators are you looking for?</p>
           <div className="flex flex-wrap gap-2">
             {CREATOR_TYPE_OPTIONS.map((type) => {
               const isSelected =
@@ -107,9 +106,9 @@ export function ListingRequirements({
               return (
                 <label
                   key={type}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium cursor-pointer transition-all ${
+                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors focus-within:ring-2 focus-within:ring-primary-600 focus-within:ring-offset-2 ${
                     isSelected
-                      ? "border-[#2F54EB] bg-blue-50 text-[#2F54EB]"
+                      ? "border-primary-500 bg-primary-50 text-primary-700"
                       : "border-gray-200 bg-white text-gray-700 hover:border-gray-300"
                   }`}
                 >
@@ -134,22 +133,22 @@ export function ListingRequirements({
                     className="sr-only"
                   />
                   <span
-                    className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                      isSelected ? "border-[#2F54EB] bg-[#2F54EB]" : "border-gray-400 bg-white"
+                    className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                      isSelected ? "border-primary-600 bg-primary-600" : "border-gray-400 bg-white"
                     }`}
                   >
                     {isSelected && <span className="w-2 h-2 rounded-full bg-white"></span>}
                   </span>
                   {type === "Lifestyle" ? (
                     <SparklesIcon
-                      className={`w-4 h-4 mr-1 ${isSelected ? "text-[#2F54EB]" : "text-gray-500"}`}
+                      className={`mr-1 h-4 w-4 ${isSelected ? "text-primary-700" : "text-gray-500"}`}
                     />
                   ) : (
                     <PaperAirplaneIcon
-                      className={`w-4 h-4 mr-1 ${isSelected ? "text-[#2F54EB]" : "text-gray-500"}`}
+                      className={`mr-1 h-4 w-4 ${isSelected ? "text-primary-700" : "text-gray-500"}`}
                     />
                   )}
-                  <span className={isSelected ? "text-[#2F54EB]" : "text-gray-700"}>
+                  <span className={isSelected ? "text-primary-700" : "text-gray-700"}>
                     {type} Creator
                   </span>
                 </label>
@@ -160,15 +159,16 @@ export function ListingRequirements({
 
         {/* Top Countries */}
         <div>
-          <label className="block text-base font-semibold text-gray-900 mb-1">
+          <label className="mb-1 block text-sm font-semibold text-gray-900">
             Top Countries (optional)
           </label>
-          <p className="text-sm text-gray-600 mb-3">
+          <p className="mb-2 text-xs text-gray-600">
             Select up to 3 countries your target audience is from
           </p>
           <div className="space-y-2">
             <input
               type="text"
+              aria-label="Search target countries"
               value={countryInput}
               onChange={(e) => onCountryInputChange(index, e.target.value)}
               onKeyDown={(e) => {
@@ -228,6 +228,7 @@ export function ListingRequirements({
                     {country}
                     <button
                       type="button"
+                      aria-label={`Remove ${country}`}
                       onClick={() => {
                         onUpdateListing(
                           index,
@@ -248,8 +249,10 @@ export function ListingRequirements({
 
         {/* Age Groups */}
         <div>
-          <label className="block text-base font-semibold text-gray-900 mb-1">Age Groups</label>
-          <p className="text-sm text-gray-600 mb-3">Select up to 3 age groups you want to target</p>
+          <label className="mb-1 block text-sm font-semibold text-gray-900">
+            Age Groups (optional)
+          </label>
+          <p className="mb-2 text-xs text-gray-600">Select up to 3 age groups you want to target</p>
           <div className="flex flex-wrap gap-2">
             {AGE_GROUP_OPTIONS.map((range) => {
               const isSelected = listing.targetGroupAgeGroups?.includes(range) || false;
@@ -257,6 +260,7 @@ export function ListingRequirements({
                 <button
                   key={range}
                   type="button"
+                  aria-pressed={isSelected}
                   onClick={() => {
                     const currentGroups = listing.targetGroupAgeGroups || [];
                     if (isSelected) {
@@ -285,6 +289,6 @@ export function ListingRequirements({
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

@@ -62,6 +62,7 @@ type SharedHotelSetupRow = {
   marketplaceProfileUpdatedAt: unknown;
   marketplaceOfferCount: number | string;
   marketplaceVerifiedOfferCount: number | string;
+  marketplacePublicOfferCount: number | string;
   marketplaceOfferUpdatedAt: unknown;
   marketplaceDeliverableCount: number | string;
   marketplaceDeliverableUpdatedAt: unknown;
@@ -588,16 +589,20 @@ function marketplaceActivation(row: SharedHotelSetupRow): SharedProductActivatio
   const missingSteps: string[] = [];
   const offerCount = toCount(row.marketplaceOfferCount);
   const verifiedOfferCount = toCount(row.marketplaceVerifiedOfferCount);
+  const publicOfferCount = toCount(row.marketplacePublicOfferCount);
   const deliverableCount = toCount(row.marketplaceDeliverableCount);
   const compensationCount = toCount(row.marketplaceCompensationCount);
   if (!row.marketplaceEntitlementActive) missingSteps.push("productEntitlement");
   if (row.marketplaceProfileComplete !== true) missingSteps.push("creatorPitch");
-  if (offerCount === 0 || verifiedOfferCount === 0) missingSteps.push("marketplaceOffer");
+  if (offerCount === 0) missingSteps.push("marketplaceOffer");
+  if (verifiedOfferCount > 0 && publicOfferCount === 0) missingSteps.push("marketplaceOffer");
   if (deliverableCount === 0) missingSteps.push("offerDeliverables");
   if (compensationCount === 0) missingSteps.push("compensationOptions");
   if (toCount(row.marketplaceRequirementCount) === 0) missingSteps.push("creatorRequirements");
 
-  return missingSteps.length === 0 && row.marketplaceProfileStatus === "verified"
+  return missingSteps.length === 0 &&
+    row.marketplaceProfileStatus === "verified" &&
+    publicOfferCount > 0
     ? productActivation("marketplace", "active", [], [], marketplaceUpdatedAt(row))
     : productActivation(
         "marketplace",
@@ -1491,6 +1496,7 @@ function sharedHotelSetupStatusSql(): string {
       marketplace_profile.updated_at AS "marketplaceProfileUpdatedAt",
       COALESCE(marketplace_offers_state.count, 0) AS "marketplaceOfferCount",
       COALESCE(marketplace_offers_state.verified_count, 0) AS "marketplaceVerifiedOfferCount",
+      COALESCE(marketplace_offers_state.public_count, 0) AS "marketplacePublicOfferCount",
       marketplace_offers_state.updated_at AS "marketplaceOfferUpdatedAt",
       COALESCE(marketplace_deliverables.count, 0) AS "marketplaceDeliverableCount",
       marketplace_deliverables.updated_at AS "marketplaceDeliverableUpdatedAt",
@@ -1821,13 +1827,21 @@ function sharedHotelSetupStatusSql(): string {
     ) pms_rate_plans ON TRUE
     LEFT JOIN LATERAL (
       SELECT
-        count(*)::int AS count,
-        count(*) FILTER (WHERE offer_status = 'verified')::int AS verified_count,
-        max(updated_at) AS updated_at
-      FROM marketplace.marketplace_offers
-      WHERE property_id = property.id
-        AND organization_id = $1::uuid
-        AND offer_status <> 'archived'
+        count(*) FILTER (WHERE offer.offer_status IN ('pending', 'verified'))::int AS count,
+        count(*) FILTER (WHERE offer.offer_status = 'verified')::int AS verified_count,
+        count(*) FILTER (
+          WHERE offer.offer_status = 'verified'
+            AND projection.visibility_status = 'public'
+        )::int AS public_count,
+        max(offer.updated_at) FILTER (
+          WHERE offer.offer_status IN ('pending', 'verified')
+        ) AS updated_at
+      FROM marketplace.marketplace_offers offer
+      LEFT JOIN marketplace.marketplace_offer_read_model projection
+        ON projection.offer_id = offer.id
+       AND projection.property_id = offer.property_id
+      WHERE offer.property_id = property.id
+        AND offer.organization_id = $1::uuid
     ) marketplace_offers_state ON TRUE
     LEFT JOIN LATERAL (
       SELECT count(*)::int AS count, max(deliverable.updated_at) AS updated_at
@@ -1838,7 +1852,7 @@ function sharedHotelSetupStatusSql(): string {
        AND offer.organization_id = deliverable.organization_id
       WHERE deliverable.property_id = property.id
         AND deliverable.organization_id = $1::uuid
-        AND offer.offer_status <> 'archived'
+        AND offer.offer_status IN ('pending', 'verified')
     ) marketplace_deliverables ON TRUE
     LEFT JOIN LATERAL (
       SELECT count(*)::int AS count, max(offering.updated_at) AS updated_at
@@ -1849,7 +1863,7 @@ function sharedHotelSetupStatusSql(): string {
        AND listing.organization_id = offering.organization_id
       WHERE offering.property_id = property.id
         AND offering.organization_id = $1::uuid
-        AND listing.offer_status <> 'archived'
+        AND listing.offer_status IN ('pending', 'verified')
     ) marketplace_compensation ON TRUE
     LEFT JOIN LATERAL (
       SELECT count(*)::int AS count, max(requirement.updated_at) AS updated_at
@@ -1860,7 +1874,7 @@ function sharedHotelSetupStatusSql(): string {
        AND listing.organization_id = requirement.organization_id
       WHERE requirement.property_id = property.id
         AND requirement.organization_id = $1::uuid
-        AND listing.offer_status <> 'archived'
+        AND listing.offer_status IN ('pending', 'verified')
     ) marketplace_requirements ON TRUE
     ORDER BY array_position($2::uuid[], property.id)
   `;

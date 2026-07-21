@@ -1683,6 +1683,46 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       expect(photoCompleteProfiles).toEqual([{ complete: true }]);
 
       await verifyClient.query(
+        `INSERT INTO platform.media_objects (
+           id, bucket, storage_key, visibility, purpose, owner_organization_id,
+           resource_product, resource_type, resource_id, lifecycle_status,
+           content_type, public_approved, created_by_user_id
+         ) VALUES (
+           '99999999-8888-4888-8888-999999999992', 'identity-media',
+           'identity/shared-creator.jpg', 'public', 'identity.user.profile_image',
+           $1, 'platform', 'user_profile', $2, 'active', 'image/jpeg', TRUE, $2
+         )`,
+        [hotelOrganizationId, creatorUserId],
+      );
+      await verifyClient.query(
+        `INSERT INTO platform.media_variants (
+           media_object_id, variant_name, visibility, storage_key, content_type,
+           public_cdn_url
+         ) VALUES (
+           '99999999-8888-4888-8888-999999999992', 'original_safe', 'public',
+           'identity/shared-creator.jpg', 'image/jpeg',
+           'https://images.example.test/shared-creator.jpg'
+         )`,
+      );
+      await verifyClient.query(
+        `UPDATE marketplace.creator_profiles
+         SET profile_picture_url = 'https://images.example.test/shared-creator.jpg',
+             profile_metadata = jsonb_build_object(
+               'profilePictureMediaObjectId',
+               '99999999-8888-4888-8888-999999999992'
+             )
+         WHERE id = $1 AND organization_id = $2`,
+        [creatorProfileId, creatorOrganizationId],
+      );
+      const { rows: sharedIdentityPhotoProfiles } = await verifyClient.query<{
+        complete: boolean;
+      }>(`SELECT marketplace.creator_profile_is_complete($1, $2, TRUE) AS complete`, [
+        creatorProfileId,
+        creatorOrganizationId,
+      ]);
+      expect(sharedIdentityPhotoProfiles).toEqual([{ complete: true }]);
+
+      await verifyClient.query(
         `UPDATE marketplace.creator_platforms
          SET platform = 'other', profile_url = NULL
          WHERE creator_profile_id = $1 AND organization_id = $2`,

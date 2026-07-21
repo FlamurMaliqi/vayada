@@ -137,19 +137,19 @@ export default function AddonsStep({
 
   return (
     <div className="flex-1 overflow-auto">
-      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 sm:py-5">
         {stepIndicators}
-        <div className="text-center mb-6">
-          <h2 className="text-lg font-bold text-gray-900">Guest Add-ons</h2>
-          <p className="text-[13px] text-gray-500 mt-1">
+        <div className="text-center mb-5">
+          <h2 className="text-2xl font-semibold text-gray-900">Guest Add-ons</h2>
+          <p className="text-sm text-gray-500 mt-1">
             Offer extras like airport transfers, spa treatments, or breakfast packages during
             booking
           </p>
         </div>
 
         {/* Add-ons List */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
-          <div className="flex items-center justify-between mb-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 mb-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
             <div>
               <h3 className="text-[14px] font-semibold text-gray-900">Guest Experiences</h3>
               <p className="text-[12px] text-gray-500 mt-0.5">
@@ -158,7 +158,7 @@ export default function AddonsStep({
             </div>
             <button
               onClick={openCreateModal}
-              className="inline-flex items-center gap-1 px-3 py-1.5 bg-primary-500 text-white text-[12px] font-medium rounded-lg hover:bg-primary-600 transition-colors"
+              className="inline-flex w-full sm:w-auto items-center justify-center gap-1 px-4 py-2 bg-primary-500 text-white text-[12px] font-medium rounded-full hover:bg-primary-600 transition-colors"
             >
               <PlusIcon className="w-3.5 h-3.5" />
               Add Experience
@@ -255,7 +255,7 @@ export default function AddonsStep({
           )}
         </div>
 
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
           <p className="text-[12px] text-blue-700">
             This step is optional — you can skip it and configure add-ons later from Booking Flow
             settings.
@@ -263,22 +263,22 @@ export default function AddonsStep({
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
             <p className="text-[12px] text-red-700 font-medium">{error}</p>
           </div>
         )}
 
-        <div className="mt-6 flex items-center justify-between">
+        <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
           <button
             onClick={onBack}
-            className="px-5 py-2 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            className="w-full sm:w-auto px-6 py-2.5 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-full hover:bg-gray-50 transition-colors"
           >
             Back
           </button>
           <button
             onClick={onContinue}
             disabled={!canProceed}
-            className="px-5 py-2 bg-primary-500 text-white text-[13px] font-semibold rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="w-full sm:w-auto px-6 py-2.5 bg-primary-500 text-white text-[13px] font-semibold rounded-full hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {addons.length === 0 ? "Skip for Now" : "Continue"} &rarr;
           </button>
@@ -288,7 +288,7 @@ export default function AddonsStep({
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40" onClick={() => setShowModal(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 max-h-[85vh] overflow-y-auto">
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[85vh] overflow-y-auto">
             <div className="flex items-center justify-between p-4 border-b border-gray-200">
               <h3 className="text-[15px] font-semibold text-gray-900">
                 {editingId ? "Edit Add-on" : "Create Add-on"}

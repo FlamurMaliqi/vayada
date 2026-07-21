@@ -178,6 +178,7 @@ test("creator selects one compensation option when applying", async ({ page }) =
   const youtubeVideoRow = page.getByText("YouTube Video", { exact: true }).locator("..");
   await youtubeVideoRow.getByRole("button").last().click();
   await fromDate.fill("2027-01-10");
+  await page.getByText(/I consent to sharing my contact information/).click();
   await page.getByRole("button", { name: "Submit Application" }).click();
 
   const availabilityError = page.getByText(
@@ -203,13 +204,15 @@ test("creator selects one compensation option when applying", async ({ page }) =
     .last()
     .click();
   await page.locator('input[type="date"]').first().fill("2027-09-01");
+  await page.getByText(/I consent to sharing my contact information/).click();
   await page.getByRole("button", { name: "Submit Application" }).click();
 
   await expect.poll(() => submittedApplication).not.toBeNull();
   expect(submittedApplication).not.toHaveProperty("creatorId");
+  expect(submittedApplication).not.toHaveProperty("initiatorSide");
   expect(submittedApplication).toMatchObject({
     offerId: "offer-application-e2e",
-    initiatorSide: "creator",
+    compensationOptionId: "compensation-paid",
     whyGreatFit: "My audience is a strong match for this city guide.",
     consent: true,
     terms: {

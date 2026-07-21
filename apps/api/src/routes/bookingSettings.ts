@@ -84,6 +84,22 @@ export const BOOKING_ROOM_FILTER_SETTINGS_CONTRACT = {
   },
 } as const;
 
+export const BOOKING_DESIGN_SETTINGS_CONTRACT = {
+  method: "GET",
+  path: "/api/booking/hotels/:hotelId/settings/design",
+  permission: "booking.settings.manage",
+  entitlement: {
+    product: "booking",
+    key: "booking-engine",
+    resourceType: "booking_hotel",
+  },
+  resource: {
+    product: "booking",
+    resourceType: "booking_hotel",
+    allowedRelationships: ["owner", "operator"],
+  },
+} as const;
+
 export const BOOKING_LAST_MINUTE_SETTINGS_CONTRACT = {
   method: "GET",
   path: "/api/booking/hotels/:hotelId/settings/last-minute",
@@ -141,6 +157,11 @@ export const BOOKING_ROOM_FILTER_SETTINGS_WRITE_CONTRACT = {
   method: "PUT",
 } as const;
 
+export const BOOKING_DESIGN_SETTINGS_WRITE_CONTRACT = {
+  ...BOOKING_DESIGN_SETTINGS_CONTRACT,
+  method: "PATCH",
+} as const;
+
 export const BOOKING_LAST_MINUTE_SETTINGS_WRITE_CONTRACT = {
   ...BOOKING_LAST_MINUTE_SETTINGS_CONTRACT,
   method: "PUT",
@@ -181,6 +202,14 @@ export type BookingRoomFilterSettingsReadModel = {
   bookingFilters?: unknown;
   customFilters?: unknown;
   filterRooms?: unknown;
+};
+
+export type BookingDesignSettingsReadModel = {
+  heroImage?: string | null;
+  heroHeading?: string | null;
+  heroSubtext?: string | null;
+  primaryColor?: string | null;
+  fontPairing?: string | null;
 };
 
 export type BookingLastMinuteTier = {
@@ -258,6 +287,14 @@ export type BookingRoomFilterSettingsResponse = {
   filterRooms: Record<string, string[]>;
 };
 
+export type BookingDesignSettingsResponse = {
+  heroImage: string;
+  heroHeading: string;
+  heroSubtext: string;
+  primaryColor: string;
+  fontPairing: string;
+};
+
 export type BookingLastMinuteSettingsResponse = {
   enabled: boolean;
   stackWithPromo: boolean;
@@ -282,6 +319,7 @@ export type BookingGuestFormSettings = BookingGuestFormSettingsResponse;
 export type BookingBenefitsSettings = BookingBenefitsSettingsResponse;
 export type BookingLocalizationSettings = BookingLocalizationSettingsResponse;
 export type BookingRoomFilterSettings = BookingRoomFilterSettingsResponse;
+export type BookingDesignSettings = BookingDesignSettingsResponse;
 export type BookingLastMinuteSettings = BookingLastMinuteSettingsResponse;
 
 export type BookingSettingsReadRepository = {
@@ -298,6 +336,7 @@ export type BookingSettingsReadRepository = {
   findRoomFilterSettingsByHotelId?(
     hotelId: string,
   ): Promise<BookingRoomFilterSettingsReadModel | null>;
+  findDesignSettingsByHotelId?(hotelId: string): Promise<BookingDesignSettingsReadModel | null>;
   findLastMinuteSettingsByHotelId?(
     hotelId: string,
   ): Promise<BookingLastMinuteSettingsReadModel | null>;
@@ -314,6 +353,7 @@ export type UpdateBookingGuestFormSettingsBody = Omit<
 export type UpdateBookingBenefitsSettingsBody = BookingBenefitsSettingsResponse;
 export type UpdateBookingLocalizationSettingsBody = BookingLocalizationSettingsResponse;
 export type UpdateBookingRoomFilterSettingsBody = BookingRoomFilterSettingsResponse;
+export type UpdateBookingDesignSettingsBody = Partial<BookingDesignSettingsResponse>;
 export type UpdateBookingLastMinuteSettingsBody = Omit<
   BookingLastMinuteSettingsResponse,
   "updatedAt"
@@ -367,6 +407,10 @@ export type BookingSettingsWriteRepository = {
     hotelId: string,
     settings: UpdateBookingRoomFilterSettingsBody,
   ): Promise<BookingRoomFilterSettingsReadModel | null>;
+  updateDesignSettingsByHotelId?(
+    hotelId: string,
+    settings: UpdateBookingDesignSettingsBody,
+  ): Promise<BookingDesignSettingsReadModel | null>;
   updateLastMinuteSettingsByHotelId?(
     hotelId: string,
     settings: UpdateBookingLastMinuteSettingsBody,
@@ -779,6 +823,11 @@ type TargetBookingSettingsRow = {
   booking_filters: unknown;
   custom_filters: unknown;
   filter_rooms: unknown;
+  hero_image_url: string | null;
+  hero_heading: string | null;
+  hero_subtext: string | null;
+  primary_color: string | null;
+  font_pairing: string | null;
   last_minute_discount: unknown;
   updated_at: string | Date | null;
 };
@@ -814,6 +863,14 @@ const DEFAULT_LAST_MINUTE_SETTINGS: UpdateBookingLastMinuteSettingsBody = {
   stackWithPromo: false,
   tiers: [],
 };
+
+const BOOKING_FONT_PAIRINGS = new Set([
+  "high-end-serif",
+  "modern-minimalist",
+  "grand-classic",
+  "imperial-serif",
+  "italiana-serif",
+]);
 
 type TargetBookingPropertyLinkQueryRow = {
   source_link_count: number | string;
@@ -918,6 +975,11 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     settings.booking_filters,
     settings.custom_filters,
     settings.filter_rooms,
+    settings.hero_image_url,
+    settings.hero_heading,
+    settings.hero_subtext,
+    settings.primary_color,
+    settings.font_pairing,
     settings.last_minute_discount,
     settings.updated_at,
     finance.accepted_methods AS accepted_payment_methods
@@ -987,6 +1049,11 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
     settings.booking_filters,
     settings.custom_filters,
     settings.filter_rooms,
+    settings.hero_image_url,
+    settings.hero_heading,
+    settings.hero_subtext,
+    settings.primary_color,
+    settings.font_pairing,
     settings.last_minute_discount,
     settings.updated_at
   FROM source_link_status
@@ -1264,6 +1331,16 @@ function toTargetRoomFilterSettings(
     bookingFilters: row.booking_filters,
     customFilters: row.custom_filters,
     filterRooms: row.filter_rooms,
+  };
+}
+
+function toTargetDesignSettings(row: TargetBookingSettingsRow): BookingDesignSettingsReadModel {
+  return {
+    heroImage: row.hero_image_url,
+    heroHeading: row.hero_heading,
+    heroSubtext: row.hero_subtext,
+    primaryColor: row.primary_color,
+    fontPairing: row.font_pairing,
   };
 }
 
@@ -1748,6 +1825,11 @@ export function createPgTargetBookingSettingsRepository(config: {
           settings.booking_filters,
           settings.custom_filters,
           settings.filter_rooms,
+          settings.hero_image_url,
+          settings.hero_heading,
+          settings.hero_subtext,
+          settings.primary_color,
+          settings.font_pairing,
           settings.last_minute_discount,
           settings.updated_at
         )
@@ -1770,6 +1852,11 @@ export function createPgTargetBookingSettingsRepository(config: {
           updated_settings.booking_filters,
           updated_settings.custom_filters,
           updated_settings.filter_rooms,
+          updated_settings.hero_image_url,
+          updated_settings.hero_heading,
+          updated_settings.hero_subtext,
+          updated_settings.primary_color,
+          updated_settings.font_pairing,
           updated_settings.last_minute_discount,
           updated_settings.updated_at
         FROM source_link_status
@@ -1824,6 +1911,10 @@ export function createPgTargetBookingSettingsRepository(config: {
     async findRoomFilterSettingsByHotelId(hotelId) {
       const row = await findSettings(hotelId);
       return row ? toTargetRoomFilterSettings(row) : null;
+    },
+    async findDesignSettingsByHotelId(hotelId) {
+      const row = await findSettings(hotelId);
+      return row ? toTargetDesignSettings(row) : null;
     },
     async findLastMinuteSettingsByHotelId(hotelId) {
       const row = await findSettings(hotelId);
@@ -1893,6 +1984,31 @@ export function createPgTargetBookingSettingsRepository(config: {
         ],
       );
       return row ? toTargetRoomFilterSettings(row) : null;
+    },
+    async updateDesignSettingsByHotelId(hotelId, settings) {
+      const assignments: string[] = [];
+      const values: unknown[] = [];
+      const assign = (column: string, value: unknown) => {
+        values.push(value);
+        assignments.push(`${column} = $${values.length + 1}`);
+      };
+
+      if (settings.heroImage !== undefined) {
+        assign("hero_image_url", nullableText(settings.heroImage));
+      }
+      if (settings.heroHeading !== undefined) {
+        assign("hero_heading", nullableText(settings.heroHeading));
+      }
+      if (settings.heroSubtext !== undefined) {
+        assign("hero_subtext", nullableText(settings.heroSubtext));
+      }
+      if (settings.primaryColor !== undefined) assign("primary_color", settings.primaryColor);
+      if (settings.fontPairing !== undefined) assign("font_pairing", settings.fontPairing);
+
+      const row = assignments.length
+        ? await updateSettings(hotelId, assignments.join(",\n         "), values)
+        : await findSettings(hotelId);
+      return row ? toTargetDesignSettings(row) : null;
     },
     async updateLastMinuteSettingsByHotelId(hotelId, settings) {
       const row = await updateSettings(hotelId, `last_minute_discount = $2::jsonb`, [
@@ -2201,6 +2317,53 @@ export async function registerBookingSettingsRoutes(
   );
 
   app.get<{ Params: BookingHotelParams }>(
+    "/hotels/:hotelId/settings/design",
+    async (request, reply) => {
+      const { hotelId } = request.params;
+
+      try {
+        enforceBookingSettingsPolicy(request, hotelId);
+      } catch (error) {
+        const contractError = toBookingSettingsAccessError(error, request, hotelId);
+        if (contractError) return reply.status(contractError.statusCode).send(contractError);
+        throw error;
+      }
+
+      if (!repository.findDesignSettingsByHotelId) {
+        return reply.status(500).send({
+          statusCode: 500,
+          code: "read_model_unavailable",
+          category: "read_model",
+          message: "Booking design settings are unavailable.",
+        });
+      }
+
+      let settings: BookingDesignSettingsReadModel | null;
+      try {
+        settings = await repository.findDesignSettingsByHotelId(hotelId);
+      } catch {
+        return reply.status(500).send({
+          statusCode: 500,
+          code: "read_model_unavailable",
+          category: "read_model",
+          message: "Booking design settings are unavailable.",
+        });
+      }
+
+      if (!settings) {
+        return reply.status(404).send({
+          statusCode: 404,
+          code: "not_found",
+          category: "read_model",
+          message: "Booking hotel design settings not found.",
+        });
+      }
+
+      return toDesignSettingsResponse(settings);
+    },
+  );
+
+  app.get<{ Params: BookingHotelParams }>(
     "/hotels/:hotelId/settings/last-minute",
     async (request, reply) => {
       const { hotelId } = request.params;
@@ -2321,6 +2484,23 @@ export async function registerBookingSettingsRoutes(
         write: (hotelId, settings) =>
           writeRepository.updateRoomFilterSettingsByHotelId(hotelId, settings),
         toResponse: toRoomFilterSettingsResponse,
+      }),
+  );
+
+  app.patch<{ Params: BookingHotelParams; Body: unknown }>(
+    "/hotels/:hotelId/settings/design",
+    async (request, reply) =>
+      handleBookingSettingsWrite({
+        request,
+        reply,
+        parseBody: parseDesignSettingsWriteBody,
+        write: (hotelId, settings) => {
+          if (!writeRepository.updateDesignSettingsByHotelId) {
+            throw new Error("Booking design settings write model is unavailable.");
+          }
+          return writeRepository.updateDesignSettingsByHotelId(hotelId, settings);
+        },
+        toResponse: toDesignSettingsResponse,
       }),
   );
 
@@ -2675,6 +2855,55 @@ function parseRoomFilterSettingsWriteBody(
   };
 }
 
+function parseDesignSettingsWriteBody(
+  body: unknown,
+): ValidationResult<UpdateBookingDesignSettingsBody> {
+  if (!isPlainRecord(body)) {
+    return { ok: false, details: ["body must be an object."] };
+  }
+
+  const allowedKeys = new Set([
+    "heroImage",
+    "heroHeading",
+    "heroSubtext",
+    "primaryColor",
+    "fontPairing",
+  ]);
+  const details: string[] = [];
+  const keys = Object.keys(body);
+  for (const key of keys) {
+    if (!allowedKeys.has(key)) details.push(`${key} is not allowed.`);
+  }
+  if (keys.length === 0) details.push("At least one design setting is required.");
+
+  const value: UpdateBookingDesignSettingsBody = {};
+  const heroImage = expectOptionalBoundedString(body, "heroImage", 2048, details);
+  if (heroImage !== undefined) value.heroImage = heroImage;
+  const heroHeading = expectOptionalBoundedString(body, "heroHeading", 160, details);
+  if (heroHeading !== undefined) value.heroHeading = heroHeading;
+  const heroSubtext = expectOptionalBoundedString(body, "heroSubtext", 1000, details);
+  if (heroSubtext !== undefined) value.heroSubtext = heroSubtext;
+
+  const primaryColor = expectOptionalBoundedString(body, "primaryColor", 7, details);
+  if (primaryColor !== undefined) {
+    if (!/^#[0-9A-Fa-f]{6}$/.test(primaryColor)) {
+      details.push("primaryColor must be a six-digit hex color.");
+    }
+    value.primaryColor = primaryColor;
+  }
+
+  const fontPairing = expectOptionalBoundedString(body, "fontPairing", 64, details);
+  if (fontPairing !== undefined) {
+    if (!BOOKING_FONT_PAIRINGS.has(fontPairing)) {
+      details.push("fontPairing is not supported.");
+    }
+    value.fontPairing = fontPairing;
+  }
+
+  if (details.length > 0) return { ok: false, details };
+  return { ok: true, value };
+}
+
 function parseLastMinuteSettingsWriteBody(
   body: unknown,
 ): ValidationResult<UpdateBookingLastMinuteSettingsBody> {
@@ -2752,6 +2981,18 @@ export function toRoomFilterSettingsResponse(
     bookingFilters: parseLooseStringList(settings?.bookingFilters),
     customFilters: parseStringRecord(settings?.customFilters),
     filterRooms: parseStringArrayRecord(settings?.filterRooms),
+  };
+}
+
+export function toDesignSettingsResponse(
+  settings: BookingDesignSettingsReadModel,
+): BookingDesignSettingsResponse {
+  return {
+    heroImage: settings.heroImage ?? "",
+    heroHeading: settings.heroHeading ?? "",
+    heroSubtext: settings.heroSubtext ?? "",
+    primaryColor: settings.primaryColor ?? "#4F46E5",
+    fontPairing: settings.fontPairing ?? "high-end-serif",
   };
 }
 
@@ -3066,6 +3307,25 @@ function expectOptionalNullableString(
     return undefined;
   }
   return nullableText(value);
+}
+
+function expectOptionalBoundedString(
+  record: Record<string, unknown>,
+  key: string,
+  maxLength: number,
+  details: string[],
+): string | undefined {
+  if (!Object.hasOwn(record, key)) return undefined;
+  const value = record[key];
+  if (typeof value !== "string") {
+    details.push(`${key} must be a string.`);
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (normalized.length > maxLength) {
+    details.push(`${key} must be at most ${maxLength} characters.`);
+  }
+  return normalized;
 }
 
 function expectOptionalBoolean(

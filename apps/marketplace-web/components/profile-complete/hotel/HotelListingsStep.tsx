@@ -2,18 +2,16 @@
 
 import { MutableRefObject } from "react";
 import { HotelBadgeIcon } from "@/components/ui";
-import { PlusIcon, InformationCircleIcon } from "@heroicons/react/24/outline";
 import type { ListingFormData } from "@/lib/types";
-import { ListingCard } from "./ListingCard";
+import { ListingCard, type ListingCardSection } from "./ListingCard";
 
 interface HotelListingsStepProps {
   listings: ListingFormData[];
+  section: ListingCardSection;
   collapsedCards: Set<number>;
   countryInputs: Record<number, string>;
   countries: string[];
   imageInputRefs: MutableRefObject<(HTMLInputElement | null)[]>;
-  onAddListing: () => void;
-  onRemoveListing: (index: number) => void;
   onToggleCollapse: (index: number) => void;
   onUpdateListing: (
     index: number,
@@ -27,12 +25,11 @@ interface HotelListingsStepProps {
 
 export function HotelListingsStep({
   listings,
+  section,
   collapsedCards,
   countryInputs,
   countries,
   imageInputRefs,
-  onAddListing,
-  onRemoveListing,
   onToggleCollapse,
   onUpdateListing,
   onImageChange,
@@ -40,32 +37,33 @@ export function HotelListingsStep({
   onCountryInputChange,
 }: HotelListingsStepProps) {
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-3 mb-4">
+    <div className="space-y-4">
+      <div className="flex items-start gap-3">
         <HotelBadgeIcon active />
         <div className="flex-1">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-bold text-gray-900">Collaboration Offers</h3>
-            <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full text-xs font-semibold">
-              {listings.length} offer{listings.length !== 1 ? "s" : ""}
+          <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h3 className="text-base font-semibold text-gray-950">Your collaboration offer</h3>
+            <span className="w-fit rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
+              First offer
             </span>
           </div>
-          <p className="text-xs text-gray-500">
-            Add at least one collaboration offer{" "}
-            <span className="font-semibold text-red-600">(required)</span>
+          <p className="mt-1 text-sm leading-5 text-gray-500">
+            {section === "details"
+              ? "Add a clear title, description, and photos. You can create more offers after setup."
+              : section === "offerings"
+                ? "Choose the collaboration terms, availability, and content platforms."
+                : "Choose the creator platforms and audience fit for this offer."}
           </p>
         </div>
       </div>
 
       {listings.length === 0 && (
-        <div className="border border-primary-200 rounded-xl p-6 text-center bg-white shadow-sm border-dashed">
-          <div className="w-10 h-10 mx-auto mb-2 rounded-lg flex items-center justify-center">
+        <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-6 text-center">
+          <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-lg">
             <HotelBadgeIcon />
           </div>
-          <p className="text-primary-800 font-semibold mb-1 text-sm">No offers added yet</p>
-          <p className="text-xs text-gray-600">
-            Add at least one collaboration offer to complete your profile.
-          </p>
+          <p className="mb-1 text-sm font-semibold text-gray-900">Your offer could not be loaded</p>
+          <p className="text-sm text-gray-500">Return to setup and try again.</p>
         </div>
       )}
 
@@ -74,35 +72,18 @@ export function HotelListingsStep({
           key={index}
           listing={listing}
           index={index}
+          section={section}
           isCollapsed={collapsedCards.has(index)}
           countryInput={countryInputs[index] || ""}
           countries={countries}
-          imageInputRef={{ current: imageInputRefs.current[index] } as any}
-          canRemove={listings.length > 1}
+          imageInputRef={{ current: imageInputRefs.current[index] ?? null }}
           onToggleCollapse={() => onToggleCollapse(index)}
-          onRemove={() => onRemoveListing(index)}
           onUpdateListing={onUpdateListing}
           onImageChange={(e) => onImageChange(index, e)}
           onRemoveImage={(imageIndex) => onRemoveImage(index, imageIndex)}
           onCountryInputChange={onCountryInputChange}
         />
       ))}
-
-      <button
-        type="button"
-        onClick={onAddListing}
-        className="w-full py-3 border-2 border-dashed border-primary-200 rounded-lg text-primary-700 hover:border-primary-400 hover:bg-primary-50 transition-all flex items-center justify-center gap-2 font-semibold text-sm group"
-      >
-        <PlusIcon className="w-4 h-4 group-hover:scale-110 transition-transform" />
-        Add Another Collaboration Offer
-      </button>
-
-      <div className="mt-3 flex items-center gap-3 rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-700">
-        <InformationCircleIcon className="w-5 h-5 text-primary-600" />
-        <p className="leading-snug">
-          All property information will be verified by our team before your offers go live.
-        </p>
-      </div>
     </div>
   );
 }

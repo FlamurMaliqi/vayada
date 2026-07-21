@@ -768,6 +768,35 @@ describe("marketplace creator platform connection routes", () => {
       claimId: "00000000-0000-4000-8000-000000000099",
     });
   });
+  it("waits for in-flight credential cleanup before closing the repository", async () => {
+    let markCleanupStarted!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      markCleanupStarted = resolve;
+    });
+    let releaseCleanup!: () => void;
+    const cleanupReleased = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const repository = connectionRepository({
+      async listCredentialCleanupCandidates() {
+        markCleanupStarted();
+        await cleanupReleased;
+        return [];
+      },
+    });
+    app = buildCreatorPlatformApp(repository, []);
+
+    await app.ready();
+    await cleanupStarted;
+    const closing = app.close();
+    await Promise.resolve();
+
+    expect(repository.close).not.toHaveBeenCalled();
+    releaseCleanup();
+    await closing;
+    expect(repository.close).toHaveBeenCalledOnce();
+    app = undefined;
+  });
 });
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
@@ -1404,6 +1433,8 @@ function connectionRepository(
       authorizationId: string;
       claimId: string;
     }>;
+    listCredentialCleanupCandidates?: MarketplaceCreatorPlatformConnectionRepository["listCredentialCleanupCandidates"];
+    close?: () => Promise<void>;
   } = {},
 ) {
   return {
@@ -1443,9 +1474,12 @@ function connectionRepository(
     ),
     recordRevocationError: vi.fn(async () => undefined),
     queueCredentialCleanup: vi.fn(async () => undefined),
-    listCredentialCleanupCandidates: vi.fn(async () => overrides.cleanupCandidates ?? []),
+    listCredentialCleanupCandidates: vi.fn(
+      overrides.listCredentialCleanupCandidates ?? (async () => overrides.cleanupCandidates ?? []),
+    ),
     markCredentialCleaned: vi.fn(async () => undefined),
     recordCredentialCleanupFailure: vi.fn(async () => undefined),
+    close: vi.fn(overrides.close ?? (async () => undefined)),
   } satisfies MarketplaceCreatorPlatformConnectionRepository;
 }
 

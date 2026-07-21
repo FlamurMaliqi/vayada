@@ -13,7 +13,10 @@ export interface HotelSocialLinks {
 }
 
 export interface HotelBranding {
-  primaryColor: string;
+  heroImage?: string;
+  heroHeading?: string;
+  heroSubtext?: string;
+  primaryColor?: string;
   accentColor?: string;
   fontPairing?: string;
   logoUrl?: string;

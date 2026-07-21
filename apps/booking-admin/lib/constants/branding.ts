@@ -27,10 +27,10 @@ export const FONT_PAIRINGS = [
   {
     id: "grand-classic",
     name: "Grand Classic",
-    fonts: "Cormorant Garamond + Lato",
+    fonts: "Lora + Source Sans Pro",
     preview: "Stately & Readable",
-    headingFamily: "'Cormorant Garamond', serif",
-    bodyFamily: "'Lato', sans-serif",
+    headingFamily: "'Lora', serif",
+    bodyFamily: "'Source Sans Pro', sans-serif",
   },
   {
     id: "imperial-serif",

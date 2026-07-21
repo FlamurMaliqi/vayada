@@ -564,6 +564,21 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
   `);
 
   await client.query(`
+    UPDATE platform.media_objects media
+    SET retained_until = message.created_at + interval '2 years',
+        source_metadata = media.source_metadata || jsonb_build_object(
+          'retentionPolicy', 'chat-message-created-at-plus-2-years'
+        ),
+        updated_at = now()
+    FROM marketplace.marketplace_chat_messages message
+    WHERE media.purpose = 'marketplace.collaboration_chat.attachment'
+      AND media.storage_kind = 'vayada_managed'
+      AND media.resource_type = 'collaboration_chat_message'
+      AND media.resource_id = message.id::text
+      AND media.retained_until IS NULL
+  `);
+
+  await client.query(`
     UPDATE pms.room_types room_type
     SET media_snapshot = source.target_media_snapshot
     FROM migration_source_media.pms_room_media_references source

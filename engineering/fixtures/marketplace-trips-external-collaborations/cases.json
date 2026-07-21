@@ -210,10 +210,26 @@
     },
     {
       "caseId": "trip-write-validation",
-      "description": "The follow-up write slice rejects invalid date ordering, missing required text, and unknown external collaboration types.",
+      "description": "An authorized creator owner receives the write validation contract for invalid external-collaboration input.",
       "request": {
         "method": "POST",
         "path": "/api/marketplace/trips/external-collaborations",
+        "headers": {
+          "Idempotency-Key": "fixture-external-create-invalid-1"
+        },
+        "auth": {
+          "organizationKind": "creator_workspace",
+          "organizationId": "org_creator_lina",
+          "permission": "marketplace.trip.manage",
+          "linkedResources": [
+            {
+              "product": "marketplace",
+              "resourceType": "creator_profile",
+              "resourceId": "creator_profile_lina",
+              "relationship": "owner"
+            }
+          ]
+        },
         "body": {
           "title": " ",
           "collaborationType": "sponsored_blog",
@@ -222,8 +238,8 @@
         }
       },
       "expected": {
-        "status": 422,
-        "errorCode": "invalid_body"
+        "status": 400,
+        "errorCode": "invalid_request"
       }
     }
   ]

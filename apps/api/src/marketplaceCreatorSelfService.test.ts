@@ -380,6 +380,82 @@ describe("marketplace creator self-service routes", () => {
     expect(response.body.detail).toBe("A verified profile picture media object is required");
   });
 
+  it("reuses the current user's identity profile image across organizations", async () => {
+    let patch: UpdateCreatorProfileRequest | undefined;
+    app = buildMarketplaceCreatorApp({
+      repository: {
+        async ensureCreatorProfile() {
+          throw new Error("existing profile link should not bootstrap");
+        },
+        async getCreatorProfile() {
+          throw new Error("profile write should not read before update");
+        },
+        async updateCreatorProfile(input) {
+          patch = input.patch;
+          return profileDocument({
+            profilePictureUrl: input.patch.profilePictureUrl ?? null,
+            profilePictureMediaObjectId: input.patch.profilePictureMediaObjectId ?? null,
+          });
+        },
+      },
+      mediaRepository: {
+        persistent: true,
+        publicCdnBaseUrl: "https://media.example/",
+        async findMediaObject(mediaId) {
+          return profileMediaObject({
+            mediaId,
+            ownerOrganizationId: "org_hotel_workspace",
+          });
+        },
+      },
+    });
+
+    const response = await injectJson<CreatorProfileDocument>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { profilePictureMediaObjectId: "media_identity_from_hotel_workspace" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(patch).toMatchObject({
+      profilePictureMediaObjectId: "media_identity_from_hotel_workspace",
+      profilePictureUrl: "https://media.example/creator-profile.png",
+    });
+  });
+
+  it("keeps creator-profile media scoped to its owning organization", async () => {
+    app = buildMarketplaceCreatorApp({
+      repository: repositoryThatShouldNotBeCalled(),
+      mediaRepository: {
+        persistent: true,
+        publicCdnBaseUrl: "https://media.example/",
+        async findMediaObject(mediaId) {
+          return profileMediaObject({
+            mediaId,
+            purpose: "marketplace.creator.profile_image",
+            ownerOrganizationId: "org_other_creator_workspace",
+            resourceProduct: "marketplace",
+            resourceType: "creator_profile",
+            resourceId: creatorProfileId,
+          });
+        },
+      },
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { profilePictureMediaObjectId: "media_other_creator_workspace" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe(
+      "Profile picture media must be an owned, approved public image upload",
+    );
+  });
+
   it("clears the stored picture URL and media link together", async () => {
     let patch: UpdateCreatorProfileRequest | undefined;
     app = buildMarketplaceCreatorApp({

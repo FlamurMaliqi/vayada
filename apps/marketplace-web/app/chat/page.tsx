@@ -32,6 +32,10 @@ import type { Collaboration, Hotel, Creator } from "@/lib/types";
 import { STORAGE_KEYS, getStatusClasses } from "@/lib/constants";
 import { getInitials, formatCompactNumber, getCurrencySymbol } from "@/lib/utils";
 
+function toMessageSenderSide(userType: string | null): MessageResponse["sender_side"] {
+  return userType === "creator" || userType === "hotel" ? userType : null;
+}
+
 function ChatPageContent() {
   const { isCollapsed } = useSidebar();
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -339,6 +343,7 @@ function ChatPageContent() {
         sender_id: "me",
         sender_name: "Me",
         sender_avatar: null,
+        sender_side: toMessageSenderSide(userType),
         content: content,
         content_type: "text" as const,
         metadata: null,
@@ -371,28 +376,15 @@ function ChatPageContent() {
   };
 
   const handleSendImageMessage = async (file: File, caption?: string) => {
-    if (!selectedChatId) return;
+    if (!selectedChatId || (userType !== "creator" && userType !== "hotel")) return;
 
-    // Upload image
-    const { url } = await collaborationService.uploadChatImage(file);
-
-    // Create temp message for image
-    const tempImageMessage = {
-      id: `temp-img-${Date.now()}`,
-      collaboration_id: selectedChatId,
-      sender_id: "me",
-      sender_name: "Me",
-      sender_avatar: null,
-      content: url,
-      content_type: "image" as const,
-      metadata: null,
-      created_at: new Date().toISOString(),
-    };
-
-    setRealMessages((prev) => [...prev, tempImageMessage]);
-
-    // Send image message
-    await collaborationService.sendMessage(selectedChatId, url, "image");
+    const imageMessage = await collaborationService.sendChatImage(
+      selectedChatId,
+      userType,
+      file,
+      caption,
+    );
+    setRealMessages((prev) => [...prev, imageMessage]);
 
     // Update conversation list
     setConversations((prev) => {
@@ -402,31 +394,13 @@ function ChatPageContent() {
       const updatedChat = {
         ...prev[chatIndex],
         last_message_content: caption || "Sent an image",
-        last_message_at: new Date().toISOString(),
+        last_message_at: imageMessage.created_at,
         unread_count: 0,
       };
 
       const filtered = prev.filter((c) => c.collaboration_id !== selectedChatId);
       return [updatedChat, ...filtered];
     });
-
-    // If caption provided, send it as a separate text message
-    if (caption) {
-      const tempCaptionMessage = {
-        id: `temp-caption-${Date.now()}`,
-        collaboration_id: selectedChatId,
-        sender_id: "me",
-        sender_name: "Me",
-        sender_avatar: null,
-        content: caption,
-        content_type: "text" as const,
-        metadata: null,
-        created_at: new Date().toISOString(),
-      };
-
-      setRealMessages((prev) => [...prev, tempCaptionMessage]);
-      await collaborationService.sendMessage(selectedChatId, caption);
-    }
   };
 
   return (

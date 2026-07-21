@@ -6,13 +6,25 @@ import { apiClient } from "./client";
 import {
   createMarketplaceAdminOffer,
   deleteMarketplaceAdminOffer,
+  getMarketplaceAdminHotelReview,
   updateMarketplaceAdminOffer,
+  verifyMarketplaceAdminOffer,
   type MarketplaceAdminCreateOfferRequest,
+  type MarketplaceAdminHotelReviewResponse,
+  type MarketplaceAdminOffer,
   type MarketplaceAdminUpdateOfferRequest,
   type MarketplaceOfferCreatorRequirementsWrite,
   type MarketplaceOfferCompensationOptionWrite,
 } from "@vayada/marketplace-shared/api/admin";
-import type { User, UserDetailResponse, CreateUserRequest } from "@/lib/types";
+import type {
+  CollaborationOffering,
+  CreateUserRequest,
+  CreatorRequirements,
+  HotelProfileDetail,
+  ListingResponse,
+  User,
+  UserDetailResponse,
+} from "@/lib/types";
 
 export interface UsersListResponse {
   users: User[];
@@ -79,8 +91,13 @@ export const usersService = {
    */
   getUserById: async (userId: string): Promise<UserDetailResponse> => {
     const response = await apiClient.get<any>(`/api/identity/admin/users/${userId}`);
-    // Transform snake_case to camelCase to match TypeScript interfaces
-    return transformSnakeToCamel(response) as UserDetailResponse;
+    const identityUser = transformSnakeToCamel(response) as UserDetailResponse;
+    if (identityUser.type !== "hotel") return identityUser;
+    const review = await getMarketplaceAdminHotelReview(userId);
+    return {
+      ...identityUser,
+      profile: review.profile ? toHotelProfileDetail(identityUser, review) : null,
+    };
   },
 
   /**
@@ -259,6 +276,12 @@ export const usersService = {
   },
 
   /**
+   * Approve a pending offer and publish its media.
+   */
+  verifyOffer: async (hotelUserId: string, listingId: string): Promise<MarketplaceAdminOffer> =>
+    verifyMarketplaceAdminOffer(hotelUserId, listingId),
+
+  /**
    * Delete a listing
    * ⚠️ Warning: This action cannot be undone!
    * Permanently removes the listing, all collaboration offerings, creator requirements, and all images from S3.
@@ -315,6 +338,111 @@ export const usersService = {
     );
   },
 };
+
+function toHotelProfileDetail(
+  identityUser: UserDetailResponse,
+  review: MarketplaceAdminHotelReviewResponse,
+): HotelProfileDetail {
+  const profile = review.profile!;
+  return {
+    id: profile.propertyId,
+    userId: identityUser.id,
+    name: profile.displayName,
+    location: profile.location,
+    picture: null,
+    website: null,
+    about: profile.hostSummary,
+    email: identityUser.email,
+    phone: null,
+    status: profile.profileStatus,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    listings: review.offers.map((offer) => toListingResponse(offer, profile.location)),
+  };
+}
+
+function toListingResponse(offer: MarketplaceAdminOffer, location: string): ListingResponse {
+  return {
+    id: offer.offerId,
+    hotelProfileId: offer.propertyId,
+    name: offer.title,
+    location,
+    description: offer.offerSummary ?? "",
+    accommodationType: null,
+    images: offer.media.flatMap((media) => (media.url ? [media.url] : [])),
+    status: offer.offerStatus,
+    createdAt: offer.createdAt,
+    updatedAt: offer.updatedAt,
+    collaborationOfferings: offer.compensationOptions.map((option) =>
+      toCollaborationOffering(offer, option),
+    ),
+    creatorRequirements: offer.creatorRequirements
+      ? toCreatorRequirements(offer, offer.creatorRequirements)
+      : undefined,
+  };
+}
+
+function toCollaborationOffering(
+  offer: MarketplaceAdminOffer,
+  option: MarketplaceAdminOffer["compensationOptions"][number],
+): CollaborationOffering {
+  const collaborationType = {
+    free_stay: "Free Stay",
+    paid: "Paid",
+    discount: "Discount",
+    affiliate: "Affiliate",
+  }[option.compensationType] as CollaborationOffering["collaborationType"];
+  return {
+    id: option.compensationOptionId,
+    listingId: offer.offerId,
+    collaborationType,
+    availabilityMonths: option.availabilityMonths,
+    platforms: option.platforms.flatMap(toLegacyPlatformName),
+    freeStayMinNights: option.freeStayMinNights,
+    freeStayMaxNights: option.freeStayMaxNights,
+    paidMaxAmount: toNullableNumber(option.paidMaxAmount),
+    currency: option.currency,
+    discountPercentage: option.discountPercentage,
+    commissionPercentage: option.commissionPercentage,
+    minFollowers: option.minFollowers,
+    createdAt: offer.createdAt,
+    updatedAt: offer.updatedAt,
+  };
+}
+
+function toCreatorRequirements(
+  offer: MarketplaceAdminOffer,
+  requirements: NonNullable<MarketplaceAdminOffer["creatorRequirements"]>,
+): CreatorRequirements {
+  return {
+    id: `${offer.offerId}:creator-requirements`,
+    listingId: offer.offerId,
+    platforms: requirements.platforms.flatMap(toLegacyPlatformName),
+    targetCountries: requirements.targetCountries,
+    targetAgeMin: requirements.targetAgeMin,
+    targetAgeMax: requirements.targetAgeMax,
+    targetAgeGroups: requirements.targetAgeGroups,
+    createdAt: offer.createdAt,
+    updatedAt: offer.updatedAt,
+  };
+}
+
+function toLegacyPlatformName(
+  platform: MarketplaceAdminOffer["compensationOptions"][number]["platforms"][number],
+): CollaborationOffering["platforms"] {
+  switch (platform) {
+    case "instagram":
+      return ["Instagram"];
+    case "tiktok":
+      return ["TikTok"];
+    case "youtube":
+      return ["YouTube"];
+    case "facebook":
+      return ["Facebook"];
+    default:
+      return [];
+  }
+}
 
 function toMarketplaceAdminCreateOfferRequest(data: {
   name: string;

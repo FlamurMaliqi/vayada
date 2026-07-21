@@ -3,7 +3,7 @@
   "cases": [
     {
       "caseId": "property-gallery-upload-session",
-      "description": "Hotel owner requests public property gallery media; upload stays private until domain approval.",
+      "description": "An authorized hotel owner uploads public property gallery media to the canonical property.",
       "request": {
         "path": "/api/media/upload-sessions",
         "method": "POST",
@@ -40,7 +40,7 @@
       "expected": {
         "status": 201,
         "requestedVisibility": "public",
-        "effectiveVisibility": "private",
+        "effectiveVisibility": "public",
         "finalizeStatus": 200,
         "mediaObjectCount": 1,
         "mediaObject": {
@@ -48,8 +48,8 @@
           "resourceProduct": "hotel_catalog",
           "resourceType": "property",
           "resourceId": "property_alpenrose",
-          "approvalStatus": "pending_domain_approval",
-          "lifecycleStatus": "staged"
+          "approvalStatus": "approved",
+          "lifecycleStatus": "active"
         },
         "requiredVariants": ["original_safe", "large", "thumbnail", "blur_preview"],
         "sideEffects": ["variant_generation", "audit_event"]
@@ -105,7 +105,7 @@
       "expected": {
         "status": 201,
         "requestedVisibility": "public",
-        "effectiveVisibility": "private",
+        "effectiveVisibility": "public",
         "finalizeStatus": 200,
         "mediaObjectCount": 2,
         "requiredVariants": ["original_safe", "large", "thumbnail", "blur_preview"],
@@ -178,6 +178,7 @@
         "method": "POST",
         "body": {
           "purpose": "property.hero_image",
+          "visibility": "public",
           "resource": {
             "product": "booking",
             "resourceType": "booking_hotel",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button, Textarea } from "@/components/ui";
 import { MONTHS_ABBR } from "@/lib/constants";
 import { XMarkIcon, CheckIcon } from "@heroicons/react/24/outline";
@@ -10,51 +10,36 @@ import { PlatformDeliverablesSelector } from "./PlatformDeliverablesSelector";
 import { DateMonthPicker } from "./DateMonthPicker";
 import type { PlatformDeliverable } from "./types";
 import type { CollaborationOffering } from "@/lib/types";
+import {
+  resolveSubmissionIdempotencyState,
+  type SubmissionIdempotencyState,
+} from "@/lib/utils/submissionIdempotency";
+import { createCollaborationWriteIdempotencyKey } from "@/services/api/collaborations";
 
 interface CollaborationApplicationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (data: CollaborationApplicationData) => void;
-  hotelName?: string;
-  availableMonths?: string[];
-  requiredPlatforms?: string[];
-  creatorPlatforms?: string[];
-  maxNights?: number;
-  minNights?: number;
+  listingId: string;
+  onSubmit: (
+    data: CollaborationApplicationData,
+    options: CollaborationApplicationSubmissionOptions,
+  ) => Promise<void>;
   compensationOptions?: CollaborationOffering[];
+  creatorPlatforms?: string[];
 }
 
 export interface CollaborationApplicationData {
+  compensationOptionId: string;
   whyGreatFit: string;
   travelDateFrom?: string;
   travelDateTo?: string;
   preferredMonths: string[];
   platformDeliverables: PlatformDeliverable[];
   consent: boolean;
-  compensationOption?: CollaborationOffering;
 }
 
-function describeCompensation(option: CollaborationOffering): string {
-  switch (option.collaboration_type) {
-    case "Free Stay":
-      return option.free_stay_min_nights && option.free_stay_max_nights
-        ? `${option.free_stay_min_nights}–${option.free_stay_max_nights} nights`
-        : option.free_stay_max_nights
-          ? `Up to ${option.free_stay_max_nights} nights`
-          : "Complimentary stay";
-    case "Paid":
-      return option.paid_max_amount != null
-        ? `Up to ${option.paid_max_amount} ${option.currency ?? "USD"}`
-        : "Paid collaboration";
-    case "Discount":
-      return option.discount_percentage != null
-        ? `${option.discount_percentage}% discount`
-        : "Discounted stay";
-    case "Affiliate":
-      return option.commission_percentage != null
-        ? `${option.commission_percentage}% commission`
-        : "Affiliate commission";
-  }
+export interface CollaborationApplicationSubmissionOptions {
+  idempotencyKey: string;
 }
 
 const getMonthsInRange = (fromStr: string, toStr: string): string[] => {
@@ -76,26 +61,48 @@ const getMonthsInRange = (fromStr: string, toStr: string): string[] => {
   return Array.from(new Set(months));
 };
 
+function formatCompensationOption(option: CollaborationOffering): string {
+  switch (option.collaboration_type) {
+    case "Free Stay":
+      return option.free_stay_max_nights
+        ? `Up to ${option.free_stay_max_nights} night${option.free_stay_max_nights === 1 ? "" : "s"}`
+        : "Complimentary stay";
+    case "Paid":
+      return option.paid_max_amount
+        ? `Up to ${option.paid_max_amount} ${option.currency ?? ""}`.trim()
+        : "Paid collaboration";
+    case "Discount":
+      return option.discount_percentage
+        ? `${option.discount_percentage}% stay discount`
+        : "Discounted stay";
+    case "Affiliate":
+      return option.commission_percentage
+        ? `${option.commission_percentage}% commission`
+        : "Affiliate commission";
+  }
+}
+
 export function CollaborationApplicationModal({
   isOpen,
   onClose,
+  listingId,
   onSubmit,
-  hotelName,
-  availableMonths = [],
-  requiredPlatforms = [],
-  creatorPlatforms = [],
-  maxNights,
-  minNights,
   compensationOptions = [],
+  creatorPlatforms = [],
 }: CollaborationApplicationModalProps) {
+  const defaultCompensationOptionId =
+    compensationOptions.length === 1 ? compensationOptions[0]?.id || "" : "";
+  const [selectedCompensationOptionId, setSelectedCompensationOptionId] = useState(
+    defaultCompensationOptionId,
+  );
   const [whyGreatFit, setWhyGreatFit] = useState("");
   const [travelDateFrom, setTravelDateFrom] = useState("");
   const [travelDateTo, setTravelDateTo] = useState("");
   const [preferredMonths, setPreferredMonths] = useState<string[]>([]);
-  const [consent, setConsent] = useState(true);
+  const [consent, setConsent] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [selectedCompensationOptionId, setSelectedCompensationOptionId] = useState("");
+  const submissionRef = useRef<SubmissionIdempotencyState | null>(null);
 
   const {
     platformDeliverables,
@@ -112,23 +119,25 @@ export function CollaborationApplicationModal({
 
   if (!isOpen) return null;
 
-  const selectedCompensationOption =
-    compensationOptions.length === 1
-      ? compensationOptions[0]
-      : compensationOptions.find((option) => option.id === selectedCompensationOptionId);
-  const activeAvailableMonths = selectedCompensationOption
-    ? selectedCompensationOption.availability_months
-    : availableMonths;
-  const activeRequiredPlatforms = selectedCompensationOption
-    ? selectedCompensationOption.platforms
-    : requiredPlatforms;
-  const activeMaxNights = selectedCompensationOption
+  const selectedCompensationOption = compensationOptions.find(
+    (option) => option.id === selectedCompensationOptionId,
+  );
+  const fallbackStayOption = compensationOptions.find(
+    (option) => option.free_stay_min_nights || option.free_stay_max_nights,
+  );
+  const availableMonths =
+    selectedCompensationOption?.availability_months ??
+    Array.from(new Set(compensationOptions.flatMap((option) => option.availability_months)));
+  const requiredPlatforms =
+    selectedCompensationOption?.platforms ??
+    Array.from(new Set(compensationOptions.flatMap((option) => option.platforms)));
+  const maxNights = selectedCompensationOption
     ? (selectedCompensationOption.free_stay_max_nights ?? undefined)
-    : maxNights;
-  const activeMinNights = selectedCompensationOption
+    : (fallbackStayOption?.free_stay_max_nights ?? undefined);
+  const minNights = selectedCompensationOption
     ? (selectedCompensationOption.free_stay_min_nights ?? undefined)
-    : minNights;
-  const normalizedAvailable = activeAvailableMonths.map((m) => getMonthAbbr(m));
+    : (fallbackStayOption?.free_stay_min_nights ?? undefined);
+  const normalizedAvailable = availableMonths.map((m) => getMonthAbbr(m));
 
   const handleMonthToggle = (month: string) => {
     setErrorMessage(null);
@@ -138,21 +147,34 @@ export function CollaborationApplicationModal({
   };
 
   const isMonthAvailable = (month: string): boolean => {
-    return activeAvailableMonths.length === 0 || normalizedAvailable.includes(month);
+    return availableMonths.length === 0 || normalizedAvailable.includes(month);
   };
 
   const filterPlatforms = (p: string): boolean => {
+    if (!selectedCompensationOption) return false;
     if (p === "Content Package") return true;
     const platformMatch = (list: string[], key: string) =>
       list.includes(key) ||
       list.some((item) => item.toLowerCase() === key.toLowerCase()) ||
       (key === "YouTube" && list.includes("YT"));
-    const isHotelDesired = platformMatch(activeRequiredPlatforms, p);
+    const isHotelDesired = platformMatch(requiredPlatforms, p);
     const isCreatorActive = creatorPlatforms.length === 0 || platformMatch(creatorPlatforms, p);
     return isHotelDesired && isCreatorActive;
   };
 
-  const handleSubmit = () => {
+  const resetForm = () => {
+    setWhyGreatFit("");
+    setTravelDateFrom("");
+    setTravelDateTo("");
+    setPreferredMonths([]);
+    setSelectedCompensationOptionId(defaultCompensationOptionId);
+    resetDeliverables();
+    setConsent(false);
+    setErrorMessage(null);
+    submissionRef.current = null;
+  };
+
+  const handleSubmit = async () => {
     setErrorMessage(null);
 
     const validPlatformDeliverables = platformDeliverables.filter(
@@ -160,10 +182,10 @@ export function CollaborationApplicationModal({
     );
 
     if (
+      !selectedCompensationOptionId ||
       !whyGreatFit.trim() ||
       validPlatformDeliverables.length === 0 ||
-      !consent ||
-      (compensationOptions.length > 0 && !selectedCompensationOption)
+      !consent
     ) {
       return;
     }
@@ -174,15 +196,15 @@ export function CollaborationApplicationModal({
       const to = new Date(travelDateTo);
       if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
         const nights = Math.round((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
-        if (activeMaxNights && nights > activeMaxNights) {
+        if (maxNights && nights > maxNights) {
           setErrorMessage(
-            `This hotel offers a maximum of ${activeMaxNights} night${activeMaxNights === 1 ? "" : "s"}. Please shorten your stay.`,
+            `This hotel offers a maximum of ${maxNights} night${maxNights === 1 ? "" : "s"}. Please shorten your stay.`,
           );
           return;
         }
-        if (activeMinNights && nights > 0 && nights < activeMinNights) {
+        if (minNights && nights > 0 && nights < minNights) {
           setErrorMessage(
-            `This hotel requires a minimum of ${activeMinNights} night${activeMinNights === 1 ? "" : "s"}. Please extend your stay.`,
+            `This hotel requires a minimum of ${minNights} night${minNights === 1 ? "" : "s"}. Please extend your stay.`,
           );
           return;
         }
@@ -190,7 +212,7 @@ export function CollaborationApplicationModal({
     }
 
     // Availability Validation
-    if (activeAvailableMonths.length > 0 && activeAvailableMonths.length < 12) {
+    if (availableMonths.length > 0 && availableMonths.length < 12) {
       let requestedMonths: string[] = [];
 
       if (travelDateFrom && travelDateTo) {
@@ -215,39 +237,40 @@ export function CollaborationApplicationModal({
       }
     }
 
+    const application = {
+      compensationOptionId: selectedCompensationOptionId,
+      whyGreatFit,
+      travelDateFrom: travelDateFrom || undefined,
+      travelDateTo: travelDateTo || undefined,
+      preferredMonths,
+      platformDeliverables: validPlatformDeliverables,
+      consent,
+    } satisfies CollaborationApplicationData;
+    const submission = resolveSubmissionIdempotencyState(
+      submissionRef.current,
+      JSON.stringify(application),
+      ["application"],
+      () => createCollaborationWriteIdempotencyKey("create", listingId),
+    );
+    submissionRef.current = submission;
+
     setIsSubmitting(true);
-    setTimeout(() => {
-      onSubmit({
-        whyGreatFit,
-        travelDateFrom: travelDateFrom || undefined,
-        travelDateTo: travelDateTo || undefined,
-        preferredMonths,
-        platformDeliverables: validPlatformDeliverables,
-        consent,
-        compensationOption: selectedCompensationOption,
-      });
-      // Reset form
-      setWhyGreatFit("");
-      setTravelDateFrom("");
-      setTravelDateTo("");
-      setPreferredMonths([]);
-      setSelectedCompensationOptionId("");
-      resetDeliverables();
-      setConsent(true);
-      setIsSubmitting(false);
+    try {
+      await onSubmit(application, { idempotencyKey: submission.keys.application });
+      resetForm();
       onClose();
-    }, 500);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Failed to submit application. Please try again.",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleCancel = () => {
-    setWhyGreatFit("");
-    setTravelDateFrom("");
-    setTravelDateTo("");
-    setPreferredMonths([]);
-    setSelectedCompensationOptionId("");
-    resetDeliverables();
-    setConsent(true);
-    setErrorMessage(null);
+    if (isSubmitting) return;
+    resetForm();
     onClose();
   };
 
@@ -301,6 +324,7 @@ export function CollaborationApplicationModal({
             />
           </div>
 
+          {/* Compensation option */}
           {compensationOptions.length > 1 && (
             <fieldset>
               <legend className="mb-3 text-base font-medium text-gray-900">
@@ -335,8 +359,13 @@ export function CollaborationApplicationModal({
                       {option.collaboration_type}
                     </span>
                     <span className="mt-1 block text-sm text-gray-600">
-                      {describeCompensation(option)}
+                      {formatCompensationOption(option)}
                     </span>
+                    {option.terms_summary && (
+                      <span className="mt-1 block text-sm text-gray-600">
+                        {option.terms_summary}
+                      </span>
+                    )}
                   </label>
                 ))}
               </div>
@@ -344,12 +373,12 @@ export function CollaborationApplicationModal({
           )}
 
           {/* Stay length hint */}
-          {(activeMaxNights || activeMinNights) && (
+          {(maxNights || minNights) && (
             <div className="px-4 py-3 rounded-xl bg-blue-50 border border-blue-100 text-sm text-blue-900">
               Stay length offered:{" "}
-              {activeMinNights && activeMaxNights && activeMinNights !== activeMaxNights
-                ? `${activeMinNights}–${activeMaxNights} nights`
-                : `up to ${activeMaxNights || activeMinNights} night${(activeMaxNights || activeMinNights) === 1 ? "" : "s"}`}
+              {minNights && maxNights && minNights !== maxNights
+                ? `${minNights}–${maxNights} nights`
+                : `up to ${maxNights || minNights} night${(maxNights || minNights) === 1 ? "" : "s"}`}
             </div>
           )}
 
@@ -422,10 +451,10 @@ export function CollaborationApplicationModal({
               onClick={handleSubmit}
               isLoading={isSubmitting}
               disabled={
+                !selectedCompensationOptionId ||
                 !whyGreatFit.trim() ||
                 platformDeliverables.filter((pd) => pd.deliverables.length > 0).length === 0 ||
-                !consent ||
-                (compensationOptions.length > 0 && !selectedCompensationOption)
+                !consent
               }
             >
               Submit Application

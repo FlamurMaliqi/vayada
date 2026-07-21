@@ -131,6 +131,7 @@ export type MarketplaceCollaborationMessage = {
   senderUserId: string | null;
   senderName: string | null;
   senderAvatarUrl: string | null;
+  senderSide: MarketplaceCollaborationSide | null;
   content: string;
   contentType: "text" | "image" | "system";
   metadata: Record<string, unknown> | null;
@@ -227,17 +228,32 @@ export type MarketplaceCollaborationDeliverableInput = {
   quantity: number;
 };
 
+type MarketplaceCollaborationCreateBaseRequest = Omit<
+  MarketplaceCollaborationLifecycleWriteBaseRequest,
+  "side"
+> & {
+  side?: never;
+  initiatorSide?: never;
+  offerId: string;
+  terms?: MarketplaceCollaborationTermsInput;
+  deliverables?: MarketplaceCollaborationDeliverableInput[];
+};
+
 export type CreateMarketplaceCollaborationLifecycleWriteRequest =
-  MarketplaceCollaborationLifecycleWriteBaseRequest & {
-    offerId: string;
-    creatorId?: string;
-    initiatorSide: MarketplaceCollaborationSide;
-    whyGreatFit?: string;
-    consent?: true;
-    message?: string;
-    terms?: MarketplaceCollaborationTermsInput;
-    deliverables?: MarketplaceCollaborationDeliverableInput[];
-  };
+  | (MarketplaceCollaborationCreateBaseRequest & {
+      compensationOptionId: string;
+      whyGreatFit: string;
+      consent: true;
+      creatorId?: never;
+      message?: never;
+    })
+  | (MarketplaceCollaborationCreateBaseRequest & {
+      creatorId: string;
+      message?: string;
+      compensationOptionId?: never;
+      whyGreatFit?: never;
+      consent?: never;
+    });
 
 export type RespondToMarketplaceCollaborationLifecycleWriteRequest =
   MarketplaceCollaborationLifecycleWriteBaseRequest & {
@@ -282,6 +298,8 @@ export const marketplaceCollaborationEndpoints = {
     input: { side?: MarketplaceCollaborationSide; before?: string },
   ) =>
     `/api/marketplace/collaborations/${encodeURIComponent(collaborationId)}/messages${toMessageQuery(input)}`,
+  markMessagesRead: (collaborationId: string) =>
+    `/api/marketplace/collaborations/${encodeURIComponent(collaborationId)}/read`,
   create: () => "/api/marketplace/collaborations",
   respond: (collaborationId: string) =>
     `/api/marketplace/collaborations/${encodeURIComponent(collaborationId)}/respond`,
@@ -330,6 +348,24 @@ export async function getMarketplaceMessages(
 ): Promise<MarketplaceCollaborationMessagesResponse> {
   return vayadaApiClient.get<MarketplaceCollaborationMessagesResponse>(
     marketplaceCollaborationEndpoints.messages(collaborationId, input),
+  );
+}
+
+export async function markMarketplaceMessagesRead(collaborationId: string): Promise<void> {
+  return vayadaApiClient.post<void>(
+    marketplaceCollaborationEndpoints.markMessagesRead(collaborationId),
+  );
+}
+
+export async function sendMarketplaceMessage(
+  collaborationId: string,
+  content: string,
+  contentType: "text" | "image" = "text",
+  mediaObjectId?: string,
+): Promise<MarketplaceCollaborationMessage> {
+  return vayadaApiClient.post<MarketplaceCollaborationMessage>(
+    marketplaceCollaborationEndpoints.messages(collaborationId, {}),
+    { content, contentType, ...(mediaObjectId ? { mediaObjectId } : {}) },
   );
 }
 

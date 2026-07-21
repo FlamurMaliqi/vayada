@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 
 import type { MarketplaceOfferIdentityAccessCommandPort } from "../platform/marketplaceOfferIdentityAccess.js";
+import type { MarketplaceOfferMediaPromotionPort } from "../platform/marketplaceOfferMediaPromotion.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
@@ -20,7 +21,16 @@ export const MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT = {
 
 export const MARKETPLACE_ADMIN_OFFERS_CONTRACT = {
   methods: ["POST", "PUT", "DELETE"],
-  path: "/api/marketplace/admin/users/:hotelUserId/offers[/:offerId]",
+  path: "/api/marketplace/admin/users/:hotelUserId/offers[/:offerId][/verify]",
+  owner: "marketplace",
+  permission: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.permission,
+  fallback: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.fallback,
+  doc: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.doc,
+} as const;
+
+export const MARKETPLACE_ADMIN_HOTEL_REVIEW_CONTRACT = {
+  method: "GET",
+  path: "/api/marketplace/admin/users/:hotelUserId/review",
   owner: "marketplace",
   permission: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.permission,
   fallback: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.fallback,
@@ -259,7 +269,27 @@ export type MarketplaceAdminOffer = {
 
 export type MarketplaceAdminOfferMedia = {
   mediaObjectId: string | null;
-  url: string;
+  url: string | null;
+  approvalStatus: "pending_domain_approval" | "approved";
+  lifecycleStatus: "staged" | "active";
+};
+
+export type MarketplaceAdminHotelReviewProfile = {
+  propertyId: string;
+  displayName: string;
+  location: string;
+  hostSummary: string | null;
+  profileStatus: "pending" | "verified" | "rejected" | "suspended" | "archived";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MarketplaceAdminHotelReviewResponse = {
+  contractVersion: typeof MARKETPLACE_ADMIN_CONTRACT_VERSION;
+  authorizationMode: MarketplaceAdminAuthorizationMode;
+  userId: string;
+  profile: MarketplaceAdminHotelReviewProfile | null;
+  offers: MarketplaceAdminOffer[];
 };
 
 export type MarketplaceAdminDeleteOfferResponse = {
@@ -304,6 +334,10 @@ export type MarketplaceAdminRepository = {
     createdByUserId: string;
   }): Promise<MarketplaceAdminInviteCode>;
   revokeInviteCode(inviteCodeId: string): Promise<boolean>;
+  readHotelReviewForUser(input: {
+    hotelUserId: string;
+    authorizationMode: MarketplaceAdminAuthorizationMode;
+  }): Promise<MarketplaceAdminHotelReviewResponse>;
   createOfferForUser(input: {
     hotelUserId: string;
     request: MarketplaceAdminCreateOfferRequest;
@@ -313,6 +347,11 @@ export type MarketplaceAdminRepository = {
     hotelUserId: string;
     offerId: string;
     request: MarketplaceAdminUpdateOfferRequest;
+    authorizationMode: MarketplaceAdminAuthorizationMode;
+  }): Promise<MarketplaceAdminOffer | null>;
+  verifyOfferForUser(input: {
+    hotelUserId: string;
+    offerId: string;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminOffer | null>;
   deleteOfferForUser(input: {
@@ -341,6 +380,7 @@ type MarketplaceAdminPool = {
 export function createPgMarketplaceAdminRepository(config: {
   connectionString: string;
   identityAccess: MarketplaceOfferIdentityAccessCommandPort;
+  offerMediaPromotion?: MarketplaceOfferMediaPromotionPort;
   max?: number;
   pool?: MarketplaceAdminPool;
 }): MarketplaceAdminRepository {
@@ -581,6 +621,44 @@ export function createPgMarketplaceAdminRepository(config: {
       );
       return Boolean(result.rows[0]);
     },
+    async readHotelReviewForUser(input) {
+      const profileResult = await pool.query<AdminHotelReviewRow>(ADMIN_HOTEL_REVIEW_SELECT_SQL, [
+        input.hotelUserId,
+      ]);
+      const profile = profileResult.rows[0];
+      if (!profile) {
+        return {
+          contractVersion: MARKETPLACE_ADMIN_CONTRACT_VERSION,
+          authorizationMode: input.authorizationMode,
+          userId: input.hotelUserId,
+          profile: null,
+          offers: [],
+        };
+      }
+      const offerResult = await pool.query<OfferRow>(
+        `${OFFER_SELECT_SQL}
+         WHERE offer.property_id::text = $1
+           AND offer.organization_id::text = $2
+           AND offer.offer_status <> 'archived'
+         ORDER BY offer.created_at DESC, offer.id ASC`,
+        [profile.propertyId, profile.organizationId],
+      );
+      return {
+        contractVersion: MARKETPLACE_ADMIN_CONTRACT_VERSION,
+        authorizationMode: input.authorizationMode,
+        userId: input.hotelUserId,
+        profile: {
+          propertyId: profile.propertyId,
+          displayName: profile.displayName,
+          location: profile.location ?? "",
+          hostSummary: profile.hostSummary,
+          profileStatus: profile.profileStatus,
+          createdAt: toIsoString(profile.createdAt),
+          updatedAt: toIsoString(profile.updatedAt),
+        },
+        offers: offerResult.rows.map((row) => mapOfferRow(row, input.authorizationMode)),
+      };
+    },
     async createOfferForUser(input) {
       return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
@@ -659,6 +737,54 @@ export function createPgMarketplaceAdminRepository(config: {
         return readOffer(client, target.offerResourceId, input.authorizationMode);
       });
     },
+    async verifyOfferForUser(input) {
+      const profile = await resolveAdminHotelProfile(pool, input.hotelUserId);
+      if (!profile || !["pending", "verified"].includes(profile.profileStatus)) return null;
+      const target = await resolveOfferForProfile(pool, profile, input.offerId);
+      if (!target || !["pending", "verified"].includes(target.offerStatus)) return null;
+      if (!(await hasEligibleOfferMedia(pool, profile.organizationId, target.offerResourceId))) {
+        throw Object.assign(
+          new Error(
+            "Marketplace offer verification requires at least one pending or approved photo",
+          ),
+          { statusCode: 422 },
+        );
+      }
+      if (!config.offerMediaPromotion) {
+        throw Object.assign(new Error("Marketplace offer media approval is not configured"), {
+          statusCode: 503,
+        });
+      }
+      await config.offerMediaPromotion.promoteOfferMedia({
+        organizationId: profile.organizationId,
+        offerId: target.offerResourceId,
+      });
+      return writeOffer(pool, async (client) => {
+        const verifiedProfile = await client.query<{ propertyId: string }>(
+          `UPDATE marketplace.marketplace_hotel_profiles
+           SET marketplace_profile_status = 'verified', updated_at = now()
+           WHERE property_id = $1::uuid
+             AND organization_id = $2::uuid
+             AND marketplace_profile_status IN ('pending', 'verified')
+           RETURNING property_id::text AS "propertyId"`,
+          [profile.propertyId, profile.organizationId],
+        );
+        if (!verifiedProfile.rows[0]) return null;
+        const current = await resolveOfferForProfile(client, profile, target.offerResourceId);
+        if (!current || !["pending", "verified"].includes(current.offerStatus)) return null;
+        const verified = await client.query<{ id: string }>(
+          `UPDATE marketplace.marketplace_offers
+           SET offer_status = 'verified', updated_at = now()
+           WHERE id = $1::uuid
+             AND offer_status IN ('pending', 'verified')
+           RETURNING id::text AS id`,
+          [current.offerResourceId],
+        );
+        if (!verified.rows[0]) return null;
+        await syncOfferReadModel(client, current.offerResourceId, "initialize");
+        return readOffer(client, current.offerResourceId, input.authorizationMode);
+      });
+    },
     async deleteOfferForUser(input) {
       return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
@@ -708,7 +834,7 @@ export function createPgMarketplaceAdminRepository(config: {
       return result.rows[0]?.is_superadmin === true;
     },
     async close() {
-      await pool.end();
+      await Promise.all([pool.end(), config.offerMediaPromotion?.close?.()]);
     },
   };
 }
@@ -778,6 +904,14 @@ export async function registerMarketplaceAdminRoutes(
       return reply.status(204).send();
     },
   );
+
+  app.get<{ Params: HotelUserParams }>("/admin/users/:hotelUserId/review", async (request) => {
+    const access = await requireMarketplaceAdminAccess(request, options);
+    return repository.readHotelReviewForUser({
+      hotelUserId: request.params.hotelUserId,
+      authorizationMode: access.authorizationMode,
+    });
+  });
 
   app.post<{ Params: CollaborationParams; Body: RespondBody }>(
     "/admin/collaborations/:collaborationId/respond",
@@ -873,6 +1007,20 @@ export async function registerMarketplaceAdminRoutes(
         hotelUserId: request.params.hotelUserId,
         offerId: request.params.offerId,
         request: request.body,
+        authorizationMode: access.authorizationMode,
+      });
+      if (!result) return sendAdminError(reply, 404, "offer_not_found");
+      return result;
+    },
+  );
+
+  app.post<{ Params: OfferParams }>(
+    "/admin/users/:hotelUserId/offers/:offerId/verify",
+    async (request, reply) => {
+      const access = await requireMarketplaceAdminAccess(request, options);
+      const result = await repository.verifyOfferForUser({
+        hotelUserId: request.params.hotelUserId,
+        offerId: request.params.offerId,
         authorizationMode: access.authorizationMode,
       });
       if (!result) return sendAdminError(reply, 404, "offer_not_found");
@@ -1389,6 +1537,15 @@ async function readLifecycleWrite(
 type AdminHotelProfile = {
   propertyId: string;
   organizationId: string;
+  profileStatus: "pending" | "verified" | "rejected" | "suspended" | "archived";
+};
+
+type AdminHotelReviewRow = AdminHotelProfile & {
+  displayName: string;
+  location: string | null;
+  hostSummary: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 };
 
 type AdminCreatorProfile = {
@@ -1427,7 +1584,8 @@ async function resolveAdminHotelProfile(
   const result = await client.query<AdminHotelProfile>(
     `SELECT
        profile.property_id::text AS "propertyId",
-       profile.organization_id::text AS "organizationId"
+       profile.organization_id::text AS "organizationId",
+       profile.marketplace_profile_status AS "profileStatus"
      FROM marketplace.marketplace_hotel_profiles profile
      JOIN identity.organization_memberships membership
        ON membership.organization_id = profile.organization_id
@@ -1442,6 +1600,72 @@ async function resolveAdminHotelProfile(
     [hotelUserId],
   );
   return result.rows[0] ?? null;
+}
+
+const ADMIN_HOTEL_REVIEW_SELECT_SQL = `
+  SELECT
+    profile.property_id::text AS "propertyId",
+    profile.organization_id::text AS "organizationId",
+    profile.marketplace_profile_status AS "profileStatus",
+    COALESCE(NULLIF(public_profile.display_name, ''), property.display_name) AS "displayName",
+    COALESCE(
+      NULLIF(public_profile.location->>'rawMarketplaceLocation', ''),
+      NULLIF(concat_ws(
+        ', ',
+        NULLIF(public_profile.location->>'city', ''),
+        NULLIF(public_profile.location->>'countryCode', '')
+      ), ''),
+      NULLIF(location.raw_marketplace_location, ''),
+      NULLIF(concat_ws(', ', NULLIF(location.city, ''), NULLIF(location.country_code::text, '')), '')
+    ) AS location,
+    profile.host_summary AS "hostSummary",
+    profile.created_at AS "createdAt",
+    profile.updated_at AS "updatedAt"
+  FROM marketplace.marketplace_hotel_profiles profile
+  JOIN identity.organization_memberships membership
+    ON membership.organization_id = profile.organization_id
+   AND membership.user_id::text = $1
+   AND membership.status = 'active'
+  JOIN identity.organizations organization
+    ON organization.id = membership.organization_id
+   AND organization.kind = 'hotel_group'
+   AND organization.status = 'active'
+  JOIN hotel_catalog.properties property ON property.id = profile.property_id
+  LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
+    ON public_profile.property_id = profile.property_id
+  LEFT JOIN hotel_catalog.property_locations location
+    ON location.property_id = profile.property_id
+  ORDER BY profile.updated_at DESC, profile.property_id ASC
+  LIMIT 1
+`;
+
+async function hasEligibleOfferMedia(
+  client: Pick<MarketplaceAdminPool, "query">,
+  organizationId: string,
+  offerId: string,
+): Promise<boolean> {
+  const result = await client.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM platform.media_objects media
+       WHERE media.owner_organization_id = $1::uuid
+         AND media.resource_product = 'marketplace'
+         AND media.resource_type = 'marketplace_offer'
+         AND media.resource_id = $2
+         AND media.purpose = 'marketplace.offer.media'
+         AND (
+           (media.visibility = 'private'
+             AND media.public_approved = FALSE
+             AND media.lifecycle_status = 'staged')
+           OR
+           (media.visibility = 'public'
+             AND media.public_approved = TRUE
+             AND media.lifecycle_status = 'active')
+         )
+     ) AS exists`,
+    [organizationId, offerId],
+  );
+  return result.rows[0]?.exists === true;
 }
 
 async function replaceCreatorPlatforms(
@@ -1493,14 +1717,20 @@ async function resolveOfferForProfile(
   client: Pick<MarketplaceAdminPool, "query">,
   profile: AdminHotelProfile,
   offerId: string,
-): Promise<{ offerResourceId: string; title: string } | null> {
+): Promise<{
+  offerResourceId: string;
+  title: string;
+  offerStatus: MarketplaceAdminOffer["offerStatus"];
+} | null> {
   const result = await client.query<{
     offerResourceId: string;
     title: string;
+    offerStatus: MarketplaceAdminOffer["offerStatus"];
   }>(
     `SELECT
        id::text AS "offerResourceId",
-       title
+       title,
+       offer_status AS "offerStatus"
      FROM marketplace.marketplace_offers
      WHERE property_id::text = $1
        AND organization_id::text = $2
@@ -1643,14 +1873,22 @@ function offerMediaLateralSql(publicOnly: boolean): string {
       jsonb_agg(
         jsonb_build_object(
           'mediaObjectId', item.id::text,
-          'url', item.url
+          'url', item.url,
+          'approvalStatus', CASE
+            WHEN item.public_approved THEN 'approved'
+            ELSE 'pending_domain_approval'
+          END,
+          'lifecycleStatus', item.lifecycle_status
         ) ORDER BY item.created_at, item.id
       ) AS items,
-      array_agg(item.url ORDER BY item.created_at, item.id) AS urls
+      array_agg(item.url ORDER BY item.created_at, item.id)
+        FILTER (WHERE item.url IS NOT NULL) AS urls
     FROM (
       SELECT
         media_object.id,
         media_object.created_at,
+        media_object.public_approved,
+        media_object.lifecycle_status,
         COALESCE(
           (
             SELECT variant.public_cdn_url
@@ -1681,7 +1919,6 @@ function offerMediaLateralSql(publicOnly: boolean): string {
         AND media_object.purpose = 'marketplace.offer.media'
         ${visibilityFilter}
     ) item
-    WHERE item.url IS NOT NULL
   ) offer_media ON TRUE
 `;
 }
@@ -1726,11 +1963,26 @@ export async function syncOfferReadModel(
          WHEN $2 = 'preserve' AND current_projection.visibility_status IS NOT NULL
            THEN current_projection.visibility_status
          WHEN offer.offer_status = 'verified'
-          AND COALESCE(public_profile.profile_status, property.profile_status) = 'complete'
+          AND marketplace_profile.marketplace_profile_status = 'verified'
+          AND COALESCE(cardinality(offer_media.urls), 0) > 0
+          AND NULLIF(btrim(COALESCE(public_profile.display_name, property.display_name)), '')
+            IS NOT NULL
+          AND (
+            NULLIF(public_profile.location->>'rawMarketplaceLocation', '') IS NOT NULL
+            OR NULLIF(public_profile.location->>'city', '') IS NOT NULL
+            OR NULLIF(public_profile.location->>'countryCode', '') IS NOT NULL
+            OR NULLIF(property_location.raw_marketplace_location, '') IS NOT NULL
+            OR NULLIF(property_location.city, '') IS NOT NULL
+            OR NULLIF(property_location.country_code::text, '') IS NOT NULL
+          )
            THEN 'public'
          ELSE 'private'
        END,
-       COALESCE(public_profile.location, '{}'::jsonb),
+       jsonb_strip_nulls(jsonb_build_object(
+         'rawMarketplaceLocation', property_location.raw_marketplace_location,
+         'city', property_location.city,
+         'countryCode', property_location.country_code
+       )) || COALESCE(public_profile.location, '{}'::jsonb),
        COALESCE(offer_media.urls, offer.image_urls, '{}'::text[]),
        COALESCE(compensation.items, '[]'::jsonb),
        COALESCE(requirements.item, '{}'::jsonb),
@@ -1738,10 +1990,15 @@ export async function syncOfferReadModel(
        now()
      FROM marketplace.marketplace_offers offer
      JOIN hotel_catalog.properties property ON property.id = offer.property_id
+     JOIN marketplace.marketplace_hotel_profiles marketplace_profile
+       ON marketplace_profile.property_id = offer.property_id
+      AND marketplace_profile.organization_id = offer.organization_id
      LEFT JOIN marketplace.marketplace_offer_read_model current_projection
        ON current_projection.offer_id = offer.id
      LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
        ON public_profile.property_id = offer.property_id
+     LEFT JOIN hotel_catalog.property_locations property_location
+       ON property_location.property_id = offer.property_id
      ${PUBLIC_OFFER_MEDIA_LATERAL_SQL}
      LEFT JOIN LATERAL (
        SELECT slug.slug
@@ -1926,8 +2183,19 @@ function toOfferMedia(value: unknown): MarketplaceAdminOfferMedia[] {
   return value.flatMap((item) => {
     if (!isRecord(item)) return [];
     const url = readString(item.url);
-    if (!url) return [];
-    return [{ mediaObjectId: readString(item.mediaObjectId), url }];
+    const mediaObjectId = readString(item.mediaObjectId);
+    if (!mediaObjectId && !url) return [];
+    return [
+      {
+        mediaObjectId,
+        url,
+        approvalStatus:
+          item.approvalStatus === "pending_domain_approval"
+            ? "pending_domain_approval"
+            : "approved",
+        lifecycleStatus: item.lifecycleStatus === "staged" ? "staged" : "active",
+      },
+    ];
   });
 }
 

@@ -81,6 +81,11 @@
           "oceanView": ["room_101"],
           "spa_access": ["room_102"]
         },
+        "heroImageUrl": null,
+        "heroHeading": null,
+        "heroSubtext": null,
+        "primaryColor": "#0F766E",
+        "fontPairing": "modern-minimalist",
         "sourceFreshness": {
           "booking_hotels": {
             "status": "fresh",

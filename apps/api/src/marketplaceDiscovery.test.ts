@@ -8,6 +8,7 @@ import { loadConfig } from "./config.js";
 import {
   createPgMarketplaceDiscoveryReadRepository,
   findForbiddenMarketplaceDiscoveryKeys,
+  toMarketplaceLocation,
   type MarketplaceCreatorPage,
   type MarketplaceCreatorReadModel,
   type MarketplaceDiscoveryError,
@@ -274,6 +275,75 @@ describe("marketplace discovery offers route", () => {
     ]) {
       expect(raw).not.toContain(forbidden);
     }
+  });
+
+  it("preserves the canonical fields used by Marketplace discovery filters", async () => {
+    const server = await buildDiscoveryApp({
+      offers: [
+        offerSeed({
+          hotelAccommodationType: "boutique_hotel",
+          compensationOptions: [
+            {
+              compensationOptionId: "paid-option",
+              compensationType: "paid",
+              availabilityMonths: ["July"],
+              platforms: ["instagram"],
+              freeStayMinNights: null,
+              freeStayMaxNights: null,
+              paidMaxAmount: "2000.00",
+              currency: "EUR",
+              discountPercentage: null,
+              commissionPercentage: null,
+              minFollowers: null,
+              termsSummary: null,
+            },
+            {
+              compensationOptionId: "discount-option",
+              compensationType: "discount",
+              availabilityMonths: ["July"],
+              platforms: ["instagram"],
+              freeStayMinNights: null,
+              freeStayMaxNights: null,
+              paidMaxAmount: null,
+              currency: null,
+              discountPercentage: 20,
+              commissionPercentage: null,
+              minFollowers: null,
+              termsSummary: null,
+            },
+            {
+              compensationOptionId: "affiliate-option",
+              compensationType: "affiliate",
+              availabilityMonths: ["July"],
+              platforms: ["instagram"],
+              freeStayMinNights: null,
+              freeStayMaxNights: null,
+              paidMaxAmount: null,
+              currency: null,
+              discountPercentage: null,
+              commissionPercentage: 12,
+              minFollowers: null,
+              termsSummary: null,
+            },
+          ],
+        }),
+      ],
+    });
+
+    const response = await injectJson<MarketplaceOfferPage>(server, {
+      method: "GET",
+      url: "/api/marketplace/offers",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.items[0]).toMatchObject({
+      hotelAccommodationType: "boutique_hotel",
+      compensationOptions: [
+        { compensationType: "paid", paidMaxAmount: "2000.00", currency: "EUR" },
+        { compensationType: "discount", discountPercentage: 20 },
+        { compensationType: "affiliate", commissionPercentage: 12 },
+      ],
+    });
   });
 
   it("excludes non-public offers (offers-excludes-non-public)", async () => {
@@ -781,9 +851,37 @@ describe("pg marketplace discovery repository", () => {
     expect(pool.sql.join("\n")).toContain("offer.offer_status = 'verified'");
     expect(pool.sql.join("\n")).toContain('offer.id::text AS "offerId"');
     expect(pool.sql.join("\n")).toContain("marketplace.offer_compensation_options");
-    expect(pool.sql.join("\n")).toContain("property_public_profile_read_model");
+    expect(
+      pool.sql
+        .join("\n")
+        .match(/LEFT JOIN hotel_catalog\.property_public_profile_read_model property_profile/g),
+    ).toHaveLength(2);
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(property_profile.display_name, read_model.display_name, property.display_name)",
+    );
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(property_profile.canonical_slug, read_model.canonical_slug, property.public_id)",
+    );
+    expect(pool.sql.join("\n")).toContain("NULLIF(property_profile.location, '{}'::jsonb)");
     expect(pool.sql.join("\n")).toContain("platformMediaObjectId");
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(media.cover_image_url, read_model.image_urls[1])",
+    );
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(media.image_urls, read_model.image_urls, '{}')",
+    );
     expect(pool.sql.join("\n")).not.toMatch(/\bauth\b|users/i);
+  });
+
+  it("maps read-model location fallbacks when the optional public profile is absent or empty", () => {
+    expect(toMarketplaceLocation({ rawMarketplaceLocation: "Innsbruck, Austria" })).toEqual({
+      displayText: "Innsbruck, Austria",
+    });
+    expect(toMarketplaceLocation({ city: "Innsbruck", countryCode: "AT" })).toEqual({
+      displayText: "Innsbruck, AT",
+      city: "Innsbruck",
+      countryCode: "AT",
+    });
   });
 
   it("maps active creator rows with source IDs, platforms, and rounded ratings", async () => {

@@ -77,6 +77,209 @@ describe("PostgreSQL platform media repository", () => {
     ).toContain("to_char(");
   });
 
+  it("persists requested-public offer media as private and staged for approval", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "marketplace.offer.media");
+
+    expect(session).toMatchObject({
+      purpose: "marketplace.offer.media",
+      requestedVisibility: "public",
+      effectiveVisibility: "private",
+    });
+
+    const completed = await repository.completeUploadSession(completionInput(session));
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose: "marketplace.offer.media",
+      visibility: "private",
+      requestedVisibility: "public",
+      approvalStatus: "pending_domain_approval",
+      lifecycleStatus: "staged",
+      variants: [
+        expect.objectContaining({
+          visibility: "private",
+          publicCdnUrl: null,
+        }),
+      ],
+    });
+
+    const objectInsert = database.clientQueries.find(({ text }) =>
+      text.includes("INSERT INTO platform.media_objects"),
+    );
+    expect(objectInsert?.values?.[3]).toBe("private");
+    expect(objectInsert?.values?.[10]).toBe("staged");
+    expect(objectInsert?.values?.[18]).toBe(false);
+    const variantInsert = database.clientQueries.find(({ text }) =>
+      text.includes("INSERT INTO platform.media_variants"),
+    );
+    expect(variantInsert?.values?.[2]).toBe("private");
+    expect(variantInsert?.values?.[9]).toBeNull();
+
+    await expect(
+      repositoryFor(database.pool).findMediaObject(session.files[0]!.mediaId),
+    ).resolves.toMatchObject({
+      approvalStatus: "pending_domain_approval",
+      lifecycleStatus: "staged",
+    });
+  });
+
+  it("persists private collaboration attachments as active provider originals", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "marketplace.collaboration_chat.attachment");
+
+    const completed = await repository.completeUploadSession(completionInput(session));
+
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose: "marketplace.collaboration_chat.attachment",
+      visibility: "private",
+      approvalStatus: "private",
+      lifecycleStatus: "active",
+      resourceProduct: "marketplace",
+      resourceType: "collaboration",
+      variants: [
+        expect.objectContaining({
+          variantName: "provider_original",
+          visibility: "private",
+          publicCdnUrl: null,
+        }),
+      ],
+    });
+
+    const objectInsert = database.clientQueries.find(({ text }) =>
+      text.includes("INSERT INTO platform.media_objects"),
+    );
+    expect(objectInsert?.text).toContain("retained_until");
+    expect(objectInsert?.text).toContain("interval '1 hour'");
+    expect(JSON.parse(String(objectInsert?.values?.[17]))).toMatchObject({
+      requestedVisibility: "private",
+      attachmentState: "orphan",
+    });
+  });
+
+  it("resolves a chat target only when the source resource belongs to the collaboration", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{ collaborationId: "collaboration-target-001", propertyId: PROPERTY_ID }],
+    }));
+    const repository = createPgPlatformMediaRepository({
+      connectionString: "postgresql://target.test/vayada",
+      publicCdnBaseUrl: "https://cdn.example.com",
+      pool: { query, connect: vi.fn(), end: vi.fn() } as never,
+    });
+
+    await expect(
+      repository.resolveTarget({
+        request: {
+          purpose: "marketplace.collaboration_chat.attachment",
+          visibility: "private",
+          resource: {
+            product: "marketplace",
+            resourceType: "creator_profile",
+            resourceId: "creator-profile-001",
+            targetResourceId: "collaboration-source-001",
+          },
+          files: [],
+        },
+        policy: {
+          targetResourceProduct: "marketplace",
+          targetResourceType: "collaboration",
+        } as never,
+        context: {} as never,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      target: {
+        resourceProduct: "marketplace",
+        resourceType: "collaboration",
+        resourceId: "collaboration-target-001",
+        propertyId: PROPERTY_ID,
+      },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("creator_profile_id"), [
+      "collaboration-source-001",
+      "creator-profile-001",
+    ]);
+  });
+
+  it.each(["property.hero_image", "property.gallery_image"] as const)(
+    "resolves and persists requested-public %s against the canonical property",
+    async (purpose) => {
+      const database = createFakeDatabase();
+      const repository = repositoryFor(database.pool);
+      const resolved = await repository.resolveTarget({
+        request: {
+          purpose,
+          visibility: "public",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: BOOKING_HOTEL_ID,
+            propertyId: "00000000-0000-4000-8000-000000000099",
+          },
+          files: [],
+        },
+        policy: {
+          targetResourceProduct: "hotel_catalog",
+          targetResourceType: "property",
+        } as never,
+        context: {} as never,
+      });
+      expect(resolved).toEqual({
+        ok: true,
+        target: {
+          resourceProduct: "hotel_catalog",
+          resourceType: "property",
+          resourceId: PROPERTY_ID,
+          propertyId: PROPERTY_ID,
+        },
+      });
+
+      const session = await createSession(repository, purpose);
+      const completed = await repository.completeUploadSession(completionInput(session));
+      expect(completed.mediaObjects[0]).toMatchObject({
+        purpose,
+        propertyId: PROPERTY_ID,
+        resourceProduct: "hotel_catalog",
+        resourceType: "property",
+        resourceId: PROPERTY_ID,
+        visibility: "public",
+        requestedVisibility: "public",
+        approvalStatus: "approved",
+        lifecycleStatus: "active",
+        variants: [
+          expect.objectContaining({
+            visibility: "public",
+            publicCdnUrl: "https://cdn.example.com/media/profile/original-safe.webp",
+          }),
+        ],
+      });
+      const projection = database.clientQueries.find(({ text }) =>
+        text.includes("INSERT INTO hotel_catalog.property_media"),
+      );
+      expect(projection?.values).toEqual([
+        session.files[0]!.mediaId,
+        PROPERTY_ID,
+        purpose === "property.hero_image" ? "hero_image" : "gallery_image",
+        "https://cdn.example.com/media/profile/original-safe.webp",
+        JSON.stringify({ platformMediaObjectId: session.files[0]!.mediaId }),
+        "2026-07-16T12:01:00.000Z",
+      ]);
+      expect(projection?.text).toContain("platform_media_object_id = $1::uuid");
+      expect(projection?.text).toContain("source_system = 'platform'");
+      expect(projection?.text).toContain("public_approved = TRUE");
+      expect(projection?.text).toContain("COALESCE(MAX(sort_order) + 1, 1)");
+      expect(
+        database.clientQueries.findIndex(({ text }) =>
+          text.includes("INSERT INTO hotel_catalog.property_media"),
+        ),
+      ).toBeGreaterThan(
+        database.clientQueries.findIndex(({ text }) =>
+          text.includes("INSERT INTO platform.media_variants"),
+        ),
+      );
+    },
+  );
+
   it("records append-only platform audit events", async () => {
     const database = createFakeDatabase();
     await repositoryFor(database.pool).recordAudit({
@@ -161,7 +364,41 @@ function repositoryFor(pool: ReturnType<typeof createFakeDatabase>["pool"]) {
   });
 }
 
-async function createSession(repository: ReturnType<typeof createPgPlatformMediaRepository>) {
+const BOOKING_HOTEL_ID = "00000000-0000-4000-8000-000000000030";
+const PROPERTY_ID = "00000000-0000-4000-8000-000000000040";
+
+async function createSession(
+  repository: ReturnType<typeof createPgPlatformMediaRepository>,
+  purpose:
+    | "identity.user.profile_image"
+    | "marketplace.offer.media"
+    | "marketplace.collaboration_chat.attachment"
+    | "property.hero_image"
+    | "property.gallery_image" = "identity.user.profile_image",
+) {
+  const isProfile = purpose === "identity.user.profile_image";
+  const isOffer = purpose === "marketplace.offer.media";
+  const isChat = purpose === "marketplace.collaboration_chat.attachment";
+  const product = isProfile ? "platform" : isOffer || isChat ? "marketplace" : "booking";
+  const resourceType = isProfile
+    ? "user_profile"
+    : isOffer
+      ? "marketplace_offer"
+      : isChat
+        ? "creator_profile"
+        : "booking_hotel";
+  const resourceId = isProfile
+    ? "00000000-0000-4000-8000-000000000001"
+    : isOffer || isChat
+      ? "00000000-0000-4000-8000-000000000020"
+      : BOOKING_HOTEL_ID;
+  const filename = isProfile
+    ? "profile.jpg"
+    : isOffer
+      ? "offer.jpg"
+      : isChat
+        ? "chat.jpg"
+        : "property.jpg";
   return repository.createUploadSession({
     sessionId: "00000000-0000-4000-8000-000000000010",
     uploadSessionKey: "media.upload_session:session-1",
@@ -173,36 +410,50 @@ async function createSession(repository: ReturnType<typeof createPgPlatformMedia
       },
     } as never,
     request: {
-      purpose: "identity.user.profile_image",
-      visibility: "public",
+      purpose,
+      visibility: isChat ? "private" : "public",
       resource: {
-        product: "platform",
-        resourceType: "user_profile",
-        resourceId: "00000000-0000-4000-8000-000000000001",
+        product,
+        resourceType,
+        resourceId,
       },
       files: [
         {
-          clientFileId: "profile",
-          filename: "profile.jpg",
+          clientFileId: purpose,
+          filename,
           contentType: "image/jpeg",
           sizeBytes: 1024,
         },
       ],
     },
-    policy: { autoApprovePublicOnFinalize: true } as never,
+    policy: {
+      purpose,
+      autoApprovePublicOnFinalize: isOffer || isChat ? undefined : true,
+    } as never,
     target: {
-      resourceProduct: "platform",
-      resourceType: "user_profile",
-      resourceId: "00000000-0000-4000-8000-000000000001",
+      resourceProduct: isProfile ? "platform" : isOffer || isChat ? "marketplace" : "hotel_catalog",
+      resourceType: isProfile
+        ? "user_profile"
+        : isOffer
+          ? "marketplace_offer"
+          : isChat
+            ? "collaboration"
+            : "property",
+      resourceId: isChat
+        ? "collaboration-target-001"
+        : isProfile || isOffer
+          ? resourceId
+          : PROPERTY_ID,
+      propertyId: isChat ? PROPERTY_ID : isProfile || isOffer ? undefined : PROPERTY_ID,
     },
     uploadTargets: [
       {
         uploadTargetId: "target-1",
-        clientFileId: "profile",
+        clientFileId: purpose,
         method: "PUT",
         uploadUrl: "https://s3.example.com/signed",
         headers: { "content-type": "image/jpeg" },
-        stagingKey: "staging/session-1/1/profile.jpg",
+        stagingKey: `staging/session-1/1/${filename}`,
         expiresAt: "2026-07-16T12:15:00.000Z",
       },
     ],
@@ -216,12 +467,17 @@ async function createSession(repository: ReturnType<typeof createPgPlatformMedia
       targetType: "media_upload_session",
       targetId: "00000000-0000-4000-8000-000000000010",
       requestId: "request-1",
-      metadata: { purpose: "identity.user.profile_image" },
+      metadata: { purpose },
     },
   });
 }
 
 function completionInput(session: PlatformMediaSessionRecord) {
+  const isPrivate = session.effectiveVisibility === "private";
+  const isChat = session.purpose === "marketplace.collaboration_chat.attachment";
+  const storageKey = isPrivate
+    ? "private/media/offer/original-safe.webp"
+    : "media/profile/original-safe.webp";
   return {
     session,
     files: [
@@ -240,15 +496,17 @@ function completionInput(session: PlatformMediaSessionRecord) {
     variantSets: [
       [
         {
-          variantName: "original_safe" as const,
-          visibility: "public" as const,
-          storageKey: "media/profile/original-safe.webp",
+          variantName: isChat ? ("provider_original" as const) : ("original_safe" as const),
+          visibility: session.effectiveVisibility,
+          storageKey,
           contentType: "image/webp",
           widthPx: 800,
           heightPx: 800,
           sizeBytes: 900,
           checksumSha256: "b".repeat(64),
-          publicCdnUrl: "https://cdn.example.com/media/profile/original-safe.webp",
+          publicCdnUrl: isPrivate
+            ? null
+            : "https://cdn.example.com/media/profile/original-safe.webp",
         },
       ],
     ],
@@ -263,7 +521,7 @@ function completionInput(session: PlatformMediaSessionRecord) {
       targetType: "media_object" as const,
       targetId: session.files[0]!.mediaId,
       requestId: "request-1",
-      metadata: { purpose: "identity.user.profile_image" },
+      metadata: { purpose: session.purpose },
     },
   };
 }
@@ -287,6 +545,9 @@ type FakeMediaRow = {
   heightPx?: number;
   originalFilename: string;
   requestedVisibility: "public" | "private";
+  visibility: "public" | "private";
+  lifecycleStatus: "staged" | "active";
+  publicApproved: boolean;
   actorUserId: string;
   createdAt: string;
 };
@@ -300,6 +561,7 @@ type FakeDatabaseState = {
   session: PlatformMediaSessionRecord | null;
   mediaRows: Map<string, FakeMediaRow>;
   variantRows: FakeVariantRow[];
+  propertyLinks: Map<string, string>;
 };
 
 function createFakeDatabase(failAuditAction?: string) {
@@ -364,7 +626,12 @@ function createFakeDatabase(failAuditAction?: string) {
 }
 
 function emptyDatabaseState(): FakeDatabaseState {
-  return { session: null, mediaRows: new Map(), variantRows: [] };
+  return {
+    session: null,
+    mediaRows: new Map(),
+    variantRows: [],
+    propertyLinks: new Map([[BOOKING_HOTEL_ID, PROPERTY_ID]]),
+  };
 }
 
 function executeFakeQuery(
@@ -379,7 +646,10 @@ function executeFakeQuery(
   ) {
     throw new Error("audit failed");
   }
-  if (text.includes("INSERT INTO platform.media_upload_sessions")) {
+  if (text.includes("WITH property_candidates AS")) {
+    const propertyId = state.propertyLinks.get(String(values?.[2]));
+    return { rows: propertyId ? [{ propertyId }] : [] };
+  } else if (text.includes("INSERT INTO platform.media_upload_sessions")) {
     state.session = metadata(values?.[15]).session;
   } else if (text.includes("completion_metadata -> 'session'")) {
     return {
@@ -397,41 +667,44 @@ function executeFakeQuery(
   } else if (text.includes("UPDATE platform.media_upload_sessions")) {
     state.session = metadata(values?.[2]).session;
   } else if (text.includes("INSERT INTO platform.media_objects")) {
-    const sourceMetadata = jsonValue<{ requestedVisibility: "public" | "private" }>(values?.[15]);
+    const sourceMetadata = jsonValue<{ requestedVisibility: "public" | "private" }>(values?.[17]);
     const row: FakeMediaRow = {
       mediaId: String(values?.[0]),
       bucket: String(values?.[1]),
       storageKey: String(values?.[2]),
-      purpose: values?.[3] as FakeMediaRow["purpose"],
-      ownerOrganizationId: String(values?.[4]),
-      propertyId: optionalString(values?.[5]),
-      resourceProduct: values?.[6] as FakeMediaRow["resourceProduct"],
-      resourceType: String(values?.[7]),
-      resourceId: String(values?.[8]),
-      contentType: String(values?.[9]),
-      sizeBytes: Number(values?.[10]),
-      checksumSha256: optionalString(values?.[11]),
-      widthPx: optionalNumber(values?.[12]),
-      heightPx: optionalNumber(values?.[13]),
-      originalFilename: String(values?.[14]),
+      visibility: values?.[3] as FakeMediaRow["visibility"],
+      purpose: values?.[4] as FakeMediaRow["purpose"],
+      ownerOrganizationId: String(values?.[5]),
+      propertyId: optionalString(values?.[6]),
+      resourceProduct: values?.[7] as FakeMediaRow["resourceProduct"],
+      resourceType: String(values?.[8]),
+      resourceId: String(values?.[9]),
+      lifecycleStatus: values?.[10] as FakeMediaRow["lifecycleStatus"],
+      contentType: String(values?.[11]),
+      sizeBytes: Number(values?.[12]),
+      checksumSha256: optionalString(values?.[13]),
+      widthPx: optionalNumber(values?.[14]),
+      heightPx: optionalNumber(values?.[15]),
+      originalFilename: String(values?.[16]),
       requestedVisibility: sourceMetadata.requestedVisibility,
-      actorUserId: String(values?.[16]),
-      createdAt: String(values?.[17]),
+      publicApproved: Boolean(values?.[18]),
+      actorUserId: String(values?.[19]),
+      createdAt: String(values?.[20]),
     };
     state.mediaRows.set(row.mediaId, row);
   } else if (text.includes("INSERT INTO platform.media_variants")) {
     state.variantRows.push({
       mediaId: String(values?.[0]),
       variantName: values?.[1] as FakeVariantRow["variantName"],
-      visibility: "public",
-      storageKey: String(values?.[2]),
-      contentType: String(values?.[3]),
-      widthPx: optionalNumber(values?.[4]),
-      heightPx: optionalNumber(values?.[5]),
-      sizeBytes: Number(values?.[6]),
-      checksumSha256: optionalString(values?.[7]),
-      publicCdnUrl: optionalString(values?.[8]) ?? null,
-      createdAt: String(values?.[9]),
+      visibility: values?.[2] as FakeVariantRow["visibility"],
+      storageKey: String(values?.[3]),
+      contentType: String(values?.[4]),
+      widthPx: optionalNumber(values?.[5]),
+      heightPx: optionalNumber(values?.[6]),
+      sizeBytes: Number(values?.[7]),
+      checksumSha256: optionalString(values?.[8]),
+      publicCdnUrl: optionalString(values?.[9]) ?? null,
+      createdAt: String(values?.[10]),
     });
   } else if (text.includes("FROM platform.media_objects media")) {
     const row = state.mediaRows.get(String(values?.[0]));
@@ -444,10 +717,14 @@ function mediaRecord(row: FakeMediaRow, variantRows: FakeVariantRow[]): Platform
   return {
     mediaId: row.mediaId,
     purpose: row.purpose,
-    visibility: "public",
+    visibility: row.visibility,
     requestedVisibility: row.requestedVisibility,
-    approvalStatus: "approved",
-    lifecycleStatus: "active",
+    approvalStatus: row.publicApproved
+      ? "approved"
+      : row.requestedVisibility === "public"
+        ? "pending_domain_approval"
+        : "private",
+    lifecycleStatus: row.lifecycleStatus,
     storageKind: "vayada_managed",
     bucket: row.bucket,
     storageKey: row.storageKey,

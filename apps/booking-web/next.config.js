@@ -1,5 +1,6 @@
 const path = require("path");
 const createNextIntlPlugin = require("next-intl/plugin");
+const isDevelopment = process.env.NODE_ENV === "development";
 
 const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
 
@@ -27,9 +28,21 @@ const nextConfig = {
         hostname: "images.unsplash.com",
       },
       {
+        protocol: "https",
+        hostname: "cdn.vayada.com",
+      },
+      {
         protocol: "http",
         hostname: "localhost",
       },
+      ...(isDevelopment
+        ? [
+            {
+              protocol: "https",
+              hostname: "media.localhost",
+            },
+          ]
+        : []),
     ],
   },
 };

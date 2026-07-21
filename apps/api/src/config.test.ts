@@ -719,6 +719,25 @@ describe("api config", () => {
     expect(loadConfig({}).platformMediaServing).toBeUndefined();
   });
 
+  it("configures and can disable the platform media cleanup interval", () => {
+    expect(loadConfig({})).toMatchObject({
+      platformMediaCleanupEnabled: true,
+      platformMediaCleanupIntervalMs: 15 * 60 * 1000,
+    });
+    expect(
+      loadConfig({
+        PLATFORM_MEDIA_CLEANUP_ENABLED: "false",
+        PLATFORM_MEDIA_CLEANUP_INTERVAL_MS: "60000",
+      }),
+    ).toMatchObject({
+      platformMediaCleanupEnabled: false,
+      platformMediaCleanupIntervalMs: 60_000,
+    });
+    expect(() => loadConfig({ PLATFORM_MEDIA_CLEANUP_INTERVAL_MS: "0" })).toThrow(
+      "PLATFORM_MEDIA_CLEANUP_INTERVAL_MS must be a positive integer",
+    );
+  });
+
   it("loads platform media serving cutover config", () => {
     expect(
       loadConfig({

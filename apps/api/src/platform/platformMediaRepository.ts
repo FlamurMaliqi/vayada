@@ -8,6 +8,7 @@ import type {
   PlatformMediaObjectRecord,
   PlatformMediaRepository,
   PlatformMediaSessionRecord,
+  PlatformMediaTargetResolver,
   PlatformMediaVariantRecord,
 } from "../routes/platformMedia.js";
 
@@ -37,16 +38,28 @@ type SessionRow = {
   mediaObjectIds: string[] | null;
 };
 type MediaObjectRow = { record: PlatformMediaObjectRecord };
+type PropertyTargetRow = { propertyId: string };
+type CollaborationTargetRow = { collaborationId: string; propertyId: string };
 
 const supportedPurposes = new Set([
   "identity.user.profile_image",
+  "property.hero_image",
+  "property.gallery_image",
+  "marketplace.creator.profile_image",
+  "marketplace.offer.media",
+  "marketplace.collaboration_chat.attachment",
+]);
+const autoApprovedPublicPurposes = new Set([
+  "identity.user.profile_image",
+  "property.hero_image",
+  "property.gallery_image",
   "marketplace.creator.profile_image",
 ]);
 const CANONICAL_UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
 export function createPgPlatformMediaRepository(
   config: PgPlatformMediaRepositoryConfig,
-): PlatformMediaRepository & ApprovedPublicProfileImageRepository {
+): PlatformMediaRepository & ApprovedPublicProfileImageRepository & PlatformMediaTargetResolver {
   if (!config.connectionString.trim()) {
     throw new Error("Platform media repository connectionString must not be empty");
   }
@@ -62,12 +75,18 @@ export function createPgPlatformMediaRepository(
     publicCdnBaseUrl: config.publicCdnBaseUrl,
     async createUploadSession(input) {
       const requestedVisibility = input.request.visibility ?? "private";
+      if (!supportedPurposes.has(input.request.purpose)) {
+        throw new Error("Persistent platform media does not support this upload purpose");
+      }
+      const isAutoApproved = autoApprovedPublicPurposes.has(input.request.purpose);
       if (
-        !supportedPurposes.has(input.request.purpose) ||
-        requestedVisibility !== "public" ||
-        !input.policy.autoApprovePublicOnFinalize
+        (isAutoApproved &&
+          (requestedVisibility !== "public" || !input.policy.autoApprovePublicOnFinalize)) ||
+        (!isAutoApproved &&
+          (input.policy.purpose !== input.request.purpose ||
+            input.policy.autoApprovePublicOnFinalize === true))
       ) {
-        throw new Error("Persistent platform media currently supports public profile images only");
+        throw new Error("Persistent platform media policy does not support this upload");
       }
 
       const files = input.request.files.map((file, index) => {
@@ -85,7 +104,7 @@ export function createPgPlatformMediaRepository(
         uploadSessionKey: input.uploadSessionKey,
         purpose: input.request.purpose,
         requestedVisibility,
-        effectiveVisibility: "public",
+        effectiveVisibility: isAutoApproved ? "public" : "private",
         actorUserId: input.context.actor.internalUserId,
         ownerOrganizationId: input.context.selectedOrganization.organizationId,
         resource: input.request.resource,
@@ -148,6 +167,9 @@ export function createPgPlatformMediaRepository(
     async findMediaObject(mediaId) {
       return readMediaObject(pool, mediaId);
     },
+    async resolveTarget(input) {
+      return resolveTarget(pool, input);
+    },
     async completeUploadSession(input) {
       return completeUploadSession(pool, input);
     },
@@ -161,6 +183,108 @@ export function createPgPlatformMediaRepository(
     },
     async close() {
       if (ownsPool) await pool.end();
+    },
+  };
+}
+
+async function resolveTarget(
+  queryable: Queryable,
+  input: Parameters<PlatformMediaTargetResolver["resolveTarget"]>[0],
+): ReturnType<PlatformMediaTargetResolver["resolveTarget"]> {
+  if (input.request.purpose === "marketplace.collaboration_chat.attachment") {
+    const targetResourceId = input.request.resource.targetResourceId?.trim();
+    if (!targetResourceId) {
+      return {
+        ok: false,
+        statusCode: 403,
+        code: "media_target_forbidden",
+        message: "Chat attachments require a collaboration target.",
+      };
+    }
+
+    const sourceColumn =
+      input.request.resource.resourceType === "creator_profile" ? "creator_profile_id" : "offer_id";
+    const result = await queryable.query<CollaborationTargetRow>(
+      `SELECT collaboration.id::text AS "collaborationId",
+              collaboration.property_id::text AS "propertyId"
+       FROM marketplace.collaborations collaboration
+       WHERE collaboration.source_collaboration_id = $1
+         AND collaboration.${sourceColumn}::text = $2
+       LIMIT 1`,
+      [targetResourceId, input.request.resource.resourceId],
+    );
+    const collaboration = result.rows[0];
+    if (!collaboration) {
+      return {
+        ok: false,
+        statusCode: 403,
+        code: "media_target_forbidden",
+        message: "Chat attachment source is not linked to this collaboration.",
+      };
+    }
+    return {
+      ok: true,
+      target: {
+        resourceProduct: "marketplace",
+        resourceType: "collaboration",
+        resourceId: collaboration.collaborationId,
+        propertyId: collaboration.propertyId,
+      },
+    };
+  }
+
+  if (input.policy.targetResourceProduct !== "hotel_catalog") {
+    return {
+      ok: true,
+      target: {
+        resourceProduct: input.policy.targetResourceProduct,
+        resourceType: input.policy.targetResourceType,
+        resourceId:
+          input.request.resource.targetResourceId ??
+          input.request.resource.propertyId ??
+          input.request.resource.resourceId,
+        propertyId: input.request.resource.propertyId,
+      },
+    };
+  }
+
+  const sourceTable =
+    input.request.resource.product === "booking" ? "booking_hotels" : "hotel_profiles";
+  const result = await queryable.query<PropertyTargetRow>(
+    `WITH property_candidates AS (
+       SELECT property.id
+       FROM hotel_catalog.properties property
+       WHERE property.id::text = $3
+       UNION
+       SELECT source.property_id
+       FROM hotel_catalog.property_source_links source
+       WHERE source.source_system = $1
+         AND source.source_table = $2
+         AND source.source_id = $3
+         AND source.status = 'active'
+     )
+     SELECT id::text AS "propertyId"
+     FROM property_candidates
+     LIMIT 2`,
+    [input.request.resource.product, sourceTable, input.request.resource.resourceId],
+  );
+  if (result.rows.length !== 1) {
+    return {
+      ok: false,
+      statusCode: 403,
+      code: "media_target_forbidden",
+      message: "Property media target is not linked to this hotel resource.",
+    };
+  }
+
+  const propertyId = result.rows[0]!.propertyId;
+  return {
+    ok: true,
+    target: {
+      resourceProduct: "hotel_catalog",
+      resourceType: "property",
+      resourceId: propertyId,
+      propertyId,
     },
   };
 }
@@ -187,12 +311,16 @@ async function completeUploadSession(
     if (session.status !== "signed") {
       throw new Error("Platform media upload session is not finalizable");
     }
+    if (!supportedPurposes.has(session.purpose)) {
+      throw new Error("Persistent platform media cannot finalize this purpose");
+    }
+    const isAutoApproved = autoApprovedPublicPurposes.has(session.purpose);
     if (
-      !supportedPurposes.has(session.purpose) ||
-      session.requestedVisibility !== "public" ||
-      session.effectiveVisibility !== "public"
+      (isAutoApproved &&
+        (session.requestedVisibility !== "public" || session.effectiveVisibility !== "public")) ||
+      (!isAutoApproved && session.effectiveVisibility !== "private")
     ) {
-      throw new Error("Persistent platform media can only finalize public profile images");
+      throw new Error("Persistent platform media session has an invalid visibility state");
     }
 
     const mediaObjects = input.files.map((file, index) =>
@@ -203,6 +331,7 @@ async function completeUploadSession(
       for (const variant of mediaObject.variants) {
         await insertVariant(client, mediaObject.mediaId, variant, input.now);
       }
+      await upsertPropertyMediaProjection(client, mediaObject, input.now);
     }
 
     const completedSession: PlatformMediaSessionRecord = {
@@ -246,26 +375,40 @@ function mediaObjectFor(
   bucketName: string,
   now: string,
 ): PlatformMediaObjectRecord {
-  const originalSafe = variants.find(({ variantName }) => variantName === "original_safe");
-  if (!originalSafe) throw new Error("Profile images require an original_safe variant");
+  const originalSafe =
+    variants.find(({ variantName }) => variantName === "original_safe") ??
+    variants.find(({ variantName }) => variantName === "provider_original");
+  if (!originalSafe) throw new Error("Platform images require a canonical media variant");
   if (
     variants.some(
       (variant) =>
-        variant.visibility !== "public" ||
-        !variant.publicCdnUrl?.startsWith("https://") ||
+        variant.visibility !== session.effectiveVisibility ||
+        (session.effectiveVisibility === "public"
+          ? !variant.publicCdnUrl?.startsWith("https://")
+          : variant.publicCdnUrl !== null) ||
         !variant.checksumSha256?.match(/^[a-f0-9]{64}$/),
     )
   ) {
-    throw new Error("Profile image variants must be checksummed public HTTPS media");
+    throw new Error("Platform image variants do not match the session visibility");
   }
+
+  const autoApproved =
+    session.requestedVisibility === "public" && session.effectiveVisibility === "public";
 
   return {
     mediaId: file.sessionFile.mediaId,
     purpose: session.purpose,
-    visibility: "public",
-    requestedVisibility: "public",
-    approvalStatus: "approved",
-    lifecycleStatus: "active",
+    visibility: session.effectiveVisibility,
+    requestedVisibility: session.requestedVisibility,
+    approvalStatus: autoApproved
+      ? "approved"
+      : session.requestedVisibility === "public"
+        ? "pending_domain_approval"
+        : "private",
+    lifecycleStatus:
+      autoApproved || session.purpose === "marketplace.collaboration_chat.attachment"
+        ? "active"
+        : "staged",
     storageKind: "vayada_managed",
     bucket: bucketName,
     storageKey: originalSafe.storageKey,
@@ -281,6 +424,10 @@ function mediaObjectFor(
     heightPx: originalSafe.heightPx,
     checksumSha256: originalSafe.checksumSha256,
     originalFilename: file.sessionFile.filename,
+    retainedUntil:
+      session.purpose === "marketplace.collaboration_chat.attachment"
+        ? new Date(Date.parse(now) + 60 * 60 * 1000).toISOString()
+        : null,
     variants,
     createdAt: now,
   };
@@ -290,34 +437,49 @@ async function insertMediaObject(
   client: Queryable,
   mediaObject: PlatformMediaObjectRecord,
 ): Promise<void> {
+  const sourceMetadata = {
+    requestedVisibility: mediaObject.requestedVisibility,
+    ...(mediaObject.purpose === "marketplace.collaboration_chat.attachment"
+      ? { attachmentState: "orphan" }
+      : {}),
+  };
   await client.query(
     `INSERT INTO platform.media_objects
        (id, bucket, storage_key, storage_kind, visibility, purpose,
         owner_organization_id, property_id, resource_product, resource_type,
         resource_id, lifecycle_status, content_type, size_bytes, checksum_sha256,
         width_px, height_px, original_filename, source_metadata, public_approved,
-        created_by_user_id, created_at, updated_at)
+        retained_until, created_by_user_id, created_at, updated_at)
      VALUES
-       ($1::uuid, $2, $3, 'vayada_managed', 'public', $4, $5::uuid, $6::uuid,
-        $7, $8, $9, 'active', $10, $11, $12, $13, $14, $15, $16::jsonb,
-        TRUE, $17::uuid, $18::timestamptz, $18::timestamptz)`,
+       ($1::uuid, $2, $3, 'vayada_managed', $4, $5, $6::uuid, $7::uuid,
+        $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb,
+        $19,
+        CASE
+          WHEN $5 = 'marketplace.collaboration_chat.attachment'
+            THEN $21::timestamptz + interval '1 hour'
+          ELSE NULL
+        END,
+        $20::uuid, $21::timestamptz, $21::timestamptz)`,
     [
       mediaObject.mediaId,
       mediaObject.bucket,
       mediaObject.storageKey,
+      mediaObject.visibility,
       mediaObject.purpose,
       mediaObject.ownerOrganizationId,
       mediaObject.propertyId ?? null,
       mediaObject.resourceProduct,
       mediaObject.resourceType,
       mediaObject.resourceId,
+      mediaObject.lifecycleStatus,
       mediaObject.contentType,
       mediaObject.sizeBytes,
       mediaObject.checksumSha256 ?? null,
       mediaObject.widthPx ?? null,
       mediaObject.heightPx ?? null,
       mediaObject.originalFilename,
-      JSON.stringify({ requestedVisibility: mediaObject.requestedVisibility }),
+      JSON.stringify(sourceMetadata),
+      mediaObject.approvalStatus === "approved",
       mediaObject.actorUserId,
       mediaObject.createdAt,
     ],
@@ -334,10 +496,11 @@ async function insertVariant(
     `INSERT INTO platform.media_variants
        (media_object_id, variant_name, visibility, storage_key, content_type,
         width_px, height_px, size_bytes, checksum_sha256, public_cdn_url, created_at)
-     VALUES ($1::uuid, $2, 'public', $3, $4, $5, $6, $7, $8, $9, $10::timestamptz)`,
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::timestamptz)`,
     [
       mediaId,
       variant.variantName,
+      variant.visibility,
       variant.storageKey,
       variant.contentType,
       variant.widthPx ?? null,
@@ -347,6 +510,76 @@ async function insertVariant(
       variant.publicCdnUrl,
       now,
     ],
+  );
+}
+
+async function upsertPropertyMediaProjection(
+  client: Queryable,
+  mediaObject: PlatformMediaObjectRecord,
+  now: string,
+): Promise<void> {
+  if (
+    mediaObject.purpose !== "property.hero_image" &&
+    mediaObject.purpose !== "property.gallery_image"
+  ) {
+    return;
+  }
+  const propertyId = mediaObject.propertyId;
+  const publicUrl = mediaObject.variants.find(
+    ({ variantName }) => variantName === "original_safe",
+  )?.publicCdnUrl;
+  if (
+    !propertyId ||
+    !publicUrl?.startsWith("https://") ||
+    mediaObject.approvalStatus !== "approved" ||
+    mediaObject.lifecycleStatus !== "active"
+  ) {
+    throw new Error("Approved property media requires a canonical property and public URL");
+  }
+
+  const mediaType = mediaObject.purpose === "property.hero_image" ? "hero_image" : "gallery_image";
+  const rightsMetadata = JSON.stringify({ platformMediaObjectId: mediaObject.mediaId });
+  await client.query(
+    `WITH superseded_hero AS (
+       UPDATE hotel_catalog.property_media
+       SET public_approved = FALSE,
+           updated_at = $6::timestamptz
+       WHERE $3 = 'hero_image'
+         AND property_id = $2::uuid
+         AND media_type = 'hero_image'
+         AND source_system = 'platform'
+         AND platform_media_object_id IS DISTINCT FROM $1::uuid
+       RETURNING id
+     ),
+     updated AS (
+       UPDATE hotel_catalog.property_media
+       SET property_id = $2::uuid,
+           media_type = $3,
+           url = $4,
+           sort_order = CASE WHEN $3 = 'hero_image' THEN 0 ELSE sort_order END,
+           source_system = 'platform',
+           public_approved = TRUE,
+           rights_metadata = COALESCE(rights_metadata, '{}'::jsonb) || $5::jsonb,
+           updated_at = $6::timestamptz
+       WHERE platform_media_object_id = $1::uuid
+       RETURNING id
+     ),
+     next_sort AS (
+       SELECT CASE
+         WHEN $3 = 'hero_image' THEN 0
+         ELSE GREATEST(COALESCE(MAX(sort_order) + 1, 1), 1)
+       END AS sort_order
+       FROM hotel_catalog.property_media
+       WHERE property_id = $2::uuid
+     )
+     INSERT INTO hotel_catalog.property_media
+       (property_id, media_type, url, alt_text, sort_order, source_system,
+        public_approved, rights_metadata, platform_media_object_id, created_at, updated_at)
+     SELECT $2::uuid, $3, $4, NULL, next_sort.sort_order, 'platform',
+            TRUE, $5::jsonb, $1::uuid, $6::timestamptz, $6::timestamptz
+     FROM next_sort
+     WHERE NOT EXISTS (SELECT 1 FROM updated)`,
+    [mediaObject.mediaId, propertyId, mediaType, publicUrl, rightsMetadata, now],
   );
 }
 
@@ -398,7 +631,12 @@ async function readMediaObject(
        'purpose', media.purpose,
        'visibility', media.visibility,
        'requestedVisibility', COALESCE(media.source_metadata ->> 'requestedVisibility', media.visibility),
-       'approvalStatus', CASE WHEN media.public_approved THEN 'approved' ELSE 'pending_domain_approval' END,
+       'approvalStatus', CASE
+         WHEN media.public_approved THEN 'approved'
+         WHEN COALESCE(media.source_metadata ->> 'requestedVisibility', media.visibility) = 'public'
+           THEN 'pending_domain_approval'
+         ELSE 'private'
+       END,
        'lifecycleStatus', media.lifecycle_status,
        'storageKind', media.storage_kind,
        'bucket', media.bucket,
@@ -415,6 +653,14 @@ async function readMediaObject(
        'widthPx', media.width_px,
        'heightPx', media.height_px,
        'originalFilename', media.original_filename,
+       'sourceMetadata', media.source_metadata,
+       'retainedUntil', CASE
+         WHEN media.retained_until IS NULL THEN NULL
+         ELSE to_char(
+           media.retained_until AT TIME ZONE 'UTC',
+           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+         )
+       END,
        'variants', COALESCE((
          SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
            'variantName', variant.variant_name,

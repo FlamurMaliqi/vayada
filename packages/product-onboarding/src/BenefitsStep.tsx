@@ -43,16 +43,18 @@ export default function BenefitsStep({
   };
 
   return (
-    <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6">
+    <div className="mx-auto max-w-3xl px-4 sm:px-6 py-4 sm:py-5">
       {stepIndicators}
 
-      <h1 className="text-xl font-bold text-gray-900 mb-1">Book Direct Benefits</h1>
-      <p className="text-[13px] text-gray-500 mb-6">
-        Encourage guests to book directly on your website instead of OTAs. These benefits appear in
-        the room detail modal and apply to all rooms.
-      </p>
+      <div className="text-center mb-5">
+        <h1 className="text-2xl font-semibold text-gray-900">Book Direct Benefits</h1>
+        <p className="mt-1 text-sm text-gray-500">
+          Encourage guests to book directly on your website instead of OTAs. These benefits appear
+          in the room detail modal and apply to all rooms.
+        </p>
+      </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 px-6 py-6 space-y-5">
+      <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 space-y-4">
         <div>
           <h3 className="text-[11px] font-bold text-gray-900 uppercase tracking-widest mb-1">
             Select Benefits
@@ -62,7 +64,7 @@ export default function BenefitsStep({
           </p>
         </div>
 
-        <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
           {BENEFIT_OPTIONS.map((benefit) => {
             const isSelected = benefits.includes(benefit);
             return (
@@ -158,21 +160,21 @@ export default function BenefitsStep({
       </div>
 
       {error && (
-        <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
+        <div className="mt-4 bg-red-50 border border-red-200 rounded-xl p-3">
           <p className="text-[11px] text-red-700 font-medium">{error}</p>
         </div>
       )}
 
-      <div className="mt-6 flex items-center justify-between">
+      <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
         <button
           onClick={onBack}
-          className="px-5 py-2 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          className="w-full sm:w-auto px-6 py-2.5 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-full hover:bg-gray-50 transition-colors"
         >
           Back
         </button>
         <button
           onClick={onContinue}
-          className="px-5 py-2 text-[13px] font-semibold bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+          className="w-full sm:w-auto px-6 py-2.5 text-[13px] font-semibold bg-primary-500 text-white rounded-full hover:bg-primary-600 transition-colors"
         >
           Continue
         </button>

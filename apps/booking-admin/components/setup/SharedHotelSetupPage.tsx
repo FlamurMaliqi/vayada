@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   SharedAccountDetailsStep,
   SharedFirstRunPropertySetupWizard,
+  buildProductHandoffUrl,
   isSharedAccountDetailsComplete,
   isSafeSharedHotelSetupReturnTo,
   normalizeSharedAccountName,
@@ -15,12 +16,16 @@ import {
 } from "@vayada/product-onboarding";
 
 import { authService } from "@/services/auth";
-import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { getAuthSessionUser, getAuthWorkosOrganizationId } from "@/services/auth/sessionStore";
 import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
 import { settingsService } from "@/services/settings";
+
+const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_FRONTEND_URL || "https://pms.vayada.com";
+const MARKETPLACE_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
 
 export function SharedHotelSetupPage({
   defaultEntryProduct,
@@ -36,6 +41,10 @@ export function SharedHotelSetupPage({
   const [accountName, setAccountName] = useState<string | null>(null);
   const [accountContactEmail, setAccountContactEmail] = useState<string | null>(null);
   const [accountContactPhone, setAccountContactPhone] = useState<string | null>(null);
+  const [accountProfilePictureUrl, setAccountProfilePictureUrl] = useState<string | null>(null);
+  const [accountProfilePictureMediaObjectId, setAccountProfilePictureMediaObjectId] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +60,8 @@ export function SharedHotelSetupPage({
         setAccountName(user?.name ?? localStorage.getItem("userName"));
         setAccountContactEmail(user?.email ?? localStorage.getItem("userEmail"));
         setAccountContactPhone(user?.phone ?? null);
+        setAccountProfilePictureUrl(user?.profilePictureUrl ?? null);
+        setAccountProfilePictureMediaObjectId(user?.profilePictureMediaObjectId ?? null);
         setAuthorized(true);
       })
       .catch(() => {
@@ -78,6 +89,33 @@ export function SharedHotelSetupPage({
 
   const handleProductContinue = async (input: SharedFirstRunProductContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
+    const workosOrganizationId = getAuthWorkosOrganizationId();
+    if (input.product === "pms") {
+      window.location.href = buildProductHandoffUrl(
+        PMS_FRONTEND_URL,
+        input.propertyId,
+        input.organizationId,
+        workosOrganizationId,
+      );
+      return;
+    }
+    if (input.product === "marketplace") {
+      const redirect =
+        input.action === "complete_product_activation"
+          ? `/profile/complete?${new URLSearchParams({
+              activation: "marketplace",
+              propertyId: input.propertyId,
+            }).toString()}`
+          : undefined;
+      window.location.href = buildProductHandoffUrl(
+        MARKETPLACE_FRONTEND_URL,
+        input.propertyId,
+        input.organizationId,
+        workosOrganizationId,
+        redirect,
+      );
+      return;
+    }
     if (input.product === "booking") {
       localStorage.removeItem("selectedHotelId");
       try {
@@ -109,12 +147,22 @@ export function SharedHotelSetupPage({
     );
   }
 
-  if (getAuthSessionUser() && !isSharedAccountDetailsComplete(accountName)) {
+  if (
+    getAuthSessionUser() &&
+    !isSharedAccountDetailsComplete({
+      name: accountName,
+      profilePictureUrl: accountProfilePictureUrl,
+      profilePictureMediaObjectId: accountProfilePictureMediaObjectId,
+    })
+  ) {
     return (
       <SharedAccountDetailsStep
+        accountType="hotel"
         email={accountContactEmail ?? ""}
         initialName={accountName}
         initialPhone={accountContactPhone}
+        initialProfilePictureUrl={accountProfilePictureUrl}
+        initialProfilePictureMediaObjectId={accountProfilePictureMediaObjectId}
         onUploadProfileImage={(file) => {
           const userId = getAuthSessionUser()?.id;
           if (!userId) throw new Error("Your session has expired. Please sign in again.");
@@ -126,6 +174,12 @@ export function SharedHotelSetupPage({
             normalizeSharedAccountName(accountDetails.firstName, accountDetails.lastName),
           );
           setAccountContactPhone(accountDetails.phone ?? null);
+          if (accountDetails.profilePictureUrl) {
+            setAccountProfilePictureUrl(accountDetails.profilePictureUrl);
+          }
+          if (accountDetails.profilePictureMediaObjectId) {
+            setAccountProfilePictureMediaObjectId(accountDetails.profilePictureMediaObjectId);
+          }
         }}
       />
     );

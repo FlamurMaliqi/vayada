@@ -12,6 +12,8 @@ export type IdentityUser = {
   email: string;
   name?: string | null;
   phone?: string | null;
+  profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
   status: InternalUserStatus;
 };
 
@@ -86,9 +88,12 @@ export function createPgIdentityRepository(config: RepositoryConfig): IdentityRe
         email: string;
         name: string | null;
         phone: string | null;
+        profile_picture_url: string | null;
+        profile_picture_media_object_id: string | null;
         status: InternalUserStatus;
       }>(
-        `SELECT u.id AS user_id, u.email, u.name, u.phone, u.status
+        `SELECT u.id AS user_id, u.email, u.name, u.phone,
+                u.profile_picture_url, u.profile_picture_media_object_id, u.status
          FROM identity.external_identities ei
          JOIN identity.users u ON u.id = ei.user_id
          WHERE ei.provider = $1 AND ei.provider_user_id = $2
@@ -102,6 +107,8 @@ export function createPgIdentityRepository(config: RepositoryConfig): IdentityRe
         email: row.email,
         name: row.name,
         phone: row.phone,
+        profilePictureUrl: row.profile_picture_url,
+        profilePictureMediaObjectId: row.profile_picture_media_object_id,
         status: row.status,
       };
     },

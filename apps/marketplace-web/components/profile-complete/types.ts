@@ -33,6 +33,7 @@ export interface FormNavigationButtonsProps {
   onPrevious: () => void;
   submitLabel?: string;
   prominentFirstStep?: boolean;
+  stackOnMobile?: boolean;
   disabled?: boolean;
 }
 

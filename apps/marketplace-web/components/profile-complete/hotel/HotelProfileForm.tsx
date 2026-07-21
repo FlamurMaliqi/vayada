@@ -6,6 +6,7 @@ import type { HotelFormState, ListingFormData } from "@/lib/types";
 import { FormNavigationButtons } from "../FormNavigationButtons";
 import { HotelBasicInfoStep } from "./HotelBasicInfoStep";
 import { HotelListingsStep } from "./HotelListingsStep";
+import type { ListingCardSection } from "./ListingCard";
 
 interface HotelProfileFormProps {
   // Form state
@@ -31,8 +32,6 @@ interface HotelProfileFormProps {
   onFormChange: (updates: Partial<HotelFormState>) => void;
 
   // Listing handlers
-  onAddListing: () => void;
-  onRemoveListing: (index: number) => void;
   onToggleCollapse: (index: number) => void;
   onUpdateListing: (
     index: number,
@@ -62,8 +61,6 @@ export function HotelProfileForm({
   countries,
   imageInputRefs,
   onFormChange,
-  onAddListing,
-  onRemoveListing,
   onToggleCollapse,
   onUpdateListing,
   onImageChange,
@@ -73,6 +70,9 @@ export function HotelProfileForm({
   onNextStep,
   onSubmit,
 }: HotelProfileFormProps) {
+  const listingSection: ListingCardSection =
+    currentStep === 2 ? "details" : currentStep === 3 ? "offerings" : "requirements";
+
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (currentStep === totalSteps) {
@@ -86,23 +86,24 @@ export function HotelProfileForm({
     <div className="space-y-4">
       <form
         onSubmit={handleFormSubmit}
-        className="bg-white rounded-2xl shadow-md border border-gray-100 p-6 space-y-6"
+        className={`rounded-xl border border-gray-200 bg-white ${
+          currentStep > 1 ? "space-y-4 border-0 bg-transparent" : "space-y-6 p-5 sm:p-6"
+        }`}
       >
         {/* Step 1: Basic Information */}
         {currentStep === 1 && (
           <HotelBasicInfoStep form={form} onFormChange={onFormChange} error={error} />
         )}
 
-        {/* Step 2: Collaboration Offers Section */}
-        {currentStep === 2 && (
+        {/* Steps 2–4: one focused collaboration-offer section at a time */}
+        {currentStep > 1 && (
           <HotelListingsStep
             listings={listings}
+            section={listingSection}
             collapsedCards={collapsedCards}
             countryInputs={countryInputs}
             countries={countries}
             imageInputRefs={imageInputRefs}
-            onAddListing={onAddListing}
-            onRemoveListing={onRemoveListing}
             onToggleCollapse={onToggleCollapse}
             onUpdateListing={onUpdateListing}
             onImageChange={onImageChange}
@@ -112,9 +113,12 @@ export function HotelProfileForm({
         )}
 
         {error && (
-          <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 flex items-start gap-3">
-            <XMarkIcon className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-red-800 font-medium whitespace-pre-line">{error}</p>
+          <div
+            role="alert"
+            className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4"
+          >
+            <XMarkIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600" />
+            <p className="whitespace-pre-line text-sm font-medium text-red-800">{error}</p>
           </div>
         )}
 
@@ -124,7 +128,8 @@ export function HotelProfileForm({
           submitting={submitting}
           canProceed={canProceed}
           onPrevious={onPrevStep}
-          submitLabel="Complete Profile"
+          submitLabel="Complete Marketplace setup"
+          stackOnMobile
         />
       </form>
     </div>

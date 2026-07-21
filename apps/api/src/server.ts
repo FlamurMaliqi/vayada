@@ -26,6 +26,7 @@ import {
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { createTargetPublicHotelProfileRepository } from "./routes/aiHotels.js";
 import {
   createPgBookingWebAffiliateHotelResolver,
@@ -47,6 +48,7 @@ import {
 } from "./routes/finance.js";
 import { createPgPmsModuleActivationRepository } from "./routes/pmsModuleActivations.js";
 import { createPgMarketplaceCollaborationReadRepository } from "./routes/marketplaceCollaborations.js";
+import { createPgMarketplaceTripRepository } from "./routes/marketplaceTrips.js";
 import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js";
 import { createPgMarketplaceHotelProfileStatusRepository } from "./routes/marketplaceHotelProfileStatus.js";
 import { createPgMarketplaceHotelSelfServiceRepository } from "./routes/marketplaceHotelSelfService.js";
@@ -455,6 +457,13 @@ const app = buildApp({
     config.marketplaceDiscoverySource === "target"
       ? createPgMarketplaceCollaborationReadRepository({
           connectionString: config.targetDatabaseUrl!,
+          attachmentMedia: platformMediaRuntime?.collaborationAttachments,
+        })
+      : undefined,
+  marketplaceTripRepository:
+    config.marketplaceDiscoverySource === "target"
+      ? createPgMarketplaceTripRepository({
+          connectionString: config.targetDatabaseUrl!,
         })
       : undefined,
   marketplaceAdminRepository:
@@ -462,6 +471,7 @@ const app = buildApp({
       ? createPgMarketplaceAdminRepository({
           connectionString: config.targetDatabaseUrl!,
           identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+          offerMediaPromotion: platformMediaRuntime?.offerMediaPromotion,
         })
       : undefined,
   marketplaceAdminLegacySuperadminFallbackEnabled:
@@ -522,6 +532,37 @@ const app = buildApp({
   bookingWebAffiliateRepository,
   platformMedia: platformMediaRuntime?.routes,
 });
+
+if (platformMediaRuntime) {
+  let activeCleanup: Promise<void> | undefined;
+  const runCleanup = () => {
+    if (activeCleanup) return;
+    activeCleanup = runPlatformMediaCleanupJobs(platformMediaRuntime.cleanupStore)
+      .then((result) => {
+        if (result.failed > 0) {
+          app.log.warn({ failed: result.failed }, "Platform media cleanup completed with failures");
+        }
+      })
+      .catch((error: unknown) => {
+        app.log.warn({ err: error }, "Platform media cleanup failed");
+      })
+      .finally(() => {
+        activeCleanup = undefined;
+      });
+  };
+
+  const cleanupTimer = config.platformMediaCleanupEnabled
+    ? setInterval(runCleanup, config.platformMediaCleanupIntervalMs)
+    : undefined;
+  cleanupTimer?.unref();
+  if (config.platformMediaCleanupEnabled) runCleanup();
+
+  app.addHook("onClose", async () => {
+    if (cleanupTimer) clearInterval(cleanupTimer);
+    await activeCleanup;
+    await platformMediaRuntime.cleanupStore.close();
+  });
+}
 
 try {
   await app.listen({ host: config.host, port: config.port });

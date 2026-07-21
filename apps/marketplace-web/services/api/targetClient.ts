@@ -1,69 +1,83 @@
 import { getAuthKitAccessToken } from "@/services/auth/sessionStore";
 
-import { ApiErrorResponse } from "./client";
+import { ApiErrorResponse, createVayadaApiClient } from "./client";
 
 const TARGET_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
-
-async function targetRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = await getOrRefreshAuthKitAccessToken(options.signal ?? undefined);
-  if (!token) throw new ApiErrorResponse(401, { detail: "Not authenticated" });
-
-  const headers = new Headers(options.headers);
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
-  headers.set("Authorization", `Bearer ${token}`);
-
-  const response = await fetch(`${TARGET_API_BASE_URL}${endpoint}`, {
-    ...options,
-    credentials: "include",
-    headers,
-  });
-
-  const contentType = response.headers.get("content-type");
-  const body =
-    contentType?.includes("application/json") && response.status !== 204
-      ? await response.json()
-      : null;
-
-  if (!response.ok) {
-    throw new ApiErrorResponse(response.status, {
-      detail: body?.detail ?? body?.message ?? body?.error ?? `API Error: ${response.status}`,
-    });
-  }
-
-  return body as T;
-}
-
-async function getOrRefreshAuthKitAccessToken(signal?: AbortSignal): Promise<string | null> {
-  const token = getAuthKitAccessToken();
-  if (token) return token;
-
-  const { authService } = await import("@/services/auth/auth");
-  const refreshed = await authService.ensureSession(signal);
-  return refreshed ? getAuthKitAccessToken() : null;
-}
+const client = createVayadaApiClient(TARGET_API_BASE_URL, getAuthKitAccessToken);
+let coldSessionFlight: { promise: Promise<boolean>; signal?: AbortSignal } | null = null;
+const authenticatedOptions = (options?: RequestInit): RequestInit => ({
+  ...options,
+  credentials: "include",
+});
 
 export const targetApiClient = {
-  get<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    return targetRequest<T>(endpoint, { ...options, method: "GET" });
+  async get<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    await requireAuthKitSession(options?.signal ?? undefined);
+    return client.get<T>(endpoint, authenticatedOptions(options));
   },
 
-  put<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
-    return targetRequest<T>(endpoint, {
-      ...options,
-      method: "PUT",
-      body: JSON.stringify(data),
-    });
+  async put<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+    await requireAuthKitSession(options?.signal ?? undefined);
+    return client.put<T>(endpoint, data, authenticatedOptions(options));
   },
 
-  post<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
-    return targetRequest<T>(endpoint, {
-      ...options,
-      method: "POST",
-      body: JSON.stringify(data),
-    });
+  async post<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+    await requireAuthKitSession(options?.signal ?? undefined);
+    return client.post<T>(endpoint, data, authenticatedOptions(options));
   },
 
-  delete<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    return targetRequest<T>(endpoint, { ...options, method: "DELETE" });
+  async delete<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    await requireAuthKitSession(options?.signal ?? undefined);
+    return client.delete<T>(endpoint, authenticatedOptions(options));
   },
 };
+
+async function requireAuthKitSession(signal?: AbortSignal): Promise<void> {
+  if (getAuthKitAccessToken()) return;
+  const flight = coldSessionFlight ?? startColdSessionFlight(signal);
+  try {
+    await waitForSessionFlight(flight.promise, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (flight.signal?.aborted && !getAuthKitAccessToken()) {
+      await requireAuthKitSession(signal);
+      return;
+    }
+    throw error;
+  }
+  if (!getAuthKitAccessToken()) {
+    throw new ApiErrorResponse(401, { detail: "Not authenticated" });
+  }
+}
+
+function startColdSessionFlight(signal?: AbortSignal): {
+  promise: Promise<boolean>;
+  signal?: AbortSignal;
+} {
+  const flight = {
+    promise: import("@/services/auth/auth").then(({ authService }) =>
+      authService.ensureSession(signal),
+    ),
+    ...(signal ? { signal } : {}),
+  };
+  coldSessionFlight = flight;
+  const clear = () => {
+    if (coldSessionFlight === flight) coldSessionFlight = null;
+  };
+  void flight.promise.then(clear, clear);
+  return flight;
+}
+
+function waitForSessionFlight(promise: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", abort, { once: true });
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+}

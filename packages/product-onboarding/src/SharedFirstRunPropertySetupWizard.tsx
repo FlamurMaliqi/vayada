@@ -33,6 +33,7 @@ import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from "@vayada/locale-constants";
 import { HotelIcon } from "./HotelIcon";
 import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
+import { isValidSharedAccountPhone } from "./sharedAccountDetails";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
   isActionableSharedProductActivation,
@@ -285,6 +286,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const [selectedProducts, setSelectedProducts] = useState<SharedHotelSetupProduct[]>(() =>
     uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]),
   );
+  const [showProductSetupHubAfterSelection, setShowProductSetupHubAfterSelection] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
@@ -310,7 +312,8 @@ export default function SharedFirstRunPropertySetupWizard({
   const productContinueBlocked = isProductContinueBlocked(view);
   const isProductSetupScreen =
     view.screen === "product_activation" || view.screen === "enter_product";
-  const productSetupHub = !autoContinueToProduct && isProductSetupScreen;
+  const shouldAutoContinueToProduct = autoContinueToProduct && !showProductSetupHubAfterSelection;
+  const productSetupHub = !shouldAutoContinueToProduct && isProductSetupScreen;
   const productSetupProducts = productSetupHub
     ? uniqueSelectedProducts([
         ...(status?.hotelGroup.selectedProducts ?? []),
@@ -335,8 +338,9 @@ export default function SharedFirstRunPropertySetupWizard({
 
   useEffect(() => {
     setSelectedProducts(uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]));
+    setShowProductSetupHubAfterSelection(false);
     seededInitialSelectionPropertyIds.current.clear();
-  }, [entryProduct, initialSelectedProducts]);
+  }, [entryProduct, initialPropertyId, initialSelectedProducts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -432,12 +436,27 @@ export default function SharedFirstRunPropertySetupWizard({
   ]);
 
   useEffect(() => {
-    if (!autoContinueToProduct || !productContinueInput || productContinueBlocked) return;
+    if (
+      loading ||
+      error ||
+      !shouldAutoContinueToProduct ||
+      !productContinueInput ||
+      productContinueBlocked
+    ) {
+      return;
+    }
     const key = `${productContinueInput.action}:${productContinueInput.product}:${productContinueInput.propertyId}`;
     if (automaticContinueKey.current === key) return;
     automaticContinueKey.current = key;
     onProductContinue(productContinueInput);
-  }, [autoContinueToProduct, onProductContinue, productContinueBlocked, productContinueInput]);
+  }, [
+    error,
+    loading,
+    onProductContinue,
+    productContinueBlocked,
+    productContinueInput,
+    shouldAutoContinueToProduct,
+  ]);
 
   const reloadStatus = async (propertyId?: string | null) => {
     const nextStatus = await api.getStatus({ entryProduct, returnTo, propertyId });
@@ -495,6 +514,7 @@ export default function SharedFirstRunPropertySetupWizard({
     setSaving(true);
     try {
       await api.saveAccountProductSelection(selectedProducts);
+      setShowProductSetupHubAfterSelection(true);
       await reloadStatus(view.selectedPropertyId);
     } catch (err) {
       setError(errorMessage(err));
@@ -610,7 +630,7 @@ export default function SharedFirstRunPropertySetupWizard({
 
       {(view.screen === "product_activation" || view.screen === "enter_product") && (
         <>
-          {autoContinueToProduct && productContinueInput && !productContinueBlocked ? (
+          {shouldAutoContinueToProduct && productContinueInput && !productContinueBlocked ? (
             <ProductRedirecting labels={labels} product={productContinueInput.product} />
           ) : (
             <ProductContinue
@@ -659,7 +679,7 @@ function WizardShell({
       : view.screen === "property_profile"
         ? null
         : view.screen === "product_selection"
-          ? "Choose one or more products to start with. You can add more later."
+          ? null
           : productSetupHub
             ? "Your hotel details are saved. Continue in each selected workspace to get every product ready."
             : "Your hotel details are saved. Continue in this workspace to finish product setup.";
@@ -1474,9 +1494,6 @@ function ProductSelection({
         <h2 className="mt-4 text-2xl font-semibold tracking-tight text-gray-950">
           Choose account systems
         </h2>
-        <p className="mt-2 max-w-xl text-sm leading-6 text-gray-600">
-          Your choices apply across this hotel group.
-        </p>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
@@ -1563,9 +1580,6 @@ function ProductSelection({
       )}
 
       <div className="mt-6 flex flex-col items-center gap-3">
-        <p className="text-sm font-medium text-gray-600" aria-live="polite">
-          {selectedProducts.length} system{selectedProducts.length === 1 ? "" : "s"} selected
-        </p>
         <button
           type="button"
           disabled={saving || needsSelection}
@@ -1853,7 +1867,11 @@ function buildProductContinueInput(
     propertyId: view.selectedPropertyId,
     missingSteps: activation?.missingSteps ?? [],
     returnTo,
-    action: activation?.status === "active" ? "enter_product" : "complete_product_activation",
+    action:
+      activation?.status === "active" ||
+      (activation?.status === "selected_incomplete" && activation.missingSteps.length === 0)
+        ? "enter_product"
+        : "complete_product_activation",
   };
 }
 
@@ -1868,6 +1886,9 @@ export function canContinueProductSetup(
   activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
 ): boolean {
   if (activation.status === "active") return true;
+  if (activation.status === "selected_incomplete" && activation.missingSteps.length === 0) {
+    return true;
+  }
   return isActionableSharedProductActivation({
     productStatus: activation.status,
     missingSteps: activation.missingSteps,
@@ -1906,6 +1927,9 @@ function productSetupNotice(
       ? "Marketplace verification is still in progress. No action is needed right now."
       : "This setup needs attention before it can continue. Please try again later.";
   }
+  if (isMarketplaceVerificationPending(product, activation)) {
+    return "Your Marketplace profile is under review. You can still open the workspace and manage it.";
+  }
   return null;
 }
 
@@ -1925,6 +1949,7 @@ function productSetupActionLabel(
       : "Setup pending";
   }
   if (activation.status === "active") return `Open ${label}`;
+  if (isMarketplaceVerificationPending(product, activation)) return `Open ${label}`;
   if (product === "booking") return "Continue in Booking Admin";
   if (product === "pms") return "Continue in PMS";
   return "Continue Marketplace setup";
@@ -1978,7 +2003,7 @@ export function validateProfileDraft(
   if (draft.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.contactEmail)) {
     errors.contactEmail = ["Enter a valid email address."];
   }
-  if (draft.phone && draft.phone.trim().length < 5) {
+  if (!isValidSharedAccountPhone(draft.phone)) {
     errors.phone = ["Enter a valid phone number."];
   }
   if (draft.website && !isHttpUrl(draft.website)) {

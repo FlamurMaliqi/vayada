@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { XMarkIcon, PlusIcon, CalendarIcon } from "@heroicons/react/24/outline";
-import { tripService } from "@/services/api/trips";
+import { createTripWriteIdempotencyKey, tripService } from "@/services/api/trips";
 import type { TripResponse } from "@/services/api/trips";
+import {
+  resolveSubmissionIdempotencyState,
+  type SubmissionIdempotencyState,
+} from "@/lib/utils/submissionIdempotency";
 
 interface Collaboration {
   id: string;
@@ -30,6 +34,11 @@ export function AddTripModal({ isOpen, onClose, onTripCreated }: AddTripModalPro
   const [collaborations, setCollaborations] = useState<Collaboration[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const submissionRef = useRef<SubmissionIdempotencyState | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) submissionRef.current = null;
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -55,6 +64,12 @@ export function AddTripModal({ isOpen, onClose, onTripCreated }: AddTripModalPro
     setFormData({ tripName: "", location: "", startDate: "", endDate: "", notes: "" });
     setCollaborations([]);
     setError("");
+    submissionRef.current = null;
+  };
+
+  const handleClose = () => {
+    resetForm();
+    onClose();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -63,32 +78,46 @@ export function AddTripModal({ isOpen, onClose, onTripCreated }: AddTripModalPro
     setSaving(true);
 
     try {
-      // 1. Create the trip
-      const trip = await tripService.createTrip({
+      const tripRequest = {
         name: formData.tripName,
         location: formData.location || undefined,
         start_date: formData.startDate,
         end_date: formData.endDate,
         notes: formData.notes || undefined,
+      };
+      const externalCollaborationRequests = collaborations
+        .filter((collab) => collab.hotelName.trim())
+        .map((collab) => ({
+          keyName: `child:${collab.id}`,
+          data: {
+            title: collab.hotelName,
+            hotel_name: collab.hotelName,
+            collaboration_type: collab.type as "Custom / External" | "Paid" | "Free Stay",
+            start_date: formData.startDate,
+            end_date: formData.endDate,
+            deliverables: collab.deliverables || undefined,
+          },
+        }));
+      const submission = resolveSubmissionIdempotencyState(
+        submissionRef.current,
+        JSON.stringify({ tripRequest, externalCollaborationRequests }),
+        ["trip", ...externalCollaborationRequests.map(({ keyName }) => keyName)],
+        (keyName) =>
+          keyName === "trip"
+            ? createTripWriteIdempotencyKey("trip.create", "new")
+            : createTripWriteIdempotencyKey("external-collaboration.create", keyName),
+      );
+      submissionRef.current = submission;
+
+      const trip = await tripService.createTrip(tripRequest, {
+        idempotencyKey: submission.keys.trip,
       });
 
-      // 2. Create any inline external collaborations linked to this trip
-      for (const collab of collaborations) {
-        if (collab.hotelName.trim()) {
-          try {
-            await tripService.createExternalCollaboration({
-              trip_id: trip.id,
-              title: collab.hotelName,
-              hotel_name: collab.hotelName,
-              collaboration_type: collab.type as "Custom / External" | "Paid" | "Free Stay",
-              start_date: formData.startDate,
-              end_date: formData.endDate,
-              deliverables: collab.deliverables || undefined,
-            });
-          } catch {
-            // Non-fatal: continue with other collaborations
-          }
-        }
+      for (const request of externalCollaborationRequests) {
+        await tripService.createExternalCollaboration(
+          { trip_id: trip.id, ...request.data },
+          { idempotencyKey: submission.keys[request.keyName] },
+        );
       }
 
       onTripCreated?.(trip);
@@ -107,7 +136,7 @@ export function AddTripModal({ isOpen, onClose, onTripCreated }: AddTripModalPro
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity backdrop-blur-sm"
-        onClick={onClose}
+        onClick={handleClose}
       />
 
       {/* Modal Content */}
@@ -118,7 +147,7 @@ export function AddTripModal({ isOpen, onClose, onTripCreated }: AddTripModalPro
               <button
                 type="button"
                 className="rounded-full p-2 text-gray-400 hover:text-gray-500 hover:bg-gray-100 transition-colors focus:outline-none"
-                onClick={onClose}
+                onClick={handleClose}
               >
                 <span className="sr-only">Close</span>
                 <XMarkIcon className="h-6 w-6" aria-hidden="true" />
@@ -364,7 +393,7 @@ export function AddTripModal({ isOpen, onClose, onTripCreated }: AddTripModalPro
               <div className="flex justify-end gap-3 mt-10">
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="px-8 py-3 rounded-xl border border-gray-100 bg-white text-[15px] text-gray-900 font-bold hover:bg-gray-50 transition-all"
                 >
                   Cancel

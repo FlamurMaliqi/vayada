@@ -299,6 +299,8 @@ VALUES
       "bookingFilters": ["oceanView", "spa_access"],
       "customFilters": {"spa_access": "Spa access"},
       "filterRooms": {"oceanView": ["room_101"], "spa_access": ["room_102"]},
+      "branding_primary_color": "#0f766e",
+      "branding_font_pairing": "Inter / Merriweather",
       "sourceFreshness": {"booking_hotels": {"status": "fresh", "snapshotAt": "2026-06-09T08:00:00Z"}}
     }',
     'd4000000-0000-0000-0000-000000000682',

@@ -9,7 +9,7 @@ describe("uploadImages", () => {
     vi.resetModules();
   });
 
-  it("uses platform media upload sessions on the configured API", async () => {
+  it("uses the explicitly captured Booking hotel for platform media uploads", async () => {
     vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
     const window = createWindowWithStorage();
     vi.stubGlobal("window", window);
@@ -19,15 +19,23 @@ describe("uploadImages", () => {
     const { uploadImages } = await import("./uploadImage");
     setAuthKitSession({
       accessToken: "authkit-token",
+      resources: {
+        "booking:booking_hotel": ["booking_hotel_alpenrose", "booking_hotel_bergwald"],
+      },
       user: { id: "user_1", email: "owner@example.com", status: "active" },
     });
+    window.localStorage.setItem("selectedHotelId", "booking_hotel_alpenrose");
 
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer authkit-token");
       if (url === "https://next-api.vayada.com/api/media/upload-sessions") {
         expect(JSON.parse(String(init?.body))).toMatchObject({
-          purpose: "property.gallery_image",
-          resource: { product: "booking", resourceType: "booking_hotel" },
+          purpose: "property.hero_image",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_bergwald",
+          },
         });
         return jsonResponse({
           uploadSession: { sessionId: "session_1" },
@@ -55,12 +63,16 @@ describe("uploadImages", () => {
     vi.stubGlobal("fetch", fetch);
 
     await expect(
-      uploadImages(new File(["image"], "room.jpg", { type: "image/jpeg" })),
+      uploadImages(
+        new File(["image"], "room.jpg", { type: "image/jpeg" }),
+        "property.hero_image",
+        "booking_hotel_bergwald",
+      ),
     ).resolves.toEqual(["https://cdn.vayada.com/media/room.jpg"]);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("returns the storage key when platform media has no public URL yet", async () => {
+  it("rejects a finalized image that has no public HTTPS URL", async () => {
     vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
     const { setAuthKitSession } = await import("@/services/auth/sessionStore");
     const { uploadSingleImage } = await import("./uploadImage");
@@ -94,7 +106,29 @@ describe("uploadImages", () => {
         new File(["image"], "hero.jpg", { type: "image/jpeg" }),
         "property.hero_image",
       ),
-    ).resolves.toBe("media/hero.jpg");
+    ).rejects.toThrow("did not return a public HTTPS image URL");
+  });
+
+  it("rejects an explicit Booking hotel outside the active organization scope", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const { setAuthKitSession } = await import("@/services/auth/sessionStore");
+    const { uploadSingleImage } = await import("./uploadImage");
+    setAuthKitSession({
+      accessToken: "authkit-token",
+      resources: { "booking:booking_hotel": ["booking_hotel_alpenrose"] },
+      user: { id: "user_1", email: "owner@example.com", status: "active" },
+    });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      uploadSingleImage(
+        new File(["image"], "hero.jpg", { type: "image/jpeg" }),
+        "property.hero_image",
+        "booking_hotel_bergwald",
+      ),
+    ).rejects.toThrow("outside the active organization scope");
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

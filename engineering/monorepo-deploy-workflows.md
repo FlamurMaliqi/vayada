@@ -8,17 +8,17 @@ The monorepo keeps deploy workflows only for the production Python APIs and the
 parallel `next-*` validation stack. They are manually dispatchable and also run
 on relevant pushes to `main`.
 
-| Runtime | Workflow |
-| --- | --- |
-| Marketplace API | `.github/workflows/deploy-marketplace-api.yml` |
-| Booking API | `.github/workflows/deploy-booking-api.yml` |
-| PMS API | `.github/workflows/deploy-pms-api.yml` |
-| Next TypeScript API | `.github/workflows/deploy-next-api.yml` |
-| Next Marketplace Web | `.github/workflows/deploy-next-marketplace-web.yml` |
-| Next Vayada Admin | `.github/workflows/deploy-next-vayada-admin.yml` |
-| Next Booking Web | `.github/workflows/deploy-next-booking-web.yml` |
-| Next Booking Admin | `.github/workflows/deploy-next-booking-admin.yml` |
-| Next PMS Web | `.github/workflows/deploy-next-pms-web.yml` |
+| Runtime                  | Workflow                                                |
+| ------------------------ | ------------------------------------------------------- |
+| Marketplace API          | `.github/workflows/deploy-marketplace-api.yml`          |
+| Booking API              | `.github/workflows/deploy-booking-api.yml`              |
+| PMS API                  | `.github/workflows/deploy-pms-api.yml`                  |
+| Next TypeScript API      | `.github/workflows/deploy-next-api.yml`                 |
+| Next Marketplace Web     | `.github/workflows/deploy-next-marketplace-web.yml`     |
+| Next Vayada Admin        | `.github/workflows/deploy-next-vayada-admin.yml`        |
+| Next Booking Web         | `.github/workflows/deploy-next-booking-web.yml`         |
+| Next Booking Admin       | `.github/workflows/deploy-next-booking-admin.yml`       |
+| Next PMS Web             | `.github/workflows/deploy-next-pms-web.yml`             |
 | Next Affiliate Dashboard | `.github/workflows/deploy-next-affiliate-dashboard.yml` |
 
 ECS-backed workflows publish a SHA-pinned image and send an

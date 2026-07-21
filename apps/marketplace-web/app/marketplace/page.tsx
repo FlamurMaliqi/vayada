@@ -13,8 +13,16 @@ import { hotelService } from "@/services/api/hotels";
 import { creatorService } from "@/services/api/creators";
 import { ApiErrorResponse } from "@/services/api/client";
 import { checkProfileStatus } from "@/lib/utils";
-import { resolveMarketplaceSetupGuard } from "@/lib/utils/sharedSetupGuard";
+import {
+  marketplaceGuardRedirectPath,
+  resolveMarketplaceSetupGuard,
+} from "@/lib/utils/sharedSetupGuard";
 import { hasRequiredCreatorAccountDetails } from "@/lib/utils/creatorAccountRequirements";
+import {
+  filterMarketplaceHotels,
+  sortMarketplaceHotels,
+  type MarketplaceHotelSort,
+} from "@/lib/utils/marketplaceHotels";
 import { authService } from "@/services/auth";
 
 export default function MarketplacePage() {
@@ -28,7 +36,7 @@ export default function MarketplacePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortOption, setSortOption] = useState<string>("relevance");
+  const [sortOption, setSortOption] = useState<MarketplaceHotelSort>("relevance");
   const [filters, setFilters] = useState<{
     hotelType?: string | string[];
     offering?: string | string[];
@@ -73,8 +81,9 @@ export default function MarketplacePage() {
             STORAGE_KEYS.PROFILE_COMPLETE,
             String(decision.action === "enter_product"),
           );
-          if (decision.action === "redirect_to_setup") {
-            router.replace(decision.redirectPath);
+          const redirectPath = marketplaceGuardRedirectPath(decision);
+          if (redirectPath) {
+            router.replace(redirectPath);
             return;
           }
           setProfileReady(true);
@@ -119,7 +128,7 @@ export default function MarketplacePage() {
     if (userType && profileReady) {
       loadData();
     }
-  }, [filters, userType, profileReady]);
+  }, [userType, profileReady]);
 
   const loadData = async () => {
     if (!userType) return;
@@ -162,73 +171,8 @@ export default function MarketplacePage() {
   };
 
   const filteredHotels = useMemo(
-    () =>
-      hotels.filter((hotel) => {
-        // Search filter
-        if (searchQuery) {
-          const query = searchQuery.toLowerCase();
-          const matchesSearch =
-            hotel.name.toLowerCase().includes(query) ||
-            hotel.location.toLowerCase().includes(query) ||
-            hotel.description.toLowerCase().includes(query);
-          if (!matchesSearch) return false;
-        }
-
-        // Hotel type filter (multiselect)
-        if (filters.hotelType) {
-          const selectedTypes = Array.isArray(filters.hotelType)
-            ? filters.hotelType
-            : [filters.hotelType];
-
-          // Filter values now match data values exactly, so we can use them directly
-          const allowedTypes = selectedTypes;
-
-          // Check if hotel's accommodation type matches any of the allowed types
-          if (!hotel.accommodationType || !allowedTypes.includes(hotel.accommodationType)) {
-            return false;
-          }
-        }
-
-        // Offering filter (multiselect)
-        if (filters.offering) {
-          const selectedOfferings = Array.isArray(filters.offering)
-            ? filters.offering
-            : [filters.offering];
-
-          // Map filter values to data values
-          const offeringMap: Record<string, string[]> = {
-            "Free stay": ["Kostenlos"],
-            "Paid stay": ["Bezahlt"],
-            Discount: ["Kostenlos", "Bezahlt"], // Hybrid can be either
-          };
-
-          // Get all possible collaboration types for selected filters
-          const allowedTypes = selectedOfferings.flatMap((offering) => offeringMap[offering] || []);
-
-          // Check if hotel's collaboration type matches any of the allowed types
-          if (!hotel.collaborationType || !allowedTypes.includes(hotel.collaborationType)) {
-            return false;
-          }
-        }
-
-        // Availability filter (multiselect)
-        if (filters.availability && hotel.availability) {
-          const selectedMonths = Array.isArray(filters.availability)
-            ? filters.availability
-            : [filters.availability];
-
-          // Backend returns months in English, so we can check directly
-          // Check if hotel's availability includes any of the selected months
-          const hasAvailability = selectedMonths.some((month) =>
-            hotel.availability?.includes(month),
-          );
-
-          if (!hasAvailability) return false;
-        }
-
-        return true;
-      }),
-    [hotels, searchQuery, filters.hotelType, filters.offering, filters.availability],
+    () => filterMarketplaceHotels(hotels, searchQuery, filters),
+    [hotels, searchQuery, filters],
   );
 
   const filteredCreators = useMemo(
@@ -324,28 +268,10 @@ export default function MarketplacePage() {
   );
 
   // Memoized sorted results
-  const sortedHotels = useMemo(() => {
-    const sorted = [...filteredHotels];
-    switch (sortOption) {
-      case "name-asc":
-        sorted.sort((a, b) => a.name.localeCompare(b.name));
-        break;
-      case "name-desc":
-        sorted.sort((a, b) => b.name.localeCompare(a.name));
-        break;
-      case "newest":
-        sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        break;
-      case "oldest":
-        sorted.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-        break;
-      case "relevance":
-      default:
-        break;
-    }
-
-    return sorted;
-  }, [filteredHotels, sortOption]);
+  const sortedHotels = useMemo(
+    () => sortMarketplaceHotels(filteredHotels, sortOption, searchQuery, currentCreator),
+    [filteredHotels, sortOption, searchQuery, currentCreator],
+  );
 
   const sortedCreators = useMemo(() => {
     const sorted = [...filteredCreators];
@@ -402,7 +328,7 @@ export default function MarketplacePage() {
               <div className="flex shrink-0 items-center gap-2">
                 <select
                   value={sortOption}
-                  onChange={(e) => setSortOption(e.target.value)}
+                  onChange={(e) => setSortOption(e.target.value as MarketplaceHotelSort)}
                   className="h-8 rounded border border-gray-200 bg-white px-2 text-xs font-medium text-gray-700 focus:border-gray-300 focus:ring-2 focus:ring-gray-100"
                   aria-label="Sort marketplace results"
                 >

@@ -25,6 +25,7 @@ export default function ColorsTab({ primaryColor, setPrimaryColor, applyPreset }
             >
               <input
                 type="color"
+                aria-label="Primary brand color picker"
                 value={primaryColor}
                 onChange={(e) => setPrimaryColor(e.target.value)}
                 className="opacity-0 w-0 h-0"
@@ -32,6 +33,7 @@ export default function ColorsTab({ primaryColor, setPrimaryColor, applyPreset }
             </label>
             <input
               type="text"
+              aria-label="Primary brand color"
               value={primaryColor}
               onChange={(e) => setPrimaryColor(e.target.value)}
               className="w-20 px-2 py-1 border border-gray-300 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"

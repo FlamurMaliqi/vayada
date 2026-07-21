@@ -3,11 +3,6 @@ import { getSelectedBookingHotelId, listScopedBookingHotelIds } from "../api/boo
 import { getBookingHotelPropertyLink } from "../api/bookingPropertyLinkClient";
 import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
 import {
-  getBookingRoomFilterSettings,
-  updateBookingRoomFilterSettings,
-  type BookingRoomFilterSettings,
-} from "../api/bookingRoomFilterSettingsClient";
-import {
   deleteBookingCustomDomain,
   getBookingCustomDomain,
   upsertBookingCustomDomain,
@@ -99,47 +94,38 @@ export interface DesignSettings {
   hero_subtext: string;
   primary_color: string;
   font_pairing: string;
-  booking_filters: string[];
-  custom_filters: Record<string, string>;
-  filter_rooms: Record<string, string[]>;
 }
 
 export type DesignSettingsUpdate = Partial<DesignSettings>;
 
-const DEFAULT_DESIGN_SETTINGS: DesignSettings = {
-  hero_image: "",
-  hero_heading: "",
-  hero_subtext: "",
-  primary_color: "#4F46E5",
-  font_pairing: "high-end-serif",
-  booking_filters: [],
-  custom_filters: {},
-  filter_rooms: {},
+type BookingDesignSettings = {
+  heroImage: string;
+  heroHeading: string;
+  heroSubtext: string;
+  primaryColor: string;
+  fontPairing: string;
 };
 
-function toDesignSettings(settings: BookingRoomFilterSettings): DesignSettings {
+type BookingDesignSettingsUpdate = Partial<BookingDesignSettings>;
+
+function toDesignSettings(branding: BookingDesignSettings): DesignSettings {
   return {
-    ...DEFAULT_DESIGN_SETTINGS,
-    booking_filters: settings.bookingFilters,
-    custom_filters: settings.customFilters,
-    filter_rooms: settings.filterRooms,
+    hero_image: branding.heroImage,
+    hero_heading: branding.heroHeading,
+    hero_subtext: branding.heroSubtext,
+    primary_color: branding.primaryColor,
+    font_pairing: branding.fontPairing,
   };
 }
 
-function hasRoomFilterDesignUpdate(data: DesignSettingsUpdate): boolean {
-  return (
-    data.booking_filters !== undefined ||
-    data.custom_filters !== undefined ||
-    data.filter_rooms !== undefined
-  );
-}
-
-function unsupportedDesignUpdateKeys(data: DesignSettingsUpdate): string[] {
-  return (Object.keys(data) as (keyof DesignSettingsUpdate)[]).filter(
-    (key) =>
-      !["booking_filters", "custom_filters", "filter_rooms"].includes(key) &&
-      data[key] !== undefined,
-  );
+function toBrandingDesignUpdate(data: DesignSettingsUpdate): BookingDesignSettingsUpdate {
+  return {
+    heroImage: data.hero_image,
+    heroHeading: data.hero_heading,
+    heroSubtext: data.hero_subtext,
+    primaryColor: data.primary_color,
+    fontPairing: data.font_pairing,
+  };
 }
 
 function legacyScopedBookingHotels(): HotelSummary[] {
@@ -225,6 +211,26 @@ async function updateTargetPropertySettings(
   const hotelId = resolveBookingHotelId(explicitHotelId);
   return apiClient.patch<PropertySettings>(
     `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/property`,
+    data,
+    omitHotelContext,
+  );
+}
+
+async function getTargetDesignSettings(explicitHotelId?: string): Promise<BookingDesignSettings> {
+  const hotelId = resolveBookingHotelId(explicitHotelId);
+  return apiClient.get<BookingDesignSettings>(
+    `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/design`,
+    omitHotelContext,
+  );
+}
+
+async function updateTargetDesignSettings(
+  data: BookingDesignSettingsUpdate,
+  explicitHotelId?: string,
+): Promise<BookingDesignSettings> {
+  const hotelId = resolveBookingHotelId(explicitHotelId);
+  return apiClient.patch<BookingDesignSettings>(
+    `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/design`,
     data,
     omitHotelContext,
   );
@@ -366,34 +372,19 @@ export const settingsService = {
   verifyEmailChange: (token: string) =>
     apiClient.post<{ message: string; email: string }>("/auth/verify-email-change", { token }),
 
-  getDesignSettings: async (): Promise<DesignSettings> =>
-    toDesignSettings(
-      await getBookingRoomFilterSettings({ hotelId: await resolveBookingHotelId() }),
-    ),
+  getDesignSettings: async (explicitHotelId?: string): Promise<DesignSettings> => {
+    const hotelId = resolveBookingHotelId(explicitHotelId);
+    return toDesignSettings(await getTargetDesignSettings(hotelId));
+  },
 
-  updateDesignSettings: async (data: DesignSettingsUpdate): Promise<DesignSettings> => {
-    const unsupportedKeys = unsupportedDesignUpdateKeys(data);
-    if (unsupportedKeys.length > 0) {
-      throw new Error(
-        `Design media and color settings are not available on next-api yet: ${unsupportedKeys.join(", ")}.`,
-      );
-    }
-
-    if (!hasRoomFilterDesignUpdate(data)) {
-      throw new Error("Design media and color settings are not available on next-api yet.");
-    }
-
-    const hotelId = await resolveBookingHotelId();
-    const current = await getBookingRoomFilterSettings({ hotelId });
-    const saved = await updateBookingRoomFilterSettings({
-      hotelId,
-      body: {
-        bookingFilters: data.booking_filters ?? current.bookingFilters,
-        customFilters: data.custom_filters ?? current.customFilters,
-        filterRooms: data.filter_rooms ?? current.filterRooms,
-      },
-    });
-    return toDesignSettings(saved);
+  updateDesignSettings: async (
+    data: DesignSettingsUpdate,
+    explicitHotelId?: string,
+  ): Promise<DesignSettings> => {
+    const hotelId = resolveBookingHotelId(explicitHotelId);
+    return toDesignSettings(
+      await updateTargetDesignSettings(toBrandingDesignUpdate(data), hotelId),
+    );
   },
 
   getCustomDomainStatus: async (): Promise<CustomDomainStatus> =>

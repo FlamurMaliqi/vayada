@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSharedAccountProfileImageUploader,
   isSharedAccountDetailsComplete,
+  isValidSharedAccountPhone,
   normalizeSharedAccountName,
   sharedAccountProfileImageError,
   splitSharedAccountName,
@@ -10,8 +11,23 @@ import {
 describe("shared account details", () => {
   it("requires both first and last name before skipping the shared step", () => {
     expect(isSharedAccountDetailsComplete(null)).toBe(false);
-    expect(isSharedAccountDetailsComplete("Flamur")).toBe(false);
-    expect(isSharedAccountDetailsComplete("Flamur Maliqi")).toBe(true);
+    expect(isSharedAccountDetailsComplete({ name: "Flamur" })).toBe(false);
+    expect(isSharedAccountDetailsComplete({ name: "Flamur Maliqi" })).toBe(false);
+    expect(
+      isSharedAccountDetailsComplete({
+        name: "Flamur Maliqi",
+        profilePictureUrl: "https://media.example/profile.webp",
+        profilePictureMediaObjectId: "media-profile-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("validates optional phone numbers by format and digit count", () => {
+    expect(isValidSharedAccountPhone("")).toBe(true);
+    expect(isValidSharedAccountPhone("+49 89 123456")).toBe(true);
+    expect(isValidSharedAccountPhone("(212) 555-0198")).toBe(true);
+    expect(isValidSharedAccountPhone("sdfdsfsfsdfdsf")).toBe(false);
+    expect(isValidSharedAccountPhone("+49 12")).toBe(false);
   });
 
   it("prefills first name and keeps the remaining name as the last name", () => {

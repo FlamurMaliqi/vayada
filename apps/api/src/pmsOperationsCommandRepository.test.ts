@@ -309,7 +309,8 @@ describe("PMS operations command repository", () => {
     expect(outboxCalls[0]?.values?.[1]).toBe(
       `pms.ari_changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
     );
-    expect(auditCall?.values?.[2]).toBe("f6852000-0000-0000-0000-000000000001");
+    expect(auditCall?.text).toMatch(/'property',\s+NULL,\s+\$3::uuid/);
+    expect(auditCall?.values?.[2]).toBe(command.propertyId);
     expect(
       target.calls.filter((call) => call.text.includes("INSERT INTO pms.room_types")),
     ).toHaveLength(1);
@@ -362,6 +363,11 @@ describe("PMS operations command repository", () => {
       "pms.room_type.created",
       "pms.room_type.updated",
     ]);
+    const updateAuditCall = target.calls.find((call) =>
+      call.text.includes("'pms.room_type.updated'"),
+    );
+    expect(updateAuditCall?.text).toMatch(/'property',\s+NULL,\s+\$3::uuid/);
+    expect(updateAuditCall?.values?.[2]).toBe(command.propertyId);
     expect(target.calls.filter((call) => call.text.includes("UPDATE pms.room_types"))).toHaveLength(
       1,
     );

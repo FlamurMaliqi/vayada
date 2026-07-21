@@ -21,6 +21,9 @@ export interface FontPairing {
 interface BrandMediaStepProps {
   heroImage: string;
   setHeroImage: (v: string) => void;
+  heroImageRequired?: boolean;
+  heroHeading?: string;
+  setHeroHeading?: (v: string) => void;
   primaryColor: string;
   setPrimaryColor: (v: string) => void;
   accentColor?: string;
@@ -50,6 +53,9 @@ const defaultFormatPrice = (amount: number, currency: string) => `${currency} ${
 export default function BrandMediaStep({
   heroImage,
   setHeroImage,
+  heroImageRequired = true,
+  heroHeading,
+  setHeroHeading,
   primaryColor,
   setPrimaryColor,
   accentColor,
@@ -75,18 +81,26 @@ export default function BrandMediaStep({
 }: BrandMediaStepProps) {
   const currentFont = fontPairings.find((f) => f.id === selectedFont) || fontPairings[0];
   const showAccentPicker = accentColor !== undefined && setAccentColor !== undefined;
+  const previewHeading = heroHeading?.trim() || propertyName;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-y-auto lg:overflow-visible">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 w-full shrink-0">{stepIndicators}</div>
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 pb-5 flex flex-col lg:flex-row gap-5 flex-1 min-h-0 w-full">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-4 w-full shrink-0">{stepIndicators}</div>
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-1 pb-4 text-center w-full shrink-0">
+        <h1 className="text-2xl font-semibold text-gray-900">Brand &amp; Media</h1>
+        <p className="mt-1 text-sm text-gray-500">
+          Shape your booking page and preview the guest experience as you edit.
+        </p>
+      </div>
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pb-5 flex flex-col lg:flex-row gap-4 flex-1 min-h-0 w-full">
         {/* LEFT: Controls panel */}
-        <div className="w-full lg:w-[380px] lg:shrink-0 flex flex-col lg:min-h-0">
+        <div className="w-full min-w-0 lg:w-[340px] lg:shrink-0 flex flex-col lg:min-h-0">
           <div className="flex-1 lg:overflow-y-auto space-y-3 pb-3">
             {/* Hero Image */}
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
               <h2 className="text-[13px] font-semibold text-gray-900">
-                Hero Image <span className="text-red-500">*</span>
+                Hero Image
+                {heroImageRequired && <span className="text-red-500"> *</span>}
               </h2>
               <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">1920x800px recommended</p>
 
@@ -99,6 +113,8 @@ export default function BrandMediaStep({
                     </div>
                   )}
                   <button
+                    type="button"
+                    aria-label="Remove hero image"
                     onClick={() => {
                       setHeroImage("");
                       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -110,6 +126,8 @@ export default function BrandMediaStep({
                 </div>
               ) : (
                 <button
+                  type="button"
+                  aria-label="Upload hero image"
                   onClick={() => fileInputRef.current?.click()}
                   className="w-full h-36 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors"
                 >
@@ -122,12 +140,16 @@ export default function BrandMediaStep({
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                aria-label="Hero image"
+                aria-required={heroImageRequired}
                 onChange={handleImageUpload}
                 className="hidden"
               />
 
               {heroImage && (
                 <button
+                  type="button"
+                  aria-label="Replace hero image"
                   onClick={() => fileInputRef.current?.click()}
                   className="mt-2 w-full py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                 >
@@ -137,7 +159,7 @@ export default function BrandMediaStep({
             </div>
 
             {/* Colour Profile */}
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
               <h2 className="text-[13px] font-semibold text-gray-900">Colour Profile</h2>
               <p className="text-[12px] text-gray-500 mt-0.5 mb-3">Define your brand colors</p>
 
@@ -154,6 +176,7 @@ export default function BrandMediaStep({
                     >
                       <input
                         type="color"
+                        aria-label="Primary brand color picker"
                         value={primaryColor}
                         onChange={(e) => setPrimaryColor(e.target.value)}
                         className="opacity-0 w-0 h-0"
@@ -161,6 +184,7 @@ export default function BrandMediaStep({
                     </label>
                     <input
                       type="text"
+                      aria-label="Primary brand color"
                       value={primaryColor}
                       onChange={(e) => setPrimaryColor(e.target.value)}
                       className="w-24 px-2 py-1 border border-gray-300 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-gray-900"
@@ -228,7 +252,7 @@ export default function BrandMediaStep({
             </div>
 
             {/* Typography */}
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
               <h2 className="text-[13px] font-semibold text-gray-900">Typography</h2>
               <p className="text-[12px] text-gray-500 mt-0.5 mb-3">Select a font pairing</p>
 
@@ -236,6 +260,9 @@ export default function BrandMediaStep({
                 {fontPairings.map((pairing) => (
                   <button
                     key={pairing.id}
+                    type="button"
+                    aria-label={`Font pairing: ${pairing.name}`}
+                    aria-pressed={selectedFont === pairing.id}
                     onClick={() => setSelectedFont(pairing.id)}
                     className={`w-full flex items-center justify-between p-3 rounded-lg border transition-all text-left ${
                       selectedFont === pairing.id
@@ -265,53 +292,88 @@ export default function BrandMediaStep({
               </div>
             </div>
 
-            {/* Property Description */}
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <h2 className="text-[13px] font-semibold text-gray-900">Property Description</h2>
+            {/* Hero Text */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
+              <h2 className="text-[13px] font-semibold text-gray-900">
+                {setHeroHeading ? "Hero Text" : "Property Description"}
+              </h2>
               <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">
-                Shown below your property name on the booking page
+                {setHeroHeading
+                  ? "Customize the heading and subtext on the booking page"
+                  : "Shown below your property name on the booking page"}
               </p>
-              <textarea
-                value={propertyDescription}
-                onChange={(e) => {
-                  if (e.target.value.length <= 1000) setPropertyDescription(e.target.value);
-                }}
-                rows={4}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-gray-900 resize-none"
-                placeholder="A boutique escape featuring private pools, ocean views, and tranquil luxury..."
-              />
-              <p className="text-[11px] text-gray-400 mt-1 text-right">
-                {propertyDescription.length}/1000 characters
-              </p>
+              <div className="space-y-2.5">
+                {setHeroHeading && (
+                  <div>
+                    <label
+                      htmlFor="brand-media-hero-heading"
+                      className="block text-[12px] font-medium text-gray-700 mb-0.5"
+                    >
+                      Heading
+                    </label>
+                    <input
+                      id="brand-media-hero-heading"
+                      type="text"
+                      aria-label="Hero heading"
+                      value={heroHeading ?? ""}
+                      onChange={(e) => setHeroHeading(e.target.value)}
+                      maxLength={160}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-gray-900"
+                      placeholder={propertyName || "Your hotel name"}
+                    />
+                  </div>
+                )}
+                <div>
+                  <label
+                    htmlFor="brand-media-hero-subtext"
+                    className="block text-[12px] font-medium text-gray-700 mb-0.5"
+                  >
+                    Subtext
+                  </label>
+                  <textarea
+                    id="brand-media-hero-subtext"
+                    aria-label="Hero subtext"
+                    value={propertyDescription}
+                    onChange={(e) => setPropertyDescription(e.target.value)}
+                    maxLength={1000}
+                    rows={4}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-gray-900 resize-none"
+                    placeholder="A boutique escape featuring private pools, ocean views, and tranquil luxury..."
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1 text-right">
+                    {propertyDescription.length}/1000 characters
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
 
           {/* Bottom buttons */}
-          <div className="mt-6 shrink-0 flex items-center justify-between gap-3">
+          <div className="mt-4 shrink-0 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3">
             <button
               onClick={onBack}
-              className="px-5 py-2 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              className="w-full sm:w-auto px-6 py-2.5 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-full hover:bg-gray-50 transition-colors"
             >
               Back
             </button>
             <button
               onClick={onContinue}
               disabled={!canProceed}
-              className="px-5 py-2 bg-primary-500 text-white text-[13px] font-semibold rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full sm:w-auto px-6 py-2.5 bg-primary-500 text-white text-[13px] font-semibold rounded-full hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Continue
             </button>
           </div>
 
           {error && (
-            <div className="mt-2 bg-red-50 border border-red-200 rounded-lg p-3">
+            <div className="mt-2 bg-red-50 border border-red-200 rounded-xl p-3">
               <p className="text-[12px] text-red-700 font-medium">{error}</p>
             </div>
           )}
         </div>
 
         {/* RIGHT: Live preview */}
-        <div className="flex-1 min-w-0 bg-white rounded-lg border border-gray-200 flex flex-col min-h-[500px] lg:min-h-0">
+        <div className="flex-1 min-w-0 bg-white rounded-2xl border border-gray-200 overflow-hidden flex flex-col min-h-[360px] lg:min-h-0">
           {/* Browser chrome bar */}
           <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 shrink-0 bg-gray-50">
             <div className="flex gap-1">
@@ -373,7 +435,7 @@ export default function BrandMediaStep({
                   className="text-2xl italic text-white mb-1.5"
                   style={{ fontFamily: currentFont.headingFamily }}
                 >
-                  {propertyName || "Your Hotel Name"}
+                  {previewHeading || "Your Hotel Name"}
                 </h2>
                 <p
                   className="text-[11px] text-white/90 leading-relaxed max-w-sm"

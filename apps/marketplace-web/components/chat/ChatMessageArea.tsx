@@ -12,6 +12,11 @@ import dynamic from "next/dynamic";
 import { AvatarSimple } from "@/components/ui";
 import { SystemMessage } from "./SystemMessage";
 import type { MessageResponse, ConversationResponse } from "@/services/api/collaborations";
+import {
+  getValidatedChatAttachmentUrl,
+  isOwnChatMessage,
+  isSystemChatMessage,
+} from "@/lib/utils/chatMessages";
 
 // Dynamically import EmojiPicker to avoid SSR issues
 const EmojiPicker = dynamic(() => import("emoji-picker-react"), { ssr: false });
@@ -181,9 +186,21 @@ export function ChatMessageArea({
 
             {messages.length > 0 ? (
               messages.map((msg, idx) => {
-                const isSystem = msg.sender_id === null || msg.content_type === "system";
-                const isThem = !isSystem && msg.sender_name === activeChat.partner_name;
-                const isMe = !isSystem && !isThem;
+                const isSystem = isSystemChatMessage({
+                  senderId: msg.sender_id,
+                  senderSide: msg.sender_side,
+                  senderName: msg.sender_name,
+                  contentType: msg.content_type,
+                });
+                const isMe =
+                  !isSystem &&
+                  isOwnChatMessage(msg.sender_side, activeChat.my_role, {
+                    adapted: msg.legacy_adapted === true,
+                    senderName: msg.sender_name,
+                    partnerName: activeChat.partner_name,
+                  });
+                const isThem = !isSystem && !isMe;
+                const attachmentUrl = getValidatedChatAttachmentUrl(msg.metadata);
 
                 // Simple date grouping
                 const showDate =
@@ -233,11 +250,28 @@ export function ChatMessageArea({
                               }`}
                             >
                               {msg.content_type === "image" ? (
-                                <img
-                                  src={msg.content}
-                                  alt="Attachment"
-                                  className="max-w-full rounded-lg"
-                                />
+                                <>
+                                  {attachmentUrl ? (
+                                    <img
+                                      src={attachmentUrl}
+                                      alt={
+                                        typeof msg.metadata?.fileName === "string"
+                                          ? msg.metadata.fileName
+                                          : "Chat attachment"
+                                      }
+                                      className="max-w-full rounded-lg"
+                                    />
+                                  ) : (
+                                    <span className="text-xs opacity-80">
+                                      Image attachment unavailable
+                                    </span>
+                                  )}
+                                  {msg.content !== "Sent an image" && (
+                                    <p className="mt-2 whitespace-pre-wrap break-words">
+                                      {msg.content}
+                                    </p>
+                                  )}
+                                </>
                               ) : (
                                 msg.content
                               )}

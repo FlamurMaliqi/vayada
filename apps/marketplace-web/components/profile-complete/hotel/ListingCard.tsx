@@ -7,16 +7,17 @@ import type { ListingFormData } from "@/lib/types";
 import { ListingOfferings } from "./ListingOfferings";
 import { ListingRequirements } from "./ListingRequirements";
 
+export type ListingCardSection = "details" | "offerings" | "requirements";
+
 interface ListingCardProps {
   listing: ListingFormData;
   index: number;
+  section: ListingCardSection;
   isCollapsed: boolean;
   countryInput: string;
   countries: string[];
   imageInputRef: RefObject<HTMLInputElement>;
-  canRemove: boolean;
   onToggleCollapse: () => void;
-  onRemove: () => void;
   onUpdateListing: (
     index: number,
     field: keyof ListingFormData,
@@ -30,272 +31,266 @@ interface ListingCardProps {
 export function ListingCard({
   listing,
   index,
+  section,
   isCollapsed,
   countryInput,
   countries,
   imageInputRef,
-  canRemove,
   onToggleCollapse,
-  onRemove,
   onUpdateListing,
   onImageChange,
   onRemoveImage,
   onCountryInputChange,
 }: ListingCardProps) {
-  // Check if offer is complete (has all required basic fields)
+  // Show completion for the section the user is currently working on.
   const isComplete =
-    listing.name.trim() &&
-    listing.location.trim() &&
-    listing.accommodation_type.trim() &&
-    listing.description.trim() &&
-    listing.collaborationTypes.length > 0 &&
-    listing.availability.length > 0 &&
-    listing.platforms.length > 0 &&
-    listing.lookingForPlatforms.length > 0;
+    section === "details"
+      ? Boolean(
+          listing.name.trim() &&
+          listing.description.trim().length >= 10 &&
+          listing.images.length > 0,
+        )
+      : section === "offerings"
+        ? Boolean(
+            listing.collaborationTypes.length > 0 &&
+            listing.availability.length > 0 &&
+            listing.platforms.length > 0,
+          )
+        : listing.lookingForPlatforms.length > 0;
 
   return (
-    <div className="border border-gray-200 rounded-2xl p-5 space-y-4 bg-white shadow-sm">
+    <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-4">
       <div className="flex items-center justify-between">
         <button
           type="button"
           onClick={onToggleCollapse}
-          className="flex items-center gap-3 flex-1 text-left hover:opacity-80 transition-opacity"
+          aria-expanded={!isCollapsed}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
           <div
-            className={`w-8 h-8 rounded-lg flex items-center justify-center font-semibold text-sm ${
-              isComplete ? "bg-green-100 text-green-700" : "bg-[#EEF2FF] text-[#2F54EB]"
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm font-semibold ${
+              isComplete ? "bg-green-100 text-green-700" : "bg-primary-50 text-primary-700"
             }`}
           >
             {index + 1}
           </div>
-          <div className="flex-1">
-            <h4 className="font-semibold text-gray-900 text-base">
+          <div className="min-w-0 flex-1">
+            <h4 className="break-words text-base font-semibold text-gray-900">
               {listing.name || `Collaboration Offer ${index + 1}`}
             </h4>
             {isCollapsed && listing.name && (
-              <p className="text-xs text-gray-500 mt-0">
+              <p className="mt-0 text-xs text-gray-500">
                 {listing.location && `${listing.location}`}{" "}
                 {listing.accommodation_type && `${listing.accommodation_type}`}
               </p>
             )}
           </div>
           {isCollapsed ? (
-            <ChevronDownIcon className="w-4 h-4 text-gray-500" />
+            <ChevronDownIcon className="h-4 w-4 shrink-0 text-gray-500" />
           ) : (
-            <ChevronUpIcon className="w-4 h-4 text-gray-500" />
+            <ChevronUpIcon className="h-4 w-4 shrink-0 text-gray-500" />
           )}
         </button>
-        <div className="flex items-center gap-2">
-          {canRemove && (
-            <button
-              type="button"
-              onClick={onRemove}
-              className="p-1 rounded-md text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors"
-              title="Remove offer"
-              aria-label="Remove offer"
-            >
-              <XMarkIcon className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
       </div>
 
       {!isCollapsed && (
-        <>
+        <div className="space-y-4">
           {/* Basic Information */}
-          <div className="space-y-4">
-            <h5 className="text-base font-semibold text-gray-900">Basic Information</h5>
+          {section === "details" && (
+            <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-4 sm:p-5">
+              <h5 className="text-base font-semibold text-gray-900">Offer details</h5>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <Input
                 label="Offer title"
+                aria-label="Offer title"
                 type="text"
                 value={listing.name}
                 onChange={(e) => onUpdateListing(index, "name", e.target.value)}
                 required
-                placeholder="Hotel vayada"
-                className="bg-gray-50 border-gray-200"
+                placeholder="Three-night creator stay in Munich"
+                className="rounded-xl border-gray-200 bg-white px-3 py-2.5 focus:ring-primary-100"
               />
 
-              <Input
-                label="Hotel location"
-                type="text"
-                value={listing.location}
-                readOnly
-                helperText="From the shared hotel profile."
-                className="bg-gray-100 border-gray-200"
+              <Textarea
+                label="Description"
+                aria-label="Description"
+                value={listing.description}
+                onChange={(e) => onUpdateListing(index, "description", e.target.value)}
+                required
+                rows={2}
+                placeholder="A stunning beachfront villa with private pool and ocean views."
+                helperText="Minimum 10 characters"
+                className="rounded-xl border-gray-200 bg-white px-3 py-2.5 focus:ring-primary-100"
               />
-            </div>
 
-            <Input
-              label="Property type"
-              value={listing.accommodation_type}
-              readOnly
-              helperText="From the shared hotel profile."
-              className="bg-gray-100 border-gray-200"
-            />
-
-            <Textarea
-              label="Description"
-              value={listing.description}
-              onChange={(e) => onUpdateListing(index, "description", e.target.value)}
-              required
-              rows={3}
-              placeholder="A stunning beachfront villa with private pool and ocean views."
-              className="bg-gray-50 border-gray-200"
-            />
-
-            {/* Images */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-3">
-                Property Photos <span className="text-red-500">*</span>
-              </label>
-              {listing.images.length > 0 ? (
-                <div className="space-y-2">
-                  {/* Main Featured Image */}
-                  <div className="relative group w-full h-64 md:h-80 rounded-xl overflow-hidden shadow-md">
-                    <img
-                      src={listing.images[0]}
-                      alt={`${listing.name} - Main photo`}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      onError={(e) => {
-                        e.currentTarget.style.display = "none";
-                      }}
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                      <div className="absolute bottom-3 right-3">
-                        <button
-                          type="button"
-                          onClick={() => onRemoveImage(0)}
-                          className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg shadow-lg transition-all transform hover:scale-105 flex items-center gap-1.5"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                          Remove
-                        </button>
+              {/* Images */}
+              <div>
+                <label
+                  htmlFor={`offer-photos-${index}`}
+                  className="mb-3 block text-sm font-semibold text-gray-700"
+                >
+                  Offer photos{" "}
+                  <span className="text-red-500" aria-hidden="true">
+                    *
+                  </span>
+                  <span className="sr-only"> (required)</span>
+                </label>
+                {listing.images.length > 0 ? (
+                  <div className="space-y-3">
+                    {/* Main Featured Image */}
+                    <div className="group relative h-48 w-full overflow-hidden rounded-xl border border-gray-200 sm:h-56">
+                      <img
+                        src={listing.images[0]}
+                        alt={`${listing.name} - Main photo`}
+                        className="h-full w-full object-cover"
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                        <div className="absolute bottom-3 right-3">
+                          <button
+                            type="button"
+                            onClick={() => onRemoveImage(0)}
+                            className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                            Remove
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Thumbnail Grid */}
-                  {listing.images.length > 1 && (
-                    <div className="grid grid-cols-4 md:grid-cols-5 gap-2">
-                      {listing.images.slice(1, 6).map((image, imageIndex) => (
-                        <div key={imageIndex + 1} className="relative group aspect-square">
-                          <img
-                            src={image}
-                            alt={`${listing.name} - Photo ${imageIndex + 2}`}
-                            className="w-full h-full object-cover rounded-lg border-2 border-gray-200 shadow-sm group-hover:border-primary-400 group-hover:shadow-md transition-all cursor-pointer"
-                            onError={(e) => {
-                              e.currentTarget.style.display = "none";
-                            }}
-                          />
-                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 rounded-lg transition-all flex items-center justify-center">
-                            <button
-                              type="button"
-                              onClick={() => onRemoveImage(imageIndex + 1)}
-                              className="p-1.5 bg-red-500 hover:bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-lg transform hover:scale-110"
-                              title="Remove image"
-                            >
-                              <XMarkIcon className="w-3.5 h-3.5" />
-                            </button>
+                    {/* Thumbnail Grid */}
+                    {listing.images.length > 1 && (
+                      <div className="grid grid-cols-4 md:grid-cols-5 gap-2">
+                        {listing.images.slice(1, 6).map((image, imageIndex) => (
+                          <div key={imageIndex + 1} className="relative group aspect-square">
+                            <img
+                              src={image}
+                              alt={`${listing.name} - Photo ${imageIndex + 2}`}
+                              className="h-full w-full rounded-lg border border-gray-200 object-cover transition-colors group-hover:border-primary-300"
+                              onError={(e) => {
+                                e.currentTarget.style.display = "none";
+                              }}
+                            />
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 rounded-lg transition-all flex items-center justify-center">
+                              <button
+                                type="button"
+                                onClick={() => onRemoveImage(imageIndex + 1)}
+                                className="rounded-full bg-red-600 p-1.5 text-white opacity-100 transition-opacity hover:bg-red-700 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                                title="Remove image"
+                                aria-label={`Remove photo ${imageIndex + 2}`}
+                              >
+                                <XMarkIcon className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        ))}
 
-                      {/* Add More Button */}
-                      {listing.images.length < 10 && (
+                        {/* Add More Button */}
+                        {listing.images.length < 10 && (
+                          <button
+                            type="button"
+                            onClick={() => imageInputRef.current?.click()}
+                            className="group flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-500 transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600"
+                          >
+                            <PlusIcon className="w-5 h-5 mb-1" />
+                            <span className="text-[10px] font-medium">Add</span>
+                          </button>
+                        )}
+
+                        {/* Show remaining count if more than 6 images */}
+                        {listing.images.length > 6 && (
+                          <div className="aspect-square rounded-lg bg-gray-800/80 flex items-center justify-center text-white text-xs font-semibold">
+                            +{listing.images.length - 6}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Add First Image Button (if only one image) */}
+                    {listing.images.length === 1 && listing.images.length < 10 && (
+                      <div className="grid grid-cols-4 md:grid-cols-5 gap-2">
                         <button
                           type="button"
                           onClick={() => imageInputRef.current?.click()}
-                          className="aspect-square border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:border-primary-400 hover:bg-primary-50 hover:text-primary-500 transition-all group cursor-pointer bg-gray-50"
+                          className="group flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-500 transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600"
                         >
                           <PlusIcon className="w-5 h-5 mb-1" />
-                          <span className="text-[10px] font-medium">Add</span>
+                          <span className="text-[10px] font-medium">Add More</span>
                         </button>
-                      )}
-
-                      {/* Show remaining count if more than 6 images */}
-                      {listing.images.length > 6 && (
-                        <div className="aspect-square rounded-lg bg-gray-800/80 flex items-center justify-center text-white text-xs font-semibold">
-                          +{listing.images.length - 6}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Add First Image Button (if only one image) */}
-                  {listing.images.length === 1 && listing.images.length < 10 && (
-                    <div className="grid grid-cols-4 md:grid-cols-5 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => imageInputRef.current?.click()}
-                        className="aspect-square border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:border-primary-400 hover:bg-primary-50 hover:text-primary-500 transition-all group cursor-pointer bg-gray-50"
-                      >
-                        <PlusIcon className="w-5 h-5 mb-1" />
-                        <span className="text-[10px] font-medium">Add More</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div
-                  className="flex flex-col items-center justify-center p-12 border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 hover:border-primary-400 hover:bg-primary-50 transition-all group cursor-pointer"
-                  onClick={() => imageInputRef.current?.click()}
-                >
-                  <div className="w-20 h-20 rounded-full bg-white border-2 border-gray-200 group-hover:border-primary-400 flex items-center justify-center mb-4 transition-all shadow-sm">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth={1.5}
-                      stroke="currentColor"
-                      className="w-10 h-10 text-gray-400 group-hover:text-primary-500 transition-colors"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"
-                      />
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z"
-                      />
-                    </svg>
+                      </div>
+                    )}
                   </div>
-                  <p className="text-base font-semibold text-gray-700 group-hover:text-primary-600 transition-colors mb-1">
-                    Upload Property Photos
-                  </p>
-                  <p className="text-sm text-gray-500">
-                    Showcase your property with high-quality images
-                  </p>
-                  <p className="text-xs text-gray-400 mt-2">JPG, PNG, WEBP - Max 20MB per image</p>
-                </div>
-              )}
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                className="hidden"
-                onChange={onImageChange}
-                multiple
-              />
+                ) : (
+                  <button
+                    type="button"
+                    className="group flex w-full cursor-pointer items-center gap-3 rounded-xl border border-dashed border-gray-300 bg-white p-4 text-left transition-colors hover:border-primary-300 hover:bg-primary-50"
+                    onClick={() => imageInputRef.current?.click()}
+                  >
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-400 transition-colors group-hover:border-primary-300 group-hover:text-primary-600">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        strokeWidth={1.5}
+                        stroke="currentColor"
+                        className="h-5 w-5"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"
+                        />
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z"
+                        />
+                      </svg>
+                    </span>
+                    <span className="flex min-w-0 flex-col items-start">
+                      <span className="text-sm font-semibold text-gray-800 transition-colors group-hover:text-primary-700">
+                        Upload offer photos
+                      </span>
+                      <span className="mt-0.5 text-xs text-gray-400">
+                        JPG, PNG, WEBP · max 10 MB each
+                      </span>
+                    </span>
+                  </button>
+                )}
+                <input
+                  id={`offer-photos-${index}`}
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  onChange={onImageChange}
+                  multiple
+                  aria-required="true"
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Offerings Section */}
-          <ListingOfferings listing={listing} index={index} onUpdateListing={onUpdateListing} />
+          {section === "offerings" && (
+            <ListingOfferings listing={listing} index={index} onUpdateListing={onUpdateListing} />
+          )}
 
           {/* Looking For Section */}
-          <ListingRequirements
-            listing={listing}
-            index={index}
-            countryInput={countryInput}
-            countries={countries}
-            onUpdateListing={onUpdateListing}
-            onCountryInputChange={onCountryInputChange}
-          />
-        </>
+          {section === "requirements" && (
+            <ListingRequirements
+              listing={listing}
+              index={index}
+              countryInput={countryInput}
+              countries={countries}
+              onUpdateListing={onUpdateListing}
+              onCountryInputChange={onCountryInputChange}
+            />
+          )}
+        </div>
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   type GetObjectCommandOutput,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -17,14 +18,21 @@ import type {
   PlatformMediaVariantName,
   PlatformMediaVariantRecord,
 } from "../routes/platformMedia.js";
+import type { PlatformMediaObjectDeleter } from "../jobs/platformMediaCleanup.js";
+import type { PrivateDownloadPolicy } from "./mediaServing.js";
 
-const PROFILE_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
+const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "identity.user.profile_image",
+  "property.hero_image",
+  "property.gallery_image",
   "marketplace.creator.profile_image",
+  "marketplace.offer.media",
+  "marketplace.collaboration_chat.attachment",
 ]);
-const PROFILE_IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const MAX_PROFILE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
-const MAX_PROFILE_IMAGE_PIXELS = 25_000_000;
+const IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const MAX_SIGNED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 25_000_000;
+const PRIVATE_CACHE_CONTROL = "private, no-store";
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const VARIANTS: Record<
@@ -45,7 +53,14 @@ export type S3PlatformMediaAdapterOptions = {
   s3Client?: S3Client;
 };
 
-export type S3PlatformMediaAdapter = PlatformMediaUploadSigner & PlatformMediaUploadFinalizer;
+export type PlatformMediaPrivateDownloadSigner = {
+  signPrivateDownload(policy: PrivateDownloadPolicy): Promise<string>;
+};
+
+export type S3PlatformMediaAdapter = PlatformMediaUploadSigner &
+  PlatformMediaUploadFinalizer &
+  PlatformMediaPrivateDownloadSigner &
+  PlatformMediaObjectDeleter;
 
 type CachedUpload = {
   bytes: Buffer;
@@ -65,23 +80,76 @@ export function createS3PlatformMediaAdapter(
   const uploads = new Map<string, CachedUpload>();
 
   return {
+    async deleteObject(input) {
+      await s3.send(
+        new DeleteObjectCommand({
+          Bucket: required(input.bucket, "bucket"),
+          Key: required(input.storageKey, "storageKey"),
+        }),
+      );
+    },
+
+    async deletePrefix(input) {
+      const bucket = required(input.bucket ?? bucketName, "bucket");
+      const prefix = required(input.prefix, "prefix");
+      const [namespace, sessionId, ...extraSegments] = prefix.split("/");
+      if (namespace !== "staging" || !sessionId || extraSegments.length > 0) {
+        throw new Error("Platform media prefix cleanup is restricted to staging namespaces");
+      }
+      assertSegment(sessionId, "staging session ID");
+
+      let continuationToken: string | undefined;
+      do {
+        const page = await s3.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            ContinuationToken: continuationToken,
+          }),
+        );
+        for (const object of page.Contents ?? []) {
+          if (object.Key) {
+            await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: object.Key }));
+          }
+        }
+        if (page.IsTruncated && !page.NextContinuationToken) {
+          throw new Error("S3 prefix listing was truncated without a continuation token");
+        }
+        continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+      } while (continuationToken);
+    },
+
+    async signPrivateDownload(policy) {
+      if (policy.bucketName !== bucketName) {
+        throw new Error("Private download bucket must match the S3 platform media bucket");
+      }
+      const command = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: policy.storageKey,
+        ResponseCacheControl: policy.cacheControl,
+        ResponseContentDisposition: policy.responseContentDisposition,
+        ResponseContentType: policy.responseContentType,
+      });
+      return getSignedUrl(s3, command, { expiresIn: policy.expiresInSeconds });
+    },
+
     async signUploadTarget(input) {
       const contentType = normalizeContentType(input.contentType);
-      if (!PROFILE_IMAGE_CONTENT_TYPES.has(contentType)) {
-        throw new Error("S3 platform media currently signs profile images only");
+      if (!IMAGE_CONTENT_TYPES.has(contentType)) {
+        throw new Error("S3 platform media only signs supported image types");
       }
       if (
         !Number.isInteger(input.sizeBytes) ||
         input.sizeBytes < 1 ||
-        input.sizeBytes > MAX_PROFILE_IMAGE_SIZE_BYTES
+        input.sizeBytes > MAX_SIGNED_IMAGE_SIZE_BYTES
       ) {
-        throw new Error("Profile image upload size must be between 1 byte and 5 MB");
+        throw new Error("Image upload size must be between 1 byte and 20 MB");
       }
       assertStagingKey(input.stagingKey, input.sessionId);
 
       const expiresIn = Math.ceil((new Date(input.expiresAt).getTime() - Date.now()) / 1000);
       if (!Number.isFinite(expiresIn) || expiresIn < 1) {
-        throw new Error("Profile image upload expiry must be in the future");
+        throw new Error("Image upload expiry must be in the future");
       }
       const command = new PutObjectCommand({
         Bucket: bucketName,
@@ -142,14 +210,14 @@ export function createS3PlatformMediaAdapter(
           return {
             ok: false,
             code: "invalid_media_size",
-            message: "Profile images cannot be empty.",
+            message: "Images cannot be empty.",
           };
         }
         if (bytes.length !== input.sessionFile.sizeBytes) return sizeMismatch();
 
         const maxImagePixels = Math.min(
-          input.policy.maxImagePixels ?? MAX_PROFILE_IMAGE_PIXELS,
-          MAX_PROFILE_IMAGE_PIXELS,
+          input.policy.maxImagePixels ?? MAX_IMAGE_PIXELS,
+          MAX_IMAGE_PIXELS,
         );
         const image = sharp(bytes, {
           failOn: "error",
@@ -158,18 +226,18 @@ export function createS3PlatformMediaAdapter(
         const metadata = await image.metadata();
         await image.clone().resize({ width: 1, height: 1, fit: "inside" }).toBuffer();
         const contentType = imageContentType(metadata.format);
-        if (!contentType || !PROFILE_IMAGE_CONTENT_TYPES.has(contentType)) {
+        if (!contentType || !IMAGE_CONTENT_TYPES.has(contentType)) {
           return {
             ok: false,
             code: "unsupported_media_type",
-            message: "Profile images must contain valid JPG, PNG, or WebP bytes.",
+            message: "Images must contain valid JPG, PNG, WebP, or GIF bytes.",
           };
         }
         if (contentType !== normalizeContentType(input.sessionFile.contentType)) {
           return {
             ok: false,
             code: "media_type_mismatch",
-            message: "Profile image bytes must match the signed content type.",
+            message: "Image bytes must match the signed content type.",
           };
         }
         const widthPx = metadata.autoOrient.width;
@@ -224,7 +292,7 @@ export function createS3PlatformMediaAdapter(
         return {
           ok: false,
           code: "invalid_media_image",
-          message: "The staged object is not a valid supported profile image.",
+          message: "The staged object is not a valid supported image.",
         };
       }
     },
@@ -239,15 +307,24 @@ export function createS3PlatformMediaAdapter(
           !isSupportedPurpose(input.session.purpose) ||
           input.policy.purpose !== input.session.purpose
         ) {
-          throw new Error("S3 platform media currently finalizes profile images only");
+          throw new Error("S3 platform media does not support this image purpose");
         }
-        if (input.session.effectiveVisibility !== "public") {
-          throw new Error("Profile image variants require public visibility");
+        if (
+          input.policy.autoApprovePublicOnFinalize !== true &&
+          input.session.effectiveVisibility !== "private"
+        ) {
+          throw new Error("Images awaiting domain approval must stay private");
+        }
+        if (
+          input.policy.autoApprovePublicOnFinalize === true &&
+          input.session.effectiveVisibility !== "public"
+        ) {
+          throw new Error("Auto-approved image variants require public visibility");
         }
 
         const upload = uploads.get(cacheKey);
         if (!upload || upload.inspection.checksumSha256 !== input.file.inspection.checksumSha256) {
-          throw new Error("Profile image must be inspected before variants are generated");
+          throw new Error("Image must be inspected before variants are generated");
         }
 
         const variants: PlatformMediaVariantRecord[] = [];
@@ -257,22 +334,26 @@ export function createS3PlatformMediaAdapter(
             input.file.sessionFile.mediaId,
             variantName,
             publicPathPrefix,
+            input.session.effectiveVisibility,
           );
           await s3.send(
             new PutObjectCommand({
               Bucket: bucketName,
               Key: record.storageKey,
               Body: bytes,
-              ContentType: "image/webp",
-              CacheControl: publicCacheControl,
+              ContentType: record.contentType,
+              CacheControl:
+                input.session.effectiveVisibility === "public"
+                  ? publicCacheControl
+                  : PRIVATE_CACHE_CONTROL,
             }),
           );
           variants.push({
             ...record,
-            publicCdnUrl: new URL(
-              record.storageKey.slice("public/".length),
-              `${cdnBaseUrl}/`,
-            ).toString(),
+            publicCdnUrl:
+              input.session.effectiveVisibility === "public"
+                ? new URL(record.storageKey.slice("public/".length), `${cdnBaseUrl}/`).toString()
+                : null,
           });
         }
         return variants;
@@ -303,9 +384,32 @@ async function createVariant(
   mediaId: string,
   variantName: PlatformMediaVariantName,
   publicPathPrefix: string,
+  visibility: "private" | "public",
 ): Promise<{ record: PlatformMediaVariantRecord; bytes: Buffer }> {
   if (variantName === "provider_original") {
-    throw new Error("Private provider media is not supported by this S3 adapter slice");
+    if (visibility !== "private") {
+      throw new Error("Provider-original media must stay private");
+    }
+    assertSegment(mediaId, "mediaId");
+    const metadata = await sharp(source, { failOn: "error" }).metadata();
+    const contentType = imageContentType(metadata.format);
+    if (!contentType) throw new Error("Provider-original media has an unsupported image type");
+    const checksumSha256 = sha256(source);
+    const extension = contentType === "image/jpeg" ? "jpg" : contentType.slice("image/".length);
+    return {
+      bytes: source,
+      record: {
+        variantName,
+        visibility,
+        storageKey: `private/${publicPathPrefix}/${mediaId}/${variantName}/sha256-${checksumSha256}.${extension}`,
+        contentType,
+        widthPx: metadata.autoOrient.width,
+        heightPx: metadata.autoOrient.height,
+        sizeBytes: source.length,
+        checksumSha256,
+        publicCdnUrl: null,
+      },
+    };
   }
   assertSegment(mediaId, "mediaId");
   const variant = VARIANTS[variantName];
@@ -321,13 +425,13 @@ async function createVariant(
     .toBuffer({ resolveWithObject: true });
   const checksumSha256 = sha256(output.data);
   const version = `sha256-${checksumSha256}`;
-  const storageKey = `public/${publicPathPrefix}/${mediaId}/${variantName}/${version}.webp`;
+  const storageKey = `${visibility}/${publicPathPrefix}/${mediaId}/${variantName}/${version}.webp`;
 
   return {
     bytes: output.data,
     record: {
       variantName,
-      visibility: "public",
+      visibility,
       storageKey,
       contentType: "image/webp",
       widthPx: output.info.width,
@@ -372,7 +476,7 @@ function checkedBuffer(value: Uint8Array, maxBytes: number): Buffer {
 
 function imageContentType(format?: string): string | null {
   if (format === "jpeg") return "image/jpeg";
-  if (format === "png" || format === "webp") return `image/${format}`;
+  if (format === "png" || format === "webp" || format === "gif") return `image/${format}`;
   return null;
 }
 
@@ -402,7 +506,7 @@ function assertSegment(value: string, name: string): void {
 
 function assertStagingKey(stagingKey: string, sessionId: string): void {
   if (!stagingKey.startsWith(`staging/${sessionId}/`) || stagingKey.includes("..")) {
-    throw new Error("Profile image uploads require the session staging namespace");
+    throw new Error("Image uploads require the session staging namespace");
   }
 }
 
@@ -419,14 +523,14 @@ function sha256(value: Uint8Array): string {
 }
 
 function isSupportedPurpose(purpose: PlatformMediaPurpose): boolean {
-  return PROFILE_IMAGE_PURPOSES.has(purpose);
+  return SUPPORTED_IMAGE_PURPOSES.has(purpose);
 }
 
 function unsupportedPurpose() {
   return {
     ok: false as const,
     code: "unsupported_media_purpose",
-    message: "S3 platform media currently supports profile images only.",
+    message: "S3 platform media does not support this image purpose.",
   };
 }
 
@@ -434,7 +538,7 @@ function tooLarge() {
   return {
     ok: false as const,
     code: "media_file_too_large",
-    message: "The staged profile image exceeds the signed size limit.",
+    message: "The staged image exceeds the signed size limit.",
   };
 }
 
@@ -442,7 +546,7 @@ function sizeMismatch() {
   return {
     ok: false as const,
     code: "media_size_mismatch",
-    message: "The staged profile image size must match the signed upload.",
+    message: "The staged image size must match the signed upload.",
   };
 }
 
@@ -450,7 +554,7 @@ function invalidDimensions() {
   return {
     ok: false as const,
     code: "invalid_media_dimensions",
-    message: "Profile image dimensions exceed the platform media limit.",
+    message: "Image dimensions exceed the platform media limit.",
   };
 }
 
@@ -458,7 +562,7 @@ function missingUpload() {
   return {
     ok: false as const,
     code: "media_upload_missing",
-    message: "The staged profile image could not be read.",
+    message: "The staged image could not be read.",
   };
 }
 

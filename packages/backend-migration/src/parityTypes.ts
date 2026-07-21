@@ -120,6 +120,11 @@ export type ExpectedTarget = {
       customFilters: Record<string, string>;
       filterRooms: Record<string, string[]>;
       sourceFreshness: Record<string, unknown>;
+      heroImageUrl: string | null;
+      heroHeading: string | null;
+      heroSubtext: string | null;
+      primaryColor: string;
+      fontPairing: string;
     }>;
     forbiddenSummaryKeys?: string[];
   };
@@ -408,6 +413,7 @@ export type ExpectedTarget = {
       offerImageUrls: string[];
       chatMessageId: string;
       chatMediaObjectId: string;
+      chatRetainedUntil: string;
     };
     pms?: {
       roomTypeId: string;

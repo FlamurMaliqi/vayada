@@ -169,7 +169,6 @@ export default function OnboardingPage() {
       setSubmitting(false);
     }
   }
-
   function selectOptionAtIndex(index: number) {
     const option = options[index];
     if (!option) return;
@@ -257,7 +256,6 @@ export default function OnboardingPage() {
       </OnboardingShell>
     );
   }
-
   if (!loading && provisionedType) {
     const user = authService.getSessionUser();
     return (
@@ -266,7 +264,15 @@ export default function OnboardingPage() {
         email={user?.email ?? ""}
         initialName={user?.name}
         initialPhone={user?.phone}
-        initialProfileImage={existingCreatorPhoto}
+        initialProfileImage={
+          existingCreatorPhoto ??
+          (user?.profilePictureUrl && user.profilePictureMediaObjectId
+            ? {
+                profilePictureUrl: user.profilePictureUrl,
+                profilePictureMediaObjectId: user.profilePictureMediaObjectId,
+              }
+            : null)
+        }
         onUploadProfileImage={(file) => {
           if (!user?.id) throw new Error("Your session has expired. Please sign in again.");
           return sharedAccountProfileImageUploader(user.id, file);
@@ -451,7 +457,7 @@ async function loadSharedAccountDetailsStatus(
 }> {
   const user = authService.getSessionUser();
   if (type !== "creator") {
-    return { complete: isSharedAccountDetailsComplete(user?.name) };
+    return { complete: isSharedAccountDetailsComplete(user) };
   }
 
   const timeoutSignal = AbortSignal.timeout(ONBOARDING_REQUEST_TIMEOUT_MS);
@@ -481,7 +487,6 @@ async function loadSharedAccountDetailsStatus(
 function accountDetailsErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Failed to load your account details.";
 }
-
 function SignupCompleteMoment({ type, onContinue }: { type: AccountType; onContinue: () => void }) {
   const isHotel = type === "hotel";
   return (

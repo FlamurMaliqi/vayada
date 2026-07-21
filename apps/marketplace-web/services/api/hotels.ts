@@ -56,6 +56,7 @@ interface ListingMarketplaceResponse {
     discount_percentage: number | null;
     commission_percentage: number | null;
     min_followers: number | null;
+    terms_summary?: string | null;
     created_at: string;
     updated_at: string;
   }>;
@@ -197,7 +198,12 @@ type TargetMarketplaceOffer = {
   offerStatus: "draft" | "pending" | "verified" | "rejected" | "suspended" | "archived";
   title: string;
   offerSummary: string | null;
-  media: Array<{ mediaObjectId: string | null; url: string }>;
+  media: Array<{
+    mediaObjectId: string | null;
+    url: string | null;
+    approvalStatus: "pending_domain_approval" | "approved";
+    lifecycleStatus: "staged" | "active";
+  }>;
   deliverables: TargetMarketplaceDeliverable[];
   compensationOptions: TargetMarketplaceCompensationOption[];
   creatorRequirements: TargetMarketplaceCreatorRequirements | null;
@@ -254,12 +260,18 @@ export const hotelService = {
   /**
    * Get the selected hotel's canonical profile and Marketplace data.
    */
-  getMyProfile: async (): Promise<HotelProfile> => {
-    const propertyId = await resolveSelectedPropertyId();
+  getMyProfile: async (
+    propertyIdOverride?: string,
+    options?: RequestInit,
+  ): Promise<HotelProfile> => {
+    const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
     const [property, marketplaceProfile, offers] = await Promise.all([
-      sharedHotelSetupApi.getPropertyProfile(propertyId),
-      targetApiClient.get<TargetMarketplaceProfile>(marketplaceProfilePath(propertyId)),
-      targetApiClient.get<{ offers: TargetMarketplaceOffer[] }>(marketplaceOffersPath(propertyId)),
+      sharedHotelSetupApi.getPropertyProfile(propertyId, options),
+      targetApiClient.get<TargetMarketplaceProfile>(marketplaceProfilePath(propertyId), options),
+      targetApiClient.get<{ offers: TargetMarketplaceOffer[] }>(
+        marketplaceOffersPath(propertyId),
+        options,
+      ),
     ]);
     return toLegacyHotelProfile(property, marketplaceProfile, offers.offers);
   },
@@ -267,12 +279,15 @@ export const hotelService = {
   /**
    * Update canonical hotel facts and Marketplace-owned profile copy.
    */
-  updateMyProfile: async (data: UpdateHotelProfileRequest | FormData): Promise<HotelProfile> => {
+  updateMyProfile: async (
+    data: UpdateHotelProfileRequest | FormData,
+    propertyIdOverride?: string,
+  ): Promise<HotelProfile> => {
     if (data instanceof FormData) {
       throw new Error("Hotel profile updates must use JSON and platform media uploads");
     }
 
-    const propertyId = await resolveSelectedPropertyId();
+    const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
     const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
     const canonicalUpdate = applyCanonicalProfileUpdate(property, data);
     if (canonicalUpdate) {
@@ -283,7 +298,7 @@ export const hotelService = {
         hostSummary: normalizedOptionalText(data.about),
       });
     }
-    return hotelService.getMyProfile();
+    return hotelService.getMyProfile(propertyId);
   },
 
   /**
@@ -319,8 +334,11 @@ export const hotelService = {
   /**
    * Create an offer under the selected hotel.
    */
-  createListing: async (data: CreateListingRequest): Promise<HotelListing> => {
-    const propertyId = await resolveSelectedPropertyId();
+  createListing: async (
+    data: CreateListingRequest,
+    propertyIdOverride?: string,
+  ): Promise<HotelListing> => {
+    const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
     const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
     const offer = await targetApiClient.post<TargetMarketplaceOffer>(
       marketplaceOffersPath(propertyId),
@@ -332,8 +350,12 @@ export const hotelService = {
   /**
    * Update an offer under the selected hotel.
    */
-  updateListing: async (id: string, data: UpdateListingRequest): Promise<HotelListing> => {
-    const propertyId = await resolveSelectedPropertyId();
+  updateListing: async (
+    id: string,
+    data: UpdateListingRequest,
+    propertyIdOverride?: string,
+  ): Promise<HotelListing> => {
+    const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
     const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
     const offer = await targetApiClient.put<TargetMarketplaceOffer>(
       `${marketplaceOffersPath(propertyId)}/${encodeURIComponent(id)}`,
@@ -345,8 +367,8 @@ export const hotelService = {
   /**
    * Delete an offer under the selected hotel.
    */
-  deleteListing: async (id: string): Promise<void> => {
-    const propertyId = await resolveSelectedPropertyId();
+  deleteListing: async (id: string, propertyIdOverride?: string): Promise<void> => {
+    const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
     return targetApiClient.delete<void>(
       `${marketplaceOffersPath(propertyId)}/${encodeURIComponent(id)}`,
     );
@@ -417,15 +439,18 @@ export const hotelService = {
   /**
    * Get the selected hotel's Marketplace completion status.
    */
-  getProfileStatus: async (): Promise<HotelProfileStatus> => {
-    const propertyId = await resolveSelectedPropertyId();
+  getProfileStatus: async (propertyIdOverride?: string): Promise<HotelProfileStatus> => {
+    const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
     return targetApiClient.get<HotelProfileStatus>(
       `/api/marketplace/properties/${encodeURIComponent(propertyId)}/profile-status`,
     );
   },
 };
 
-async function resolveSelectedPropertyId(): Promise<string> {
+async function resolveSelectedPropertyId(propertyIdOverride?: string): Promise<string> {
+  const requestedPropertyId = propertyIdOverride?.trim();
+  if (requestedPropertyId) return requestedPropertyId;
+
   const storage = typeof window === "undefined" ? null : window.localStorage;
   const storedPropertyId = readSelectedSharedPropertyId(storage);
   if (storedPropertyId) return storedPropertyId;
@@ -615,7 +640,7 @@ function toLegacyHotelListing(
     location: formatPropertyLocation(property),
     description: offer.offerSummary ?? "",
     accommodation_type: property.propertyType,
-    images: offer.media.map((media) => media.url),
+    images: offer.media.flatMap((media) => (media.url ? [media.url] : [])),
     image_media_object_ids: offer.media.flatMap((media) =>
       media.mediaObjectId ? [media.mediaObjectId] : [],
     ),
@@ -635,6 +660,7 @@ function toLegacyHotelListing(
       discount_percentage: option.discountPercentage,
       commission_percentage: option.commissionPercentage,
       min_followers: option.minFollowers,
+      terms_summary: option.termsSummary,
       created_at: offer.createdAt,
       updated_at: offer.updatedAt,
     })),
@@ -781,6 +807,7 @@ function toLegacyCompensationOption(
     discount_percentage: option.discountPercentage,
     commission_percentage: option.commissionPercentage,
     min_followers: option.minFollowers,
+    terms_summary: option.termsSummary,
     created_at: offer.createdAt,
     updated_at: offer.projectedAt,
   };

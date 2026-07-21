@@ -16,6 +16,7 @@ export const BOOKING_ADMIN_GUEST_FORM_SETTINGS_PATH = `/api/booking/hotels/${BOO
 export const BOOKING_ADMIN_LOCALIZATION_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/localization`;
 export const BOOKING_ADMIN_LAST_MINUTE_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/last-minute`;
 export const BOOKING_ADMIN_ROOM_FILTER_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/room-filters`;
+export const BOOKING_ADMIN_DESIGN_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/design`;
 export const BOOKING_ADMIN_CUSTOM_DOMAIN_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/custom-domain`;
 export const BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH = `/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/payment-settings`;
 
@@ -100,6 +101,20 @@ export interface BookingAdminRoomFilterSettingsFixture {
   bookingFilters: string[];
   customFilters: Record<string, string>;
   filterRooms: Record<string, string[]>;
+}
+
+export interface BookingAdminDesignSettingsFixture {
+  heroImage: string;
+  heroHeading: string;
+  heroSubtext: string;
+  primaryColor: string;
+  fontPairing: string;
+}
+
+export interface BookingAdminDesignSettingsRequest {
+  method: string;
+  hotelId: string;
+  body: Partial<BookingAdminDesignSettingsFixture> | null;
 }
 
 export interface BookingAdminLastMinuteSettingsFixture {
@@ -234,6 +249,14 @@ const defaultRoomFilterSettings: BookingAdminRoomFilterSettingsFixture = {
   filterRooms: {},
 };
 
+export const defaultBookingAdminDesignSettings: BookingAdminDesignSettingsFixture = {
+  heroImage: "/hotel-hero.JPG",
+  heroHeading: "Stay above the clouds",
+  heroSubtext: "An independent alpine escape made for memorable direct stays.",
+  primaryColor: "#2563EB",
+  fontPairing: "modern-minimalist",
+};
+
 const defaultLastMinuteSettings: BookingAdminLastMinuteSettingsFixture = {
   enabled: false,
   stackWithPromo: false,
@@ -310,6 +333,9 @@ export async function mockBookingAdminShellRoutes(
   await page.route(`**${BOOKING_ADMIN_PROPERTY_SETTINGS_PATH}*`, (route) =>
     route.fulfill({ json: propertySettings }),
   );
+  await page.route("**/api/booking/hotels/*/settings/design", (route) =>
+    route.fulfill({ json: defaultBookingAdminDesignSettings }),
+  );
   await page.route("**/admin/settings/setup-status", (route) =>
     route.fulfill({
       json: {
@@ -373,6 +399,31 @@ export async function mockBookingAdminShellRoutes(
       ? route.fulfill({ status: 204 })
       : route.fulfill({ json: options.customDomain ?? defaultCustomDomain }),
   );
+}
+
+export async function mockBookingAdminDesignSettings(
+  page: Page,
+  initial: BookingAdminDesignSettingsFixture = defaultBookingAdminDesignSettings,
+): Promise<{ requests: BookingAdminDesignSettingsRequest[] }> {
+  const settings = { ...initial };
+  const requests: BookingAdminDesignSettingsRequest[] = [];
+
+  await page.route("**/api/booking/hotels/*/settings/design", (route) => {
+    const request = route.request();
+    const hotelId = decodeURIComponent(
+      new URL(request.url()).pathname.match(/\/hotels\/([^/]+)\/settings\/design$/)?.[1] ?? "",
+    );
+    const body =
+      request.method() === "PATCH"
+        ? (request.postDataJSON() as Partial<BookingAdminDesignSettingsFixture>)
+        : null;
+    requests.push({ method: request.method(), hotelId, body });
+
+    if (body) Object.assign(settings, body);
+    return route.fulfill({ json: settings });
+  });
+
+  return { requests };
 }
 
 function fakeBookingAdminJwt(hotelIds: string[] = [BOOKING_ADMIN_HOTEL_ID]): string {

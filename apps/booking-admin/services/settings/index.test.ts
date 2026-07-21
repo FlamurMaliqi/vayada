@@ -10,6 +10,13 @@ const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 describe("settingsService next-stack bootstrap data", () => {
   beforeEach(() => {
     const storage = createMemoryStorage();
+    let designSettings = {
+      heroImage: "https://cdn.vayada.test/hotels/alpenrose/hero.jpg",
+      heroHeading: "Stay above the clouds",
+      heroSubtext: "An independent alpine escape.",
+      primaryColor: "#2563EB",
+      fontPairing: "modern-minimalist",
+    };
     vi.stubGlobal("localStorage", storage);
     vi.stubGlobal("window", { localStorage: storage });
     vi.stubGlobal(
@@ -166,6 +173,17 @@ describe("settingsService next-stack bootstrap data", () => {
             { headers: { "content-type": "application/json" } },
           );
         }
+        if (href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/design")) {
+          if (init?.method === "PATCH") {
+            designSettings = {
+              ...designSettings,
+              ...(JSON.parse(String(init.body)) as Partial<typeof designSettings>),
+            };
+          }
+          return new Response(JSON.stringify(designSettings), {
+            headers: { "content-type": "application/json" },
+          });
+        }
         throw new Error(`unexpected request: ${href}`);
       }),
     );
@@ -226,6 +244,63 @@ describe("settingsService next-stack bootstrap data", () => {
       expect.stringMatching(/\/api\/booking\/hotels\/booking_hotel_alpenrose\/settings\/property$/),
       expect.objectContaining({ method: "PATCH" }),
     );
+  });
+
+  it("loads and saves the design model for an explicit Booking hotel", async () => {
+    await expect(settingsService.getDesignSettings(" booking_hotel_alpenrose ")).resolves.toEqual({
+      hero_image: "https://cdn.vayada.test/hotels/alpenrose/hero.jpg",
+      hero_heading: "Stay above the clouds",
+      hero_subtext: "An independent alpine escape.",
+      primary_color: "#2563EB",
+      font_pairing: "modern-minimalist",
+    });
+
+    await expect(
+      settingsService.updateDesignSettings(
+        {
+          hero_image: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
+          hero_heading: "Book the mountain directly",
+          hero_subtext: "A quieter stay starts here.",
+          primary_color: "#0F766E",
+          font_pairing: "grand-classic",
+        },
+        "booking_hotel_alpenrose",
+      ),
+    ).resolves.toEqual({
+      hero_image: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
+      hero_heading: "Book the mountain directly",
+      hero_subtext: "A quieter stay starts here.",
+      primary_color: "#0F766E",
+      font_pairing: "grand-classic",
+    });
+
+    const designCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([url]) => String(url).includes("/settings/design"));
+    expect(
+      designCalls.map(([url, init]) => ({
+        path: new URL(String(url)).pathname,
+        method: init?.method,
+        body: init?.body,
+      })),
+    ).toEqual([
+      {
+        path: "/api/booking/hotels/booking_hotel_alpenrose/settings/design",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        path: "/api/booking/hotels/booking_hotel_alpenrose/settings/design",
+        method: "PATCH",
+        body: JSON.stringify({
+          heroImage: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
+          heroHeading: "Book the mountain directly",
+          heroSubtext: "A quieter stay starts here.",
+          primaryColor: "#0F766E",
+          fontPairing: "grand-classic",
+        }),
+      },
+    ]);
   });
 });
 

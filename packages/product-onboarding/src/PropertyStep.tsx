@@ -54,6 +54,7 @@ interface PropertyStepProps {
   setSupportedLanguages: (v: string[]) => void;
   prefilled: boolean;
   sharedBasicsReadOnly?: boolean;
+  hideSharedHotelFields?: boolean;
   error: string;
   canProceed: boolean;
   onContinue: () => void;
@@ -109,7 +110,7 @@ function FlagSelect<T extends { code: string; flag: string }>({
           setOpen(!open);
           setSearch("");
         }}
-        className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900"
+        className="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-sm text-gray-900 transition-colors focus:border-transparent focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
       >
         <span>{selected ? `${selected.flag} ${getLabel(selected)}` : placeholder}</span>
         <svg
@@ -122,20 +123,20 @@ function FlagSelect<T extends { code: string; flag: string }>({
         </svg>
       </button>
       {open && (
-        <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg">
-          <div className="p-1.5">
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 rounded-xl border border-gray-200 bg-white shadow-lg">
+          <div className="p-2">
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search..."
               autoFocus
-              className="w-full px-2.5 py-1.5 text-[12px] border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
           </div>
           <div className="max-h-52 overflow-y-auto">
             {filtered.length === 0 ? (
-              <div className="px-3 py-2 text-[12px] text-gray-400">No results</div>
+              <div className="px-3 py-2 text-sm text-gray-400">No results</div>
             ) : (
               filtered.map((opt) => {
                 const optValue = resolveValue(opt);
@@ -148,7 +149,7 @@ function FlagSelect<T extends { code: string; flag: string }>({
                       onChange(optValue);
                       setOpen(false);
                     }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-[12px] text-left hover:bg-gray-50 ${isSelected ? "bg-gray-50 font-medium" : ""}`}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50 ${isSelected ? "bg-gray-50 font-medium" : ""}`}
                   >
                     {isSelected ? (
                       <svg
@@ -247,13 +248,13 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
           }}
           onFocus={() => setOpen(true)}
           placeholder={placeholder}
-          className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
+          className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 placeholder:text-gray-400 focus:border-transparent focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
         />
         {/* Dropdown */}
         {open && query.trim() && (
-          <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+          <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
             {filtered.length === 0 ? (
-              <p className="px-3 py-2 text-[12px] text-gray-400">No results found</p>
+              <p className="px-3 py-2 text-sm text-gray-400">No results found</p>
             ) : (
               filtered.map((opt) => {
                 const isSelected = selected.includes(opt.code);
@@ -266,7 +267,7 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
                       setQuery("");
                       setOpen(false);
                     }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-[12px] text-left transition-colors ${isSelected ? "bg-primary-500 text-white" : "hover:bg-gray-50 text-gray-900"}`}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${isSelected ? "bg-primary-500 text-white" : "text-gray-900 hover:bg-gray-50"}`}
                   >
                     <span>{opt.flag}</span>
                     <span>{getSearchLabel(opt)}</span>
@@ -280,7 +281,7 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
 
       {/* Popular choices */}
       <div className="mt-2.5">
-        <p className="text-[11px] text-gray-400 font-medium mb-1.5">Popular choices &mdash;</p>
+        <p className="mb-1.5 text-xs font-medium text-gray-400">Popular choices &mdash;</p>
         <div className="flex flex-wrap gap-1.5">
           {popular.map((opt) => {
             const isSelected = selected.includes(opt.code);
@@ -289,7 +290,7 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
                 key={opt.code}
                 type="button"
                 onClick={() => onToggle(opt.code)}
-                className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-medium rounded-full transition-colors ${
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
                   isSelected
                     ? "bg-primary-100 text-primary-700 border border-primary-300"
                     : "bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100"
@@ -305,7 +306,7 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
       {/* Added items */}
       {selected.length > 0 ? (
         <div className="mt-2.5">
-          <p className="text-[11px] text-gray-400 font-medium mb-1.5">Added ({selected.length}):</p>
+          <p className="mb-1.5 text-xs font-medium text-gray-400">Added ({selected.length}):</p>
           <div className="flex flex-wrap gap-1.5">
             {selected.map((code) => {
               const opt = options.find((o) => o.code === code);
@@ -313,13 +314,14 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
               return (
                 <span
                   key={code}
-                  className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-medium rounded-full bg-primary-100 text-primary-700 border border-primary-300"
+                  className="inline-flex items-center gap-1 rounded-full border border-primary-300 bg-primary-100 px-2.5 py-1 text-xs font-medium text-primary-700"
                 >
                   {opt.flag} {getLabel(opt)}
                   <button
                     type="button"
                     onClick={() => onToggle(code)}
                     className="ml-0.5 text-primary-400 hover:text-primary-600"
+                    aria-label={`Remove ${getLabel(opt)}`}
                   >
                     &times;
                   </button>
@@ -329,7 +331,7 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
           </div>
         </div>
       ) : (
-        <p className="mt-2.5 text-[11px] text-gray-400 italic">{emptyMessage}</p>
+        <p className="mt-2.5 text-xs italic text-gray-400">{emptyMessage}</p>
       )}
     </div>
   );
@@ -369,6 +371,7 @@ export default function PropertyStep({
   setSupportedLanguages,
   prefilled,
   sharedBasicsReadOnly = false,
+  hideSharedHotelFields = false,
   error,
   canProceed,
   onContinue,
@@ -379,181 +382,299 @@ export default function PropertyStep({
   popularCurrencyCodes,
   popularLanguageCodes,
 }: PropertyStepProps) {
+  const inputClassName =
+    "w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 transition-colors focus:border-transparent focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500";
+
   return (
-    <div className="flex-1 overflow-auto">
-      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6">
+    <div className="flex-1 overflow-auto bg-gray-50/50">
+      <div className="mx-auto max-w-3xl px-4 py-5 sm:px-6 sm:py-7">
         {stepIndicators}
         {prefilled && (
-          <div className="mb-4 px-3 py-2.5 rounded-lg text-[13px] bg-blue-50 text-blue-800 border border-blue-200">
-            {sharedBasicsReadOnly
+          <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            {hideSharedHotelFields || sharedBasicsReadOnly
               ? "Hotel basics are reused from shared setup. Configure only Booking-specific settings below."
               : "Some hotel basics were prefilled from shared setup. Complete the missing fields below."}
           </div>
         )}
 
-        <div className="text-center mb-6">
-          <h2 className="text-base font-bold text-gray-900">Your Property</h2>
-          <p className="text-[12px] text-gray-500 mt-1">
+        <div className="mb-5 text-center">
+          <h2 className="text-2xl font-semibold tracking-tight text-gray-950">Your Property</h2>
+          <p className="mt-1.5 text-sm text-gray-500">
             Configure how this hotel should appear and communicate in Booking Engine.
           </p>
         </div>
 
-        {/* Basic Information */}
-        <div className="bg-white rounded-xl border border-gray-200 px-5 py-5 space-y-4 mb-5">
-          <div className="flex items-center gap-1.5">
-            <svg
-              className="w-3.5 h-3.5 text-primary-500"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
-              <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
-              <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
-              <path d="M10 6h4" />
-              <path d="M10 10h4" />
-              <path d="M10 14h4" />
-              <path d="M10 18h4" />
-            </svg>
-            <h3 className="text-[13px] font-bold text-gray-900">
-              {sharedBasicsReadOnly ? "Shared hotel profile" : "Basic Information"}
-            </h3>
-          </div>
+        <div className="divide-y divide-gray-200 rounded-2xl border border-gray-200 bg-white shadow-sm">
+          {!hideSharedHotelFields && (
+            <section className="space-y-4 p-4 sm:p-5">
+              <div className="flex items-center gap-2">
+                <svg
+                  className="h-4 w-4 text-primary-500"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
+                  <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
+                  <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
+                  <path d="M10 6h4" />
+                  <path d="M10 10h4" />
+                  <path d="M10 14h4" />
+                  <path d="M10 18h4" />
+                </svg>
+                <h3 className="text-base font-semibold text-gray-950">
+                  {sharedBasicsReadOnly ? "Shared hotel profile" : "Basic Information"}
+                </h3>
+              </div>
 
-          <div>
-            <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-              Property Name <span className="text-gray-800">*</span>
-            </label>
-            <input
-              type="text"
-              value={propertyName}
-              onChange={(e) => setPropertyName(e.target.value)}
-              readOnly={sharedBasicsReadOnly}
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-              placeholder="e.g. Sundancer Villas & Suites"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                City <span className="text-gray-800">*</span>
-              </label>
-              <input
-                type="text"
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-                readOnly={sharedBasicsReadOnly}
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                placeholder="e.g. Seminyak"
-              />
-            </div>
-            <div>
-              <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                Country <span className="text-gray-800">*</span>
-              </label>
-              {sharedBasicsReadOnly ? (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  Property Name <span aria-hidden="true">*</span>
+                </label>
                 <input
                   type="text"
-                  value={countryOptions.find((option) => option.code === country)?.name ?? country}
-                  readOnly
-                  className="w-full px-3 py-2 bg-gray-100 border border-gray-200 rounded-lg text-[12px] text-gray-700"
+                  value={propertyName}
+                  onChange={(e) => setPropertyName(e.target.value)}
+                  readOnly={sharedBasicsReadOnly}
+                  className={inputClassName}
+                  placeholder="e.g. Sundancer Villas & Suites"
                 />
-              ) : (
-                <FlagSelect<CountryOption>
-                  value={country}
-                  onChange={setCountry}
-                  options={countryOptions}
-                  getLabel={(o) => o.name}
-                  getValue={(o) => o.code}
-                  placeholder="Select country"
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    City <span aria-hidden="true">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    readOnly={sharedBasicsReadOnly}
+                    className={inputClassName}
+                    placeholder="e.g. Seminyak"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    Country <span aria-hidden="true">*</span>
+                  </label>
+                  {sharedBasicsReadOnly ? (
+                    <input
+                      type="text"
+                      value={
+                        countryOptions.find((option) => option.code === country)?.name ?? country
+                      }
+                      readOnly
+                      className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3.5 py-2.5 text-sm text-gray-600"
+                    />
+                  ) : (
+                    <FlagSelect<CountryOption>
+                      value={country}
+                      onChange={setCountry}
+                      options={countryOptions}
+                      getLabel={(o) => o.name}
+                      getValue={(o) => o.code}
+                      placeholder="Select country"
+                    />
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  Full Address <span aria-hidden="true">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  readOnly={sharedBasicsReadOnly}
+                  className={inputClassName}
+                  placeholder="Street address, area"
                 />
+              </div>
+            </section>
+          )}
+
+          <section className="grid divide-y divide-gray-200 lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+            <div className="space-y-4 p-4 sm:p-5">
+              <div className="flex items-center gap-2">
+                <svg
+                  className="h-4 w-4 text-primary-500"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"
+                  />
+                </svg>
+                <h3 className="text-base font-semibold text-gray-950">
+                  {hideSharedHotelFields
+                    ? "Booking contact"
+                    : sharedBasicsReadOnly
+                      ? "Shared hotel contact"
+                      : "Hotel contact"}
+                </h3>
+              </div>
+
+              {!hideSharedHotelFields && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      Hotel contact email <span aria-hidden="true">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      value={reservationEmail}
+                      onChange={(e) => setReservationEmail(e.target.value)}
+                      readOnly={sharedBasicsReadOnly}
+                      className={inputClassName}
+                      placeholder="reservations@yourproperty.com"
+                    />
+                    <p className="mt-1.5 text-xs leading-5 text-gray-400">
+                      {sharedBasicsReadOnly
+                        ? "Managed once in the shared hotel profile."
+                        : "Saved to the shared hotel profile and used by Booking Engine."}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      Hotel phone <span aria-hidden="true">*</span>
+                    </label>
+                    <input
+                      type="tel"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      readOnly={sharedBasicsReadOnly}
+                      className={inputClassName}
+                      placeholder="+62 812 3456 7890"
+                    />
+                    <p className="mt-1.5 text-xs leading-5 text-gray-400">
+                      {sharedBasicsReadOnly
+                        ? "Managed once in the shared hotel profile."
+                        : "Saved to the shared hotel profile and used by Booking Engine."}
+                    </p>
+                  </div>
+                </div>
               )}
+
+              <div>
+                <label className="mb-1.5 flex items-center gap-1.5 text-sm text-gray-800">
+                  <svg
+                    className="h-3.5 w-3.5 text-gray-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M8.625 9.75a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375m-13.5 3.01c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 01.778-.332 48.294 48.294 0 005.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z"
+                    />
+                  </svg>
+                  <span className="font-medium">WhatsApp</span>
+                  <span className="text-xs font-normal text-gray-400">(optional)</span>
+                </label>
+                <input
+                  type="tel"
+                  value={whatsapp}
+                  onChange={(e) => setWhatsapp(e.target.value)}
+                  className={inputClassName}
+                  placeholder="+62 812 ..."
+                />
+              </div>
             </div>
-          </div>
 
-          <div>
-            <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-              Full Address <span className="text-gray-800">*</span>
-            </label>
-            <input
-              type="text"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              readOnly={sharedBasicsReadOnly}
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-              placeholder="Street address, area"
-            />
-          </div>
-        </div>
+            <div className="space-y-4 p-4 sm:p-5">
+              <div>
+                <div className="flex items-center gap-2">
+                  <svg
+                    className="h-4 w-4 text-primary-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"
+                    />
+                  </svg>
+                  <h3 className="text-base font-semibold text-gray-950">Social Media</h3>
+                  <span className="text-xs font-normal text-gray-400">(optional)</span>
+                </div>
+                <p className="mt-1 text-xs text-gray-400">
+                  Links shown in your booking site footer
+                </p>
+              </div>
 
-        {/* Contact Details */}
-        <div className="bg-white rounded-xl border border-gray-200 px-5 py-5 space-y-4 mb-5">
-          <div className="flex items-center gap-1.5">
-            <svg
-              className="w-3.5 h-3.5 text-primary-500"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.5}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"
-              />
-            </svg>
-            <h3 className="text-[13px] font-bold text-gray-900">
-              {sharedBasicsReadOnly ? "Shared hotel contact" : "Hotel contact"}
-            </h3>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                Hotel contact email <span className="text-gray-800">*</span>
-              </label>
-              <input
-                type="email"
-                value={reservationEmail}
-                onChange={(e) => setReservationEmail(e.target.value)}
-                readOnly={sharedBasicsReadOnly}
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                placeholder="reservations@yourproperty.com"
-              />
-              <p className="mt-1 text-[11px] text-gray-400">
-                {sharedBasicsReadOnly
-                  ? "Managed once in the shared hotel profile."
-                  : "Saved to the shared hotel profile and used by Booking Engine."}
-              </p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    Instagram
+                  </label>
+                  <input
+                    type="text"
+                    value={instagram}
+                    onChange={(e) => setInstagram(e.target.value)}
+                    className={inputClassName}
+                    placeholder="https://instagram.com/yourhotel"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-800">Facebook</label>
+                  <input
+                    type="text"
+                    value={facebook}
+                    onChange={(e) => setFacebook(e.target.value)}
+                    className={inputClassName}
+                    placeholder="https://facebook.com/yourhotel"
+                  />
+                </div>
+                {tiktok !== undefined && setTiktok && (
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">TikTok</label>
+                    <input
+                      type="text"
+                      value={tiktok}
+                      onChange={(e) => setTiktok(e.target.value)}
+                      className={inputClassName}
+                      placeholder="https://www.tiktok.com/@yourhotel"
+                    />
+                  </div>
+                )}
+                {youtube !== undefined && setYoutube && (
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      YouTube
+                    </label>
+                    <input
+                      type="text"
+                      value={youtube}
+                      onChange={(e) => setYoutube(e.target.value)}
+                      className={inputClassName}
+                      placeholder="https://youtube.com/@yourhotel"
+                    />
+                  </div>
+                )}
+              </div>
             </div>
-            <div>
-              <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                Hotel phone <span className="text-gray-800">*</span>
-              </label>
-              <input
-                type="tel"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                readOnly={sharedBasicsReadOnly}
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                placeholder="+62 812 3456 7890"
-              />
-              <p className="mt-1 text-[11px] text-gray-400">
-                {sharedBasicsReadOnly
-                  ? "Managed once in the shared hotel profile."
-                  : "Saved to the shared hotel profile and used by Booking Engine."}
-              </p>
-            </div>
-          </div>
+          </section>
 
-          <div>
-            <label className="flex items-center gap-1 text-[12px] text-gray-800 mb-1">
+          <section className="space-y-4 p-4 sm:p-5">
+            <div className="flex items-center gap-2">
               <svg
-                className="w-3 h-3 text-gray-400"
+                className="h-4 w-4 text-primary-500"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -562,227 +683,131 @@ export default function PropertyStep({
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  d="M8.625 9.75a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375m-13.5 3.01c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 01.778-.332 48.294 48.294 0 005.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z"
+                  d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"
                 />
               </svg>
-              <span className="font-semibold">WhatsApp</span>{" "}
-              <span className="text-gray-400 font-normal text-[11px]">(optional)</span>
-            </label>
-            <input
-              type="tel"
-              value={whatsapp}
-              onChange={(e) => setWhatsapp(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-              placeholder="+62 812 ..."
-            />
-          </div>
-        </div>
-
-        {/* Social Media */}
-        <div className="bg-white rounded-xl border border-gray-200 px-5 py-5 space-y-4 mb-5">
-          <div className="flex items-center gap-1.5">
-            <svg
-              className="w-3.5 h-3.5 text-primary-500"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.5}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"
-              />
-            </svg>
-            <h3 className="text-[13px] font-bold text-gray-900">Social Media</h3>
-            <span className="text-gray-400 font-normal text-[11px]">(optional)</span>
-          </div>
-          <p className="text-[11px] text-gray-400">Links shown in your booking site footer</p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[12px] text-gray-800 mb-1">
-                <span className="font-semibold">Instagram</span>
-              </label>
-              <input
-                type="text"
-                value={instagram}
-                onChange={(e) => setInstagram(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                placeholder="https://instagram.com/yourhotel"
-              />
+              <h3 className="text-base font-semibold text-gray-950">Currency & Languages</h3>
             </div>
-            <div>
-              <label className="block text-[12px] text-gray-800 mb-1">
-                <span className="font-semibold">Facebook</span>
-              </label>
-              <input
-                type="text"
-                value={facebook}
-                onChange={(e) => setFacebook(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                placeholder="https://facebook.com/yourhotel"
-              />
-            </div>
-            {tiktok !== undefined && setTiktok && (
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <label className="block text-[12px] text-gray-800 mb-1">
-                  <span className="font-semibold">TikTok</span>
+                <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  Default Currency <span aria-hidden="true">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={tiktok}
-                  onChange={(e) => setTiktok(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                  placeholder="https://www.tiktok.com/@yourhotel"
+                <FlagSelect<CurrencyOption>
+                  value={currency}
+                  onChange={(code) => {
+                    const oldDefault = currency;
+                    setCurrency(code);
+                    const without = supportedCurrencies.filter((c) => c !== code);
+                    setSupportedCurrencies(
+                      oldDefault && !without.includes(oldDefault)
+                        ? [...without, oldDefault]
+                        : without,
+                    );
+                  }}
+                  options={currencyOptions}
+                  getLabel={(o) => o.name}
                 />
               </div>
-            )}
-            {youtube !== undefined && setYoutube && (
               <div>
-                <label className="block text-[12px] text-gray-800 mb-1">
-                  <span className="font-semibold">YouTube</span>
+                <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  Default Language <span aria-hidden="true">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={youtube}
-                  onChange={(e) => setYoutube(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 placeholder:text-gray-400"
-                  placeholder="https://youtube.com/@yourhotel"
+                <FlagSelect<LanguageOption>
+                  value={defaultLanguage}
+                  onChange={(code) => {
+                    const oldDefault = defaultLanguage;
+                    setDefaultLanguage(code);
+                    const without = supportedLanguages.filter((l) => l !== code);
+                    setSupportedLanguages(
+                      oldDefault && !without.includes(oldDefault)
+                        ? [...without, oldDefault]
+                        : without,
+                    );
+                  }}
+                  options={languageOptions}
+                  getLabel={(o) => o.name}
                 />
               </div>
-            )}
-          </div>
-        </div>
+            </div>
 
-        {/* Currency & Languages */}
-        <div className="bg-white rounded-xl border border-gray-200 px-5 py-5 space-y-5">
-          <div className="flex items-center gap-1.5">
-            <svg
-              className="w-3.5 h-3.5 text-primary-500"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.5}
+            <details
+              className="rounded-xl bg-gray-50 p-3 sm:p-4"
+              open={supportedCurrencies.length > 0 || supportedLanguages.length > 0 || undefined}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"
-              />
-            </svg>
-            <h3 className="text-[13px] font-bold text-gray-900">Currency & Languages</h3>
-          </div>
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-gray-800 [&::-webkit-details-marker]:hidden">
+                <span>Additional currencies &amp; languages</span>
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-normal text-gray-500">
+                  Optional
+                </span>
+              </summary>
+              <p className="mt-1 text-xs text-gray-500">
+                Add more display options only when your booking site needs them.
+              </p>
+              <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    Additional Currencies
+                  </label>
+                  <SearchableMultiSelect<CurrencyOption>
+                    selected={supportedCurrencies}
+                    onToggle={(code) => {
+                      setSupportedCurrencies(
+                        supportedCurrencies.includes(code)
+                          ? supportedCurrencies.filter((x) => x !== code)
+                          : [...supportedCurrencies, code],
+                      );
+                    }}
+                    options={currencyOptions}
+                    excludeCode={currency}
+                    placeholder={`Search currencies, e.g. "Swiss" or "CHF"...`}
+                    getLabel={(o) => o.code}
+                    getSearchLabel={(o) => `${o.name} \u00b7 ${o.code}`}
+                    popularCodes={popularCurrencyCodes}
+                    emptyMessage={`No additional currencies added \u2014 your booking page will show only ${currency}`}
+                  />
+                </div>
 
-          {/* Default Currency & Language */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                Default Currency <span className="text-gray-800">*</span>
-              </label>
-              <FlagSelect<CurrencyOption>
-                value={currency}
-                onChange={(code) => {
-                  const oldDefault = currency;
-                  setCurrency(code);
-                  const without = supportedCurrencies.filter((c) => c !== code);
-                  setSupportedCurrencies(
-                    oldDefault && !without.includes(oldDefault)
-                      ? [...without, oldDefault]
-                      : without,
-                  );
-                }}
-                options={currencyOptions}
-                getLabel={(o) => o.name}
-              />
-            </div>
-            <div>
-              <label className="block text-[12px] font-semibold text-gray-800 mb-1">
-                Default Language <span className="text-gray-800">*</span>
-              </label>
-              <FlagSelect<LanguageOption>
-                value={defaultLanguage}
-                onChange={(code) => {
-                  const oldDefault = defaultLanguage;
-                  setDefaultLanguage(code);
-                  const without = supportedLanguages.filter((l) => l !== code);
-                  setSupportedLanguages(
-                    oldDefault && !without.includes(oldDefault)
-                      ? [...without, oldDefault]
-                      : without,
-                  );
-                }}
-                options={languageOptions}
-                getLabel={(o) => o.name}
-              />
-            </div>
-          </div>
-
-          {/* Additional Currencies */}
-          <div>
-            <label className="block text-[12px] text-gray-800 mb-1.5">
-              <span className="font-semibold">Additional Currencies</span>{" "}
-              <span className="text-gray-400 font-normal text-[11px]">(optional)</span>
-            </label>
-            <SearchableMultiSelect<CurrencyOption>
-              selected={supportedCurrencies}
-              onToggle={(code) => {
-                setSupportedCurrencies(
-                  supportedCurrencies.includes(code)
-                    ? supportedCurrencies.filter((x) => x !== code)
-                    : [...supportedCurrencies, code],
-                );
-              }}
-              options={currencyOptions}
-              excludeCode={currency}
-              placeholder={`Search currencies, e.g. "Swiss" or "CHF"...`}
-              getLabel={(o) => o.code}
-              getSearchLabel={(o) => `${o.name} \u00b7 ${o.code}`}
-              popularCodes={popularCurrencyCodes}
-              emptyMessage={`No additional currencies added \u2014 your booking page will show only ${currency}`}
-            />
-          </div>
-
-          {/* Additional Languages */}
-          <div>
-            <label className="block text-[12px] text-gray-800 mb-1.5">
-              <span className="font-semibold">Additional Languages</span>{" "}
-              <span className="text-gray-400 font-normal text-[11px]">(optional)</span>
-            </label>
-            <SearchableMultiSelect<LanguageOption>
-              selected={supportedLanguages}
-              onToggle={(code) => {
-                setSupportedLanguages(
-                  supportedLanguages.includes(code)
-                    ? supportedLanguages.filter((x) => x !== code)
-                    : [...supportedLanguages, code],
-                );
-              }}
-              options={languageOptions}
-              excludeCode={defaultLanguage}
-              placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
-              getLabel={(o) => o.nativeName}
-              getSearchLabel={(o) => `${o.name} \u00b7 ${o.nativeName}`}
-              popularCodes={popularLanguageCodes}
-              emptyMessage={`No additional languages added \u2014 your booking page will show only ${defaultLanguage.toUpperCase()}`}
-            />
-          </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    Additional Languages
+                  </label>
+                  <SearchableMultiSelect<LanguageOption>
+                    selected={supportedLanguages}
+                    onToggle={(code) => {
+                      setSupportedLanguages(
+                        supportedLanguages.includes(code)
+                          ? supportedLanguages.filter((x) => x !== code)
+                          : [...supportedLanguages, code],
+                      );
+                    }}
+                    options={languageOptions}
+                    excludeCode={defaultLanguage}
+                    placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
+                    getLabel={(o) => o.nativeName}
+                    getSearchLabel={(o) => `${o.name} \u00b7 ${o.nativeName}`}
+                    popularCodes={popularLanguageCodes}
+                    emptyMessage={`No additional languages added \u2014 your booking page will show only ${defaultLanguage.toUpperCase()}`}
+                  />
+                </div>
+              </div>
+            </details>
+          </section>
         </div>
 
         {error && (
-          <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-[12px] text-red-700 font-medium">{error}</p>
+          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3">
+            <p className="text-sm font-medium text-red-700">{error}</p>
           </div>
         )}
 
-        <div className="mt-6 flex items-center justify-between">
-          <button className="px-5 py-2 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
-            Back
-          </button>
+        <div className="mt-5 flex justify-center">
           <button
+            type="button"
             onClick={onContinue}
             disabled={!canProceed}
-            className="px-5 py-2 bg-primary-500 text-white text-[13px] font-semibold rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="w-full rounded-full bg-primary-500 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
             Continue
           </button>

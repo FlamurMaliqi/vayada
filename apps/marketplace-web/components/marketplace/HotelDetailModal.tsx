@@ -26,10 +26,10 @@ import type { CollaborationOffering } from "@/lib/types";
 import {
   CollaborationApplicationModal,
   type CollaborationApplicationData,
+  type CollaborationApplicationSubmissionOptions,
 } from "./CollaborationApplicationModal";
 import {
   collaborationService,
-  toCreatorCompensationTerms,
   type CreateCreatorCollaborationRequest,
 } from "@/services/api/collaborations";
 import { getCurrentUserInfo } from "@/lib/utils/accessControl";
@@ -78,27 +78,40 @@ export function HotelDetailModal({
     setShowApplicationModal(true);
   };
 
-  const handleApplicationSubmit = async (data: CollaborationApplicationData) => {
+  const handleApplicationSubmit = async (
+    data: CollaborationApplicationData,
+    options: CollaborationApplicationSubmissionOptions,
+  ) => {
     try {
       const userInfo = getCurrentUserInfo();
       if (!userInfo.userId) {
-        setErrorState({
-          isOpen: true,
-          message: "Please log in to apply for collaborations",
-          title: "Authentication Required",
-        });
-        return;
+        throw new Error("Please log in to apply for collaborations");
       }
+
+      const selectedOffering = hotel.collaborationOfferings?.find(
+        (offering) => offering.id === data.compensationOptionId,
+      );
+      if (!selectedOffering) {
+        throw new Error("Choose one of this hotel's compensation options before applying.");
+      }
+      if (!data.consent) throw new Error("Consent is required before applying.");
 
       const request: CreateCreatorCollaborationRequest = {
         initiator_type: "creator",
         listing_id: hotel.id,
+        compensation_option_id: selectedOffering.id,
+        collaboration_type: selectedOffering.collaboration_type,
+        free_stay_min_nights: selectedOffering.free_stay_min_nights ?? undefined,
+        free_stay_max_nights: selectedOffering.free_stay_max_nights ?? undefined,
+        paid_amount: selectedOffering.paid_max_amount ?? undefined,
+        currency: selectedOffering.currency ?? undefined,
+        discount_percentage: selectedOffering.discount_percentage ?? undefined,
+        creator_fee: selectedOffering.commission_percentage ?? undefined,
         why_great_fit: data.whyGreatFit,
-        consent: true,
+        consent: data.consent,
         travel_date_from: data.travelDateFrom || undefined,
         travel_date_to: data.travelDateTo || undefined,
         preferred_months: data.preferredMonths.length > 0 ? data.preferredMonths : undefined,
-        ...toCreatorCompensationTerms(data.compensationOption),
         platform_deliverables: (data.platformDeliverables || []).map((pd) => ({
           platform: pd.platform,
           deliverables: pd.deliverables.map((d) => ({
@@ -108,8 +121,7 @@ export function HotelDetailModal({
         })),
       };
 
-      await collaborationService.create(request);
-      setShowApplicationModal(false);
+      await collaborationService.create(request, options);
       setShowSuccessModal(true);
     } catch (error) {
       console.error("Failed to submit application:", error);
@@ -126,6 +138,10 @@ export function HotelDetailModal({
         displayMessage =
           "You already have an active collaboration or pending request with this hotel. You can only have one active conversation per property.";
         displayTitle = "Duplicate Application";
+      } else if (rawMessage.includes("log in")) {
+        displayTitle = "Authentication Required";
+      } else if (rawMessage.includes("compensation")) {
+        displayTitle = "Compensation Required";
       }
 
       setErrorState({
@@ -133,6 +149,7 @@ export function HotelDetailModal({
         message: displayMessage,
         title: displayTitle,
       });
+      throw error;
     }
   };
 
@@ -583,16 +600,13 @@ export function HotelDetailModal({
 
       {/* Collaboration Application Modal */}
       <CollaborationApplicationModal
+        key={hotel.id}
         isOpen={showApplicationModal}
         onClose={() => setShowApplicationModal(false)}
+        listingId={hotel.id}
         onSubmit={handleApplicationSubmit}
-        hotelName={hotel.name}
-        availableMonths={hotel.availability}
-        requiredPlatforms={hotel.platforms}
-        creatorPlatforms={creatorPlatforms}
-        maxNights={hotel.numberOfNights}
-        minNights={hotel.minNumberOfNights}
         compensationOptions={offerings}
+        creatorPlatforms={creatorPlatforms}
       />
 
       {/* Success Modal */}

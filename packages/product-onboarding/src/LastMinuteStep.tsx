@@ -70,18 +70,20 @@ export default function LastMinuteStep({
   };
 
   return (
-    <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6">
+    <div className="mx-auto max-w-3xl px-4 sm:px-6 py-4 sm:py-5">
       {stepIndicators}
 
-      <h1 className="text-xl font-bold text-gray-900 mb-1">Last-Minute Discounts</h1>
-      <p className="text-[13px] text-gray-500 mb-6">
-        Automatically reduce prices when check-in is approaching to fill empty rooms. You can change
-        these anytime from Booking Flow settings.
-      </p>
+      <div className="text-center mb-5">
+        <h1 className="text-2xl font-semibold text-gray-900">Last-Minute Discounts</h1>
+        <p className="mt-1 text-sm text-gray-500">
+          Automatically reduce prices when check-in is approaching to fill empty rooms. You can
+          change these anytime from Booking Flow settings.
+        </p>
+      </div>
 
       <div className="space-y-4">
         {/* Enable toggle */}
-        <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+        <div className="bg-white rounded-2xl border border-gray-200 px-4 sm:px-5 py-4">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-gray-900">Enable last-minute discounts</h2>
@@ -108,7 +110,7 @@ export default function LastMinuteStep({
         {config.enabled && (
           <>
             {/* Stacking toggle */}
-            <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+            <div className="bg-white rounded-2xl border border-gray-200 px-4 sm:px-5 py-4">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[13px] font-medium text-gray-900">Stack with promo codes</p>
@@ -129,7 +131,7 @@ export default function LastMinuteStep({
             </div>
 
             {/* Discount tiers */}
-            <div className="bg-white rounded-xl border border-gray-200 px-5 py-5">
+            <div className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5">
               <div className="flex items-center justify-between mb-3">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900">Discount Tiers</h3>
@@ -268,21 +270,21 @@ export default function LastMinuteStep({
       </div>
 
       {error && (
-        <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
+        <div className="mt-4 bg-red-50 border border-red-200 rounded-xl p-3">
           <p className="text-[11px] text-red-700 font-medium">{error}</p>
         </div>
       )}
 
-      <div className="mt-6 flex items-center justify-between">
+      <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
         <button
           onClick={onBack}
-          className="px-5 py-2 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          className="w-full sm:w-auto px-6 py-2.5 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-full hover:bg-gray-50 transition-colors"
         >
           Back
         </button>
         <button
           onClick={onContinue}
-          className="px-5 py-2 text-[13px] font-semibold bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+          className="w-full sm:w-auto px-6 py-2.5 text-[13px] font-semibold bg-primary-500 text-white rounded-full hover:bg-primary-600 transition-colors"
         >
           Continue
         </button>

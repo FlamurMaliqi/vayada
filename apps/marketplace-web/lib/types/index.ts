@@ -78,7 +78,7 @@ export interface Hotel {
   description: string;
   picture?: string;
   images: string[];
-  accommodationType?: string; // Hotel, Boutiques Hotel, City Hotel, Luxury Hotel, Apartment, Villa, Lodge
+  accommodationType?: string; // Canonical hotel_catalog property type; legacy aliases are read-only.
   collaborationType?: "Kostenlos" | "Bezahlt"; // Free, Paid — legacy single-value summary
   collaborationOfferings?: CollaborationOffering[]; // Full list of offerings; preferred for detail rendering
   availability?: string[]; // Array of months
@@ -115,6 +115,7 @@ export interface CollaborationOffering {
   discount_percentage?: number | null;
   commission_percentage?: number | null;
   min_followers?: number | null;
+  terms_summary?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -449,10 +450,5 @@ export interface CreatorFormState {
 }
 
 export interface HotelFormState {
-  name: string;
-  location: string;
   about: string;
-  website: string;
-  phone: string;
-  picture: string;
 }

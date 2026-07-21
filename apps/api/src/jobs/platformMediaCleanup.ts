@@ -127,7 +127,7 @@ export type PlatformMediaCleanupSchedulerOptions = {
 type PgPlatformMediaCleanupStoreConfig = {
   connectionString: string;
   max?: number;
-  objectDeleter?: PlatformMediaObjectDeleter;
+  objectDeleter: PlatformMediaObjectDeleter;
 };
 
 export type PlatformMediaObjectDeleter = {
@@ -208,7 +208,7 @@ export function createPgPlatformMediaCleanupStore(
     connectionString: config.connectionString,
     max: config.max,
   });
-  const objectDeleter = config.objectDeleter ?? noopObjectDeleter;
+  const objectDeleter = config.objectDeleter;
 
   return {
     async findAbandonedStagingUploads(now, limit) {
@@ -542,22 +542,37 @@ async function updateMediaObjectLifecycle(
   mutation: PlatformMediaCleanupMutation,
   context: PlatformMediaCleanupContext,
 ): Promise<PlatformMediaCleanupMutationResult> {
+  if (mutation.action === "abandoned-staging-upload") {
+    throw new Error("Upload-session cleanup cannot mutate a media object");
+  }
+  const storage = await lockEligibleMediaStorageForCleanup(
+    client,
+    requiredCandidateId(candidate),
+    mutation.action,
+    context.now,
+  );
+  if (!storage) return skippedCleanupMutation(candidate, mutation);
+
   if (mutation.action === "cleanup-rollback-window-object") {
-    if (candidate.rollbackStorageKey) {
+    if (storage.rollbackStorageKey) {
       await deleteStorageObjectForCandidate(
         objectDeleter,
         candidate,
-        requiredBucket(candidate.rollbackBucket ?? candidate.bucket, candidate),
-        candidate.rollbackStorageKey,
+        requiredBucket(storage.rollbackBucket ?? storage.bucket, candidate),
+        storage.rollbackStorageKey,
       );
     }
-  } else if (candidate.bucket && candidate.storageKey) {
-    await deleteStorageObjectForCandidate(
-      objectDeleter,
-      candidate,
-      candidate.bucket,
-      candidate.storageKey,
+  } else {
+    const storageKeys = distinctPlatformMediaStorageKeys(
+      storage.storageKey,
+      storage.variantStorageKeys,
     );
+    if (storageKeys.length > 0) {
+      const bucket = requiredBucket(storage.bucket, candidate);
+      for (const storageKey of storageKeys) {
+        await deleteStorageObjectForCandidate(objectDeleter, candidate, bucket, storageKey);
+      }
+    }
   }
   const updated =
     mutation.action === "cleanup-rollback-window-object"
@@ -596,6 +611,101 @@ async function updateMediaObjectLifecycle(
   return insertCleanupSideEffects(client, candidate, mutation, context, {
     applied: Boolean(updated.rows[0]),
   });
+}
+
+async function lockEligibleMediaStorageForCleanup(
+  client: pg.PoolClient,
+  mediaObjectId: string,
+  action: Exclude<PlatformMediaCleanupAction, "abandoned-staging-upload">,
+  now: Date,
+): Promise<{
+  bucket: string | null;
+  storageKey: string | null;
+  variantStorageKeys: string[];
+  rollbackBucket: string | null;
+  rollbackStorageKey: string | null;
+} | null> {
+  const result = await client.query<{
+    bucket: string | null;
+    storageKey: string | null;
+    variantStorageKeys: string[];
+    rollbackBucket: string | null;
+    rollbackStorageKey: string | null;
+  }>(
+    `SELECT media.bucket,
+            media.storage_key AS "storageKey",
+            media.source_metadata ->> 'rollbackBucket' AS "rollbackBucket",
+            media.source_metadata ->> 'rollbackStorageKey' AS "rollbackStorageKey",
+            ARRAY(
+              SELECT variant.storage_key
+              FROM platform.media_variants variant
+              WHERE variant.media_object_id = media.id
+              ORDER BY variant.variant_name, variant.id
+            ) AS "variantStorageKeys"
+     FROM platform.media_objects media
+     WHERE media.id = $1::uuid
+       AND ${mediaCleanupEligibilitySql(action)}
+     FOR UPDATE`,
+    [mediaObjectId, now.toISOString()],
+  );
+  return result.rows[0] ?? null;
+}
+
+function mediaCleanupEligibilitySql(
+  action: Exclude<PlatformMediaCleanupAction, "abandoned-staging-upload">,
+): string {
+  switch (action) {
+    case "delete-replaced-public-image":
+      return `media.visibility = 'public'
+       AND media.lifecycle_status = 'delete_requested'
+       AND media.deletion_requested_at <= $2::timestamptz
+       AND COALESCE(media.source_metadata ->> 'replacementReason', '') = 'replaced'`;
+    case "delete-private-attachment-after-retention":
+      return `media.visibility = 'private'
+       AND media.purpose IN ('marketplace.collaboration_chat.attachment', 'pms.messaging.attachment')
+       AND media.lifecycle_status IN ('active', 'retained', 'delete_requested')
+       AND media.retained_until IS NOT NULL
+       AND media.retained_until <= $2::timestamptz`;
+    case "cleanup-rollback-window-object":
+      return `media.source_system = 'migration'
+       AND media.storage_kind = 'vayada_managed'
+       AND NULLIF(media.source_metadata ->> 'rollbackWindowEndsAt', '')::timestamptz <= $2::timestamptz
+       AND NULLIF(media.source_metadata ->> 'rollbackStorageKey', '') IS NOT NULL
+       AND COALESCE(media.source_metadata ->> 'rollbackCleanupStatus', '') <> 'completed'`;
+  }
+}
+
+function skippedCleanupMutation(
+  candidate: PlatformMediaCleanupCandidate,
+  mutation: PlatformMediaCleanupMutation,
+): PlatformMediaCleanupMutationResult {
+  const resourceId = cleanupResourceId(candidate);
+  return {
+    action: mutation.action,
+    applied: false,
+    resourceId,
+    cleanupKey: buildPlatformMediaCleanupKey({
+      action: mutation.action,
+      resourceId,
+      deadlineOrWindow: mutation.deadlineOrWindow,
+    }),
+    jobKey: buildPlatformMediaCleanupJobKey({
+      action: mutation.action,
+      resourceId,
+      deadlineOrWindow: mutation.deadlineOrWindow,
+    }),
+  };
+}
+
+export function distinctPlatformMediaStorageKeys(
+  canonicalStorageKey: string | null | undefined,
+  variantStorageKeys: readonly string[],
+): string[] {
+  return [...new Set([canonicalStorageKey, ...variantStorageKeys].filter(isStorageKey))];
+}
+
+function isStorageKey(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 async function insertCleanupSideEffects(
@@ -1442,15 +1552,6 @@ function sortJson(value: unknown): unknown {
 function sumBy<T extends Record<K, number>, K extends keyof T>(items: T[], key: K): number {
   return items.reduce((total, item) => total + item[key], 0);
 }
-
-const noopObjectDeleter: PlatformMediaObjectDeleter = {
-  async deleteObject() {
-    return;
-  },
-  async deletePrefix() {
-    return;
-  },
-};
 
 class PlatformMediaStorageDeleteError extends Error {
   constructor(resourceId: string, cause: unknown) {

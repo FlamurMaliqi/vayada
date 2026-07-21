@@ -6,6 +6,12 @@ export type SharedAccountDetailsInput = {
   profilePictureMediaObjectId?: string;
 };
 
+export type SharedAccountDetailsProfile = {
+  name?: string | null;
+  profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
+};
+
 export function splitSharedAccountName(name?: string | null): {
   firstName: string;
   lastName: string;
@@ -17,11 +23,26 @@ export function splitSharedAccountName(name?: string | null): {
   };
 }
 
-export function isSharedAccountDetailsComplete(name?: string | null): boolean {
-  const { firstName, lastName } = splitSharedAccountName(name);
-  return Boolean(firstName && lastName);
+export function isSharedAccountDetailsComplete(
+  profile?: SharedAccountDetailsProfile | null,
+): boolean {
+  const { firstName, lastName } = splitSharedAccountName(profile?.name);
+  return Boolean(
+    firstName &&
+    lastName &&
+    profile?.profilePictureUrl?.trim() &&
+    profile.profilePictureMediaObjectId?.trim(),
+  );
 }
 
 export function normalizeSharedAccountName(firstName: string, lastName: string): string {
   return `${firstName.trim()} ${lastName.trim()}`.replace(/\s+/g, " ").trim();
+}
+
+export function isValidSharedAccountPhone(phone: string): boolean {
+  const value = phone.trim();
+  if (!value) return true;
+  if (!/^\+?[0-9(][0-9\s().-]*$/.test(value)) return false;
+  const digitCount = value.replace(/\D/g, "").length;
+  return digitCount >= 7 && digitCount <= 15;
 }

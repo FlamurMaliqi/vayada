@@ -26,6 +26,13 @@ export type BookingWebPublicHotelResponse = {
       longitude: number | null;
     };
     summary: string | null;
+    branding?: {
+      heroImage: string | null;
+      heroHeading: string | null;
+      heroSubtext: string | null;
+      primaryColor: string | null;
+      fontPairing: string | null;
+    };
     images: Array<{ url: string; alt: string | null }>;
     amenities: string[];
     policies: {
@@ -236,7 +243,7 @@ export const bookingWebAffiliateApi = {
 export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
   const hotel = data.hotel;
   const images = hotel.images.map((image) => image.url).filter(Boolean);
-  const heroImage = images[0] || FALLBACK_IMAGE;
+  const heroImage = hotel.branding?.heroImage || images[0] || FALLBACK_IMAGE;
 
   return {
     id: hotel.propertyId,
@@ -266,6 +273,15 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     customFilters: {},
     filterRooms: {},
     socialLinks: {},
+    branding: hotel.branding
+      ? {
+          heroImage: hotel.branding.heroImage || undefined,
+          heroHeading: hotel.branding.heroHeading || undefined,
+          heroSubtext: hotel.branding.heroSubtext || undefined,
+          primaryColor: hotel.branding.primaryColor || undefined,
+          fontPairing: hotel.branding.fontPairing || undefined,
+        }
+      : undefined,
     defaultLanguage: hotel.defaultLocale,
     supportedLanguages: hotel.supportedLocales,
     guestTypeSettings: {

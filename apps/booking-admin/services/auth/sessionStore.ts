@@ -3,6 +3,8 @@ export type AuthUser = {
   email: string;
   name?: string | null;
   phone?: string | null;
+  profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
   status: string;
   workosUserId?: string;
 };
@@ -71,6 +73,8 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
       email: session.user.email,
       name: userName,
       phone: session.user.phone ?? null,
+      profilePictureUrl: session.user.profilePictureUrl ?? null,
+      profilePictureMediaObjectId: session.user.profilePictureMediaObjectId ?? null,
       type: "hotel",
       status: session.user.status,
       is_superadmin: false,
@@ -149,6 +153,10 @@ export function getAuthKitAccessToken(): string | null {
 
 export function getAuthSessionUser(): AuthUser | null {
   return authKitSession?.user ?? null;
+}
+
+export function getAuthWorkosOrganizationId(): string | null {
+  return authKitSession?.workosOrganizationId ?? null;
 }
 
 export function getAuthBearerToken(): string | null {

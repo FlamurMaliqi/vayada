@@ -12,6 +12,7 @@ export function FormNavigationButtons({
   onPrevious,
   submitLabel = "Complete Profile",
   prominentFirstStep = false,
+  stackOnMobile = false,
   disabled = false,
 }: FormNavigationButtonsProps) {
   const isLastStep = currentStep === totalSteps;
@@ -20,8 +21,14 @@ export function FormNavigationButtons({
 
   return (
     <div
-      className={`flex items-center gap-4 ${
-        isFirstStep ? "justify-center pt-1" : "justify-between border-t border-gray-100 pt-4"
+      className={`flex gap-4 ${
+        isFirstStep
+          ? stackOnMobile
+            ? "flex-col items-stretch justify-center pt-1 sm:flex-row sm:items-center"
+            : "items-center justify-center pt-1"
+          : stackOnMobile
+            ? "flex-col-reverse items-stretch border-t border-gray-100 pt-4 sm:flex-row sm:items-center sm:justify-between"
+            : "items-center justify-between border-t border-gray-100 pt-4"
       }`}
     >
       {currentStep > 1 && (
@@ -29,21 +36,23 @@ export function FormNavigationButtons({
           type="button"
           variant="outline"
           onClick={onPrevious}
-          className="gap-2 rounded-full border-gray-200 px-5 py-3"
+          className={`gap-2 rounded-full border-gray-200 px-5 py-3 ${
+            stackOnMobile ? "w-full sm:w-auto" : ""
+          }`}
         >
           <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" />
           Previous
         </Button>
       )}
-      {!isFirstStep && <div className="flex-1" />}
+      {!isFirstStep && <div className={stackOnMobile ? "hidden sm:block sm:flex-1" : "flex-1"} />}
       <Button
         type="submit"
         variant="primary"
         size={useProminentButton ? "lg" : "md"}
         className={`gap-2 rounded-full font-semibold shadow-[0_14px_30px_-18px_rgba(37,99,235,0.8)] transition hover:-translate-y-0.5 ${
-          useProminentButton ? "px-8" : "px-6 py-3"
-        }`}
-        disabled={disabled || submitting || (!isLastStep && !canProceed)}
+          stackOnMobile ? "w-full sm:w-auto" : ""
+        } ${useProminentButton ? "px-8" : "px-6 py-3"}`}
+        disabled={disabled || submitting || !canProceed}
       >
         {submitting ? (
           <span className="flex items-center justify-center gap-2">
