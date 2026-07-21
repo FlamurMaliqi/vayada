@@ -217,7 +217,8 @@ Only after PR checks are proven, test one low-risk Docker deploy workflow on
 Blacksmith. Prefer a frontend workflow with existing Buildx usage, not
 `migrate-auth-db.yml`.
 
-Candidate: `deploy-landing.yml` or `deploy-affiliate-dashboard.yml`.
+Candidate: `deploy-next-marketplace-web.yml` or
+`deploy-next-affiliate-dashboard.yml`.
 
 Measure before changing Docker actions:
 

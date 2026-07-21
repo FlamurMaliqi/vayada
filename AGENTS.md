@@ -195,7 +195,11 @@ Full operating model (projects, labels, statuses, priorities, issue quality, age
 
 ## Deployment
 
-Production runs on AWS ECS Fargate, fronted by an ALB. Each app has a GitHub Actions workflow under `.github/workflows/` that triggers on path changes under its `apps/<name>/` directory, then builds, pushes to ECR, and deploys via OIDC.
+Production runs on AWS ECS Fargate and App Runner, fronted by an ALB where
+applicable. The legacy Python APIs and parallel `next-*` stack deploy through
+GitHub Actions under `.github/workflows/`. Canonical frontend builds are frozen
+on the legacy APIs and intentionally have no active deploy workflow; restoring
+their delivery requires explicit rollback-compatibility or cutover work.
 
 - **PMS migrations** auto-run on ECS container start. Do not suggest manually running `scripts/run_migration.sh` after a push to `main`.
 - **auth-db** does **not** auto-migrate in production — run `scripts/run_migration.sh auth` against RDS for any schema change. Locally, the `auth-db-migrate` one-shot service in `docker-compose.yml` runs migrations on `docker compose up`.
