@@ -848,7 +848,7 @@ async function createPgCollaboration(
   if (!offerId) {
     throw new MarketplaceCollaborationWriteError(400, "invalid_query", "create requires offerId.");
   }
-  const initiatorSide = readCollaborationSide(input.payload.initiatorSide) ?? input.side;
+  const initiatorSide = input.side;
   const creator = await resolveCreatorProfileForCreate(client, input);
   if (!creator) return null;
 
@@ -1285,26 +1285,39 @@ async function resolveCreatorProfileForCreate(
   client: MarketplaceCollaborationQueryable,
   input: MarketplaceCollaborationLifecycleWriteInput,
 ): Promise<{ id: string; organizationId: string } | null> {
-  const creatorId = readString(input.payload.creatorId);
-  const values: unknown[] = [];
-  const clauses: string[] = [];
-  if (creatorId) {
-    values.push(creatorId);
-    clauses.push(`source_creator_id = $${values.length}`);
-  }
   if (input.side === "creator") {
-    values.push(activeResourceIds(input.context, "creator_profile", "owner"));
-    clauses.push(`id::text = ANY($${values.length}::text[])`);
+    const creatorProfileIds = activeResourceIds(input.context, "creator_profile", "owner");
+    if (creatorProfileIds.length > 1) {
+      throw new MarketplaceCollaborationWriteError(
+        409,
+        "ambiguous_marketplace_creator_profile",
+        "Selected organization has multiple active marketplace creator profile links.",
+      );
+    }
+    if (!creatorProfileIds[0]) return null;
+
+    const result = await client.query<{ id: string; organizationId: string }>(
+      `SELECT id::text AS id,
+              organization_id::text AS "organizationId"
+       FROM marketplace.creator_profiles
+       WHERE id::text = $1
+         AND organization_id::text = $2
+       LIMIT 1`,
+      [creatorProfileIds[0], input.context.selectedOrganization.organizationId],
+    );
+    return result.rows[0] ?? null;
   }
-  if (clauses.length === 0) return null;
+
+  const creatorId = readString(input.payload.creatorId);
+  if (!creatorId) return null;
 
   const result = await client.query<{ id: string; organizationId: string }>(
     `SELECT id::text AS id,
             organization_id::text AS "organizationId"
      FROM marketplace.creator_profiles
-     WHERE ${clauses.join(" AND ")}
+     WHERE source_creator_id = $1
      LIMIT 1`,
-    values,
+    [creatorId],
   );
   return result.rows[0] ?? null;
 }
@@ -1606,9 +1619,9 @@ function createCollaborationCorrelationId(
 ): string {
   const offerId = readString(input.payload.offerId) ?? "unknown_offer";
   const creatorId =
-    readString(input.payload.creatorId) ??
-    activeResourceIds(input.context, "creator_profile", "owner")[0] ??
-    "unknown_creator";
+    (input.side === "creator"
+      ? activeResourceIds(input.context, "creator_profile", "owner")[0]
+      : readString(input.payload.creatorId)) ?? "unknown_creator";
   return `${offerId}:${creatorId}`;
 }
 
@@ -1706,7 +1719,7 @@ function collaborationSelectSql(side: MarketplaceCollaborationAuthorizationSide)
   return `collaboration.source_collaboration_id AS "collaborationId",
           '${authorizationModeForSide(side)}'::text AS "authorizationMode",
           offer.id::text AS "offerId",
-          creator.source_creator_id AS "creatorId",
+          COALESCE(creator.source_creator_id, creator.id::text) AS "creatorId",
           hotel_profile.source_hotel_profile_id AS "hotelProfileId",
           '${side}'::text AS side,
           collaboration.initiator_type AS "initiatorSide",
@@ -1786,15 +1799,19 @@ function activeResourceIds(
   resourceType: "creator_profile" | "marketplace_offer",
   relationship: "owner" | "operator",
 ): string[] {
-  return context.linkedResources
-    .filter(
-      (resource) =>
-        resource.status === "active" &&
-        resource.product === "marketplace" &&
-        resource.resourceType === resourceType &&
-        resource.relationship === relationship,
-    )
-    .map((resource) => resource.resourceId);
+  return [
+    ...new Set(
+      context.linkedResources
+        .filter(
+          (resource) =>
+            resource.status === "active" &&
+            resource.product === "marketplace" &&
+            resource.resourceType === resourceType &&
+            resource.relationship === relationship,
+        )
+        .map((resource) => resource.resourceId),
+    ),
+  ];
 }
 
 function mapCollaborationRow(
@@ -1974,10 +1991,6 @@ function readCurrency(value: unknown): string | null {
   return text && /^[A-Za-z]{3}$/.test(text) ? text.toUpperCase() : null;
 }
 
-function readCollaborationSide(value: unknown): MarketplaceCollaborationAuthorizationSide | null {
-  return typeof value === "string" && isCollaborationSide(value) ? value : null;
-}
-
 function readCompensationType(value: unknown): MarketplaceCollaborationRead["compensationType"] {
   return typeof value === "string" ? toCompensationType(value) : null;
 }
@@ -2107,6 +2120,16 @@ function authorizeRequiredSideCollaborationWrite(
   }
   const resourceCheck = checkRequiredWriteResourceLinks(context, side);
   if (!resourceCheck.ok) return resourceCheck;
+  if (side === "creator" && activeResourceIds(context, "creator_profile", "owner").length > 1) {
+    return {
+      ok: false,
+      error: {
+        statusCode: 409,
+        code: "ambiguous_marketplace_creator_profile",
+        message: "Selected organization has multiple active marketplace creator profile links.",
+      },
+    };
+  }
   return { ok: true, context, side };
 }
 
@@ -2233,9 +2256,7 @@ function checkRequiredWriteResourceLinks(
           resource.relationship === required.relationship,
       ),
   );
-  if (!missing) {
-    return { ok: true };
-  }
+  if (!missing) return { ok: true };
 
   const code = side === "creator" ? "missing_creator_resource_link" : "missing_hotel_resource_link";
   return {
@@ -2410,6 +2431,7 @@ type MarketplaceCollaborationRouteError = {
   code:
     | "invalid_query"
     | "forbidden"
+    | "ambiguous_marketplace_creator_profile"
     | "missing_creator_resource_link"
     | "missing_hotel_resource_link"
     | "collaboration_not_found"

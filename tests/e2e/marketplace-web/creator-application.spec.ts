@@ -1,0 +1,325 @@
+import { expect, test, type Page } from "@playwright/test";
+import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
+
+test.use({ timezoneId: "America/Los_Angeles" });
+
+test("creator selects one compensation option when applying", async ({ page }) => {
+  await primeCreatorSession(page);
+  await mockCreatorProfile(page);
+  await routeJson(page, /\/api\/marketplace\/offers(?:\?|$)/, {
+    items: [
+      {
+        offerId: "offer-application-e2e",
+        offerPublicId: "offer-application-public-e2e",
+        offerTitle: "Alpine creator stay",
+        offerSummary: "Create a city guide for our hotel.",
+        hotelName: "Marketplace Alpenrose",
+        hotelSlug: "marketplace-alpenrose",
+        hotelAccommodationType: "hotel",
+        hotelLocation: { displayText: "Innsbruck, Austria", countryCode: "AT" },
+        hotelCoverImageUrl: null,
+        hotelImageUrls: [],
+        deliverables: [],
+        compensationOptions: [
+          {
+            compensationOptionId: "compensation-free-stay",
+            compensationType: "free_stay",
+            availabilityMonths: ["January"],
+            platforms: ["instagram"],
+            freeStayMinNights: 2,
+            freeStayMaxNights: 3,
+            paidMaxAmount: null,
+            currency: null,
+            discountPercentage: null,
+            commissionPercentage: null,
+            minFollowers: null,
+            termsSummary: null,
+          },
+          {
+            compensationOptionId: "compensation-paid",
+            compensationType: "paid",
+            availabilityMonths: ["September"],
+            platforms: ["youtube"],
+            freeStayMinNights: null,
+            freeStayMaxNights: null,
+            paidMaxAmount: "900",
+            currency: "EUR",
+            discountPercentage: null,
+            commissionPercentage: null,
+            minFollowers: null,
+            termsSummary: null,
+          },
+        ],
+        creatorRequirements: {
+          platforms: ["instagram", "youtube"],
+          targetCountries: ["AT", "DE"],
+          targetAgeMin: null,
+          targetAgeMax: null,
+          targetAgeGroups: null,
+          creatorTypes: ["travel"],
+        },
+        createdAt: "2026-07-01T10:00:00.000Z",
+        projectedAt: "2026-07-01T10:00:00.000Z",
+      },
+    ],
+    pagination: { limit: 200, offset: 0, total: 1 },
+  });
+
+  let submittedApplication: Record<string, unknown> | null = null;
+  await page.route(/\/api\/marketplace\/collaborations$/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    submittedApplication = route.request().postDataJSON() as Record<string, unknown>;
+    const idempotencyKey = String(submittedApplication.idempotencyKey);
+    await route.fulfill({
+      status: 201,
+      headers: corsHeaders(route),
+      json: {
+        contractVersion: "marketplace-collaboration-lifecycle-writes.v1",
+        command: { action: "create", idempotencyKey },
+        collaboration: {
+          contractVersion: "marketplace-collaboration-reads.v1",
+          authorizationMode: "creator_workspace_resource_link",
+          collaborationId: "collaboration-application-e2e",
+          offerId: "offer-application-e2e",
+          creatorId: "creator-profile-e2e",
+          hotelProfileId: "hotel-profile-e2e",
+          side: "creator",
+          initiatorSide: "creator",
+          isInitiator: true,
+          status: "pending",
+          compensationType: "paid",
+          offerTitle: "Alpine creator stay",
+          hotelLocation: "Innsbruck, Austria",
+          creator: {
+            side: "creator",
+            organizationId: "22222222-2222-4222-8222-222222222222",
+            profileId: "creator-profile-e2e",
+            displayName: "Lina Creator",
+            avatarUrl: "https://media.example/lina.png",
+          },
+          hotel: {
+            side: "hotel",
+            organizationId: "33333333-3333-4333-8333-333333333333",
+            profileId: "hotel-profile-e2e",
+            displayName: "Marketplace Alpenrose",
+            avatarUrl: null,
+          },
+          terms: {
+            freeStayMinNights: null,
+            freeStayMaxNights: null,
+            paidAmount: "900",
+            currency: "EUR",
+            discountPercentage: null,
+            affiliateEnabled: false,
+            affiliateCommissionPercentage: null,
+            travelDateFrom: null,
+            travelDateTo: null,
+            preferredDateFrom: null,
+            preferredDateTo: null,
+            preferredMonths: [],
+          },
+          deliverables: [],
+          lastMessageAt: null,
+          createdAt: "2026-07-21T10:00:00.000Z",
+          updatedAt: "2026-07-21T10:00:00.000Z",
+        },
+        sideEffects: [],
+      },
+    });
+  });
+
+  await page.goto("/marketplace");
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Apply for Collaboration" })).toBeVisible();
+
+  const compensationRadios = page.getByRole("radio");
+  await expect(compensationRadios).toHaveCount(2);
+  const [freeStayRow, paidRow] = await Promise.all([
+    compensationRadios.nth(0).locator("..").boundingBox(),
+    compensationRadios.nth(1).locator("..").boundingBox(),
+  ]);
+  expect(freeStayRow).not.toBeNull();
+  expect(paidRow).not.toBeNull();
+  if (!freeStayRow || !paidRow) throw new Error("Compensation choices were not rendered");
+  expect(Math.abs(freeStayRow.x - paidRow.x)).toBeLessThan(2);
+  expect(paidRow.y).toBeGreaterThan(freeStayRow.y + freeStayRow.height);
+
+  await expect(page.getByText(/Stay length offered: 2–3 nights/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Jan", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Sep", exact: true })).toBeEnabled();
+
+  const paidChoice = page.getByRole("radio", { name: /Paid/ });
+  await paidChoice.locator("..").click();
+  await expect(paidChoice).toBeChecked();
+  await expect(page.getByText(/Stay length offered:/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Jan", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Sep", exact: true })).toBeEnabled();
+
+  const fromDate = page.locator('input[type="date"]').first();
+  await fromDate.fill("2027-09-01");
+  await page.getByRole("button", { name: "Sep", exact: true }).click();
+  await page
+    .getByRole("radio", { name: /Free Stay/ })
+    .locator("..")
+    .click();
+  await expect(fromDate).toHaveValue("");
+  await paidChoice.locator("..").click();
+  await expect(page.getByRole("button", { name: "Sep", exact: true })).not.toHaveClass(
+    /bg-primary-600/,
+  );
+
+  await page
+    .getByPlaceholder(/Share your content style, audience demographics/)
+    .fill("My audience is a strong match for this city guide.");
+  await page.getByText("YouTube", { exact: true }).last().click();
+  const youtubeVideoRow = page.getByText("YouTube Video", { exact: true }).locator("..");
+  await youtubeVideoRow.getByRole("button").last().click();
+  await fromDate.fill("2027-01-10");
+  await page.getByRole("button", { name: "Submit Application" }).click();
+
+  const availabilityError = page.getByText(
+    "The hotel is not available in: Jan. Please select dates within their availability.",
+  );
+  await expect(availabilityError).toBeVisible();
+  await page.waitForTimeout(600);
+  expect(submittedApplication).toBeNull();
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(availabilityError).toHaveCount(0);
+
+  await page.getByRole("radio", { name: /Paid/ }).locator("..").click();
+  await page
+    .getByPlaceholder(/Share your content style, audience demographics/)
+    .fill("My audience is a strong match for this city guide.");
+  await page.getByText("YouTube", { exact: true }).last().click();
+  await page
+    .getByText("YouTube Video", { exact: true })
+    .locator("..")
+    .getByRole("button")
+    .last()
+    .click();
+  await page.locator('input[type="date"]').first().fill("2027-09-01");
+  await page.getByRole("button", { name: "Submit Application" }).click();
+
+  await expect.poll(() => submittedApplication).not.toBeNull();
+  expect(submittedApplication).not.toHaveProperty("creatorId");
+  expect(submittedApplication).toMatchObject({
+    offerId: "offer-application-e2e",
+    initiatorSide: "creator",
+    whyGreatFit: "My audience is a strong match for this city guide.",
+    consent: true,
+    terms: {
+      compensationType: "paid",
+      paidAmount: "900",
+      currency: "EUR",
+      affiliateEnabled: false,
+      travelDateFrom: "2027-09-01",
+    },
+    deliverables: [{ platform: "YouTube", type: "YouTube Video", quantity: 1 }],
+  });
+  await expect(page.getByRole("heading", { name: "Application Sent!" })).toBeVisible();
+});
+
+async function primeCreatorSession(page: Page) {
+  await page.addInitScript(() => {
+    localStorage.setItem("userType", "creator");
+    localStorage.setItem("userName", "Lina Creator");
+    localStorage.setItem("isLoggedIn", "true");
+    localStorage.setItem(
+      "vayada_cookie_consent",
+      JSON.stringify({ necessary: true, functional: true, analytics: false, marketing: false }),
+    );
+  });
+  await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: corsHeaders(route),
+      json: {
+        accessToken: "creator-authkit-token",
+        csrfToken: "creator-csrf-token",
+        organizationId: "22222222-2222-4222-8222-222222222222",
+        organizationKind: "creator_workspace",
+        user: {
+          id: "user-creator-e2e",
+          email: "creator@example.test",
+          name: "Lina Creator",
+          phone: "+49 89 123456",
+          status: "active",
+        },
+      },
+    });
+  });
+  await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
+    accessToken: "legacy-marketplace-token",
+    expiresIn: 900,
+  });
+}
+
+async function mockCreatorProfile(page: Page) {
+  await routeJson(page, /\/api\/marketplace\/creators\/me(?:\?|$)/, {
+    creatorProfileId: "creator-profile-e2e",
+    displayName: "Lina Creator",
+    creatorType: "travel",
+    locationText: "Berlin, Germany",
+    shortDescription: "I create practical city guides for independent travelers.",
+    portfolioUrl: "https://creator.example/portfolio",
+    phone: "+49 89 123456",
+    profilePictureUrl: "https://media.example/lina.png",
+    profilePictureMediaObjectId: "media-lina",
+    profileComplete: true,
+    profileStatus: "active",
+    platforms: [
+      {
+        platformId: "platform-instagram",
+        platform: "instagram",
+        handle: "@lina",
+        profileUrl: "https://instagram.com/lina",
+        followerCount: 1200,
+        engagementRate: 4.2,
+        audienceCountries: [],
+        audienceAgeGroups: [],
+        audienceGenderSplit: null,
+      },
+      {
+        platformId: "platform-youtube",
+        platform: "youtube",
+        handle: "@linatravels",
+        profileUrl: "https://youtube.com/@linatravels",
+        followerCount: 800,
+        engagementRate: 3.8,
+        audienceCountries: [],
+        audienceAgeGroups: [],
+        audienceGenderSplit: null,
+      },
+    ],
+    audienceSize: 2000,
+    rating: { averageRating: 0, totalReviews: 0 },
+    createdAt: "2026-07-01T10:00:00.000Z",
+    updatedAt: "2026-07-21T10:00:00.000Z",
+  });
+  await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
+    profilePhotoRequired: true,
+    profileComplete: true,
+    missingFields: [],
+    missingPlatforms: false,
+    completionSteps: [],
+  });
+}
+
+async function routeJson(page: Page, pattern: RegExp, json: unknown) {
+  await page.route(pattern, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillCorsPreflight(route);
+      return;
+    }
+    await route.fulfill({ status: 200, headers: corsHeaders(route), json });
+  });
+}
