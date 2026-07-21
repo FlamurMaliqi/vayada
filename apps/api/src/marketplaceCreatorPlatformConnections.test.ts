@@ -4,6 +4,7 @@ import {
   type IdentityRepository,
   type VerifiedSession,
 } from "@vayada/backend-auth";
+import { CREATOR_PLATFORM_ENGAGEMENT_WINDOW_DAYS } from "@vayada/domain-marketplace";
 import type { FastifyInstance } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
@@ -932,15 +933,21 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
         status: "active",
         credentialRef: finalCredentialRef,
       });
-      const snapshot = await client.query<{ count: string; providerMetrics: unknown }>(
+      const snapshot = await client.query<{
+        count: string;
+        providerMetrics: unknown;
+        windowDays: number;
+      }>(
         `SELECT count(*)::text AS count,
-                (array_agg(provider_metrics ORDER BY captured_at DESC))[1] AS "providerMetrics"
+                (array_agg(provider_metrics ORDER BY captured_at DESC))[1] AS "providerMetrics",
+                (array_agg(window_days ORDER BY captured_at DESC))[1] AS "windowDays"
          FROM marketplace.creator_platform_metric_snapshots
          WHERE connection_id = $1`,
         [connection.connectionId],
       );
       expect(snapshot.rows[0]?.count).toBe("1");
       expect(snapshot.rows[0]?.providerMetrics).toEqual({ totalLikes: 12_345 });
+      expect(snapshot.rows[0]?.windowDays).toBe(CREATOR_PLATFORM_ENGAGEMENT_WINDOW_DAYS);
       await expect(
         repository.completeConnection({
           authorization: selectedAuthorization!,

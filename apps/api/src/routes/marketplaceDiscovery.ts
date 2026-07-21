@@ -520,7 +520,7 @@ function toMarketplaceCreatorPlatforms(value: unknown): MarketplaceCreatorPlatfo
       platformId: readString(row.platformId) ?? readString(row.id) ?? "",
       platform: toPlatformName(platformName),
       handle: readString(row.handle) ?? "",
-      profileUrl: readString(row.profileUrl ?? row.profile_url),
+      profileUrl: toAbsoluteHttpsUrl(row.profileUrl ?? row.profile_url),
       followerCount: toNumber(row.followerCount ?? row.followers),
       engagementRate: toNumber(row.engagementRate ?? row.engagement_rate),
       audienceCountries: toAudienceCountries(row.audienceCountries ?? row.top_countries),
@@ -626,6 +626,18 @@ function toCompensationType(
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function toAbsoluteHttpsUrl(value: unknown): string | null {
+  const rawUrl = readString(value);
+  if (!rawUrl) return null;
+
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "https:" && Boolean(url.hostname) ? rawUrl : null;
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
