@@ -15,6 +15,7 @@ import type {
   ApiCreatorResponse,
   CreatorUpdatePayload,
   CreatorProfile,
+  PlatformName,
 } from "@/components/profile/types";
 
 function normalizeProfilePlatforms(platforms: ProfilePlatform[]): ProfilePlatform[] {
@@ -254,14 +255,7 @@ export function useCreatorProfile(
 
         return {
           id: platform.id ?? null,
-          name: platform.name as
-            | "Instagram"
-            | "TikTok"
-            | "YouTube"
-            | "Facebook"
-            | "Blog"
-            | "X"
-            | "Other",
+          name: platform.name as PlatformName,
           handle: platform.handle.trim(),
           ...(platform.profileUrl !== undefined
             ? { profileUrl: platform.profileUrl?.trim() || null }

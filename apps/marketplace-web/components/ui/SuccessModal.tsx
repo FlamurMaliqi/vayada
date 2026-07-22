@@ -13,7 +13,13 @@ interface SuccessModalProps {
 
 export function SuccessModal({ isOpen, onClose, title = "Success!", message }: SuccessModalProps) {
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="md">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      size="md"
+      zIndex={60}
+      ariaLabelledBy="success-modal-title"
+    >
       <div className="p-6 md:p-8">
         {/* Close Button */}
         <button
@@ -32,7 +38,9 @@ export function SuccessModal({ isOpen, onClose, title = "Success!", message }: S
           </div>
 
           {/* Title */}
-          <h3 className="text-2xl font-bold text-gray-900 mb-3">{title}</h3>
+          <h3 id="success-modal-title" className="text-2xl font-bold text-gray-900 mb-3">
+            {title}
+          </h3>
 
           {/* Message */}
           <p className="text-gray-600 mb-8 leading-relaxed">{message}</p>

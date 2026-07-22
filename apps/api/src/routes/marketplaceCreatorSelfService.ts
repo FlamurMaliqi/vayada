@@ -927,6 +927,8 @@ async function recalculateProfileCompletion(
 function creatorProfileStatus(profile: CreatorProfileDocument): CreatorProfileStatusResult {
   const missingFields = creatorProfileMissingFields(profile);
   const missingPlatforms = !hasCompletePlatform(profile.platforms);
+  // SQL completeness checks these same fields plus photo approval, so residual
+  // incompleteness maps to profilePicture. Keep both criteria in sync.
   if (missingFields.length === 0 && !missingPlatforms && !profile.profileComplete) {
     missingFields.push("profilePicture");
   }

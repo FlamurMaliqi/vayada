@@ -8,6 +8,7 @@ import {
   clearAuthData,
   getAuthBearerToken,
   getAuthCsrfToken,
+  getAuthStateGeneration,
   getLegacyPasswordToken,
   hasAuthenticatedSession,
   hasPlatformAccessMarker,
@@ -52,8 +53,10 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
   return body as T;
 }
 
-async function attachMarketplaceCompatibilityToken(): Promise<void> {
-  const csrfToken = getAuthCsrfToken();
+async function attachMarketplaceCompatibilityToken(
+  csrfToken = getAuthCsrfToken(),
+  expectedGeneration?: number,
+): Promise<void> {
   if (!csrfToken) return;
 
   try {
@@ -64,7 +67,7 @@ async function attachMarketplaceCompatibilityToken(): Promise<void> {
         headers: { "x-vayada-csrf": csrfToken },
       },
     );
-    setLegacyCompatibilityToken(response.accessToken, response.expiresIn);
+    setLegacyCompatibilityToken(response.accessToken, response.expiresIn, expectedGeneration);
   } catch (error) {
     if (error instanceof ApiErrorResponse && error.status === 404) {
       return;
@@ -84,7 +87,8 @@ export const authService = {
   refreshSession: async (
     organizationId?: string,
     signal?: AbortSignal,
-  ): Promise<AuthKitSessionResponse> => {
+    expectedGeneration = getAuthStateGeneration(),
+  ): Promise<AuthKitSessionResponse | null> => {
     const csrfToken = getAuthCsrfToken();
     const response =
       organizationId && csrfToken
@@ -96,9 +100,10 @@ export const authService = {
           })
         : await authFetch<AuthKitSessionResponse>("/auth/session", { signal });
 
-    setAuthKitSession(response);
+    const committedGeneration = setAuthKitSession(response, expectedGeneration);
+    if (committedGeneration === null) return null;
     if (isCompatibilityTokenEnabled()) {
-      await attachMarketplaceCompatibilityToken();
+      await attachMarketplaceCompatibilityToken(response.csrfToken, committedGeneration);
     }
     return response;
   },
@@ -110,13 +115,13 @@ export const authService = {
     if (hasAuthenticatedSession() && hasPlatformAccessMarker()) {
       return true;
     }
+    const expectedGeneration = getAuthStateGeneration();
     try {
-      await authService.refreshSession();
-      return true;
+      await authService.refreshSession(undefined, undefined, expectedGeneration);
     } catch {
-      clearAuthData();
-      return false;
+      clearAuthData(expectedGeneration);
     }
+    return hasAuthenticatedSession() && hasPlatformAccessMarker();
   },
 
   login: async (data: LoginRequest): Promise<LoginResponse> => {
@@ -124,9 +129,9 @@ export const authService = {
       method: "POST",
       body: JSON.stringify({ ...data, surface: PLATFORM_AUTH_SURFACE }),
     });
-    setAuthKitSession(response);
-    if (isCompatibilityTokenEnabled()) {
-      await attachMarketplaceCompatibilityToken();
+    const committedGeneration = setAuthKitSession(response);
+    if (committedGeneration !== null && isCompatibilityTokenEnabled()) {
+      await attachMarketplaceCompatibilityToken(response.csrfToken, committedGeneration);
     }
     return {
       id: response.user.id,

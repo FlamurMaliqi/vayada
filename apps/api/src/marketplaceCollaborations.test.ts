@@ -930,6 +930,7 @@ describe("marketplace collaboration read routes", () => {
 
   it("persists private chat media IDs and returns signed attachment URLs", async () => {
     const pool = createChatAttachmentPool();
+    const mediaObject = chatMediaObject();
     const signPrivateDownload = vi.fn(async () => "https://signed.example/chat-image");
     const repository = createPgMarketplaceCollaborationReadRepository({
       connectionString: "postgresql://target-db",
@@ -937,7 +938,7 @@ describe("marketplace collaboration read routes", () => {
       attachmentMedia: {
         repository: {
           async findMediaObject(mediaId) {
-            return mediaId === "00000000-0000-4000-8000-000000000099" ? chatMediaObject() : null;
+            return mediaId === "00000000-0000-4000-8000-000000000099" ? mediaObject : null;
           },
         },
         signer: { signPrivateDownload },
@@ -1007,6 +1008,11 @@ describe("marketplace collaboration read routes", () => {
       "2 years",
     ]);
 
+    mediaObject.sourceMetadata = {
+      attachmentState: "claimed",
+      claimedByMessageId: sent.body.messageId,
+    };
+
     const messagesResponse = await app.inject({
       method: "GET",
       url: "/api/marketplace/collaborations/collab_001/messages",
@@ -1039,6 +1045,116 @@ describe("marketplace collaboration read routes", () => {
         responseContentDisposition: undefined,
       }),
     );
+  });
+
+  it("generates a fresh signed attachment URL for a delayed idempotent replay", async () => {
+    const pool = createChatAttachmentPool();
+    const mediaObject = chatMediaObject();
+    let signedUrl = "https://signed.example/chat-image?version=initial";
+    let now = new Date("2026-07-21T09:00:00.000Z");
+    const signPrivateDownload = vi.fn(async () => signedUrl);
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+      attachmentMedia: attachmentMediaForTest({
+        signPrivateDownload,
+        mediaObject,
+        now: () => now,
+      }),
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+    const request = {
+      method: "POST" as const,
+      url: "/api/marketplace/collaborations/collab_001/messages",
+      payload: {
+        content: "Poolside breakfast at sunrise",
+        contentType: "image",
+        mediaObjectId: "00000000-0000-4000-8000-000000000099",
+        idempotencyKey: "marketplace.collaboration.message:collab_001:delayed-replay:v1",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    };
+
+    const first = await injectJson<MarketplaceCollaborationMessage>(app, request);
+    mediaObject.sourceMetadata = {
+      attachmentState: "claimed",
+      claimedByMessageId: first.body.messageId,
+    };
+    now = new Date("2026-07-21T09:10:00.000Z");
+    signedUrl = "https://signed.example/chat-image?version=replay";
+    const replay = await injectJson<MarketplaceCollaborationMessage>(app, request);
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(201);
+    expect(first.body.metadata?.attachmentUrl).toBe(
+      "https://signed.example/chat-image?version=initial",
+    );
+    expect(replay.body).toMatchObject({
+      messageId: first.body.messageId,
+      metadata: {
+        mediaObjectId: "00000000-0000-4000-8000-000000000099",
+        attachmentUrl: "https://signed.example/chat-image?version=replay",
+        attachmentValidated: true,
+      },
+    });
+    expect(JSON.stringify(pool.storedIdempotencyMetadata)).not.toContain("signed.example");
+    expect(pool.storedIdempotencyMetadata).toMatchObject({
+      messageResponse: {
+        metadata: { mediaObjectId: "00000000-0000-4000-8000-000000000099" },
+      },
+    });
+    expect(
+      pool.calls.filter((call) =>
+        call.text.includes("INSERT INTO marketplace.marketplace_chat_messages"),
+      ),
+    ).toHaveLength(1);
+    expect(signPrivateDownload).toHaveBeenCalledTimes(2);
+    expect(signPrivateDownload).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ expiresInSeconds: 300 }),
+    );
+  });
+
+  it("does not sign an idempotent replay attachment claimed by another message", async () => {
+    const pool = createChatAttachmentPool();
+    const mediaObject = chatMediaObject();
+    const signPrivateDownload = vi.fn(async () => "https://signed.example/chat-image");
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+      attachmentMedia: attachmentMediaForTest({ mediaObject, signPrivateDownload }),
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+    const request = {
+      method: "POST" as const,
+      url: "/api/marketplace/collaborations/collab_001/messages",
+      payload: {
+        content: "Poolside breakfast at sunrise",
+        contentType: "image",
+        mediaObjectId: mediaObject.mediaId,
+        idempotencyKey: "marketplace.collaboration.message:collab_001:cross-message-replay:v1",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    };
+
+    const first = await injectJson<MarketplaceCollaborationMessage>(app, request);
+    mediaObject.sourceMetadata = {
+      attachmentState: "claimed",
+      claimedByMessageId: "00000000-0000-4000-8000-000000000777",
+    };
+    const replay = await injectJson<MarketplaceCollaborationMessage>(app, request);
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(201);
+    expect(replay.body.messageId).toBe(first.body.messageId);
+    expect(replay.body.metadata).toEqual({ mediaObjectId: mediaObject.mediaId });
+    expect(signPrivateDownload).toHaveBeenCalledOnce();
   });
 
   it("serves fixture-shaped migrated chat media only for its exact message and owner", async () => {
@@ -2401,18 +2517,36 @@ function testSortJson(value: unknown): unknown {
 
 function createChatAttachmentPool(initialMessage: Record<string, unknown> | null = null) {
   let message: Record<string, unknown> | null = initialMessage;
+  let idempotencyReplay: {
+    status: "completed";
+    requestFingerprintHash: string;
+    metadata: Record<string, unknown>;
+  } | null = null;
   const calls: Array<{ text: string; values: readonly unknown[] }> = [];
   const pool = {
     calls,
     insertedMetadata: null as Record<string, unknown> | null,
     insertedContent: null as string | null,
+    storedIdempotencyMetadata: null as Record<string, unknown> | null,
     async query(text: string, values: readonly unknown[] = []) {
       calls.push({ text, values });
       if (text.includes("FROM platform.idempotency_keys")) {
-        return { rows: [] };
+        return { rows: idempotencyReplay ? [idempotencyReplay] : [] };
       }
       if (text.includes("INSERT INTO platform.idempotency_keys")) {
         return { rows: [{ id: "idempotency-message-001" }] };
+      }
+      if (
+        text.includes("UPDATE platform.idempotency_keys") &&
+        text.includes("response_resource_type = 'collaboration_message'")
+      ) {
+        pool.storedIdempotencyMetadata = JSON.parse(String(values[3])) as Record<string, unknown>;
+        idempotencyReplay = {
+          status: "completed",
+          requestFingerprintHash: String(values[0]),
+          metadata: pool.storedIdempotencyMetadata,
+        };
+        return { rows: [] };
       }
       if (text.includes("INSERT INTO marketplace.marketplace_chat_messages")) {
         pool.insertedMetadata = JSON.parse(String(values[6])) as Record<string, unknown>;

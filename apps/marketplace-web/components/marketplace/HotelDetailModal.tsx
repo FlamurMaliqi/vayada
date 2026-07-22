@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import { Hotel } from "@/lib/types";
 import { Button, PlatformIcon } from "@/components/ui";
@@ -35,6 +35,7 @@ import {
 import { getCurrentUserInfo } from "@/lib/utils/accessControl";
 import { SuccessModal } from "@/components/ui/SuccessModal";
 import { ErrorModal } from "@/components/ui/ErrorModal";
+import { useModalAccessibility } from "@/components/ui/useModalAccessibility";
 
 interface HotelDetailModalProps {
   hotel: Hotel | null;
@@ -61,15 +62,32 @@ export function HotelDetailModal({
     message: "",
   });
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  const hotelId = hotel?.id;
+  const images = hotel?.images && hotel.images.length > 0 ? hotel.images : [];
+  const imageListKey = JSON.stringify(images);
+  const safeImageIndex = images.length > 0 ? Math.min(currentImageIndex, images.length - 1) : 0;
+  const currentImage = images[safeImageIndex];
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && hotelId) {
       setCurrentImageIndex(0);
       setImageError(false);
     }
-  }, [hotel?.id, isOpen]);
+  }, [hotelId, imageListKey, isOpen]);
+
+  useModalAccessibility({
+    isOpen: isOpen && Boolean(hotelId),
+    onClose,
+    dialogRef,
+    initialFocusRef: closeButtonRef,
+  });
 
   if (!isOpen || !hotel) return null;
+
+  const isCovered = showApplicationModal || showSuccessModal || errorState.isOpen;
 
   const handleApplyClick = () => {
     setShowApplicationModal(true);
@@ -151,17 +169,22 @@ export function HotelDetailModal({
     }
   };
 
-  const images = hotel.images && hotel.images.length > 0 ? hotel.images : [];
   const hasMultipleImages = images.length > 1;
 
   const goToPreviousImage = () => {
     setImageError(false);
-    setCurrentImageIndex((prev) => (prev === 0 ? images.length - 1 : prev - 1));
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === 0 ? images.length - 1 : index - 1;
+    });
   };
 
   const goToNextImage = () => {
     setImageError(false);
-    setCurrentImageIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === images.length - 1 ? 0 : index + 1;
+    });
   };
 
   const goToImage = (index: number) => {
@@ -246,23 +269,29 @@ export function HotelDetailModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) onClose();
+      }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hotel-detail-title"
+        aria-hidden={isCovered || undefined}
       >
         {/* Hero Image Section */}
         <div className="relative h-56 md:h-64 flex-shrink-0">
-          {images.length > 0 && !imageError ? (
+          {currentImage && !imageError ? (
             <>
               <Image
-                key={images[currentImageIndex]}
-                src={images[currentImageIndex]}
-                alt={`${hotel.name} - Image ${currentImageIndex + 1}`}
+                key={currentImage}
+                src={currentImage}
+                alt={`${hotel.name} - Image ${safeImageIndex + 1}`}
                 fill
                 className="object-cover"
                 onError={() => setImageError(true)}
@@ -302,12 +331,12 @@ export function HotelDetailModal({
                     type="button"
                     onClick={() => goToImage(index)}
                     className={`h-2 rounded-full transition-all ${
-                      index === currentImageIndex
+                      index === safeImageIndex
                         ? "w-6 bg-white"
                         : "w-2 bg-white/50 hover:bg-white/75"
                     }`}
                     aria-label={`Show detail image ${index + 1}`}
-                    aria-current={index === currentImageIndex ? "true" : undefined}
+                    aria-current={index === safeImageIndex ? "true" : undefined}
                   />
                 ))}
               </div>
@@ -316,6 +345,7 @@ export function HotelDetailModal({
 
           {/* Close Button */}
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={onClose}
             className="absolute top-4 right-4 z-20 p-2 bg-white/90 hover:bg-white rounded-full text-gray-800 transition-colors shadow-lg"
@@ -619,6 +649,7 @@ export function HotelDetailModal({
         onSubmit={handleApplicationSubmit}
         compensationOptions={offerings}
         creatorPlatforms={creatorPlatforms}
+        isCovered={showSuccessModal || errorState.isOpen}
       />
 
       {/* Success Modal */}

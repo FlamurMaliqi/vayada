@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Hotel } from "@/lib/types";
@@ -44,6 +44,16 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
     message: "",
   });
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+
+  const images = hotel.images && hotel.images.length > 0 ? hotel.images : [];
+  const imageListKey = JSON.stringify(images);
+  const safeImageIndex = images.length > 0 ? Math.min(currentImageIndex, images.length - 1) : 0;
+  const currentImage = images[safeImageIndex];
+
+  useEffect(() => {
+    setCurrentImageIndex(0);
+    setImageError(false);
+  }, [hotel.id, imageListKey]);
 
   const handleApplicationSubmit = async (
     data: CollaborationApplicationData,
@@ -122,20 +132,25 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
     }
   };
 
-  const images = hotel.images && hotel.images.length > 0 ? hotel.images : [];
   const hasMultipleImages = images.length > 1;
   const visibleMonths = hotel.availability ? sortMonths(hotel.availability).slice(0, 3) : [];
 
   const goToPreviousImage = (e: React.MouseEvent) => {
     e.stopPropagation();
     setImageError(false);
-    setCurrentImageIndex((prev) => (prev === 0 ? images.length - 1 : prev - 1));
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === 0 ? images.length - 1 : index - 1;
+    });
   };
 
   const goToNextImage = (e: React.MouseEvent) => {
     e.stopPropagation();
     setImageError(false);
-    setCurrentImageIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === images.length - 1 ? 0 : index + 1;
+    });
   };
 
   const goToImage = (index: number) => {
@@ -148,11 +163,11 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
       <div className="flex h-full flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm transition-colors hover:border-gray-300">
         {/* Image Gallery */}
         <div className="relative h-40 flex-shrink-0 overflow-hidden bg-gray-100">
-          {images.length > 0 && !imageError ? (
+          {currentImage && !imageError ? (
             <Image
-              key={images[currentImageIndex]}
-              src={images[currentImageIndex]}
-              alt={`${hotel.name} - Image ${currentImageIndex + 1}`}
+              key={currentImage}
+              src={currentImage}
+              alt={`${hotel.name} - Image ${safeImageIndex + 1}`}
               fill
               className="object-cover transition-opacity duration-300"
               onError={() => setImageError(true)}
@@ -193,12 +208,12 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
                       goToImage(index);
                     }}
                     className={`h-2 rounded-full transition-all ${
-                      index === currentImageIndex
+                      index === safeImageIndex
                         ? "w-6 bg-white"
                         : "w-2 bg-white/50 hover:bg-white/75"
                     }`}
                     aria-label={`Go to image ${index + 1}`}
-                    aria-current={index === currentImageIndex ? "true" : undefined}
+                    aria-current={index === safeImageIndex ? "true" : undefined}
                   />
                 ))}
               </div>
@@ -337,6 +352,7 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
         onSubmit={handleApplicationSubmit}
         compensationOptions={hotel.collaborationOfferings}
         creatorPlatforms={creatorPlatforms}
+        isCovered={showSuccessModal || errorState.isOpen}
       />
 
       {/* Success Modal */}

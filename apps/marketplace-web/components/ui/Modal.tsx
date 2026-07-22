@@ -1,6 +1,7 @@
 "use client";
 
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useRef } from "react";
+import { useModalAccessibility } from "./useModalAccessibility";
 
 export interface ModalProps {
   isOpen: boolean;
@@ -18,6 +19,10 @@ export interface ModalProps {
   className?: string;
   /** Z-index level */
   zIndex?: 50 | 60;
+  /** ID of the element that labels the dialog */
+  ariaLabelledBy?: string;
+  /** Accessible label when there is no visible title */
+  ariaLabel?: string;
 }
 
 const sizeClasses = {
@@ -50,31 +55,17 @@ export function Modal({
   backdropOpacity = 50,
   className = "",
   zIndex = 50,
+  ariaLabelledBy,
+  ariaLabel,
 }: ModalProps) {
-  // Handle escape key
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener("keydown", handleEscape);
-      // Prevent body scroll when modal is open
-      document.body.style.overflow = "hidden";
-    }
-
-    return () => {
-      document.removeEventListener("keydown", handleEscape);
-      document.body.style.overflow = "";
-    };
-  }, [isOpen, onClose]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalAccessibility({ isOpen, onClose, dialogRef });
 
   if (!isOpen) return null;
 
-  const handleBackdropClick = () => {
-    if (closeOnBackdropClick) {
+  const handleBackdropClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    if (event.target === event.currentTarget && closeOnBackdropClick) {
       onClose();
     }
   };
@@ -85,8 +76,14 @@ export function Modal({
       onClick={handleBackdropClick}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className={`max-h-[95vh] w-full overflow-y-auto rounded-lg bg-white shadow-2xl ${sizeClasses[size]} animate-in fade-in zoom-in-95 duration-200 ${className}`}
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={ariaLabelledBy}
+        aria-label={ariaLabel}
       >
         {children}
       </div>

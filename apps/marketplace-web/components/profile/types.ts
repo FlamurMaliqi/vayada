@@ -14,6 +14,7 @@ export type { PlatformCountry, PlatformAgeGroup, PlatformGenderSplit };
 export type UserType = "hotel" | "creator";
 export type CreatorTab = "overview" | "platforms" | "reviews";
 export type HotelTab = "overview" | "listings";
+export type PlatformName = "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Blog" | "X" | "Other";
 
 // Platform with optional id (for profile management)
 export interface ProfilePlatform {
@@ -91,7 +92,7 @@ export interface CreatorUpdatePayload {
   creatorType?: CreatorType;
   platforms?: Array<{
     id?: string | null;
-    name: "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Blog" | "X" | "Other";
+    name: PlatformName;
     handle: string;
     profileUrl?: string | null;
     followers: number;

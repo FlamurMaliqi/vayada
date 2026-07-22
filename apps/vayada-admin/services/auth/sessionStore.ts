@@ -24,6 +24,8 @@ let authKitSession: AuthKitSessionResponse | null = null;
 let authKitAccessTokenExpiresAt: number | null = null;
 let authKitRefreshPromise: Promise<string | null> | null = null;
 let legacyCompatibilityToken: { token: string; expiresAt: number } | null = null;
+// Refreshes may only commit to the login/logout state they started against.
+let authStateGeneration = 0;
 
 setApiBearerTokenProvider(() => getAuthBearerToken());
 setVayadaApiBearerTokenProvider((signal, forceRefresh) =>
@@ -38,10 +40,29 @@ export function isCompatibilityTokenEnabled(): boolean {
   return process.env.NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED === "true";
 }
 
-export function setAuthKitSession(session: AuthKitSessionResponse): void {
+export function getAuthStateGeneration(): number {
+  return authStateGeneration;
+}
+
+export function setAuthKitSession(
+  session: AuthKitSessionResponse,
+  expectedGeneration?: number,
+): number | null {
+  if (expectedGeneration !== undefined && expectedGeneration !== authStateGeneration) {
+    return null;
+  }
+  if (expectedGeneration === undefined) {
+    authStateGeneration += 1;
+    authKitRefreshPromise = null;
+  }
+  const replacesIdentity =
+    expectedGeneration === undefined ||
+    authKitSession?.user.id !== session.user.id ||
+    authKitSession?.organizationId !== session.organizationId;
+  if (replacesIdentity) legacyCompatibilityToken = null;
   authKitSession = session;
   authKitAccessTokenExpiresAt = readJwtExpiresAt(session.accessToken);
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") return authStateGeneration;
   localStorage.setItem("isLoggedIn", "true");
   localStorage.setItem("userId", session.user.id);
   localStorage.setItem("userEmail", session.user.email);
@@ -57,13 +78,22 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
       workos_user_id: session.user.workosUserId,
     }),
   );
+  return authStateGeneration;
 }
 
-export function setLegacyCompatibilityToken(token: string, expiresIn: number): void {
+export function setLegacyCompatibilityToken(
+  token: string,
+  expiresIn: number,
+  expectedGeneration?: number,
+): boolean {
+  if (expectedGeneration !== undefined && expectedGeneration !== authStateGeneration) {
+    return false;
+  }
   legacyCompatibilityToken = {
     token,
     expiresAt: Date.now() + expiresIn * 1000,
   };
+  return true;
 }
 
 export function setLegacyPasswordSession(input: {
@@ -92,12 +122,16 @@ export function setLegacyPasswordSession(input: {
   localStorage.setItem("user", JSON.stringify(input.user));
 }
 
-export function clearAuthData(): void {
+export function clearAuthData(expectedGeneration?: number): boolean {
+  if (expectedGeneration !== undefined && expectedGeneration !== authStateGeneration) {
+    return false;
+  }
+  authStateGeneration += 1;
   authKitSession = null;
   authKitAccessTokenExpiresAt = null;
   authKitRefreshPromise = null;
   legacyCompatibilityToken = null;
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") return true;
 
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_EXPIRES_AT_KEY);
@@ -109,6 +143,7 @@ export function clearAuthData(): void {
   localStorage.removeItem("isSuperAdmin");
   localStorage.removeItem("user");
   localStorage.setItem("isLoggedIn", "false");
+  return true;
 }
 
 export function getAuthKitAccessToken(): string | null {
@@ -124,28 +159,30 @@ export async function getOrRefreshAuthKitAccessToken(
     authKitAccessTokenExpiresAt !== null && Date.now() >= authKitAccessTokenExpiresAt - 30_000;
   if (accessToken && !forceRefresh && !expiresSoon) return accessToken;
 
-  if (authKitRefreshPromise) return authKitRefreshPromise;
+  signal?.throwIfAborted();
 
-  const refreshPromise = (async () => {
-    try {
-      const { authService } = await import("./auth");
-      await authService.refreshSession(undefined, signal);
-      return getAuthKitAccessToken();
-    } catch (error) {
-      if (wasRefreshAborted(error, signal)) throw error;
-      clearAuthData();
-      return null;
-    }
-  })();
-  authKitRefreshPromise = refreshPromise;
-
-  try {
-    return await refreshPromise;
-  } finally {
-    if (authKitRefreshPromise === refreshPromise) {
-      authKitRefreshPromise = null;
-    }
+  if (!authKitRefreshPromise) {
+    const refreshGeneration = getAuthStateGeneration();
+    const refreshPromise = (async () => {
+      try {
+        const { authService } = await import("./auth");
+        await authService.refreshSession(undefined, undefined, refreshGeneration);
+        return getAuthStateGeneration() === refreshGeneration ? getAuthKitAccessToken() : null;
+      } catch {
+        clearAuthData(refreshGeneration);
+        return null;
+      }
+    })();
+    authKitRefreshPromise = refreshPromise;
+    const releaseRefreshPromise = () => {
+      if (authKitRefreshPromise === refreshPromise) {
+        authKitRefreshPromise = null;
+      }
+    };
+    void refreshPromise.then(releaseRefreshPromise, releaseRefreshPromise);
   }
+
+  return waitForRefresh(authKitRefreshPromise, signal);
 }
 
 export function getAuthCsrfToken(): string | null {
@@ -206,13 +243,20 @@ function readJwtExpiresAt(token: string): number | null {
   }
 }
 
-function wasRefreshAborted(error: unknown, signal?: AbortSignal): boolean {
-  return (
-    signal?.aborted === true &&
-    (error === signal.reason ||
-      (typeof error === "object" &&
-        error !== null &&
-        "name" in error &&
-        error.name === "AbortError"))
-  );
+function waitForRefresh(
+  refreshPromise: Promise<string | null>,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  if (!signal) return refreshPromise;
+  signal.throwIfAborted();
+
+  return new Promise((resolve, reject) => {
+    const handleAbort = () => {
+      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    };
+    signal.addEventListener("abort", handleAbort, { once: true });
+    void refreshPromise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", handleAbort);
+    });
+  });
 }

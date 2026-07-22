@@ -67,6 +67,10 @@ test("creator selects one compensation option when applying", async ({ page }) =
 
   let submittedApplication: Record<string, unknown> | null = null;
   let submissionAttempts = 0;
+  let releaseFirstSubmission!: () => void;
+  const firstSubmissionGate = new Promise<void>((resolve) => {
+    releaseFirstSubmission = resolve;
+  });
   await page.route(/\/api\/marketplace\/collaborations$/, async (route) => {
     const method = route.request().method();
     if (method === "OPTIONS") {
@@ -80,6 +84,7 @@ test("creator selects one compensation option when applying", async ({ page }) =
     submissionAttempts += 1;
     submittedApplication = route.request().postDataJSON() as Record<string, unknown>;
     if (submissionAttempts === 1) {
+      await firstSubmissionGate;
       await route.fulfill({
         status: 409,
         headers: corsHeaders(route),
@@ -234,12 +239,29 @@ test("creator selects one compensation option when applying", async ({ page }) =
   await page.getByText(/I consent to sharing my contact information/).click();
   await expect(contactConsent).toBeChecked();
   const submitApplication = page.getByRole("button", { name: "Submit Application" });
+  const applicationDialog = page.getByRole("dialog", { name: "Apply for Collaboration" });
   await expect(submitApplication).toBeEnabled();
   await submitApplication.click();
+  await expect(applicationDialog.getByRole("button", { name: "Loading..." })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(applicationDialog).toBeVisible();
+  releaseFirstSubmission();
 
-  await expect(page.getByRole("heading", { name: "Duplicate Application" })).toBeVisible();
-  await page.getByRole("button", { name: "OK" }).click();
-  await expect(page.getByRole("heading", { name: "Apply for Collaboration" })).toBeVisible();
+  const duplicateDialog = page.getByRole("dialog", { name: "Duplicate Application" });
+  await expect(duplicateDialog).toBeVisible();
+  const closeDuplicateDialog = duplicateDialog.getByRole("button", { name: "Close" });
+  const confirmDuplicateDialog = duplicateDialog.getByRole("button", { name: "OK" });
+  await expect(closeDuplicateDialog).toBeFocused();
+  await confirmDuplicateDialog.focus();
+  await page.keyboard.press("Tab");
+  await expect(closeDuplicateDialog).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(confirmDuplicateDialog).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(duplicateDialog).toHaveCount(0);
+
+  await expect(applicationDialog).toBeVisible();
+  await expect(submitApplication).toBeFocused();
   await expect(
     page.getByPlaceholder(/Share your content style, audience demographics/),
   ).toHaveValue("My audience is a strong match for this city guide.");
@@ -263,7 +285,19 @@ test("creator selects one compensation option when applying", async ({ page }) =
     },
     deliverables: [{ platform: "YouTube", type: "YouTube Video", quantity: 1 }],
   });
-  await expect(page.getByRole("heading", { name: "Application Sent!" })).toBeVisible();
+  const successDialog = page.getByRole("dialog", { name: "Application Sent!" });
+  await expect(successDialog).toBeVisible();
+  const closeSuccessDialog = successDialog.getByRole("button", { name: "Close" });
+  const continueFromSuccess = successDialog.getByRole("button", { name: "Continue" });
+  await expect(closeSuccessDialog).toBeFocused();
+  await continueFromSuccess.focus();
+  await page.keyboard.press("Tab");
+  await expect(closeSuccessDialog).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(continueFromSuccess).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(successDialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeFocused();
 });
 
 test("creator can navigate the hotel detail gallery", async ({ page }) => {
@@ -312,12 +346,28 @@ test("creator can navigate the hotel detail gallery", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Next image" })).toBeVisible();
   await page.getByRole("button", { name: "Next image" }).click();
   await expect(page.getByAltText("Gallery hotel - Image 2")).toBeVisible();
-  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Go to image 2" })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+
+  const detailsButton = page.getByRole("button", { name: "Details", exact: true });
+  await detailsButton.click();
 
   const dialog = page.getByRole("dialog", { name: "Gallery hotel" });
   await expect(dialog).toBeVisible();
+  const closeButton = dialog.getByRole("button", { name: "Close hotel details" });
+  await expect(closeButton).toBeFocused();
   await expect(dialog.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
+
+  const firstFocusable = dialog.getByRole("button", { name: "Previous detail image" });
+  const lastFocusable = dialog.getByRole("button", { name: "Apply for Collaboration" });
+  await lastFocusable.focus();
+  await page.keyboard.press("Tab");
+  await expect(firstFocusable).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(lastFocusable).toBeFocused();
 
   await dialog.getByRole("button", { name: "Next detail image" }).click();
   await expect(dialog.getByAltText("Gallery hotel - Image 2")).toBeVisible();
@@ -327,8 +377,52 @@ test("creator can navigate the hotel detail gallery", async ({ page }) => {
   );
 
   await dialog.getByRole("button", { name: "Show detail image 1" }).click();
-  await expect(dialog.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Show detail image 1" })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
   await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
+
+  const detailDialogElement = page.locator('[role="dialog"][aria-labelledby="hotel-detail-title"]');
+  const applyFromDetails = dialog.getByRole("button", { name: "Apply for Collaboration" });
+  await applyFromDetails.click();
+
+  const applicationDialog = page.getByRole("dialog", { name: "Apply for Collaboration" });
+  await expect(applicationDialog).toBeVisible();
+  await expect(detailDialogElement).toHaveAttribute("aria-hidden", "true");
+  const closeApplication = applicationDialog.getByRole("button", { name: "Close application" });
+  const cancelApplication = applicationDialog.getByRole("button", { name: "Cancel" });
+  const fitInput = applicationDialog.getByPlaceholder(
+    /Share your content style, audience demographics/,
+  );
+  await expect(closeApplication).toBeFocused();
+  await cancelApplication.focus();
+  await page.keyboard.press("Tab");
+  await expect(closeApplication).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(cancelApplication).toBeFocused();
+  await fitInput.fill("This should be cleared when the modal closes.");
+  await page.keyboard.press("Escape");
+  await expect(applicationDialog).toHaveCount(0);
+  await expect(detailDialogElement).not.toHaveAttribute("aria-hidden");
+  await expect(applyFromDetails).toBeFocused();
+
+  await applyFromDetails.click();
+  const reopenedApplicationDialog = page.getByRole("dialog", {
+    name: "Apply for Collaboration",
+  });
+  await expect(reopenedApplicationDialog).toBeVisible();
+  await expect(
+    reopenedApplicationDialog.getByPlaceholder(/Share your content style, audience demographics/),
+  ).toHaveValue("");
+  await reopenedApplicationDialog.locator("..").click({ position: { x: 2, y: 2 } });
+  await expect(reopenedApplicationDialog).toHaveCount(0);
+  await expect(detailDialogElement).not.toHaveAttribute("aria-hidden");
+  await expect(applyFromDetails).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(detailsButton).toBeFocused();
 });
 
 async function primeCreatorSession(page: Page) {

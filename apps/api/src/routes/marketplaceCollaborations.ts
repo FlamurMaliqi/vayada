@@ -111,7 +111,7 @@ type ChatAttachmentScope = {
   collaborationResourceId: string;
   creatorOrganizationId: string;
   hotelOrganizationId: string;
-  migratedMessage?: {
+  message?: {
     messageId: string;
     senderSide: string | null;
     attachmentSource: string | null;
@@ -804,7 +804,7 @@ export function createPgMarketplaceCollaborationReadRepository(config: {
                 collaborationResourceId: target.id,
                 creatorOrganizationId: target.creatorOrganizationId,
                 hotelOrganizationId: target.hotelOrganizationId,
-                migratedMessage: {
+                message: {
                   messageId: row.messageId,
                   senderSide: row.senderSide,
                   attachmentSource: readString(
@@ -963,7 +963,11 @@ async function sendPgCollaborationMessage(
     if (replay) {
       await client.query("COMMIT");
       transactionOpen = false;
-      return replay;
+      return mapMessageWithAttachment(
+        replay,
+        messageAttachmentScope(collaboration, replay),
+        attachmentMedia,
+      );
     }
 
     const reserved = await reserveMarketplaceCollaborationIdempotency(client, {
@@ -984,7 +988,11 @@ async function sendPgCollaborationMessage(
       if (currentReplay) {
         await client.query("COMMIT");
         transactionOpen = false;
-        return currentReplay;
+        return mapMessageWithAttachment(
+          currentReplay,
+          messageAttachmentScope(collaboration, currentReplay),
+          attachmentMedia,
+        );
       }
       throw new MarketplaceCollaborationWriteError(
         409,
@@ -2194,6 +2202,7 @@ async function completeMarketplaceMessageIdempotency(
     organizationId: string;
   },
 ): Promise<void> {
+  const replayMessage = stableMarketplaceMessageResponse(input.message);
   await client.query(
     `UPDATE platform.idempotency_keys
      SET status = 'completed',
@@ -2213,9 +2222,9 @@ async function completeMarketplaceMessageIdempotency(
        AND organization_id = $7::uuid`,
     [
       input.fingerprint,
-      sha256(stableJson(input.message)),
-      input.message.messageId,
-      JSON.stringify({ messageResponse: input.message }),
+      sha256(stableJson(replayMessage)),
+      replayMessage.messageId,
+      JSON.stringify({ messageResponse: replayMessage }),
       input.operation,
       input.keyHash,
       input.organizationId,
@@ -2691,22 +2700,33 @@ async function requireChatAttachment(
       variantName === "provider_original" && visibility === "private",
   );
   const participantOrganizationIds = [scope.creatorOrganizationId, scope.hotelOrganizationId];
-  const canonicalResource =
+  const canonicalCollaborationResource =
     mediaObject?.resourceType === "collaboration" &&
-    mediaObject.resourceId === scope.collaborationResourceId &&
-    participantOrganizationIds.includes(mediaObject.ownerOrganizationId);
-  const migratedOwnerOrganizationId =
-    scope.migratedMessage?.senderSide === "creator"
+    mediaObject.resourceId === scope.collaborationResourceId;
+  const messageOwnerOrganizationId =
+    scope.message?.senderSide === "creator"
       ? scope.creatorOrganizationId
-      : scope.migratedMessage?.senderSide === "hotel"
+      : scope.message?.senderSide === "hotel"
         ? scope.hotelOrganizationId
         : null;
+  const canonicalUploadResource =
+    uploader !== undefined &&
+    mediaObject !== null &&
+    canonicalCollaborationResource &&
+    participantOrganizationIds.includes(mediaObject.ownerOrganizationId);
+  const canonicalClaimedMessageResource =
+    scope.message !== undefined &&
+    mediaObject !== null &&
+    canonicalCollaborationResource &&
+    mediaObject.sourceMetadata?.attachmentState === "claimed" &&
+    mediaObject.sourceMetadata.claimedByMessageId === scope.message.messageId &&
+    mediaObject.ownerOrganizationId === messageOwnerOrganizationId;
   const migratedMessageResource =
-    scope.migratedMessage?.attachmentSource === "platform_media_migration" &&
+    scope.message?.attachmentSource === "platform_media_migration" &&
     mediaObject?.sourceMetadata?.migrationCase === "media-url-migration" &&
     mediaObject.resourceType === "collaboration_chat_message" &&
-    mediaObject.resourceId === scope.migratedMessage.messageId &&
-    mediaObject.ownerOrganizationId === migratedOwnerOrganizationId;
+    mediaObject.resourceId === scope.message.messageId &&
+    mediaObject.ownerOrganizationId === messageOwnerOrganizationId;
   const retainedUntil = mediaObject?.retainedUntil ? Date.parse(mediaObject.retainedUntil) : null;
   const hasActiveRetention =
     retainedUntil !== null &&
@@ -2720,7 +2740,7 @@ async function requireChatAttachment(
     mediaObject.lifecycleStatus !== "active" ||
     mediaObject.storageKind !== "vayada_managed" ||
     mediaObject.resourceProduct !== "marketplace" ||
-    (!canonicalResource && !migratedMessageResource) ||
+    (!canonicalUploadResource && !canonicalClaimedMessageResource && !migratedMessageResource) ||
     !hasActiveRetention ||
     (uploader !== undefined &&
       (mediaObject.actorUserId !== uploader.actorUserId ||
@@ -2756,7 +2776,15 @@ async function mapMessageRowWithAttachment(
   attachmentMedia: ChatAttachmentMedia | undefined,
   validated?: ValidatedChatAttachment | null,
 ): Promise<MarketplaceCollaborationMessage> {
-  const mapped = mapMessageRow(row);
+  return mapMessageWithAttachment(mapMessageRow(row), scope, attachmentMedia, validated);
+}
+
+async function mapMessageWithAttachment(
+  mapped: MarketplaceCollaborationMessage,
+  scope: ChatAttachmentScope,
+  attachmentMedia: ChatAttachmentMedia | undefined,
+  validated?: ValidatedChatAttachment | null,
+): Promise<MarketplaceCollaborationMessage> {
   const message = {
     ...mapped,
     metadata: safeChatMessageMetadata(mapped.metadata),
@@ -2779,6 +2807,31 @@ async function mapMessageRowWithAttachment(
       fileName: attachment.mediaObject.originalFilename,
       fileSize: attachment.mediaObject.sizeBytes,
       contentType: attachment.mediaObject.contentType,
+    },
+  };
+}
+
+function stableMarketplaceMessageResponse(
+  message: MarketplaceCollaborationMessage,
+): MarketplaceCollaborationMessage {
+  return {
+    ...message,
+    metadata: safeChatMessageMetadata(message.metadata),
+  };
+}
+
+function messageAttachmentScope(
+  collaboration: CollaborationMutationRow,
+  message: MarketplaceCollaborationMessage,
+): ChatAttachmentScope {
+  return {
+    collaborationResourceId: collaboration.id,
+    creatorOrganizationId: collaboration.creatorOrganizationId,
+    hotelOrganizationId: collaboration.hotelOrganizationId,
+    message: {
+      messageId: message.messageId,
+      senderSide: message.senderSide,
+      attachmentSource: readString(message.metadata?.attachmentSource),
     },
   };
 }

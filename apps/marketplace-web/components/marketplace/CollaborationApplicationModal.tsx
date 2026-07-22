@@ -15,6 +15,7 @@ import {
   type SubmissionIdempotencyState,
 } from "@/lib/utils/submissionIdempotency";
 import { createCollaborationWriteIdempotencyKey } from "@/services/api/collaborations";
+import { useModalAccessibility } from "@/components/ui/useModalAccessibility";
 
 interface CollaborationApplicationModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ interface CollaborationApplicationModalProps {
   ) => Promise<void>;
   compensationOptions?: CollaborationOffering[];
   creatorPlatforms?: string[];
+  isCovered?: boolean;
 }
 
 export interface CollaborationApplicationData {
@@ -89,6 +91,7 @@ export function CollaborationApplicationModal({
   onSubmit,
   compensationOptions = [],
   creatorPlatforms = [],
+  isCovered = false,
 }: CollaborationApplicationModalProps) {
   const defaultCompensationOptionId =
     compensationOptions.length === 1 ? compensationOptions[0]?.id || "" : "";
@@ -103,6 +106,7 @@ export function CollaborationApplicationModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const submissionRef = useRef<SubmissionIdempotencyState | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const {
     platformDeliverables,
@@ -116,6 +120,26 @@ export function CollaborationApplicationModal({
     getPlatformDeliverables,
     resetDeliverables,
   } = usePlatformDeliverables();
+
+  const resetForm = () => {
+    setWhyGreatFit("");
+    setTravelDateFrom("");
+    setTravelDateTo("");
+    setPreferredMonths([]);
+    setSelectedCompensationOptionId(defaultCompensationOptionId);
+    resetDeliverables();
+    setConsent(false);
+    setErrorMessage(null);
+    submissionRef.current = null;
+  };
+
+  const handleCancel = () => {
+    if (isSubmitting) return;
+    resetForm();
+    onClose();
+  };
+
+  useModalAccessibility({ isOpen, onClose: handleCancel, dialogRef });
 
   if (!isOpen) return null;
 
@@ -160,18 +184,6 @@ export function CollaborationApplicationModal({
     const isHotelDesired = requiredPlatforms.length === 0 || platformMatch(requiredPlatforms, p);
     const isCreatorActive = creatorPlatforms.length === 0 || platformMatch(creatorPlatforms, p);
     return isHotelDesired && isCreatorActive;
-  };
-
-  const resetForm = () => {
-    setWhyGreatFit("");
-    setTravelDateFrom("");
-    setTravelDateTo("");
-    setPreferredMonths([]);
-    setSelectedCompensationOptionId(defaultCompensationOptionId);
-    resetDeliverables();
-    setConsent(false);
-    setErrorMessage(null);
-    submissionRef.current = null;
   };
 
   const handleSubmit = async () => {
@@ -272,26 +284,26 @@ export function CollaborationApplicationModal({
     }
   };
 
-  const handleCancel = () => {
-    if (isSubmitting) return;
-    resetForm();
-    onClose();
-  };
-
   const characterCount = whyGreatFit.length;
   const maxCharacters = 500;
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
-      onClick={handleCancel}
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
+      onClick={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) handleCancel();
+      }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[95vh] overflow-y-auto my-8"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="collaboration-application-title"
+        aria-hidden={isCovered || undefined}
       >
         {/* Modal Header */}
         <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
