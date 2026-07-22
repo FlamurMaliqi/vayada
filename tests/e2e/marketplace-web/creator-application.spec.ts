@@ -66,12 +66,26 @@ test("creator selects one compensation option when applying", async ({ page }) =
   });
 
   let submittedApplication: Record<string, unknown> | null = null;
+  let submissionAttempts = 0;
   await page.route(/\/api\/marketplace\/collaborations$/, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await fulfillCorsPreflight(route);
       return;
     }
+    submissionAttempts += 1;
     submittedApplication = route.request().postDataJSON() as Record<string, unknown>;
+    if (submissionAttempts === 1) {
+      await route.fulfill({
+        status: 409,
+        headers: corsHeaders(route),
+        json: {
+          code: "invalid_transition",
+          category: "conflict",
+          message: "An active collaboration already exists for this offer.",
+        },
+      });
+      return;
+    }
     const idempotencyKey = String(submittedApplication.idempotencyKey);
     await route.fulfill({
       status: 201,
@@ -99,6 +113,10 @@ test("creator selects one compensation option when applying", async ({ page }) =
             profileId: "creator-profile-e2e",
             displayName: "Lina Creator",
             avatarUrl: "https://media.example/lina.png",
+            location: "Berlin, Germany",
+            portfolioUrl: "https://example.test/lina",
+            creatorType: "travel",
+            platforms: [],
           },
           hotel: {
             side: "hotel",
@@ -178,7 +196,12 @@ test("creator selects one compensation option when applying", async ({ page }) =
   const youtubeVideoRow = page.getByText("YouTube Video", { exact: true }).locator("..");
   await youtubeVideoRow.getByRole("button").last().click();
   await fromDate.fill("2027-01-10");
-  await page.getByText(/I consent to sharing my contact information/).click();
+  const contactConsent = page.getByRole("checkbox", {
+    name: /I consent to sharing my contact information with the hotel/,
+  });
+  await expect(contactConsent).not.toBeChecked();
+  await contactConsent.locator("..").click();
+  await expect(contactConsent).toBeChecked();
   await page.getByRole("button", { name: "Submit Application" }).click();
 
   const availabilityError = page.getByText(
@@ -196,18 +219,29 @@ test("creator selects one compensation option when applying", async ({ page }) =
   await page
     .getByPlaceholder(/Share your content style, audience demographics/)
     .fill("My audience is a strong match for this city guide.");
-  await page.getByText("YouTube", { exact: true }).last().click();
-  await page
-    .getByText("YouTube Video", { exact: true })
-    .locator("..")
-    .getByRole("button")
-    .last()
-    .click();
+  const september = page.getByRole("button", { name: "Sep", exact: true });
+  await september.click();
+  await page.getByRole("button", { name: "Select YouTube deliverables" }).click();
+  await page.getByRole("button", { name: "Increase YouTube Video quantity" }).click();
+  await expect(september).toHaveClass(/bg-primary-600/);
+  await expect(contactConsent).not.toBeChecked();
   await page.locator('input[type="date"]').first().fill("2027-09-01");
   await page.getByText(/I consent to sharing my contact information/).click();
-  await page.getByRole("button", { name: "Submit Application" }).click();
+  await expect(contactConsent).toBeChecked();
+  const submitApplication = page.getByRole("button", { name: "Submit Application" });
+  await expect(submitApplication).toBeEnabled();
+  await submitApplication.click();
+
+  await expect(page.getByRole("heading", { name: "Duplicate Application" })).toBeVisible();
+  await page.getByRole("button", { name: "OK" }).click();
+  await expect(page.getByRole("heading", { name: "Apply for Collaboration" })).toBeVisible();
+  await expect(
+    page.getByPlaceholder(/Share your content style, audience demographics/),
+  ).toHaveValue("My audience is a strong match for this city guide.");
+  await submitApplication.click();
 
   await expect.poll(() => submittedApplication).not.toBeNull();
+  await expect.poll(() => submissionAttempts).toBe(2);
   expect(submittedApplication).not.toHaveProperty("creatorId");
   expect(submittedApplication).not.toHaveProperty("initiatorSide");
   expect(submittedApplication).toMatchObject({
@@ -225,6 +259,71 @@ test("creator selects one compensation option when applying", async ({ page }) =
     deliverables: [{ platform: "YouTube", type: "YouTube Video", quantity: 1 }],
   });
   await expect(page.getByRole("heading", { name: "Application Sent!" })).toBeVisible();
+});
+
+test("creator can navigate the hotel detail gallery", async ({ page }) => {
+  await primeCreatorSession(page);
+  await mockCreatorProfile(page);
+  await routeJson(page, /\/api\/marketplace\/offers(?:\?|$)/, {
+    items: [
+      {
+        offerId: "offer-gallery-e2e",
+        offerPublicId: "offer-gallery-public-e2e",
+        offerTitle: "Gallery hotel",
+        offerSummary: "A two-image creator stay.",
+        hotelName: "Gallery hotel",
+        hotelSlug: "gallery-hotel",
+        hotelAccommodationType: "hotel",
+        hotelLocation: { displayText: "Berlin, Germany", countryCode: "DE" },
+        hotelCoverImageUrl: "/missing-gallery-image.jpg",
+        hotelImageUrls: ["/missing-gallery-image.jpg", "/creator-category-lifestyle.jpg"],
+        deliverables: [],
+        compensationOptions: [
+          {
+            compensationOptionId: "gallery-free-stay",
+            compensationType: "free_stay",
+            availabilityMonths: ["September"],
+            platforms: ["instagram"],
+            freeStayMinNights: 2,
+            freeStayMaxNights: 2,
+            paidMaxAmount: null,
+            currency: null,
+            discountPercentage: null,
+            commissionPercentage: null,
+            minFollowers: null,
+            termsSummary: null,
+          },
+        ],
+        creatorRequirements: null,
+        createdAt: "2026-07-01T10:00:00.000Z",
+        projectedAt: "2026-07-01T10:00:00.000Z",
+      },
+    ],
+    pagination: { limit: 200, offset: 0, total: 1 },
+  });
+
+  await page.goto("/marketplace");
+  await expect(page.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Next image" })).toBeVisible();
+  await page.getByRole("button", { name: "Next image" }).click();
+  await expect(page.getByAltText("Gallery hotel - Image 2")).toBeVisible();
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Gallery hotel" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
+
+  await dialog.getByRole("button", { name: "Next detail image" }).click();
+  await expect(dialog.getByAltText("Gallery hotel - Image 2")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Show detail image 2" })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+
+  await dialog.getByRole("button", { name: "Show detail image 1" }).click();
+  await expect(dialog.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
 });
 
 async function primeCreatorSession(page: Page) {

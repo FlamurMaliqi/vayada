@@ -1,4 +1,4 @@
-import { ApiErrorResponse, getApiBearerToken } from "./client";
+import { ApiErrorResponse, getVayadaApiBearerToken } from "./client";
 
 const IDENTITY_PRIVACY_API_BASE_URL =
   process.env.NEXT_PUBLIC_IDENTITY_API_URL ??
@@ -190,6 +190,8 @@ async function requestIdentityPrivacy<T>(
     includeAuth?: boolean;
     responseType?: "json" | "blob";
   } = {},
+  retryUnauthorized = true,
+  forceRefreshToken = false,
 ): Promise<T> {
   const { includeAuth = true, responseType = "json", ...fetchOptions } = options;
   const headers: Record<string, string> = {
@@ -197,7 +199,9 @@ async function requestIdentityPrivacy<T>(
     ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
     ...(fetchOptions.headers as Record<string, string>),
   };
-  const token = includeAuth ? readAccessToken() : null;
+  const token = includeAuth
+    ? await getVayadaApiBearerToken(fetchOptions.signal ?? undefined, forceRefreshToken)
+    : null;
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const response = await fetch(`${IDENTITY_PRIVACY_API_BASE_URL}${endpoint}`, {
@@ -205,6 +209,16 @@ async function requestIdentityPrivacy<T>(
     method: fetchOptions.method ?? "GET",
     headers,
   });
+
+  if (response.status === 401 && includeAuth && retryUnauthorized) {
+    if (fetchOptions.signal?.aborted) {
+      throw (
+        fetchOptions.signal.reason ?? new DOMException("The operation was aborted", "AbortError")
+      );
+    }
+    await response.body?.cancel().catch(() => undefined);
+    return requestIdentityPrivacy<T>(endpoint, options, false, true);
+  }
 
   if (responseType === "blob") {
     if (!response.ok) {
@@ -244,8 +258,4 @@ function readErrorMessage(status: number, body: unknown): string {
   }
   if (typeof body === "string" && body) return body;
   return `Identity privacy request failed: ${status}`;
-}
-
-function readAccessToken(): string | null {
-  return getApiBearerToken();
 }

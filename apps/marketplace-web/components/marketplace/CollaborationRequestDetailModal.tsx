@@ -81,17 +81,7 @@ export function CollaborationRequestDetailModal({
   };
 
   const getMessage = () => {
-    if (collaboration.whyGreatFit) {
-      return collaboration.whyGreatFit;
-    }
-
-    if (currentUserType === "hotel" && collaboration.creator) {
-      return "I absolutely love your property! I specialize in luxury travel content and would love to showcase your stunning rooms and amenities to my engaged audience.";
-    }
-    if (currentUserType === "creator" && collaboration.hotel) {
-      return "Your eco-friendly approach aligns perfectly with my content focus. I'd love to create authentic content highlighting your sustainability initiatives and unique experiences.";
-    }
-    return "Looking forward to collaborating with you!";
+    return collaboration.whyGreatFit || "No message was provided.";
   };
 
   // Real travel dates from collaboration data
@@ -233,10 +223,14 @@ export function CollaborationRequestDetailModal({
                 {currentUserType === "hotel" && collaboration.creator && (
                   <div className="flex flex-col gap-1">
                     <div className="flex items-center gap-2 text-sm text-gray-600">
-                      <span>{formatNumber(getTotalFollowers())} followers</span>
-                      <span>•</span>
-                      <span>{getAvgEngagement()}% engagement</span>
-                      <span>•</span>
+                      {collaboration.creator.platforms.length > 0 && (
+                        <>
+                          <span>{formatNumber(getTotalFollowers())} followers</span>
+                          <span>•</span>
+                          <span>{getAvgEngagement()}% engagement</span>
+                          <span>•</span>
+                        </>
+                      )}
                       <span>Applied {getTimeAgo(collaboration.createdAt)}</span>
                     </div>
                     {collaboration.listingName && (

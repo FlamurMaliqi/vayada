@@ -1,14 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import type { CollaborationResponse } from "@/services/api/collaborations";
 import type { TripResponse, ExternalCollaborationResponse } from "@/services/api/trips";
 import { CalendarEventModal } from "./CalendarEventModal";
 import { AddCollaborationModal } from "./AddCollaborationModal";
 import { AddTripModal } from "./AddTripModal";
-import { MONTHS_ABBR, MONTHS_FULL, DAYS_IN_MONTH, WEEKDAYS } from "@/lib/constants";
+import { MONTHS_ABBR, DAYS_IN_MONTH, WEEKDAYS } from "@/lib/constants";
 
 interface YearlyCalendarProps {
   collaborations?: CollaborationResponse[];
@@ -33,6 +32,9 @@ export function YearlyCalendar({
   const [selectedCollaboration, setSelectedCollaboration] = useState<CollaborationResponse | null>(
     null,
   );
+  const [selectedTrip, setSelectedTrip] = useState<TripResponse | null>(null);
+  const [selectedExternalCollaboration, setSelectedExternalCollaboration] =
+    useState<ExternalCollaborationResponse | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isTripModalOpen, setIsTripModalOpen] = useState(false);
 
@@ -85,12 +87,86 @@ export function YearlyCalendar({
 
     // Days for current month
     for (let d = 1; d <= daysInCurrentMonth; d++) {
+      const currentDateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      const dayCollaborations = collaborations.filter((collaboration) => {
+        const startDate = (
+          collaboration.travel_date_from || collaboration.preferred_date_from
+        )?.split("T")[0];
+        const endDate = (collaboration.travel_date_to || collaboration.preferred_date_to)?.split(
+          "T",
+        )[0];
+        return !!startDate && !!endDate && currentDateStr >= startDate && currentDateStr <= endDate;
+      });
+      const dayTrips = trips.filter(
+        (trip) =>
+          currentDateStr >= trip.start_date.split("T")[0] &&
+          currentDateStr <= trip.end_date.split("T")[0],
+      );
+      const dayExternalCollaborations = externalCollaborations.filter(
+        (collaboration) =>
+          currentDateStr >= collaboration.start_date.split("T")[0] &&
+          currentDateStr <= collaboration.end_date.split("T")[0],
+      );
+
       slots.push(
         <div
           key={d}
-          className="min-h-[120px] bg-white border border-gray-100 p-2 relative rounded-lg hover:border-gray-200 transition-colors"
+          className="relative min-h-[120px] rounded-lg border border-gray-100 bg-white p-2 transition-colors hover:border-gray-200"
         >
           <span className="text-sm font-medium text-gray-700 block mb-2">{d}</span>
+          <div className="space-y-1">
+            {dayCollaborations.map((collaboration) => (
+              <button
+                key={`collaboration-${collaboration.id}`}
+                type="button"
+                className={`block w-full truncate rounded px-2 py-1 text-left text-xs font-medium text-white ${
+                  collaboration.status === "pending"
+                    ? "bg-[#64748b]"
+                    : collaboration.status === "accepted"
+                      ? "bg-blue-500"
+                      : collaboration.status === "completed"
+                        ? "bg-[#0fb981]"
+                        : "bg-gray-400"
+                }`}
+                title={
+                  userType === "creator" ? collaboration.hotel_name : collaboration.creator_name
+                }
+                onClick={() => setSelectedCollaboration(collaboration)}
+              >
+                {userType === "creator" ? collaboration.hotel_name : collaboration.creator_name}
+              </button>
+            ))}
+            {userType === "creator" &&
+              dayTrips.map((trip) => (
+                <button
+                  key={`trip-${trip.id}`}
+                  type="button"
+                  className="block w-full truncate rounded bg-amber-500 px-2 py-1 text-left text-xs font-medium text-white"
+                  title={trip.name}
+                  onClick={() => {
+                    setSelectedTrip(trip);
+                    setIsTripModalOpen(true);
+                  }}
+                >
+                  {trip.name}
+                </button>
+              ))}
+            {userType === "creator" &&
+              dayExternalCollaborations.map((collaboration) => (
+                <button
+                  key={`external-${collaboration.id}`}
+                  type="button"
+                  className="block w-full truncate rounded bg-purple-500 px-2 py-1 text-left text-xs font-medium text-white"
+                  title={collaboration.hotel_name || collaboration.title}
+                  onClick={() => {
+                    setSelectedExternalCollaboration(collaboration);
+                    setIsAddModalOpen(true);
+                  }}
+                >
+                  {collaboration.hotel_name || collaboration.title}
+                </button>
+              ))}
+          </div>
         </div>,
       );
     }
@@ -186,7 +262,10 @@ export function YearlyCalendar({
         <div className="flex items-center gap-3">
           {userType === "creator" && (
             <button
-              onClick={() => setIsTripModalOpen(true)}
+              onClick={() => {
+                setSelectedTrip(null);
+                setIsTripModalOpen(true);
+              }}
               className="flex items-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
             >
               <svg
@@ -207,7 +286,11 @@ export function YearlyCalendar({
             </button>
           )}
           <button
-            onClick={() => (userType === "creator" ? setIsAddModalOpen(true) : null)}
+            onClick={() => {
+              if (userType !== "creator") return;
+              setSelectedExternalCollaboration(null);
+              setIsAddModalOpen(true);
+            }}
             className="flex items-center gap-2 rounded-md bg-primary-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-primary-700"
           >
             {userType === "creator" ? (
@@ -289,176 +372,138 @@ export function YearlyCalendar({
                     >
                       {DAYS_IN_MONTH.map((day) => {
                         const isValidDate = day <= daysInMonth;
-
-                        // Create date for this cell (local time)
                         const cellDate = new Date(year, monthIndex, day);
-
-                        // Format as YYYY-MM-DD for comparison
                         const yearStr = cellDate.getFullYear();
                         const monthStr = String(cellDate.getMonth() + 1).padStart(2, "0");
                         const dayStr = String(cellDate.getDate()).padStart(2, "0");
                         const currentDateStr = `${yearStr}-${monthStr}-${dayStr}`;
 
-                        // Find active collaboration for this day
-                        const activeCollab = isValidDate
-                          ? collaborations.find((c) => {
-                              let startStr = c.travel_date_from || c.preferred_date_from;
-                              let endStr = c.travel_date_to || c.preferred_date_to;
-                              if (!startStr || !endStr) return false;
-                              startStr = startStr.split("T")[0];
-                              endStr = endStr.split("T")[0];
-                              return currentDateStr >= startStr && currentDateStr <= endStr;
-                            })
-                          : null;
+                        const dayEvents = isValidDate
+                          ? [
+                              ...collaborations.flatMap((collaboration) => {
+                                const startDate = (
+                                  collaboration.travel_date_from ||
+                                  collaboration.preferred_date_from
+                                )?.split("T")[0];
+                                const endDate = (
+                                  collaboration.travel_date_to || collaboration.preferred_date_to
+                                )?.split("T")[0];
+                                if (
+                                  !startDate ||
+                                  !endDate ||
+                                  currentDateStr < startDate ||
+                                  currentDateStr > endDate
+                                ) {
+                                  return [];
+                                }
 
-                        // Find active trip for this day
-                        const activeTrip =
-                          isValidDate && !activeCollab
-                            ? trips.find((t) => {
-                                const startStr = t.start_date.split("T")[0];
-                                const endStr = t.end_date.split("T")[0];
-                                return currentDateStr >= startStr && currentDateStr <= endStr;
-                              })
-                            : null;
-
-                        // Find active external collaboration for this day
-                        const activeExtCollab =
-                          isValidDate && !activeCollab && !activeTrip
-                            ? externalCollaborations.find((ec) => {
-                                const startStr = ec.start_date.split("T")[0];
-                                const endStr = ec.end_date.split("T")[0];
-                                return currentDateStr >= startStr && currentDateStr <= endStr;
-                              })
-                            : null;
-
-                        // Determine which event to show (priority: collab > trip > external)
-                        let isStart = false;
-                        let isEnd = false;
-                        let colorClass = "";
-                        let label = "";
-                        let hasEvent = false;
-
-                        if (activeCollab) {
-                          hasEvent = true;
-                          let startStr =
-                            activeCollab.travel_date_from || activeCollab.preferred_date_from;
-                          let endStr =
-                            activeCollab.travel_date_to || activeCollab.preferred_date_to;
-                          if (startStr) startStr = startStr.split("T")[0];
-                          if (endStr) endStr = endStr.split("T")[0];
-                          isStart = currentDateStr === startStr;
-                          isEnd = currentDateStr === endStr;
-                          if (activeCollab.status === "pending") colorClass = "bg-[#64748b]";
-                          else if (activeCollab.status === "accepted") colorClass = "bg-blue-500";
-                          else if (activeCollab.status === "completed") colorClass = "bg-[#0fb981]";
-                          else colorClass = "bg-gray-400";
-                          label =
-                            userType === "creator"
-                              ? activeCollab.hotel_name
-                              : activeCollab.creator_name;
-                        } else if (activeTrip) {
-                          hasEvent = true;
-                          const startStr = activeTrip.start_date.split("T")[0];
-                          const endStr = activeTrip.end_date.split("T")[0];
-                          isStart = currentDateStr === startStr;
-                          isEnd = currentDateStr === endStr;
-                          colorClass = "bg-amber-500";
-                          label = activeTrip.name;
-                        } else if (activeExtCollab) {
-                          hasEvent = true;
-                          const startStr = activeExtCollab.start_date.split("T")[0];
-                          const endStr = activeExtCollab.end_date.split("T")[0];
-                          isStart = currentDateStr === startStr;
-                          isEnd = currentDateStr === endStr;
-                          colorClass = "bg-purple-500";
-                          label = activeExtCollab.hotel_name || activeExtCollab.title;
-                        }
+                                return [
+                                  {
+                                    key: `collaboration-${collaboration.id}`,
+                                    kind: "collaboration",
+                                    label:
+                                      (userType === "creator"
+                                        ? collaboration.hotel_name
+                                        : collaboration.creator_name) || "Collaboration",
+                                    startDate,
+                                    endDate,
+                                    colorClass:
+                                      collaboration.status === "pending"
+                                        ? "bg-[#64748b]"
+                                        : collaboration.status === "accepted"
+                                          ? "bg-blue-500"
+                                          : collaboration.status === "completed"
+                                            ? "bg-[#0fb981]"
+                                            : "bg-gray-400",
+                                    open: () => setSelectedCollaboration(collaboration),
+                                  },
+                                ];
+                              }),
+                              ...(userType === "creator"
+                                ? trips.flatMap((trip) => {
+                                    const startDate = trip.start_date.split("T")[0];
+                                    const endDate = trip.end_date.split("T")[0];
+                                    if (currentDateStr < startDate || currentDateStr > endDate) {
+                                      return [];
+                                    }
+                                    return [
+                                      {
+                                        key: `trip-${trip.id}`,
+                                        kind: "trip",
+                                        label: trip.name,
+                                        startDate,
+                                        endDate,
+                                        colorClass: "bg-amber-500",
+                                        open: () => {
+                                          setSelectedTrip(trip);
+                                          setIsTripModalOpen(true);
+                                        },
+                                      },
+                                    ];
+                                  })
+                                : []),
+                              ...(userType === "creator"
+                                ? externalCollaborations.flatMap((collaboration) => {
+                                    const startDate = collaboration.start_date.split("T")[0];
+                                    const endDate = collaboration.end_date.split("T")[0];
+                                    if (currentDateStr < startDate || currentDateStr > endDate) {
+                                      return [];
+                                    }
+                                    return [
+                                      {
+                                        key: `external-${collaboration.id}`,
+                                        kind: "external collaboration",
+                                        label: collaboration.hotel_name || collaboration.title,
+                                        startDate,
+                                        endDate,
+                                        colorClass: "bg-purple-500",
+                                        open: () => {
+                                          setSelectedExternalCollaboration(collaboration);
+                                          setIsAddModalOpen(true);
+                                        },
+                                      },
+                                    ];
+                                  })
+                                : []),
+                            ]
+                          : [];
 
                         return (
                           <div
                             key={day}
-                            className={`h-12 relative flex items-center justify-center transition-colors
+                            className={`relative min-h-12 transition-colors
                               ${!isValidDate ? "bg-gray-50/30 pattern-diagonal-lines" : ""}
-                              ${isValidDate && !hasEvent ? "hover:bg-gray-100/50" : ""}
+                              ${isValidDate && dayEvents.length === 0 ? "hover:bg-gray-100/50" : ""}
                             `}
-                            style={{ zIndex: isStart ? 10 : 1 }}
                           >
                             {!isValidDate && (
                               <div className="w-full h-full bg-gray-50 opacity-50" />
                             )}
-
-                            {hasEvent && (
-                              <div
-                                onClick={() => {
-                                  if (activeCollab) setSelectedCollaboration(activeCollab);
-                                }}
-                                className={`h-8 w-full flex items-center px-2 ${activeCollab ? "cursor-pointer" : ""} hover:brightness-95 transition-all
-                                                                    ${colorClass} text-white shadow-sm shrink-0
-                                                                    ${isStart ? "rounded-l-md ml-1" : ""}
-                                                                    ${isEnd ? "rounded-r-md mr-1" : ""}
-                                                                    ${!isStart && !isEnd ? "rounded-none min-w-[calc(100%+1px)] -ml-[1px]" : ""}
-                                                                    ${isStart ? "overflow-visible" : "overflow-hidden"}
-                                                                `}
-                                title={label}
-                              >
-                                {isStart && (
-                                  <div className="flex items-center gap-2 min-w-max relative z-20">
-                                    {activeTrip ? (
-                                      <svg
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        width="24"
-                                        height="24"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="2"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        className="lucide lucide-plane h-4 w-4 text-white/80"
-                                      >
-                                        <path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"></path>
-                                      </svg>
-                                    ) : userType === "creator" ? (
-                                      <svg
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        width="24"
-                                        height="24"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="2"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        className="lucide lucide-building2 h-4 w-4 text-white/80"
-                                      >
-                                        <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"></path>
-                                        <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"></path>
-                                        <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"></path>
-                                        <path d="M10 6h4"></path>
-                                        <path d="M10 10h4"></path>
-                                        <path d="M10 14h4"></path>
-                                        <path d="M10 18h4"></path>
-                                      </svg>
-                                    ) : activeCollab?.creator_profile_picture ? (
-                                      <div className="w-5 h-5 rounded-full border border-white/30 overflow-hidden relative">
-                                        <Image
-                                          src={activeCollab.creator_profile_picture}
-                                          alt=""
-                                          fill
-                                          className="object-cover"
-                                          unoptimized
-                                        />
-                                      </div>
-                                    ) : activeCollab ? (
-                                      <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[8px] font-bold">
-                                        {activeCollab.creator_name.charAt(0)}
-                                      </div>
-                                    ) : null}
-                                    <span className="text-xs font-medium whitespace-nowrap drop-shadow-sm">
-                                      {label}
-                                    </span>
-                                  </div>
-                                )}
+                            {isValidDate && (
+                              <div className="flex min-h-12 flex-col gap-0.5 py-1">
+                                {dayEvents.map((event) => {
+                                  const isStart = currentDateStr === event.startDate;
+                                  const isEnd = currentDateStr === event.endDate;
+                                  return (
+                                    <button
+                                      key={event.key}
+                                      type="button"
+                                      aria-label={`Open ${event.kind}: ${event.label}`}
+                                      title={event.label}
+                                      onClick={event.open}
+                                      className={`relative h-4 w-full text-white shadow-sm transition hover:brightness-95 focus:z-30 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1 ${event.colorClass}
+                                        ${isStart ? "ml-0.5 rounded-l" : "-ml-px"}
+                                        ${isEnd ? "mr-0.5 rounded-r" : ""}
+                                      `}
+                                    >
+                                      {isStart && (
+                                        <span className="pointer-events-none absolute left-1 top-1/2 z-20 min-w-max -translate-y-1/2 text-[9px] font-semibold leading-none drop-shadow-sm">
+                                          {event.label}
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
@@ -490,7 +535,7 @@ export function YearlyCalendar({
         </div>
       )}
 
-      {!collaborations.length && (
+      {!collaborations.length && !trips.length && !externalCollaborations.length && (
         <div className="text-center py-8 text-xs text-gray-300 border-t border-gray-100 mt-4">
           No collaborations found for {view === "year" ? year : `${MONTHS_ABBR[month]} ${year}`}
         </div>
@@ -506,14 +551,24 @@ export function YearlyCalendar({
 
       <AddCollaborationModal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        onCollaborationCreated={() => onDataChanged?.()}
+        collaboration={selectedExternalCollaboration}
+        onClose={() => {
+          setIsAddModalOpen(false);
+          setSelectedExternalCollaboration(null);
+        }}
+        onCollaborationSaved={() => onDataChanged?.()}
+        onCollaborationDeleted={() => onDataChanged?.()}
       />
 
       <AddTripModal
         isOpen={isTripModalOpen}
-        onClose={() => setIsTripModalOpen(false)}
-        onTripCreated={() => onDataChanged?.()}
+        trip={selectedTrip}
+        onClose={() => {
+          setIsTripModalOpen(false);
+          setSelectedTrip(null);
+        }}
+        onTripSaved={() => onDataChanged?.()}
+        onTripDeleted={() => onDataChanged?.()}
       />
     </div>
   );

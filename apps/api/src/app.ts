@@ -166,7 +166,6 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
     "profileRepository" | "lifecycleCommandBus"
   >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
-  creatorProfilePhotoRequired?: boolean;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
@@ -331,7 +330,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.marketplaceCreatorSelfServiceRepository,
       lifecycleCommandBus: options.identityLifecycleCommandBus,
       mediaRepository: options.marketplaceCreatorProfileMediaRepository,
-      profilePhotoRequired: options.creatorProfilePhotoRequired,
     });
   }
   if (
@@ -344,7 +342,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...options.marketplaceCreatorPlatformConnections,
       profileRepository: options.marketplaceCreatorSelfServiceRepository,
       lifecycleCommandBus: options.identityLifecycleCommandBus,
-      profilePhotoRequired: options.creatorProfilePhotoRequired,
     });
   }
   if (options.sharedHotelSetupStatusRepository) {

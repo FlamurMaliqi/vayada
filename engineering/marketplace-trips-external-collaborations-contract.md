@@ -30,8 +30,9 @@ Reads land before writes:
 5. Remove fallback once the TypeScript read and write routes are fully wired to
    the target read/write model.
 
-Slices 1-4 are implemented. The frontend keeps the legacy fallback until the
-TypeScript routes are fully deployed and verified.
+Slices 1-5 are implemented. The calendar uses the typed TypeScript routes for
+all reads and writes; the retired legacy fallback is no longer part of the
+frontend facade.
 
 ## Endpoints
 
@@ -158,6 +159,7 @@ type CreateMarketplaceExternalCollaborationRequest = {
 
 Validation rules for the write slice:
 
+- Every write requires a non-empty `Idempotency-Key` header of at most 200 characters.
 - `name` and `title` must contain non-whitespace text.
 - `startDate` and `endDate` must be ISO calendar dates.
 - `endDate >= startDate`.

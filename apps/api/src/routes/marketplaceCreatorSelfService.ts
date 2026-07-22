@@ -44,7 +44,6 @@ type MarketplaceCreatorSelfServiceRoutesOptions = {
   repository: MarketplaceCreatorSelfServiceRepository;
   lifecycleCommandBus: IdentityLifecycleCommandBus;
   mediaRepository?: MarketplaceCreatorProfileMediaRepository;
-  profilePhotoRequired?: boolean;
 };
 
 export type MarketplaceCreatorProfileMediaRepository = ApprovedPublicProfileImageRepository;
@@ -114,7 +113,6 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
   options: MarketplaceCreatorSelfServiceRoutesOptions,
 ): Promise<void> {
   const { lifecycleCommandBus, mediaRepository, repository } = options;
-  const profilePhotoRequired = options.profilePhotoRequired ?? false;
   const resolveAccess = (request: FastifyRequest, reply: FastifyReply) =>
     resolveCreatorProfileAccess(request, reply, repository, lifecycleCommandBus);
 
@@ -133,7 +131,7 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
         detail: "Creator profile was not found",
       });
     }
-    return creatorProfileStatus(profile, profilePhotoRequired);
+    return creatorProfileStatus(profile);
   });
 
   app.get("/creators/me", async (request, reply) => {
@@ -278,7 +276,6 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
   connectionString: string;
   max?: number;
   pool?: MarketplaceCreatorSelfServicePool;
-  profilePhotoRequired?: boolean;
 }): MarketplaceCreatorSelfServiceRepository {
   if (!config.connectionString.trim()) {
     throw new Error(
@@ -292,8 +289,6 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
       connectionString: config.connectionString,
       max: config.max,
     }) as unknown as MarketplaceCreatorSelfServicePool);
-  const profilePhotoRequired = config.profilePhotoRequired ?? false;
-
   return {
     async ensureCreatorProfile({ organizationId, ownerUserId }) {
       const client = await pool.connect();
@@ -362,7 +357,7 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
     },
 
     async getCreatorProfile(input) {
-      return readCreatorProfile(pool, input, profilePhotoRequired);
+      return readCreatorProfile(pool, input);
     },
 
     async updateCreatorProfile({ organizationId, creatorProfileId, patch }) {
@@ -377,16 +372,8 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
             platforms: patch.platforms,
           });
         }
-        await recalculateProfileCompletion(
-          client,
-          { organizationId, creatorProfileId },
-          profilePhotoRequired,
-        );
-        const profile = await readCreatorProfile(
-          client,
-          { organizationId, creatorProfileId },
-          profilePhotoRequired,
-        );
+        await recalculateProfileCompletion(client, { organizationId, creatorProfileId });
+        const profile = await readCreatorProfile(client, { organizationId, creatorProfileId });
         await client.query("COMMIT");
         return profile;
       } catch (error) {
@@ -549,7 +536,6 @@ async function grantCreatorProfileAccess(
 async function readCreatorProfile(
   client: MarketplaceCreatorSelfServiceClient,
   input: { organizationId: string; creatorProfileId: string },
-  profilePhotoRequired = false,
 ): Promise<CreatorProfileDocument | null> {
   const result = await client.query<CreatorProfileRow>(
     `SELECT
@@ -566,8 +552,7 @@ async function readCreatorProfile(
        profile.profile_metadata ->> 'profilePictureMediaObjectId' AS "profilePictureMediaObjectId",
        marketplace.creator_profile_is_complete(
          profile.id,
-         profile.organization_id,
-         $3::boolean
+         profile.organization_id
        ) AS "profileComplete",
        profile.profile_completed_at AS "profileCompletedAt",
        profile.profile_status AS "profileStatus",
@@ -607,7 +592,7 @@ async function readCreatorProfile(
      WHERE profile.id::text = $1
        AND profile.organization_id::text = $2
      LIMIT 1`,
-    [input.creatorProfileId, input.organizationId, profilePhotoRequired],
+    [input.creatorProfileId, input.organizationId],
   );
 
   const row = result.rows[0];
@@ -917,14 +902,12 @@ async function replaceCreatorPlatforms(
 async function recalculateProfileCompletion(
   client: MarketplaceCreatorSelfServiceClient,
   input: { organizationId: string; creatorProfileId: string },
-  profilePhotoRequired: boolean,
 ): Promise<void> {
   await client.query(
     `WITH completion AS (
        SELECT marketplace.creator_profile_is_complete(
          $1::uuid,
-         $2::uuid,
-         $3::boolean
+         $2::uuid
        ) AS profile_complete
      )
      UPDATE marketplace.creator_profiles profile
@@ -935,30 +918,22 @@ async function recalculateProfileCompletion(
          END,
          updated_at = now()
      FROM completion
-     WHERE profile.id::text = $1
-       AND profile.organization_id::text = $2`,
-    [input.creatorProfileId, input.organizationId, profilePhotoRequired],
+     WHERE profile.id = $1::uuid
+       AND profile.organization_id = $2::uuid`,
+    [input.creatorProfileId, input.organizationId],
   );
 }
 
-function creatorProfileStatus(
-  profile: CreatorProfileDocument,
-  profilePhotoRequired = false,
-): CreatorProfileStatusResult {
-  const missingFields = creatorProfileMissingFields(profile, profilePhotoRequired);
+function creatorProfileStatus(profile: CreatorProfileDocument): CreatorProfileStatusResult {
+  const missingFields = creatorProfileMissingFields(profile);
   const missingPlatforms = !hasCompletePlatform(profile.platforms);
-  if (
-    profilePhotoRequired &&
-    missingFields.length === 0 &&
-    !missingPlatforms &&
-    !profile.profileComplete
-  ) {
+  if (missingFields.length === 0 && !missingPlatforms && !profile.profileComplete) {
     missingFields.push("profilePicture");
   }
   return {
     creatorProfileId: profile.creatorProfileId,
     organizationId: profile.organizationId,
-    profilePhotoRequired,
+    profilePhotoRequired: true,
     profileComplete: missingFields.length === 0 && !missingPlatforms,
     profileStatus: profile.profileStatus,
     missingFields: missingPlatforms ? [...missingFields, "platforms"] : missingFields,
@@ -972,17 +947,13 @@ function creatorProfileStatus(
 
 function creatorProfileMissingFields(
   profile: CreatorProfileDocument,
-  profilePhotoRequired = false,
 ): CreatorProfileMissingField[] {
   const missingFields: CreatorProfileMissingField[] = [];
   if (!profile.displayName?.trim()) missingFields.push("displayName");
   if (!profile.locationText?.trim()) missingFields.push("locationText");
   if (!profile.shortDescription?.trim()) missingFields.push("shortDescription");
   if (!profile.phone?.trim()) missingFields.push("phone");
-  if (
-    profilePhotoRequired &&
-    (!profile.profilePictureUrl?.trim() || !profile.profilePictureMediaObjectId?.trim())
-  ) {
+  if (!profile.profilePictureUrl?.trim() || !profile.profilePictureMediaObjectId?.trim()) {
     missingFields.push("profilePicture");
   }
   return missingFields;

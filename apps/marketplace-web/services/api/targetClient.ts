@@ -1,9 +1,8 @@
 import { getAuthKitAccessToken } from "@/services/auth/sessionStore";
 
-import { ApiErrorResponse, createVayadaApiClient } from "./client";
+import { ApiErrorResponse, createVayadaApiClient, VAYADA_API_BASE_URL } from "./client";
 
-const TARGET_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
-const client = createVayadaApiClient(TARGET_API_BASE_URL, getAuthKitAccessToken);
+const client = createVayadaApiClient(VAYADA_API_BASE_URL, getAuthKitAccessToken);
 let coldSessionFlight: { promise: Promise<boolean>; signal?: AbortSignal } | null = null;
 const authenticatedOptions = (options?: RequestInit): RequestInit => ({
   ...options,

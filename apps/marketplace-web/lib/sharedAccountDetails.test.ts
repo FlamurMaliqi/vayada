@@ -53,6 +53,11 @@ describe("shared account details", () => {
     expect(sharedAccountProfileImageError(new File([], "empty.png", { type: "image/png" }))).toBe(
       "Choose an image that isn’t empty.",
     );
+    expect(
+      sharedAccountProfileImageError(
+        new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png", { type: "image/png" }),
+      ),
+    ).toBe("Choose an image smaller than 5 MB.");
   });
 
   it("uploads an account photo against the signed-in user's shared profile", async () => {

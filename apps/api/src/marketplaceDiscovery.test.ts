@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 
 import { buildApp } from "./app.js";
-import { loadConfig } from "./config.js";
 import {
   createPgMarketplaceDiscoveryReadRepository,
   findForbiddenMarketplaceDiscoveryKeys,
@@ -669,13 +668,7 @@ describe("marketplace discovery public-safety guard", () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it("mounts offers and creators in target mode without the legacy marketplace DB", async () => {
-    const config = loadConfig({
-      TARGET_DATABASE_URL: "postgresql://target-db",
-      MARKETPLACE_DISCOVERY_SOURCE: "target",
-    });
-    expect(config.marketplaceDiscoverySource).toBe("target");
-
+  it("mounts offers and creators from the target database without the legacy marketplace DB", async () => {
     const pool = createFakePool([
       [
         {
@@ -721,7 +714,7 @@ describe("marketplace discovery public-safety guard", () => {
     app = buildApp({
       logger: false,
       marketplaceDiscoveryRepository: createPgMarketplaceDiscoveryReadRepository({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: "postgresql://target-db",
         pool,
       }),
     });
@@ -806,7 +799,6 @@ describe("pg marketplace discovery repository", () => {
     const repository = createPgMarketplaceDiscoveryReadRepository({
       connectionString: "postgresql://marketplace-db",
       pool,
-      profilePhotoRequired: true,
     });
 
     const result = await repository.listPublicOffers({ limit: 1, offset: 2 });
@@ -964,8 +956,8 @@ describe("pg marketplace discovery repository", () => {
     const sql = pool.sql.join("\n");
     expect(sql).not.toContain("creator.profile_complete");
     expect(sql).toContain("marketplace.creator_profile_is_complete");
-    expect(sql).toContain("$3::boolean");
-    expect(sql).toContain("$1::boolean");
+    expect(sql).toContain("TRUE");
+    expect(sql).not.toMatch(/\$[13]::boolean/);
     expect(sql).toContain("creator.profile_status = 'active'");
     expect(sql).toContain('creator.source_creator_id AS "creatorId"');
     expect(sql).toContain("'profileUrl', platform.profile_url");
@@ -974,21 +966,14 @@ describe("pg marketplace discovery repository", () => {
     expect(sql).not.toMatch(/\bauth\b|users/i);
   });
 
-  it("discovers a base-complete creator after photo policy rollback without an update", async () => {
+  it("does not discover a creator without the mandatory profile photo", async () => {
     const sql: string[] = [];
-    const storedProfile = creatorSeed({ profileComplete: false, profilePictureUrl: null });
     const pool: MarketplaceDiscoveryReadPool = {
-      async query(text, values) {
+      async query(text) {
         sql.push(text);
-        const derivesBaseCompleteness = text.includes("marketplace.creator_profile_is_complete");
-        const profilePhotoRequired = values ? values[values.length - 1] === true : false;
-        const eligible =
-          (storedProfile.profileComplete || derivesBaseCompleteness) && !profilePhotoRequired;
         const rows = text.trim().startsWith("SELECT COUNT(*)::text AS total")
-          ? [{ total: eligible ? "1" : "0" }]
-          : eligible
-            ? [storedProfile]
-            : [];
+          ? [{ total: "0" }]
+          : [];
         return { rows: rows as never[] };
       },
       async end() {},
@@ -996,25 +981,13 @@ describe("pg marketplace discovery repository", () => {
     const repository = createPgMarketplaceDiscoveryReadRepository({
       connectionString: "postgresql://marketplace-db",
       pool,
-      profilePhotoRequired: false,
     });
 
     const result = await repository.listPublicCreators({ limit: 100, offset: 0 });
 
-    expect(result.total).toBe(1);
-    expect(result.items[0]?.creatorId).toBe(LEGACY_CREATOR_ID_A);
-
-    const photoRequiredRepository = createPgMarketplaceDiscoveryReadRepository({
-      connectionString: "postgresql://marketplace-db",
-      pool,
-      profilePhotoRequired: true,
-    });
-    const photoRequiredResult = await photoRequiredRepository.listPublicCreators({
-      limit: 100,
-      offset: 0,
-    });
-
-    expect(photoRequiredResult).toEqual({ items: [], total: 0 });
+    expect(result).toEqual({ items: [], total: 0 });
     expect(sql.join("\n")).not.toContain("creator.profile_complete");
+    expect(sql.join("\n")).toContain("marketplace.creator_profile_is_complete");
+    expect(sql.join("\n")).toContain("TRUE");
   });
 });

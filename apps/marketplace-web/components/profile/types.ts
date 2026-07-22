@@ -79,21 +79,19 @@ export interface ApiCreatorResponse {
   rating?: ApiRatingResponse;
 }
 
-// Update payload for creator profile (uses snake_case for backend compatibility)
+// Canonical creator profile update payload used by the TypeScript API adapter.
 export interface CreatorUpdatePayload {
   name?: string;
   location?: string;
-  short_description?: string;
-  portfolio_link?: string;
-  phone?: string;
+  shortDescription?: string;
+  portfolioLink?: string | null;
+  phone?: string | null;
   profilePicture?: string;
   profilePictureMediaObjectId?: string;
-  profile_picture_media_object_id?: string;
-  audience_size?: number;
-  creator_type?: CreatorType;
+  creatorType?: CreatorType;
   platforms?: Array<{
     id?: string | null;
-    name: "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Other";
+    name: "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Blog" | "X" | "Other";
     handle: string;
     profileUrl?: string | null;
     followers: number;

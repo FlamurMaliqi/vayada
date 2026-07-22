@@ -9,7 +9,7 @@ import type {
   HotelListing,
   HotelProfileStatus,
 } from "@/lib/types";
-import { transformHotelListingToHotel, transformListingMarketplaceResponse } from "@/lib/utils";
+import { transformListingMarketplaceResponse } from "@/lib/utils";
 import {
   getAllMarketplaceOffers,
   type MarketplaceOfferReadModel,
@@ -27,7 +27,6 @@ import {
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/sharedSetupGuard";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
-import { apiClient } from "./client";
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { targetApiClient } from "./targetClient";
 
@@ -125,16 +124,6 @@ export interface CreateListingRequest {
 }
 
 export type UpdateListingRequest = Partial<CreateListingRequest>;
-
-export interface UploadPictureResponse {
-  url: string;
-  mediaObjectId?: string;
-}
-
-export interface UploadImagesResponse {
-  urls: string[];
-  mediaObjectIds?: string[];
-}
 
 export type PlatformImageUploadResponse = PlatformMediaUploadResult & {
   mediaObjectId: string;
@@ -250,14 +239,6 @@ export const hotelService = {
   },
 
   /**
-   * Get hotel by ID (public)
-   */
-  getById: async (id: string): Promise<Hotel> => {
-    const listing = await apiClient.get<HotelListing>(`/hotels/${id}`);
-    return transformHotelListingToHotel(listing);
-  },
-
-  /**
    * Get the selected hotel's canonical profile and Marketplace data.
    */
   getMyProfile: async (
@@ -321,14 +302,6 @@ export const hotelService = {
     });
     if (!uploaded) throw new Error("Platform media did not return an uploaded image");
     return { ...uploaded, mediaObjectId: uploaded.mediaId };
-  },
-
-  /**
-   * @deprecated Use uploadProfileImage(file, profileId) so the upload can be
-   * scoped to the marketplace hotel profile resource.
-   */
-  uploadPicture: async (): Promise<UploadPictureResponse> => {
-    throw new Error("uploadPicture is retired; use uploadProfileImage(file, profileId)");
   },
 
   /**
@@ -397,43 +370,6 @@ export const hotelService = {
         mediaObjectId: image.mediaId,
       })),
     };
-  },
-
-  /**
-   * @deprecated Use uploadListingImages(files, id) and include media IDs in
-   * the listing update command instead.
-   */
-  uploadListingImagesToExisting: async (
-    id: string,
-    files: File[],
-  ): Promise<UploadImagesResponse> => {
-    const uploaded = await hotelService.uploadListingImages(files, id);
-    return {
-      urls: uploaded.images.map((image) => image.url),
-      mediaObjectIds: uploaded.images.map((image) => image.mediaObjectId),
-    };
-  },
-
-  // Legacy methods (kept for backward compatibility)
-  /**
-   * Create hotel (legacy)
-   */
-  create: async (data: Partial<Hotel>): Promise<Hotel> => {
-    return apiClient.post<Hotel>("/hotels", data);
-  },
-
-  /**
-   * Update hotel (legacy)
-   */
-  update: async (id: string, data: Partial<Hotel>): Promise<Hotel> => {
-    return apiClient.put<Hotel>(`/hotels/${id}`, data);
-  },
-
-  /**
-   * Delete hotel (legacy)
-   */
-  delete: async (id: string): Promise<void> => {
-    return apiClient.delete<void>(`/hotels/${id}`);
   },
 
   /**

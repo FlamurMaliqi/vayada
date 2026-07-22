@@ -12,7 +12,8 @@ Create accepts `offerId`, optional message, proposed terms, and proposed
 deliverables. Hotel invitations identify their target with `creatorId`.
 Creator applications derive the creator from the authenticated creator-profile
 resource link and require a nonblank `whyGreatFit`, explicit boolean
-`consent: true`, and a `compensationOptionId` belonging to the offer. The
+`consent: true`, a `compensationOptionId` belonging to the offer, at least one
+valid deliverable, and a valid ISO travel-date range. The
 authenticated organization exclusively determines the initiator side;
 `side`/`initiatorSide` request fields are ignored and are not part of the typed
 create contract. Creators may apply only to verified offers, while hotel operators
@@ -24,7 +25,8 @@ agreement; later edits to the source offer do not mutate it.
 
 Lifecycle idempotency records are scoped to the selected organization. A replay
 is returned only after the stored collaboration is re-authorized against the
-caller's current creator-profile or Marketplace-offer resource links.
+caller's current creator-profile or Marketplace-offer resource links. A replay
+can never return a response stored for another tenant or command side/resource.
 
 Primary compensation is one of `free_stay`, `paid`, `discount`, or `custom`.
 Affiliate participation is represented separately by `affiliateEnabled` and

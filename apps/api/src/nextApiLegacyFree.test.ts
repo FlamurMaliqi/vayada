@@ -29,7 +29,6 @@ const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   PUBLIC_BOOKABILITY_SOURCE: "target",
   BOOKING_SETTINGS_SOURCE: "target",
   BOOKING_RESERVATIONS_SOURCE: "target",
-  MARKETPLACE_DISCOVERY_SOURCE: "target",
   PMS_OPERATIONS_SOURCE: "target",
   FINANCE_SOURCE: "target",
   BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -116,7 +115,6 @@ describe("next-api legacy-free runtime check", () => {
       publicBookabilitySource: "target",
       bookingSettingsSource: "target",
       bookingReservationsSource: "target",
-      marketplaceDiscoverySource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
       bookingCheckoutCommandSource: "target",
@@ -151,6 +149,12 @@ describe("next-api legacy-free runtime check", () => {
       const response = await injectJson(app, { method: "GET", url });
       expect(response.statusCode, url).toBe(200);
     }
+  });
+
+  it("requires the target database because Marketplace is always enabled", () => {
+    expect(() => createPublicRuntimeRepositories(loadConfig({}))).toThrow(
+      "TARGET_DATABASE_URL is required for target public runtime repositories",
+    );
   });
 });
 

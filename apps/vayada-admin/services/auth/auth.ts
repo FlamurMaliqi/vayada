@@ -81,16 +81,20 @@ export const authService = {
    * WorkOS organization ID switches organization through the apps/api session
    * refresh route.
    */
-  refreshSession: async (organizationId?: string): Promise<AuthKitSessionResponse> => {
+  refreshSession: async (
+    organizationId?: string,
+    signal?: AbortSignal,
+  ): Promise<AuthKitSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
     const response =
       organizationId && csrfToken
         ? await authFetch<AuthKitSessionResponse>("/auth/session/refresh", {
             method: "POST",
+            signal,
             headers: { "x-vayada-csrf": csrfToken },
             body: JSON.stringify({ organizationId }),
           })
-        : await authFetch<AuthKitSessionResponse>("/auth/session");
+        : await authFetch<AuthKitSessionResponse>("/auth/session", { signal });
 
     setAuthKitSession(response);
     if (isCompatibilityTokenEnabled()) {

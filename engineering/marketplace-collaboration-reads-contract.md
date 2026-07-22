@@ -8,8 +8,8 @@ Contract version: `marketplace-collaboration-reads.v1`.
 | ----------------- | --------------------------------------------------------------------------- |
 | My collaborations | `GET /api/marketplace/collaborations/me?side=creator\|hotel`                |
 | Detail            | `GET /api/marketplace/collaborations/{collaborationId}?side=creator\|hotel` |
-| Conversations     | `GET /api/marketplace/collaborations/conversations`                         |
-| Messages          | `GET /api/marketplace/collaborations/{collaborationId}/messages`            |
+| Conversations     | `GET /api/marketplace/collaborations/conversations?limit=&cursor=&search=`  |
+| Messages          | `GET /api/marketplace/collaborations/{collaborationId}/messages?cursor=`    |
 
 Creator reads require `marketplace.collaboration.read` plus an active owner link
 to the creator profile. Hotel reads require the same permission plus an active
@@ -30,7 +30,12 @@ type MarketplaceCollaborationRead = {
   compensationType: "free_stay" | "paid" | "discount" | "custom" | null;
   offerTitle: string;
   hotelLocation: string | null;
-  creator: MarketplaceCollaborationParticipant;
+  creator: MarketplaceCollaborationParticipant & {
+    location: string | null;
+    portfolioUrl: string | null;
+    creatorType: string;
+    platforms: MarketplaceCollaborationCreatorPlatform[];
+  };
   hotel: MarketplaceCollaborationParticipant;
   terms: {
     freeStayMinNights: number | null;
@@ -56,6 +61,10 @@ catalog. Affiliate participation is independent from primary compensation.
 
 Conversation summaries expose `offerTitle`. Private identity data, precise geo,
 source migration IDs, negotiated metadata, and affiliate links are excluded.
+Paginated conversations use an opaque `(sortAt, collaborationId)` cursor.
+Message pages and read acknowledgements use `(createdAt, messageId)` so equal
+timestamps cannot skip messages and messages arriving after the acknowledged
+cursor remain unread. Sending a message requires a client idempotency key.
 
 Fixture coverage lives in
 `engineering/fixtures/marketplace-collaboration-reads/cases.json`.

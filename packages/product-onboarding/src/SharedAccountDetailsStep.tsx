@@ -51,13 +51,11 @@ export default function SharedAccountDetailsStep({
       : null);
   const hasInitialProfileImage = Boolean(
     existingProfileImage?.profilePictureUrl.trim() &&
-      existingProfileImage.profilePictureMediaObjectId.trim(),
+    existingProfileImage.profilePictureMediaObjectId.trim(),
   );
   const phoneRequired = accountType === "creator";
   const description =
-    accountType === "hotel"
-      ? "Start with your details. Next, we’ll set up your first hotel."
-      : "Start with your details. Next, we’ll build the creator profile hotels will see.";
+    accountType === "hotel" ? "Start with your details. Next, we’ll set up your first hotel." : "";
   const submitLabel =
     accountType === "hotel" ? "Continue to hotel setup" : "Continue to creator profile";
   const headingRef = useRef<HTMLHeadingElement>(null);

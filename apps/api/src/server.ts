@@ -98,6 +98,11 @@ function buildAuthOptions(auth: ApiConfig["auth"]): ApiAuthOptions | undefined {
   };
 }
 
+const targetDatabaseUrl = config.targetDatabaseUrl;
+if (!targetDatabaseUrl) {
+  throw new Error("TARGET_DATABASE_URL is required because Marketplace is always enabled");
+}
+
 const {
   publicHotelProfileRepository,
   publicHotelQuoteRepository,
@@ -108,7 +113,7 @@ const {
 const bookingSettingsRepository =
   config.bookingSettingsSource === "target"
     ? createPgTargetBookingSettingsRepository({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : config.bookingDatabaseUrl
       ? createPgBookingSettingsReadRepository({
@@ -116,37 +121,23 @@ const bookingSettingsRepository =
         })
       : undefined;
 
-const bookingCustomDomainRepository = config.targetDatabaseUrl
-  ? createTargetBookingCustomDomainRepository({
-      connectionString: config.targetDatabaseUrl,
-    })
-  : undefined;
+const bookingCustomDomainRepository = createTargetBookingCustomDomainRepository({
+  connectionString: targetDatabaseUrl,
+});
 
-const bookingAddonItemsRepository = config.targetDatabaseUrl
-  ? createPgTargetBookingAddonItemsRepository({
-      connectionString: config.targetDatabaseUrl,
-    })
-  : undefined;
+const bookingAddonItemsRepository = createPgTargetBookingAddonItemsRepository({
+  connectionString: targetDatabaseUrl,
+});
 
-const bookingPromoCodesRepository = config.targetDatabaseUrl
-  ? createPgTargetBookingPromoCodesRepository({
-      connectionString: config.targetDatabaseUrl,
-    })
-  : undefined;
+const bookingPromoCodesRepository = createPgTargetBookingPromoCodesRepository({
+  connectionString: targetDatabaseUrl,
+});
 
 const bookingReservationsRepository =
   config.bookingReservationsSource === "target"
-    ? (() => {
-        if (!config.targetDatabaseUrl) {
-          throw new Error(
-            "TARGET_DATABASE_URL is required when BOOKING_RESERVATIONS_SOURCE=target",
-          );
-        }
-
-        return createTargetBookingReservationsReadRepository({
-          connectionString: config.targetDatabaseUrl,
-        });
-      })()
+    ? createTargetBookingReservationsReadRepository({
+        connectionString: targetDatabaseUrl,
+      })
     : config.bookingReservationsReadDatabaseUrl
       ? createCompatibilityPmsBookingReservationsReadRepository({
           connectionString: config.bookingReservationsReadDatabaseUrl,
@@ -154,40 +145,39 @@ const bookingReservationsRepository =
       : undefined;
 
 const bookingDashboardMetricsReadPort =
-  config.bookingReservationsSource === "target" && config.targetDatabaseUrl
+  config.bookingReservationsSource === "target"
     ? createTargetBookingDashboardMetricsReadPort({
-        connectionString: config.targetDatabaseUrl,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
 const bookingWebCheckoutAdapter =
   config.bookingCheckoutCommandSource === "target"
     ? createTargetBookingWebCheckoutAdapter({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
 const pmsOperationsRepository =
   config.pmsOperationsSource === "target"
     ? createTargetPmsOperationsReadRepository({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
 const bookingGuestPiiPort =
   config.pmsOperationsSource === "target"
     ? createTargetBookingGuestPiiPort({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
-const pmsOperationsCommandRepository =
-  config.pmsOperationsSource === "target" && pmsOperationsRepository
-    ? createTargetPmsOperationsCommandRepository({
-        connectionString: config.targetDatabaseUrl!,
-        readRepository: pmsOperationsRepository,
-      })
-    : undefined;
+const pmsOperationsCommandRepository = pmsOperationsRepository
+  ? createTargetPmsOperationsCommandRepository({
+      connectionString: targetDatabaseUrl,
+      readRepository: pmsOperationsRepository,
+    })
+  : undefined;
 
 const pmsModuleActivationRepository = config.auth
   ? createPgPmsModuleActivationRepository({
@@ -198,7 +188,7 @@ const pmsModuleActivationRepository = config.auth
 const financeRepository =
   config.financeSource === "target"
     ? createTargetFinancePropertySettingsRepository({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
@@ -206,22 +196,20 @@ const financePublicHotelProfileRepository =
   publicHotelProfileRepository ??
   (config.financeSource === "target"
     ? createTargetPublicHotelProfileRepository({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : undefined);
 
 const financePublicHotelPropertyResolver =
   config.financeSource === "target"
     ? createTargetFinancePublicHotelPropertyResolver({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
-const sharedHotelSetupStatusRepository = config.targetDatabaseUrl
-  ? createPgSharedHotelSetupStatusRepository({
-      connectionString: config.targetDatabaseUrl,
-    })
-  : undefined;
+const sharedHotelSetupStatusRepository = createPgSharedHotelSetupStatusRepository({
+  connectionString: targetDatabaseUrl,
+});
 
 const xenditBankValidator = config.xenditSecretKey
   ? createXenditBankValidator({
@@ -237,7 +225,7 @@ const askModelProvider =
 const askEvidenceRepository =
   config.askIntelligenceEvidenceSource === "target"
     ? createTargetAskEvidenceRepository({
-        connectionString: config.targetDatabaseUrl!,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
@@ -249,38 +237,32 @@ const providerWebhookSecrets = {
 const hasProviderWebhookSecret = Object.values(providerWebhookSecrets).some(Boolean);
 
 const bookingWebAffiliateRepository =
-  config.affiliatePublicSource === "target" && config.targetDatabaseUrl
+  config.affiliatePublicSource === "target"
     ? createPgBookingWebAffiliateRepository({
-        connectionString: config.targetDatabaseUrl,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
 const bookingWebAffiliateHotelResolver =
-  config.affiliatePublicSource === "target" && config.targetDatabaseUrl
+  config.affiliatePublicSource === "target"
     ? createPgBookingWebAffiliateHotelResolver({
-        connectionString: config.targetDatabaseUrl,
+        connectionString: targetDatabaseUrl,
       })
     : undefined;
 
 const platformMediaRuntime = composePlatformMediaRuntime({
   auth: config.auth,
-  targetDatabaseUrl: config.targetDatabaseUrl,
+  targetDatabaseUrl,
   platformMediaServing: config.platformMediaServing,
   allowedOrigins: config.authSession?.authAllowedOrigins,
 });
 
-const marketplaceCreatorSelfServiceRepository = config.targetDatabaseUrl
-  ? createPgMarketplaceCreatorSelfServiceRepository({
-      connectionString: config.targetDatabaseUrl,
-      profilePhotoRequired: config.creatorProfilePhotoRequired,
-    })
-  : undefined;
+const marketplaceCreatorSelfServiceRepository = createPgMarketplaceCreatorSelfServiceRepository({
+  connectionString: targetDatabaseUrl,
+});
 
 const creatorPlatformConnectionRuntime = (() => {
   const connectionConfig = config.creatorPlatformConnections;
-  if (!config.targetDatabaseUrl || !marketplaceCreatorSelfServiceRepository) {
-    return undefined;
-  }
   const adapters: CreatorPlatformAdapter[] = [];
   if (connectionConfig?.instagram) {
     adapters.push(createInstagramCreatorPlatformAdapter(connectionConfig.instagram));
@@ -303,7 +285,7 @@ const creatorPlatformConnectionRuntime = (() => {
         });
   return {
     repository: createPgMarketplaceCreatorPlatformConnectionRepository({
-      connectionString: config.targetDatabaseUrl,
+      connectionString: targetDatabaseUrl,
     }),
     credentialVault,
     adapters: createCreatorPlatformAdapterRegistry(adapters),
@@ -409,20 +391,19 @@ const app = buildApp({
           }),
         }
       : undefined,
-  providerWebhooks:
-    config.targetDatabaseUrl && hasProviderWebhookSecret
-      ? {
-          secrets: providerWebhookSecrets,
-          modes: {
-            stripe: config.providerWebhooks.stripeMode,
-            xendit: config.providerWebhooks.xenditMode,
-            channex: config.providerWebhooks.channexMode,
-          },
-          store: createPgProviderWebhookStore({
-            connectionString: config.targetDatabaseUrl,
-          }),
-        }
-      : undefined,
+  providerWebhooks: hasProviderWebhookSecret
+    ? {
+        secrets: providerWebhookSecrets,
+        modes: {
+          stripe: config.providerWebhooks.stripeMode,
+          xendit: config.providerWebhooks.xenditMode,
+          channex: config.providerWebhooks.channexMode,
+        },
+        store: createPgProviderWebhookStore({
+          connectionString: targetDatabaseUrl,
+        }),
+      }
+    : undefined,
   bookingReservationsRepository,
   bookingAddonItemsRepository,
   bookingPromoCodesRepository,
@@ -435,62 +416,46 @@ const app = buildApp({
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
   financePublicHotelPropertyResolver,
-  platformContactIntake: config.targetDatabaseUrl
-    ? {
-        repository: createPgPlatformContactIntakeRepository({
-          connectionString: config.targetDatabaseUrl,
-        }),
-        allowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
-      }
-    : undefined,
-  platformAdminDashboardRepository: config.targetDatabaseUrl
-    ? createTargetPlatformAdminDashboardRepository({
-        connectionString: config.targetDatabaseUrl,
-      })
-    : undefined,
+  platformContactIntake: {
+    repository: createPgPlatformContactIntakeRepository({
+      connectionString: targetDatabaseUrl,
+    }),
+    allowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
+  },
+  platformAdminDashboardRepository: createTargetPlatformAdminDashboardRepository({
+    connectionString: targetDatabaseUrl,
+  }),
   pmsOperationsAllowedOrigins: config.pmsOperationsAllowedOrigins,
   bookingSettingsRepository,
   bookingSettingsWriteRepository: bookingSettingsRepository,
   bookingCustomDomainRepository,
   marketplaceDiscoveryRepository,
-  marketplaceCollaborationRepository:
-    config.marketplaceDiscoverySource === "target"
-      ? createPgMarketplaceCollaborationReadRepository({
-          connectionString: config.targetDatabaseUrl!,
-          attachmentMedia: platformMediaRuntime?.collaborationAttachments,
-        })
-      : undefined,
-  marketplaceTripRepository:
-    config.marketplaceDiscoverySource === "target"
-      ? createPgMarketplaceTripRepository({
-          connectionString: config.targetDatabaseUrl!,
-        })
-      : undefined,
+  marketplaceCollaborationRepository: createPgMarketplaceCollaborationReadRepository({
+    connectionString: targetDatabaseUrl,
+    attachmentMedia: platformMediaRuntime?.collaborationAttachments,
+  }),
+  marketplaceTripRepository: createPgMarketplaceTripRepository({
+    connectionString: targetDatabaseUrl,
+  }),
   marketplaceAdminRepository:
     config.marketplaceAdminSource === "target"
       ? createPgMarketplaceAdminRepository({
-          connectionString: config.targetDatabaseUrl!,
+          connectionString: targetDatabaseUrl,
           identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
           offerMediaPromotion: platformMediaRuntime?.offerMediaPromotion,
         })
       : undefined,
   marketplaceAdminLegacySuperadminFallbackEnabled:
     config.marketplaceAdminLegacySuperadminFallbackEnabled,
-  marketplaceHotelProfileStatusRepository:
-    config.marketplaceDiscoverySource === "target"
-      ? createPgMarketplaceHotelProfileStatusRepository({
-          connectionString: config.targetDatabaseUrl!,
-        })
-      : undefined,
-  marketplaceHotelSelfServiceRepository: config.targetDatabaseUrl
-    ? createPgMarketplaceHotelSelfServiceRepository({
-        connectionString: config.targetDatabaseUrl,
-      })
-    : undefined,
+  marketplaceHotelProfileStatusRepository: createPgMarketplaceHotelProfileStatusRepository({
+    connectionString: targetDatabaseUrl,
+  }),
+  marketplaceHotelSelfServiceRepository: createPgMarketplaceHotelSelfServiceRepository({
+    connectionString: targetDatabaseUrl,
+  }),
   marketplaceCreatorSelfServiceRepository,
   marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
-  creatorProfilePhotoRequired: config.creatorProfilePhotoRequired,
   sharedHotelSetupStatusRepository,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
@@ -516,11 +481,9 @@ const app = buildApp({
   bookingWebCheckoutAdapter,
   askModel: askModelProvider?.model,
   askModelMetadata: askModelProvider?.metadata,
-  askAuditRepository: config.targetDatabaseUrl
-    ? createPgAskAuditRepository({
-        connectionString: config.targetDatabaseUrl,
-      })
-    : undefined,
+  askAuditRepository: createPgAskAuditRepository({
+    connectionString: targetDatabaseUrl,
+  }),
   askEvidenceRepository,
   bookingWebAttributionSink:
     config.bookingWebEventSink === "target" && config.auth

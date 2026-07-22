@@ -194,22 +194,12 @@ export default function MarketplacePage() {
           }
         }
 
-        // Minimum Engagement Rate filter (weighted average proportional to follower count)
-        if (filters.minEngagementRate) {
-          const totalFollowers = creator.platforms.reduce(
-            (sum, platform) => sum + platform.followers,
-            0,
-          );
-          const avgEngagementRate =
-            totalFollowers > 0
-              ? creator.platforms.reduce(
-                  (sum, platform) => sum + platform.followers * (platform.engagementRate || 0),
-                  0,
-                ) / totalFollowers
-              : 0;
-          if (avgEngagementRate < filters.minEngagementRate) {
-            return false;
-          }
+        // Minimum Engagement Rate filter
+        if (
+          filters.minEngagementRate &&
+          creatorEngagementRate(creator) < filters.minEngagementRate
+        ) {
+          return false;
         }
 
         // Platforms filter (multiselect)
@@ -290,7 +280,7 @@ export default function MarketplacePage() {
         );
       case "relevance":
       default:
-        return sorted;
+        return sorted.sort(compareCreatorRelevance);
     }
   }, [filteredCreators, sortOption]);
 
@@ -441,4 +431,30 @@ function currentReturnTo(fallbackReturnTo: string): string {
       ? fallbackReturnTo
       : `${window.location.pathname}${window.location.search}`;
   return returnTo;
+}
+
+function compareCreatorRelevance(a: Creator, b: Creator): number {
+  return (
+    (b.rating?.averageRating ?? 0) - (a.rating?.averageRating ?? 0) ||
+    creatorEngagementRate(b) - creatorEngagementRate(a) ||
+    b.audienceSize - a.audienceSize ||
+    new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() ||
+    a.name.localeCompare(b.name) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function creatorEngagementRate(creator: Creator): number {
+  if (creator.avgEngagementRate !== undefined) return creator.avgEngagementRate;
+  const totalFollowers = creator.platforms.reduce(
+    (total, platform) => total + platform.followers,
+    0,
+  );
+  if (totalFollowers === 0) return 0;
+  return (
+    creator.platforms.reduce(
+      (total, platform) => total + platform.followers * platform.engagementRate,
+      0,
+    ) / totalFollowers
+  );
 }

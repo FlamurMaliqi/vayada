@@ -181,6 +181,8 @@ export function CreatorOverviewTab({
           >
             {hasPicture ? (
               <>
+                {/* Native img supports the local blob URL used for an unsaved profile preview. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={profilePic}
                   alt="Profile"
@@ -225,7 +227,7 @@ export function CreatorOverviewTab({
             )}
           </div>
           <p className="text-xs text-gray-500 text-center">
-            Optional - JPG, PNG or WebP (max 20MB)
+            Required - JPG, PNG or WebP (max 5 MB)
           </p>
           <input
             type="file"

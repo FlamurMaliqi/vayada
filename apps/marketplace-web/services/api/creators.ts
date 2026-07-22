@@ -17,7 +17,6 @@ import {
   type MarketplacePlatformName,
 } from "@vayada/marketplace-shared/api/discovery";
 import { uploadPlatformMedia } from "@vayada/marketplace-shared/api/platformMedia";
-import { apiClient } from "./client";
 import { targetApiClient } from "./targetClient";
 
 // Backend API response type for marketplace endpoint (snake_case from backend)
@@ -47,7 +46,7 @@ interface CreatorMarketplaceResponse {
 }
 
 type TargetCreatorProfileStatus = {
-  profilePhotoRequired?: boolean;
+  profilePhotoRequired: true;
   profileComplete: boolean;
   missingFields: string[];
   missingPlatforms: boolean;
@@ -131,13 +130,6 @@ export const creatorService = {
         totalPages: 1,
       },
     };
-  },
-
-  /**
-   * Get creator by ID
-   */
-  getById: async (id: string): Promise<Creator> => {
-    return apiClient.get<Creator>(`/creators/${id}`);
   },
 
   /**
@@ -244,27 +236,6 @@ export const creatorService = {
   },
 
   /**
-   * Create creator
-   */
-  create: async (data: Partial<Creator>): Promise<Creator> => {
-    return apiClient.post<Creator>("/creators", data);
-  },
-
-  /**
-   * Update creator
-   */
-  update: async (id: string, data: Partial<Creator>): Promise<Creator> => {
-    return apiClient.put<Creator>(`/creators/${id}`, data);
-  },
-
-  /**
-   * Delete creator
-   */
-  delete: async (id: string): Promise<void> => {
-    return apiClient.delete<void>(`/creators/${id}`);
-  },
-
-  /**
    * Get creator profile completion status
    * GET /api/marketplace/creators/me/profile-status
    */
@@ -274,7 +245,7 @@ export const creatorService = {
       options,
     );
     return {
-      profile_photo_required: status.profilePhotoRequired === true,
+      profile_photo_required: status.profilePhotoRequired,
       profile_complete: status.profileComplete,
       missing_fields: status.missingFields,
       missing_platforms: status.missingPlatforms,

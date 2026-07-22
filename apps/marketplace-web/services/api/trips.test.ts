@@ -8,12 +8,6 @@ const mocks = vi.hoisted(() => ({
   createMarketplaceExternalCollaboration: vi.fn(),
   updateMarketplaceExternalCollaboration: vi.fn(),
   deleteMarketplaceExternalCollaboration: vi.fn(),
-  apiClient: {
-    get: vi.fn(),
-    post: vi.fn(),
-    put: vi.fn(),
-    delete: vi.fn(),
-  },
 }));
 
 vi.mock("@vayada/marketplace-shared/api/trips", async (importOriginal) => {
@@ -29,8 +23,6 @@ vi.mock("@vayada/marketplace-shared/api/trips", async (importOriginal) => {
     deleteMarketplaceExternalCollaboration: mocks.deleteMarketplaceExternalCollaboration,
   };
 });
-
-vi.mock("./client", () => ({ apiClient: mocks.apiClient }));
 
 import { tripService } from "./trips";
 
@@ -101,27 +93,6 @@ describe("tripService idempotency", () => {
     );
   });
 
-  it("reuses the same caller key when the target route falls back to legacy", async () => {
-    mocks.createMarketplaceTrip.mockRejectedValue({ status: 404, data: { detail: "Not Found" } });
-    mocks.apiClient.post.mockResolvedValue({ id: "legacy-created" });
-
-    await tripService.createTrip({
-      name: "Bali campaign",
-      start_date: "2026-09-10",
-      end_date: "2026-09-20",
-    });
-
-    expect(mocks.createMarketplaceTrip).toHaveBeenCalledWith(
-      expect.objectContaining({ idempotencyKey: "key:trip.create:new" }),
-    );
-    expect(mocks.apiClient.post).toHaveBeenCalledWith(
-      "/trips",
-      expect.objectContaining({ name: "Bali campaign" }),
-      { headers: { "Idempotency-Key": "key:trip.create:new" } },
-    );
-    expect(mocks.buildMarketplaceTripIdempotencyKey).toHaveBeenCalledTimes(1);
-  });
-
   it("lets a logical caller reuse its key across a separate timeout retry", async () => {
     mocks.createMarketplaceTrip.mockRejectedValueOnce(new TypeError("Network request timed out"));
     const data = {
@@ -144,6 +115,125 @@ describe("tripService idempotency", () => {
       idempotencyKey: "trip-create-submission-123",
     });
     expect(mocks.buildMarketplaceTripIdempotencyKey).not.toHaveBeenCalled();
+  });
+
+  it("reuses a generated trip-create key after an uncertain failure and rotates after success", async () => {
+    const request = {
+      name: "Retry-safe Lisbon trip",
+      start_date: "2026-10-01",
+      end_date: "2026-10-08",
+    };
+    mocks.buildMarketplaceTripIdempotencyKey
+      .mockReturnValueOnce("pending-trip-key")
+      .mockReturnValueOnce("next-trip-key");
+    mocks.createMarketplaceTrip
+      .mockRejectedValueOnce(new Error("connection dropped after commit"))
+      .mockResolvedValueOnce(targetTrip())
+      .mockResolvedValueOnce(targetTrip());
+
+    await expect(tripService.createTrip(request)).rejects.toThrow(
+      "connection dropped after commit",
+    );
+    await expect(tripService.createTrip(request)).resolves.toMatchObject({
+      id: "legacy-trip-bali",
+    });
+    await expect(tripService.createTrip(request)).resolves.toMatchObject({
+      id: "legacy-trip-bali",
+    });
+
+    expect(
+      mocks.createMarketplaceTrip.mock.calls.map(([payload]) => payload.idempotencyKey),
+    ).toEqual(["pending-trip-key", "pending-trip-key", "next-trip-key"]);
+  });
+
+  it("reuses a generated external-collaboration create key across retries", async () => {
+    const request = {
+      title: "Retry-safe hotel partnership",
+      hotel_name: "Hotel Seehof",
+      collaboration_type: "Paid" as const,
+      start_date: "2026-09-12",
+      end_date: "2026-09-16",
+    };
+    mocks.buildMarketplaceTripIdempotencyKey.mockReturnValueOnce("pending-external-key");
+    mocks.createMarketplaceExternalCollaboration
+      .mockRejectedValueOnce(new Error("response was lost"))
+      .mockResolvedValueOnce(targetExternalCollaboration());
+
+    await expect(tripService.createExternalCollaboration(request)).rejects.toThrow(
+      "response was lost",
+    );
+    await expect(tripService.createExternalCollaboration(request)).resolves.toMatchObject({
+      id: "legacy-external-seehof",
+    });
+
+    expect(
+      mocks.createMarketplaceExternalCollaboration.mock.calls.map(
+        ([payload]) => payload.idempotencyKey,
+      ),
+    ).toEqual(["pending-external-key", "pending-external-key"]);
+  });
+
+  it("passes an explicit request key through unchanged", async () => {
+    await tripService.createTrip({
+      idempotency_key: "calendar-modal-trip-17",
+      name: "Explicit key trip",
+      start_date: "2026-11-01",
+      end_date: "2026-11-04",
+    });
+
+    expect(mocks.createMarketplaceTrip).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "calendar-modal-trip-17" }),
+    );
+    expect(mocks.buildMarketplaceTripIdempotencyKey).not.toHaveBeenCalled();
+  });
+
+  it("surfaces canonical target errors without retrying a legacy API", async () => {
+    const targetError = Object.assign(new Error("Marketplace trip write model is unavailable."), {
+      status: 500,
+      data: { code: "write_model_unavailable", category: "write_model" },
+    });
+    mocks.createMarketplaceTrip.mockRejectedValueOnce(targetError);
+
+    await expect(
+      tripService.createTrip({
+        name: "Canonical error trip",
+        start_date: "2026-12-01",
+        end_date: "2026-12-04",
+      }),
+    ).rejects.toBe(targetError);
+    expect(mocks.createMarketplaceTrip).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears nullable trip fields through the target API", async () => {
+    await tripService.updateTrip("legacy-trip-bali", {
+      location: null,
+      notes: null,
+    });
+
+    expect(mocks.updateMarketplaceTrip).toHaveBeenCalledWith(
+      "legacy-trip-bali",
+      expect.objectContaining({
+        locationText: null,
+        notes: null,
+      }),
+    );
+  });
+
+  it("updates and unlinks an external collaboration without losing its type", async () => {
+    await tripService.updateExternalCollaboration("legacy-external-seehof", {
+      trip_id: null,
+      collaboration_type: "Affiliate",
+      hotel_name: null,
+    });
+
+    expect(mocks.updateMarketplaceExternalCollaboration).toHaveBeenCalledWith(
+      "legacy-external-seehof",
+      expect.objectContaining({
+        tripId: null,
+        hotelName: null,
+        collaborationType: "affiliate",
+      }),
+    );
   });
 });
 

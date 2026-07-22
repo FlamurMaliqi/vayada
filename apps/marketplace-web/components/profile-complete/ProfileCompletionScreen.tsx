@@ -29,19 +29,7 @@ export function ProfileCompletionScreen({
             <CheckCircleIcon className="h-7 w-7" />
           </div>
 
-          <div className="rounded-2xl border border-primary-100 bg-primary-50/70 p-3 text-left">
-            <div className="flex items-start gap-3">
-              <EnvelopeIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-primary-600" />
-              <div>
-                <p className="mb-1 text-sm font-semibold text-gray-950">Verify your email</p>
-                <p className="text-sm leading-5 text-gray-700">
-                  Check your inbox for the verification link. It expires in 48 hours.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-3 space-y-2 rounded-2xl border border-gray-100 bg-gray-50 p-3 text-left">
+          <div className="space-y-2 rounded-2xl border border-gray-100 bg-gray-50 p-3 text-left">
             <div className="flex items-center gap-2">
               <CheckCircleIcon className="h-5 w-5 text-primary-600" />
               <p className="text-sm font-semibold text-gray-950">Profile review</p>

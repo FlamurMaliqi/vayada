@@ -28,6 +28,7 @@ import {
   type MarketplaceCollaborationListFilters,
   type MarketplaceCollaborationLifecycleWriteInput,
   type MarketplaceCollaborationLifecycleWriteResponse,
+  type MarketplaceCollaborationReadPool,
   type MarketplaceCollaborationReadRepository,
 } from "./routes/marketplaceCollaborations.js";
 import type { PlatformMediaObjectRecord } from "./routes/platformMedia.js";
@@ -173,7 +174,7 @@ describe("marketplace collaboration read routes", () => {
     const repository = createCollaborationRepository({
       async listConversations({ side }) {
         calls.push(side ?? "missing");
-        return [];
+        return conversationPage();
       },
     });
     const app = buildMarketplaceCollaborationsApp({
@@ -206,6 +207,43 @@ describe("marketplace collaboration read routes", () => {
     expect(response.headers.vary).toBe("Authorization");
     expect(response.json()).toEqual([]);
     expect(calls).toEqual(["hotel"]);
+  });
+
+  it("supports paginated conversation search while preserving the legacy array response", async () => {
+    const filters: unknown[] = [];
+    const repository = createCollaborationRepository({
+      async listConversations(input) {
+        filters.push(input.filters);
+        return {
+          contractVersion: MARKETPLACE_COLLABORATION_READS_CONTRACT_VERSION,
+          items: [],
+          nextCursor: "next-page",
+          hasMore: true,
+        };
+      },
+    });
+    const app = buildMarketplaceCollaborationsApp({ repository });
+
+    const legacy = await injectJson(app, {
+      method: "GET",
+      url: "/api/marketplace/collaborations/conversations",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(legacy.statusCode).toBe(200);
+    expect(legacy.body).toEqual([]);
+
+    const paginated = await injectJson(app, {
+      method: "GET",
+      url: "/api/marketplace/collaborations/conversations",
+      query: { limit: "25", search: "Aurora" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(paginated.statusCode).toBe(200);
+    expect(paginated.body).toMatchObject({ hasMore: true, nextCursor: "next-page" });
+    expect(filters).toEqual([
+      { limit: 100, search: undefined, cursor: undefined },
+      { limit: 25, search: "Aurora", cursor: undefined },
+    ]);
   });
 
   it("returns not_found when a detail read is outside the authorized side", async () => {
@@ -272,6 +310,124 @@ describe("marketplace collaboration read routes", () => {
     });
   });
 
+  it("rejects reversed creator travel dates before repository access", async () => {
+    const executeLifecycleWrite = vi.fn();
+    const app = buildMarketplaceCollaborationsApp({
+      repository: createCollaborationRepository({ executeLifecycleWrite }),
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations",
+      payload: {
+        idempotencyKey: "marketplace.collaboration.create:offer_001:dates:v1",
+        side: "creator",
+        offerId: "offer_001",
+        consent: true,
+        whyGreatFit: "My audience is a strong match.",
+        deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
+        terms: {
+          travelDateFrom: "2026-10-10",
+          travelDateTo: "2026-10-09",
+        },
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_query",
+      category: "validation",
+      message: "travelDateTo must be after travelDateFrom.",
+    });
+    expect(executeLifecycleWrite).not.toHaveBeenCalled();
+  });
+
+  it("requires valid creator deliverables and real date ranges", async () => {
+    const executeLifecycleWrite = vi.fn();
+    const app = buildMarketplaceCollaborationsApp({
+      repository: createCollaborationRepository({ executeLifecycleWrite }),
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+    const base = {
+      side: "creator",
+      offerId: "offer_001",
+      consent: true,
+      whyGreatFit: "My audience is a strong match.",
+      deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
+    };
+    const invalidCases = [
+      { payload: { ...base, deliverables: [] }, message: "at least one valid deliverable" },
+      {
+        payload: {
+          ...base,
+          deliverables: [{ platform: "instagram", type: "", quantity: 1 }],
+        },
+        message: "at least one valid deliverable",
+      },
+      {
+        payload: {
+          ...base,
+          terms: { travelDateFrom: "2026-02-30", travelDateTo: "2026-03-02" },
+        },
+        message: "travelDateFrom must be a real ISO date",
+      },
+      {
+        payload: { ...base, terms: { travelDateFrom: "2026-09-01" } },
+        message: "travelDateFrom and travelDateTo must be provided together",
+      },
+    ];
+
+    for (const [index, testCase] of invalidCases.entries()) {
+      const response = await injectJson(app, {
+        method: "POST",
+        url: "/api/marketplace/collaborations",
+        payload: {
+          ...testCase.payload,
+          idempotencyKey: `marketplace.collaboration.create:validation-${index}:v1`,
+        },
+        headers: { authorization: "Bearer valid-token" },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body).toMatchObject({ code: "invalid_query" });
+      expect(String((response.body as { message: string }).message)).toContain(testCase.message);
+    }
+    expect(executeLifecycleWrite).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit message idempotency and a composite read cursor", async () => {
+    const repository = createCollaborationRepository({
+      async markMessagesRead() {
+        return true;
+      },
+    });
+    const app = buildMarketplaceCollaborationsApp({
+      repository,
+      permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+    });
+
+    const send = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations/collab_001/messages",
+      payload: { content: "Retry me safely" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(send.statusCode).toBe(400);
+    expect(send.body).toMatchObject({ message: "message idempotencyKey is required." });
+
+    const markRead = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/collaborations/collab_001/read",
+      payload: { readThrough: { createdAt: "2026-07-22T08:00:00.000Z" } },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(markRead.statusCode).toBe(400);
+    expect(markRead.body).toMatchObject({
+      message: "readThrough requires a valid createdAt and messageId cursor.",
+    });
+  });
+
   it("derives creator identity and initiator side from auth and snapshots the selected compensation option", async () => {
     const pool = createCreatorApplicationPool();
     const repository = createPgMarketplaceCollaborationReadRepository({
@@ -296,6 +452,7 @@ describe("marketplace collaboration read routes", () => {
         compensationOptionId: "compensation-paid-001",
         whyGreatFit: "My audience is a strong fit.",
         consent: true,
+        deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -374,6 +531,7 @@ describe("marketplace collaboration read routes", () => {
             compensationOptionId: "compensation-paid-001",
             whyGreatFit: "My audience is a strong fit.",
             consent: true,
+            deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
           },
         }),
       ),
@@ -464,6 +622,7 @@ describe("marketplace collaboration read routes", () => {
         compensationOptionId: "compensation-paid-001",
         whyGreatFit: "My audience is a strong fit.",
         consent: true,
+        deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -493,6 +652,7 @@ describe("marketplace collaboration read routes", () => {
         compensationOptionId: "compensation-paid-001",
         whyGreatFit: "My audience is a strong fit.",
         consent: true,
+        deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -529,6 +689,7 @@ describe("marketplace collaboration read routes", () => {
         compensationOptionId: "compensation-from-another-offer",
         whyGreatFit: "My audience is a strong fit.",
         consent: true,
+        deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -564,6 +725,7 @@ describe("marketplace collaboration read routes", () => {
         compensationOptionId: "compensation-paid-001",
         whyGreatFit: "My audience is a strong fit.",
         consent: true,
+        deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -673,7 +835,7 @@ describe("marketplace collaboration read routes", () => {
     const offerLookup = pool.calls.find((call) =>
       call.text.includes("FROM marketplace.marketplace_offers"),
     );
-    expect(offerLookup?.text).toContain("organization_id::text = $3");
+    expect(offerLookup?.text).toContain("offer.organization_id::text = $3");
     expect(offerLookup?.values).toEqual(["offer-001", ["offer-001"], "org_creator"]);
     expect(
       pool.calls.some((call) => call.text.includes("INSERT INTO marketplace.collaborations")),
@@ -721,11 +883,9 @@ describe("marketplace collaboration read routes", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    const replayLookup = pool.calls.find((call) =>
-      call.text.includes("FROM platform.idempotency_keys"),
+    expect(pool.calls.some((call) => call.text.includes("FROM platform.idempotency_keys"))).toBe(
+      false,
     );
-    expect(replayLookup?.text).toContain("organization_id = $3::uuid");
-    expect(replayLookup?.values[2]).toBe("org_creator");
     const authorizationLookup = pool.calls.find((call) =>
       call.text.includes("FROM marketplace.collaborations collaboration"),
     );
@@ -751,7 +911,11 @@ describe("marketplace collaboration read routes", () => {
     const response = await injectJson(app, {
       method: "POST",
       url: "/api/marketplace/collaborations/collab_001/messages",
-      payload: { content: "Looks good to me.", message_type: "text" },
+      payload: {
+        content: "Looks good to me.",
+        message_type: "text",
+        idempotencyKey: "marketplace.collaboration.message:collab_001:one:v1",
+      },
       headers: { authorization: "Bearer valid-token" },
     });
 
@@ -800,6 +964,7 @@ describe("marketplace collaboration read routes", () => {
         content: "Poolside breakfast at sunrise",
         contentType: "image",
         mediaObjectId: "00000000-0000-4000-8000-000000000099",
+        idempotencyKey: "marketplace.collaboration.message:collab_001:image:v1",
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -1063,6 +1228,7 @@ describe("marketplace collaboration read routes", () => {
         payload: {
           contentType: "image",
           mediaObjectId: "00000000-0000-4000-8000-000000000099",
+          idempotencyKey: `marketplace.collaboration.message:collab_001:${JSON.stringify(mediaOverrides)}:v1`,
         },
         headers: { authorization: "Bearer valid-token" },
       });
@@ -1143,6 +1309,9 @@ describe("marketplace collaboration read routes", () => {
         side: "creator",
         offerId: "offer_001",
         creatorId: "creator_profile_not_owned",
+        consent: true,
+        whyGreatFit: "My audience is a strong match.",
+        deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
       },
       headers: { authorization: "Bearer valid-token" },
     });
@@ -1403,7 +1572,7 @@ describe.skipIf(!TEST_DATABASE_URL)("marketplace chat attachment persistence", (
         );
       }
 
-      const send = (mediaObjectId: string) =>
+      const send = (mediaObjectId: string, attempt: number) =>
         repository.sendMessage!({
           context,
           side: "creator",
@@ -1411,10 +1580,11 @@ describe.skipIf(!TEST_DATABASE_URL)("marketplace chat attachment persistence", (
           content: "Sent an image",
           contentType: "image",
           mediaObjectId,
+          idempotencyKey: `marketplace.collaboration.message:${sourceCollaborationId}:${mediaObjectId}:${attempt}:v1`,
         });
       const concurrentResults = await Promise.allSettled([
-        send(mediaIds.orphan),
-        send(mediaIds.orphan),
+        send(mediaIds.orphan, 1),
+        send(mediaIds.orphan, 2),
       ]);
       expect(concurrentResults.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
       expect(concurrentResults.filter(({ status }) => status === "rejected")).toHaveLength(1);
@@ -1436,7 +1606,7 @@ describe.skipIf(!TEST_DATABASE_URL)("marketplace chat attachment persistence", (
       });
 
       for (const mediaObjectId of [mediaIds.claimed, mediaIds.expired, mediaIds.wrongOwner]) {
-        await expect(send(mediaObjectId)).rejects.toMatchObject({
+        await expect(send(mediaObjectId, 3)).rejects.toMatchObject({
           statusCode: 400,
           code: "invalid_query",
         });
@@ -1459,6 +1629,326 @@ describe.skipIf(!TEST_DATABASE_URL)("marketplace chat attachment persistence", (
       await mediaRepository.close?.();
       await client.end();
     }
+  });
+});
+
+describe("marketplace collaboration PostgreSQL behavior", () => {
+  it("replays messages atomically only inside the authenticated organization scope", async () => {
+    const idempotency = new Map<
+      string,
+      { requestFingerprintHash: string; metadata: unknown; status: "completed" }
+    >();
+    let messageInserts = 0;
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    const client = {
+      async query(text: string, values: readonly unknown[] = []) {
+        queries.push({ text, values });
+        if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return { rows: [] };
+        if (text.includes("FROM marketplace.collaborations collaboration")) {
+          const resourceIds = values[0] as string[];
+          return resourceIds.includes("creator_profile_001")
+            ? {
+                rows: [
+                  {
+                    id: "00000000-0000-4000-8000-000000000061",
+                    propertyId: "00000000-0000-4000-8000-000000000062",
+                    lifecycleStatus: "active",
+                    initiatorSide: "creator",
+                    sourceCollaborationId: "collab_001",
+                    compensationType: "paid",
+                    affiliateEnabled: false,
+                    creatorProfileId: "creator_profile_001",
+                    creatorOrganizationId: "org_creator",
+                    hotelOrganizationId: "org_hotel",
+                    creatorAgreedAt: null,
+                    hotelAgreedAt: null,
+                  },
+                ],
+              }
+            : { rows: [] };
+        }
+        if (text.includes("FROM platform.idempotency_keys")) {
+          const key = `${values[2]}:${values[0]}:${values[1]}`;
+          const row = idempotency.get(key);
+          return { rows: row ? [row] : [] };
+        }
+        if (text.includes("INSERT INTO platform.idempotency_keys")) {
+          return { rows: [{ id: "00000000-0000-4000-8000-000000000051" }] };
+        }
+        if (text.includes("INSERT INTO marketplace.marketplace_chat_messages")) {
+          messageInserts += 1;
+          return {
+            rows: [
+              {
+                messageId: "00000000-0000-4000-8000-000000000071",
+                collaborationId: "collab_001",
+                senderUserId: "user_creator",
+                senderName: "creator",
+                senderAvatarUrl: null,
+                senderSide: "creator",
+                content: "Safe retry",
+                contentType: "text",
+                metadata: {},
+                createdAt: "2026-07-22T10:00:00.000Z",
+              },
+            ],
+          };
+        }
+        if (text.includes("UPDATE platform.idempotency_keys")) {
+          const organizationId = String(values[6]);
+          const operation = String(values[4]);
+          const keyHash = String(values[5]);
+          idempotency.set(`${organizationId}:${operation}:${keyHash}`, {
+            requestFingerprintHash: String(values[0]),
+            metadata: JSON.parse(String(values[3])),
+            status: "completed",
+          });
+          return { rows: [] };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      },
+      release() {},
+    };
+    const pool = {
+      async query() {
+        throw new Error("message writes must use a transaction client");
+      },
+      async connect() {
+        return client;
+      },
+      async end() {},
+    };
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://test",
+      pool,
+    });
+    const input = {
+      context: creatorRequestContext(),
+      side: "creator" as const,
+      collaborationId: "collab_001",
+      content: "Safe retry",
+      contentType: "text" as const,
+      idempotencyKey: "marketplace.collaboration.message:collab_001:retry:v1",
+    };
+
+    const first = await repository.sendMessage?.(input);
+    const replay = await repository.sendMessage?.(input);
+    const otherTenant = await repository.sendMessage?.({
+      ...input,
+      context: creatorRequestContext({
+        organizationId: "00000000-0000-4000-8000-000000000099",
+        creatorProfileId: "creator_profile_other",
+      }),
+    });
+
+    expect(first?.messageId).toBe("00000000-0000-4000-8000-000000000071");
+    expect(replay).toEqual(first);
+    expect(otherTenant).toBeNull();
+    expect(messageInserts).toBe(1);
+    const replayLookups = queries.filter((query) =>
+      query.text.includes("FROM platform.idempotency_keys"),
+    );
+    expect(replayLookups).toHaveLength(2);
+    expect(
+      replayLookups.every(
+        (lookup) =>
+          lookup.text.includes("tenant_scope = 'organization'") &&
+          lookup.text.includes("organization_id = $3::uuid"),
+      ),
+    ).toBe(true);
+    for (const replayLookup of replayLookups) {
+      const lookupIndex = queries.indexOf(replayLookup);
+      expect(queries[lookupIndex - 1]?.text).toContain(
+        "FROM marketplace.collaborations collaboration",
+      );
+    }
+  });
+
+  it("types the optional message cursor so an unpaginated chat read is valid PostgreSQL", async () => {
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values: readonly unknown[] = []) {
+        queries.push({ text, values });
+        if (text.includes("FROM marketplace.collaborations collaboration")) {
+          return { rows: [{ id: "collaboration_internal_001", propertyId: "property_001" }] };
+        }
+        if (text.includes("FROM marketplace.marketplace_chat_messages message")) {
+          return { rows: [] };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      },
+      async end() {},
+    };
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://test",
+      pool: pool as MarketplaceCollaborationReadPool,
+    });
+
+    const response = await repository.listMessages({
+      context: creatorRequestContext(),
+      collaborationId: "collab_001",
+      side: "creator",
+      filters: {},
+    });
+
+    const messageQuery = queries.find((query) =>
+      query.text.includes('$4::text AS "collaborationId"'),
+    );
+    expect(response?.items).toEqual([]);
+    expect(messageQuery?.text).toContain(
+      "($3::timestamptz IS NULL OR message.created_at < $3::timestamptz)",
+    );
+    expect(messageQuery?.values).toEqual([
+      "collaboration_internal_001",
+      "property_001",
+      null,
+      "collab_001",
+      null,
+      null,
+    ]);
+  });
+
+  it("paginates messages with the created-at and message-id tuple", async () => {
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values: readonly unknown[] = []) {
+        queries.push({ text, values });
+        if (text.includes("FROM marketplace.collaborations collaboration")) {
+          return { rows: [{ id: "collaboration_internal_001", propertyId: "property_001" }] };
+        }
+        if (text.includes("FROM marketplace.marketplace_chat_messages message")) {
+          return { rows: [] };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      },
+      async end() {},
+    };
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://test",
+      pool: pool as MarketplaceCollaborationReadPool,
+    });
+
+    await repository.listMessages({
+      context: creatorRequestContext(),
+      collaborationId: "collab_001",
+      side: "creator",
+      filters: {
+        cursor: {
+          createdAt: "2026-07-21T10:15:00.000Z",
+          messageId: "00000000-0000-4000-8000-000000000041",
+        },
+      },
+    });
+
+    expect(queries[1]?.text).toContain(
+      "(message.created_at, message.id) < ($5::timestamptz, $6::uuid)",
+    );
+    expect(queries[1]?.values?.slice(4)).toEqual([
+      "2026-07-21T10:15:00.000Z",
+      "00000000-0000-4000-8000-000000000041",
+    ]);
+  });
+
+  it("uses stable conversation tuple pagination and escaped server-side search", async () => {
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values: readonly unknown[] = []) {
+        queries.push({ text, values });
+        return {
+          rows: [
+            {
+              collaborationId: "collab_002",
+              side: "creator",
+              partnerName: "Hotel Aurora",
+              partnerAvatarUrl: null,
+              offerTitle: "Aurora winter stay",
+              collaborationStatus: "pending",
+              lastMessageContent: "Welcome",
+              lastMessageAt: "2026-07-22T09:00:00.000Z",
+              unreadCount: "1",
+              sortAt: "2026-07-22T09:00:00.000Z",
+            },
+            {
+              collaborationId: "collab_001",
+              side: "creator",
+              partnerName: "Hotel Aurora",
+              partnerAvatarUrl: null,
+              offerTitle: "Aurora autumn stay",
+              collaborationStatus: "active",
+              lastMessageContent: null,
+              lastMessageAt: null,
+              unreadCount: "0",
+              sortAt: "2026-07-21T09:00:00.000Z",
+            },
+          ],
+        };
+      },
+      async end() {},
+    };
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://test",
+      pool: pool as MarketplaceCollaborationReadPool,
+    });
+
+    const page = await repository.listConversations({
+      context: creatorRequestContext(),
+      side: "creator",
+      filters: { limit: 1, search: "Aurora_100%" },
+    });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toEqual(expect.any(String));
+    expect(queries[0]?.text).toContain("ILIKE $2 ESCAPE '\\'");
+    expect(queries[0]?.text).toContain(
+      'ORDER BY COALESCE(last_message."lastMessageAt", collaboration.updated_at) DESC',
+    );
+    expect(queries[0]?.values).toEqual([["creator_profile_001"], "%Aurora\\_100\\%%", 2]);
+  });
+
+  it("updates only unread messages sent by the other collaboration side", async () => {
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values: readonly unknown[] = []) {
+        queries.push({ text, values });
+        if (text.includes("FROM marketplace.collaborations collaboration")) {
+          return { rows: [{ id: "collaboration_internal_001", propertyId: "property_001" }] };
+        }
+        if (text.startsWith("WITH read_cursor AS")) {
+          return { rows: [{ cursorFound: true }] };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      },
+      async end() {},
+    };
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://test",
+      pool: pool as MarketplaceCollaborationReadPool,
+    });
+
+    await expect(
+      repository.markMessagesRead?.({
+        context: creatorRequestContext(),
+        collaborationId: "collab_001",
+        side: "creator",
+        readThrough: {
+          createdAt: "2026-07-21T10:15:00.000Z",
+          messageId: "00000000-0000-4000-8000-000000000041",
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(queries[1]?.text).toContain("AND message.sender_type <> $3");
+    expect(queries[1]?.text).toContain(
+      "(message.created_at, message.id) <= (read_cursor.created_at, read_cursor.id)",
+    );
+    expect(queries[1]?.values).toEqual([
+      "collaboration_internal_001",
+      "property_001",
+      "creator",
+      "2026-07-21T10:15:00.000Z",
+      "00000000-0000-4000-8000-000000000041",
+    ]);
   });
 });
 
@@ -1507,7 +1997,7 @@ function createCollaborationRepository(
       return collaborationRead();
     },
     async listConversations() {
-      return [];
+      return conversationPage();
     },
     async listMessages({ collaborationId }) {
       return {
@@ -1585,6 +2075,10 @@ function collaborationRead(): MarketplaceCollaborationRead {
       profileId: "creator_profile_001",
       displayName: "Ari Creator",
       avatarUrl: null,
+      location: "Berlin, Germany",
+      portfolioUrl: "https://ari.example.com",
+      creatorType: "travel",
+      platforms: [],
     },
     hotel: {
       side: "hotel",
@@ -1611,6 +2105,15 @@ function collaborationRead(): MarketplaceCollaborationRead {
     lastMessageAt: null,
     createdAt: "2026-06-12T12:00:00.000Z",
     updatedAt: "2026-06-12T12:00:00.000Z",
+  };
+}
+
+function conversationPage() {
+  return {
+    contractVersion: MARKETPLACE_COLLABORATION_READS_CONTRACT_VERSION,
+    items: [],
+    nextCursor: null,
+    hasMore: false,
   };
 }
 
@@ -1697,7 +2200,7 @@ function createCreatorApplicationPool(
         options.offerStatus === "pending" && text.includes("offer_status = 'verified'");
       const crossTenantHotelOffer =
         options.hotelOfferOrganizationMatches === false &&
-        text.includes("AND organization_id::text");
+        text.includes("AND offer.organization_id::text");
       rows =
         creatorCannotSeePending || crossTenantHotelOffer
           ? []
@@ -1752,6 +2255,54 @@ function createCreatorApplicationPool(
   };
 }
 
+function creatorRequestContext(
+  overrides: { organizationId?: string; creatorProfileId?: string } = {},
+): RequestContext {
+  return {
+    actor: {
+      internalUserId: "user_creator",
+      providerIdentity: {
+        provider: "workos",
+        providerUserId: "workos_creator_user",
+        providerOrganizationId: "workos_creator_org",
+      },
+      email: "creator@example.com",
+      status: "active",
+    },
+    selectedOrganization: {
+      organizationId: overrides.organizationId ?? "org_creator",
+      workosOrgId: "workos_creator_org",
+      kind: "creator_workspace",
+      status: "active",
+    },
+    membership: {
+      membershipId: "membership_creator",
+      status: "active",
+      roleKey: "creator_owner",
+      permissions: ["marketplace.collaboration.write"],
+      workosMembershipId: "membership_workos_creator",
+      workosRoleSlugs: ["creator_owner"],
+    },
+    linkedResources: [
+      {
+        product: "marketplace",
+        resourceType: "creator_profile",
+        resourceId: overrides.creatorProfileId ?? "creator_profile_001",
+        relationship: "owner",
+        status: "active",
+      },
+    ],
+    entitlements: [],
+    locale: "en",
+    currency: "EUR",
+    audit: {
+      requestId: "request_creator_application",
+      source: "web",
+      receivedAt: "2026-07-21T10:00:00.000Z",
+    },
+  };
+}
+
 function creatorApplicationRow() {
   return {
     collaborationId: "collaboration-target-001",
@@ -1785,6 +2336,10 @@ function creatorApplicationRow() {
     preferredDateFrom: null,
     preferredDateTo: null,
     preferredMonths: [],
+    applicationMessage: "My audience is a strong match.",
+    creatorConsent: true,
+    creatorAgreedAt: "2026-07-21T10:05:00.000Z",
+    hotelAgreedAt: null,
     deliverables: [],
     lastMessageAt: null,
     createdAt: "2026-07-21T08:00:00.000Z",
@@ -1853,6 +2408,12 @@ function createChatAttachmentPool(initialMessage: Record<string, unknown> | null
     insertedContent: null as string | null,
     async query(text: string, values: readonly unknown[] = []) {
       calls.push({ text, values });
+      if (text.includes("FROM platform.idempotency_keys")) {
+        return { rows: [] };
+      }
+      if (text.includes("INSERT INTO platform.idempotency_keys")) {
+        return { rows: [{ id: "idempotency-message-001" }] };
+      }
       if (text.includes("INSERT INTO marketplace.marketplace_chat_messages")) {
         pool.insertedMetadata = JSON.parse(String(values[6])) as Record<string, unknown>;
         pool.insertedContent = String(values[5]);
@@ -1894,6 +2455,12 @@ function createChatAttachmentPool(initialMessage: Record<string, unknown> | null
         return { rows: message ? [message] : [] };
       }
       return { rows: [] };
+    },
+    async connect() {
+      return {
+        query: pool.query,
+        release() {},
+      };
     },
     async end() {},
   };

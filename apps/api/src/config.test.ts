@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "./config.js";
 
-const completeRequiredCreatorPhotoEnv = {
-  CREATOR_PROFILE_PHOTO_REQUIRED: "true",
+const completeCreatorMarketplaceEnv = {
   TARGET_DATABASE_URL: "postgresql://target-db",
   AUTH_DATABASE_URL: "postgresql://auth-db",
   WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
@@ -15,11 +14,7 @@ const completeRequiredCreatorPhotoEnv = {
 };
 
 const completeCreatorPlatformConnectionEnv = {
-  TARGET_DATABASE_URL: "postgresql://target-db",
-  AUTH_DATABASE_URL: "postgresql://auth-db",
-  WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
-  WORKOS_ISSUER: "https://api.workos.com",
-  WORKOS_AUDIENCE: "client",
+  ...completeCreatorMarketplaceEnv,
 };
 
 describe("api config", () => {
@@ -50,6 +45,9 @@ describe("api config", () => {
       WORKOS_ISSUER: "https://api.workos.com",
       WORKOS_AUDIENCE: "client",
       TARGET_DATABASE_URL: "postgresql://user:pass@target-db:5432/target?sslmode=require",
+      PLATFORM_MEDIA_BUCKET: "vayada-media-staging",
+      PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.staging.vayada.com",
+      PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
       BOOKING_DATABASE_URL: "postgresql://user:pass@booking-db:5432/booking?sslmode=require",
       BOOKING_RESERVATIONS_READ_DATABASE_URL:
         "postgresql://user:pass@reservations-db:5432/reservations?sslmode=require",
@@ -228,7 +226,6 @@ describe("api config", () => {
       PUBLIC_BOOKABILITY_SOURCE: "target",
       BOOKING_SETTINGS_SOURCE: "target",
       BOOKING_RESERVATIONS_SOURCE: "target",
-      MARKETPLACE_DISCOVERY_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -243,14 +240,13 @@ describe("api config", () => {
       publicBookabilitySource: "target",
       bookingSettingsSource: "target",
       bookingReservationsSource: "target",
-      marketplaceDiscoverySource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
       bookingCheckoutCommandSource: "target",
     });
   });
 
-  it("loads next API runtime with explicit disabled target-only surfaces", () => {
+  it("loads next API runtime with an explicitly disabled PMS surface", () => {
     const config = loadConfig({
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
@@ -259,13 +255,11 @@ describe("api config", () => {
       PUBLIC_BOOKABILITY_SOURCE: "target",
       BOOKING_SETTINGS_SOURCE: "target",
       BOOKING_RESERVATIONS_SOURCE: "target",
-      MARKETPLACE_DISCOVERY_SOURCE: "disabled",
       PMS_OPERATIONS_SOURCE: "disabled",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
     });
 
-    expect(config.marketplaceDiscoverySource).toBe("disabled");
     expect(config.pmsOperationsSource).toBe("disabled");
   });
 
@@ -279,7 +273,6 @@ describe("api config", () => {
         PUBLIC_BOOKABILITY_SOURCE: "target",
         BOOKING_SETTINGS_SOURCE: "target",
         BOOKING_RESERVATIONS_SOURCE: "target",
-        MARKETPLACE_DISCOVERY_SOURCE: "target",
         PMS_OPERATIONS_SOURCE: "target",
         FINANCE_SOURCE: "target",
         BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -461,38 +454,6 @@ describe("api config", () => {
     ).toThrow("BOOKING_WEB_EVENT_SINK must be one of: disabled, target");
   });
 
-  it("keeps marketplace discovery disabled by default", () => {
-    expect(loadConfig({}).marketplaceDiscoverySource).toBe("disabled");
-  });
-
-  it("loads target marketplace discovery config without the legacy marketplace DB", () => {
-    expect(
-      loadConfig({
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        MARKETPLACE_DISCOVERY_SOURCE: "target",
-      }),
-    ).toMatchObject({
-      targetDatabaseUrl: "postgresql://target-db",
-      marketplaceDiscoverySource: "target",
-    });
-  });
-
-  it("requires target database config when marketplace discovery uses the target source", () => {
-    expect(() =>
-      loadConfig({
-        MARKETPLACE_DISCOVERY_SOURCE: "target",
-      }),
-    ).toThrow("TARGET_DATABASE_URL is required when MARKETPLACE_DISCOVERY_SOURCE=target");
-  });
-
-  it("rejects unsupported marketplace discovery source config", () => {
-    expect(() =>
-      loadConfig({
-        MARKETPLACE_DISCOVERY_SOURCE: "legacy",
-      }),
-    ).toThrow("MARKETPLACE_DISCOVERY_SOURCE must be one of: disabled, target");
-  });
-
   it("keeps marketplace admin legacy superadmin fallback disabled by default", () => {
     expect(loadConfig({}).marketplaceAdminLegacySuperadminFallbackEnabled).toBe(false);
     expect(
@@ -502,34 +463,18 @@ describe("api config", () => {
     ).toBe(true);
   });
 
-  it("keeps creator profile photos optional unless explicitly enabled", () => {
-    expect(loadConfig({}).creatorProfilePhotoRequired).toBe(false);
-    expect(loadConfig(completeRequiredCreatorPhotoEnv).creatorProfilePhotoRequired).toBe(true);
-  });
-
-  it("rejects required creator photos when any durable-media prerequisite is absent", () => {
-    const incompleteEnvironments = [
-      { ...completeRequiredCreatorPhotoEnv, TARGET_DATABASE_URL: undefined },
-      {
-        ...completeRequiredCreatorPhotoEnv,
-        AUTH_DATABASE_URL: undefined,
-        WORKOS_JWKS_URL: undefined,
-        WORKOS_ISSUER: undefined,
-        WORKOS_AUDIENCE: undefined,
-      },
-      {
-        ...completeRequiredCreatorPhotoEnv,
+  it("requires durable media whenever target Marketplace and auth make the server creator-capable", () => {
+    expect(loadConfig(completeCreatorMarketplaceEnv).platformMediaServing).toBeDefined();
+    expect(() =>
+      loadConfig({
+        ...completeCreatorMarketplaceEnv,
         PLATFORM_MEDIA_BUCKET: undefined,
         PLATFORM_MEDIA_CDN_BASE_URL: undefined,
         PLATFORM_MEDIA_CDN_ORIGIN_HOST: undefined,
-      },
-    ];
-
-    for (const env of incompleteEnvironments) {
-      expect(() => loadConfig(env)).toThrow(
-        "CREATOR_PROFILE_PHOTO_REQUIRED=true requires TARGET_DATABASE_URL, complete auth config, and complete PLATFORM_MEDIA_* config",
-      );
-    }
+      }),
+    ).toThrow(
+      "Target Marketplace with complete auth requires complete PLATFORM_MEDIA_* config because creator profile photos are required",
+    );
   });
 
   it("keeps PMS operations routes disabled by default", () => {
@@ -763,10 +708,10 @@ describe("api config", () => {
     ).toBeUndefined();
   });
 
-  it("rejects partial platform media config when creator photos are required", () => {
+  it("rejects partial platform media config for a creator-capable server", () => {
     expect(() =>
       loadConfig({
-        ...completeRequiredCreatorPhotoEnv,
+        ...completeCreatorMarketplaceEnv,
         PLATFORM_MEDIA_BUCKET: undefined,
         PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.vayada.com",
         PLATFORM_MEDIA_CDN_ORIGIN_HOST: undefined,

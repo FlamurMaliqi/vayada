@@ -442,7 +442,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
     } catch (error) {
       const mapped = mapWorkOSAuthError(error);
-      await sendVerificationEmailForAuthState(options, request, mapped);
       await recordPasswordLoginFailure(options, request, parsed.surface, mapped.state);
       if (mapped.state === "auth_failed") {
         request.log.error({ err: error }, "WorkOS password authentication failed");
@@ -920,12 +919,18 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionResponse(reply, error, readCsrfToken(request));
+        return sendOrganizationSelectionSessionResponse(
+          reply,
+          session,
+          error,
+          surfacePolicy,
+          options,
+        );
       }
       return reply.code(403).send(toAuthError(error));
     }
     const setCookieHeaders = [
-      ...(resolution.session.sealedSession !== session.sealedSession
+      ...(resolution.session.sealedSession !== sealedSession
         ? [
             serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
               maxAge: 60 * 60 * 24 * 7,
@@ -986,7 +991,13 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionResponse(reply, error, readCsrfToken(request));
+        return sendOrganizationSelectionSessionResponse(
+          reply,
+          session,
+          error,
+          surfacePolicy,
+          options,
+        );
       }
       return reply.code(403).send(toAuthError(error));
     }
@@ -1032,6 +1043,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!session) {
       return reply.code(401).send({ error: "invalid_session" });
     }
+    persistRefreshedSessionCookie(reply, sealedSession, session, options);
 
     let baseResolution: IdentityResolution;
     try {
@@ -1044,6 +1056,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
+    persistRefreshedSessionCookie(reply, sealedSession, baseResolution.session, options);
 
     if (baseResolution.organizationKind) {
       return reply.send(
@@ -1129,7 +1142,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     const csrfToken = readCsrfToken(request) ?? randomBytes(24).toString("base64url");
     reply.header(
       "set-cookie",
-      authSessionCookieHeaders(selectedSession, csrfToken, surfacePolicy, options),
+      authSessionCookieHeaders(resolution.session, csrfToken, surfacePolicy, options),
     );
     return reply.send(
       toSessionResponse(
@@ -1162,6 +1175,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!session) {
       return reply.code(401).send({ error: "invalid_session" });
     }
+    persistRefreshedSessionCookie(reply, sealedSession, session, options);
 
     let resolution: IdentityResolution;
     try {
@@ -1175,6 +1189,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
+    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, options);
 
     let profilePictureUrl = parsed.profilePictureUrl;
     if (parsed.profilePictureMediaObjectId) {
@@ -1259,6 +1274,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     let logoutUrl = returnTo;
     if (sealedSession) {
       const session = await options.authKitClient.authenticateSession({ sealedSession });
+      const logoutSealedSession = session?.sealedSession ?? sealedSession;
       if (session) {
         const resolution = await resolveExistingIdentity(
           session,
@@ -1278,7 +1294,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         });
       }
       logoutUrl = await options.authKitClient.getLogoutUrl({
-        sealedSession,
+        sealedSession: logoutSealedSession,
         returnTo,
       });
     }
@@ -1348,24 +1364,6 @@ function sendEmailSendCooldownResponse(reply: FastifyReply, retryAfterSeconds: n
     state: "auth_failed",
     message: EMAIL_SEND_COOLDOWN_MESSAGE,
   });
-}
-
-async function sendVerificationEmailForAuthState(
-  options: AuthSessionRouteOptions,
-  request: FastifyRequest,
-  authState: { state: string; emailVerificationId?: string },
-): Promise<void> {
-  if (authState.state !== "email_verification_required" || !authState.emailVerificationId) {
-    return;
-  }
-
-  try {
-    await options.authKitClient.resendVerificationEmail({
-      emailVerificationId: authState.emailVerificationId,
-    });
-  } catch (error) {
-    request.log.warn({ err: error }, "WorkOS verification email delivery failed");
-  }
 }
 
 function parseSurface(value: string | undefined): AuthSurface {
@@ -2147,6 +2145,7 @@ function registerCompatibilityTokenRoute(
     if (!session) {
       return reply.code(401).send({ error: "invalid_session" });
     }
+    persistRefreshedSessionCookie(reply, sealedSession, session, options);
     let resolution: IdentityResolution;
     try {
       resolution = await resolveExistingIdentity(
@@ -2163,6 +2162,7 @@ function registerCompatibilityTokenRoute(
       }
       return reply.code(403).send(toAuthError(error));
     }
+    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, options);
     const expiresIn = 15 * 60;
     const resourceScope = resolution.resourceScope
       ? { [resourceScopeKey(resolution.resourceScope)]: resolution.resourceScope.resourceIds }
@@ -2656,6 +2656,23 @@ function authSessionCookieHeaders(
     }),
     ...selectedOrganizationCookieHeaders(session, surfacePolicy, options),
   ];
+}
+
+function persistRefreshedSessionCookie(
+  reply: FastifyReply,
+  requestSealedSession: string,
+  session: AuthKitSession,
+  options: AuthSessionRouteOptions,
+): void {
+  if (session.sealedSession === requestSealedSession) return;
+  reply.header(
+    "set-cookie",
+    serializeCookie(SESSION_COOKIE, session.sealedSession, {
+      maxAge: 60 * 60 * 24 * 7,
+      secure: options.cookieSecure,
+      domain: options.cookieDomain,
+    }),
+  );
 }
 
 function selectedOrganizationCookieHeaders(

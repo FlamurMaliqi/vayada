@@ -2,13 +2,11 @@
  * Authentication service
  */
 
-import { apiClient, ApiErrorResponse } from "../api/client";
-import type { LoginRequest, LoginResponse } from "@/lib/types";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { ApiErrorResponse } from "../api/client";
+import type { LoginRequest } from "@/lib/types";
 import {
   clearAuthData,
   currentUserType,
-  getAuthBearerToken,
   getAuthCsrfToken,
   getAuthSessionUser,
   hasAuthenticatedSession,
@@ -23,8 +21,6 @@ import {
 } from "./sessionStore";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 
-const TOKEN_KEY = "access_token";
-const EXPIRES_AT_KEY = "token_expires_at";
 const AUTH_SURFACE = "marketplace-web";
 
 type CompatibilityTokenResponse = {
@@ -175,58 +171,24 @@ async function setAuthenticatedSession(
   session: AuthKitSessionResponse,
   signal?: AbortSignal,
 ): Promise<void> {
-  const compatibilityToken =
-    isCompatibilityTokenEnabled() && session.csrfToken
-      ? await authFetch<CompatibilityTokenResponse>("/auth/compat/marketplace-web-token", {
-          method: "POST",
-          headers: { "x-vayada-csrf": session.csrfToken },
-          signal,
-        })
-      : null;
-
   setAuthKitSession(session);
-  if (compatibilityToken) {
+  if (!isCompatibilityTokenEnabled() || !session.csrfToken) return;
+
+  try {
+    const compatibilityToken = await authFetch<CompatibilityTokenResponse>(
+      "/auth/compat/marketplace-web-token",
+      {
+        method: "POST",
+        headers: { "x-vayada-csrf": session.csrfToken },
+        signal,
+      },
+    );
     setLegacyCompatibilityToken(compatibilityToken.accessToken, compatibilityToken.expiresIn);
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) {
+      console.warn("Marketplace compatibility token could not be refreshed", error);
+    }
   }
-}
-
-/**
- * Clear all auth data from localStorage
- */
-function clearLegacyAuthData(): void {
-  if (typeof window === "undefined") return;
-
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(EXPIRES_AT_KEY);
-  localStorage.removeItem(STORAGE_KEYS.USER_ID);
-  localStorage.removeItem(STORAGE_KEYS.USER_EMAIL);
-  localStorage.removeItem(STORAGE_KEYS.USER_NAME);
-  localStorage.removeItem(STORAGE_KEYS.USER_TYPE);
-  localStorage.removeItem(STORAGE_KEYS.USER_STATUS);
-  localStorage.removeItem(STORAGE_KEYS.IS_SUPERADMIN);
-  localStorage.removeItem(STORAGE_KEYS.USER);
-  localStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "false");
-  localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
-  localStorage.setItem(STORAGE_KEYS.HAS_PROFILE, "false");
-}
-
-/**
- * Get token if not expired
- */
-function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-
-  const token = localStorage.getItem(TOKEN_KEY);
-  const expiresAt = localStorage.getItem(EXPIRES_AT_KEY);
-
-  if (!token || !expiresAt) return null;
-
-  if (Date.now() >= parseInt(expiresAt)) {
-    clearLegacyAuthData();
-    return null;
-  }
-
-  return token;
 }
 
 export const authService = {
@@ -405,37 +367,6 @@ export const authService = {
     clearAuthData();
   },
 
-  /**
-   * Get current user
-   */
-  getCurrentUser: async () => {
-    try {
-      if (isAuthKitLoginEnabled()) {
-        return await authService.refreshSession();
-      }
-      return await apiClient.get<LoginResponse>("/auth/me");
-    } catch (error) {
-      if (error instanceof ApiErrorResponse) {
-        throw error;
-      }
-      throw new Error("Failed to get current user");
-    }
-  },
-
-  /**
-   * Check if user is logged in (has valid token)
-   */
-  isLoggedIn: (): boolean => {
-    return hasAuthenticatedSession() || getToken() !== null;
-  },
-
-  /**
-   * Get token if available and not expired
-   */
-  getToken: (): string | null => {
-    return getAuthBearerToken() ?? getToken();
-  },
-
   getUserType: () => currentUserType(),
 
   getSessionUser: () => getAuthSessionUser(),
@@ -513,7 +444,7 @@ export const authService = {
         setPendingOrganizationSelection(response);
         return response;
       }
-      setAuthKitSession(response);
+      await setAuthenticatedSession(response);
       clearPendingEmailVerification();
       return response;
     } catch (error) {

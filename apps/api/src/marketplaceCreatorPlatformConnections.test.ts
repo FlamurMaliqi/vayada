@@ -236,7 +236,7 @@ describe("marketplace creator platform connection routes", () => {
     });
     const vault = createMemoryProviderCredentialVault();
     const adapter = creatorPlatformAdapter("instagram");
-    app = buildCreatorPlatformApp(repository, [adapter], vault, false, undefined, true);
+    app = buildCreatorPlatformApp(repository, [adapter], vault);
 
     const response = await app.inject({
       method: "GET",
@@ -255,7 +255,6 @@ describe("marketplace creator platform connection routes", () => {
     expect(redirect.searchParams.get("connection_id")).toBe("connection-1");
     expect(repository.completeConnection).toHaveBeenCalledWith(
       expect.objectContaining({
-        profilePhotoRequired: true,
         projection: expect.objectContaining({
           engagementRate: 3,
           importedFields: expect.arrayContaining([
@@ -923,7 +922,6 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
           credentialRef: finalCredentialRef,
           grant: creatorGrant("instagram"),
           projection,
-          profilePhotoRequired: false,
         }),
       ).rejects.toThrow("no longer has access");
       await client.query(`UPDATE identity.users SET status = 'active' WHERE id = $1`, [
@@ -934,7 +932,6 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
         credentialRef: finalCredentialRef,
         grant: creatorGrant("instagram"),
         projection,
-        profilePhotoRequired: false,
       });
 
       expect(connection).toMatchObject({
@@ -983,7 +980,6 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
           credentialRef: finalCredentialRef,
           grant: creatorGrant("instagram"),
           projection,
-          profilePhotoRequired: false,
         }),
       ).rejects.toThrow("authorization is no longer pending");
 
@@ -1079,7 +1075,6 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
         credentialRef: targetFinalCredentialRef,
         grant: creatorGrant("instagram"),
         projection: integrationProjection(true, "integration-manual-account"),
-        profilePhotoRequired: false,
       });
       expect(attached.platformId).toBe(manualPlatformId);
       const attachedPlatform = await client.query<{ countries: unknown; followers: number }>(
@@ -1155,7 +1150,6 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
           credentialRef: reboundFinalCredentialRef,
           grant: creatorGrant("instagram"),
           projection: integrationProjection(false, "different-instagram-account"),
-          profilePhotoRequired: false,
         }),
       ).rejects.toThrow("already connected");
       const preservedIdentity = await client.query<{ externalAccountId: string }>(
@@ -1207,7 +1201,6 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
           authorization: cleanupFencedAuthorization!,
           credentialRef: cleanupFencedCredentialRef,
           grant: creatorGrant("youtube"),
-          profilePhotoRequired: false,
           projection: {
             ...projection,
             account: account("youtube", "cleanup-fenced-youtube-account"),
@@ -1387,7 +1380,6 @@ function buildCreatorPlatformApp(
   credentialVault = createMemoryProviderCredentialVault(),
   logger: false | { level: string; stream: { write(line: string): void } } = false,
   callbackBaseUrl = "https://creator.api.example",
-  profilePhotoRequired = false,
 ): FastifyInstance {
   return buildApp({
     logger,
@@ -1401,7 +1393,6 @@ function buildCreatorPlatformApp(
       webReturnUrl: "https://marketplace.example/profile/complete",
       credentialSecretPrefix: "vayada/test",
     },
-    creatorProfilePhotoRequired: profilePhotoRequired,
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(),

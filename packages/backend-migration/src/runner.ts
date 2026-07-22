@@ -70,10 +70,18 @@ export function computeChecksum(content: string): string {
 export async function discoverMigrations(dir: string): Promise<MigrationFile[]> {
   const entries = await readdir(dir);
   const files: MigrationFile[] = [];
+  const filenameByVersion = new Map<string, string>();
 
   for (const filename of entries) {
     const match = MIGRATION_FILENAME_RE.exec(filename);
     if (match) {
+      const existingFilename = filenameByVersion.get(match[1]);
+      if (existingFilename) {
+        throw new Error(
+          `Duplicate migration version ${match[1]}: ${existingFilename} and ${filename}`,
+        );
+      }
+      filenameByVersion.set(match[1], filename);
       files.push({
         version: match[1],
         name: match[2],

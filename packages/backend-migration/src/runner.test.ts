@@ -66,6 +66,13 @@ describe("discoverMigrations", () => {
     expect(files[0].filename).toBe("0001_identity.sql");
   });
 
+  it("rejects duplicate migration versions", async () => {
+    await writeFile(join(tmpDir, "0001_identity.sql"), "SELECT 1;");
+    await writeFile(join(tmpDir, "0001_catalog.sql"), "SELECT 2;");
+
+    await expect(discoverMigrations(tmpDir)).rejects.toThrow("Duplicate migration version 0001");
+  });
+
   it("exposes version, name, filename, and path on each result", async () => {
     await writeFile(join(tmpDir, "0001_identity.sql"), "SELECT 1;");
 
@@ -258,6 +265,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     expect(result.applied).toContain("0015");
     expect(result.applied).toContain("0016");
     expect(result.applied).toContain("0024");
+    expect(result.applied).toContain("0036");
+    expect(result.applied).toContain("0037");
+    expect(result.applied).toContain("0038");
 
     const verifyClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await verifyClient.connect();
@@ -1134,6 +1144,32 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "trips",
       ]);
 
+      const { rows: marketplaceTripGrants } = await verifyClient.query<{
+        key: string;
+        organization_kind: string;
+        role_key: string;
+      }>(
+        `SELECT catalog.key, grant_row.organization_kind, grant_row.role_key
+         FROM identity.permission_catalog catalog
+         JOIN identity.role_permission_grants grant_row
+           ON grant_row.permission_key = catalog.key
+         WHERE catalog.key IN ('marketplace.trip.read', 'marketplace.trip.manage')
+         ORDER BY catalog.key`,
+      );
+
+      expect(marketplaceTripGrants).toEqual([
+        {
+          key: "marketplace.trip.manage",
+          organization_kind: "creator_workspace",
+          role_key: "creator_owner",
+        },
+        {
+          key: "marketplace.trip.read",
+          organization_kind: "creator_workspace",
+          role_key: "creator_owner",
+        },
+      ]);
+
       const { rows: creatorEngagementColumns } = await verifyClient.query<{
         table_name: string;
         numeric_precision: number;
@@ -1176,8 +1212,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       );
       expect(creatorCompletionFunctions).toEqual([
         {
-          argument_count: 3,
-          default_count: 1,
+          argument_count: 2,
+          default_count: 0,
           language: "sql",
           result: "boolean",
           volatility: "s",
@@ -1625,18 +1661,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       );
       const { rows: completedProfiles } = await verifyClient.query<{
         complete: boolean;
-        photo_complete: boolean;
         wrong_organization_complete: boolean;
       }>(
         `SELECT
            marketplace.creator_profile_is_complete($1, $2) AS complete,
-           marketplace.creator_profile_is_complete($1, $2, TRUE) AS photo_complete,
            marketplace.creator_profile_is_complete($1, $3) AS wrong_organization_complete`,
         [creatorProfileId, creatorOrganizationId, wrongOrganizationId],
       );
-      expect(completedProfiles).toEqual([
-        { complete: true, photo_complete: false, wrong_organization_complete: false },
-      ]);
+      expect(completedProfiles).toEqual([{ complete: false, wrong_organization_complete: false }]);
 
       await verifyClient.query(
         `UPDATE marketplace.creator_profiles
@@ -1649,7 +1681,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         [creatorProfileId, creatorOrganizationId],
       );
       const { rows: unownedPhotoProfiles } = await verifyClient.query<{ complete: boolean }>(
-        `SELECT marketplace.creator_profile_is_complete($1, $2, TRUE) AS complete`,
+        `SELECT marketplace.creator_profile_is_complete($1, $2) AS complete`,
         [creatorProfileId, creatorOrganizationId],
       );
       expect(unownedPhotoProfiles).toEqual([{ complete: false }]);
@@ -1677,7 +1709,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
          )`,
       );
       const { rows: photoCompleteProfiles } = await verifyClient.query<{ complete: boolean }>(
-        `SELECT marketplace.creator_profile_is_complete($1, $2, TRUE) AS complete`,
+        `SELECT marketplace.creator_profile_is_complete($1, $2) AS complete`,
         [creatorProfileId, creatorOrganizationId],
       );
       expect(photoCompleteProfiles).toEqual([{ complete: true }]);
@@ -1688,11 +1720,11 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
            resource_product, resource_type, resource_id, lifecycle_status,
            content_type, public_approved, created_by_user_id
          ) VALUES (
-           '99999999-8888-4888-8888-999999999992', 'identity-media',
-           'identity/shared-creator.jpg', 'public', 'identity.user.profile_image',
-           $1, 'platform', 'user_profile', $2, 'active', 'image/jpeg', TRUE, $2
+           '99999999-8888-4888-8888-999999999992', 'creator-media',
+           'user-profiles/owned.jpg', 'public', 'identity.user.profile_image',
+           $1, 'platform', 'user_profile', $2::text, 'active', 'image/jpeg', TRUE, $2::uuid
          )`,
-        [hotelOrganizationId, creatorUserId],
+        [creatorOrganizationId, creatorUserId],
       );
       await verifyClient.query(
         `INSERT INTO platform.media_variants (
@@ -1700,13 +1732,20 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
            public_cdn_url
          ) VALUES (
            '99999999-8888-4888-8888-999999999992', 'original_safe', 'public',
-           'identity/shared-creator.jpg', 'image/jpeg',
-           'https://images.example.test/shared-creator.jpg'
+           'user-profiles/owned.jpg', 'image/jpeg',
+           'https://images.example.test/identity-owner.jpg'
          )`,
       );
       await verifyClient.query(
+        `UPDATE identity.users
+         SET profile_picture_media_object_id = '99999999-8888-4888-8888-999999999992',
+             profile_picture_url = 'https://images.example.test/identity-owner.jpg'
+         WHERE id = $1`,
+        [creatorUserId],
+      );
+      await verifyClient.query(
         `UPDATE marketplace.creator_profiles
-         SET profile_picture_url = 'https://images.example.test/shared-creator.jpg',
+         SET profile_picture_url = 'https://images.example.test/identity-owner.jpg',
              profile_metadata = jsonb_build_object(
                'profilePictureMediaObjectId',
                '99999999-8888-4888-8888-999999999992'
@@ -1714,13 +1753,13 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
          WHERE id = $1 AND organization_id = $2`,
         [creatorProfileId, creatorOrganizationId],
       );
-      const { rows: sharedIdentityPhotoProfiles } = await verifyClient.query<{
+      const { rows: identityPhotoCompleteProfiles } = await verifyClient.query<{
         complete: boolean;
-      }>(`SELECT marketplace.creator_profile_is_complete($1, $2, TRUE) AS complete`, [
+      }>(`SELECT marketplace.creator_profile_is_complete($1, $2) AS complete`, [
         creatorProfileId,
         creatorOrganizationId,
       ]);
-      expect(sharedIdentityPhotoProfiles).toEqual([{ complete: true }]);
+      expect(identityPhotoCompleteProfiles).toEqual([{ complete: true }]);
 
       await verifyClient.query(
         `UPDATE marketplace.creator_platforms

@@ -132,6 +132,24 @@ describe("marketplace hotel discovery", () => {
     ).toEqual(["text-fit", "platform-fit", "newest"]);
   });
 
+  it("uses compensation-option platforms and follower eligibility for relevance", () => {
+    const creator = creatorWithPlatforms("Instagram");
+    const noFit = hotel({
+      id: "no-fit",
+      createdAt: "2026-07-20",
+      offerings: [{ ...compensation("Paid", 2_000), platforms: ["TikTok"] }],
+    });
+    const platformFit = hotel({
+      id: "platform-fit",
+      createdAt: "2026-07-01",
+      offerings: [{ ...compensation("Free Stay"), platforms: ["Instagram"] }],
+    });
+
+    expect(
+      sortMarketplaceHotels([noFit, platformFit], "relevance", "", creator).map(({ id }) => id),
+    ).toEqual(["platform-fit", "no-fit"]);
+  });
+
   it("uses newest then offer ID as deterministic relevance tie-breakers", () => {
     const older = hotel({ id: "older", createdAt: "2026-07-01" });
     const laterId = hotel({ id: "z-id", createdAt: "2026-07-20" });

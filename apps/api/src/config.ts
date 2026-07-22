@@ -48,7 +48,6 @@ export type AskIntelligenceEvidenceSource = "fixture" | "target";
 export type PublicHotelProfileSource = "legacy" | "target";
 export type BookingDomainResolutionSource = "legacy" | "target";
 export type PublicBookabilitySource = "legacy" | "target";
-export type MarketplaceDiscoverySource = "disabled" | "target";
 export type MarketplaceAdminSource = "disabled" | "target";
 export type BookingCheckoutCommandSource = "legacy_proxy" | "target";
 export type PmsOperationsSource = "disabled" | "target";
@@ -108,10 +107,8 @@ export type ApiConfig = {
   publicBookabilitySource: PublicBookabilitySource;
   bookingSettingsSource: "legacy" | "target";
   bookingReservationsReadDatabaseUrl?: string;
-  marketplaceDiscoverySource: MarketplaceDiscoverySource;
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
-  creatorProfilePhotoRequired: boolean;
   pmsOperationsSource: PmsOperationsSource;
   financeSource: FinanceSource;
   marketplaceDiscoveryAllowedOrigins: string[];
@@ -484,12 +481,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ["legacy", "target"],
     "legacy",
   );
-  const marketplaceDiscoverySource = readSourceEnv(
-    env,
-    "MARKETPLACE_DISCOVERY_SOURCE",
-    ["disabled", "target"],
-    "disabled",
-  );
   const marketplaceAdminSource = readSourceEnv(
     env,
     "MARKETPLACE_ADMIN_SOURCE",
@@ -535,9 +526,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
   const creatorPlatformConnections = loadCreatorPlatformConnectionsConfig(env);
-  const creatorProfilePhotoRequired = readBooleanEnv(env, "CREATOR_PROFILE_PHOTO_REQUIRED");
   const platformMediaServing = loadPlatformMediaServingConfig(env, {
-    incomplete: creatorProfilePhotoRequired ? "error" : "disabled",
+    incomplete: targetDatabaseUrl && auth ? "error" : "disabled",
   });
   assertNextApiRuntimeConfig(env, {
     apiRuntime,
@@ -546,16 +536,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     publicBookabilitySource,
     bookingSettingsSource,
     bookingReservationsSource,
-    marketplaceDiscoverySource,
     pmsOperationsSource,
     financeSource,
     bookingCheckoutCommandSource,
   });
   if (bookingSettingsSource === "target" && !targetDatabaseUrl) {
     throw new Error("TARGET_DATABASE_URL is required when BOOKING_SETTINGS_SOURCE=target");
-  }
-  if (marketplaceDiscoverySource === "target" && !targetDatabaseUrl) {
-    throw new Error("TARGET_DATABASE_URL is required when MARKETPLACE_DISCOVERY_SOURCE=target");
   }
   if (marketplaceAdminSource === "target" && !targetDatabaseUrl) {
     throw new Error("TARGET_DATABASE_URL is required when MARKETPLACE_ADMIN_SOURCE=target");
@@ -592,9 +578,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (bookingCheckoutCommandSource === "target" && !targetDatabaseUrl) {
     throw new Error("BOOKING_CHECKOUT_COMMAND_SOURCE=target requires TARGET_DATABASE_URL");
   }
-  if (creatorProfilePhotoRequired && (!targetDatabaseUrl || !auth || !platformMediaServing)) {
+  if (targetDatabaseUrl && auth && !platformMediaServing) {
     throw new Error(
-      "CREATOR_PROFILE_PHOTO_REQUIRED=true requires TARGET_DATABASE_URL, complete auth config, and complete PLATFORM_MEDIA_* config",
+      "Target Marketplace with complete auth requires complete PLATFORM_MEDIA_* config because creator profile photos are required",
     );
   }
   if (creatorPlatformConnections && (!targetDatabaseUrl || !auth)) {
@@ -618,13 +604,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     publicBookabilitySource,
     bookingSettingsSource,
     bookingReservationsReadDatabaseUrl,
-    marketplaceDiscoverySource,
     marketplaceAdminSource,
     marketplaceAdminLegacySuperadminFallbackEnabled: readBooleanEnv(
       env,
       "MARKETPLACE_ADMIN_LEGACY_SUPERADMIN_FALLBACK_ENABLED",
     ),
-    creatorProfilePhotoRequired,
     pmsOperationsSource,
     financeSource,
     marketplaceDiscoveryAllowedOrigins: readOptionalCsvEnv(
@@ -672,7 +656,6 @@ function assertNextApiRuntimeConfig(
     | "publicBookabilitySource"
     | "bookingSettingsSource"
     | "bookingReservationsSource"
-    | "marketplaceDiscoverySource"
     | "pmsOperationsSource"
     | "financeSource"
     | "bookingCheckoutCommandSource"
@@ -693,11 +676,6 @@ function assertNextApiRuntimeConfig(
     { key: "PUBLIC_BOOKABILITY_SOURCE", value: config.publicBookabilitySource },
     { key: "BOOKING_SETTINGS_SOURCE", value: config.bookingSettingsSource },
     { key: "BOOKING_RESERVATIONS_SOURCE", value: config.bookingReservationsSource },
-    {
-      key: "MARKETPLACE_DISCOVERY_SOURCE",
-      value: config.marketplaceDiscoverySource,
-      allowExplicitDisabled: true,
-    },
     {
       key: "PMS_OPERATIONS_SOURCE",
       value: config.pmsOperationsSource,

@@ -1,4 +1,7 @@
-import { setApiBearerTokenProvider } from "@vayada/marketplace-shared/api/client";
+import {
+  setApiBearerTokenProvider,
+  setVayadaApiBearerTokenProvider,
+} from "@vayada/marketplace-shared/api/client";
 
 export type AuthUser = {
   id: string;
@@ -18,9 +21,14 @@ const LEGACY_TOKEN_KEY = "access_token";
 const LEGACY_EXPIRES_AT_KEY = "token_expires_at";
 
 let authKitSession: AuthKitSessionResponse | null = null;
+let authKitAccessTokenExpiresAt: number | null = null;
+let authKitRefreshPromise: Promise<string | null> | null = null;
 let legacyCompatibilityToken: { token: string; expiresAt: number } | null = null;
 
 setApiBearerTokenProvider(() => getAuthBearerToken());
+setVayadaApiBearerTokenProvider((signal, forceRefresh) =>
+  getOrRefreshAuthKitAccessToken(signal, forceRefresh),
+);
 
 export function isAuthKitLoginEnabled(): boolean {
   return process.env.NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED !== "false";
@@ -32,6 +40,7 @@ export function isCompatibilityTokenEnabled(): boolean {
 
 export function setAuthKitSession(session: AuthKitSessionResponse): void {
   authKitSession = session;
+  authKitAccessTokenExpiresAt = readJwtExpiresAt(session.accessToken);
   if (typeof window === "undefined") return;
   localStorage.setItem("isLoggedIn", "true");
   localStorage.setItem("userId", session.user.id);
@@ -85,6 +94,8 @@ export function setLegacyPasswordSession(input: {
 
 export function clearAuthData(): void {
   authKitSession = null;
+  authKitAccessTokenExpiresAt = null;
+  authKitRefreshPromise = null;
   legacyCompatibilityToken = null;
   if (typeof window === "undefined") return;
 
@@ -102,6 +113,30 @@ export function clearAuthData(): void {
 
 export function getAuthKitAccessToken(): string | null {
   return authKitSession?.accessToken ?? null;
+}
+
+export async function getOrRefreshAuthKitAccessToken(
+  signal?: AbortSignal,
+  forceRefresh = false,
+): Promise<string | null> {
+  const accessToken = getAuthKitAccessToken();
+  const expiresSoon =
+    authKitAccessTokenExpiresAt !== null && Date.now() >= authKitAccessTokenExpiresAt - 30_000;
+  if (accessToken && !forceRefresh && !expiresSoon) return accessToken;
+
+  if (authKitRefreshPromise) return authKitRefreshPromise;
+
+  authKitRefreshPromise = (async () => {
+    const { authService } = await import("./auth");
+    await authService.refreshSession(undefined, signal);
+    return getAuthKitAccessToken();
+  })();
+
+  try {
+    return await authKitRefreshPromise;
+  } finally {
+    authKitRefreshPromise = null;
+  }
 }
 
 export function getAuthCsrfToken(): string | null {
@@ -146,4 +181,18 @@ export function hasPlatformAccessMarker(): boolean {
   if (authKitSession) return true;
   if (typeof window === "undefined") return false;
   return localStorage.getItem("isSuperAdmin") === "true";
+}
+
+function readJwtExpiresAt(token: string): number | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+
+  try {
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const normalized = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const decoded = JSON.parse(atob(normalized)) as { exp?: unknown };
+    return typeof decoded.exp === "number" ? decoded.exp * 1000 : null;
+  } catch {
+    return null;
+  }
 }

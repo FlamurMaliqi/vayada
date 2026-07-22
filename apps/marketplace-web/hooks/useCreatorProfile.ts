@@ -8,6 +8,7 @@ import { transformCreatorProfile } from "@/components/profile/transforms";
 import { formatErrorForModal } from "./useErrorModal";
 import type { CreatorProfileStatus, CreatorType } from "@/lib/types";
 import type { Creator as ApiCreator } from "@/lib/types";
+import { sharedAccountProfileImageError } from "@vayada/product-onboarding";
 import type {
   ProfilePlatform,
   PlatformAgeGroup,
@@ -135,19 +136,33 @@ export function useCreatorProfile(
     if (!email || !email.includes("@")) {
       return;
     }
+    if (!phone.trim()) {
+      showError("Validation Error", "Phone number is required");
+      return;
+    }
 
     setIsSavingContact(true);
-    setTimeout(() => {
-      if (creatorProfile) {
-        setCreatorProfile({
-          ...creatorProfile,
-          email: email,
-          phone: phone,
-        });
-      }
+    try {
+      const updatedProfile = await creatorService.updateMyProfile({ phone: phone.trim() });
+      setCreatorProfile((current) =>
+        current
+          ? {
+              ...current,
+              email,
+              phone: updatedProfile.phone ?? phone.trim(),
+            }
+          : current,
+      );
       setIsEditingContact(false);
+    } catch (error) {
+      const detail = error instanceof ApiErrorResponse ? error.data.detail : null;
+      showError(
+        "Failed to Save Contact Details",
+        typeof detail === "string" ? detail : "Please try again.",
+      );
+    } finally {
       setIsSavingContact(false);
-    }, 500);
+    }
   };
 
   const validateCreatorEdit = (): string | null => {
@@ -177,7 +192,9 @@ export function useCreatorProfile(
       const platform = editFormData.platforms[i];
       if (
         !platform.name ||
-        !["Instagram", "TikTok", "YouTube", "Facebook", "Other"].includes(platform.name)
+        !["Instagram", "TikTok", "YouTube", "Facebook", "Blog", "X", "Other"].includes(
+          platform.name,
+        )
       ) {
         return `Platform ${i + 1}: Platform name is not supported`;
       }
@@ -237,7 +254,14 @@ export function useCreatorProfile(
 
         return {
           id: platform.id ?? null,
-          name: platform.name as "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Other",
+          name: platform.name as
+            | "Instagram"
+            | "TikTok"
+            | "YouTube"
+            | "Facebook"
+            | "Blog"
+            | "X"
+            | "Other",
           handle: platform.handle.trim(),
           ...(platform.profileUrl !== undefined
             ? { profileUrl: platform.profileUrl?.trim() || null }
@@ -270,8 +294,6 @@ export function useCreatorProfile(
       const originalPlatforms = creatorProfile.platforms.map(toPlatformUpdate);
       const platformsChanged = JSON.stringify(platforms) !== JSON.stringify(originalPlatforms);
 
-      const audienceSize = platforms.reduce((sum, p) => sum + p.followers, 0);
-
       let profilePictureUrl: string | undefined = undefined;
       let profilePictureMediaObjectId: string | undefined = undefined;
       if (creatorProfilePictureFile) {
@@ -303,13 +325,10 @@ export function useCreatorProfile(
       const updatePayload: CreatorUpdatePayload = {
         name: editFormData.name.trim(),
         location: editFormData.location.trim(),
-        short_description: editFormData.shortDescription.trim(),
-        creator_type: editFormData.creatorType,
-        ...(platformsChanged && { platforms, audience_size: audienceSize }),
-        ...(editFormData.portfolioLink &&
-          editFormData.portfolioLink.trim() && {
-            portfolio_link: editFormData.portfolioLink.trim(),
-          }),
+        shortDescription: editFormData.shortDescription.trim(),
+        creatorType: editFormData.creatorType,
+        portfolioLink: editFormData.portfolioLink.trim() || null,
+        ...(platformsChanged && { platforms }),
         ...(phone &&
           phone.trim() && {
             phone: phone.trim(),
@@ -319,12 +338,11 @@ export function useCreatorProfile(
         }),
         ...(profilePictureMediaObjectId && {
           profilePictureMediaObjectId,
-          profile_picture_media_object_id: profilePictureMediaObjectId,
         }),
       };
 
       const updatedProfile = await creatorService.updateMyProfile(
-        updatePayload as unknown as Partial<ApiCreator>,
+        updatePayload as Partial<ApiCreator>,
       );
 
       const responseWithSnakeCase = updatedProfile as ApiCreator & {
@@ -392,13 +410,9 @@ export function useCreatorProfile(
     if (!files || files.length === 0) return;
 
     const file = files[0];
-    if (!file.type.startsWith("image/")) {
-      showError("Invalid File Type", "Please select an image file");
-      return;
-    }
-
-    if (file.size > 20 * 1024 * 1024) {
-      showError("File Too Large", "Image must be less than 20MB");
+    const validationError = sharedAccountProfileImageError(file);
+    if (validationError) {
+      showError("Invalid Profile Photo", validationError);
       return;
     }
 

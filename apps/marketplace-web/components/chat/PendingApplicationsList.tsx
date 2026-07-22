@@ -111,25 +111,30 @@ export function PendingApplicationsList({
                   </div>
                   {userType === "hotel" ? (
                     <div className="flex items-center gap-2 text-xs text-gray-500 font-medium leading-none">
-                      <span>{request.followers}</span>
-                      <span>•</span>
-                      <span>{request.engagement}</span>
-                      <div className="flex items-center gap-1">
-                        {request.platforms && request.platforms.length > 0 ? (
-                          request.platforms.map((p: PlatformInfo) => (
-                            <PlatformIcon
-                              key={p.name}
-                              platform={(p.name || p.platform || "").toLowerCase()}
-                              className="w-3 h-3 text-gray-400"
-                            />
-                          ))
-                        ) : (
-                          <PlatformIcon
-                            platform={request.followersPlatform}
-                            className="w-3 h-3 text-gray-400"
-                          />
-                        )}
-                      </div>
+                      {request.followers || request.engagement || request.platforms.length > 0 ? (
+                        <>
+                          {request.followers && <span>{request.followers} followers</span>}
+                          {request.followers && request.engagement && <span>•</span>}
+                          {request.engagement && <span>{request.engagement} engagement</span>}
+                          <div className="flex items-center gap-1">
+                            {request.platforms.map((p: PlatformInfo) => (
+                              <PlatformIcon
+                                key={p.name}
+                                platform={(p.name || p.platform || "").toLowerCase()}
+                                className="w-3 h-3 text-gray-400"
+                              />
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <span>Creator profile details unavailable</span>
+                      )}
+                      {request.platforms.length === 0 && request.followersPlatform && (
+                        <PlatformIcon
+                          platform={request.followersPlatform}
+                          className="w-3 h-3 text-gray-400"
+                        />
+                      )}
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 text-xs text-gray-500 font-medium leading-none">

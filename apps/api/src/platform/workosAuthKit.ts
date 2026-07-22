@@ -14,6 +14,30 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
     clientId: config.clientId,
   });
 
+  async function refreshSealedSession(input: {
+    sealedSession: string;
+    organizationId?: string;
+  }): Promise<AuthKitSession | null> {
+    const loaded = workos.userManagement.loadSealedSession({
+      sessionData: input.sealedSession,
+      cookiePassword: config.cookiePassword,
+    });
+    const refreshed = await loaded.refresh({
+      cookiePassword: config.cookiePassword,
+      organizationId: input.organizationId,
+    });
+    if (!refreshed.authenticated || !refreshed.sealedSession || !refreshed.session) return null;
+    const accessToken =
+      "accessToken" in refreshed && typeof refreshed.accessToken === "string"
+        ? refreshed.accessToken
+        : refreshed.session.accessToken;
+    return toAuthKitSession({
+      ...refreshed,
+      accessToken,
+      sealedSession: refreshed.sealedSession,
+    });
+  }
+
   return {
     getAuthorizationUrl(input) {
       return workos.userManagement.getAuthorizationUrl({
@@ -105,47 +129,30 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
     },
 
     async authenticateSession(input) {
+      const loaded = workos.userManagement.loadSealedSession({
+        sessionData: input.sealedSession,
+        cookiePassword: config.cookiePassword,
+      });
       let response: Awaited<
         ReturnType<ReturnType<typeof workos.userManagement.loadSealedSession>["authenticate"]>
       >;
       try {
-        response = await workos.userManagement
-          .loadSealedSession({
-            sessionData: input.sealedSession,
-            cookiePassword: config.cookiePassword,
-          })
-          .authenticate();
+        response = await loaded.authenticate();
       } catch (error) {
+        if (isExpiredSealedSessionError(error)) return refreshSealedSession(input);
         if (isInvalidSealedSessionError(error)) return null;
         throw error;
       }
-      if (!response.authenticated) return null;
+      if (!response.authenticated) {
+        return response.reason === "invalid_jwt" ? refreshSealedSession(input) : null;
+      }
       return toAuthKitSession({
         ...response,
         sealedSession: input.sealedSession,
       });
     },
 
-    async refreshSession(input) {
-      const loaded = workos.userManagement.loadSealedSession({
-        sessionData: input.sealedSession,
-        cookiePassword: config.cookiePassword,
-      });
-      const refreshed = await loaded.refresh({
-        cookiePassword: config.cookiePassword,
-        organizationId: input.organizationId,
-      });
-      if (!refreshed.authenticated || !refreshed.sealedSession || !refreshed.session) return null;
-      const accessToken =
-        "accessToken" in refreshed && typeof refreshed.accessToken === "string"
-          ? refreshed.accessToken
-          : refreshed.session.accessToken;
-      return toAuthKitSession({
-        ...refreshed,
-        accessToken,
-        sealedSession: refreshed.sealedSession,
-      });
-    },
+    refreshSession: refreshSealedSession,
 
     async createSignupOrganization(input) {
       const organization = await workos.organizations.createOrganization(
@@ -231,12 +238,13 @@ function membershipRoleSlugs(
 function isInvalidSealedSessionError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const code = (error as { code?: unknown }).code;
-  return (
-    code === "ERR_JWKS_NO_MATCHING_KEY" ||
-    code === "ERR_JWT_EXPIRED" ||
-    error.name === "JWKSNoMatchingKey" ||
-    error.name === "JWTExpired"
-  );
+  return code === "ERR_JWKS_NO_MATCHING_KEY" || error.name === "JWKSNoMatchingKey";
+}
+
+function isExpiredSealedSessionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "ERR_JWT_EXPIRED" || error.name === "JWTExpired";
 }
 
 function membershipStatus(status: string | undefined): MembershipStatus | undefined {

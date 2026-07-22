@@ -215,7 +215,7 @@ describe("@vayada/domain-marketplace", () => {
     const status: CreatorProfileStatusResult = {
       creatorProfileId: "creator_profile_lina",
       organizationId: "org_creator_workspace",
-      profilePhotoRequired: false,
+      profilePhotoRequired: true,
       profileComplete: false,
       profileStatus: "pending",
       missingFields: ["displayName", "locationText", "shortDescription", "platforms"],
@@ -602,6 +602,10 @@ describe("@vayada/domain-marketplace", () => {
             profileId: "creator_profile_lina",
             displayName: "Lina Travels",
             avatarUrl: "https://cdn.example.com/lina.jpg",
+            location: "Berlin, Germany",
+            portfolioUrl: "https://lina.example.com",
+            creatorType: "travel",
+            platforms: [],
           },
           hotel: {
             side: "hotel",

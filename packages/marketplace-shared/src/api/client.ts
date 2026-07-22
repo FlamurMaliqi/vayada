@@ -4,11 +4,15 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.marketplace.localhost";
 export const VAYADA_API_BASE_URL =
+  process.env.NEXT_PUBLIC_VAYADA_API_URL ||
   process.env.NEXT_PUBLIC_AUTH_API_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
   "https://api.localhost";
 let bearerTokenProvider: (() => string | null) | null = null;
-let vayadaBearerTokenProvider: (() => string | null) | null = null;
+type VayadaBearerTokenProvider = (
+  signal?: AbortSignal,
+  forceRefresh?: boolean,
+) => string | null | Promise<string | null>;
+let vayadaBearerTokenProvider: VayadaBearerTokenProvider | null = null;
 let vayadaSessionRecoveryHandlers: ApiSessionRecoveryHandlers | null = null;
 
 type ApiSessionRecoveryState = {
@@ -27,8 +31,15 @@ export function setApiBearerTokenProvider(provider: (() => string | null) | null
   bearerTokenProvider = provider;
 }
 
-export function setVayadaApiBearerTokenProvider(provider: (() => string | null) | null): void {
+export function setVayadaApiBearerTokenProvider(provider: VayadaBearerTokenProvider | null): void {
   vayadaBearerTokenProvider = provider;
+}
+
+export function getVayadaApiBearerToken(
+  signal?: AbortSignal,
+  forceRefresh = false,
+): string | null | Promise<string | null> {
+  return vayadaBearerTokenProvider?.(signal, forceRefresh) ?? null;
 }
 
 export function setVayadaApiSessionRecoveryHandlers(
@@ -43,10 +54,6 @@ export function getApiBearerToken(): string | null {
     if (token) return token;
   }
   return getStoredLegacyToken();
-}
-
-function getVayadaApiBearerToken(): string | null {
-  return vayadaBearerTokenProvider ? vayadaBearerTokenProvider() : getApiBearerToken();
 }
 
 function getStoredLegacyToken(): string | null {
@@ -76,6 +83,8 @@ export interface ApiError {
       }>;
   message?: string;
   error?: string;
+  code?: string;
+  category?: string;
 }
 
 export class ApiErrorResponse extends Error {
@@ -108,24 +117,27 @@ function wasRequestAborted(error: unknown, signal?: AbortSignal | null): boolean
 
 export class ApiClient {
   private baseURL: string;
-  private tokenProvider?: () => string | null;
+  private tokenProvider?: VayadaBearerTokenProvider;
   private sessionRecoveryProvider?: () => ApiSessionRecoveryHandlers | null;
+  private retryUnauthorizedWithTokenProvider: boolean;
 
   constructor(
     baseURL: string = API_BASE_URL,
-    tokenProvider?: () => string | null,
+    tokenProvider?: VayadaBearerTokenProvider,
     sessionRecoveryProvider?: () => ApiSessionRecoveryHandlers | null,
+    retryUnauthorizedWithTokenProvider = false,
   ) {
     this.baseURL = baseURL;
     this.tokenProvider = tokenProvider;
     this.sessionRecoveryProvider = sessionRecoveryProvider;
+    this.retryUnauthorizedWithTokenProvider = retryUnauthorizedWithTokenProvider;
   }
 
   /**
    * Get JWT token from localStorage if not expired
    */
-  private getToken(): string | null {
-    if (this.tokenProvider) return this.tokenProvider();
+  private async getToken(signal?: AbortSignal, forceRefresh = false): Promise<string | null> {
+    if (this.tokenProvider) return this.tokenProvider(signal, forceRefresh);
     return getApiBearerToken();
   }
 
@@ -164,9 +176,24 @@ export class ApiClient {
   ): Promise<Response> {
     const response = await fetch(url, config);
     const handlers = this.sessionRecoveryProvider?.() ?? null;
-    if (response.status !== 401 || endpoint.startsWith("/auth/") || !handlers) {
+    if (response.status !== 401 || endpoint.startsWith("/auth/")) {
       return response;
     }
+
+    if (!handlers && this.retryUnauthorizedWithTokenProvider && this.tokenProvider) {
+      const refreshedToken = await this.getToken(config.signal ?? undefined, true);
+      if (!refreshedToken) return response;
+      await response.body?.cancel().catch(() => undefined);
+      return fetch(url, {
+        ...config,
+        headers: {
+          ...(config.headers as Record<string, string>),
+          Authorization: `Bearer ${refreshedToken}`,
+        },
+      });
+    }
+
+    if (!handlers) return response;
 
     const refreshedToken = await this.recoverSession(failedToken, handlers);
     if (!refreshedToken) {
@@ -192,7 +219,7 @@ export class ApiClient {
     handlers: ApiSessionRecoveryHandlers,
   ): Promise<string | null> {
     const state = getSessionRecoveryState(handlers);
-    const currentToken = this.getToken();
+    const currentToken = await this.getToken();
     if (currentToken && currentToken !== failedToken) return currentToken;
 
     if (!state.refreshPromise) {
@@ -207,7 +234,7 @@ export class ApiClient {
     } catch {
       return null;
     }
-    const refreshedToken = this.getToken();
+    const refreshedToken = await this.getToken();
     return refreshedToken && refreshedToken !== failedToken ? refreshedToken : null;
   }
 
@@ -228,7 +255,9 @@ export class ApiClient {
     const url = `${this.baseURL}${endpoint}`;
 
     // Get token for authenticated requests (skip for auth endpoints)
-    const token = !endpoint.startsWith("/auth/") ? this.getToken() : null;
+    const token = !endpoint.startsWith("/auth/")
+      ? await this.getToken(options.signal ?? undefined)
+      : null;
 
     const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
     const headers: Record<string, string> = {
@@ -247,6 +276,9 @@ export class ApiClient {
     };
 
     try {
+      if (config.signal?.aborted) {
+        throw config.signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+      }
       const response = await this.fetchWithSessionRecovery(url, endpoint, config, token);
 
       // Handle 204 No Content responses (no body to parse)
@@ -281,6 +313,7 @@ export class ApiClient {
         if (
           response.status === 401 &&
           !endpoint.startsWith("/auth/") &&
+          !this.retryUnauthorizedWithTokenProvider &&
           !this.sessionRecoveryProvider?.()
         ) {
           this.handleUnauthorized(error);
@@ -357,9 +390,9 @@ function getSessionRecoveryState(handlers: ApiSessionRecoveryHandlers): ApiSessi
 
 export function createVayadaApiClient(
   baseURL: string = VAYADA_API_BASE_URL,
-  tokenProvider: () => string | null = getVayadaApiBearerToken,
+  tokenProvider: VayadaBearerTokenProvider = getVayadaApiBearerToken,
 ): ApiClient {
-  return new ApiClient(baseURL, tokenProvider, () => vayadaSessionRecoveryHandlers);
+  return new ApiClient(baseURL, tokenProvider, () => vayadaSessionRecoveryHandlers, true);
 }
 
 export const apiClient = new ApiClient(

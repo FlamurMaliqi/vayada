@@ -37,14 +37,15 @@ export function PlatformDeliverablesSelector({
   return (
     <>
       <div>
-        <label className="block text-base font-medium text-gray-900 mb-4">
+        <p className="block text-base font-medium text-gray-900 mb-4">
           {label} <span className="text-red-500">*</span>
-        </label>
+        </p>
         <div className="space-y-3">
           {PLATFORM_OPTIONS_WITH_CONTENT.filter(filterPlatforms).map((platform) => {
             const platformSelected = isPlatformSelected(platform);
             const platformDeliverablesList = getPlatformDeliverables(platform);
             const availableDeliverables = PLATFORM_DELIVERABLES[platform] || [];
+            const platformPanelId = `deliverables-${platform.toLowerCase().replaceAll(" ", "-")}`;
 
             return (
               <div
@@ -56,12 +57,17 @@ export function PlatformDeliverablesSelector({
                 }`}
               >
                 {/* Platform Header */}
-                <div
-                  className="p-4 flex items-center justify-between cursor-pointer"
+                <button
+                  type="button"
+                  className="p-4 flex w-full items-center justify-between cursor-pointer text-left"
                   onClick={() => onPlatformToggle(platform)}
+                  aria-expanded={platformSelected}
+                  aria-controls={platformPanelId}
+                  aria-label={`${platformSelected ? "Remove" : "Select"} ${platform} deliverables`}
                 >
                   <div className="flex items-center gap-4">
                     <div
+                      aria-hidden="true"
                       className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
                         platformSelected
                           ? "bg-primary-600 border-primary-600"
@@ -77,11 +83,14 @@ export function PlatformDeliverablesSelector({
                       <span className="text-lg font-semibold text-gray-900">{platform}</span>
                     </div>
                   </div>
-                </div>
+                </button>
 
                 {/* Deliverables for this platform */}
                 {platformSelected && (
-                  <div className="px-4 pb-4 space-y-2 animate-in slide-in-from-top-2 duration-200">
+                  <div
+                    id={platformPanelId}
+                    className="px-4 pb-4 space-y-2 animate-in slide-in-from-top-2 duration-200"
+                  >
                     {availableDeliverables.map((deliverable) => {
                       const deliverableItem = platformDeliverablesList.find(
                         (d) => d.type === deliverable,
@@ -107,6 +116,7 @@ export function PlatformDeliverablesSelector({
                                   : "border-gray-200 text-gray-300 cursor-not-allowed"
                               }`}
                               disabled={quantity === 0}
+                              aria-label={`Decrease ${deliverable} quantity`}
                             >
                               <MinusSmallIcon className="w-5 h-5" />
                             </button>
@@ -124,6 +134,7 @@ export function PlatformDeliverablesSelector({
                                 onDeliverableQuantityChange(platform, deliverable, quantity + 1);
                               }}
                               className="w-8 h-8 rounded-full border border-primary-200 text-primary-600 hover:bg-primary-50 flex items-center justify-center transition-all shadow-sm"
+                              aria-label={`Increase ${deliverable} quantity`}
                             >
                               <PlusSmallIcon className="w-5 h-5" />
                             </button>
@@ -152,12 +163,14 @@ export function PlatformDeliverablesSelector({
               onChange={(e) => onCustomDeliverableInputChange(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), onAddCustomDeliverable())}
               placeholder="e.g., Blog Post, Drone Footage..."
+              aria-label="Custom deliverable"
               className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all shadow-sm"
             />
             <button
               type="button"
               onClick={onAddCustomDeliverable}
               className="w-12 h-12 flex items-center justify-center rounded-xl bg-white border border-gray-200 text-gray-400 hover:text-primary-600 hover:border-primary-200 hover:bg-primary-50 transition-all shadow-sm"
+              aria-label="Add custom deliverable"
             >
               <PlusSmallIcon className="w-6 h-6" />
             </button>
@@ -175,6 +188,7 @@ export function PlatformDeliverablesSelector({
                     type="button"
                     onClick={() => onRemoveCustomDeliverable(item.type)}
                     className="w-6 h-6 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 transition-all"
+                    aria-label={`Remove ${item.type}`}
                   >
                     <XMarkIcon className="w-4 h-4" />
                   </button>
@@ -188,6 +202,7 @@ export function PlatformDeliverablesSelector({
                     }
                     className="w-8 h-8 rounded-full border border-primary-200 text-primary-600 hover:bg-primary-50 flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                     disabled={item.quantity <= 1}
+                    aria-label={`Decrease ${item.type} quantity`}
                   >
                     <MinusSmallIcon className="w-5 h-5" />
                   </button>
@@ -200,6 +215,7 @@ export function PlatformDeliverablesSelector({
                       onDeliverableQuantityChange("Custom", item.type, item.quantity + 1)
                     }
                     className="w-8 h-8 rounded-full border border-primary-200 text-primary-600 hover:bg-primary-50 flex items-center justify-center transition-all shadow-sm"
+                    aria-label={`Increase ${item.type} quantity`}
                   >
                     <PlusSmallIcon className="w-5 h-5" />
                   </button>
