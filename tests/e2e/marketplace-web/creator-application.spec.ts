@@ -68,8 +68,13 @@ test("creator selects one compensation option when applying", async ({ page }) =
   let submittedApplication: Record<string, unknown> | null = null;
   let submissionAttempts = 0;
   await page.route(/\/api\/marketplace\/collaborations$/, async (route) => {
-    if (route.request().method() === "OPTIONS") {
+    const method = route.request().method();
+    if (method === "OPTIONS") {
       await fulfillCorsPreflight(route);
+      return;
+    }
+    if (method !== "POST") {
+      await route.continue();
       return;
     }
     submissionAttempts += 1;

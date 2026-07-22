@@ -469,11 +469,15 @@ export const collaborationService = {
    */
   getConversations: async (): Promise<ConversationResponse[]> => {
     const conversations: MarketplaceConversationSummary[] = [];
+    const seenCursors = new Set<string>();
     let cursor: string | undefined;
     do {
       const page = await getMarketplaceConversationPage({ cursor, limit: 100 });
       conversations.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
+      const nextCursor = page.nextCursor ?? undefined;
+      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     } while (cursor);
     return conversations.map(toLegacyConversationResponse);
   },

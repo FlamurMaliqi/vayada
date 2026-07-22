@@ -150,6 +150,22 @@ describe("marketplace hotel discovery", () => {
     ).toEqual(["platform-fit", "no-fit"]);
   });
 
+  it("ranks a follower-eligible offer above an ineligible offer on the same platform", () => {
+    const creator = creatorWithPlatforms("Instagram");
+    const eligible = hotel({
+      id: "z-eligible",
+      offerings: [{ ...compensation("Paid", 2_000), min_followers: 9_999 }],
+    });
+    const ineligible = hotel({
+      id: "a-ineligible",
+      offerings: [{ ...compensation("Paid", 2_000), min_followers: 10_001 }],
+    });
+
+    expect(
+      sortMarketplaceHotels([ineligible, eligible], "relevance", "", creator).map(({ id }) => id),
+    ).toEqual(["z-eligible", "a-ineligible"]);
+  });
+
   it("uses newest then offer ID as deterministic relevance tie-breakers", () => {
     const older = hotel({ id: "older", createdAt: "2026-07-01" });
     const laterId = hotel({ id: "z-id", createdAt: "2026-07-20" });

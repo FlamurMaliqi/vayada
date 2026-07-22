@@ -1,7 +1,22 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { vayadaApiClient } from "@vayada/marketplace-shared/api/client";
-import { clearAuthData, setAuthKitSession } from "./sessionStore";
+import {
+  clearAuthData,
+  getAuthKitAccessToken,
+  getOrRefreshAuthKitAccessToken,
+  setAuthKitSession,
+} from "./sessionStore";
+
+beforeEach(() => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal("window", {});
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    removeItem: (key: string) => storage.delete(key),
+    setItem: (key: string, value: string) => storage.set(key, value),
+  });
+});
 
 afterEach(() => {
   clearAuthData();
@@ -52,6 +67,53 @@ describe("admin Vayada API authentication", () => {
         headers: expect.objectContaining({ Authorization: "Bearer fresh-workos-token" }),
       }),
     );
+  });
+
+  it("clears the session and allows another refresh after refresh rejection", async () => {
+    setAuthKitSession({
+      accessToken: "stale-workos-token",
+      csrfToken: "csrf-token",
+      user: { id: "admin-user", email: "admin@example.com", status: "active" },
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("session refresh failed"))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          accessToken: "fresh-workos-token",
+          csrfToken: "fresh-csrf-token",
+          user: { id: "admin-user", email: "admin@example.com", status: "active" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getOrRefreshAuthKitAccessToken(undefined, true)).resolves.toBeNull();
+    expect(getAuthKitAccessToken()).toBeNull();
+    expect(localStorage.getItem("isLoggedIn")).toBe("false");
+
+    await expect(getOrRefreshAuthKitAccessToken(undefined, true)).resolves.toBe(
+      "fresh-workos-token",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves the session when refresh is intentionally aborted", async () => {
+    setAuthKitSession({
+      accessToken: "current-workos-token",
+      csrfToken: "csrf-token",
+      user: { id: "admin-user", email: "admin@example.com", status: "active" },
+    });
+
+    const controller = new AbortController();
+    const abortError = new DOMException("The operation was aborted.", "AbortError");
+    controller.abort(abortError);
+    const fetchMock = vi.fn().mockRejectedValueOnce(abortError);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getOrRefreshAuthKitAccessToken(controller.signal, true)).rejects.toBe(abortError);
+    expect(getAuthKitAccessToken()).toBe("current-workos-token");
+    expect(localStorage.getItem("isLoggedIn")).toBe("true");
   });
 });
 

@@ -183,6 +183,25 @@ describe("creator chat integration", () => {
     });
   });
 
+  it("stops when the API repeats a conversation cursor", async () => {
+    mocks.getMarketplaceConversationPage
+      .mockResolvedValueOnce({
+        contractVersion: "marketplace-collaboration-reads.v1",
+        items: [marketplaceConversation("collaboration-1")],
+        nextCursor: "page-2",
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        contractVersion: "marketplace-collaboration-reads.v1",
+        items: [marketplaceConversation("collaboration-101")],
+        nextCursor: "page-2",
+        hasMore: true,
+      });
+
+    await expect(collaborationService.getConversations()).resolves.toHaveLength(2);
+    expect(mocks.getMarketplaceConversationPage).toHaveBeenCalledTimes(2);
+  });
+
   it("sends retry-safe text messages through the TypeScript contract", async () => {
     mocks.sendMarketplaceCollaborationMessage.mockResolvedValue({
       contractVersion: "marketplace-collaboration-reads.v1",

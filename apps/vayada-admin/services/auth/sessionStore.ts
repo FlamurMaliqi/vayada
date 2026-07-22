@@ -126,16 +126,25 @@ export async function getOrRefreshAuthKitAccessToken(
 
   if (authKitRefreshPromise) return authKitRefreshPromise;
 
-  authKitRefreshPromise = (async () => {
-    const { authService } = await import("./auth");
-    await authService.refreshSession(undefined, signal);
-    return getAuthKitAccessToken();
+  const refreshPromise = (async () => {
+    try {
+      const { authService } = await import("./auth");
+      await authService.refreshSession(undefined, signal);
+      return getAuthKitAccessToken();
+    } catch (error) {
+      if (wasRefreshAborted(error, signal)) throw error;
+      clearAuthData();
+      return null;
+    }
   })();
+  authKitRefreshPromise = refreshPromise;
 
   try {
-    return await authKitRefreshPromise;
+    return await refreshPromise;
   } finally {
-    authKitRefreshPromise = null;
+    if (authKitRefreshPromise === refreshPromise) {
+      authKitRefreshPromise = null;
+    }
   }
 }
 
@@ -195,4 +204,15 @@ function readJwtExpiresAt(token: string): number | null {
   } catch {
     return null;
   }
+}
+
+function wasRefreshAborted(error: unknown, signal?: AbortSignal): boolean {
+  return (
+    signal?.aborted === true &&
+    (error === signal.reason ||
+      (typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        error.name === "AbortError"))
+  );
 }
