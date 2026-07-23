@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { bookingsService, Booking } from "@/services/bookings";
+import { bookingsService } from "@/services/bookings";
 import { roomsService, RoomType } from "@/services/rooms";
 import { useTranslation } from "@/lib/i18n";
 
@@ -51,12 +51,6 @@ const PAGES: PageEntry[] = [
     href: "/bookings",
   },
   {
-    id: "inbox",
-    labelKey: "layout.sidebar.inbox",
-    sublabelKey: "search.pageInboxHint",
-    href: "/inbox",
-  },
-  {
     id: "rooms",
     labelKey: "layout.sidebar.roomsAndRates",
     sublabelKey: "search.pageRoomsHint",
@@ -67,12 +61,6 @@ const PAGES: PageEntry[] = [
     labelKey: "layout.sidebar.channelManager",
     sublabelKey: "search.pageChannelManagerHint",
     href: "/channel-manager",
-  },
-  {
-    id: "financials",
-    labelKey: "layout.sidebar.financials",
-    sublabelKey: "search.pageFinancialsHint",
-    href: "/financials",
   },
   {
     id: "settings",

@@ -137,7 +137,9 @@ test.describe("marketplace-web smoke", () => {
     ).toBeVisible();
     await expect(page.getByLabel("Email address")).toHaveValue("owner@example.test");
     await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
+    await expect(page.getByLabel("Phone number")).toHaveAttribute("required", "");
     await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
+    await expect(page.getByText("Optional", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByText("Enter your first name.")).toBeVisible();
     await expect(page.getByText("Enter your last name.")).toBeVisible();
@@ -159,6 +161,9 @@ test.describe("marketplace-web smoke", () => {
     });
     await expect(page.getByRole("img", { name: "Selected profile preview" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Remove photo" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Continue to hotel setup" }).click();
+    await expect(page.getByText("Enter your phone number.")).toBeVisible();
+    await page.getByLabel("Phone number").fill("+49 89 123456");
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
 
     await expect(page).toHaveURL(/\/onboarding$/);
@@ -216,6 +221,7 @@ test.describe("marketplace-web smoke", () => {
             id: "user-restored-hotel",
             email: "returning-owner@example.test",
             name: "Returning Owner",
+            phone: "+49 89 123456",
             profilePictureUrl: "https://media.example/returning-owner.webp",
             profilePictureMediaObjectId: "media-returning-owner",
             status: "active",
@@ -1670,6 +1676,32 @@ async function mockCreatorSession(
         profilePictureMediaObjectId?: string | null;
       } = "+49 89 123456",
 ) {
+  const sessionResponse = () => ({
+    accessToken: "creator-authkit-token",
+    csrfToken: "creator-csrf-token",
+    organizationId: "22222222-2222-4222-8222-222222222222",
+    organizationKind: "creator_workspace",
+    user: {
+      id: "user-legacy-creator",
+      email: "creator@example.test",
+      name,
+      phone:
+        typeof account === "function"
+          ? account()
+          : typeof account === "object" && account !== null
+            ? (account.phone ?? null)
+            : account,
+      profilePictureUrl:
+        typeof account === "object" && account !== null
+          ? (account.profilePictureUrl ?? null)
+          : null,
+      profilePictureMediaObjectId:
+        typeof account === "object" && account !== null
+          ? (account.profilePictureMediaObjectId ?? null)
+          : null,
+      status: "active",
+    },
+  });
   await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await fulfillCorsPreflight(route);
@@ -1678,37 +1710,25 @@ async function mockCreatorSession(
     await route.fulfill({
       status: 200,
       headers: corsHeaders(route),
-      json: {
-        accessToken: "creator-authkit-token",
-        csrfToken: "creator-csrf-token",
-        organizationId: "22222222-2222-4222-8222-222222222222",
-        organizationKind: "creator_workspace",
-        user: {
-          id: "user-legacy-creator",
-          email: "creator@example.test",
-          name,
-          phone:
-            typeof account === "function"
-              ? account()
-              : typeof account === "object" && account !== null
-                ? (account.phone ?? null)
-                : account,
-          profilePictureUrl:
-            typeof account === "object" && account !== null
-              ? (account.profilePictureUrl ?? null)
-              : null,
-          profilePictureMediaObjectId:
-            typeof account === "object" && account !== null
-              ? (account.profilePictureMediaObjectId ?? null)
-              : null,
-          status: "active",
-        },
-      },
+      json: sessionResponse(),
     });
   });
+  await page.route(/\/auth\/session\/refresh$/, (route) =>
+    route.fulfill({ status: 200, headers: corsHeaders(route), json: sessionResponse() }),
+  );
   await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
     accessToken: "legacy-marketplace-token",
     expiresIn: 900,
+  });
+  await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
+    connections: [],
+  });
+  await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
+    profilePhotoRequired: true,
+    profileComplete: false,
+    missingFields: [],
+    missingPlatforms: false,
+    completionSteps: [],
   });
 }
 
@@ -1716,7 +1736,7 @@ async function mockOnboardingAuth(
   page: Page,
   accountType: "hotel" | "creator" = "hotel",
   expectedFirstName = "Mary Jane",
-  expectedPhone = accountType === "creator" ? "+49 89 123456" : "",
+  expectedPhone = "+49 89 123456",
 ) {
   let onboarded = false;
   let accountName: string | null = null;
@@ -1750,6 +1770,22 @@ async function mockOnboardingAuth(
         ...(onboarded ? onboardedSession : guestSession),
         user: {
           ...(onboarded ? onboardedSession.user : guestSession.user),
+          name: accountName,
+          phone: accountPhone,
+          profilePictureUrl: accountProfilePictureUrl,
+          profilePictureMediaObjectId: accountProfilePictureMediaObjectId,
+        },
+      },
+    });
+  });
+  await page.route(/\/auth\/session\/refresh$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: corsHeaders(route),
+      json: {
+        ...onboardedSession,
+        user: {
+          ...onboardedSession.user,
           name: accountName,
           phone: accountPhone,
           profilePictureUrl: accountProfilePictureUrl,
@@ -1857,6 +1893,9 @@ async function mockOnboardingAuth(
   await routeJson(page, /\/auth\/compat\/marketplace-web-token/, {
     accessToken: "legacy-marketplace-token",
     expiresIn: 900,
+  });
+  await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
+    connections: [],
   });
 }
 

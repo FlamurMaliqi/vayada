@@ -136,6 +136,7 @@ export function SharedHotelSetupPage({
   if (
     !isSharedAccountDetailsComplete({
       name: accountName,
+      phone: accountContactPhone,
       profilePictureUrl: accountProfilePictureUrl,
       profilePictureMediaObjectId: accountProfilePictureMediaObjectId,
     })

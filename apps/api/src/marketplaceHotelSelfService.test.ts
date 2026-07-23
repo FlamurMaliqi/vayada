@@ -13,7 +13,11 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
-import { createPgMarketplaceHotelSelfServiceRepository } from "./routes/marketplaceHotelSelfService.js";
+import type { MarketplaceAdminCreateOfferRequest } from "./routes/marketplaceAdmin.js";
+import {
+  createPgMarketplaceHotelSelfServiceRepository,
+  MarketplaceOfferIdempotencyConflictError,
+} from "./routes/marketplaceHotelSelfService.js";
 import type {
   MarketplaceHotelSelfServiceOffer,
   MarketplaceHotelSelfServiceProfile,
@@ -97,6 +101,104 @@ describe("marketplace hotel self-service routes", () => {
     expect(sql).toContain("unnest(offer.image_urls)");
   });
 
+  it("replays an offer only after its operator access grant is completed", async () => {
+    const harness = createOfferRepositoryHarness();
+    const repository = createPgMarketplaceHotelSelfServiceRepository({
+      connectionString: "postgresql://target-db",
+      pool: harness.pool,
+    });
+    const input = {
+      organizationId: "org_hotel_group",
+      propertyId: propertyTwo,
+      idempotencyKey: "onboarding-draft-offer-one",
+      request: offerRequest(),
+    };
+
+    const created = await repository.createOffer(input);
+    expect(harness.idempotencyStatus()).toBe("in_progress");
+    await repository.completeOfferCreation({ ...input, offerResourceId });
+    const replayed = await repository.createOffer(input);
+
+    expect(created).toMatchObject({ offerResourceId, replayed: false });
+    expect(replayed).toMatchObject({ offerResourceId, replayed: true });
+    expect(harness.offerInsertCount()).toBe(1);
+    expect(harness.idempotencyStatus()).toBe("completed");
+    const idempotencyLookup = harness
+      .queries()
+      .find(({ text }) => text.includes("FROM platform.idempotency_keys"));
+    expect(idempotencyLookup?.text).toContain("tenant_scope = 'organization'");
+    expect(idempotencyLookup?.text).toContain("organization_id = $2::uuid");
+    expect(idempotencyLookup?.text).toContain("property_id IS NULL");
+    expect(idempotencyLookup?.values?.[1]).toBe(input.organizationId);
+    const idempotencyReservation = harness
+      .queries()
+      .find(({ text }) => text.includes("INSERT INTO platform.idempotency_keys"));
+    expect(idempotencyReservation?.text).toContain("tenant_scope, organization_id");
+    expect(idempotencyReservation?.text).toContain("'organization', $3::uuid");
+    expect(idempotencyReservation?.values?.[2]).toBe(input.organizationId);
+    expect(harness.transactions()).toEqual([
+      "BEGIN",
+      "COMMIT",
+      "BEGIN",
+      "COMMIT",
+      "BEGIN",
+      "COMMIT",
+    ]);
+  });
+
+  it("rejects a replay when its stored offer no longer belongs to the organization", async () => {
+    const harness = createOfferRepositoryHarness();
+    const repository = createPgMarketplaceHotelSelfServiceRepository({
+      connectionString: "postgresql://target-db",
+      pool: harness.pool,
+    });
+    const input = {
+      organizationId: "org_hotel_group",
+      propertyId: propertyTwo,
+      idempotencyKey: "onboarding-organization-recheck",
+      request: offerRequest(),
+    };
+    await repository.createOffer(input);
+    await repository.completeOfferCreation({ ...input, offerResourceId });
+    harness.setOfferOrganization("org_other_hotel_group");
+
+    await expect(repository.createOffer(input)).rejects.toBeInstanceOf(
+      MarketplaceOfferIdempotencyConflictError,
+    );
+
+    const accessCheck = harness
+      .queries()
+      .findLast(({ text }) => text.includes("FROM marketplace.marketplace_hotel_profiles profile"));
+    expect(accessCheck?.values).toEqual([offerResourceId, input.organizationId, input.propertyId]);
+    expect(harness.transactions().slice(-2)).toEqual(["BEGIN", "ROLLBACK"]);
+  });
+
+  it("rolls back when an offer key is reused with a different request", async () => {
+    const harness = createOfferRepositoryHarness();
+    const repository = createPgMarketplaceHotelSelfServiceRepository({
+      connectionString: "postgresql://target-db",
+      pool: harness.pool,
+    });
+    const input = {
+      organizationId: "org_hotel_group",
+      propertyId: propertyTwo,
+      idempotencyKey: "onboarding-draft-offer-one",
+      request: offerRequest(),
+    };
+    await repository.createOffer(input);
+    await repository.completeOfferCreation({ ...input, offerResourceId });
+
+    await expect(
+      repository.createOffer({
+        ...input,
+        request: { ...input.request, title: "A different hotel stay" },
+      }),
+    ).rejects.toBeInstanceOf(MarketplaceOfferIdempotencyConflictError);
+
+    expect(harness.offerInsertCount()).toBe(1);
+    expect(harness.transactions().slice(-2)).toEqual(["BEGIN", "ROLLBACK"]);
+  });
+
   it("reads the explicitly selected hotel when an account has multiple hotels", async () => {
     const calls: string[] = [];
     app = buildMarketplaceHotelApp({
@@ -146,22 +248,27 @@ describe("marketplace hotel self-service routes", () => {
     expect(response.body.offers.map(({ offerId }) => offerId)).toEqual([offerResourceId]);
   });
 
-  it("creates an offer under the selected hotel and its authorized relationship", async () => {
+  it("creates an offer under the selected hotel with collaboration operator access", async () => {
     const createOffer = vi.fn(async (input) => ({
       offer: offer(input.propertyId),
       offerResourceId,
+      replayed: false,
     }));
     const lifecycleCommandBus = recordingCommandBus();
+    const completeOfferCreation = vi.fn(async (input) => offer(input.propertyId));
     app = buildMarketplaceHotelApp({
-      linkedResources: [profileLink(propertyOne), profileLink(propertyTwo, "operator")],
-      repository: repository({ createOffer }),
+      linkedResources: [profileLink(propertyOne), profileLink(propertyTwo)],
+      repository: repository({ createOffer, completeOfferCreation }),
       lifecycleCommandBus,
     });
 
     const response = await injectJson<MarketplaceHotelSelfServiceOffer>(app, {
       method: "POST",
       url: `/api/marketplace/properties/${propertyTwo}/offers`,
-      headers: { authorization: "Bearer valid-token" },
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "hotel-onboarding-offer-two",
+      },
       payload: offerRequest(),
     });
 
@@ -173,6 +280,7 @@ describe("marketplace hotel self-service routes", () => {
       expect.objectContaining({
         organizationId: "org_hotel_group",
         propertyId: propertyTwo,
+        idempotencyKey: "hotel-onboarding-offer-two",
       }),
     );
     expect(lifecycleCommandBus.commands).toEqual([
@@ -191,6 +299,91 @@ describe("marketplace hotel self-service routes", () => {
         }),
       }),
     ]);
+    expect(completeOfferCreation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org_hotel_group",
+        propertyId: propertyTwo,
+        idempotencyKey: "hotel-onboarding-offer-two",
+        offerResourceId,
+      }),
+    );
+  });
+
+  it("requires a bounded Idempotency-Key before creating an offer", async () => {
+    const createOffer = vi.fn();
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo)],
+      repository: repository({ createOffer }),
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "POST",
+      url: `/api/marketplace/properties/${propertyTwo}/offers`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: offerRequest(),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.code).toBe("idempotency_key_required");
+    expect(createOffer).not.toHaveBeenCalled();
+  });
+
+  it("returns an idempotent replay without granting or changing offer access", async () => {
+    const lifecycleCommandBus = recordingCommandBus();
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo)],
+      repository: repository({
+        async createOffer(input) {
+          return {
+            offer: offer(input.propertyId),
+            offerResourceId,
+            replayed: true,
+          };
+        },
+      }),
+      lifecycleCommandBus,
+    });
+
+    const response = await injectJson<MarketplaceHotelSelfServiceOffer>(app, {
+      method: "POST",
+      url: `/api/marketplace/properties/${propertyTwo}/offers`,
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "hotel-onboarding-replay",
+      },
+      payload: offerRequest(),
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.body.offerId).toBe(offerResourceId);
+    expect(lifecycleCommandBus.commands).toEqual([]);
+  });
+
+  it("returns a conflict when an offer key is reused with another request", async () => {
+    const lifecycleCommandBus = recordingCommandBus();
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo)],
+      repository: repository({
+        async createOffer() {
+          throw new MarketplaceOfferIdempotencyConflictError();
+        },
+      }),
+      lifecycleCommandBus,
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "POST",
+      url: `/api/marketplace/properties/${propertyTwo}/offers`,
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "hotel-onboarding-conflict",
+      },
+      payload: offerRequest(),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.code).toBe("idempotency_conflict");
+    expect(lifecycleCommandBus.commands).toEqual([]);
   });
 
   it("archives offer access without revoking the hotel membership", async () => {
@@ -233,26 +426,86 @@ describe("marketplace hotel self-service routes", () => {
   });
 
   it("archives a new offer when its identity link cannot be granted", async () => {
-    const archiveOffer = vi.fn(async () => true);
+    const failOfferCreation = vi.fn(async () => undefined);
     app = buildMarketplaceHotelApp({
       linkedResources: [profileLink(propertyTwo)],
       lifecycleCommandBus: recordingCommandBus(new Error("identity unavailable")),
-      repository: repository({ archiveOffer }),
+      repository: repository({ failOfferCreation }),
     });
 
     const response = await app.inject({
       method: "POST",
       url: `/api/marketplace/properties/${propertyTwo}/offers`,
-      headers: { authorization: "Bearer valid-token" },
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "hotel-onboarding-offer-link-failure",
+      },
       payload: offerRequest(),
     });
 
     expect(response.statusCode).toBe(500);
-    expect(archiveOffer).toHaveBeenCalledWith({
+    expect(failOfferCreation).toHaveBeenCalledWith({
       organizationId: "org_hotel_group",
       propertyId: propertyTwo,
+      idempotencyKey: "hotel-onboarding-offer-link-failure",
+      request: offerRequest(),
       offerResourceId,
     });
+  });
+
+  it("recovers the archived offer on retry without duplicating the offer or operator link", async () => {
+    const harness = createOfferRepositoryHarness();
+    const lifecycleCommandBus = failFirstGrantCommandBus();
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo)],
+      lifecycleCommandBus,
+      repository: createPgMarketplaceHotelSelfServiceRepository({
+        connectionString: "postgresql://target-db",
+        pool: harness.pool,
+      }),
+    });
+    const request = {
+      method: "POST" as const,
+      url: `/api/marketplace/properties/${propertyTwo}/offers`,
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "hotel-onboarding-recover-link",
+      },
+      payload: offerRequest(),
+    };
+
+    const failed = await app.inject(request);
+
+    expect(failed.statusCode).toBe(500);
+    expect(harness.offerStatus()).toBe("archived");
+    expect(harness.idempotencyStatus()).toBe("in_progress");
+    expect(harness.idempotencyMetadata()).toMatchObject({ accessGrantFailed: true });
+    expect(harness.offerInsertCount()).toBe(1);
+    expect(lifecycleCommandBus.successfulOfferLinks.size).toBe(0);
+
+    const changedPayload = await injectJson<{ code: string }>(app, {
+      ...request,
+      payload: { ...offerRequest(), title: "A different hotel stay" },
+    });
+    expect(changedPayload.statusCode).toBe(409);
+    expect(changedPayload.body.code).toBe("idempotency_conflict");
+
+    const recovered = await injectJson<MarketplaceHotelSelfServiceOffer>(app, request);
+    const replayed = await injectJson<MarketplaceHotelSelfServiceOffer>(app, request);
+
+    expect(recovered.statusCode).toBe(201);
+    expect(recovered.body.offerId).toBe(offerResourceId);
+    expect(recovered.body.offerStatus).toBe("pending");
+    expect(replayed.statusCode).toBe(201);
+    expect(replayed.body.offerId).toBe(offerResourceId);
+    expect(harness.offerStatus()).toBe("pending");
+    expect(harness.idempotencyStatus()).toBe("completed");
+    expect(harness.offerInsertCount()).toBe(1);
+    expect(lifecycleCommandBus.commands).toHaveLength(2);
+    expect(
+      new Set(lifecycleCommandBus.commands.map(({ idempotencyKey }) => idempotencyKey)),
+    ).toEqual(new Set([`marketplace-offer:org_hotel_group:${offerResourceId}:operator`]));
+    expect(lifecycleCommandBus.successfulOfferLinks).toEqual(new Set([offerResourceId]));
   });
 
   it("requires the offer resource link before updating an offer", async () => {
@@ -435,8 +688,12 @@ function repository(
       return null;
     },
     async createOffer(input) {
-      return { offer: offer(input.propertyId), offerResourceId };
+      return { offer: offer(input.propertyId), offerResourceId, replayed: false };
     },
+    async completeOfferCreation(input) {
+      return offer(input.propertyId);
+    },
+    async failOfferCreation() {},
     async updateOffer(input) {
       return offer(input.propertyId);
     },
@@ -458,6 +715,38 @@ function recordingCommandBus(error?: Error): RecordingCommandBus {
     async execute(command) {
       commands.push(command);
       if (error) throw error;
+      return {
+        status: "accepted",
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+        events: [],
+      };
+    },
+  };
+}
+
+function failFirstGrantCommandBus(): RecordingCommandBus & {
+  successfulOfferLinks: Set<string>;
+} {
+  const commands: IdentityLifecycleCommand[] = [];
+  const successfulOfferLinks = new Set<string>();
+  let failNextGrant = true;
+  return {
+    commands,
+    successfulOfferLinks,
+    async execute(command) {
+      commands.push(command);
+      if (failNextGrant) {
+        failNextGrant = false;
+        throw new Error("identity unavailable");
+      }
+      if (command.commandType === "identity.resource_links.grant") {
+        for (const link of command.payload.resourceLinks) {
+          if (link.resourceType === "marketplace_offer" && link.relationship === "operator") {
+            successfulOfferLinks.add(link.resourceId);
+          }
+        }
+      }
       return {
         status: "accepted",
         commandId: command.commandId,
@@ -498,11 +787,15 @@ function offer(propertyId: string) {
   };
 }
 
-function offerRow(offerId: string, media: Array<{ mediaObjectId: string; url: string }>) {
+function offerRow(
+  offerId: string,
+  media: Array<{ mediaObjectId: string; url: string }>,
+  offerStatus: "pending" | "archived" = "pending",
+) {
   return {
     offerId,
     propertyId: propertyTwo,
-    offerStatus: "pending",
+    offerStatus,
     title: "Hotel stay",
     offerSummary: "Two nights",
     media,
@@ -514,7 +807,7 @@ function offerRow(offerId: string, media: Array<{ mediaObjectId: string; url: st
   };
 }
 
-function offerRequest() {
+function offerRequest(): MarketplaceAdminCreateOfferRequest {
   return {
     title: "Hotel stay",
     offerSummary: "Two nights",
@@ -575,4 +868,155 @@ function offerLink(
     relationship,
     status: "active",
   };
+}
+
+function createOfferRepositoryHarness() {
+  let idempotency:
+    | {
+        id: string;
+        status: string;
+        requestFingerprintHash: string;
+        responseResourceId: string | null;
+        idempotencyMetadata: Record<string, unknown>;
+        organizationId: string;
+      }
+    | undefined;
+  let offerInserts = 0;
+  let offerStatus: "pending" | "archived" = "pending";
+  let offerOrganizationId = "org_hotel_group";
+  const transactionStatements: string[] = [];
+  const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+
+  const client = {
+    async query(text: string, values: readonly unknown[] = []) {
+      queries.push({ text, values });
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") {
+        transactionStatements.push(text);
+        return queryResult();
+      }
+      if (text.includes("FROM platform.idempotency_keys")) {
+        return queryResult(
+          idempotency && idempotency.organizationId === values[1] ? [idempotency] : [],
+        );
+      }
+      if (text.includes("INSERT INTO platform.idempotency_keys")) {
+        if (idempotency && idempotency.organizationId === values[2]) return queryResult();
+        idempotency = {
+          id: "00000000-0000-4000-8000-000000000020",
+          status: "in_progress",
+          requestFingerprintHash: String(values[1]),
+          responseResourceId: null,
+          idempotencyMetadata: {},
+          organizationId: String(values[2]),
+        };
+        return queryResult([{ id: idempotency.id }]);
+      }
+      if (text.includes("INSERT INTO marketplace.marketplace_offers")) {
+        offerInserts += 1;
+        offerOrganizationId = String(values[1]);
+        return queryResult([{ id: offerResourceId }]);
+      }
+      if (text.includes("FROM marketplace.marketplace_hotel_profiles profile")) {
+        return queryResult(
+          values[1] === offerOrganizationId && values[2] === propertyTwo
+            ? [offerRow(offerResourceId, [], offerStatus)]
+            : [],
+        );
+      }
+      if (text.includes("FROM marketplace.marketplace_offers offer")) {
+        return queryResult([offerRow(offerResourceId, [], offerStatus)]);
+      }
+      if (
+        text.includes("UPDATE marketplace.marketplace_offers") &&
+        text.includes("SET offer_status = 'archived'")
+      ) {
+        const changed = offerStatus !== "archived";
+        offerStatus = "archived";
+        return queryResult(changed ? [{ id: offerResourceId }] : []);
+      }
+      if (
+        text.includes("UPDATE marketplace.marketplace_offers") &&
+        text.includes("WHEN offer_status = 'archived'")
+      ) {
+        const canRestore = Boolean(values[3]);
+        if (offerStatus === "archived" && !canRestore) return queryResult();
+        if (canRestore) offerStatus = "pending";
+        return queryResult([{ id: offerResourceId }]);
+      }
+      if (
+        text.includes("UPDATE platform.idempotency_keys") &&
+        text.includes("response_resource_product = 'marketplace'") &&
+        !text.includes("status = 'completed'")
+      ) {
+        if (!idempotency) throw new Error("Missing idempotency reservation");
+        idempotency.requestFingerprintHash = String(values[1]);
+        idempotency.responseResourceId = String(values[2]);
+        idempotency.idempotencyMetadata = {
+          ...idempotency.idempotencyMetadata,
+          ...(JSON.parse(String(values[3])) as Record<string, unknown>),
+        };
+        return queryResult([{ id: idempotency.id }]);
+      }
+      if (
+        text.includes("UPDATE platform.idempotency_keys") &&
+        text.includes("idempotency_metadata = idempotency_metadata || $2::jsonb")
+      ) {
+        if (!idempotency) throw new Error("Missing idempotency reservation");
+        idempotency.idempotencyMetadata = {
+          ...idempotency.idempotencyMetadata,
+          ...(JSON.parse(String(values[1])) as Record<string, unknown>),
+        };
+        return queryResult([{ id: idempotency.id }]);
+      }
+      if (
+        text.includes("UPDATE platform.idempotency_keys") &&
+        text.includes("status = 'completed'")
+      ) {
+        if (!idempotency) throw new Error("Missing idempotency reservation");
+        idempotency.status = "completed";
+        idempotency.requestFingerprintHash = String(values[1]);
+        idempotency.responseResourceId = String(values[3]);
+        idempotency.idempotencyMetadata = {
+          ...idempotency.idempotencyMetadata,
+          ...(JSON.parse(String(values[4])) as Record<string, unknown>),
+        };
+        return queryResult([{ id: idempotency.id }]);
+      }
+      if (
+        text.includes("DELETE FROM marketplace.offer_") ||
+        text.includes("INSERT INTO marketplace.offer_") ||
+        text.includes("INSERT INTO marketplace.marketplace_offer_read_model")
+      ) {
+        return queryResult();
+      }
+      if (text.includes("DELETE FROM platform.idempotency_keys")) {
+        idempotency = undefined;
+        return queryResult();
+      }
+      throw new Error(`Unexpected offer repository query: ${text}`);
+    },
+    release: vi.fn(),
+  };
+  const pool = {
+    connect: vi.fn(async () => client),
+    query: vi.fn(),
+    end: vi.fn(async () => undefined),
+  } as never;
+
+  return {
+    pool,
+    offerInsertCount: () => offerInserts,
+    offerStatus: () => offerStatus,
+    idempotencyStatus: () => idempotency?.status,
+    idempotencyMetadata: () => idempotency?.idempotencyMetadata,
+    queries: () => queries,
+    setOfferOrganization: (organizationId: string) => {
+      offerOrganizationId = organizationId;
+    },
+    transactions: () => transactionStatements,
+  };
+}
+
+function queryResult(rows: Record<string, unknown>[] = []) {
+  return { rows, rowCount: rows.length };
 }

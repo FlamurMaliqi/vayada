@@ -3,12 +3,17 @@
 import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/auth";
+import { getAuthSessionUser, getSelectedOrganizationId } from "@/services/auth/sessionStore";
 import { settingsService } from "@/services/settings";
 import type { CreateBookingAddonItemBody } from "@/services/api/bookingAddonItemsClient";
 import type { CreateBookingPromoCodeBody } from "@/services/api/bookingPromoCodesClient";
 import { updateBookingBenefitsSettings } from "@/services/api/bookingBenefitsSettingsClient";
 import { updateBookingLastMinuteSettings } from "@/services/api/bookingLastMinuteSettingsClient";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
+import {
+  publicationReadinessError,
+  publishPublicBookabilityProfile,
+} from "@/services/api/publicBookabilityPublicationClient";
 import {
   buildFinancePaymentSettingsBody,
   updateFinancePaymentSettings,
@@ -27,6 +32,13 @@ import { getCurrencySymbol } from "@/lib/utils";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { SharedHotelSetupPage } from "@/components/setup/SharedHotelSetupPage";
 import { reconcileSetupAddons, reconcileSetupPromoCodes } from "@/lib/utils/reconcileSetupCatalog";
+import {
+  clearBookingSetupDraft,
+  readBookingSetupDraft,
+  type BookingSetupDraftScope,
+  writeBookingSetupDraft,
+} from "@/lib/utils/bookingSetupDraft";
+import { isBookingActivationBrandingReady } from "@/lib/utils/bookingActivationBranding";
 
 import {
   AddonsStep,
@@ -104,6 +116,20 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function getBookingSetupDraftUserId(): string | null {
+  const sessionUserId = getAuthSessionUser()?.id;
+  if (sessionUserId?.trim()) return sessionUserId.trim();
+  if (typeof window === "undefined") return null;
+
+  const storedUserId = localStorage.getItem("userId")?.trim();
+  if (storedUserId) return storedUserId;
+  try {
+    return readString(JSON.parse(localStorage.getItem("user") ?? "null")?.id);
+  } catch {
+    return null;
+  }
+}
+
 function readBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
@@ -134,6 +160,8 @@ function BookingProductSetupPage() {
   const [showWizard, setShowWizard] = useState(false);
   const [setupPromoCodes, setSetupPromoCodes] = useState<CreateBookingPromoCodeBody[]>([]);
   const [heroHeading, setHeroHeading] = useState("");
+  const [draftScope, setDraftScope] = useState<BookingSetupDraftScope | null>(null);
+  const [draftHydrated, setDraftHydrated] = useState(false);
   const activationHotelIdRef = useRef<string | null>(null);
   const setupSteps = productActivationMode ? ACTIVATION_STEPS : STEPS;
 
@@ -235,9 +263,169 @@ function BookingProductSetupPage() {
     ],
   });
 
+  const restoreDraft = (propertyId?: string) => {
+    const userId = getBookingSetupDraftUserId();
+    const organizationId = getSelectedOrganizationId();
+    const scope =
+      userId?.trim() && organizationId?.trim()
+        ? { userId, organizationId, propertyId: propertyId?.trim() || null }
+        : null;
+    const draft = scope ? readBookingSetupDraft(localStorage, scope) : null;
+    if (draft) {
+      const values = draft.values;
+      const setString = (key: string, setter: (value: string) => void) => {
+        const value = values[key];
+        if (typeof value === "string") setter(value);
+      };
+      const setBoolean = (key: string, setter: (value: boolean) => void) => {
+        const value = values[key];
+        if (typeof value === "boolean") setter(value);
+      };
+      const setStrings = (key: string, setter: (value: string[]) => void) => {
+        const value = values[key];
+        if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+          setter(value);
+        }
+      };
+
+      setString("propertyName", setPropertyName);
+      setString("city", setCity);
+      setString("country", setCountry);
+      setString("address", setAddress);
+      setString("reservationEmail", setReservationEmail);
+      setString("phoneNumber", setPhoneNumber);
+      setString("whatsapp", setWhatsapp);
+      setString("instagram", setInstagram);
+      setString("facebook", setFacebook);
+      setString("currency", setCurrency);
+      setString("defaultLanguage", setDefaultLanguage);
+      setStrings("supportedCurrencies", setSupportedCurrencies);
+      setStrings("supportedLanguages", setSupportedLanguages);
+      setString("heroImage", setHeroImage);
+      setString("heroHeading", setHeroHeading);
+      setString("primaryColor", setPrimaryColor);
+      setString("selectedFont", setSelectedFont);
+      setString("propertyDescription", setPropertyDescription);
+      setString("checkInFrom", setCheckInFrom);
+      setString("checkOutUntil", setCheckOutUntil);
+      setBoolean("payAtHotel", setPayAtHotel);
+      setStrings("payAtHotelMethods", setPayAtHotelMethods);
+      setBoolean("onlineCardPayment", setOnlineCardPayment);
+      setBoolean("bankTransfer", setBankTransfer);
+      setBoolean("specialRequests", setSpecialRequests);
+      setBoolean("estimatedArrivalTime", setEstimatedArrivalTime);
+      setBoolean("numberOfGuests", setNumberOfGuests);
+      const restoredPaymentProvider = values.paymentProvider;
+      if (
+        restoredPaymentProvider === "stripe" ||
+        restoredPaymentProvider === "xendit" ||
+        restoredPaymentProvider === "vayada"
+      ) {
+        setPaymentProvider(restoredPaymentProvider);
+      }
+
+      if (Array.isArray(values.setupAddons)) setSetupAddons(values.setupAddons as SetupAddon[]);
+      if (Array.isArray(values.setupPromoCodes)) {
+        setSetupPromoCodes(values.setupPromoCodes as CreateBookingPromoCodeBody[]);
+      }
+      if (Array.isArray(values.benefits)) setBenefits(values.benefits as string[]);
+      if (isRecord(values.lastMinuteConfig)) {
+        setLastMinuteConfig(values.lastMinuteConfig as unknown as typeof lastMinuteConfig);
+      }
+      if (setupSteps.some((item) => item.number === draft.step)) setStep(draft.step);
+    }
+    setDraftScope(scope);
+    setDraftHydrated(true);
+  };
+
+  useEffect(() => {
+    if (!draftHydrated || !draftScope || loading || saving) return;
+    const timeout = window.setTimeout(() => {
+      writeBookingSetupDraft(localStorage, draftScope, {
+        step,
+        values: {
+          propertyName,
+          city,
+          country,
+          address,
+          reservationEmail,
+          phoneNumber,
+          whatsapp,
+          instagram,
+          facebook,
+          currency,
+          defaultLanguage,
+          supportedCurrencies,
+          supportedLanguages,
+          heroImage,
+          heroHeading,
+          primaryColor,
+          selectedFont,
+          propertyDescription,
+          setupAddons,
+          setupPromoCodes,
+          benefits,
+          lastMinuteConfig,
+          checkInFrom,
+          checkOutUntil,
+          payAtHotel,
+          payAtHotelMethods,
+          onlineCardPayment,
+          bankTransfer,
+          specialRequests,
+          estimatedArrivalTime,
+          numberOfGuests,
+          paymentProvider,
+        },
+      });
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [
+    address,
+    bankTransfer,
+    benefits,
+    checkInFrom,
+    checkOutUntil,
+    city,
+    country,
+    currency,
+    defaultLanguage,
+    draftHydrated,
+    draftScope,
+    estimatedArrivalTime,
+    facebook,
+    heroHeading,
+    heroImage,
+    instagram,
+    lastMinuteConfig,
+    loading,
+    numberOfGuests,
+    onlineCardPayment,
+    payAtHotel,
+    payAtHotelMethods,
+    paymentProvider,
+    phoneNumber,
+    primaryColor,
+    propertyDescription,
+    propertyName,
+    reservationEmail,
+    saving,
+    selectedFont,
+    setupAddons,
+    setupPromoCodes,
+    specialRequests,
+    step,
+    supportedCurrencies,
+    supportedLanguages,
+    whatsapp,
+  ]);
+
   useEffect(() => {
     async function checkAuth() {
       activationHotelIdRef.current = null;
+      setDraftHydrated(false);
+      setDraftScope(null);
+      let selectedDraftPropertyId = activationPropertyId;
       // Accept auth token passed via URL hash (cross-domain handoff from PMS)
       if (typeof window !== "undefined" && window.location.hash) {
         const params = new URLSearchParams(window.location.hash.slice(1));
@@ -290,6 +478,7 @@ function BookingProductSetupPage() {
           return;
         }
         activationHotelIdRef.current = activationHotel.id;
+        selectedDraftPropertyId = activationHotel.propertyId ?? activationHotel.id;
         localStorage.setItem("selectedHotelId", activationHotel.id);
       }
 
@@ -379,25 +568,35 @@ function BookingProductSetupPage() {
           setPropertyDescription(design.hero_subtext);
           setPrimaryColor(design.primary_color);
           setSelectedFont(design.font_pairing);
+          restoreDraft(selectedDraftPropertyId ?? activationHotelId);
           setActivationSettingsLoaded(true);
           setPrefilled(true);
         } catch {
+          restoreDraft(
+            selectedDraftPropertyId ?? activationPropertyId ?? activationHotelIdRef.current!,
+          );
           setError("We couldn't load your Booking settings. Refresh the page to try again.");
           setShowWizard(true);
         }
-      } else if (!addMode) {
-        const prefill = status?.prefill_data;
-        if (prefill) {
-          if (prefill.property_name) setPropertyName(prefill.property_name);
-          if (prefill.reservation_email) setReservationEmail(prefill.reservation_email);
-          if (prefill.phone_number) setPhoneNumber(prefill.phone_number);
-          if (prefill.address) setAddress(prefill.address);
-          setPrefilled(true);
+      } else {
+        if (!addMode) {
+          const prefill = status?.prefill_data;
+          if (prefill) {
+            if (prefill.property_name) setPropertyName(prefill.property_name);
+            if (prefill.reservation_email) setReservationEmail(prefill.reservation_email);
+            if (prefill.phone_number) setPhoneNumber(prefill.phone_number);
+            if (prefill.address) setAddress(prefill.address);
+            setPrefilled(true);
+          }
         }
+        restoreDraft();
       }
       setLoading(false);
     }
     checkAuth();
+    // This is an initialization boundary. Wizard setters are stable, while
+    // re-running hydration after each restored field would overwrite edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activationPropertyId, productActivationMode, router]);
 
   const canProceed = (): boolean => {
@@ -417,9 +616,14 @@ function BookingProductSetupPage() {
     if (step === BRANDING_STEP) {
       return (
         activationSettingsLoaded &&
-        !uploading &&
-        /^#[0-9A-Fa-f]{6}$/.test(primaryColor) &&
-        FONT_PAIRINGS.some((pairing) => pairing.id === selectedFont)
+        isBookingActivationBrandingReady({
+          heroImage,
+          heroSubtext: propertyDescription,
+          primaryColor,
+          selectedFont,
+          supportedFontPairings: FONT_PAIRINGS.map((pairing) => pairing.id),
+          uploading,
+        })
       );
     }
     return true;
@@ -542,32 +746,25 @@ function BookingProductSetupPage() {
         }
       }
       if (createdHotelId) {
-        try {
-          const propertyLink = await getBookingHotelPropertyLink({ hotelId: createdHotelId });
-          await updateFinancePaymentSettings({
-            propertyId: propertyLink.propertyId,
-            body: buildFinancePaymentSettingsBody({
-              payAtPropertyEnabled: payAtHotel,
-              payAtHotelMethods,
-              onlineCardPayment,
-              bankTransfer,
-              payoutAccountHolder,
-              payoutAccountType,
-              payoutIban,
-              payoutAccountNumber,
-              payoutBankName,
-              payoutSwift,
-              paymentProvider,
-              defaultCurrency: currency,
-              commandPrefix: `setup-payment-settings-${createdHotelId}`,
-            }),
-          });
-        } catch {
-          localStorage.setItem(
-            "setupWarning",
-            "Hotel created, but payment settings were not saved. Update them from Settings > Payments.",
-          );
-        }
+        const propertyLink = await getBookingHotelPropertyLink({ hotelId: createdHotelId });
+        await updateFinancePaymentSettings({
+          propertyId: propertyLink.propertyId,
+          body: buildFinancePaymentSettingsBody({
+            payAtPropertyEnabled: payAtHotel,
+            payAtHotelMethods,
+            onlineCardPayment,
+            bankTransfer,
+            payoutAccountHolder,
+            payoutAccountType,
+            payoutIban,
+            payoutAccountNumber,
+            payoutBankName,
+            payoutSwift,
+            paymentProvider,
+            defaultCurrency: currency,
+            commandPrefix: `setup-payment-settings-${createdHotelId}`,
+          }),
+        });
       }
 
       // 8. Save benefits
@@ -596,6 +793,19 @@ function BookingProductSetupPage() {
         }
       }
 
+      if (!createdHotelId) {
+        throw new Error("Booking hotel id is required before publishing the booking page.");
+      }
+      const publication = await publishPublicBookabilityProfile(createdHotelId);
+      const readinessError = publicationReadinessError(publication);
+      if (readinessError) {
+        setError(readinessError);
+        setSaving(false);
+        return;
+      }
+
+      if (draftScope) clearBookingSetupDraft(localStorage, draftScope);
+
       localStorage.setItem("setupComplete", "true");
 
       // Mark invite code as redeemed
@@ -622,14 +832,22 @@ function BookingProductSetupPage() {
 
       router.push("/dashboard");
     } catch (err: unknown) {
-      console.error("Setup failed:", err);
+      console.warn("Setup failed:", err);
       let message = "An unexpected error occurred. Please try again.";
       if (err && typeof err === "object" && "data" in err) {
-        const apiErr = err as { data: { detail: string | Array<{ msg: string }> } };
+        const apiErr = err as {
+          data: {
+            detail?: string | Array<{ msg: string }>;
+            message?: string;
+            details?: string[];
+          };
+        };
         if (typeof apiErr.data.detail === "string") {
           message = apiErr.data.detail;
         } else if (Array.isArray(apiErr.data.detail)) {
           message = apiErr.data.detail.map((e) => e.msg).join(", ");
+        } else if (typeof apiErr.data.message === "string") {
+          message = [apiErr.data.message, ...(apiErr.data.details ?? [])].join(" ");
         }
       } else if (err instanceof TypeError && err.message === "Failed to fetch") {
         message =
@@ -989,7 +1207,7 @@ function BookingProductSetupPage() {
         <BrandMediaStep
           heroImage={heroImage}
           setHeroImage={setHeroImage}
-          heroImageRequired={false}
+          heroImageRequired
           heroHeading={heroHeading}
           setHeroHeading={setHeroHeading}
           primaryColor={primaryColor}
@@ -998,6 +1216,7 @@ function BookingProductSetupPage() {
           setSelectedFont={setSelectedFont}
           propertyDescription={propertyDescription}
           setPropertyDescription={setPropertyDescription}
+          propertyDescriptionRequired
           uploading={uploading}
           fileInputRef={fileInputRef}
           handleImageUpload={handleImageUpload}

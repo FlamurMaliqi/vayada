@@ -3,6 +3,7 @@ import type { QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildRoomTypeInventoryHorizon,
   createTargetPmsOperationsCommandRepository,
   type PmsOperationsCommandPool,
 } from "./domains/pmsOperationsCommandRepository.js";
@@ -244,7 +245,7 @@ describe("PMS operations command repository", () => {
     ).toHaveLength(1);
   });
 
-  it("creates PMS room types with replay-safe idempotency and ARI side effects", async () => {
+  it("creates PMS room types with replay-safe inventory and distribution side effects", async () => {
     const target = targetPrivateNotesPool();
     const repository = createTargetPmsOperationsCommandRepository({
       connectionString: "postgresql://pms-target",
@@ -288,7 +289,11 @@ describe("PMS operations command repository", () => {
       statusCode: 409,
       code: "idempotency_conflict",
     });
-    expect(created.commandMeta.sideEffects).toEqual(["ari_changed", "audit_event"]);
+    expect(created.commandMeta.sideEffects).toEqual([
+      "ari_changed",
+      "distribution_refresh",
+      "audit_event",
+    ]);
     expect(target.roomTypes).toHaveLength(1);
     expect(target.generatedRooms.map((room) => room.roomNumber)).toEqual([
       "Deluxe Double 1",
@@ -304,10 +309,13 @@ describe("PMS operations command repository", () => {
       call.text.includes("INSERT INTO platform.product_audit_events"),
     );
     expect(domainEventCalls[0]?.values?.[0]).toBe(
-      `pms.room_type.created.property.${command.propertyId}.key.${keyHash}.v1`,
+      `pms.inventory.changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
     );
     expect(outboxCalls[0]?.values?.[1]).toBe(
       `pms.ari_changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
+    );
+    expect(outboxCalls[1]?.values?.[1]).toBe(
+      `distribution.inventory_changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
     );
     expect(auditCall?.text).toMatch(/'property',\s+NULL,\s+\$3::uuid/);
     expect(auditCall?.values?.[2]).toBe(command.propertyId);
@@ -320,8 +328,57 @@ describe("PMS operations command repository", () => {
     expect(target.calls.filter((call) => call.text.includes("INSERT INTO pms.rooms"))).toHaveLength(
       1,
     );
+    expect(
+      target.calls.filter((call) => call.text.includes("INSERT INTO pms.rate_rules")),
+    ).toHaveLength(1);
+    expect(
+      target.calls.filter((call) => call.text.includes("INSERT INTO pms.inventory_days")),
+    ).toHaveLength(1);
     expect(domainEventCalls).toHaveLength(1);
-    expect(outboxCalls).toHaveLength(1);
+    expect(outboxCalls).toHaveLength(2);
+  });
+
+  it("materializes only the bounded explicit operating and season horizon", () => {
+    const horizon = buildRoomTypeInventoryHorizon(
+      roomTypeCreateCommand({
+        roomCount: 3,
+        operatingPeriods: [{ from: "08-01", to: "08-31" }],
+        seasons: [
+          {
+            name: "Summer",
+            tier: "high",
+            from: "08-10",
+            to: "08-20",
+            rate: { amountDecimal: "210.00", currency: "EUR" },
+            minStayNights: 2,
+            maxStayNights: 7,
+          },
+        ],
+      }),
+      "2026-08-14T17:00:00.000Z",
+    );
+
+    expect(horizon).toHaveLength(366);
+    expect(horizon[0]).toEqual({
+      stayDate: "2026-08-14",
+      status: "open",
+      totalCount: 3,
+      availableCount: 3,
+      seasonIndex: 0,
+      rateAmountDecimal: "210.00",
+      minStayNights: 2,
+      maxStayNights: 7,
+    });
+    expect(horizon.find((day) => day.stayDate === "2026-08-21")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+      rateAmountDecimal: null,
+    });
+    expect(horizon.find((day) => day.stayDate === "2026-09-01")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+    });
+    expect(horizon.at(-1)?.stayDate).toBe("2027-08-14");
   });
 
   it("updates PMS room-type location with replay-safe idempotency", async () => {
@@ -876,7 +933,7 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
 function roomTypeCreateCommand(
   overrides: Partial<PmsRoomTypeCreateCommand> = {},
 ): PmsRoomTypeCreateCommand {
-  return {
+  const command: PmsRoomTypeCreateCommand = {
     propertyId: defaultPropertyId,
     commandId: "cmd-room-type-create",
     idempotencyKey: "client-room-type-create",
@@ -889,11 +946,28 @@ function roomTypeCreateCommand(
     media: [{ url: "https://cdn.example.test/deluxe.jpg", altText: "Deluxe Double" }],
     baseRate: { amountDecimal: "149.00", currency: "EUR" },
     nonRefundableRate: { amountDecimal: "129.00", currency: "EUR" },
+    operatingPeriods: [{ from: "01-01", to: "12-31" }],
+    seasons: [
+      {
+        name: "Default",
+        tier: "mid",
+        from: "01-01",
+        to: "12-31",
+        rate: { amountDecimal: "149.00", currency: "EUR" },
+        minStayNights: 1,
+        maxStayNights: null,
+      },
+    ],
     active: true,
     sortOrder: 10,
     roomCount: 2,
     audit: roomTypeAudit("cmd-room-type-create", "Create room type"),
+  };
+  return {
+    ...command,
     ...overrides,
+    operatingPeriods: overrides.operatingPeriods ?? command.operatingPeriods,
+    seasons: overrides.seasons ?? command.seasons,
   };
 }
 

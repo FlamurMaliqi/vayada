@@ -273,6 +273,30 @@ describe("createWorkOSAuthKitClient", () => {
     expect(workosMocks.refresh).not.toHaveBeenCalled();
   });
 
+  it("treats expired sealed-session refreshes as invalid sessions", async () => {
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          loadSealedSession: workosMocks.loadSealedSession,
+        },
+      };
+    });
+    workosMocks.loadSealedSession.mockReturnValue({
+      refresh: workosMocks.refresh,
+    });
+    workosMocks.refresh.mockRejectedValue(
+      Object.assign(new Error("JWT expired"), { code: "ERR_JWT_EXPIRED" }),
+    );
+
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await expect(client.refreshSession({ sealedSession: "stale-session" })).resolves.toBeNull();
+  });
+
   it("updates both structured and display names", async () => {
     workosMocks.WorkOS.mockImplementation(function WorkOS() {
       return {

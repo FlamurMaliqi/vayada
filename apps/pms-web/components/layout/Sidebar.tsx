@@ -4,15 +4,10 @@ import { Fragment, useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BoltIcon, ChevronLeftIcon, ChevronDownIcon, CheckIcon } from "@heroicons/react/24/outline";
-import { useFeatureModuleActivations } from "@vayada/feature-hub";
 import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
-import { messagingService } from "@/services/messaging";
-import { moduleActivationClient } from "@/services/api/moduleActivationClient";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
-
-const UNREAD_POLL_MS = 60_000;
 
 const BOOKING_ADMIN_URL =
   process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
@@ -39,6 +34,7 @@ interface NavItem {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   badge?: number;
+  unavailable?: boolean;
 }
 
 const CORE_NAV_ITEMS: Omit<NavItem, "badge">[] = [
@@ -46,14 +42,14 @@ const CORE_NAV_ITEMS: Omit<NavItem, "badge">[] = [
   { labelKey: "layout.sidebar.calendar", href: "/calendar", icon: CalendarIcon },
   { labelKey: "layout.sidebar.reservations", href: "/bookings", icon: ReservationsIcon },
   { labelKey: "layout.sidebar.roomsAndRates", href: "/rooms", icon: RoomsIcon },
-  { labelKey: "layout.sidebar.channelManager", href: "/channel-manager", icon: ChannelsIcon },
+  {
+    labelKey: "layout.sidebar.channelManager",
+    href: "/channel-manager",
+    icon: ChannelsIcon,
+    unavailable: true,
+  },
   { labelKey: "layout.sidebar.settings", href: "/settings", icon: SettingsIcon },
 ];
-
-const ACTIVATABLE_NAV_ITEMS: Record<string, Omit<NavItem, "badge">> = {
-  inbox: { labelKey: "layout.sidebar.inbox", href: "/inbox", icon: InboxIcon },
-  financials: { labelKey: "layout.sidebar.financials", href: "/financials", icon: FinancialsIcon },
-};
 
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -62,10 +58,8 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const [enabledProducts, setEnabledProducts] = useState<Set<SharedHotelSetupProduct>>(
     () => new Set<SharedHotelSetupProduct>(["pms"]),
   );
-  const [inboxUnread, setInboxUnread] = useState(0);
   const { t } = useTranslation();
   const switcherRef = useRef<HTMLDivElement>(null);
-  const { activeModuleSet } = useFeatureModuleActivations(moduleActivationClient);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -96,41 +90,16 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      messagingService
-        .unreadCount()
-        .then((res) => {
-          if (!cancelled) setInboxUnread(res.unreadCount);
-        })
-        .catch(() => {
-          /* ignore — likely 401 on logout, or feature flag off */
-        });
-    };
-    tick();
-    const id = setInterval(tick, UNREAD_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
-
   const baseNavItems: Omit<NavItem, "badge">[] = [
     CORE_NAV_ITEMS[0],
     CORE_NAV_ITEMS[1],
     CORE_NAV_ITEMS[2],
-    ...(activeModuleSet.has("inbox") ? [ACTIVATABLE_NAV_ITEMS.inbox] : []),
     CORE_NAV_ITEMS[3],
     CORE_NAV_ITEMS[4],
-    ...(activeModuleSet.has("financials") ? [ACTIVATABLE_NAV_ITEMS.financials] : []),
     CORE_NAV_ITEMS[5],
   ];
 
-  const navItems: NavItem[] = baseNavItems.map((item) =>
-    item.href === "/inbox" && inboxUnread > 0 ? { ...item, badge: inboxUnread } : item,
-  );
+  const navItems: NavItem[] = baseNavItems;
 
   return (
     <aside
@@ -324,38 +293,59 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           const featureHubActive = pathname.startsWith("/settings/feature-hub");
           return (
             <Fragment key={item.href}>
-              <Link
-                href={item.href}
-                onClick={onNavigate}
-                className={cn(
-                  "relative flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] transition-colors",
-                  isActive
-                    ? "text-gray-900 font-semibold bg-gray-50"
-                    : "text-gray-600 hover:text-gray-900 hover:bg-gray-50",
-                  collapsed && "justify-center px-0",
-                )}
-                title={collapsed ? label : undefined}
-              >
-                <item.icon
+              {item.unavailable ? (
+                <div
+                  aria-disabled="true"
                   className={cn(
-                    "w-[18px] h-[18px] shrink-0",
-                    isActive ? "text-gray-900" : "text-gray-400",
+                    "relative flex cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-gray-400",
+                    collapsed && "justify-center px-0",
                   )}
-                />
-                {!collapsed && (
-                  <>
-                    <span className="flex-1">{label}</span>
-                    {item.badge != null && (
-                      <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[10px] font-bold bg-emerald-600 text-white rounded-full shrink-0">
-                        {item.badge > 99 ? "99+" : item.badge}
+                  title={`${label} — not available yet`}
+                >
+                  <item.icon className="h-[18px] w-[18px] shrink-0 text-gray-300" />
+                  {!collapsed && (
+                    <>
+                      <span className="flex-1">{label}</span>
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
+                        Soon
                       </span>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <Link
+                  href={item.href}
+                  onClick={onNavigate}
+                  className={cn(
+                    "relative flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] transition-colors",
+                    isActive
+                      ? "text-gray-900 font-semibold bg-gray-50"
+                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-50",
+                    collapsed && "justify-center px-0",
+                  )}
+                  title={collapsed ? label : undefined}
+                >
+                  <item.icon
+                    className={cn(
+                      "w-[18px] h-[18px] shrink-0",
+                      isActive ? "text-gray-900" : "text-gray-400",
                     )}
-                  </>
-                )}
-                {collapsed && item.badge != null && (
-                  <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-emerald-600 rounded-full" />
-                )}
-              </Link>
+                  />
+                  {!collapsed && (
+                    <>
+                      <span className="flex-1">{label}</span>
+                      {item.badge != null && (
+                        <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[10px] font-bold bg-emerald-600 text-white rounded-full shrink-0">
+                          {item.badge > 99 ? "99+" : item.badge}
+                        </span>
+                      )}
+                    </>
+                  )}
+                  {collapsed && item.badge != null && (
+                    <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-emerald-600 rounded-full" />
+                  )}
+                </Link>
+              )}
               {item.href === "/settings" && !collapsed && (
                 <Link
                   href="/settings/feature-hub"
@@ -492,39 +482,6 @@ function ChannelsIcon({ className }: { className?: string }) {
       <circle cx="12" cy="12" r="10" />
       <path d="M2 12h20" />
       <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-    </svg>
-  );
-}
-
-function InboxIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
-
-function FinancialsIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <line x1="12" y1="1" x2="12" y2="23" />
-      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
     </svg>
   );
 }

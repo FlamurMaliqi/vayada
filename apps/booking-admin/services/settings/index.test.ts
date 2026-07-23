@@ -239,7 +239,7 @@ describe("settingsService next-stack bootstrap data", () => {
       id: "booking_hotel_alpenrose",
       property_name: "Updated",
     });
-    expect(fetch).toHaveBeenCalledTimes(8);
+    expect(fetch).toHaveBeenCalledTimes(12);
     expect(fetch).toHaveBeenLastCalledWith(
       expect.stringMatching(/\/api\/booking\/hotels\/booking_hotel_alpenrose\/settings\/property$/),
       expect.objectContaining({ method: "PATCH" }),

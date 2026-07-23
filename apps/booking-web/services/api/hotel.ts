@@ -67,6 +67,7 @@ export const hotelService = {
     dates: string[];
     minStayByArrival: Record<string, number>;
     maxStayByArrival: Record<string, number>;
+    availabilityUnavailable: boolean;
   }> {
     return toLegacyCalendar(await bookingWebPublicApi.getCalendar(slug, start, end));
   },

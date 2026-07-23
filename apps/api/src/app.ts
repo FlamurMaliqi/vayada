@@ -1,6 +1,10 @@
 import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backend-auth";
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
+import type {
+  PmsInventoryPublicOfferProjectionPort,
+  PublicBookabilityPublicationCommandPort,
+} from "@vayada/domain-distribution";
 import {
   createAuthorizationResolver,
   type EntitlementRepository,
@@ -94,6 +98,7 @@ import {
   type BookingWebPublicRoutesOptions,
   type BookingDomainResolutionSource,
 } from "./routes/bookingWebPublic.js";
+import type { BookingHotelChangeRequestRepository } from "./routes/bookingChangeRequests.js";
 import {
   registerBookingWebAffiliateRoutes,
   type BookingWebAffiliateHotelResolver,
@@ -101,9 +106,11 @@ import {
 } from "./routes/bookingWebAffiliate.js";
 import {
   registerFinanceRoutes,
+  registerPmsFinanceCompatibilityRoutes,
   type FinancePublicHotelPropertyResolver,
   type FinanceRoutesOptions,
   type FinanceXenditBankValidator,
+  type PmsFinanceCompatibilityRoutesOptions,
 } from "./routes/finance.js";
 import {
   registerAffiliateDashboardRoutes,
@@ -139,10 +146,12 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   workosWebhooks?: WorkosWebhookRoutesOptions;
   providerWebhooks?: ProviderWebhookRoutesOptions;
   bookingReservationsRepository?: BookingReservationsReadRepository;
+  bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
   pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
   pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
+  pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   pmsOperationsAllowedOrigins?: string[];
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
@@ -150,6 +159,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
   bookingSettingsRepository?: BookingSettingsReadRepository;
   bookingSettingsWriteRepository?: BookingSettingsWriteRepository;
+  publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
   bookingCustomDomainRepository?: BookingCustomDomainRepository;
   publicHotelProfileRepository?: PublicHotelProfileRepository;
   publicHotelQuoteRepository?: PublicHotelQuoteRepository;
@@ -194,6 +204,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingWebPublicNow?: BookingWebPublicRoutesOptions["now"];
   affiliateDashboardRepository?: Partial<AffiliateDashboardReadRepository>;
   financeRepository?: FinanceRoutesOptions["repository"];
+  pmsFinanceCompatibilityRepository?: PmsFinanceCompatibilityRoutesOptions["repository"];
   financeXenditBankValidator?: FinanceXenditBankValidator;
   financePublicHotelProfileRepository?: PublicHotelProfileRepository;
   financePublicHotelPropertyResolver?: FinancePublicHotelPropertyResolver;
@@ -373,7 +384,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     reservationsRepository: options.bookingReservationsRepository,
     settingsRepository: options.bookingSettingsRepository,
     settingsWriteRepository: options.bookingSettingsWriteRepository,
+    publicBookabilityPublisher: options.publicBookabilityPublisher,
+    inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
     customDomainRepository: options.bookingCustomDomainRepository,
+    changeRequestRepository: options.bookingChangeRequestRepository,
   });
   app.register(registerAffiliateDashboardRoutes, {
     prefix: "/api",
@@ -386,6 +400,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.pmsOperationsRepository,
       checkoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
       commandRepository: options.pmsOperationsCommandRepository,
+      inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
       bookingGuestPiiPort: options.bookingGuestPiiPort,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
     });
@@ -409,6 +424,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       closePublicHotelProfileRepository:
         Boolean(options.financePublicHotelProfileRepository) &&
         options.financePublicHotelProfileRepository !== options.publicHotelProfileRepository,
+    });
+  } else if (options.pmsFinanceCompatibilityRepository) {
+    app.register(registerPmsFinanceCompatibilityRoutes, {
+      prefix: "/api",
+      repository: options.pmsFinanceCompatibilityRepository,
     });
   }
   if (options.platformContactIntake) {

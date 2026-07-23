@@ -528,7 +528,10 @@ describe("shared hotel setup status route", () => {
       missingFields: ["location", "website", "phone", "description", "media"],
     });
 
-    const updateInput = completeProfileInput("Alpenrose Munich Updated");
+    const updateInput = {
+      ...completeProfileInput("Alpenrose Munich Updated"),
+      expectedUpdatedAt: "2026-06-30T08:00:00.000Z",
+    };
     const updateResponse = await injectJson<SharedPropertyProfile>(app, {
       method: "PUT",
       url: `/api/hotel-setup/properties/${propertyId}/profile`,
@@ -548,6 +551,29 @@ describe("shared hotel setup status route", () => {
       },
     });
     expect(profiles.get(propertyId)).toMatchObject({ displayName: "Alpenrose Munich Updated" });
+  });
+
+  it("rejects an update based on a stale profile timestamp", async () => {
+    const profiles = new Map<string, SharedPropertyProfile>([
+      [propertyId, profileResponse(propertyId, incompleteProfileInput())],
+    ]);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: profileRepository(profiles),
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        ...completeProfileInput("Stale update"),
+        expectedUpdatedAt: "2026-06-29T08:00:00.000Z",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.code).toBe("property_profile_conflict");
   });
 
   it("preserves a legacy property type and accepts a canonical replacement", async () => {
@@ -1579,6 +1605,57 @@ describe("shared hotel setup status route", () => {
     expect(query.mock.calls[0]![1]).toEqual([organizationId, propertyId]);
   });
 
+  it("uses the canonical property timestamp as the profile concurrency token", async () => {
+    const propertyUpdatedAt = "2026-06-30T08:00:00.000Z";
+    const downstreamProjectionUpdatedAt = "2026-06-30T08:05:00.000Z";
+    const query = vi.fn(async (text: string, values?: readonly unknown[]) => {
+      if (text.includes("UPDATE hotel_catalog.properties")) {
+        return {
+          rows: values?.[6] === propertyUpdatedAt ? [{ propertyId }] : [],
+        };
+      }
+
+      return {
+        rows: [
+          profileRow({
+            updatedAt: text.includes('property.updated_at AS "updatedAt"')
+              ? propertyUpdatedAt
+              : downstreamProjectionUpdatedAt,
+          }),
+        ],
+      };
+    });
+    const repository = createPgSharedHotelSetupStatusRepository({
+      connectionString: "postgresql://target-db",
+      pool: {
+        query: async <T extends QueryResultRow = QueryResultRow>(
+          text: string,
+          values?: readonly unknown[],
+        ) => {
+          const result = await query(text, values);
+          return { rows: result.rows as unknown as T[] };
+        },
+        end: vi.fn(async () => undefined),
+      },
+    });
+
+    const current = await repository.getPropertyProfile({ organizationId, propertyId });
+    expect(current?.updatedAt).toBe(propertyUpdatedAt);
+
+    const updated = await repository.updatePropertyProfile({
+      organizationId,
+      propertyId,
+      expectedPropertyType: current!.propertyType,
+      expectedUpdatedAt: current!.updatedAt,
+      profile: completeProfileInput("Alpenrose Updated"),
+    });
+
+    expect(updated?.propertyId).toBe(propertyId);
+    expect(query.mock.calls[0]![0]).toContain('property.updated_at AS "updatedAt"');
+    expect(query.mock.calls[0]![0]).not.toContain("public_profile.projected_at");
+    expect(query.mock.calls[1]![1]?.[6]).toBe(propertyUpdatedAt);
+  });
+
   it("normalizes nullable display names when reading shared property profiles", async () => {
     const query = vi.fn(async (_text: string, _values?: readonly unknown[]) => ({
       rows: [profileRow({ displayName: null })],
@@ -1718,6 +1795,7 @@ describe("shared hotel setup status route", () => {
         organizationId,
         propertyId,
         expectedPropertyType: "hotel",
+        expectedUpdatedAt: "2026-06-30T08:00:00.000Z",
         profile: updatedProfile,
       }),
     ).resolves.toMatchObject({
@@ -1735,6 +1813,9 @@ describe("shared hotel setup status route", () => {
     );
     expect(updateSql).toContain(
       "NULLIF(BTRIM(property.property_type), '') IS NOT DISTINCT FROM $6::text",
+    );
+    expect(updateSql).toContain(
+      "($7::timestamptz IS NULL OR property.updated_at = $7::timestamptz)",
     );
     expect(updateSql).toContain("AND contact.source_system = 'platform'");
     expect(updateSql).toContain("AND media.source_system = 'platform'");
@@ -1758,6 +1839,7 @@ describe("shared hotel setup status route", () => {
       "complete",
       [],
       "hotel",
+      "2026-06-30T08:00:00.000Z",
     ]);
   });
 
@@ -2234,9 +2316,20 @@ function profileRepository(
       profiles.set(secondPropertyId, created);
       return created;
     },
-    async updatePropertyProfile({ propertyId: id, expectedPropertyType, profile }) {
+    async updatePropertyProfile({
+      propertyId: id,
+      expectedPropertyType,
+      expectedUpdatedAt,
+      profile,
+    }) {
       const existing = profiles.get(id);
-      if (!existing || existing.propertyType !== expectedPropertyType) return null;
+      if (
+        !existing ||
+        existing.propertyType !== expectedPropertyType ||
+        (expectedUpdatedAt !== null && existing.updatedAt !== expectedUpdatedAt)
+      ) {
+        return null;
+      }
       const updated = profileResponse(id, profile);
       profiles.set(id, updated);
       return updated;

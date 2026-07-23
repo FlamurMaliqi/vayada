@@ -28,7 +28,7 @@ test.describe("booking-admin AuthKit handoff", () => {
     );
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    expect(refreshRequests).toEqual([
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([
       { organizationId: TARGET_WORKOS_ORGANIZATION_ID, surface: "booking-admin" },
     ]);
     expect(
@@ -42,17 +42,21 @@ test.describe("booking-admin AuthKit handoff", () => {
   test("honors a WorkOS-only organization hint for a normal session", async ({ page }) => {
     await mockBookingAdminShellRoutes(page);
     const refreshRequests: unknown[] = [];
+    let selected = false;
     await page.route("**/auth/session/refresh", (route) => {
+      selected = true;
       refreshRequests.push(route.request().postDataJSON());
       return route.fulfill({ json: authenticatedSession() });
     });
     await page.route("**/auth/session?surface=booking-admin", (route) =>
       route.fulfill({
-        json: authenticatedSession(
-          OTHER_HOTEL_ID,
-          OTHER_ORGANIZATION_ID,
-          OTHER_WORKOS_ORGANIZATION_ID,
-        ),
+        json: selected
+          ? authenticatedSession()
+          : authenticatedSession(
+              OTHER_HOTEL_ID,
+              OTHER_ORGANIZATION_ID,
+              OTHER_WORKOS_ORGANIZATION_ID,
+            ),
       }),
     );
 
@@ -61,7 +65,7 @@ test.describe("booking-admin AuthKit handoff", () => {
     );
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    expect(refreshRequests).toEqual([
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([
       { organizationId: TARGET_WORKOS_ORGANIZATION_ID, surface: "booking-admin" },
     ]);
     expect(
@@ -140,12 +144,12 @@ test.describe("booking-admin AuthKit handoff", () => {
     await expect(page.getByRole("heading", { name: "Choose hotel group" })).toBeVisible();
     await expect(page.getByRole("textbox")).toHaveCount(0);
     expect(new URL(page.url()).searchParams.get("returnTo")).toBe(returnTo);
-    expect(refreshRequests).toEqual([]);
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([]);
 
     await page.getByRole("button", { name: "Alpenrose Hotel Group" }).click();
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    expect(refreshRequests).toEqual([
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([
       { organizationId: TARGET_WORKOS_ORGANIZATION_ID, surface: "booking-admin" },
     ]);
     expect(
@@ -210,6 +214,15 @@ async function mockOrganizationSelection(page: Page, hotelId = BOOKING_ADMIN_HOT
     }),
   );
   return refreshRequests;
+}
+
+function organizationSelectionRequests(requests: unknown[]): unknown[] {
+  return requests.filter(
+    (request) =>
+      Boolean(request) &&
+      typeof request === "object" &&
+      typeof (request as { organizationId?: unknown }).organizationId === "string",
+  );
 }
 
 function organizationSelectionResponse() {

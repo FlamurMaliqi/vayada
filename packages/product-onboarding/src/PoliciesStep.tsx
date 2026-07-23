@@ -73,6 +73,13 @@ function TimeWindow({
   );
 }
 
+export function paymentMethodsAfterPayAtHotelToggle(
+  enabled: boolean,
+  currentMethods: string[],
+): string[] {
+  return enabled && currentMethods.length === 0 ? ["card"] : currentMethods;
+}
+
 interface PoliciesStepProps {
   checkInFrom: string;
   setCheckInFrom: (v: string) => void;
@@ -361,7 +368,15 @@ export default function PoliciesStep({
                   : "border-gray-200 hover:border-gray-300"
               }`}
             >
-              <div onClick={() => setPayAtHotel(!payAtHotel)}>
+              <div
+                onClick={() => {
+                  const enabled = !payAtHotel;
+                  setPayAtHotel(enabled);
+                  setPayAtHotelMethods(
+                    paymentMethodsAfterPayAtHotelToggle(enabled, payAtHotelMethods),
+                  );
+                }}
+              >
                 <div
                   className={`absolute top-3 right-3 w-5 h-5 rounded-full border-2 flex items-center justify-center ${payAtHotel ? "border-primary-500 bg-primary-500" : "border-gray-300"}`}
                 >

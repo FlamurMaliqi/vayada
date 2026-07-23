@@ -8,6 +8,7 @@ import {
   toBookingReservationReadModel,
   type BookingReservationReadModelRow,
 } from "./bookingReservationReadModel.js";
+import { bookingScopedPropertyCte } from "./bookingDashboard.js";
 
 type BookingReservationsReadPool = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -47,6 +48,10 @@ export function createTargetBookingReservationsReadRepository(config: {
 
   return {
     async listReservationsByHotelId(hotelId, filters) {
+      if (!hotelId.trim()) {
+        return { reservations: [], total: 0 };
+      }
+
       const { whereSql, params } = toTargetReservationWhere(hotelId, filters);
       const listParams = [...params, filters.limit, filters.offset];
       const limitParam = params.length + 1;
@@ -54,16 +59,7 @@ export function createTargetBookingReservationsReadRepository(config: {
 
       const [reservationResult, countResult] = await Promise.all([
         pool.query<TargetBookingReservationRow>(
-          `WITH scoped_property AS (
-             SELECT source.property_id
-             FROM hotel_catalog.property_source_links source
-             WHERE source.source_system = 'booking'
-               AND source.source_table = 'booking_hotels'
-               AND source.source_id = $1
-               AND source.relationship = 'canonical_input'
-               AND source.status = 'active'
-             LIMIT 1
-           )
+          `${bookingScopedPropertyCte()}
            SELECT
              booking.id::text AS "id",
              booking.public_reference AS "bookingReference",
@@ -91,8 +87,8 @@ export function createTargetBookingReservationsReadRepository(config: {
              COALESCE(booker.special_requests, checkout.guest_input ->> 'specialRequests', '') AS "specialRequests",
              COALESCE(booker.arrival_time, checkout.guest_input ->> 'arrivalTime') AS "estimatedArrivalTime",
              booking.adults + booking.children AS "numberOfGuests",
-             booking.check_in AS "checkIn",
-             booking.check_out AS "checkOut",
+             booking.check_in::text AS "checkIn",
+             booking.check_out::text AS "checkOut",
              booking.adults,
              booking.children,
              COALESCE(
@@ -303,16 +299,7 @@ export function createTargetBookingReservationsReadRepository(config: {
           listParams,
         ),
         pool.query<{ total: string }>(
-          `WITH scoped_property AS (
-             SELECT source.property_id
-             FROM hotel_catalog.property_source_links source
-             WHERE source.source_system = 'booking'
-               AND source.source_table = 'booking_hotels'
-               AND source.source_id = $1
-               AND source.relationship = 'canonical_input'
-               AND source.status = 'active'
-             LIMIT 1
-           )
+          `${bookingScopedPropertyCte()}
            SELECT COUNT(*)::text AS total
            FROM booking.guest_bookings booking
            JOIN scoped_property scoped ON scoped.property_id = booking.property_id

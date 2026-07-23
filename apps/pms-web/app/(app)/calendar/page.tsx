@@ -33,6 +33,7 @@ import { getChannelBarColor, normalizeChannelKey } from "@/lib/constants/statusS
 
 const VIEW_DAYS = 21;
 const VIEW_MODE_STORAGE_KEY = "pms.calendar.viewMode";
+const CALENDAR_WRITES_AVAILABLE = false;
 type ViewMode = "timeline" | "month";
 
 const CHANNEL_LEGEND_KEYS: Array<{
@@ -502,6 +503,7 @@ export default function CalendarPage() {
             onNewBooking={handleMobileNewBooking}
             onBlockRoom={handleMobileBlockRoom}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
+            writeActionsAvailable={CALENDAR_WRITES_AVAILABLE}
           />
         )}
       </div>
@@ -589,20 +591,32 @@ export default function CalendarPage() {
                 &rarr;
               </button>
               <button
+                type="button"
+                disabled={!CALENDAR_WRITES_AVAILABLE}
+                title={
+                  !CALENDAR_WRITES_AVAILABLE ? "Room blocking is not available yet" : undefined
+                }
                 onClick={() => {
                   setPrefill(null);
                   setShowBlockModal(true);
                 }}
-                className="px-4 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors"
+                className="px-4 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
               >
                 {t("calendar.blockRoom")}
               </button>
               <button
+                type="button"
+                disabled={!CALENDAR_WRITES_AVAILABLE}
+                title={
+                  !CALENDAR_WRITES_AVAILABLE
+                    ? "Manual booking creation is not available yet"
+                    : undefined
+                }
                 onClick={() => {
                   setPrefill(null);
                   setShowNewBookingModal(true);
                 }}
-                className="px-4 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors"
+                className="px-4 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 {t("calendar.newBooking")}
               </button>
@@ -679,8 +693,14 @@ export default function CalendarPage() {
                             {t("calendar.roomView")}
                           </div>
                           <button
+                            disabled={!CALENDAR_WRITES_AVAILABLE}
+                            title={
+                              !CALENDAR_WRITES_AVAILABLE
+                                ? "Room reordering is not available yet"
+                                : undefined
+                            }
                             onClick={enterReorderMode}
-                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2 disabled:cursor-not-allowed disabled:text-gray-400"
                           >
                             <svg
                               className="w-4 h-4 text-gray-500"
@@ -706,6 +726,18 @@ export default function CalendarPage() {
             </div>
           )}
         </div>
+
+        {!CALENDAR_WRITES_AVAILABLE && (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+            <span>
+              Calendar viewing is active. Creating bookings, blocking, and reordering rooms are not
+              available yet.
+            </span>
+            <span className="shrink-0 rounded bg-gray-100 px-2 py-1 font-medium text-gray-500">
+              View only
+            </span>
+          </div>
+        )}
 
         {reorderMode && (
           <div className="mb-4 px-4 py-2.5 bg-primary-50 border border-primary-200 rounded-lg text-xs text-primary-800">
@@ -746,6 +778,7 @@ export default function CalendarPage() {
             roomIndexInType={roomIndexInType}
             onSelectBooking={(id) => setSelectedBookingId(id)}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
+            blockEditingAvailable={CALENDAR_WRITES_AVAILABLE}
           />
         ) : (
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden flex-1 overflow-x-auto">
@@ -867,8 +900,18 @@ export default function CalendarPage() {
                         </td>
                         <td
                           colSpan={VIEW_DAYS}
-                          className={`relative h-12 p-0 select-none touch-none ${reorderMode ? "pointer-events-none opacity-60" : "cursor-cell"}`}
-                          onPointerDown={(e) => !reorderMode && handleCellPointerDown(e, room.id)}
+                          className={`relative h-12 p-0 select-none touch-none ${
+                            reorderMode
+                              ? "pointer-events-none opacity-60"
+                              : CALENDAR_WRITES_AVAILABLE
+                                ? "cursor-cell"
+                                : "cursor-default"
+                          }`}
+                          onPointerDown={(e) =>
+                            CALENDAR_WRITES_AVAILABLE &&
+                            !reorderMode &&
+                            handleCellPointerDown(e, room.id)
+                          }
                         >
                           {/* Day grid lines */}
                           <div className="absolute inset-0 flex">
@@ -931,14 +974,13 @@ export default function CalendarPage() {
                               <div
                                 key={`block-${bl.id}`}
                                 data-bar="block"
-                                className="absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate z-[1] bg-red-100 border border-red-300 border-dashed text-red-600 flex items-center gap-1 cursor-pointer hover:bg-red-200 transition-colors"
+                                className="absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate z-[1] bg-red-100 border border-red-300 border-dashed text-red-600 flex items-center gap-1 cursor-default"
                                 style={style}
                                 title={`Blocked: ${bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}${
                                   bl.roomId
                                     ? `\nRoom #${bl.roomNumber ?? ""}`
                                     : `\n${bl.blockedCount} room${bl.blockedCount !== 1 ? "s" : ""}`
-                                }\nClick to edit or unblock`}
-                                onClick={() => setSelectedBlock(bl)}
+                                }\nBlock editing is not available yet`}
                               >
                                 <svg
                                   className="w-3.5 h-3.5 flex-shrink-0"
@@ -1064,6 +1106,7 @@ export default function CalendarPage() {
 
       {/* Drag-selection action popover */}
       {prefill &&
+        CALENDAR_WRITES_AVAILABLE &&
         !showBlockModal &&
         !showNewBookingModal &&
         data &&
@@ -1137,7 +1180,7 @@ export default function CalendarPage() {
         })()}
 
       {/* Block Modal */}
-      {showBlockModal && data && (
+      {CALENDAR_WRITES_AVAILABLE && showBlockModal && data && (
         <BlockModal
           roomTypes={data.roomTypes}
           rooms={data.rooms}
@@ -1158,7 +1201,7 @@ export default function CalendarPage() {
       )}
 
       {/* New Booking Modal */}
-      {showNewBookingModal && data && (
+      {CALENDAR_WRITES_AVAILABLE && showNewBookingModal && data && (
         <NewBookingModal
           roomTypes={data.roomTypes}
           rooms={data.rooms}
@@ -1176,7 +1219,7 @@ export default function CalendarPage() {
       )}
 
       {/* Block Detail Modal */}
-      {selectedBlock && data && (
+      {CALENDAR_WRITES_AVAILABLE && selectedBlock && data && (
         <BlockDetailModal
           block={selectedBlock}
           roomTypes={data.roomTypes}

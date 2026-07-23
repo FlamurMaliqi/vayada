@@ -89,6 +89,11 @@
     "selectThisRate": "Pilih Tarif Ini",
     "selectingRate": "Menyiapkan checkout...",
     "soldOut": "Habis Terjual",
+    "calendar": {
+      "checkingAvailability": "Memeriksa ketersediaan",
+      "availabilityUnavailable": "Ketersediaan untuk tanggal ini sementara tidak dapat dimuat.",
+      "availabilityUnavailableTooltip": "Ketersediaan tidak dapat dimuat"
+    },
     "mobileView": {
       "list": "Daftar",
       "map": "Peta"
@@ -212,6 +217,7 @@
     "bankTransfer": "Transfer Bank",
     "bankTransferNote": "Kami akan mengirim detail bank setelah kami menerimanya",
     "nonRefundablePaymentHint": "Bayar di properti dan transfer bank tidak tersedia untuk tarif non-refundable.",
+    "ratePaymentHint": "Beberapa metode pembayaran tidak tersedia untuk tarif ini.",
     "bankTransferExplanation": "Kirim permintaan pemesanan sekarang. Jika kami menerimanya, kami akan mengirim detail transfer bank dan batas waktu pembayaran melalui email.",
     "bankTransferDepositExplanation": "Kirim permintaan pemesanan sekarang. Jika kami menerimanya, kami akan mengirim detail transfer bank untuk deposit {deposit} melalui email. Sisa {remaining} dibayar kepada kami saat check-in.",
     "paypalLabel": "Bayar dengan PayPal",
@@ -226,9 +232,11 @@
     "accountHolder": "Pemegang Rekening",
     "accountNumber": "Nomor Rekening",
     "submitRequest": "Kirim Permintaan Pemesanan",
+    "confirmBooking": "Konfirmasi Pemesanan",
     "processing": "Memproses...",
     "confirmPayment": "Konfirmasi Pembayaran",
     "confirmPaymentDesc": "Selesaikan pembayaran Anda untuk mengirim permintaan pemesanan. Kartu Anda akan diotorisasi tetapi tidak dikenakan biaya sampai kami menerima.",
+    "confirmPaymentDescInstant": "Selesaikan pembayaran untuk mengonfirmasi pemesanan. Kartu Anda akan ditagih sekarang.",
     "authorizePayment": "Otorisasi Pembayaran",
     "authorizationNote": "Kartu Anda hanya akan dikenakan biaya jika kami menerima pemesanan Anda dalam 24 jam.",
     "continueToPayment": "Lanjutkan ke Pembayaran",
@@ -266,6 +274,7 @@
     "fullRefund": "Anda akan menerima pengembalian dana penuh sebesar {amount}.",
     "partialRefund": "Anda akan menerima pengembalian dana sebagian sebesar {amount} ({percentage}%).",
     "noRefund": "Tidak ada pengembalian dana untuk pembatalan ini.",
+    "noPaymentToRefund": "Belum ada pembayaran yang ditagihkan, jadi tidak ada yang perlu dikembalikan.",
     "freeCancellation": "Pembatalan gratis",
     "cancellationFeeApplies": "Biaya pembatalan berlaku",
     "confirmCancel": "Ya, Batalkan",
@@ -279,6 +288,8 @@
     "withdrawn": "Ditarik"
   },
   "confirmation": {
+    "loadingDetails": "Memuat detail pemesanan…",
+    "detailsUnavailable": "Detail pemesanan tidak tersedia. Gunakan Kelola Pemesanan untuk mencari reservasi Anda.",
     "title": "Pemesanan Dikonfirmasi!",
     "subtitle": "Reservasi Anda telah berhasil dikonfirmasi.",
     "requestSubmitted": "Permintaan Pemesanan Terkirim",
@@ -306,7 +317,10 @@
     "withdrawing": "Menarik...",
     "backToHotel": "Kembali ke Hotel",
     "manageBooking": "Kelola Pemesanan",
-    "emailNotice": "Email konfirmasi telah dikirim ke alamat email Anda."
+    "emailNotice": "Email konfirmasi telah dikirim ke alamat email Anda.",
+    "requestChanges": "Ajukan Perubahan",
+    "changePending": "Permintaan perubahan menunggu peninjauan",
+    "changePendingDesc": "Kami akan meninjau tanggal baru yang Anda minta dan membalas melalui email."
   },
   "refer": {
     "title": "Referensikan Tamu",
@@ -334,6 +348,27 @@
     "yourReferralLink": "Tautan Referral Anda",
     "commissionInfo": "Anda akan menerima <strong>5%</strong> dari total pendapatan pemesanan untuk setiap pemesanan langsung yang berhasil melalui tautan Anda.",
     "pendingReview": "Pengajuan Anda sedang dalam peninjauan. Kami akan memberitahu Anda di <strong>{email}</strong> setelah disetujui."
+  },
+  "requestChange": {
+    "title": "Ajukan Perubahan Pemesanan",
+    "subtitle": "Pilih tanggal menginap baru. Kami akan memeriksa ketersediaan dan harga sebelum properti meninjau permintaan Anda.",
+    "loading": "Memuat…",
+    "loadError": "Pemesanan ini tidak dapat dimuat.",
+    "missingEmail": "Buka halaman ini dari tautan konfirmasi pemesanan Anda.",
+    "pendingExists": "Permintaan perubahan untuk pemesanan ini masih menunggu peninjauan.",
+    "newDates": "Tanggal baru",
+    "checkIn": "Check-in",
+    "checkOut": "Check-out",
+    "summary": "Ringkasan",
+    "currentDates": "Tanggal saat ini",
+    "requestedDates": "Tanggal yang diminta",
+    "oldTotal": "Total sebelumnya",
+    "newTotal": "Total baru",
+    "priceDifference": "Selisih harga",
+    "submit": "Kirim Permintaan Perubahan",
+    "submitting": "Mengirim…",
+    "submitError": "Permintaan perubahan tidak dapat dikirim. Silakan coba lagi.",
+    "previewUnavailable": "Kami tidak dapat memeriksa tanggal ini. Pilih tanggal lain atau coba lagi."
   },
   "error": {
     "unableToLoad": "Tidak Dapat Memuat Hotel",

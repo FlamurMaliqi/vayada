@@ -21,7 +21,6 @@ import {
   BookingAddon,
   BookingChangeRequest,
   BookingNote,
-  CheckoutRecord,
   BookingAdditionalGuest,
   BookingAdditionalGuestPayload,
   CancellationPolicy,
@@ -33,7 +32,6 @@ import { formatCurrency } from "@/lib/formatCurrency";
 import {
   AddOnListPicker,
   SelectedAddOnSummary,
-  addOnUnitLabel,
   calculateAddOnsTotal,
   clampAddOnQuantity,
 } from "@/components/bookings/AddOnListPicker";
@@ -103,11 +101,8 @@ function totalGuestsLabel(adults: number, children: number): string {
   return parts.join(", ");
 }
 
-function addOnsLockedAfterPayment(booking: Booking): boolean {
-  return ["captured", "paid", "refunded", "partially_refunded"].includes(
-    booking.paymentStatus || "",
-  );
-}
+const LEGACY_BOOKING_WRITES_AVAILABLE = false;
+const DRAFT_GUEST_ID_PREFIX = "draft-guest-";
 
 function CountdownTimer({ deadline }: { deadline: string }) {
   const [timeLeft, setTimeLeft] = useState("");
@@ -138,15 +133,7 @@ function CountdownTimer({ deadline }: { deadline: string }) {
 
 // ─── Header bar with overflow menu ───────────────────────────────────
 
-function OverflowMenu({
-  onPrint,
-  onResendConfirmation,
-  onExport,
-}: {
-  onPrint: () => void;
-  onResendConfirmation: () => void;
-  onExport: () => void;
-}) {
+function OverflowMenu({ onPrint, onExport }: { onPrint: () => void; onExport: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -181,13 +168,15 @@ function OverflowMenu({
             Print
           </button>
           <button
-            onClick={() => {
-              setOpen(false);
-              onResendConfirmation();
-            }}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            type="button"
+            disabled
+            title="Confirmation email resending is not available yet"
+            className="flex w-full cursor-not-allowed items-center justify-between px-4 py-2 text-left text-sm text-gray-400"
           >
-            Resend confirmation email
+            <span>Resend confirmation email</span>
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
+              Soon
+            </span>
           </button>
           <button
             onClick={() => {
@@ -336,15 +325,9 @@ function AdditionalGuestRow({
   const [form, setForm] = useState({
     firstName: guest.firstName,
     lastName: guest.lastName,
-    gender: guest.gender,
     nationality: guest.nationality,
-    dateOfBirth: guest.dateOfBirth ?? "",
     email: guest.email,
     phone: guest.phone,
-    passportNumber: guest.passportNumber,
-    // Empty string in the dropdown represents "unassigned"; we translate
-    // to null on save so the backend clears the row.
-    roomPosition: guest.roomPosition == null ? "" : String(guest.roomPosition),
   });
 
   const initials =
@@ -450,13 +433,9 @@ function AdditionalGuestRow({
                 setForm({
                   firstName: guest.firstName,
                   lastName: guest.lastName,
-                  gender: guest.gender,
                   nationality: guest.nationality,
-                  dateOfBirth: guest.dateOfBirth ?? "",
                   email: guest.email,
                   phone: guest.phone,
-                  passportNumber: guest.passportNumber,
-                  roomPosition: guest.roomPosition == null ? "" : String(guest.roomPosition),
                 });
                 setOpen(false);
               }}
@@ -1119,9 +1098,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [booking, setBooking] = useState<Booking | null>(null);
   const [policy, setPolicy] = useState<CancellationPolicy | null>(null);
   const [notes, setNotes] = useState<BookingNote[]>([]);
-  const [checkoutRecord, setCheckoutRecord] = useState<CheckoutRecord | null>(null);
   const [guests, setGuests] = useState<BookingAdditionalGuest[]>([]);
-  const [detailAvailableAddons, setDetailAvailableAddons] = useState<BookingAddon[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState("");
@@ -1187,8 +1164,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         .listAdditionalGuests(id)
         .then((r) => setGuests(r.guests))
         .catch(console.error),
-      bookingsService.getCheckoutRecord(id).then(setCheckoutRecord).catch(console.error),
-      bookingsService.listAvailableAddons(id).then(setDetailAvailableAddons).catch(console.error),
       bookingsService
         .getPaymentSettings()
         .then((r) => setPolicy(r.cancellationPolicy))
@@ -1242,7 +1217,8 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     setDecidingChange(true);
     setError("");
     try {
-      const cr = await bookingsService.approveChangeRequest(id);
+      if (!changeRequest) return;
+      const cr = await bookingsService.approveChangeRequest(id, changeRequest.id);
       setChangeRequest(cr);
       const refreshed = await bookingsService.get(id);
       setBooking(refreshed);
@@ -1258,7 +1234,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     setDecidingChange(true);
     setError("");
     try {
-      const cr = await bookingsService.declineChangeRequest(id, declineReason.trim() || undefined);
+      if (!changeRequest) return;
+      const cr = await bookingsService.declineChangeRequest(
+        id,
+        changeRequest.id,
+        declineReason.trim() || undefined,
+      );
       setChangeRequest(cr);
       setDecideOpen(null);
     } catch (err) {
@@ -1321,18 +1302,33 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const handleAddGuest = async () => {
-    setError("");
-    try {
-      const guest = await bookingsService.createAdditionalGuest(id, {});
-      setGuests((prev) => [...prev, guest]);
-    } catch (err) {
-      setError(errMessage(err, "Failed to add guest"));
-    }
+    const now = new Date().toISOString();
+    setGuests((prev) => [
+      ...prev,
+      {
+        id: `${DRAFT_GUEST_ID_PREFIX}${Date.now()}`,
+        bookingId: id,
+        position: prev.length + 1,
+        firstName: "",
+        lastName: "",
+        gender: "",
+        nationality: "",
+        dateOfBirth: null,
+        email: "",
+        phone: "",
+        passportNumber: "",
+        roomPosition: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
   };
 
   const handleSaveGuest = async (guestId: string, patch: BookingAdditionalGuestPayload) => {
     try {
-      const updated = await bookingsService.updateAdditionalGuest(id, guestId, patch);
+      const updated = guestId.startsWith(DRAFT_GUEST_ID_PREFIX)
+        ? await bookingsService.createAdditionalGuest(id, patch)
+        : await bookingsService.updateAdditionalGuest(id, guestId, patch);
       setGuests((prev) => prev.map((g) => (g.id === guestId ? updated : g)));
     } catch (err) {
       setError(errMessage(err, "Failed to save guest"));
@@ -1346,6 +1342,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       confirmLabel: "Delete",
       onConfirm: async () => {
         setConfirmDialog(null);
+        if (guestId.startsWith(DRAFT_GUEST_ID_PREFIX)) {
+          setGuests((prev) => prev.filter((g) => g.id !== guestId));
+          return;
+        }
         try {
           await bookingsService.deleteAdditionalGuest(id, guestId);
           setGuests((prev) => prev.filter((g) => g.id !== guestId));
@@ -1434,7 +1434,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     setBooking(updated);
   };
 
-  const handleAssignGuests = async (_changes: Record<string, number | null>) => {
+  const handleAssignGuests = async () => {
     throw new Error("Additional guest room assignment is not available on PMS next-stack yet.");
   };
 
@@ -1501,9 +1501,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     booking.status === "declined" ||
     booking.status === "expired" ||
     booking.status === "no_show";
-  const isDirectBooking = normalizeChannelKey(booking.channel) === "direct";
-  const addOnsLocked = addOnsLockedAfterPayment(booking);
-  const canEditAddOns = !isCancelled && isDirectBooking && !addOnsLocked;
   const hasDeadline = isPending && booking.hostResponseDeadline;
   const totalParty = booking.adults + booking.children;
   const additionalCapacity = Math.max(0, totalParty - 1);
@@ -1572,14 +1569,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         <div className="ml-auto">
           <OverflowMenu
             onPrint={() => window.print()}
-            onResendConfirmation={() =>
-              setConfirmDialog({
-                message:
-                  "Resend the booking confirmation email to the guest? (Not yet implemented — placeholder.)",
-                confirmLabel: "OK",
-                onConfirm: () => setConfirmDialog(null),
-              })
-            }
             onExport={() => {
               const blob = new Blob([JSON.stringify(booking, null, 2)], {
                 type: "application/json",
@@ -1663,8 +1652,8 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             {changeRequest.priceDifference === 0
               ? "No change"
               : changeRequest.priceDifference > 0
-                ? `+${formatCurrency(changeRequest.priceDifference, changeRequest.currency)} (guest must pay)`
-                : `${formatCurrency(changeRequest.priceDifference, changeRequest.currency)} (refund where applicable)`}
+                ? `+${formatCurrency(changeRequest.priceDifference, changeRequest.currency)} (added to the pay-at-property balance)`
+                : `${formatCurrency(changeRequest.priceDifference, changeRequest.currency)} (reduces the pay-at-property balance)`}
           </div>
           <div className="flex gap-3 flex-wrap">
             <button
@@ -1716,31 +1705,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <h2 className="text-sm font-semibold text-gray-900">Stay details</h2>
             {/* Booking-level Modify (dates / guest count for whole booking) */}
             <button
-              disabled={isCancelled || !isDirectBooking}
+              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
               onClick={() => setModifyOpen(true)}
-              title={
-                isCancelled
-                  ? "Cancelled bookings cannot be modified"
-                  : !isDirectBooking
-                    ? `OTA bookings can't be edited here. Manage changes via ${getChannelLabel(booking.channel)}.`
-                    : "Modify booking dates and guest count"
-              }
-              aria-label={
-                isCancelled
-                  ? "Modify booking disabled: Cancelled bookings cannot be modified"
-                  : !isDirectBooking
-                    ? `Modify booking disabled: OTA bookings can't be edited here. Manage changes via ${getChannelLabel(booking.channel)}.`
-                    : "Modify booking dates and guest count"
-              }
-              aria-disabled={isCancelled || !isDirectBooking}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                isCancelled || !isDirectBooking
-                  ? "text-gray-500 bg-gray-50 border-gray-200 cursor-not-allowed"
-                  : "text-gray-700 bg-white border-gray-300 hover:bg-gray-50"
-              }`}
+              title="Booking modifications are not available yet"
+              aria-label="Modify booking — not available yet"
+              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-400"
             >
               <PencilSquareIcon className="w-4 h-4" />
               Modify
+              <span className="rounded bg-gray-100 px-1 py-0.5 text-[9px] font-medium text-gray-500">
+                Soon
+              </span>
             </button>
           </div>
 
@@ -1817,11 +1792,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                         fromRoomNumber: row.roomNumber,
                       })
                     }
-                    disabled={isCancelled || moveCandidates.length === 0}
+                    disabled={
+                      isCancelled ||
+                      moveCandidates.length === 0 ||
+                      (roomRows.length > 1 && !row.assignmentId && !row.roomId)
+                    }
                     title={
-                      moveCandidates.length === 0
-                        ? "No other rooms of this type available"
-                        : "Reassign this segment to another physical room"
+                      roomRows.length > 1 && !row.assignmentId && !row.roomId
+                        ? "This unassigned room slot cannot be moved safely yet"
+                        : moveCandidates.length === 0
+                          ? "No other rooms of this type available"
+                          : "Reassign this segment to another physical room"
                     }
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
@@ -1834,50 +1815,21 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           </div>
 
           {/* Add-ons sub-section (only if configured or already selected) */}
-          {(detailAvailableAddons.length > 0 || addonRows.length > 0) && (
+          {addonRows.length > 0 && (
             <div className="mb-6">
               <div className="flex items-center justify-between gap-3 mb-3">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                   Add-ons
                 </p>
-                {canEditAddOns ? (
-                  <button
-                    type="button"
-                    onClick={() => setAddonEditOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-                  >
-                    <PencilSquareIcon className="w-3.5 h-3.5" />
-                    Edit add-ons
-                  </button>
-                ) : (
-                  <span className="text-xs text-gray-500">
-                    {addOnsLocked
-                      ? "Add-ons locked after payment"
-                      : !isDirectBooking
-                        ? "OTA add-ons are locked"
-                        : "Add-ons locked"}
-                  </span>
-                )}
+                <span className="text-xs text-gray-500">Editing not available yet</span>
               </div>
               <div className="space-y-1.5 text-sm">
-                {addonRows.length > 0 ? (
-                  addonRows.map((row) => {
-                    const addon = detailAvailableAddons.find((item) => item.id === row.addonId);
-                    const unitLabel = addon ? addOnUnitLabel(addon) : "stay";
-                    return (
-                      <div key={row.addonId} className="flex justify-between text-gray-700">
-                        <span>{row.name}</span>
-                        {row.qty && (
-                          <span className="text-gray-500">
-                            {row.qty} × {unitLabel}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p className="text-sm text-gray-500">No add-ons selected.</p>
-                )}
+                {addonRows.map((row) => (
+                  <div key={row.addonId} className="flex justify-between text-gray-700">
+                    <span>{row.name}</span>
+                    {row.qty && <span className="text-gray-500">Quantity {row.qty}</span>}
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -2038,10 +1990,13 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             {!bookerEditing && (
               <button
                 onClick={handleEditBooker}
-                className="p-1.5 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-                aria-label="Edit booker information"
+                disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
+                title="Booker editing is not available yet"
+                className="inline-flex cursor-not-allowed items-center gap-1 rounded bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-400"
+                aria-label="Edit booker information — not available yet"
               >
                 <PencilSquareIcon className="w-4 h-4" />
+                Soon
               </button>
             )}
           </div>
@@ -2321,59 +2276,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           )}
         </div>
 
-        {checkoutRecord && (
-          <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-gray-900">Check-out record</h2>
-                <p className="mt-1 text-xs text-gray-500">
-                  Completed {formatDateTime(checkoutRecord.completedAt)}
-                </p>
-              </div>
-              <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                Checked out
-              </span>
-            </div>
-            {checkoutRecord.pendingFlags.length > 0 ? (
-              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
-                <p className="text-sm font-semibold text-amber-950">Inspection flags</p>
-                <ul className="mt-2 list-disc pl-5 text-sm text-amber-900">
-                  {checkoutRecord.pendingFlags.map((flag) => (
-                    <li key={flag.stepId}>
-                      {flag.label}
-                      {flag.note ? ` - ${flag.note}` : ""}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="mt-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm font-semibold text-green-800">
-                All inspection items completed without flags.
-              </p>
-            )}
-            {checkoutRecord.chargesSettled.length > 0 && (
-              <div className="mt-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                  Charges settled
-                </p>
-                <div className="mt-2 space-y-2">
-                  {checkoutRecord.chargesSettled.map((charge) => (
-                    <div
-                      key={charge.id}
-                      className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 p-3 text-sm"
-                    >
-                      <span className="font-medium text-gray-900">{charge.label}</span>
-                      <span className="text-gray-600">
-                        {formatCurrency(charge.amount, booking.currency)} · {charge.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* VAY-560: Check in from booking detail — visible for any confirmed booking regardless of date. */}
         {canCheckIn && (
           <div className="flex gap-3 flex-wrap">
@@ -2389,42 +2291,52 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         {/* Pending-booking accept/reject — kept above the cancel card so the
             most urgent action stays visible without scrolling further. */}
         {isPending && booking.hostResponseDeadline && (
-          <div className="flex gap-3 flex-wrap">
-            {booking.paymentMethod === "paypal" ? (
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <p className="mb-2 text-xs text-gray-500">
+              Booking approval and payment status actions are not available yet.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {booking.paymentMethod === "paypal" ? (
+                <button
+                  onClick={handleMarkPaid}
+                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
+                  title="Payment status changes are not available yet"
+                  className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
+                >
+                  <CheckCircleIcon className="w-4 h-4" />
+                  Mark as paid
+                </button>
+              ) : (
+                <button
+                  onClick={handleAccept}
+                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
+                  title="Booking acceptance is not available yet"
+                  className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
+                >
+                  <CheckCircleIcon className="w-4 h-4" />
+                  Accept booking
+                </button>
+              )}
               <button
-                onClick={handleMarkPaid}
-                disabled={updating}
-                className="inline-flex items-center gap-1.5 px-5 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50"
+                onClick={handleReject}
+                disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
+                title="Booking rejection is not available yet"
+                className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
               >
-                <CheckCircleIcon className="w-4 h-4" />
-                Mark as paid
+                <XCircleIcon className="w-4 h-4" />
+                {booking.paymentMethod === "paypal" ? "Cancel - not received" : "Reject booking"}
               </button>
-            ) : (
-              <button
-                onClick={handleAccept}
-                disabled={updating}
-                className="inline-flex items-center gap-1.5 px-5 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50"
-              >
-                <CheckCircleIcon className="w-4 h-4" />
-                Accept booking
-              </button>
-            )}
-            <button
-              onClick={handleReject}
-              disabled={updating}
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 border border-red-200 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 disabled:opacity-50"
-            >
-              <XCircleIcon className="w-4 h-4" />
-              {booking.paymentMethod === "paypal" ? "Cancel - not received" : "Reject booking"}
-            </button>
+            </div>
           </div>
         )}
         {isPending && !booking.hostResponseDeadline && (
-          <div className="flex gap-3 flex-wrap">
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <p className="mb-2 text-xs text-gray-500">Booking confirmation is not available yet.</p>
             <button
               onClick={handleConfirmFromPending}
-              disabled={updating}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50"
+              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
+              title="Booking confirmation is not available yet"
+              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-400"
             >
               <CheckCircleIcon className="w-4 h-4" />
               Confirm booking
@@ -2460,11 +2372,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 setCancelReason("");
                 setCancelOpen(true);
               }}
-              disabled={updating}
-              className="inline-flex items-center gap-1.5 px-4 py-2 border border-red-200 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 disabled:opacity-50"
+              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
+              title="Booking cancellation is not available yet"
+              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
             >
               <XCircleIcon className="w-4 h-4" />
-              Cancel this booking
+              Cancellation unavailable
             </button>
           </div>
         )}
@@ -2485,20 +2398,19 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         <Modal onClose={() => setDecideOpen(null)}>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">Approve change request?</h3>
           <p className="text-sm text-gray-600 mb-4">
-            The booking will be updated to use the requested dates and add-ons.
+            The booking will be updated to use the requested dates.
             {changeRequest.priceDifference > 0 && (
               <>
                 {" "}
-                The guest will be asked to pay the{" "}
-                {formatCurrency(changeRequest.priceDifference, changeRequest.currency)} difference.
+                The pay-at-property balance will increase by{" "}
+                {formatCurrency(changeRequest.priceDifference, changeRequest.currency)}.
               </>
             )}
             {changeRequest.priceDifference < 0 && (
               <>
                 {" "}
-                The total will decrease by{" "}
-                {formatCurrency(Math.abs(changeRequest.priceDifference), changeRequest.currency)} —
-                handle any refund manually.
+                The pay-at-property balance will decrease by{" "}
+                {formatCurrency(Math.abs(changeRequest.priceDifference), changeRequest.currency)}.
               </>
             )}
           </p>
@@ -2551,7 +2463,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         </Modal>
       )}
 
-      {rejectOpen && (
+      {LEGACY_BOOKING_WRITES_AVAILABLE && rejectOpen && (
         <Modal onClose={() => setRejectOpen(false)}>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">
             {booking?.paymentMethod === "paypal"
@@ -2587,7 +2499,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         </Modal>
       )}
 
-      {cancelOpen && canCancelBooking && (
+      {LEGACY_BOOKING_WRITES_AVAILABLE && cancelOpen && canCancelBooking && (
         <Modal onClose={() => setCancelOpen(false)}>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">Cancel this booking?</h3>
           <p className="text-sm text-gray-600 mb-4">
@@ -2640,7 +2552,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         />
       )}
 
-      {modifyOpen && (
+      {LEGACY_BOOKING_WRITES_AVAILABLE && modifyOpen && (
         <ModifyBookingModal
           booking={booking}
           onClose={() => setModifyOpen(false)}
@@ -2648,7 +2560,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         />
       )}
 
-      {addonEditOpen && (
+      {LEGACY_BOOKING_WRITES_AVAILABLE && addonEditOpen && (
         <EditAddOnsModal
           booking={booking}
           onClose={() => setAddonEditOpen(false)}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import {
   BoltIcon,
   CalendarDaysIcon,
@@ -10,23 +10,21 @@ import {
 } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
 import { bookingsService } from "@/services/bookings";
-import { channexService } from "@/services/channex";
-import {
-  getPmsCalendarSettings,
-  getPmsPropertyProfile,
-  updatePmsCalendarSettings,
-  updatePmsPropertyProfile,
-  type PmsCalendarSettings,
-  type PmsPropertyProfile,
-} from "@/services/api/pmsPropertyClient";
+import { getPmsPropertyProfile, updatePmsPropertyProfile } from "@/services/api/pmsPropertyClient";
 import { useTranslation } from "@/lib/i18n";
-import { SettingsLayout, type SettingsNavSection } from "@/components/settings/layout";
+import {
+  SettingsCard,
+  SettingsLayout,
+  SettingsSection,
+  type SettingsNavSection,
+} from "@/components/settings/layout";
 import { PropertySection } from "@/components/settings/PropertySection";
-import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
-import { CalendarSection } from "@/components/settings/CalendarSection";
-import { CheckInOutSection } from "@/components/settings/CheckInOutSection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
 import { humanizeApiError } from "@/components/settings/constants";
+import {
+  pmsPropertyDetailsSaveError,
+  type PmsPropertyProfileLoadStatus,
+} from "@/lib/settings/propertyDetails";
 
 // Rail items also map to anchor IDs. Localization combines the existing
 // #currency + #language anchors (both preserved as sub-targets so the global
@@ -61,79 +59,53 @@ export default function SettingsPage() {
   const [activeId, setActiveId] = useState<SectionId>("property-details");
 
   // Currency
-  const [currency, setCurrency] = useState("EUR");
-  const [savingCurrency, setSavingCurrency] = useState(false);
-
-  // Check-in / Check-out times
-  const [checkInFrom, setCheckInFrom] = useState("14:00");
-  const [checkInUntil, setCheckInUntil] = useState("22:00");
-  const [checkOutFrom, setCheckOutFrom] = useState("07:00");
-  const [checkOutUntil, setCheckOutUntil] = useState("11:00");
-  const [savingTimes, setSavingTimes] = useState(false);
+  const [currency, setCurrency] = useState("");
+  const [currencyLoadError, setCurrencyLoadError] = useState("");
 
   // Property details — only fields Channex actually enforces (timezone + country).
   // Title/currency/contact-email live elsewhere; other address fields are filled
   // later by each OTA's own validation flow when needed.
-  const [timezone, setTimezone] = useState("Asia/Makassar");
+  const [timezone, setTimezone] = useState("");
   const [country, setCountry] = useState("");
   const [savingProperty, setSavingProperty] = useState(false);
+  const [propertyProfileLoadStatus, setPropertyProfileLoadStatus] =
+    useState<PmsPropertyProfileLoadStatus>("loading");
+  const [propertyProfileLoadError, setPropertyProfileLoadError] = useState("");
 
-  // Booking engine
-  const [instantBook, setInstantBook] = useState(false);
-  const [savingInstantBook, setSavingInstantBook] = useState(false);
-  const [sameDayBookingsEnabled, setSameDayBookingsEnabled] = useState(true);
-  const [sameDayBookingCutoffTime, setSameDayBookingCutoffTime] = useState("18:00");
-  const [savingSameDay, setSavingSameDay] = useState(false);
-  const [channexConnected, setChannexConnected] = useState(false);
-
-  // Calendar — VAY-397 auto-rearrange toggle
-  const [autoRearrange, setAutoRearrange] = useState(true);
-  const [savingAutoRearrange, setSavingAutoRearrange] = useState(false);
-  const [autoOpenEnabled, setAutoOpenEnabled] = useState(false);
-  const [autoOpenMode, setAutoOpenMode] = useState<"rolling" | "fixed">("rolling");
-  const [autoOpenMonths, setAutoOpenMonths] = useState<12 | 18 | 24>(18);
-  const [autoOpenFixedMonth, setAutoOpenFixedMonth] = useState("");
-  const [autoOpenThrough, setAutoOpenThrough] = useState<string | null>(null);
-  const [autoOpenWarnings, setAutoOpenWarnings] = useState<string[]>([]);
+  const loadPropertyProfile = useCallback(async () => {
+    setPropertyProfileLoadStatus("loading");
+    setPropertyProfileLoadError("");
+    try {
+      const profile = await getPmsPropertyProfile();
+      setTimezone(profile.timezone ?? "");
+      setCountry(profile.country ?? "");
+      setPropertyProfileLoadStatus("ready");
+    } catch (loadError) {
+      setPropertyProfileLoadStatus("error");
+      setPropertyProfileLoadError(
+        humanizeApiError(
+          loadError,
+          "We couldn’t load the canonical property profile. Retry before editing these fields.",
+        ),
+      );
+    }
+  }, []);
 
   useEffect(() => {
     bookingsService
       .getPaymentSettings()
       .then((res) => {
-        setCurrency(res.paymentSettings.defaultCurrency || "EUR");
+        setCurrency(res.paymentSettings.defaultCurrency || "");
+        setCurrencyLoadError("");
       })
-      .catch(console.error)
+      .catch(() => {
+        setCurrency("");
+        setCurrencyLoadError("We couldn’t load the persisted property currency.");
+      })
       .finally(() => setLoading(false));
 
-    getPmsPropertyProfile()
-      .then((h) => {
-        if (h.timezone) setTimezone(h.timezone);
-        if (h.country) setCountry(h.country);
-        setInstantBook(Boolean(h.instant_book ?? h.instantBook));
-        setSameDayBookingsEnabled(h.same_day_bookings_enabled ?? h.sameDayBookingsEnabled ?? true);
-        setSameDayBookingCutoffTime(
-          h.same_day_booking_cutoff_time ?? h.sameDayBookingCutoffTime ?? "18:00",
-        );
-      })
-      .catch(() => {});
-
-    channexService
-      .getStatus()
-      .then((status) => setChannexConnected(Boolean(status.isConnected)))
-      .catch(() => setChannexConnected(false));
-
-    getPmsCalendarSettings()
-      .then((s) => {
-        setAutoRearrange(Boolean(s.autoRearrangeEnabled));
-        setAutoOpenEnabled(Boolean(s.autoOpenEnabled));
-        setAutoOpenMode(s.autoOpenMode || "rolling");
-        setAutoOpenMonths(s.autoOpenMonths || 18);
-        setAutoOpenFixedMonth(s.autoOpenFixedMonth?.slice(0, 7) || "");
-        setAutoOpenThrough(s.autoOpenThrough || null);
-        setAutoOpenWarnings(s.autoOpenWarnings || []);
-      })
-      .catch(() => {});
-  }, []);
+    void loadPropertyProfile();
+  }, [loadPropertyProfile]);
 
   // Hash → active rail item + scrollIntoView. Re-runs on hashchange so the
   // global SearchModal navigation (VAY-367) lands on the right section even
@@ -162,20 +134,17 @@ export default function SettingsPage() {
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const saveTimes = async () => {
-    setSavingTimes(true);
-    setError("");
-    setSuccess("");
-    try {
-      throw new Error("Check-in/out time settings are not available on PMS next-stack yet.");
-    } catch (err: any) {
-      setError(err.message || t("settings.failedToSaveTimes"));
-    } finally {
-      setSavingTimes(false);
-    }
-  };
-
   const savePropertyDetails = async () => {
+    const validationError = pmsPropertyDetailsSaveError({
+      loadStatus: propertyProfileLoadStatus,
+      timezone,
+      country,
+    });
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     setSavingProperty(true);
     setError("");
     setSuccess("");
@@ -183,7 +152,14 @@ export default function SettingsPage() {
       // PATCH only the fields the form actually edits; the backend leaves
       // unsent fields untouched (so any address/lat-lon set during onboarding
       // or via a future OTA-specific flow is preserved).
-      await updatePmsPropertyProfile({ timezone, country });
+      const normalizedTimezone = timezone.trim();
+      const normalizedCountry = country.trim().toUpperCase();
+      await updatePmsPropertyProfile({
+        timezone: normalizedTimezone,
+        country: normalizedCountry,
+      });
+      setTimezone(normalizedTimezone);
+      setCountry(normalizedCountry);
       setSuccess("Property details saved");
     } catch (err: any) {
       setError(
@@ -194,121 +170,6 @@ export default function SettingsPage() {
       );
     } finally {
       setSavingProperty(false);
-    }
-  };
-
-  const toggleAutoRearrange = async (next: boolean) => {
-    setSavingAutoRearrange(true);
-    setError("");
-    setSuccess("");
-    const previous = autoRearrange;
-    setAutoRearrange(next);
-    try {
-      await updatePmsCalendarSettings({
-        autoRearrangeEnabled: next,
-      });
-      setSuccess(
-        next
-          ? "Auto-rearrange enabled — new bookings will shuffle existing reservations when needed"
-          : "Auto-rearrange disabled — bookings that don’t fit will go to Unassigned",
-      );
-    } catch (err: any) {
-      setAutoRearrange(previous);
-      setError(humanizeApiError(err, "Couldn’t update auto-rearrange setting. Please try again."));
-    } finally {
-      setSavingAutoRearrange(false);
-    }
-  };
-
-  const saveAutoOpen = async () => {
-    setSavingAutoRearrange(true);
-    setError("");
-    setSuccess("");
-    try {
-      const payload: Record<string, unknown> = {
-        autoOpenEnabled,
-        autoOpenMode,
-        autoOpenMonths,
-      };
-      if (autoOpenMode === "fixed" && /^\d{4}-\d{2}$/.test(autoOpenFixedMonth)) {
-        payload.autoOpenFixedMonth = `${autoOpenFixedMonth}-01`;
-      }
-      const saved = await updatePmsCalendarSettings(payload as Partial<PmsCalendarSettings>);
-      setAutoOpenEnabled(Boolean(saved.autoOpenEnabled));
-      setAutoOpenMode(saved.autoOpenMode || "rolling");
-      setAutoOpenMonths(saved.autoOpenMonths || 18);
-      setAutoOpenFixedMonth(saved.autoOpenFixedMonth?.slice(0, 7) || "");
-      setAutoOpenThrough(saved.autoOpenThrough || null);
-      setAutoOpenWarnings(saved.autoOpenWarnings || []);
-      setSuccess(
-        saved.autoOpenEnabled ? "Calendar auto-open settings saved" : "Calendar auto-open disabled",
-      );
-    } catch (err: any) {
-      setError(
-        humanizeApiError(err, "Couldn’t update calendar auto-open settings. Please try again."),
-      );
-    } finally {
-      setSavingAutoRearrange(false);
-    }
-  };
-
-  const toggleInstantBook = async (next: boolean) => {
-    setSavingInstantBook(true);
-    setError("");
-    setSuccess("");
-    const previous = instantBook;
-    setInstantBook(next);
-    try {
-      await updatePmsPropertyProfile({ instant_book: next });
-      setSuccess(next ? "Instant booking enabled" : "Booking requests re-enabled");
-    } catch (err: any) {
-      setInstantBook(previous);
-      setError(
-        humanizeApiError(
-          err,
-          "Couldn’t update booking acceptance setting. Please try again, or contact support if the issue persists.",
-        ),
-      );
-    } finally {
-      setSavingInstantBook(false);
-    }
-  };
-
-  const saveSameDayBookingCutoff = async () => {
-    setSavingSameDay(true);
-    setError("");
-    setSuccess("");
-    try {
-      const payload = {
-        sameDayBookingsEnabled,
-        sameDayBookingCutoffTime: sameDayBookingsEnabled ? sameDayBookingCutoffTime : null,
-      };
-      const h = await updatePmsPropertyProfile(payload as Partial<PmsPropertyProfile>);
-      setSameDayBookingsEnabled(
-        h.same_day_bookings_enabled ?? h.sameDayBookingsEnabled ?? sameDayBookingsEnabled,
-      );
-      setSameDayBookingCutoffTime(
-        h.same_day_booking_cutoff_time ?? h.sameDayBookingCutoffTime ?? "18:00",
-      );
-      setSuccess("Same-day booking cutoff saved");
-    } catch (err: any) {
-      setError(humanizeApiError(err, "Couldn’t update same-day booking cutoff. Please try again."));
-    } finally {
-      setSavingSameDay(false);
-    }
-  };
-
-  const saveCurrency = async () => {
-    setSavingCurrency(true);
-    setError("");
-    setSuccess("");
-    try {
-      await bookingsService.updatePaymentSettings({ defaultCurrency: currency });
-      setSuccess(t("settings.currencySaved"));
-    } catch (err: any) {
-      setError(err.message || t("settings.failedToSaveCurrency"));
-    } finally {
-      setSavingCurrency(false);
     }
   };
 
@@ -375,58 +236,54 @@ export default function SettingsPage() {
         country={country}
         setCountry={setCountry}
         saving={savingProperty}
+        loadStatus={propertyProfileLoadStatus}
+        loadError={propertyProfileLoadError}
+        onRetry={loadPropertyProfile}
         onSave={savePropertyDetails}
       />
 
-      <BookingEngineSection
-        instantBook={instantBook}
-        saving={savingInstantBook}
-        onToggle={toggleInstantBook}
-        sameDayBookingsEnabled={sameDayBookingsEnabled}
-        sameDayBookingCutoffTime={sameDayBookingCutoffTime}
-        savingSameDay={savingSameDay}
-        channexConnected={channexConnected}
-        onSameDayEnabledChange={setSameDayBookingsEnabled}
-        onSameDayCutoffTimeChange={setSameDayBookingCutoffTime}
-        onSaveSameDay={saveSameDayBookingCutoff}
+      <UnavailableSettingsSection
+        id="booking-engine"
+        title="Booking Engine"
+        description="Booking acceptance and same-day cutoff controls are not available in PMS yet."
       />
 
-      <CalendarSection
-        autoRearrange={autoRearrange}
-        autoOpenEnabled={autoOpenEnabled}
-        autoOpenMode={autoOpenMode}
-        autoOpenMonths={autoOpenMonths}
-        autoOpenFixedMonth={autoOpenFixedMonth}
-        autoOpenThrough={autoOpenThrough}
-        autoOpenWarnings={autoOpenWarnings}
-        saving={savingAutoRearrange}
-        onToggle={toggleAutoRearrange}
-        onAutoOpenEnabledChange={setAutoOpenEnabled}
-        onAutoOpenModeChange={setAutoOpenMode}
-        onAutoOpenMonthsChange={setAutoOpenMonths}
-        onAutoOpenFixedMonthChange={setAutoOpenFixedMonth}
-        onSaveAutoOpen={saveAutoOpen}
+      <UnavailableSettingsSection
+        id="calendar"
+        title="Calendar"
+        description="Automatic room rearrangement and future-calendar controls are not available yet."
       />
 
-      <CheckInOutSection
-        checkInFrom={checkInFrom}
-        setCheckInFrom={setCheckInFrom}
-        checkInUntil={checkInUntil}
-        setCheckInUntil={setCheckInUntil}
-        checkOutFrom={checkOutFrom}
-        setCheckOutFrom={setCheckOutFrom}
-        checkOutUntil={checkOutUntil}
-        setCheckOutUntil={setCheckOutUntil}
-        saving={savingTimes}
-        onSave={saveTimes}
+      <UnavailableSettingsSection
+        id="check-in-out"
+        title={t("settings.checkInCheckOut")}
+        description="Check-in and check-out time controls are not available in PMS yet."
       />
 
-      <LocalizationSection
-        currency={currency}
-        setCurrency={setCurrency}
-        savingCurrency={savingCurrency}
-        onSaveCurrency={saveCurrency}
-      />
+      <LocalizationSection currency={currency} currencyLoadError={currencyLoadError} />
     </SettingsLayout>
+  );
+}
+
+function UnavailableSettingsSection({
+  id,
+  title,
+  description,
+}: {
+  id: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <SettingsSection id={id} title={title} description={description}>
+      <SettingsCard>
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm text-gray-500">No settings can be changed here yet.</p>
+          <span className="shrink-0 rounded-md bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600">
+            Not available yet
+          </span>
+        </div>
+      </SettingsCard>
+    </SettingsSection>
   );
 }

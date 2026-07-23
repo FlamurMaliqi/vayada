@@ -122,14 +122,16 @@ export const authService = {
 
   refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
-    const response =
-      organizationId && csrfToken
-        ? await authFetch<AuthSessionResponse>("/auth/session/refresh", {
-            method: "POST",
-            headers: { "x-vayada-csrf": csrfToken },
-            body: JSON.stringify({ organizationId, surface: AUTH_SURFACE }),
-          })
-        : await authFetch<AuthSessionResponse>(`/auth/session?surface=${AUTH_SURFACE}`);
+    const response = csrfToken
+      ? await authFetch<AuthSessionResponse>("/auth/session/refresh", {
+          method: "POST",
+          headers: { "x-vayada-csrf": csrfToken },
+          body: JSON.stringify({
+            ...(organizationId ? { organizationId } : {}),
+            surface: AUTH_SURFACE,
+          }),
+        })
+      : await authFetch<AuthSessionResponse>(`/auth/session?surface=${AUTH_SURFACE}`);
 
     return storeAuthSessionResponse(response);
   },

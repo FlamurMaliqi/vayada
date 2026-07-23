@@ -2,10 +2,35 @@
  * API client configuration
  */
 
-import { clearAuthData, getAuthBearerToken } from "../auth/sessionStore";
+import {
+  recoverUnauthorizedResponse,
+  redirectToOrganizationSelection,
+  type ApiSessionRecoveryHandlers,
+} from "@vayada/product-onboarding/apiSessionRecovery";
+import {
+  clearAuthData,
+  getAuthBearerToken,
+  isAuthOrganizationSelectionResponse,
+  isAuthKitLoginEnabled,
+} from "../auth/sessionStore";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.booking.localhost";
 const OMIT_HOTEL_CONTEXT_HEADER = "X-Vayada-Omit-Hotel-Context";
+
+const defaultSessionRecoveryHandlers: ApiSessionRecoveryHandlers = {
+  async refresh() {
+    const { authService } = await import("../auth");
+    const response = await authService.refreshSession();
+    return isAuthOrganizationSelectionResponse(response)
+      ? { status: "organization_selection_required" }
+      : { status: "session_refreshed" };
+  },
+  onOrganizationSelectionRequired: redirectToOrganizationSelection,
+  async signOut() {
+    const { authService } = await import("../auth");
+    await authService.logout();
+  },
+};
 
 export function isNextApiTarget(
   apiBaseUrl = process.env.NEXT_PUBLIC_AUTH_API_URL || API_BASE_URL,
@@ -59,9 +84,14 @@ export class ApiErrorResponse extends Error {
 
 export class ApiClient {
   private baseURL: string;
+  private sessionRecoveryHandlers: ApiSessionRecoveryHandlers | null;
 
-  constructor(baseURL: string = API_BASE_URL) {
+  constructor(
+    baseURL: string = API_BASE_URL,
+    sessionRecoveryHandlers: ApiSessionRecoveryHandlers | null = defaultSessionRecoveryHandlers,
+  ) {
     this.baseURL = baseURL;
+    this.sessionRecoveryHandlers = sessionRecoveryHandlers;
   }
 
   private handleUnauthorized(error: ApiErrorResponse): void {
@@ -100,7 +130,28 @@ export class ApiClient {
     };
 
     try {
-      const response = await fetch(url, config);
+      let response = await fetch(url, config);
+      if (
+        response.status === 401 &&
+        !endpoint.startsWith("/auth/") &&
+        isAuthKitLoginEnabled() &&
+        this.sessionRecoveryHandlers
+      ) {
+        response = await recoverUnauthorizedResponse({
+          response,
+          failedToken: token,
+          getToken: getAuthBearerToken,
+          handlers: this.sessionRecoveryHandlers,
+          retry: (refreshedToken) =>
+            fetch(url, {
+              ...config,
+              headers: {
+                ...headers,
+                Authorization: `Bearer ${refreshedToken}`,
+              },
+            }),
+        });
+      }
 
       if (response.status === 204) {
         if (!response.ok) {
@@ -124,7 +175,11 @@ export class ApiClient {
       if (!response.ok) {
         const error = new ApiErrorResponse(response.status, data as ApiError);
 
-        if (response.status === 401 && !endpoint.startsWith("/auth/")) {
+        if (
+          response.status === 401 &&
+          !endpoint.startsWith("/auth/") &&
+          (!isAuthKitLoginEnabled() || !this.sessionRecoveryHandlers)
+        ) {
           this.handleUnauthorized(error);
         }
 

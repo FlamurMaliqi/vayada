@@ -14,6 +14,7 @@ import { createTargetBookingDashboardMetricsReadPort } from "./platform/bookingD
 import { createTargetBookingGuestPiiPort } from "./platform/bookingGuestPii.js";
 import { createPgIdentityLifecycleCommandBus } from "./platform/identityLifecycle.js";
 import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
+import { createTargetPublicBookabilityPublicationCommandPort } from "./platform/publicBookabilityPublication.js";
 import { createPgProductAuditSink } from "./platform/productAudit.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
 import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
@@ -25,6 +26,8 @@ import {
 } from "./platform/workosWebhooks.js";
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
+import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
+import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { createTargetPublicHotelProfileRepository } from "./routes/aiHotels.js";
@@ -121,6 +124,45 @@ const bookingSettingsRepository =
         })
       : undefined;
 
+const publicBookabilityPublisher =
+  config.bookingSettingsSource === "target"
+    ? createTargetPublicBookabilityPublicationCommandPort({
+        connectionString: targetDatabaseUrl,
+        bookingHostBase: config.bookingHostBase,
+      })
+    : undefined;
+
+const pmsInventoryPublicOfferProjector =
+  config.pmsOperationsSource === "target"
+    ? createTargetPmsInventoryPublicOfferProjection({
+        connectionString: targetDatabaseUrl,
+        refreshPublicBookability: publicBookabilityPublisher
+          ? async ({ propertyId }) => {
+              const publication = await publicBookabilityPublisher.publish({ propertyId });
+              if (!publication) {
+                throw new Error(
+                  "Public bookability profile was unavailable after PMS inventory projection",
+                );
+              }
+            }
+          : undefined,
+      })
+    : undefined;
+
+// Route modules register their own close hooks for injected repositories. Give
+// them non-owning views so the server remains the sole owner of these shared
+// runtime resources and can drain the retry worker before closing either pool.
+const routePublicBookabilityPublisher = publicBookabilityPublisher
+  ? { publish: publicBookabilityPublisher.publish.bind(publicBookabilityPublisher) }
+  : undefined;
+const routePmsInventoryPublicOfferProjector = pmsInventoryPublicOfferProjector
+  ? {
+      projectPending: pmsInventoryPublicOfferProjector.projectPending.bind(
+        pmsInventoryPublicOfferProjector,
+      ),
+    }
+  : undefined;
+
 const bookingCustomDomainRepository = createTargetBookingCustomDomainRepository({
   connectionString: targetDatabaseUrl,
 });
@@ -155,6 +197,7 @@ const bookingWebCheckoutAdapter =
   config.bookingCheckoutCommandSource === "target"
     ? createTargetBookingWebCheckoutAdapter({
         connectionString: targetDatabaseUrl,
+        inventoryReservationPort: createTargetPmsInventoryReservationPort(),
       })
     : undefined;
 
@@ -187,6 +230,13 @@ const pmsModuleActivationRepository = config.auth
 
 const financeRepository =
   config.financeSource === "target"
+    ? createTargetFinancePropertySettingsRepository({
+        connectionString: targetDatabaseUrl,
+      })
+    : undefined;
+
+const pmsFinanceCompatibilityRepository =
+  config.pmsOperationsSource === "target" && config.financeSource !== "target"
     ? createTargetFinancePropertySettingsRepository({
         connectionString: targetDatabaseUrl,
       })
@@ -405,14 +455,17 @@ const app = buildApp({
       }
     : undefined,
   bookingReservationsRepository,
+  bookingChangeRequestRepository: bookingWebCheckoutAdapter,
   bookingAddonItemsRepository,
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
   pmsModuleActivationRepository,
   pmsOperationsCommandRepository,
+  pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
   financeRepository,
+  pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
   financePublicHotelPropertyResolver,
@@ -428,6 +481,7 @@ const app = buildApp({
   pmsOperationsAllowedOrigins: config.pmsOperationsAllowedOrigins,
   bookingSettingsRepository,
   bookingSettingsWriteRepository: bookingSettingsRepository,
+  publicBookabilityPublisher: routePublicBookabilityPublisher,
   bookingCustomDomainRepository,
   marketplaceDiscoveryRepository,
   marketplaceCollaborationRepository: createPgMarketplaceCollaborationReadRepository({
@@ -495,6 +549,63 @@ const app = buildApp({
   bookingWebAffiliateRepository,
   platformMedia: platformMediaRuntime?.routes,
 });
+
+let activeRetryBatch: Promise<void> | undefined;
+let pmsPublicOfferRetryTimer: NodeJS.Timeout | undefined;
+
+if (pmsInventoryPublicOfferProjector) {
+  const runRetryBatch = () => {
+    if (activeRetryBatch) return;
+    activeRetryBatch = pmsInventoryPublicOfferProjector
+      .runRetryBatch()
+      .then((result) => {
+        if (result.exhaustedEvents > 0) {
+          app.log.warn(
+            {
+              failedEvents: result.failedEvents,
+              exhaustedEvents: result.exhaustedEvents,
+              processedProperties: result.processedProperties,
+            },
+            "PMS public-offer projection retries exhausted",
+          );
+        } else if (result.failedEvents > 0) {
+          app.log.warn(
+            {
+              failedEvents: result.failedEvents,
+              processedProperties: result.processedProperties,
+            },
+            "PMS public-offer projection retry batch completed with failures",
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        app.log.warn({ err: error }, "PMS public-offer projection retry batch failed");
+      })
+      .finally(() => {
+        activeRetryBatch = undefined;
+      });
+  };
+
+  const retryEnabled =
+    config.pmsInventoryPublicOfferRetryEnabled &&
+    config.pmsOperationsSource === "target" &&
+    config.bookingSettingsSource === "target" &&
+    config.publicBookabilitySource === "target";
+  pmsPublicOfferRetryTimer = retryEnabled
+    ? setInterval(runRetryBatch, config.pmsInventoryPublicOfferRetryIntervalMs)
+    : undefined;
+  pmsPublicOfferRetryTimer?.unref();
+  if (retryEnabled) runRetryBatch();
+}
+
+if (pmsInventoryPublicOfferProjector || publicBookabilityPublisher) {
+  app.addHook("onClose", async () => {
+    if (pmsPublicOfferRetryTimer) clearInterval(pmsPublicOfferRetryTimer);
+    await activeRetryBatch;
+    await pmsInventoryPublicOfferProjector?.close?.();
+    await publicBookabilityPublisher?.close?.();
+  });
+}
 
 if (platformMediaRuntime) {
   let activeCleanup: Promise<void> | undefined;

@@ -20,7 +20,6 @@ import {
   ChatBubbleLeftIcon,
   EnvelopeIcon,
   MapPinIcon,
-  LockClosedIcon,
   PlusIcon,
   TrashIcon,
   ArrowUpIcon,
@@ -33,8 +32,7 @@ import {
   type PropertySettingsUpdate,
   type CustomDomainStatus,
 } from "@/services/settings";
-import { ToggleSwitch, FeedbackAlert, PasswordField, SaveButton } from "@/components/ui";
-import { TotpSettings } from "@/components/settings/TotpSettings";
+import { ToggleSwitch, FeedbackAlert, SaveButton } from "@/components/ui";
 import { CountrySelect } from "@/components/settings/CountrySelect";
 import {
   SettingsLayout,
@@ -213,26 +211,6 @@ export default function SettingsPage() {
     null,
   );
 
-  // Email form state
-  const [emailForm, setEmailForm] = useState({ new_email: "", password: "" });
-  const [changingEmail, setChangingEmail] = useState(false);
-  const [emailFeedback, setEmailFeedback] = useState<{
-    type: "success" | "error";
-    message: string;
-  } | null>(null);
-
-  // Password form state
-  const [passwordForm, setPasswordForm] = useState({
-    current_password: "",
-    new_password: "",
-    confirm_password: "",
-  });
-  const [changingPassword, setChangingPassword] = useState(false);
-  const [passwordFeedback, setPasswordFeedback] = useState<{
-    type: "success" | "error";
-    message: string;
-  } | null>(null);
-
   // Custom domain
   const [domainInput, setDomainInput] = useState("");
   const [domainStatus, setDomainStatus] = useState<CustomDomainStatus | null>(null);
@@ -256,49 +234,6 @@ export default function SettingsPage() {
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
   const billingPlanSwitchUnavailable = true;
   const billingPlanSwitchDisabled = saving || billingPlanSwitchUnavailable;
-
-  const handleChangeEmail = async () => {
-    try {
-      setChangingEmail(true);
-      setEmailFeedback(null);
-      const res = await settingsService.changeEmail(emailForm.new_email, emailForm.password);
-      setEmailFeedback({
-        type: "success",
-        message: res.message || t("settings.security.emailSuccess"),
-      });
-      setEmailForm({ new_email: "", password: "" });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : t("settings.security.emailError");
-      setEmailFeedback({ type: "error", message });
-    } finally {
-      setChangingEmail(false);
-    }
-  };
-
-  const handleChangePassword = async () => {
-    if (passwordForm.new_password !== passwordForm.confirm_password) {
-      setPasswordFeedback({ type: "error", message: t("settings.security.passwordMismatch") });
-      return;
-    }
-    if (passwordForm.new_password.length < 8) {
-      setPasswordFeedback({ type: "error", message: t("settings.security.passwordLength") });
-      return;
-    }
-    try {
-      setChangingPassword(true);
-      setPasswordFeedback(null);
-      await settingsService.changePassword(
-        passwordForm.current_password,
-        passwordForm.new_password,
-      );
-      setPasswordFeedback({ type: "success", message: t("settings.security.passwordSuccess") });
-      setPasswordForm({ current_password: "", new_password: "", confirm_password: "" });
-    } catch {
-      setPasswordFeedback({ type: "error", message: t("settings.security.passwordError") });
-    } finally {
-      setChangingPassword(false);
-    }
-  };
 
   const fetchSettings = useCallback(async (): Promise<PropertySettings | null> => {
     try {
@@ -1302,122 +1237,24 @@ export default function SettingsPage() {
 
       {/* Account tab — personal-account settings (was "Security"). */}
       {activeSection === "account" && (
-        <div className="mt-5 space-y-4">
-          {/* Change Email card */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <div className="flex items-center gap-1.5 mb-0.5">
-              <EnvelopeIcon className="w-4 h-4 text-gray-700" />
-              <h2 className="text-sm font-semibold text-gray-900">
-                {t("settings.security.changeEmailTitle")}
-              </h2>
-            </div>
-            <p className="text-[13px] text-gray-500 mb-4">
-              {t("settings.security.changeEmailSubtitle")}
-            </p>
-
-            <div className="space-y-3 max-w-sm">
-              <div>
-                <label className="block text-[13px] font-medium text-gray-700 mb-0.5">
-                  {t("settings.security.newEmailLabel")}
-                </label>
-                <div className="relative">
-                  <EnvelopeIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                  <input
-                    type="email"
-                    value={emailForm.new_email}
-                    onChange={(e) => setEmailForm({ ...emailForm, new_email: e.target.value })}
-                    className="w-full pl-8 pr-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder={t("settings.security.newEmailPlaceholder")}
-                  />
-                </div>
+        <div className="mt-5">
+          <div className="rounded-lg border border-gray-200 bg-white p-5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100">
+                <UserCircleIcon className="h-5 w-5 text-gray-500" />
               </div>
-              <PasswordField
-                label={t("settings.security.currentPasswordLabel")}
-                value={emailForm.password}
-                onChange={(value) => setEmailForm({ ...emailForm, password: value })}
-                placeholder={t("settings.security.confirmWithPassword")}
-              />
-            </div>
-
-            {emailFeedback && (
-              <FeedbackAlert
-                type={emailFeedback.type}
-                message={emailFeedback.message}
-                className="mt-3 max-w-sm"
-              />
-            )}
-
-            <div className="flex justify-end mt-4">
-              <SaveButton
-                onClick={handleChangeEmail}
-                saving={changingEmail}
-                disabled={!emailForm.new_email || !emailForm.password}
-                icon={<EnvelopeIcon className="w-3.5 h-3.5" />}
-              >
-                {t("settings.security.updateEmail")}
-              </SaveButton>
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Personal account security</h2>
+                <p className="mt-1 max-w-xl text-[13px] leading-5 text-gray-500">
+                  Email, password, two-factor authentication, and sign-in history are managed by
+                  Vayada sign-in. These controls are not available inside Booking Admin yet.
+                </p>
+                <span className="mt-3 inline-flex rounded-md bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600">
+                  Not available yet
+                </span>
+              </div>
             </div>
           </div>
-
-          {/* Change Password card */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <div className="flex items-center gap-1.5 mb-0.5">
-              <LockClosedIcon className="w-4 h-4 text-gray-700" />
-              <h2 className="text-sm font-semibold text-gray-900">
-                {t("settings.security.changePasswordTitle")}
-              </h2>
-            </div>
-            <p className="text-[13px] text-gray-500 mb-4">
-              {t("settings.security.changePasswordSubtitle")}
-            </p>
-
-            <div className="space-y-3 max-w-sm">
-              <PasswordField
-                label={t("settings.security.currentPasswordLabel")}
-                value={passwordForm.current_password}
-                onChange={(value) => setPasswordForm({ ...passwordForm, current_password: value })}
-                placeholder={t("settings.security.currentPasswordPlaceholder")}
-              />
-              <PasswordField
-                label={t("settings.security.newPasswordLabel")}
-                value={passwordForm.new_password}
-                onChange={(value) => setPasswordForm({ ...passwordForm, new_password: value })}
-                placeholder={t("settings.security.newPasswordPlaceholder")}
-              />
-              <PasswordField
-                label={t("settings.security.confirmNewPasswordLabel")}
-                value={passwordForm.confirm_password}
-                onChange={(value) => setPasswordForm({ ...passwordForm, confirm_password: value })}
-                placeholder={t("settings.security.confirmNewPasswordPlaceholder")}
-              />
-            </div>
-
-            {passwordFeedback && (
-              <FeedbackAlert
-                type={passwordFeedback.type}
-                message={passwordFeedback.message}
-                className="mt-3 max-w-sm"
-              />
-            )}
-
-            <div className="flex justify-end mt-4">
-              <SaveButton
-                onClick={handleChangePassword}
-                saving={changingPassword}
-                disabled={
-                  !passwordForm.current_password ||
-                  !passwordForm.new_password ||
-                  !passwordForm.confirm_password
-                }
-                icon={<LockClosedIcon className="w-3.5 h-3.5" />}
-              >
-                {t("settings.security.updatePassword")}
-              </SaveButton>
-            </div>
-          </div>
-
-          {/* Two-factor authentication + login history */}
-          <TotpSettings />
         </div>
       )}
 

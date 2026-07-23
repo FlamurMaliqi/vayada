@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cache } from "react";
 
 import { routing } from "@/i18n/routing";
+import { getRequestHost } from "@/lib/requestHost";
 import {
   publicHotelPageHreflangUrls,
   publicHotelPageUrl,
@@ -69,7 +70,10 @@ async function fetchPublicHotelUncached(
   slug: string,
   locale: string,
 ): Promise<PublicHotelMetadata | null> {
-  const apiUrl = process.env.NEXT_PUBLIC_BOOKING_WEB_API_URL || "https://api.localhost";
+  const apiUrl =
+    process.env.BOOKING_WEB_API_URL ||
+    process.env.NEXT_PUBLIC_BOOKING_WEB_API_URL ||
+    "https://api.localhost";
   const params = new URLSearchParams();
   if (locale) params.set("locale", locale);
   const qs = params.toString();
@@ -137,7 +141,7 @@ export function buildPublicHotelMetadata({
 export function requestProtocol(headersList: Headers): "http" | "https" {
   const forwardedProto = headersList.get("x-forwarded-proto");
   if (forwardedProto === "http" || forwardedProto === "https") return forwardedProto;
-  const host = headersList.get("host") || "";
+  const host = getRequestHost(headersList);
   return host.includes("localhost") ||
     host.startsWith("127.0.0.1") ||
     host.startsWith("::1") ||

@@ -89,6 +89,11 @@
     "selectThisRate": "Seleccionar Esta Tarifa",
     "selectingRate": "Preparando el pago...",
     "soldOut": "Agotado",
+    "calendar": {
+      "checkingAvailability": "Comprobando disponibilidad",
+      "availabilityUnavailable": "No podemos consultar temporalmente la disponibilidad para estas fechas.",
+      "availabilityUnavailableTooltip": "No se puede consultar la disponibilidad"
+    },
     "mobileView": {
       "list": "Lista",
       "map": "Mapa"
@@ -212,6 +217,7 @@
     "bankTransfer": "Transferencia bancaria",
     "bankTransferNote": "Te enviaremos los datos bancarios tras la aceptación",
     "nonRefundablePaymentHint": "El pago en el hotel y la transferencia bancaria no están disponibles para tarifas no reembolsables.",
+    "ratePaymentHint": "Algunos métodos de pago no están disponibles para esta tarifa.",
     "bankTransferExplanation": "Envía tu solicitud de reserva ahora. Si la aceptamos, te enviaremos por email los datos bancarios y el plazo de pago.",
     "bankTransferDepositExplanation": "Envía tu solicitud de reserva ahora. Si la aceptamos, te enviaremos por email los datos bancarios para el depósito de {deposit}. El importe restante de {remaining} se paga con nosotros al hacer el check-in.",
     "paypalLabel": "Pagar con PayPal",
@@ -226,9 +232,11 @@
     "accountHolder": "Titular de la cuenta",
     "accountNumber": "Número de cuenta",
     "submitRequest": "Enviar solicitud de reserva",
+    "confirmBooking": "Confirmar reserva",
     "processing": "Procesando...",
     "confirmPayment": "Confirmar pago",
     "confirmPaymentDesc": "Completa tu pago para enviar la solicitud de reserva. Tu tarjeta será autorizada pero no se cobrará hasta que aceptemos.",
+    "confirmPaymentDescInstant": "Completa el pago para confirmar la reserva. Tu tarjeta se cobrará ahora.",
     "authorizePayment": "Autorizar pago",
     "authorizationNote": "Tu tarjeta solo se cobrará si aceptamos tu reserva en un plazo de 24 horas.",
     "continueToPayment": "Continuar al pago",
@@ -266,6 +274,7 @@
     "fullRefund": "Recibirás un reembolso completo de {amount}.",
     "partialRefund": "Recibirás un reembolso parcial de {amount} ({percentage}%).",
     "noRefund": "No se emitirá reembolso por esta cancelación.",
+    "noPaymentToRefund": "No se cobró ningún pago, por lo que no hay nada que reembolsar.",
     "freeCancellation": "Cancelación gratuita",
     "cancellationFeeApplies": "Se aplican cargos por cancelación",
     "confirmCancel": "Sí, cancelar",
@@ -279,6 +288,8 @@
     "withdrawn": "Retirada"
   },
   "confirmation": {
+    "loadingDetails": "Cargando los detalles de la reserva…",
+    "detailsUnavailable": "Los detalles de la reserva no están disponibles. Usa Gestionar reserva para buscarla.",
     "title": "¡Reserva Confirmada!",
     "subtitle": "Tu reserva ha sido confirmada con éxito.",
     "requestSubmitted": "Solicitud de reserva enviada",
@@ -306,7 +317,10 @@
     "withdrawing": "Retirando...",
     "backToHotel": "Volver al Hotel",
     "manageBooking": "Gestionar Reserva",
-    "emailNotice": "Se ha enviado un correo de confirmación a tu dirección de correo electrónico."
+    "emailNotice": "Se ha enviado un correo de confirmación a tu dirección de correo electrónico.",
+    "requestChanges": "Solicitar cambios",
+    "changePending": "Solicitud de cambio pendiente",
+    "changePendingDesc": "Revisaremos las nuevas fechas solicitadas y te responderemos por correo electrónico."
   },
   "refer": {
     "title": "Referir un Huésped",
@@ -334,6 +348,27 @@
     "yourReferralLink": "Tu Enlace de Referido",
     "commissionInfo": "Recibirás el <strong>5%</strong> de los ingresos totales de la reserva por cada reserva directa exitosa realizada a través de tu enlace.",
     "pendingReview": "Tu solicitud está pendiente de revisión. Te notificaremos en <strong>{email}</strong> una vez aprobada."
+  },
+  "requestChange": {
+    "title": "Solicitar un cambio de reserva",
+    "subtitle": "Elige nuevas fechas. Comprobaremos la disponibilidad y el precio antes de que el alojamiento revise tu solicitud.",
+    "loading": "Cargando…",
+    "loadError": "No se pudo cargar esta reserva.",
+    "missingEmail": "Abre esta página desde el enlace de confirmación de tu reserva.",
+    "pendingExists": "Ya hay una solicitud de cambio pendiente para esta reserva.",
+    "newDates": "Nuevas fechas",
+    "checkIn": "Llegada",
+    "checkOut": "Salida",
+    "summary": "Resumen",
+    "currentDates": "Fechas actuales",
+    "requestedDates": "Fechas solicitadas",
+    "oldTotal": "Total anterior",
+    "newTotal": "Nuevo total",
+    "priceDifference": "Diferencia de precio",
+    "submit": "Enviar solicitud de cambio",
+    "submitting": "Enviando…",
+    "submitError": "No se pudo enviar la solicitud de cambio. Inténtalo de nuevo.",
+    "previewUnavailable": "No pudimos comprobar estas fechas. Elige otras o inténtalo de nuevo."
   },
   "error": {
     "unableToLoad": "No se pudo cargar el hotel",

@@ -53,7 +53,7 @@ export const POPULAR_CURRENCY_CODES = [
 ];
 
 export const TIMEZONE_OPTIONS = [
-  "UTC",
+  "Etc/UTC",
   "Europe/London",
   "Europe/Paris",
   "Europe/Berlin",

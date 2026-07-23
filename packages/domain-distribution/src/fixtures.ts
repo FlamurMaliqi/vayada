@@ -192,6 +192,7 @@ function profileFixture(
       summary: "Independent alpine hotel near the old town.",
       images: [{ url: "https://cdn.vayada.example/hotels/alpenrose/front.jpg", alt: "Exterior" }],
       amenities: ["wifi", "breakfast", "parking"],
+      publicContacts: [],
       policies: {
         checkInFrom: "15:00",
         checkOutUntil: "11:00",

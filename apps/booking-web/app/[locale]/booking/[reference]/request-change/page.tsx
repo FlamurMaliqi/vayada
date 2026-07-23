@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, use } from "react";
+import { useState, useEffect, useMemo, use } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import Image from "next/image";
@@ -9,9 +9,8 @@ import BookingFooter from "@/components/layout/BookingFooter";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { useHotel, useSlug } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
-import { Booking, Addon } from "@/lib/types";
+import { Booking } from "@/lib/types";
 import { bookingService, ChangeRequestPreview } from "@/services/api/booking";
-import { hotelService } from "@/services/api/hotel";
 
 export default function RequestChangePage({
   params,
@@ -23,7 +22,6 @@ export default function RequestChangePage({
   const { reference } = use(params);
   const { email: emailParam } = use(searchParams);
   const t = useTranslations("requestChange");
-  const tc = useTranslations("common");
   const { hotel } = useHotel();
   const { slug } = useSlug();
   const { formatPrice } = useCurrency();
@@ -32,24 +30,19 @@ export default function RequestChangePage({
   const [booking, setBooking] = useState<Booking | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [addons, setAddons] = useState<Addon[]>([]);
   const [hasPending, setHasPending] = useState(false);
 
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
-  const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
-  const [addonQuantities, setAddonQuantities] = useState<Record<string, number>>({});
-  const [addonDates, setAddonDates] = useState<Record<string, string[]>>({});
-
   const [preview, setPreview] = useState<ChangeRequestPreview | null>(null);
+  const [previewError, setPreviewError] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
   const guestEmail = emailParam || "";
 
-  // Initial load: fetch the booking + the hotel's add-ons + any existing
-  // change request. We need all three before the form is meaningful.
+  // Load the booking and any existing date-change request.
   useEffect(() => {
     if (!guestEmail) {
       setLoadError(
@@ -59,19 +52,13 @@ export default function RequestChangePage({
       return;
     }
     let cancelled = false;
-    Promise.all([
-      bookingService.lookup(slug, reference, guestEmail),
-      hotelService.getAddons(slug).catch(() => [] as Addon[]),
-    ])
-      .then(async ([fetched, fetchedAddons]) => {
+    bookingService
+      .lookup(slug, reference, guestEmail)
+      .then(async (fetched) => {
         if (cancelled) return;
         setBooking(fetched);
-        setAddons(fetchedAddons);
         setCheckIn(fetched.checkIn);
         setCheckOut(fetched.checkOut);
-        // Hydrate add-on selections from the lookup response. The /lookup
-        // payload doesn't currently include them, so we leave the form
-        // empty when the booking has no addon details available.
         try {
           const cr = await bookingService.getChangeRequest(slug, fetched.id, guestEmail);
           if (cr && cr.status === "pending") {
@@ -102,19 +89,28 @@ export default function RequestChangePage({
     }
     let cancelled = false;
     setPreviewing(true);
+    setPreviewError("");
     const timer = setTimeout(async () => {
       try {
         const res = await bookingService.previewChangeRequest(slug, booking.id, {
           guestEmail,
           checkIn,
           checkOut,
-          addonIds: selectedAddonIds,
-          addonQuantities,
-          addonDates,
+          addonIds: [],
+          addonQuantities: {},
+          addonDates: {},
         });
-        if (!cancelled) setPreview(res);
-      } catch (err: any) {
-        if (!cancelled) setPreview(null);
+        if (!cancelled) {
+          setPreview(res);
+          setPreviewError(res.blocked ? res.blockReason || t("previewUnavailable") : "");
+        }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setPreview(null);
+          setPreviewError(
+            err instanceof Error && err.message ? err.message : t("previewUnavailable"),
+          );
+        }
       } finally {
         if (!cancelled) setPreviewing(false);
       }
@@ -123,23 +119,7 @@ export default function RequestChangePage({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [
-    booking,
-    hasPending,
-    slug,
-    guestEmail,
-    checkIn,
-    checkOut,
-    selectedAddonIds,
-    addonQuantities,
-    addonDates,
-  ]);
-
-  const toggleAddon = useCallback((addonId: string) => {
-    setSelectedAddonIds((prev) =>
-      prev.includes(addonId) ? prev.filter((id) => id !== addonId) : [...prev, addonId],
-    );
-  }, []);
+  }, [booking, hasPending, slug, guestEmail, checkIn, checkOut, t]);
 
   const handleSubmit = async () => {
     if (!booking) return;
@@ -150,13 +130,13 @@ export default function RequestChangePage({
         guestEmail,
         checkIn,
         checkOut,
-        addonIds: selectedAddonIds,
-        addonQuantities,
-        addonDates,
+        addonIds: [],
+        addonQuantities: {},
+        addonDates: {},
       });
       router.push(`/booking/${reference}?email=${encodeURIComponent(guestEmail)}`);
-    } catch (err: any) {
-      setSubmitError(err.message || "Failed to submit change request");
+    } catch (err: unknown) {
+      setSubmitError(err instanceof Error && err.message ? err.message : t("submitError"));
     } finally {
       setSubmitting(false);
     }
@@ -164,10 +144,8 @@ export default function RequestChangePage({
 
   const noChange = useMemo(() => {
     if (!booking) return true;
-    return (
-      checkIn === booking.checkIn && checkOut === booking.checkOut && selectedAddonIds.length === 0
-    );
-  }, [booking, checkIn, checkOut, selectedAddonIds]);
+    return checkIn === booking.checkIn && checkOut === booking.checkOut;
+  }, [booking, checkIn, checkOut]);
 
   const submitDisabled =
     submitting || previewing || hasPending || !preview || preview.blocked || noChange;
@@ -216,7 +194,7 @@ export default function RequestChangePage({
         </h1>
         <p className="text-sm text-gray-600 mb-6">
           {t("subtitle") ||
-            "Pick the new dates or add-ons you'd like. We'll review and approve before anything is applied."}
+            "Choose new stay dates. We'll verify availability and price before the property reviews your request."}
         </p>
 
         {loadError && (
@@ -263,51 +241,6 @@ export default function RequestChangePage({
                 </div>
               </div>
             </div>
-
-            {addons.length > 0 && (
-              <div className="bg-white rounded-2xl border border-gray-200 p-6 mb-4">
-                <h2 className="text-sm font-semibold text-gray-900 mb-3">
-                  {t("addons") || "Add-ons"}
-                </h2>
-                <p className="text-xs text-gray-500 mb-3">
-                  {t("addonsHint") ||
-                    "Picking nothing here keeps the booking without add-ons; selecting an add-on adds it to the booking once we approve it."}
-                </p>
-                <div className="space-y-2">
-                  {addons.map((addon) => {
-                    const selected = selectedAddonIds.includes(addon.id);
-                    return (
-                      <label
-                        key={addon.id}
-                        className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer ${
-                          selected
-                            ? "border-primary-500 bg-primary-50"
-                            : "border-gray-200 hover:bg-gray-50"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() => toggleAddon(addon.id)}
-                            className="w-4 h-4"
-                          />
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{addon.name}</p>
-                            <p className="text-xs text-gray-500">{addon.category}</p>
-                          </div>
-                        </div>
-                        <span className="text-sm font-medium text-gray-900">
-                          {formatPrice(addon.price, addon.currency)}
-                          {addon.perPerson && ` · ${t("perPerson") || "per person"}`}
-                          {addon.perNight && ` · ${t("perNight") || "per night"}`}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             <div className="bg-white rounded-2xl border border-gray-200 p-6 mb-4">
               <h2 className="text-sm font-semibold text-gray-900 mb-3">
@@ -356,6 +289,11 @@ export default function RequestChangePage({
               {preview?.blocked && preview.blockReason && (
                 <p className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
                   {preview.blockReason}
+                </p>
+              )}
+              {!preview?.blocked && previewError && (
+                <p className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                  {previewError}
                 </p>
               )}
             </div>

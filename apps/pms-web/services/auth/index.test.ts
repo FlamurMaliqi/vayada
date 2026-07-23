@@ -7,7 +7,13 @@ import {
   getPendingEmailVerification,
   storePendingEmailVerification,
 } from "./index";
-import { clearAuthData, getAuthBearerToken, setAuthKitSession } from "./sessionStore";
+import {
+  clearAuthData,
+  getAuthBearerToken,
+  getAuthCsrfToken,
+  isAuthOrganizationSelectionResponse,
+  setAuthKitSession,
+} from "./sessionStore";
 
 describe("PMS AuthKit session refresh", () => {
   beforeEach(() => {
@@ -104,6 +110,80 @@ describe("PMS AuthKit session refresh", () => {
 
     expect(getAuthBearerToken()).toBe("workos-access-token");
     expect(authService.isLoggedIn()).toBe(true);
+  });
+
+  it("uses the refresh-token endpoint when an in-memory session expires", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    setAuthKitSession({
+      accessToken: "expired-access-token",
+      csrfToken: "csrf-token",
+      organizationId: "org_hotel_group",
+      user: {
+        id: "user_hotel_admin",
+        email: "hotel@example.com",
+        status: "active",
+      },
+    });
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        accessToken: "fresh-access-token",
+        csrfToken: "fresh-csrf-token",
+        organizationId: "org_hotel_group",
+        user: {
+          id: "user_hotel_admin",
+          email: "hotel@example.com",
+          status: "active",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authService.refreshSession()).resolves.toMatchObject({
+      accessToken: "fresh-access-token",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/session/refresh",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({ "x-vayada-csrf": "csrf-token" }),
+        body: JSON.stringify({ surface: "pms-web" }),
+      }),
+    );
+  });
+
+  it("drops the expired bearer when refresh requires organization selection", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    setAuthKitSession({
+      accessToken: "expired-access-token",
+      csrfToken: "expired-csrf-token",
+      user: {
+        id: "user_hotel_admin",
+        email: "hotel@example.com",
+        status: "active",
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          organizationSelectionRequired: true,
+          csrfToken: "selection-csrf-token",
+          organizations: [],
+          user: {
+            id: "user_hotel_admin",
+            email: "hotel@example.com",
+            status: "active",
+          },
+        }),
+      ),
+    );
+
+    const response = await authService.refreshSession();
+
+    expect(isAuthOrganizationSelectionResponse(response)).toBe(true);
+    expect(getAuthBearerToken()).toBeNull();
+    expect(getAuthCsrfToken()).toBe("selection-csrf-token");
   });
 
   it("preserves verification-required auth state for the verification page", async () => {

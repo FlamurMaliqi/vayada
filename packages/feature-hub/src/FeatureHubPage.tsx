@@ -34,6 +34,8 @@ interface FeatureHubPageProps {
   activationClient: FeatureActivationClient;
   initialProduct?: FeatureProduct;
   products?: FeatureProduct[];
+  /** Modules that are intentionally unavailable on the current API target. */
+  hiddenModuleIds?: string[];
 }
 
 function cx(...classes: Array<string | false | null | undefined>): string {
@@ -56,6 +58,7 @@ export function FeatureHubPage({
   activationClient,
   initialProduct = "pms",
   products,
+  hiddenModuleIds = [],
 }: FeatureHubPageProps) {
   const [product, setProduct] = useState<FeatureProduct>(initialProduct);
   const [query, setQuery] = useState("");
@@ -65,6 +68,11 @@ export function FeatureHubPage({
   const [savingModuleId, setSavingModuleId] = useState<string | null>(null);
   const { activeModuleIds, activeModuleSet, loading, error, setModuleActive } =
     useFeatureModuleActivations(activationClient);
+  const hiddenModuleSet = useMemo(() => new Set(hiddenModuleIds), [hiddenModuleIds]);
+  const visibleActiveModuleIds = useMemo(
+    () => activeModuleIds.filter((moduleId) => !hiddenModuleSet.has(moduleId)),
+    [activeModuleIds, hiddenModuleSet],
+  );
 
   const availableProducts = useMemo(() => {
     const requested = products?.length ? products : ALL_PRODUCTS;
@@ -84,13 +92,14 @@ export function FeatureHubPage({
   }, [notice]);
 
   const productActiveCount = useMemo(
-    () => activeModuleCount(product, activeModuleIds),
-    [activeModuleIds, product],
+    () => activeModuleCount(product, visibleActiveModuleIds),
+    [product, visibleActiveModuleIds],
   );
 
   const filteredModules = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return modulesForProduct(product).filter((module) => {
+      if (hiddenModuleSet.has(module.id)) return false;
       const matchesCategory = category === "All" || module.category === category;
       const matchesSearch =
         !normalized ||
@@ -100,7 +109,7 @@ export function FeatureHubPage({
           .includes(normalized);
       return matchesCategory && matchesSearch;
     });
-  }, [category, product, query]);
+  }, [category, hiddenModuleSet, product, query]);
 
   const toggleModule = async (module: FeatureModule, isActive: boolean) => {
     if (!isActive) {
@@ -155,7 +164,7 @@ export function FeatureHubPage({
           {availableProducts.length > 1 && (
             <div className="flex flex-col gap-2 sm:flex-row">
               {availableProducts.map((key) => {
-                const count = activeModuleCount(key, activeModuleIds);
+                const count = activeModuleCount(key, visibleActiveModuleIds);
                 return (
                   <button
                     key={key}
@@ -271,7 +280,7 @@ export function FeatureHubPage({
             </main>
 
             <aside className="lg:sticky lg:top-4 lg:self-start">
-              <NavigationPreview product={product} activeModuleIds={activeModuleIds} />
+              <NavigationPreview product={product} activeModuleIds={visibleActiveModuleIds} />
             </aside>
           </div>
         </div>

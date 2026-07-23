@@ -1,4 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import type {
+  PmsInventoryPublicOfferProjectionPort,
+  PublicBookabilityPublicationCommandPort,
+} from "@vayada/domain-distribution";
 
 import {
   registerBookingAddonItemRoutes,
@@ -16,6 +20,10 @@ import {
   registerBookingCustomDomainRoutes,
   type BookingCustomDomainRepository,
 } from "./bookingCustomDomain.js";
+import {
+  registerBookingChangeRequestRoutes,
+  type BookingHotelChangeRequestRepository,
+} from "./bookingChangeRequests.js";
 import {
   registerBookingReservationRoutes,
   type BookingReservationsReadRepository,
@@ -38,7 +46,10 @@ export type BookingRoutesOptions = {
   reservationsRepository?: BookingReservationsReadRepository;
   settingsRepository?: BookingSettingsReadRepository;
   settingsWriteRepository?: BookingSettingsWriteRepository;
+  publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
+  inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   customDomainRepository?: BookingCustomDomainRepository;
+  changeRequestRepository?: BookingHotelChangeRequestRepository;
 };
 
 export async function registerBookingRoutes(
@@ -58,6 +69,8 @@ export async function registerBookingRoutes(
       app,
       options.settingsRepository,
       options.settingsWriteRepository,
+      options.publicBookabilityPublisher,
+      options.inventoryPublicOfferProjector,
     );
   }
 
@@ -73,6 +86,10 @@ export async function registerBookingRoutes(
 
   if (options.customDomainRepository) {
     await registerBookingCustomDomainRoutes(app, options.customDomainRepository);
+  }
+
+  if (options.changeRequestRepository) {
+    await registerBookingChangeRequestRoutes(app, options.changeRequestRepository);
   }
 
   app.get<{ Params: BookingHotelParams }>("/hotels/:hotelId/policy-check", async (request) => {

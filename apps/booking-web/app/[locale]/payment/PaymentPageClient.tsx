@@ -21,7 +21,12 @@ import { ApiError } from "@/services/api/client";
 import { getFreeCancellationDays } from "@/lib/constants/booking";
 import { usePricing } from "@/lib/hooks/usePricing";
 import { useBookingSteps } from "@/lib/hooks/useBookingSteps";
-import { GuestDetailsDraft, readGuestDetails, saveLastBooking } from "@/lib/storage/bookingDraft";
+import {
+  GuestDetailsDraft,
+  readGuestDetails,
+  saveLastBooking,
+  toConfirmationBooking,
+} from "@/lib/storage/bookingDraft";
 
 function PaymentPageContent() {
   const router = useRouter();
@@ -293,7 +298,34 @@ function PaymentPageContent() {
         balanceAmount: checkoutQuote.balanceAmount,
       });
 
-      const booking = result.booking;
+      const booking = toConfirmationBooking(result.booking, {
+        hotelName: hotel.name,
+        roomName: room.name,
+        guestFirstName: guestDetails.guestFirstName,
+        guestLastName: guestDetails.guestLastName,
+        guestEmail: guestDetails.guestEmail,
+        checkIn,
+        checkOut,
+        nights,
+        adults: adultsParam,
+        children: childrenParam,
+        numberOfRooms: roomsParam,
+        nightlyRate: quotedNightlyRate,
+        totalAmount: quotedGrandTotal,
+        depositRequired: quotedDepositRequired,
+        depositPercentage: quotedDepositPercentage,
+        depositAmount: quotedDepositAmount,
+        balanceAmount: quotedRemainingBalance,
+        addonTotal: checkoutQuote.addonTotal,
+        addonIds: selectedAddonIds,
+        addonNames: selectedAddonIds.map(
+          (addonId) => addons.find((addon) => addon.id === addonId)?.name || addonId,
+        ),
+        addonQuantities,
+        addonDates,
+        currency: quotedCurrency,
+        paymentMethod,
+      });
 
       if (paymentMethod === "card" && result.clientSecret) {
         // VAY-388: `booking` is a draft preview here, not a persisted row.

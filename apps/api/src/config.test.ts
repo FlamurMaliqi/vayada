@@ -488,7 +488,10 @@ describe("api config", () => {
     });
 
     expect(config.pmsOperationsSource).toBe("target");
-    expect(config.pmsOperationsAllowedOrigins).toEqual(["https://pms.localhost"]);
+    expect(config.pmsOperationsAllowedOrigins).toEqual([
+      "https://pms.localhost",
+      "https://admin.booking.localhost",
+    ]);
   });
 
   it("loads PMS operations allowed origins from comma-separated config", () => {
@@ -680,6 +683,25 @@ describe("api config", () => {
     });
     expect(() => loadConfig({ PLATFORM_MEDIA_CLEANUP_INTERVAL_MS: "0" })).toThrow(
       "PLATFORM_MEDIA_CLEANUP_INTERVAL_MS must be a positive integer",
+    );
+  });
+
+  it("configures and can disable the PMS public-offer retry interval", () => {
+    expect(loadConfig({})).toMatchObject({
+      pmsInventoryPublicOfferRetryEnabled: true,
+      pmsInventoryPublicOfferRetryIntervalMs: 30_000,
+    });
+    expect(
+      loadConfig({
+        PMS_INVENTORY_PUBLIC_OFFER_RETRY_ENABLED: "false",
+        PMS_INVENTORY_PUBLIC_OFFER_RETRY_INTERVAL_MS: "60000",
+      }),
+    ).toMatchObject({
+      pmsInventoryPublicOfferRetryEnabled: false,
+      pmsInventoryPublicOfferRetryIntervalMs: 60_000,
+    });
+    expect(() => loadConfig({ PMS_INVENTORY_PUBLIC_OFFER_RETRY_INTERVAL_MS: "0" })).toThrow(
+      "PMS_INVENTORY_PUBLIC_OFFER_RETRY_INTERVAL_MS must be a positive integer",
     );
   });
 

@@ -146,34 +146,46 @@ async function listScopedBookingHotels(): Promise<HotelSummary[]> {
       Promise.all(
         bookingHotelIds.map(async (hotelId) => {
           try {
-            const link = await getBookingHotelPropertyLink({ hotelId });
-            return [link.propertyId, hotelId] as const;
+            const [link, settings] = await Promise.all([
+              getBookingHotelPropertyLink({ hotelId }),
+              apiClient
+                .get<PropertySettings>(
+                  `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/property`,
+                  omitHotelContext,
+                )
+                .catch(() => null),
+            ]);
+            return [link.propertyId, { hotelId, slug: settings?.slug ?? "" }] as const;
           } catch {
             return null;
           }
         }),
       ),
     ]);
-    const bookingHotelIdByPropertyId = new Map<string, string>();
+    const bookingHotelByPropertyId = new Map<string, { hotelId: string; slug: string }>();
+    const canonicalSlugByPropertyId = new Map<string, string>();
     for (const link of propertyLinks) {
       if (!link) continue;
-      const [propertyId, hotelId] = link;
+      const [propertyId, bookingHotel] = link;
+      const { hotelId } = bookingHotel;
+      if (bookingHotel.slug) canonicalSlugByPropertyId.set(propertyId, bookingHotel.slug);
       if (hotelId === propertyId) continue;
-      const existing = bookingHotelIdByPropertyId.get(propertyId);
-      if (!existing || hotelId.localeCompare(existing) < 0) {
-        bookingHotelIdByPropertyId.set(propertyId, hotelId);
+      const existing = bookingHotelByPropertyId.get(propertyId);
+      if (!existing || hotelId.localeCompare(existing.hotelId) < 0) {
+        bookingHotelByPropertyId.set(propertyId, bookingHotel);
       }
     }
 
     return status.properties.map((property) => {
-      const bookingHotelId = bookingHotelIdByPropertyId.get(property.propertyId);
+      const bookingHotel = bookingHotelByPropertyId.get(property.propertyId);
+      const bookingHotelId = bookingHotel?.hotelId;
       return {
         id: bookingHotelId ?? property.propertyId,
         propertyId: property.propertyId,
         bookingHotelId,
         productReady: true,
         name: property.displayName ?? "Unnamed hotel",
-        slug: property.publicId,
+        slug: canonicalSlugByPropertyId.get(property.propertyId) ?? "",
         location: property.locationSummary ?? "",
         country: "",
       };

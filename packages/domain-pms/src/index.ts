@@ -1,4 +1,5 @@
 export const PMS_RESERVATION_CONTRACT_VERSION = "pms-reservation.v1" as const;
+export const PMS_INVENTORY_RESERVATION_MARKER_VERSION = "pms.inventory-reservation.v1" as const;
 
 export const PMS_PROVIDER_KEYS = ["vayada_pms", "guesty", "lodgify", "hostaway", "custom"] as const;
 
@@ -73,6 +74,19 @@ export type PmsCurrencyCode = string;
 export type PmsDecimalAmount = string;
 export type PmsDate = string;
 export type PmsUtcDateTime = string;
+
+export type PmsInventoryReservationMarker = {
+  contractVersion: typeof PMS_INVENTORY_RESERVATION_MARKER_VERSION;
+  owner: "pms";
+  source: "booking_engine";
+  quoteSessionId: string;
+  propertyId: string;
+  roomTypeId: string;
+  publicOfferKey: string;
+  checkIn: PmsDate;
+  checkOut: PmsDate;
+  roomCount: number;
+};
 
 export type PmsMoney = {
   amountDecimal: PmsDecimalAmount;

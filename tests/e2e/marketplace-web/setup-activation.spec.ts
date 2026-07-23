@@ -56,8 +56,39 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByLabel("Last name")).toHaveValue("Owner");
     await expect(page.getByLabel("Email address")).toHaveValue("owner@alpenrose.example");
     await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
+    await expect(page.getByLabel("Phone number")).toHaveAttribute("required", "");
     await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
+    await expect(page.getByText("Optional", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Continue to hotel setup" })).toBeVisible();
+  });
+
+  test("makes the unsupported hotel external-creator action explicit", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    const setupStatus = sharedSetupStatus([], "selected_incomplete");
+    setupStatus.nextAction.action = "enter_product";
+    await mockSharedSetupStatus(page, setupStatus);
+    await routeJson(page, /\/api\/marketplace\/collaborations\/me(?:\?|$)/, {
+      contractVersion: "marketplace-collaboration-reads.v1",
+      authorizationMode: "hotel_group_resource_link",
+      items: [],
+    });
+
+    await page.goto(calendarUrl(baseURL));
+
+    const unavailableAction = page.getByRole("button", {
+      name: "External creators coming soon",
+    });
+    await expect(unavailableAction).toBeVisible();
+    await expect(unavailableAction).toBeDisabled();
+    await expect(unavailableAction).toHaveAttribute(
+      "title",
+      "Adding creators outside Vayada isn’t available yet.",
+    );
+    await expect(page.getByRole("button", { name: "Add External Creator" })).toHaveCount(0);
   });
 
   test("creates the first hotel with the complete shared minimum", async ({ page, baseURL }) => {
@@ -365,15 +396,31 @@ test.describe("marketplace-web shared setup activation", () => {
     await expectMarketplaceActivationIntro(page, 1);
   });
 
-  test("requires a replacement offer when a verified offer is missing activation details", async ({
-    page,
-    baseURL,
-  }) => {
+  test("reuses the shared hotel hero for a replacement offer", async ({ page, baseURL }) => {
     await page.setViewportSize({ width: 2048, height: 1125 });
     await primeBrowserState(page);
     await mockAuthSession(page);
     await mockSharedSetupStatus(page, sharedSetupStatus(["offerDeliverables"]));
-    await mockMarketplaceProfileApis(page, [marketplaceOffer("verified")]);
+    const sharedHeroUrl = "https://media.example/alpenrose.webp";
+    await mockMarketplaceProfileApis(
+      page,
+      [marketplaceOffer("verified")],
+      [
+        {
+          mediaType: "hero_image",
+          url: sharedHeroUrl,
+          altText: "Hotel Alpenrose",
+          sortOrder: 0,
+        },
+      ],
+    );
+    await page.route(sharedHeroUrl, async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { ...corsHeaders(route), "content-type": "image/webp" },
+        body: Buffer.from("shared-hotel-photo"),
+      });
+    });
     let createdOfferPayload: Record<string, unknown> | null = null;
     let updatedOfferPayload: Record<string, unknown> | null = null;
     let uploadFinalized = false;
@@ -438,9 +485,9 @@ test.describe("marketplace-web shared setup activation", () => {
               {
                 mediaId: "offer-media-e2e",
                 storageKey: "private/marketplace/offers/offer-media-e2e/original-safe.webp",
-                contentType: "image/png",
+                contentType: "image/webp",
                 sizeBytes: 11,
-                originalFilename: "offer.png",
+                originalFilename: "shared-hotel-photo-1.webp",
                 variants: [
                   {
                     publicCdnUrl: null,
@@ -455,6 +502,12 @@ test.describe("marketplace-web shared setup activation", () => {
       }
       expect(route.request().postDataJSON()).toMatchObject({
         purpose: "marketplace.offer.media",
+        files: [
+          expect.objectContaining({
+            filename: "shared-hotel-photo-1.webp",
+            contentType: "image/webp",
+          }),
+        ],
         resource: {
           product: "marketplace",
           resourceType: "marketplace_offer",
@@ -515,21 +568,10 @@ test.describe("marketplace-web shared setup activation", () => {
     await page
       .getByLabel(/Description/)
       .fill("A memorable city stay with breakfast and a guided local experience.");
-    const offerPhotos = page.getByLabel(/Offer photos/);
-    await offerPhotos.setInputFiles({
-      name: "too-large.png",
-      mimeType: "image/png",
-      buffer: Buffer.alloc(10 * 1024 * 1024 + 1),
-    });
-    await expect(
-      page.getByRole("alert").filter({ hasText: "Image must be 10 MB or smaller" }),
-    ).toBeVisible();
-    await expect(continueButton).toBeDisabled();
-    await offerPhotos.setInputFiles({
-      name: "offer.png",
-      mimeType: "image/png",
-      buffer: Buffer.from("offer-photo"),
-    });
+    await expect(page.getByAltText("Three-night creator stay - Main photo")).toHaveAttribute(
+      "src",
+      sharedHeroUrl,
+    );
     await expect(continueButton).toBeEnabled();
     await continueButton.click();
 
@@ -586,6 +628,70 @@ test.describe("marketplace-web shared setup activation", () => {
     });
     await expect.poll(() => uploadFinalized).toBe(true);
     await expect.poll(() => updatedOfferPayload).not.toBeNull();
+  });
+
+  test("restores a hotel offer draft after a reload and asks only for local photos again", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await page.addInitScript(
+      ({ draftPropertyId }) => {
+        localStorage.setItem(
+          `vayada_hotel_marketplace_draft:${draftPropertyId}`,
+          JSON.stringify({
+            version: 1,
+            savedAt: Date.now(),
+            currentStep: 4,
+            form: {
+              about:
+                "Alpenrose gives travel creators a welcoming base for memorable Munich stories.",
+            },
+            listings: [
+              {
+                name: "Restored creator stay",
+                location: "Munich, DE",
+                description: "A restored city stay with breakfast and a local experience.",
+                accommodation_type: "hotel",
+                images: [],
+                imageMediaObjectIds: [],
+                collaborationTypes: ["Free Stay"],
+                availability: ["Jan"],
+                platforms: ["Instagram"],
+                freeStayMinNights: 2,
+                freeStayMaxNights: 3,
+                lookingForPlatforms: ["TikTok"],
+                targetGroupCountries: [],
+                targetGroupAgeGroups: [],
+              },
+            ],
+            omittedLocalPhotos: true,
+          }),
+        );
+      },
+      { draftPropertyId: propertyId },
+    );
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus(["marketplaceOffer"]));
+    await mockMarketplaceProfileApis(page, []);
+
+    await page.goto(profileActivationUrl(baseURL));
+
+    await expect(page.getByText("Step 2 of 4", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Your Marketplace setup details were restored" }),
+    ).toContainText("Please select your offer photos again");
+    await expect(page.getByLabel("Offer title", { exact: true })).toHaveValue(
+      "Restored creator stay",
+    );
+    await expect(page.getByLabel(/Description/)).toHaveValue(
+      "A restored city stay with breakfast and a local experience.",
+    );
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Previous" }).click();
+    await expect(page.getByLabel("Creator-facing introduction", { exact: true })).toHaveValue(
+      "Alpenrose gives travel creators a welcoming base for memorable Munich stories.",
+    );
   });
 
   test("asks for a replacement offer when the existing Marketplace offer was rejected", async ({
@@ -894,7 +1000,11 @@ async function mockSharedSetupStatus(page: Page, status: ReturnType<typeof share
   });
 }
 
-async function mockMarketplaceProfileApis(page: Page, offers: unknown[] = []) {
+async function mockMarketplaceProfileApis(
+  page: Page,
+  offers: unknown[] = [],
+  media: unknown[] = [],
+) {
   await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile-status`), {
     profile_complete: false,
     missing_fields: ["profile"],
@@ -926,7 +1036,7 @@ async function mockMarketplaceProfileApis(page: Page, offers: unknown[] = []) {
       phone: "+49 89 123456",
       shortDescription: "A city hotel close to the old town.",
       longDescription: null,
-      media: [],
+      media,
     }),
   );
   await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile(?:\\?|$)`), {

@@ -2,6 +2,7 @@ import type { MetadataRoute } from "next";
 import { headers } from "next/headers";
 
 import { routing } from "@/i18n/routing";
+import { getRequestHost } from "@/lib/requestHost";
 import { privateDisallowRules, publicAllowRules } from "@/lib/server/crawlRules";
 import { resolveSlugFromHost } from "@/lib/server/resolveSlug";
 import {
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 export default async function robots(): Promise<MetadataRoute.Robots> {
   const headersList = await headers();
-  const hostname = headersList.get("host") || "";
+  const hostname = getRequestHost(headersList);
   const slug = await resolveSlugFromHost(hostname);
   const sitemap = slug ? await resolveSitemapUrl(headersList, hostname, slug) : undefined;
 

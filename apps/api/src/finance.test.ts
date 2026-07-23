@@ -989,6 +989,35 @@ describe("finance route contracts", () => {
     expect(repository.writeCount).toBe(1);
   });
 
+  it("allows Booking owners to update payment settings through the Booking entitlement", async () => {
+    const repository = paymentSettingsWriteRepository();
+    app = buildFinanceApp({
+      repository,
+      permissions: ["booking.settings.manage"],
+      entitlements: [directBookingFinanceEntitlement()],
+    });
+
+    const response = await injectJson<Record<string, unknown>>(app, {
+      method: "PATCH",
+      url: `/api/finance/properties/${propertyId}/payment-settings`,
+      payload: {
+        commandId: "cmd-booking-payment-settings-001",
+        idempotencyKey: "booking-payment-settings-f300686-001",
+        paymentSettings: {
+          paymentsEnabled: true,
+          paymentProvider: "manual",
+          acceptedMethods: ["pay_at_property", "manual_card"],
+          defaultCurrency: "EUR",
+          supportedCurrencies: ["EUR"],
+        },
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.writeCount).toBe(1);
+  });
+
   it("rejects Finance payment settings writes without manage permission", async () => {
     app = buildFinanceApp();
 
@@ -3963,7 +3992,7 @@ const emptyFinanceRepository: FinancePropertyReadRepository = {
 };
 
 function financeManagePermissions(): PermissionKey[] {
-  return ["pms.finance.read", "pms.finance.manage" as PermissionKey];
+  return ["pms.finance.read", "pms.operations.manage"];
 }
 
 function filterInvoices(query: FinanceInvoiceListQuery): FinanceInvoiceListItem[] {

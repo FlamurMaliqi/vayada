@@ -27,6 +27,7 @@ interface MonthViewProps {
   roomIndexInType: Record<string, number>;
   onSelectBooking: (id: string) => void;
   onSelectBlock: (block: CalendarBlock) => void;
+  blockEditingAvailable?: boolean;
 }
 
 const getInitials = (first: string, last: string) =>
@@ -50,6 +51,7 @@ export default function MonthView({
   roomIndexInType,
   onSelectBooking,
   onSelectBlock,
+  blockEditingAvailable = true,
 }: MonthViewProps) {
   const days = useMemo(() => {
     const gridStart = startOfWeek(startOfMonth(monthStart), { weekStartsOn: 0 });
@@ -133,9 +135,14 @@ export default function MonthView({
                             <button
                               key={`block-${bl.id}-${day.toISOString()}`}
                               type="button"
+                              disabled={!blockEditingAvailable}
                               onClick={() => onSelectBlock(bl)}
-                              title={`Blocked: ${bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}`}
-                              className="w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 border border-red-300 border-dashed text-red-700 hover:bg-red-200 transition-colors truncate"
+                              title={
+                                blockEditingAvailable
+                                  ? `Blocked: ${bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}`
+                                  : "Block editing is not available yet"
+                              }
+                              className="w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 border border-red-300 border-dashed text-red-700 hover:bg-red-200 transition-colors truncate disabled:cursor-default disabled:hover:bg-red-100"
                             >
                               <svg
                                 className="w-2.5 h-2.5 flex-shrink-0"

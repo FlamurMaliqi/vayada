@@ -123,6 +123,17 @@ export interface CreateListingRequest {
   };
 }
 
+export type CreateListingOptions = {
+  idempotencyKey: string;
+};
+
+export class CanonicalHotelPhotoReuseError extends Error {
+  constructor(readonly sourceUrl: string) {
+    super("The shared hotel photo could not be copied");
+    this.name = "CanonicalHotelPhotoReuseError";
+  }
+}
+
 export type UpdateListingRequest = Partial<CreateListingRequest>;
 
 export type PlatformImageUploadResponse = PlatformMediaUploadResult & {
@@ -310,12 +321,16 @@ export const hotelService = {
   createListing: async (
     data: CreateListingRequest,
     propertyIdOverride?: string,
+    options?: CreateListingOptions,
   ): Promise<HotelListing> => {
     const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
     const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
+    const idempotencyKey =
+      options?.idempotencyKey.trim() || `marketplace.hotel-offer.create:${randomIdentifier()}:v1`;
     const offer = await targetApiClient.post<TargetMarketplaceOffer>(
       marketplaceOffersPath(propertyId),
       toTargetOfferCreate(data),
+      { headers: { "Idempotency-Key": idempotencyKey } },
     );
     return toLegacyHotelListing(offer, property);
   },
@@ -370,6 +385,20 @@ export const hotelService = {
         mediaObjectId: image.mediaId,
       })),
     };
+  },
+
+  /**
+   * Reuse canonical hotel photos without asking the hotel to upload them again.
+   * The copied files still become offer-owned media, so Marketplace review and
+   * publication keep their existing media-approval boundary.
+   */
+  uploadListingImagesFromSources: async (
+    sourceImageUrls: string[],
+    files: File[],
+    listingId: string,
+  ): Promise<{ images: Array<{ url: string; mediaObjectId: string }> }> => {
+    const copiedFiles = await Promise.all(sourceImageUrls.map(remoteImageFile));
+    return hotelService.uploadListingImages([...copiedFiles, ...files], listingId);
   },
 
   /**
@@ -690,6 +719,33 @@ function formatPropertyLocation(profile: SharedPropertyProfile): string {
 
 function normalizedOptionalText(value: string | null | undefined): string | null {
   return value?.trim() || null;
+}
+
+async function remoteImageFile(url: string, index: number): Promise<File> {
+  try {
+    const response = await fetch(url, { credentials: "omit" });
+    if (!response.ok) throw new CanonicalHotelPhotoReuseError(url);
+
+    const blob = await response.blob();
+    const extension = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+    }[blob.type];
+    if (!extension) throw new CanonicalHotelPhotoReuseError(url);
+
+    return new File([blob], `shared-hotel-photo-${index + 1}.${extension}`, { type: blob.type });
+  } catch (error) {
+    if (error instanceof CanonicalHotelPhotoReuseError) throw error;
+    throw new CanonicalHotelPhotoReuseError(url);
+  }
+}
+
+function randomIdentifier(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  );
 }
 
 function toLegacyListingMarketplaceResponse(

@@ -53,7 +53,6 @@ export default function SharedAccountDetailsStep({
     existingProfileImage?.profilePictureUrl.trim() &&
     existingProfileImage.profilePictureMediaObjectId.trim(),
   );
-  const phoneRequired = accountType === "creator";
   const description =
     accountType === "hotel" ? "Start with your details. Next, we’ll set up your first hotel." : "";
   const submitLabel =
@@ -104,7 +103,7 @@ export default function SharedAccountDetailsStep({
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError("");
-    const errors = accountDetailsErrors({ firstName, lastName, phone }, phoneRequired);
+    const errors = accountDetailsErrors({ firstName, lastName, phone });
     const missingRequiredProfileImage = !profileImage && !hasInitialProfileImage;
     setFieldErrors(errors);
     if (missingRequiredProfileImage && !profileImageError) {
@@ -275,13 +274,12 @@ export default function SharedAccountDetailsStep({
               <AccountField
                 id="account-phone"
                 label="Phone number"
-                optional={!phoneRequired}
                 type="tel"
                 value={phone}
                 autoComplete="tel"
                 maxLength={64}
                 placeholder="+49 89 123456"
-                required={phoneRequired}
+                required
                 error={fieldErrors.phone}
                 onChange={(value) => {
                   setPhone(value);
@@ -319,7 +317,6 @@ export default function SharedAccountDetailsStep({
 function AccountField({
   id,
   label,
-  optional = false,
   type = "text",
   value,
   autoComplete,
@@ -331,7 +328,6 @@ function AccountField({
 }: {
   id: string;
   label: string;
-  optional?: boolean;
   type?: "text" | "tel";
   value: string;
   autoComplete: string;
@@ -344,7 +340,15 @@ function AccountField({
   const errorId = `${id}-error`;
   return (
     <label htmlFor={id} className="block text-sm font-medium text-gray-800">
-      {label} {optional && <span className="font-normal text-gray-400">Optional</span>}
+      {label}
+      {required ? (
+        <>
+          <span className="ml-1 text-red-500" aria-hidden="true">
+            *
+          </span>
+          <span className="sr-only"> (required)</span>
+        </>
+      ) : null}
       <input
         id={id}
         type={type}
@@ -367,21 +371,18 @@ function AccountField({
   );
 }
 
-function accountDetailsErrors(
-  input: {
-    firstName: string;
-    lastName: string;
-    phone: string;
-  },
-  phoneRequired = false,
-): Record<string, string> {
+function accountDetailsErrors(input: {
+  firstName: string;
+  lastName: string;
+  phone: string;
+}): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!input.firstName.trim()) errors.firstName = "Enter your first name.";
   if (!input.lastName.trim()) errors.lastName = "Enter your last name.";
   if (normalizeSharedAccountName(input.firstName, input.lastName).length > 120) {
     errors.lastName = "Enter a shorter name.";
   }
-  if (phoneRequired && !input.phone.trim()) {
+  if (!input.phone.trim()) {
     errors.phone = "Enter your phone number.";
   } else if (!isValidSharedAccountPhone(input.phone)) {
     errors.phone = "Enter a valid phone number.";

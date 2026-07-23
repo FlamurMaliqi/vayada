@@ -18,7 +18,7 @@ vi.mock("@vayada/marketplace-shared/api/discovery", () => ({
 }));
 
 import { clearAuthData, setAuthKitSession } from "@/services/auth/sessionStore";
-import { hotelService } from "./hotels";
+import { CanonicalHotelPhotoReuseError, hotelService } from "./hotels";
 
 const propertyId = "property-two";
 
@@ -379,6 +379,11 @@ describe("hotel target self-service client", () => {
         if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
           return jsonResponse(sharedProfile);
         }
+        if (method === "POST") {
+          expect(requestHeader(init, "Idempotency-Key")).toBe(
+            "marketplace.hotel-onboarding.offer:draft-offer-one:v1",
+          );
+        }
         if (method === "DELETE") {
           expect(requestHeader(init, "Content-Type")).toBeNull();
         }
@@ -420,7 +425,9 @@ describe("hotel target self-service client", () => {
       },
     };
 
-    const created = await hotelService.createListing(createRequest, propertyId);
+    const created = await hotelService.createListing(createRequest, propertyId, {
+      idempotencyKey: "marketplace.hotel-onboarding.offer:draft-offer-one:v1",
+    });
     const updated = await hotelService.updateListing(
       "offer-resource-id",
       {
@@ -545,6 +552,81 @@ describe("hotel target self-service client", () => {
         },
       ],
     });
+  });
+
+  it("copies a canonical hotel photo into offer-owned media", async () => {
+    const sourceUrl = "https://images.example/alpenrose.webp";
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === sourceUrl) {
+        expect(init).toEqual({ credentials: "omit" });
+        return new Response(new Blob(["hotel-image"], { type: "image/webp" }), { status: 200 });
+      }
+      if (String(url).endsWith("/api/media/upload-sessions")) {
+        const body = JSON.parse(String(init?.body));
+        expect(body.files).toEqual([
+          expect.objectContaining({
+            filename: "shared-hotel-photo-1.webp",
+            contentType: "image/webp",
+          }),
+        ]);
+        return jsonResponse({
+          uploadSession: { sessionId: "copy-session" },
+          uploadTargets: [
+            {
+              uploadTargetId: "copy-target",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/copy-target",
+              headers: {},
+            },
+          ],
+        });
+      }
+      if (String(url).endsWith("/api/media/upload-sessions/copy-session/finalize")) {
+        return jsonResponse({
+          mediaObjects: [
+            {
+              mediaId: "copied-media-id",
+              storageKey: "private/marketplace/offers/copied-media-id/original-safe.webp",
+              contentType: "image/webp",
+              sizeBytes: 11,
+              originalFilename: "shared-hotel-photo-1.webp",
+              variants: [
+                {
+                  publicCdnUrl: null,
+                  storageKey: "private/marketplace/offers/copied-media-id/original-safe.webp",
+                },
+              ],
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      hotelService.uploadListingImagesFromSources([sourceUrl], [], "offer-resource-id"),
+    ).resolves.toEqual({
+      images: [
+        {
+          url: "private/marketplace/offers/copied-media-id/original-safe.webp",
+          mediaObjectId: "copied-media-id",
+        },
+      ],
+    });
+  });
+
+  it("classifies a browser-blocked canonical photo before starting a media upload", async () => {
+    const sourceUrl = "https://images.example/no-cors.jpg";
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      hotelService.uploadListingImagesFromSources([sourceUrl], [], "offer-resource-id"),
+    ).rejects.toEqual(new CanonicalHotelPhotoReuseError(sourceUrl));
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(sourceUrl, { credentials: "omit" });
   });
 });
 

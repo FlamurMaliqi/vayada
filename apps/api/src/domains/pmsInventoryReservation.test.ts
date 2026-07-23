@@ -1,0 +1,129 @@
+import { describe, expect, it } from "vitest";
+
+import { createTargetPmsInventoryReservationPort } from "./pmsInventoryReservation.js";
+
+const reservationInput = {
+  propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+  quoteSessionId: "49b3e1e1-95f8-47f2-8bf1-c2d18e3d7a66",
+  roomTypeId: "59b3e1e1-95f8-47f2-8bf1-c2d18e3d7a66",
+  publicOfferKey: "room-deluxe:flexible",
+  checkIn: "2026-09-12",
+  checkOut: "2026-09-15",
+  roomCount: 1,
+  currency: "EUR",
+  occurredAt: new Date("2026-09-01T10:00:00.000Z"),
+} as const;
+
+describe("target PMS inventory reservation adapter", () => {
+  it("reserves through the caller transaction and returns the durable marker", async () => {
+    const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const transaction = {
+      async query(text: string, values?: readonly unknown[]) {
+        calls.push({ text, values });
+        return { rows: [{ reserved: true }] };
+      },
+    };
+
+    const marker = await createTargetPmsInventoryReservationPort().reserve({
+      transaction: transaction as never,
+      ...reservationInput,
+    });
+
+    expect(marker).toEqual({
+      contractVersion: "pms.inventory-reservation.v1",
+      owner: "pms",
+      source: "booking_engine",
+      quoteSessionId: reservationInput.quoteSessionId,
+      propertyId: reservationInput.propertyId,
+      roomTypeId: reservationInput.roomTypeId,
+      publicOfferKey: reservationInput.publicOfferKey,
+      checkIn: reservationInput.checkIn,
+      checkOut: reservationInput.checkOut,
+      roomCount: 1,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain("UPDATE pms.inventory_days");
+    expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
+    expect(calls[0]?.text).toContain(
+      "WHEN offer.availability_status IN ('closed', 'stale', 'unavailable')",
+    );
+    expect(calls[0]?.text).toContain(
+      "WHEN offer.availability_status IN ('closed', 'stale', 'unavailable') THEN FALSE",
+    );
+    expect(calls[0]?.values).toEqual([
+      reservationInput.propertyId,
+      reservationInput.roomTypeId,
+      reservationInput.publicOfferKey,
+      reservationInput.checkIn,
+      reservationInput.checkOut,
+      reservationInput.roomCount,
+      reservationInput.currency,
+      reservationInput.occurredAt.toISOString(),
+    ]);
+  });
+
+  it("returns null when the guarded reservation does not cover the full stay", async () => {
+    const transaction = {
+      async query() {
+        return { rows: [{ reserved: false }] };
+      },
+    };
+
+    await expect(
+      createTargetPmsInventoryReservationPort().reserve({
+        transaction: transaction as never,
+        ...reservationInput,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("releases only a valid marker for the same property through the caller transaction", async () => {
+    const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const transaction = {
+      async query(text: string, values?: readonly unknown[]) {
+        calls.push({ text, values });
+        return { rows: [] };
+      },
+    };
+    const adapter = createTargetPmsInventoryReservationPort();
+
+    await adapter.release({
+      transaction: transaction as never,
+      propertyId: reservationInput.propertyId,
+      bookingMetadata: {},
+      occurredAt: reservationInput.occurredAt,
+    });
+    expect(calls).toHaveLength(0);
+
+    await adapter.release({
+      transaction: transaction as never,
+      propertyId: reservationInput.propertyId,
+      bookingMetadata: {
+        inventoryReservation: {
+          contractVersion: "pms.inventory-reservation.v1",
+          owner: "pms",
+          source: "booking_engine",
+          quoteSessionId: reservationInput.quoteSessionId,
+          propertyId: reservationInput.propertyId,
+          roomTypeId: reservationInput.roomTypeId,
+          publicOfferKey: reservationInput.publicOfferKey,
+          checkIn: reservationInput.checkIn,
+          checkOut: reservationInput.checkOut,
+          roomCount: reservationInput.roomCount,
+        },
+      },
+      occurredAt: reservationInput.occurredAt,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain("assigned_count = GREATEST");
+    expect(calls[0]?.values).toEqual([
+      reservationInput.propertyId,
+      reservationInput.roomTypeId,
+      reservationInput.checkIn,
+      reservationInput.checkOut,
+      reservationInput.roomCount,
+      reservationInput.occurredAt.toISOString(),
+    ]);
+  });
+});

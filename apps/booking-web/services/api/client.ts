@@ -78,10 +78,9 @@ async function parse<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-const BOOKING_WEB_PUBLIC_API_URL =
-  process.env.NEXT_PUBLIC_BOOKING_WEB_API_URL || "https://api.localhost";
-
-export const bookingWebPublic = new ApiClient(BOOKING_WEB_PUBLIC_API_URL);
-export const bookingEngine = new ApiClient(API_URL);
+// Browser requests stay same-origin and are proxied by Next.js. This keeps
+// verified hotel custom domains functional without trusting arbitrary origins
+// in the public API's CORS policy.
+export const bookingWebPublic = new ApiClient("");
+export const bookingEngine = new ApiClient("");
 export { ApiError };

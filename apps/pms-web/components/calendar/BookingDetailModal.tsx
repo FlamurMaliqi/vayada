@@ -58,6 +58,8 @@ interface UnassignPlan {
 const datesOverlap = (aStart: string, aEnd: string, bStart: string, bEnd: string): boolean =>
   aStart < bEnd && aEnd > bStart;
 
+const LEGACY_BOOKING_WRITES_AVAILABLE = false;
+
 export default function BookingDetailModal({
   bookingId,
   onClose,
@@ -555,6 +557,8 @@ export default function BookingDetailModal({
                             {entry.swap && (
                               <button
                                 type="button"
+                                disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
+                                title="Room swaps are not available yet"
                                 onClick={() =>
                                   beginSwap(
                                     room,
@@ -562,9 +566,9 @@ export default function BookingDetailModal({
                                     entry.swap!.partnerDestinationRoomId,
                                   )
                                 }
-                                className="px-2.5 py-1 text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
+                                className="cursor-not-allowed rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-400"
                               >
-                                Swap
+                                Swap unavailable
                               </button>
                             )}
                             <button
@@ -599,10 +603,10 @@ export default function BookingDetailModal({
               {movingRoom
                 ? "Moving..."
                 : !selectedCandidate
-                  ? "Select a free room or use Swap / Move to Unassigned"
+                  ? "Select a free room or move an occupant to Unassigned"
                   : selectedCandidate.kind === "available"
                     ? `Move to #${selectedCandidate.room.roomNumber || ""}`
-                    : "Use Swap or Move to Unassigned above"}
+                    : "Move the occupant to Unassigned above"}
             </button>
             <p className="mt-2 text-xs text-gray-500 text-center">
               The original confirmation number and payment record are preserved.
@@ -712,10 +716,11 @@ export default function BookingDetailModal({
             </button>
             <button
               onClick={handleConfirmSwap}
-              disabled={movingRoom}
-              className="flex-1 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50"
+              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || movingRoom}
+              title="Room swaps are not available yet"
+              className="flex-1 cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
             >
-              {movingRoom ? "Swapping…" : "Confirm swap"}
+              Swap unavailable
             </button>
           </div>
         </div>
@@ -966,7 +971,8 @@ export default function BookingDetailModal({
             </button>
             <button
               onClick={handleSaveEdit}
-              disabled={saving}
+              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || saving}
+              title="Booking edits are not available yet"
               className="flex-1 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50"
             >
               {saving ? "Saving..." : "Save Changes"}
@@ -1247,7 +1253,13 @@ export default function BookingDetailModal({
               {booking.status !== "cancelled" && (
                 <button
                   onClick={enterRoomPicker}
-                  className="w-full px-4 py-2 text-sm font-medium text-primary-700 border border-primary-300 hover:bg-primary-50 rounded-lg transition-colors flex items-center justify-center gap-2"
+                  disabled={booking.numberOfRooms > 1}
+                  title={
+                    booking.numberOfRooms > 1
+                      ? "Multi-room assignment changes are not available from the calendar yet"
+                      : undefined
+                  }
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-primary-300 px-4 py-2 text-sm font-medium text-primary-700 transition-colors hover:bg-primary-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-400"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path
@@ -1264,24 +1276,28 @@ export default function BookingDetailModal({
               {booking.status !== "cancelled" && (
                 <button
                   onClick={() => setEditing(true)}
-                  className="w-full px-4 py-2 text-sm font-medium text-primary-700 border border-primary-300 hover:bg-primary-50 rounded-lg transition-colors"
+                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
+                  title="Booking edits are not available yet"
+                  className="w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                 >
-                  Edit Booking
+                  Edit booking · Not available yet
                 </button>
               )}
               {booking.status === "pending" && (
                 <div className="flex gap-2">
                   <button
                     onClick={() => handleStatusUpdate("confirmed")}
-                    disabled={actionLoading}
-                    className="flex-1 px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors disabled:opacity-50"
+                    disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading}
+                    title="Booking confirmation is not available yet"
+                    className="flex-1 cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                   >
                     Confirm
                   </button>
                   <button
                     onClick={() => setShowCancelConfirm(true)}
-                    disabled={actionLoading}
-                    className="flex-1 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors disabled:opacity-50"
+                    disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading}
+                    title="Booking cancellation is not available yet"
+                    className="flex-1 cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                   >
                     Cancel
                   </button>
@@ -1290,10 +1306,11 @@ export default function BookingDetailModal({
               {booking.status === "confirmed" && (
                 <button
                   onClick={() => setShowCancelConfirm(true)}
-                  disabled={actionLoading}
-                  className="w-full px-4 py-2 text-sm font-medium text-red-700 border border-red-300 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading}
+                  title="Booking cancellation is not available yet"
+                  className="w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                 >
-                  Cancel Booking
+                  Cancellation not available yet
                 </button>
               )}
             </div>
