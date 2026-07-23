@@ -70,6 +70,7 @@ export function HotelDetailModal({
   const imageListKey = JSON.stringify(images);
   const safeImageIndex = images.length > 0 ? Math.min(currentImageIndex, images.length - 1) : 0;
   const currentImage = images[safeImageIndex];
+  const isCovered = showApplicationModal || showSuccessModal || errorState.isOpen;
 
   useEffect(() => {
     if (isOpen && hotelId) {
@@ -83,11 +84,10 @@ export function HotelDetailModal({
     onClose,
     dialogRef,
     initialFocusRef: closeButtonRef,
+    isInert: isCovered,
   });
 
   if (!isOpen || !hotel) return null;
-
-  const isCovered = showApplicationModal || showSuccessModal || errorState.isOpen;
 
   const handleApplyClick = () => {
     setShowApplicationModal(true);
@@ -282,7 +282,6 @@ export function HotelDetailModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="hotel-detail-title"
-        aria-hidden={isCovered || undefined}
       >
         {/* Hero Image Section */}
         <div className="relative h-56 md:h-64 flex-shrink-0">

@@ -249,6 +249,7 @@ test("creator selects one compensation option when applying", async ({ page }) =
 
   const duplicateDialog = page.getByRole("dialog", { name: "Duplicate Application" });
   await expect(duplicateDialog).toBeVisible();
+  await expect(applicationDialog).toHaveAttribute("inert", "");
   const closeDuplicateDialog = duplicateDialog.getByRole("button", { name: "Close" });
   const confirmDuplicateDialog = duplicateDialog.getByRole("button", { name: "OK" });
   await expect(closeDuplicateDialog).toBeFocused();
@@ -261,6 +262,7 @@ test("creator selects one compensation option when applying", async ({ page }) =
   await expect(duplicateDialog).toHaveCount(0);
 
   await expect(applicationDialog).toBeVisible();
+  await expect(applicationDialog).not.toHaveAttribute("inert");
   await expect(submitApplication).toBeFocused();
   await expect(
     page.getByPlaceholder(/Share your content style, audience demographics/),
@@ -389,7 +391,7 @@ test("creator can navigate the hotel detail gallery", async ({ page }) => {
 
   const applicationDialog = page.getByRole("dialog", { name: "Apply for Collaboration" });
   await expect(applicationDialog).toBeVisible();
-  await expect(detailDialogElement).toHaveAttribute("aria-hidden", "true");
+  await expect(detailDialogElement).toHaveAttribute("inert", "");
   const closeApplication = applicationDialog.getByRole("button", { name: "Close application" });
   const cancelApplication = applicationDialog.getByRole("button", { name: "Cancel" });
   const fitInput = applicationDialog.getByPlaceholder(
@@ -404,7 +406,7 @@ test("creator can navigate the hotel detail gallery", async ({ page }) => {
   await fitInput.fill("This should be cleared when the modal closes.");
   await page.keyboard.press("Escape");
   await expect(applicationDialog).toHaveCount(0);
-  await expect(detailDialogElement).not.toHaveAttribute("aria-hidden");
+  await expect(detailDialogElement).not.toHaveAttribute("inert");
   await expect(applyFromDetails).toBeFocused();
 
   await applyFromDetails.click();
@@ -417,7 +419,7 @@ test("creator can navigate the hotel detail gallery", async ({ page }) => {
   ).toHaveValue("");
   await reopenedApplicationDialog.locator("..").click({ position: { x: 2, y: 2 } });
   await expect(reopenedApplicationDialog).toHaveCount(0);
-  await expect(detailDialogElement).not.toHaveAttribute("aria-hidden");
+  await expect(detailDialogElement).not.toHaveAttribute("inert");
   await expect(applyFromDetails).toBeFocused();
 
   await page.keyboard.press("Escape");

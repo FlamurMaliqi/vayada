@@ -7,6 +7,7 @@ interface UseModalAccessibilityOptions {
   onClose: () => void;
   dialogRef: RefObject<HTMLElement | null>;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  isInert?: boolean;
 }
 
 interface ModalStackEntry {
@@ -44,6 +45,7 @@ export function useModalAccessibility({
   onClose,
   dialogRef,
   initialFocusRef,
+  isInert = false,
 }: UseModalAccessibilityOptions) {
   const tokenRef = useRef(Symbol("modal"));
   const onCloseRef = useRef(onClose);
@@ -51,6 +53,10 @@ export function useModalAccessibility({
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    dialogRef.current?.toggleAttribute("inert", isOpen && isInert);
+  }, [dialogRef, isInert, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -157,6 +163,7 @@ export function useModalAccessibility({
       }
 
       if (wasTopModal) {
+        modalStack[modalStack.length - 1]?.dialog.removeAttribute("inert");
         const focusTarget = entry.restoreFocusElement?.isConnected
           ? entry.restoreFocusElement
           : modalStack[modalStack.length - 1]?.lastFocusedElement;

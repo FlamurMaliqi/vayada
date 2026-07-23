@@ -139,7 +139,7 @@ export function CollaborationApplicationModal({
     onClose();
   };
 
-  useModalAccessibility({ isOpen, onClose: handleCancel, dialogRef });
+  useModalAccessibility({ isOpen, onClose: handleCancel, dialogRef, isInert: isCovered });
 
   if (!isOpen) return null;
 
@@ -303,7 +303,6 @@ export function CollaborationApplicationModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="collaboration-application-title"
-        aria-hidden={isCovered || undefined}
       >
         {/* Modal Header */}
         <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
