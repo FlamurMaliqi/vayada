@@ -351,7 +351,7 @@
   },
   "requestChange": {
     "title": "Ajukan Perubahan Pemesanan",
-    "subtitle": "Pilih tanggal menginap baru. Kami akan memeriksa ketersediaan dan harga sebelum properti meninjau permintaan Anda.",
+    "subtitle": "Pilih tanggal menginap baru. Kami akan memeriksa ketersediaan dan harga sebelum meninjau permintaan Anda.",
     "loading": "Memuat…",
     "loadError": "Pemesanan ini tidak dapat dimuat.",
     "missingEmail": "Buka halaman ini dari tautan konfirmasi pemesanan Anda.",

@@ -140,8 +140,15 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
     },
 
     async release(input) {
-      const reservation = inventoryReservationMarker(input.bookingMetadata, input.propertyId);
-      if (!reservation) return;
+      const reservation = input.reservation;
+      if (
+        reservation.contractVersion !== PMS_INVENTORY_RESERVATION_MARKER_VERSION ||
+        reservation.owner !== "pms" ||
+        reservation.source !== "booking_engine" ||
+        reservation.propertyId !== input.propertyId
+      ) {
+        return;
+      }
 
       await input.transaction.query(
         `WITH inventory_lock AS (
@@ -199,70 +206,4 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
       );
     },
   };
-}
-
-function inventoryReservationMarker(
-  bookingMetadata: unknown,
-  expectedPropertyId: string,
-): PmsInventoryReservationMarker | null {
-  const marker = objectValue(objectValue(bookingMetadata)["inventoryReservation"]);
-  if (
-    marker["contractVersion"] !== PMS_INVENTORY_RESERVATION_MARKER_VERSION ||
-    marker["owner"] !== "pms" ||
-    marker["source"] !== "booking_engine"
-  ) {
-    return null;
-  }
-  const quoteSessionId = stringValue(marker["quoteSessionId"]);
-  const propertyId = stringValue(marker["propertyId"]);
-  const roomTypeId = stringValue(marker["roomTypeId"]);
-  const publicOfferKey = stringValue(marker["publicOfferKey"]);
-  const checkIn = reservationDate(marker["checkIn"]);
-  const checkOut = reservationDate(marker["checkOut"]);
-  const roomCount = integerValue(marker["roomCount"]);
-  if (
-    !quoteSessionId ||
-    propertyId !== expectedPropertyId ||
-    !roomTypeId ||
-    !publicOfferKey ||
-    !checkIn ||
-    !checkOut ||
-    checkIn >= checkOut ||
-    roomCount < 1
-  ) {
-    return null;
-  }
-  return {
-    contractVersion: PMS_INVENTORY_RESERVATION_MARKER_VERSION,
-    owner: "pms",
-    source: "booking_engine",
-    quoteSessionId,
-    propertyId,
-    roomTypeId,
-    publicOfferKey,
-    checkIn,
-    checkOut,
-    roomCount,
-  };
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function integerValue(value: unknown): number {
-  return typeof value === "number" && Number.isInteger(value) ? value : 0;
-}
-
-function reservationDate(value: unknown): string | null {
-  const date = stringValue(value);
-  return date && /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(`${date}T00:00:00Z`))
-    ? date
-    : null;
 }

@@ -787,6 +787,9 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
 function toPmsOperationalReservation(
   row: TargetPmsOperationalReservationRow,
 ): PmsOperationalReservation {
+  const bookedRoomTypeId = row.bookedRoomTypeId.trim();
+  const bookedRoomName = row.bookedRoomName.trim();
+
   return {
     guestBookingId: row.guestBookingId,
     bookingReference: row.bookingReference,
@@ -814,10 +817,9 @@ function toPmsOperationalReservation(
     },
     privateNoteCount: toInteger(row.privateNoteCount),
     additionalGuestCount: toInteger(row.additionalGuestCount),
-    bookedOffer: {
-      roomTypeId: row.bookedRoomTypeId,
-      roomName: row.bookedRoomName,
-    },
+    ...(bookedRoomTypeId && bookedRoomName
+      ? { bookedOffer: { roomTypeId: bookedRoomTypeId, roomName: bookedRoomName } }
+      : {}),
     roomCount: Math.max(toInteger(row.roomCount), 1),
     pricing: {
       totalAmount: {

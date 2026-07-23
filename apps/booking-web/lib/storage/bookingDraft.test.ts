@@ -87,4 +87,51 @@ describe("toConfirmationBooking", () => {
     expect(Number.isNaN(booking.nights)).toBe(false);
     expect(Number.isNaN(booking.totalAmount)).toBe(false);
   });
+
+  it("fails closed for malformed authoritative statuses while preserving safe context fallbacks", () => {
+    const unsafeSource = {
+      id: " ",
+      status: "run_script",
+      paymentStatus: "invented",
+      depositPercentage: -25,
+    } as unknown as BookingConfirmationSource;
+
+    const booking = toConfirmationBooking(unsafeSource, {
+      id: "context-booking-123",
+      status: "confirmed",
+      paymentStatus: "captured",
+      depositPercentage: 30,
+    });
+
+    expect(booking).toMatchObject({
+      id: "context-booking-123",
+      status: "pending",
+      paymentStatus: null,
+      depositPercentage: 30,
+    });
+  });
+
+  it("uses context statuses only when the public response omits them", () => {
+    const booking = toConfirmationBooking(
+      {},
+      {
+        status: "confirmed",
+        paymentStatus: "captured",
+      },
+    );
+
+    expect(booking).toMatchObject({
+      status: "confirmed",
+      paymentStatus: "captured",
+    });
+  });
+
+  it("normalizes invalid deposit percentages to zero", () => {
+    const booking = toConfirmationBooking(
+      { depositPercentage: Number.NaN },
+      { depositPercentage: -1 },
+    );
+
+    expect(booking.depositPercentage).toBe(0);
+  });
 });

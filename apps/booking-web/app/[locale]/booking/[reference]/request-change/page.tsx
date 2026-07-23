@@ -194,7 +194,7 @@ export default function RequestChangePage({
         </h1>
         <p className="text-sm text-gray-600 mb-6">
           {t("subtitle") ||
-            "Choose new stay dates. We'll verify availability and price before the property reviews your request."}
+            "Choose new stay dates. We'll verify availability and price before we review your request."}
         </p>
 
         {loadError && (

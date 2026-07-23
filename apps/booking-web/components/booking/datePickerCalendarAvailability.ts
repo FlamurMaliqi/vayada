@@ -10,3 +10,13 @@ export function calendarDatesInRange(start: string, end: string): string[] {
 
   return dates;
 }
+
+export function replaceRestrictionsForDates(
+  current: Record<string, number>,
+  requestedDates: string[],
+  refreshed: Record<string, number>,
+): Record<string, number> {
+  const next = { ...current };
+  requestedDates.forEach((date) => delete next[date]);
+  return { ...next, ...refreshed };
+}

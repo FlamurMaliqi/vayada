@@ -351,7 +351,7 @@
   },
   "requestChange": {
     "title": "Demander une modification de réservation",
-    "subtitle": "Choisissez de nouvelles dates. Nous vérifierons la disponibilité et le prix avant l'examen de votre demande par l'établissement.",
+    "subtitle": "Choisissez de nouvelles dates. Nous vérifierons la disponibilité et le prix avant d’examiner votre demande.",
     "loading": "Chargement…",
     "loadError": "Cette réservation n'a pas pu être chargée.",
     "missingEmail": "Ouvrez cette page depuis le lien de confirmation de votre réservation.",

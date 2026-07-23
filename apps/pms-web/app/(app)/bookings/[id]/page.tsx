@@ -1306,7 +1306,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     setGuests((prev) => [
       ...prev,
       {
-        id: `${DRAFT_GUEST_ID_PREFIX}${Date.now()}`,
+        id: `${DRAFT_GUEST_ID_PREFIX}${crypto.randomUUID()}`,
         bookingId: id,
         position: prev.length + 1,
         firstName: "",

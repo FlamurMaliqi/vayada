@@ -41,6 +41,7 @@ class LifecyclePool {
         contractVersion: "pms.inventory-reservation.v1",
         owner: "pms",
         source: "booking_engine",
+        quoteSessionId: "change-lifecycle-original-quote",
         propertyId,
         roomTypeId: "6e14c338-b483-471f-95bc-47a3bc322910",
         publicOfferKey: "room-deluxe:flex",

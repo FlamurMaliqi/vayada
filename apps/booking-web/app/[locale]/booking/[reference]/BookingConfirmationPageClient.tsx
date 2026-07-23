@@ -485,15 +485,15 @@ export default function BookingConfirmationPageClient({
                   <span className="text-gray-600">{t("paymentMethodLabel") || "Payment"}</span>
                   <span className="font-medium text-gray-900">
                     {booking.paymentMethod === "card"
-                      ? "Card"
+                      ? tp("payWithCard")
                       : isPayAtProperty
                         ? tp("payAtProperty")
                         : booking.paymentMethod === "paypal"
-                          ? "PayPal"
+                          ? tp("paypalLabel")
                           : booking.paymentMethod === "bank_transfer"
-                            ? "Bank transfer"
+                            ? tp("bankTransfer")
                             : booking.paymentMethod === "xendit"
-                              ? "Xendit"
+                              ? tp("xenditTitle")
                               : booking.paymentMethod || "Other"}
                   </span>
                 </div>

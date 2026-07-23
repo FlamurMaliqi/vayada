@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { inventoryReservationReceiptFromBookingMetadata } from "../platform/inventoryReservation.js";
 import { createTargetPmsInventoryReservationPort } from "./pmsInventoryReservation.js";
 
 const reservationInput = {
@@ -87,18 +88,15 @@ describe("target PMS inventory reservation adapter", () => {
     };
     const adapter = createTargetPmsInventoryReservationPort();
 
-    await adapter.release({
-      transaction: transaction as never,
-      propertyId: reservationInput.propertyId,
-      bookingMetadata: {},
-      occurredAt: reservationInput.occurredAt,
-    });
+    const invalidReservation = inventoryReservationReceiptFromBookingMetadata(
+      {},
+      reservationInput.propertyId,
+    );
+    expect(invalidReservation).toBeNull();
     expect(calls).toHaveLength(0);
 
-    await adapter.release({
-      transaction: transaction as never,
-      propertyId: reservationInput.propertyId,
-      bookingMetadata: {
+    const reservation = inventoryReservationReceiptFromBookingMetadata(
+      {
         inventoryReservation: {
           contractVersion: "pms.inventory-reservation.v1",
           owner: "pms",
@@ -112,6 +110,13 @@ describe("target PMS inventory reservation adapter", () => {
           roomCount: reservationInput.roomCount,
         },
       },
+      reservationInput.propertyId,
+    );
+    expect(reservation).not.toBeNull();
+    await adapter.release({
+      transaction: transaction as never,
+      propertyId: reservationInput.propertyId,
+      reservation: reservation!,
       occurredAt: reservationInput.occurredAt,
     });
 

@@ -124,12 +124,12 @@ function nightsBetween(checkIn: string, checkOut: string): number {
   return difference > 0 ? Math.round(difference / 86_400_000) : 0;
 }
 
-function bookingStatus(value: unknown): Booking["status"] {
+function bookingStatus(value: unknown): Booking["status"] | null {
   if (value === "canceled") return "cancelled";
   if (value === "pending_payment") return "pending";
   return BOOKING_STATUSES.includes(value as Booking["status"])
     ? (value as Booking["status"])
-    : "pending";
+    : null;
 }
 
 function paymentMethod(value: unknown): string | null {
@@ -160,9 +160,18 @@ export function toConfirmationBooking(
   const derivedNights = nightsBetween(checkIn, checkOut);
   const sourceNights = nonNegativeInteger(source.nights);
   const contextNights = nonNegativeInteger(context.nights);
+  const hasSourceBookingStatus =
+    Object.prototype.hasOwnProperty.call(source, "status") && source.status !== undefined;
+  const hasSourcePaymentStatus =
+    Object.prototype.hasOwnProperty.call(source, "paymentStatus") &&
+    source.paymentStatus !== undefined;
 
   return {
-    id: nonEmptyString(source.guestBookingId) ?? nonEmptyString(source.id) ?? "",
+    id:
+      nonEmptyString(source.guestBookingId) ??
+      nonEmptyString(source.id) ??
+      nonEmptyString(context.id) ??
+      "",
     bookingReference:
       nonEmptyString(source.bookingReference) ?? nonEmptyString(context.bookingReference) ?? "",
     hotelName: nonEmptyString(context.hotelName) ?? nonEmptyString(source.hotelName) ?? "",
@@ -184,7 +193,10 @@ export function toConfirmationBooking(
     ),
     totalAmount: nonNegativeNumber(source.totalAmount, nonNegativeNumber(context.totalAmount)),
     depositRequired: source.depositRequired ?? context.depositRequired,
-    depositPercentage: source.depositPercentage ?? context.depositPercentage,
+    depositPercentage: nonNegativeNumber(
+      source.depositPercentage,
+      nonNegativeNumber(context.depositPercentage),
+    ),
     depositAmount: nonNegativeNumber(
       source.depositAmount,
       nonNegativeNumber(context.depositAmount),
@@ -202,9 +214,13 @@ export function toConfirmationBooking(
       nonEmptyString(source.currency)?.toUpperCase() ??
       nonEmptyString(context.currency)?.toUpperCase() ??
       "EUR",
-    status: bookingStatus(source.status ?? context.status),
+    status: hasSourceBookingStatus
+      ? (bookingStatus(source.status) ?? "pending")
+      : (bookingStatus(context.status) ?? "pending"),
     paymentMethod: paymentMethod(context.paymentMethod) ?? paymentMethod(source.paymentMethod),
-    paymentStatus: paymentStatus(source.paymentStatus ?? context.paymentStatus),
+    paymentStatus: hasSourcePaymentStatus
+      ? paymentStatus(source.paymentStatus)
+      : paymentStatus(context.paymentStatus),
     hostResponseDeadline:
       nonEmptyString(source.hostResponseDeadline) ?? nonEmptyString(context.hostResponseDeadline),
     createdAt: nonEmptyString(source.createdAt) ?? nonEmptyString(context.createdAt) ?? "",

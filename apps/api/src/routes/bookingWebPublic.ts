@@ -15,7 +15,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { enqueueBookingLifecycleEmailJob } from "../jobs/bookingEmails.js";
-import type { DirectBookingInventoryReservationPort } from "../platform/inventoryReservation.js";
+import {
+  inventoryReservationReceiptFromBookingMetadata,
+  type DirectBookingInventoryReservationPort,
+} from "../platform/inventoryReservation.js";
 import {
   serializePublicHotelQuoteProjection,
   type PublicHotelQuoteQuery,
@@ -1320,12 +1323,18 @@ export function createTargetBookingWebCheckoutAdapter(
         }
         assertTargetDateChangePriceUnchanged(changeRequest.requestedChanges, preview);
 
-        await config.inventoryReservationPort.release({
-          transaction: client,
+        const currentReservation = inventoryReservationReceiptFromBookingMetadata(
+          booking.bookingMetadata,
           propertyId,
-          bookingMetadata: booking.bookingMetadata,
-          occurredAt: context.occurredAt,
-        });
+        );
+        if (currentReservation) {
+          await config.inventoryReservationPort.release({
+            transaction: client,
+            propertyId,
+            reservation: currentReservation,
+            occurredAt: context.occurredAt,
+          });
+        }
         const selectedOffer = objectValue(preview.pricingSnapshot["selectedOffer"]);
         const roomTypeId = stringValue(selectedOffer["roomTypeId"]);
         const publicOfferKey = stringValue(selectedOffer["publicOfferKey"]);
@@ -2925,12 +2934,18 @@ async function withGuestLifecycleMutation(
     if (!updated) {
       throw createHttpError(409, "Booking status changed. Please refresh and try again.");
     }
-    await inventoryReservationPort.release({
-      transaction: client,
-      propertyId: updated.propertyId,
-      bookingMetadata: updated.bookingMetadata,
-      occurredAt: context.occurredAt,
-    });
+    const currentReservation = inventoryReservationReceiptFromBookingMetadata(
+      updated.bookingMetadata,
+      updated.propertyId,
+    );
+    if (currentReservation) {
+      await inventoryReservationPort.release({
+        transaction: client,
+        propertyId: updated.propertyId,
+        reservation: currentReservation,
+        occurredAt: context.occurredAt,
+      });
+    }
     await enqueuePmsReservationHandoff(client, property.propertyId, updated, context, "cancel");
     const body = serializeTargetBookingStatus(updated);
     await recordTargetCheckoutCommand(client, {

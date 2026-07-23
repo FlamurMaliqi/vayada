@@ -1,6 +1,9 @@
-import { apiClient, omitHotelContext } from "../api/client";
+import { ApiErrorResponse, apiClient, isNextApiTarget, omitHotelContext } from "../api/client";
 import { getSelectedBookingHotelId, listScopedBookingHotelIds } from "../api/bookingHotelScope";
-import { getBookingHotelPropertyLink } from "../api/bookingPropertyLinkClient";
+import {
+  BookingPropertyLinkClientError,
+  getBookingHotelPropertyLink,
+} from "../api/bookingPropertyLinkClient";
 import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
 import {
   deleteBookingCustomDomain,
@@ -139,60 +142,70 @@ function legacyScopedBookingHotels(): HotelSummary[] {
 }
 
 async function listScopedBookingHotels(): Promise<HotelSummary[]> {
-  const bookingHotelIds = listScopedBookingHotelIds();
-  try {
-    const [status, propertyLinks] = await Promise.all([
-      sharedHotelSetupApi.getStatus({ entryProduct: "booking" }),
-      Promise.all(
-        bookingHotelIds.map(async (hotelId) => {
-          try {
-            const [link, settings] = await Promise.all([
-              getBookingHotelPropertyLink({ hotelId }),
-              apiClient
-                .get<PropertySettings>(
-                  `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/property`,
-                  omitHotelContext,
-                )
-                .catch(() => null),
-            ]);
-            return [link.propertyId, { hotelId, slug: settings?.slug ?? "" }] as const;
-          } catch {
-            return null;
-          }
-        }),
-      ),
-    ]);
-    const bookingHotelByPropertyId = new Map<string, { hotelId: string; slug: string }>();
-    const canonicalSlugByPropertyId = new Map<string, string>();
-    for (const link of propertyLinks) {
-      if (!link) continue;
-      const [propertyId, bookingHotel] = link;
-      const { hotelId } = bookingHotel;
-      if (bookingHotel.slug) canonicalSlugByPropertyId.set(propertyId, bookingHotel.slug);
-      if (hotelId === propertyId) continue;
-      const existing = bookingHotelByPropertyId.get(propertyId);
-      if (!existing || hotelId.localeCompare(existing.hotelId) < 0) {
-        bookingHotelByPropertyId.set(propertyId, bookingHotel);
-      }
-    }
+  if (!isNextApiTarget()) return legacyScopedBookingHotels();
 
-    return status.properties.map((property) => {
-      const bookingHotel = bookingHotelByPropertyId.get(property.propertyId);
-      const bookingHotelId = bookingHotel?.hotelId;
-      return {
-        id: bookingHotelId ?? property.propertyId,
-        propertyId: property.propertyId,
-        bookingHotelId,
-        productReady: true,
-        name: property.displayName ?? "Unnamed hotel",
-        slug: canonicalSlugByPropertyId.get(property.propertyId) ?? "",
-        location: property.locationSummary ?? "",
-        country: "",
-      };
-    });
-  } catch {
-    return legacyScopedBookingHotels();
+  const bookingHotelIds = listScopedBookingHotelIds();
+  const [status, propertyLinks] = await Promise.all([
+    sharedHotelSetupApi.getStatus({ entryProduct: "booking" }),
+    Promise.all(bookingHotelIds.map(loadLinkedBookingHotel)),
+  ]);
+  const canonicalByPropertyId = new Map<string, LinkedBookingHotel>();
+  const selfFallbackByPropertyId = new Map<string, LinkedBookingHotel>();
+  for (const link of propertyLinks) {
+    if (!link) continue;
+    const [propertyId, bookingHotel] = link;
+    const candidates =
+      bookingHotel.hotelId === propertyId ? selfFallbackByPropertyId : canonicalByPropertyId;
+    const existing = candidates.get(propertyId);
+    if (!existing || bookingHotel.hotelId.localeCompare(existing.hotelId) < 0) {
+      candidates.set(propertyId, bookingHotel);
+    }
   }
+
+  return status.properties.map((property) => {
+    const canonical = canonicalByPropertyId.get(property.propertyId);
+    const selected = canonical ?? selfFallbackByPropertyId.get(property.propertyId);
+    return {
+      id: selected?.hotelId ?? property.propertyId,
+      propertyId: property.propertyId,
+      bookingHotelId: canonical?.hotelId,
+      productReady: true,
+      name: property.displayName ?? "Unnamed hotel",
+      slug: selected?.slug ?? "",
+      location: property.locationSummary ?? "",
+      country: "",
+    };
+  });
+}
+
+type LinkedBookingHotel = { hotelId: string; slug: string };
+
+async function loadLinkedBookingHotel(
+  hotelId: string,
+): Promise<readonly [string, LinkedBookingHotel] | null> {
+  let propertyId: string;
+  try {
+    propertyId = (await getBookingHotelPropertyLink({ hotelId })).propertyId;
+  } catch (error) {
+    if (error instanceof BookingPropertyLinkClientError && error.statusCode === 404) return null;
+    throw error;
+  }
+
+  let settings: PropertySettings | null;
+  try {
+    settings = await apiClient.get<PropertySettings>(
+      `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/property`,
+      omitHotelContext,
+    );
+  } catch (error) {
+    if (error instanceof ApiErrorResponse && error.status === 404) {
+      settings = null;
+    } else {
+      throw error;
+    }
+  }
+
+  return [propertyId, { hotelId, slug: settings?.slug ?? "" }] as const;
 }
 
 function resolveBookingHotelId(explicitHotelId?: string): string {

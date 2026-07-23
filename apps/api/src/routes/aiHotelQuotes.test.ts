@@ -61,6 +61,71 @@ function targetRepository(rows: QueryResultRow[]) {
   };
 }
 
+function cachedTargetRepository(offers: Record<string, unknown>[], hotelProfile = profile) {
+  const pool: PublicHotelQuoteReadPool = {
+    async query<T extends QueryResultRow>() {
+      return {
+        rows: [
+          {
+            quoteSessionId: "f6898100-0000-0000-0000-000000000001",
+            publicQuoteReference: "quote_cached",
+            quoteHash: "sha256:cached",
+            requestSnapshot: {},
+            quoteStatus: "bookable",
+            unavailableReasons: [],
+            offers,
+            totals: {},
+            deepLinkUrl: "https://hotel-alpenrose.booking.localhost/en/book",
+            priceGuarantee: "expires_at",
+            currency: "EUR",
+            sourceFreshness: {
+              hotel_catalog: { status: "fresh" },
+              booking: { status: "fresh" },
+              pms: { status: "fresh" },
+              finance: { status: "fresh" },
+              distribution: { status: "fresh" },
+            },
+            freshnessStatus: "fresh",
+            dataSources: ["hotel_catalog", "booking", "pms", "finance", "distribution"],
+            generatedAt: NOW.toISOString(),
+            expiresAt: new Date(NOW.getTime() + 15 * 60 * 1_000).toISOString(),
+          },
+        ] as unknown as T[],
+      };
+    },
+    async end() {},
+  };
+
+  return createTargetPublicHotelQuoteRepository({
+    connectionString: "postgresql://target",
+    profileRepository: {
+      async findProfileBySlug(slug) {
+        return slug === hotelProfile.hotel.slug ? hotelProfile : null;
+      },
+    },
+    pool,
+    now: () => NOW,
+  });
+}
+
+function cachedOffer(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    offerId: "offer-deluxe",
+    roomTypeId: "room-deluxe",
+    name: "Deluxe Room",
+    availableRooms: 1,
+    paymentOptions: ["card"],
+    totals: {
+      currency: "EUR",
+      roomTotal: 180,
+      taxesAndFees: 18,
+      discounts: 0,
+      grandTotal: 198,
+    },
+    ...overrides,
+  };
+}
+
 describe("target public hotel quote stay restrictions", () => {
   it("returns min_stay_not_met when every otherwise available rate requires a longer stay", async () => {
     const { repository } = targetRepository([
@@ -131,5 +196,60 @@ describe("target public hotel quote stay restrictions", () => {
       "(array_agg(offer.rate_summary ORDER BY offer.stay_date))[1]",
     );
     expect(queries[1]?.values?.[7]).toBe(3);
+  });
+});
+
+describe("cached target public hotel quote payment readiness", () => {
+  const query = {
+    check_in: "2026-09-12",
+    check_out: "2026-09-15",
+    adults: "2",
+    rooms: "1",
+    currency: "EUR",
+    locale: "en",
+  };
+
+  it("reports sold_out when the cached projection originally contains no offers", async () => {
+    const quote = await cachedTargetRepository([]).findQuoteBySlug(profile.hotel.slug, query);
+
+    expect(quote).toMatchObject({
+      status: "unavailable",
+      unavailableReasons: [{ code: "sold_out" }],
+    });
+  });
+
+  it("reports payment_disabled when hotel payment readiness removes every offer", async () => {
+    const payAtPropertyOnlyProfile = {
+      ...profile,
+      hotel: {
+        ...profile.hotel,
+        capabilities: {
+          ...profile.hotel.capabilities,
+          onlinePayment: false,
+          payAtProperty: true,
+        },
+      },
+    };
+    const quote = await cachedTargetRepository(
+      [cachedOffer({ paymentOptions: ["card"] })],
+      payAtPropertyOnlyProfile,
+    ).findQuoteBySlug(profile.hotel.slug, query);
+
+    expect(quote).toMatchObject({
+      status: "unavailable",
+      unavailableReasons: [{ code: "payment_disabled" }],
+    });
+  });
+
+  it("retains the established card fallback when payment options are missing", async () => {
+    const offer = cachedOffer();
+    delete offer.paymentOptions;
+
+    const quote = await cachedTargetRepository([offer]).findQuoteBySlug(profile.hotel.slug, query);
+
+    expect(quote).toMatchObject({
+      status: "bookable",
+      quote: { offers: [{ paymentOptions: ["card"] }] },
+    });
   });
 });

@@ -8,7 +8,10 @@ const originalCompatibilityFlag = process.env.NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_
 const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 
 describe("settingsService next-stack bootstrap data", () => {
+  let propertySettingsFailure: number | Error | null;
+
   beforeEach(() => {
+    propertySettingsFailure = null;
     const storage = createMemoryStorage();
     let designSettings = {
       heroImage: "https://cdn.vayada.test/hotels/alpenrose/hero.jpg",
@@ -115,7 +118,20 @@ describe("settingsService next-stack bootstrap data", () => {
             { headers: { "content-type": "application/json" } },
           );
         }
+        if (href.endsWith("/api/booking/hotels/property_alpenrose/settings/property")) {
+          return new Response(JSON.stringify({ detail: "Booking hotel settings not found." }), {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          });
+        }
         if (href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/property")) {
+          if (propertySettingsFailure instanceof Error) throw propertySettingsFailure;
+          if (propertySettingsFailure !== null) {
+            return new Response(JSON.stringify({ detail: "Booking settings unavailable." }), {
+              status: propertySettingsFailure,
+              headers: { "content-type": "application/json" },
+            });
+          }
           if (init?.method === "PATCH") {
             return new Response(
               JSON.stringify({
@@ -302,6 +318,110 @@ describe("settingsService next-stack bootstrap data", () => {
       },
     ]);
   });
+
+  it.each([401, 500])(
+    "does not hide a %i response from the canonical property settings request",
+    async (status) => {
+      propertySettingsFailure = status;
+
+      await expect(settingsService.listHotels()).rejects.toMatchObject({ status });
+    },
+  );
+
+  it("does not hide a network failure from the canonical property settings request", async () => {
+    propertySettingsFailure = new Error("property settings network failure");
+
+    await expect(settingsService.listHotels()).rejects.toThrow("property settings network failure");
+  });
+
+  it("keeps the canonical Booking hotel id and slug together with an explicit self fallback", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      resources: {
+        "booking:booking_hotel": [
+          "booking_hotel_z",
+          "booking_hotel_a",
+          "property_alpenrose",
+          "property_self",
+        ],
+      },
+      user: {
+        id: "user_1",
+        email: "owner@example.com",
+        status: "active",
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo | URL) => {
+        const href = String(url);
+        if (href.includes("/api/hotel-setup/status?entryProduct=booking")) {
+          return jsonResponse({
+            properties: [
+              {
+                propertyId: "property_alpenrose",
+                displayName: "Hotel Alpenrose",
+                locationSummary: "Innsbruck, AT",
+              },
+              {
+                propertyId: "property_self",
+                displayName: "Self-managed hotel",
+                locationSummary: "Salzburg, AT",
+              },
+            ],
+          });
+        }
+
+        const hotelId = decodeURIComponent(
+          new URL(href).pathname.match(/\/hotels\/([^/]+)\//)?.[1] ?? "",
+        );
+        if (href.endsWith("/property-link")) {
+          return jsonResponse({
+            hotelId,
+            propertyId: hotelId === "property_self" ? "property_self" : "property_alpenrose",
+            resourceLinks: {
+              bookingHotel: true,
+              pmsProperty: true,
+              financeProperty: true,
+            },
+          });
+        }
+        if (href.endsWith("/settings/property")) {
+          const slugByHotelId: Record<string, string> = {
+            booking_hotel_z: "hotel-z",
+            booking_hotel_a: "hotel-a",
+            property_alpenrose: "self-alpenrose",
+            property_self: "self-managed",
+          };
+          return jsonResponse({ slug: slugByHotelId[hotelId] });
+        }
+        throw new Error(`unexpected request: ${href}`);
+      }),
+    );
+
+    await expect(settingsService.listHotels()).resolves.toEqual([
+      {
+        id: "booking_hotel_a",
+        propertyId: "property_alpenrose",
+        bookingHotelId: "booking_hotel_a",
+        productReady: true,
+        name: "Hotel Alpenrose",
+        slug: "hotel-a",
+        location: "Innsbruck, AT",
+        country: "",
+      },
+      {
+        id: "property_self",
+        propertyId: "property_self",
+        bookingHotelId: undefined,
+        productReady: true,
+        name: "Self-managed hotel",
+        slug: "self-managed",
+        location: "Salzburg, AT",
+        country: "",
+      },
+    ]);
+  });
 });
 
 function restoreEnv(key: string, value: string | undefined): void {
@@ -310,6 +430,12 @@ function restoreEnv(key: string, value: string | undefined): void {
   } else {
     process.env[key] = value;
   }
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+  });
 }
 
 function createMemoryStorage(): Storage {

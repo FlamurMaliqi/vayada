@@ -559,12 +559,14 @@ async function mockMultiHotelActivation(
   await page.route("**/api/booking/hotels/*/public-bookability", (route) => {
     const hotelId = bookingHotelIdFromPath(route.request().url());
     const propertyId = hotelId === SECOND_HOTEL_ID ? SECOND_PROPERTY_ID : BOOKING_ADMIN_PROPERTY_ID;
+    const canonicalSlug = hotelId === SECOND_HOTEL_ID ? "bergwald" : "hotel-alpenrose";
+    const bookingBaseUrl = `https://${canonicalSlug}.booking.localhost`;
     return route.fulfill({
       json: {
         propertyId,
-        canonicalSlug: hotelId === SECOND_HOTEL_ID ? "bergwald" : "hotel-alpenrose",
-        canonicalUrl: "https://booking.localhost/en",
-        bookingBaseUrl: "https://booking.localhost",
+        canonicalSlug,
+        canonicalUrl: `${bookingBaseUrl}/en`,
+        bookingBaseUrl,
         ...publication,
       },
     });

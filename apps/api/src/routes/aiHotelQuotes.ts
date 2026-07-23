@@ -527,7 +527,8 @@ function toTargetPublicHotelQuoteProjection(
   let unavailableReasons = unavailableReasonsArray(row.unavailableReasons);
   const dataSources = dataSourcesArray(row.dataSources);
   const publicPaymentOptions = new Set(publicHotelPaymentOptions(hotel));
-  const offers = offersArray(hotel, row.offers, row.totals, request, row.deepLinkUrl)
+  const unfilteredOffers = offersArray(hotel, row.offers, row.totals, request, row.deepLinkUrl);
+  const offers = unfilteredOffers
     .map((offer) => ({
       ...offer,
       paymentOptions: offer.paymentOptions.filter((option) => publicPaymentOptions.has(option)),
@@ -548,7 +549,10 @@ function toTargetPublicHotelQuoteProjection(
   }
   if (status === "bookable" && offers.length === 0) {
     status = "unavailable";
-    unavailableReasons = dedupeReasons([...unavailableReasons, { code: "sold_out" }]);
+    unavailableReasons = dedupeReasons([
+      ...unavailableReasons,
+      { code: unfilteredOffers.length === 0 ? "sold_out" : "payment_disabled" },
+    ]);
   }
   const projection: PublicBookabilityQuoteProjection = {
     contractVersion: PUBLIC_BOOKABILITY_CONTRACT_VERSION,
@@ -996,6 +1000,8 @@ function dataSourcesArray(value: unknown): PublicBookabilityDataSourceOwner[] {
 }
 
 function paymentOptionsArray(value: unknown): PublicBookabilityOffer["paymentOptions"] {
+  if (value === null || value === undefined) return ["card"];
+
   const options = Array.isArray(value)
     ? value
         .map(normalizePublicPaymentMethod)

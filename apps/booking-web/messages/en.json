@@ -324,7 +324,7 @@
   },
   "requestChange": {
     "title": "Request Booking Changes",
-    "subtitle": "Choose new stay dates. We'll verify availability and price before the property reviews your request.",
+    "subtitle": "Choose new stay dates. We'll verify availability and price before we review your request.",
     "loading": "Loading…",
     "loadError": "Could not load this booking.",
     "missingEmail": "This page must be opened from the booking confirmation link.",

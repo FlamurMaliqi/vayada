@@ -351,7 +351,7 @@
   },
   "requestChange": {
     "title": "Buchungsänderung anfragen",
-    "subtitle": "Wählen Sie neue Reisedaten. Wir prüfen Verfügbarkeit und Preis, bevor die Unterkunft Ihre Anfrage bearbeitet.",
+    "subtitle": "Wählen Sie neue Reisedaten. Wir prüfen Verfügbarkeit und Preis, bevor wir Ihre Anfrage bearbeiten.",
     "loading": "Wird geladen…",
     "loadError": "Diese Buchung konnte nicht geladen werden.",
     "missingEmail": "Öffnen Sie diese Seite über den Link in Ihrer Buchungsbestätigung.",

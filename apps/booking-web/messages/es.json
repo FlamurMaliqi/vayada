@@ -351,7 +351,7 @@
   },
   "requestChange": {
     "title": "Solicitar un cambio de reserva",
-    "subtitle": "Elige nuevas fechas. Comprobaremos la disponibilidad y el precio antes de que el alojamiento revise tu solicitud.",
+    "subtitle": "Elige nuevas fechas. Comprobaremos la disponibilidad y el precio antes de revisar tu solicitud.",
     "loading": "Cargando…",
     "loadError": "No se pudo cargar esta reserva.",
     "missingEmail": "Abre esta página desde el enlace de confirmación de tu reserva.",

@@ -362,13 +362,16 @@ export default function PoliciesStep({
 
             {/* Pay at Hotel */}
             <div
-              className={`relative flex flex-col p-4 rounded-xl border-2 transition-all text-left cursor-pointer ${
+              className={`relative flex flex-col p-4 rounded-xl border-2 transition-all text-left ${
                 payAtHotel
                   ? "border-primary-500 bg-primary-50/30"
                   : "border-gray-200 hover:border-gray-300"
               }`}
             >
-              <div
+              <button
+                type="button"
+                aria-pressed={payAtHotel}
+                className="text-left"
                 onClick={() => {
                   const enabled = !payAtHotel;
                   setPayAtHotel(enabled);
@@ -457,7 +460,7 @@ export default function PoliciesStep({
                     <span className="text-[10px] text-gray-500">Higher no-show risk</span>
                   </div>
                 </div>
-              </div>
+              </button>
               {payAtHotel && (
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-200 flex-wrap">
                   {[

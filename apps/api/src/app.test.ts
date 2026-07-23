@@ -6500,7 +6500,7 @@ describe("vayada-api", () => {
         distribution: { status: "fresh" },
       },
       paymentOptions: [],
-      reasonCode: "sold_out",
+      reasonCode: "payment_disabled",
     },
   ])("fails cached bookable quotes closed when $caseName", async (fixture) => {
     const repository = createTargetPublicHotelQuoteRepository({

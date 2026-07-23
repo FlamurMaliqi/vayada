@@ -5,7 +5,10 @@ import { useTranslations } from "next-intl";
 import { hotelService } from "@/services/api/hotel";
 import { useSlug } from "@/contexts/HotelContext";
 
-import { calendarDatesInRange } from "./datePickerCalendarAvailability";
+import {
+  calendarDatesInRange,
+  replaceRestrictionsForDates,
+} from "./datePickerCalendarAvailability";
 
 interface DatePickerCalendarProps {
   open: boolean;
@@ -330,8 +333,12 @@ export default function DatePickerCalendar({
       .then(({ dates, minStayByArrival, maxStayByArrival, availabilityUnavailable }) => {
         if (cancelled) return;
         setUnavailableDates(new Set(dates));
-        setMinStayByArrival((prev) => ({ ...prev, ...minStayByArrival }));
-        setMaxStayByArrival((prev) => ({ ...prev, ...maxStayByArrival }));
+        setMinStayByArrival((prev) =>
+          replaceRestrictionsForDates(prev, requestedDates, minStayByArrival),
+        );
+        setMaxStayByArrival((prev) =>
+          replaceRestrictionsForDates(prev, requestedDates, maxStayByArrival),
+        );
         setAvailabilityStatus(availabilityUnavailable ? "failed" : "ready");
       })
       .catch(() => {

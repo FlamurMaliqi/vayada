@@ -6,9 +6,14 @@ import { useTranslation, SUPPORTED_LANGUAGES } from "@/lib/i18n";
 interface LocalizationSectionProps {
   currency: string;
   currencyLoadError: string;
+  currencyLoadStatus: "loading" | "ready" | "error";
 }
 
-export function LocalizationSection({ currency, currencyLoadError }: LocalizationSectionProps) {
+export function LocalizationSection({
+  currency,
+  currencyLoadError,
+  currencyLoadStatus,
+}: LocalizationSectionProps) {
   const { t, locale, setLocale } = useTranslation();
 
   return (
@@ -19,9 +24,13 @@ export function LocalizationSection({ currency, currencyLoadError }: Localizatio
     >
       <SettingsCard title={t("settings.currency")} description={t("settings.currencyDescription")}>
         <div id="currency" className="scroll-mt-24">
-          {currencyLoadError ? (
+          {currencyLoadStatus === "error" ? (
             <p className="text-sm text-red-600" role="alert">
-              {currencyLoadError}
+              {currencyLoadError || "We couldn’t load the persisted property currency."}
+            </p>
+          ) : currencyLoadStatus === "loading" ? (
+            <p className="text-sm text-gray-500" role="status">
+              Loading persisted currency…
             </p>
           ) : currency ? (
             <div className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
@@ -32,7 +41,7 @@ export function LocalizationSection({ currency, currencyLoadError }: Localizatio
             </div>
           ) : (
             <p className="text-sm text-gray-500" role="status">
-              Loading persisted currency…
+              No persisted currency is configured.
             </p>
           )}
         </div>

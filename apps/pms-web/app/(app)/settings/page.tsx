@@ -61,6 +61,9 @@ export default function SettingsPage() {
   // Currency
   const [currency, setCurrency] = useState("");
   const [currencyLoadError, setCurrencyLoadError] = useState("");
+  const [currencyLoadStatus, setCurrencyLoadStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
 
   // Property details — only fields Channex actually enforces (timezone + country).
   // Title/currency/contact-email live elsewhere; other address fields are filled
@@ -97,10 +100,12 @@ export default function SettingsPage() {
       .then((res) => {
         setCurrency(res.paymentSettings.defaultCurrency || "");
         setCurrencyLoadError("");
+        setCurrencyLoadStatus("ready");
       })
       .catch(() => {
         setCurrency("");
         setCurrencyLoadError("We couldn’t load the persisted property currency.");
+        setCurrencyLoadStatus("error");
       })
       .finally(() => setLoading(false));
 
@@ -260,7 +265,11 @@ export default function SettingsPage() {
         description="Check-in and check-out time controls are not available in PMS yet."
       />
 
-      <LocalizationSection currency={currency} currencyLoadError={currencyLoadError} />
+      <LocalizationSection
+        currency={currency}
+        currencyLoadError={currencyLoadError}
+        currencyLoadStatus={currencyLoadStatus}
+      />
     </SettingsLayout>
   );
 }
