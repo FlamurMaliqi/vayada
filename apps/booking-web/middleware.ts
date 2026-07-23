@@ -1,6 +1,7 @@
 import createMiddleware from "next-intl/middleware";
 import { NextRequest, NextResponse } from "next/server";
 import { routing } from "./i18n/routing";
+import { getRequestHost } from "./lib/requestHost";
 import {
   getCanonicalHostRedirectUrl,
   isFallbackBookingHost,
@@ -51,7 +52,8 @@ export default async function middleware(request: NextRequest) {
   // Hostnames are case-insensitive per RFC 1035 §2.3.3 but the backend
   // lookup keys are stored lowercased — normalize here so a stray
   // uppercase Host header still resolves.
-  const hostname = normalizeHost(request.headers.get("host") || "");
+  const requestHost = getRequestHost(request.headers);
+  const hostname = normalizeHost(requestHost);
 
   const knownSlug = getKnownSubdomainSlug(hostname);
   let hostResolution: BookingWebPublicHostResponse | null = null;
@@ -107,15 +109,18 @@ function resolveCanonicalRedirect(
 ): NextResponse | null {
   if (!isFallbackBookingHost(hostname)) return null;
 
+  const requestHost = getRequestHost(request.headers) || hostname;
   const policy = resolvePublicHotelUrls({
-    requestHost: request.headers.get("host") || hostname,
+    requestHost,
     requestProtocol: request.nextUrl.protocol === "http:" ? "http" : "https",
     slug: hostResolution.hotel?.slug || slug,
     locale: firstLocaleSegment(request.nextUrl.pathname) || "en",
     supportedLocales: hostResolution.hotel?.supportedLocales,
     customDomainUrl: hostResolution.customDomainUrl,
   });
-  const redirectUrl = getCanonicalHostRedirectUrl(policy, request.nextUrl);
+  const publicRequestUrl = new URL(request.nextUrl.toString());
+  publicRequestUrl.host = requestHost;
+  const redirectUrl = getCanonicalHostRedirectUrl(policy, publicRequestUrl);
   return redirectUrl ? NextResponse.redirect(redirectUrl, 308) : null;
 }
 

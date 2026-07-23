@@ -233,20 +233,22 @@ export const authService = {
     signal?: AbortSignal,
   ): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
-    const response =
-      organizationId && csrfToken
-        ? await authFetch<AuthSessionResponse>("/auth/session/refresh", {
-            method: "POST",
-            headers: { "x-vayada-csrf": csrfToken },
-            body: JSON.stringify({ organizationId, surface: AUTH_SURFACE }),
-            signal,
-          })
-        : await authFetch<AuthSessionResponse>(
-            `/auth/session?${new URLSearchParams({
-              surface: AUTH_SURFACE,
-            }).toString()}`,
-            { signal },
-          );
+    const response = csrfToken
+      ? await authFetch<AuthSessionResponse>("/auth/session/refresh", {
+          method: "POST",
+          headers: { "x-vayada-csrf": csrfToken },
+          body: JSON.stringify({
+            ...(organizationId ? { organizationId } : {}),
+            surface: AUTH_SURFACE,
+          }),
+          signal,
+        })
+      : await authFetch<AuthSessionResponse>(
+          `/auth/session?${new URLSearchParams({
+            surface: AUTH_SURFACE,
+          }).toString()}`,
+          { signal },
+        );
 
     if (isAuthOrganizationSelectionResponse(response)) {
       setPendingOrganizationSelection(response);

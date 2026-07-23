@@ -6,6 +6,7 @@ import { routing } from "@/i18n/routing";
 import IntlProviderClient from "@/i18n/IntlProviderClient";
 import Providers from "./providers";
 import DomainNotConfigured from "@/components/DomainNotConfigured";
+import { getRequestHost } from "@/lib/requestHost";
 import { resolveSlugFromHost } from "@/lib/server/resolveSlug";
 
 export function generateStaticParams() {
@@ -30,7 +31,7 @@ export default async function LocaleLayout({
   const messages = await getMessages();
 
   const headersList = await headers();
-  const hostname = headersList.get("host") || "";
+  const hostname = getRequestHost(headersList);
   // `undefined` is dev-only — the HotelProvider's client effect resolves
   // the slug from ?slug=/localStorage so a single dev container can
   // serve any hotel. `null` is a real production miss → render the

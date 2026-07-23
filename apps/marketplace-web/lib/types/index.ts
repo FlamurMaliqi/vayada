@@ -438,6 +438,12 @@ export interface ListingFormData {
   targetGroupAgeMax?: number;
   targetGroupAgeGroups?: string[];
   lookingForCreatorTypes?: CreatorType[];
+  marketplaceOnboarding?: {
+    idempotencyKey: string;
+    createdOfferId?: string;
+    createdOfferMediaResourceId?: string;
+    mediaPending?: boolean;
+  };
 }
 
 export interface CreatorFormState {

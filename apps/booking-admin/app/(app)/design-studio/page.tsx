@@ -4,10 +4,12 @@ import { useState, useRef, useEffect } from "react";
 import { EyeIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { settingsService } from "@/services/settings";
 import { requireSelectedBookingHotelId } from "@/services/api/bookingHotelScope";
+import { publishPublicBookabilityProfile } from "@/services/api/publicBookabilityPublicationClient";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { FeedbackAlert, SaveButton } from "@/components/ui";
 import { uploadSingleImage } from "@/lib/utils/uploadImage";
 import { generateColorPalette } from "@/lib/utils/colors";
+import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
 
 import MediaTab from "@/components/design-studio/MediaTab";
 import ColorsTab from "@/components/design-studio/ColorsTab";
@@ -34,6 +36,10 @@ export default function DesignStudioPage() {
   const [heroHeading, setHeroHeading] = useState("");
   const [heroSubtext, setHeroSubtext] = useState("");
   const [propertyName, setPropertyName] = useState("");
+  const [propertySlug, setPropertySlug] = useState("");
+  const [propertyAddress, setPropertyAddress] = useState("");
+  const [propertyPhone, setPropertyPhone] = useState("");
+  const [propertyEmail, setPropertyEmail] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const designHotelIdRef = useRef<string | null>(null);
 
@@ -43,6 +49,13 @@ export default function DesignStudioPage() {
 
   // Fonts state
   const [selectedFont, setSelectedFont] = useState("high-end-serif");
+  const bookingPreviewUrl = propertySlug
+    ? buildBookingPreviewUrl({
+        slug: propertySlug,
+        template: process.env.NEXT_PUBLIC_BOOKING_PREVIEW_URL_TEMPLATE,
+        location: typeof window === "undefined" ? undefined : window.location,
+      })
+    : null;
 
   // Mirror the live booking engine's palette onto the preview pane so the
   // preview renders with the same shade tokens (bg-primary-600 for CTAs,
@@ -77,6 +90,10 @@ export default function DesignStudioPage() {
         if (settings.primary_color) setPrimaryColor(settings.primary_color);
         if (settings.font_pairing) setSelectedFont(settings.font_pairing);
         if (property?.property_name) setPropertyName(property.property_name);
+        if (property?.slug) setPropertySlug(property.slug);
+        if (property?.address) setPropertyAddress(property.address);
+        if (property?.phone_number) setPropertyPhone(property.phone_number);
+        if (property?.reservation_email) setPropertyEmail(property.reservation_email);
       })
       .catch(() => {
         setLoadFailed(true);
@@ -104,8 +121,9 @@ export default function DesignStudioPage() {
 
       try {
         await settingsService.updateDesignSettings({ hero_image: s3Url }, hotelId);
+        await publishPublicBookabilityProfile(hotelId);
       } catch {
-        console.error("Failed to auto-save hero image");
+        console.error("Failed to auto-save or publish hero image");
       }
     } catch (err) {
       console.error("Image upload failed:", err);
@@ -143,6 +161,15 @@ export default function DesignStudioPage() {
         },
         hotelId,
       );
+      try {
+        await publishPublicBookabilityProfile(hotelId);
+      } catch {
+        setFeedback({
+          type: "error",
+          message: "Design saved, but the booking preview could not be refreshed. Try again.",
+        });
+        return;
+      }
       setFeedback({ type: "success", message: "Design settings saved successfully" });
     } catch {
       setFeedback({ type: "error", message: "Failed to save design settings" });
@@ -312,7 +339,7 @@ export default function DesignStudioPage() {
               <span className="w-2.5 h-2.5 rounded-full bg-green-400" />
             </div>
             <div className="flex-1 bg-white rounded-md px-3 py-0.5 text-[11px] text-gray-500 text-center truncate border border-gray-200">
-              yourhotel.vayada.com
+              {bookingPreviewUrl?.replace(/^https?:\/\//, "") ?? "Your booking URL"}
             </div>
           </div>
 
@@ -873,9 +900,12 @@ export default function DesignStudioPage() {
                     className="space-y-0.5 text-[8px] text-white/80"
                     style={{ fontFamily: currentFont.bodyFamily }}
                   >
-                    <p>Alpengasse 12, 6020 Innsbruck</p>
-                    <p>Phone: +43 512 123 456</p>
-                    <p>Email: reservations@hotel.com</p>
+                    {propertyAddress && <p>{propertyAddress}</p>}
+                    {propertyPhone && <p>Phone: {propertyPhone}</p>}
+                    {propertyEmail && <p>Email: {propertyEmail}</p>}
+                    {!propertyAddress && !propertyPhone && !propertyEmail && (
+                      <p>Add contact details in Property settings.</p>
+                    )}
                   </div>
                 </div>
               </div>

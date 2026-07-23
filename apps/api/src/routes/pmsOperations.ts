@@ -11,6 +11,7 @@ import type {
   BookingGuestPiiPort,
   BookingGuestPiiProjection,
 } from "@vayada/domain-booking";
+import type { PmsInventoryPublicOfferProjectionPort } from "@vayada/domain-distribution";
 import type {
   PmsCalendarDay,
   PmsOperationsReadRepository,
@@ -102,7 +103,11 @@ export type PmsOperationalReservationDetail = PmsOperationalReservation & {
 };
 
 export type PmsAssignmentCommandAction = "assign" | "move" | "unassign" | "swap";
-export type PmsOperationsCommandSideEffect = "calendar_refresh" | "ari_changed" | "audit_event";
+export type PmsOperationsCommandSideEffect =
+  | "calendar_refresh"
+  | "ari_changed"
+  | "distribution_refresh"
+  | "audit_event";
 export type PmsAssignmentCommandSideEffect = "calendar_refresh" | "ari_changed" | "audit_event";
 export type PmsPrivateNoteSource = "pms" | "migration" | "system";
 export type PmsCheckoutChargeStatus = "pending" | "paid" | "waived" | "void";
@@ -291,10 +296,27 @@ export type PmsRoomTypeCreateCommand = {
   media: PmsRoomType["media"];
   baseRate: PmsMoney;
   nonRefundableRate: PmsMoney | null;
+  operatingPeriods: PmsRoomTypeOperatingPeriod[];
+  seasons: PmsRoomTypeSeason[];
   active: boolean;
   sortOrder: number;
   roomCount: number;
   audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomTypeOperatingPeriod = {
+  from: string;
+  to: string;
+};
+
+export type PmsRoomTypeSeason = {
+  name: string;
+  tier: string | null;
+  from: string;
+  to: string;
+  rate: PmsMoney;
+  minStayNights: number;
+  maxStayNights: number | null;
 };
 
 export type PmsRoomTypeUpdateCommand = {
@@ -667,6 +689,7 @@ export type PmsOperationsRoutesOptions = {
   checkoutChargeMarkPaidFreezeEnabled?: boolean;
   commandRepository?: PmsOperationsCommandRepository;
   bookingGuestPiiPort?: BookingGuestPiiPort;
+  inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   allowedOrigins?: string[];
 };
 
@@ -1540,6 +1563,19 @@ export async function registerPmsOperationsRoutes(
         const result = await commandRepository.createRoomType(command.value);
         if (!result.ok) return sendPmsRoomTypeCommandError(reply, result);
 
+        if (options.inventoryPublicOfferProjector) {
+          try {
+            await options.inventoryPublicOfferProjector.projectPending({
+              propertyId,
+            });
+          } catch (error) {
+            request.log.error(
+              { error, propertyId, roomTypeId: result.roomType.roomTypeId },
+              "PMS inventory public-offer projection remains pending",
+            );
+          }
+        }
+
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
@@ -2278,6 +2314,11 @@ function toRoomTypeCreateCommand(
     return { error: invalidBody("Room type create requires a three-letter currency.") };
   }
 
+  const operatingPeriods = roomTypeOperatingPeriods(raw.operatingPeriods);
+  if ("error" in operatingPeriods) return { error: invalidBody(operatingPeriods.error) };
+  const seasons = roomTypeSeasons(raw.seasons, currency);
+  if ("error" in seasons) return { error: invalidBody(seasons.error) };
+
   const parsedRoomCount = optionalNonNegativeInteger(raw.totalRooms);
   if (raw.totalRooms !== undefined && parsedRoomCount === undefined) {
     return { error: invalidBody("Room type create totalRooms must be a non-negative integer.") };
@@ -2321,12 +2362,85 @@ function toRoomTypeCreateCommand(
       media: roomTypeMedia(raw.images),
       baseRate: { amountDecimal: baseRate, currency },
       nonRefundableRate,
+      operatingPeriods: operatingPeriods.value,
+      seasons: seasons.value,
       active: typeof raw.isActive === "boolean" ? raw.isActive : true,
       sortOrder: optionalNonNegativeInteger(raw.sortOrder) ?? 0,
       roomCount,
       audit: pmsOperationsCommandAudit(request, commandId, "Create room type"),
     },
   };
+}
+
+function roomTypeOperatingPeriods(
+  value: unknown,
+): { value: PmsRoomTypeOperatingPeriod[] } | { error: string } {
+  if (!Array.isArray(value) || value.length === 0) {
+    return { error: "Room type create requires at least one operating period." };
+  }
+  const periods: PmsRoomTypeOperatingPeriod[] = [];
+  for (const item of value) {
+    const raw = objectBody(item);
+    const from = raw ? stringField(raw.from) : undefined;
+    const to = raw ? stringField(raw.to) : undefined;
+    if (!from || !to || !isRecurringMonthDay(from) || !isRecurringMonthDay(to)) {
+      return { error: "Room type operating periods require valid MM-DD from and to dates." };
+    }
+    periods.push({ from, to });
+  }
+  return { value: periods };
+}
+
+function roomTypeSeasons(
+  value: unknown,
+  currency: string,
+): { value: PmsRoomTypeSeason[] } | { error: string } {
+  if (!Array.isArray(value) || value.length === 0) {
+    return { error: "Room type create requires at least one priced season." };
+  }
+  const seasons: PmsRoomTypeSeason[] = [];
+  for (const [index, item] of value.entries()) {
+    const raw = objectBody(item);
+    const from = raw ? stringField(raw.from) : undefined;
+    const to = raw ? stringField(raw.to) : undefined;
+    const rate = raw ? moneyDecimal(raw.rate) : undefined;
+    const minStay = raw ? optionalNonNegativeInteger(raw.minStay) : undefined;
+    const maxStay = raw ? optionalNonNegativeInteger(raw.maxStay) : undefined;
+    if (!from || !to || !isRecurringMonthDay(from) || !isRecurringMonthDay(to)) {
+      return { error: `Room type season ${index + 1} requires valid MM-DD from and to dates.` };
+    }
+    if (!rate || rate === "0.00") {
+      return { error: `Room type season ${index + 1} requires a rate greater than zero.` };
+    }
+    if (raw && raw.minStay !== undefined && (!minStay || minStay < 1)) {
+      return { error: `Room type season ${index + 1} minStay must be at least one night.` };
+    }
+    if (raw && raw.maxStay != null && raw.maxStay !== "" && (!maxStay || maxStay < 1)) {
+      return { error: `Room type season ${index + 1} maxStay must be at least one night.` };
+    }
+    if (maxStay && maxStay < (minStay ?? 1)) {
+      return { error: `Room type season ${index + 1} maxStay cannot be less than minStay.` };
+    }
+    seasons.push({
+      name: raw ? (optionalStringField(raw.name) ?? `Season ${index + 1}`) : `Season ${index + 1}`,
+      tier: raw ? (nullableStringField(raw.tier) ?? null) : null,
+      from,
+      to,
+      rate: { amountDecimal: rate, currency },
+      minStayNights: minStay ?? 1,
+      maxStayNights: maxStay ?? null,
+    });
+  }
+  return { value: seasons };
+}
+
+function isRecurringMonthDay(value: string): boolean {
+  const match = /^(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (month < 1 || month > 12 || day < 1) return false;
+  return day <= new Date(Date.UTC(2024, month, 0)).getUTCDate();
 }
 
 function toRoomTypeUpdateCommand(

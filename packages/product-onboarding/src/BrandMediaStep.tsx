@@ -32,6 +32,7 @@ interface BrandMediaStepProps {
   setSelectedFont: (v: string) => void;
   propertyDescription: string;
   setPropertyDescription: (v: string) => void;
+  propertyDescriptionRequired?: boolean;
   uploading: boolean;
   fileInputRef: RefObject<HTMLInputElement>;
   handleImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -64,6 +65,7 @@ export default function BrandMediaStep({
   setSelectedFont,
   propertyDescription,
   setPropertyDescription,
+  propertyDescriptionRequired = false,
   uploading,
   fileInputRef,
   handleImageUpload,
@@ -329,10 +331,12 @@ export default function BrandMediaStep({
                     className="block text-[12px] font-medium text-gray-700 mb-0.5"
                   >
                     Subtext
+                    {propertyDescriptionRequired && <span className="text-red-500"> *</span>}
                   </label>
                   <textarea
                     id="brand-media-hero-subtext"
                     aria-label="Hero subtext"
+                    aria-required={propertyDescriptionRequired}
                     value={propertyDescription}
                     onChange={(e) => setPropertyDescription(e.target.value)}
                     maxLength={1000}

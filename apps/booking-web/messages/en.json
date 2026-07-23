@@ -89,6 +89,11 @@
     "selectThisRate": "Select This Rate",
     "selectingRate": "Preparing checkout...",
     "soldOut": "Sold Out",
+    "calendar": {
+      "checkingAvailability": "Checking availability",
+      "availabilityUnavailable": "Availability is temporarily unavailable for these dates.",
+      "availabilityUnavailableTooltip": "Availability unavailable"
+    },
     "mobileView": {
       "list": "List",
       "map": "Map"
@@ -190,6 +195,7 @@
     "bankTransfer": "Bank Transfer",
     "bankTransferNote": "We'll email bank details after acceptance",
     "nonRefundablePaymentHint": "Pay at Property and Bank Transfer are not available for non-refundable rates.",
+    "ratePaymentHint": "Some payment methods are not available for this rate.",
     "bankTransferExplanation": "Submit your booking request now. If we accept it, we'll email the bank transfer details and payment deadline.",
     "bankTransferDepositExplanation": "Submit your booking request now. If we accept it, we'll email the bank transfer details for the {deposit} deposit. The remaining {remaining} is due with us at check-in.",
     "paypalLabel": "Pay by PayPal",
@@ -226,9 +232,11 @@
     "pay": "Pay {amount}",
     "paymentSecure": "Your payment is 100% secure",
     "submitRequest": "Submit Booking Request",
+    "confirmBooking": "Confirm Booking",
     "processing": "Processing...",
     "confirmPayment": "Confirm Payment",
     "confirmPaymentDesc": "Complete your payment to submit the booking request. Your card will be authorized but not charged until we accept.",
+    "confirmPaymentDescInstant": "Complete your payment to confirm the booking. Your card will be charged now.",
     "authorizePayment": "Authorize Payment",
     "authorizationNote": "Your card will only be charged if we accept your booking within 24 hours.",
     "continueToPayment": "Continue to Payment",
@@ -266,6 +274,7 @@
     "fullRefund": "You will receive a full refund of {amount}.",
     "partialRefund": "You will receive a partial refund of {amount} ({percentage}%).",
     "noRefund": "No refund will be issued for this cancellation.",
+    "noPaymentToRefund": "No payment was collected, so there is nothing to refund.",
     "freeCancellation": "Free cancellation",
     "cancellationFeeApplies": "Cancellation fee applies",
     "confirmCancel": "Yes, Cancel",
@@ -279,6 +288,8 @@
     "withdrawn": "Withdrawn"
   },
   "confirmation": {
+    "loadingDetails": "Loading booking details…",
+    "detailsUnavailable": "Booking details are unavailable. Use Manage Booking to look up your reservation.",
     "title": "Booking Confirmed!",
     "subtitle": "Your reservation has been successfully confirmed.",
     "requestSubmitted": "Booking Request Submitted",
@@ -313,7 +324,7 @@
   },
   "requestChange": {
     "title": "Request Booking Changes",
-    "subtitle": "Pick the new dates or add-ons you'd like. We'll review and approve before anything is applied.",
+    "subtitle": "Choose new stay dates. We'll verify availability and price before we review your request.",
     "loading": "Loading…",
     "loadError": "Could not load this booking.",
     "missingEmail": "This page must be opened from the booking confirmation link.",
@@ -321,10 +332,6 @@
     "newDates": "New dates",
     "checkIn": "Check-in",
     "checkOut": "Check-out",
-    "addons": "Add-ons",
-    "addonsHint": "Picking nothing here keeps the booking without add-ons; selecting an add-on adds it to the booking once we approve it.",
-    "perPerson": "per person",
-    "perNight": "per night",
     "summary": "Summary",
     "currentDates": "Current dates",
     "requestedDates": "Requested dates",
@@ -332,7 +339,9 @@
     "newTotal": "New total",
     "priceDifference": "Price difference",
     "submit": "Submit Change Request",
-    "submitting": "Submitting…"
+    "submitting": "Submitting…",
+    "submitError": "We couldn't send your change request. Please try again.",
+    "previewUnavailable": "We couldn't verify these dates. Choose different dates or try again."
   },
   "refer": {
     "title": "Refer a Guest",

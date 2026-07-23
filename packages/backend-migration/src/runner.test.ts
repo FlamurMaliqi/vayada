@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -229,6 +229,84 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       for (const schema of DEFAULT_TARGET_SCHEMAS) {
         await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       }
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("repairs missing Marketplace offer operator links without reactivating existing links", async () => {
+    assertSafeTestDatabase(TEST_DATABASE_URL!);
+
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await client.connect();
+    try {
+      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+        await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      }
+
+      await client.query(`
+        CREATE SCHEMA identity;
+        CREATE SCHEMA marketplace;
+
+        CREATE TABLE marketplace.marketplace_offers (
+          id UUID PRIMARY KEY,
+          organization_id UUID NOT NULL,
+          offer_status TEXT NOT NULL
+        );
+
+        CREATE TABLE identity.organization_resource_links (
+          organization_id UUID NOT NULL,
+          product TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          relationship TEXT NOT NULL,
+          status TEXT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (organization_id, product, resource_type, resource_id, relationship)
+        );
+
+        INSERT INTO marketplace.marketplace_offers (id, organization_id, offer_status)
+        VALUES
+          ('10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000001', 'verified'),
+          ('10000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000001', 'verified'),
+          ('10000000-0000-4000-8000-000000000003', '20000000-0000-4000-8000-000000000001', 'verified');
+
+        INSERT INTO identity.organization_resource_links (
+          organization_id,
+          product,
+          resource_type,
+          resource_id,
+          relationship,
+          status
+        )
+        VALUES
+          ('20000000-0000-4000-8000-000000000001', 'marketplace', 'marketplace_offer', '10000000-0000-4000-8000-000000000001', 'owner', 'active'),
+          ('20000000-0000-4000-8000-000000000001', 'marketplace', 'marketplace_offer', '10000000-0000-4000-8000-000000000002', 'owner', 'active'),
+          ('20000000-0000-4000-8000-000000000001', 'marketplace', 'marketplace_offer', '10000000-0000-4000-8000-000000000003', 'owner', 'active'),
+          ('20000000-0000-4000-8000-000000000001', 'marketplace', 'marketplace_offer', '10000000-0000-4000-8000-000000000001', 'operator', 'suspended'),
+          ('20000000-0000-4000-8000-000000000001', 'marketplace', 'marketplace_offer', '10000000-0000-4000-8000-000000000002', 'operator', 'archived');
+      `);
+
+      const migrationSql = await readFile(
+        join(REAL_MIGRATIONS_DIR, "0038_repair_marketplace_offer_operator_links.sql"),
+        "utf8",
+      );
+      await client.query(migrationSql);
+
+      const { rows } = await client.query<{ resource_id: string; status: string }>(`
+        SELECT resource_id, status
+        FROM identity.organization_resource_links
+        WHERE product = 'marketplace'
+          AND resource_type = 'marketplace_offer'
+          AND relationship = 'operator'
+        ORDER BY resource_id
+      `);
+
+      expect(rows).toEqual([
+        { resource_id: "10000000-0000-4000-8000-000000000001", status: "suspended" },
+        { resource_id: "10000000-0000-4000-8000-000000000002", status: "archived" },
+        { resource_id: "10000000-0000-4000-8000-000000000003", status: "active" },
+      ]);
     } finally {
       await client.end();
     }

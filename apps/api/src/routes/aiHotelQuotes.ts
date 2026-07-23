@@ -170,6 +170,14 @@ export function createTargetPublicHotelQuoteRepository(config: {
       if (parsed.reasons.length > 0) {
         return toUnavailablePublicHotelQuoteProjection(profile.hotel, query, requestedAt);
       }
+      if (profile.hotel.trust.bookabilityStatus !== "bookable") {
+        return toUnavailablePublicHotelQuoteProjection(
+          profile.hotel,
+          query,
+          requestedAt,
+          profile.hotel.trust.reasonCodes.map((code) => ({ code })),
+        );
+      }
 
       try {
         const result = await pool.query<TargetPublicHotelQuoteRow>(
@@ -194,6 +202,12 @@ export function createTargetPublicHotelQuoteRepository(config: {
          JOIN distribution.public_hotel_bookability_profiles profile
            ON profile.property_id = read_model.property_id
          WHERE profile.canonical_slug = $1
+           AND profile.public_visibility = 'public_safe'
+           AND profile.profile_status = 'public'
+           AND profile.freshness_status = 'fresh'
+           AND (profile.expires_at IS NULL OR profile.expires_at > $11::timestamptz)
+           AND read_model.public_visibility = 'public_safe'
+           AND read_model.freshness_status = 'fresh'
            AND read_model.request_snapshot ->> 'checkIn' = $2
            AND read_model.request_snapshot ->> 'checkOut' = $3
            AND COALESCE((read_model.request_snapshot ->> 'adults')::int, 0) = $4
@@ -259,7 +273,7 @@ async function quoteFromTargetOfferSnapshots(
        (array_agg(offer.rate_summary ORDER BY offer.stay_date))[1] AS "rateSummary",
        (array_agg(offer.occupancy ORDER BY offer.stay_date))[1] AS occupancy,
        (array_agg(offer.public_policy ORDER BY offer.stay_date))[1] AS "publicPolicy",
-       (array_agg(offer.payment_options ORDER BY offer.stay_date))[1] AS "paymentOptions",
+       (jsonb_agg(offer.payment_options ORDER BY offer.stay_date)->0) AS "paymentOptions",
        MIN(offer.available_rooms) AS "availableRooms",
        SUM(offer.base_price_amount) * $7::int AS "roomTotal",
        SUM(offer.taxes_and_fees_amount) * $7::int AS "taxesAndFees",
@@ -270,11 +284,18 @@ async function quoteFromTargetOfferSnapshots(
      JOIN distribution.public_hotel_bookability_profiles profile
        ON profile.property_id = offer.property_id
      WHERE profile.canonical_slug = $1
+       AND profile.public_visibility = 'public_safe'
+       AND profile.profile_status = 'public'
+       AND profile.freshness_status = 'fresh'
+       AND (profile.expires_at IS NULL OR profile.expires_at > $9::timestamptz)
+       AND offer.public_visibility = 'public_safe'
        AND offer.stay_date >= $2::date
        AND offer.stay_date < $3::date
        AND offer.currency = $4
        AND offer.sellable_publicly = TRUE
        AND offer.availability_status IN ('available', 'limited')
+       AND offer.available_rooms > 0
+       AND offer.freshness_status = 'fresh'
        AND COALESCE((offer.occupancy ->> 'maxAdults')::int, $5::int) >= $5::int
        AND COALESCE((offer.occupancy ->> 'maxChildren')::int, $6::int) >= $6::int
        AND COALESCE((offer.occupancy ->> 'maxOccupancy')::int, $5::int + $6::int) >= ($5::int + $6::int)
@@ -297,8 +318,9 @@ async function quoteFromTargetOfferSnapshots(
     ],
   );
 
-  const offers = result.rows.map((row) => snapshotOfferInput(row));
-  const offerPolicies = result.rows.map((row) => snapshotOfferPolicy(row));
+  const stayRestrictions = applyStayRestrictions(result.rows, config.request.nights);
+  const offers = stayRestrictions.eligibleRows.map((row) => snapshotOfferInput(row));
+  const offerPolicies = stayRestrictions.eligibleRows.map((row) => snapshotOfferPolicy(row));
   const quoteId = buildPublicQuoteId(config.request);
   const expiresAt = new Date(config.requestedAt.getTime() + 15 * 60 * 1_000).toISOString();
   const latestGeneratedAt =
@@ -316,10 +338,11 @@ async function quoteFromTargetOfferSnapshots(
       availabilityReady: true,
       lastUpdatedAt: latestGeneratedAt,
       offers,
+      unavailableReasons: offers.length === 0 ? stayRestrictions.unavailableReasons : [],
     },
     finance: {
       lastUpdatedAt: latestGeneratedAt,
-      publicPaymentOptions: publicPaymentOptionsForQuote(config.hotel, offers),
+      publicPaymentOptions: publicHotelPaymentOptions(config.hotel),
       supportedCurrencies: config.hotel.supportedCurrencies,
     },
     bookingWeb: {
@@ -336,6 +359,56 @@ async function quoteFromTargetOfferSnapshots(
       priceGuarantee: offers.length > 0 ? "expires_at" : "none",
     },
   });
+}
+
+function applyStayRestrictions(
+  rows: TargetRoomOfferSnapshotQuoteRow[],
+  nights: number,
+): {
+  eligibleRows: TargetRoomOfferSnapshotQuoteRow[];
+  unavailableReasons: PublicBookabilityUnavailableReason[];
+} {
+  const eligibleRows: TargetRoomOfferSnapshotQuoteRow[] = [];
+  const unmetMinimums: number[] = [];
+  const exceededMaximums: number[] = [];
+
+  for (const row of rows) {
+    const rateSummary = objectValue(row.rateSummary);
+    const minimum = positiveIntegerValue(rateSummary["minStayNights"]);
+    const maximum = positiveIntegerValue(rateSummary["maxStayNights"]);
+
+    if (minimum !== null && nights < minimum) {
+      unmetMinimums.push(minimum);
+      continue;
+    }
+    if (maximum !== null && nights > maximum) {
+      exceededMaximums.push(maximum);
+      continue;
+    }
+    eligibleRows.push(row);
+  }
+
+  if (eligibleRows.length > 0) {
+    return { eligibleRows, unavailableReasons: [] };
+  }
+
+  const unavailableReasons: PublicBookabilityUnavailableReason[] = [];
+  if (unmetMinimums.length > 0) {
+    const requiredNights = Math.min(...unmetMinimums);
+    unavailableReasons.push({
+      code: "min_stay_not_met",
+      detail: `Minimum stay is ${requiredNights} ${requiredNights === 1 ? "night" : "nights"}.`,
+    });
+  }
+  if (exceededMaximums.length > 0) {
+    const maximumNights = Math.max(...exceededMaximums);
+    unavailableReasons.push({
+      code: "max_stay_exceeded",
+      detail: `Maximum stay is ${maximumNights} ${maximumNights === 1 ? "night" : "nights"}.`,
+    });
+  }
+
+  return { eligibleRows, unavailableReasons };
 }
 
 function snapshotOfferInput(
@@ -382,6 +455,11 @@ function integerLikeValue(value: unknown, fallback: number): number {
   return integerValue(value, fallback);
 }
 
+function positiveIntegerValue(value: unknown): number | null {
+  const parsed = typeof value === "string" && value.trim() ? Number(value) : numberValue(value);
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 function snapshotOfferPolicy(
   row: TargetRoomOfferSnapshotQuoteRow,
 ): PublicBookabilityBookingOfferPolicyInput {
@@ -402,6 +480,7 @@ export function toUnavailablePublicHotelQuoteProjection(
   hotel: PublicBookabilityHotelProfile,
   query: PublicHotelQuoteQuery,
   now: Date,
+  profileReasons: PublicBookabilityUnavailableReason[] = [],
 ): PublicBookabilityQuoteProjection {
   const generatedAt = now.toISOString();
   const { request, reasons } = parsePublicHotelQuoteRequest(hotel, query, now);
@@ -409,7 +488,13 @@ export function toUnavailablePublicHotelQuoteProjection(
     code: "unavailable_data",
     detail: "Public quote read model is not ready yet.",
   };
-  const unavailableReasons = reasons.length > 0 ? reasons : [readModelUnavailableReason];
+  const unavailableReasons = dedupeReasons(
+    reasons.length > 0
+      ? reasons
+      : profileReasons.length > 0
+        ? profileReasons
+        : [readModelUnavailableReason],
+  );
   const freshness = unavailableQuoteFreshness(generatedAt, unavailableReasons);
 
   const projection: PublicBookabilityQuoteProjection = {
@@ -438,16 +523,37 @@ function toTargetPublicHotelQuoteProjection(
 ): PublicBookabilityQuoteProjection {
   const generatedAt = toIsoDateTime(row.generatedAt) ?? new Date().toISOString();
   const expiresAt = toIsoDateTime(row.expiresAt) ?? generatedAt;
-  const status = publicBookabilityStatus(row.quoteStatus);
-  const unavailableReasons = unavailableReasonsArray(row.unavailableReasons);
+  let status = publicBookabilityStatus(row.quoteStatus);
+  let unavailableReasons = unavailableReasonsArray(row.unavailableReasons);
   const dataSources = dataSourcesArray(row.dataSources);
-  const offers = offersArray(hotel, row.offers, row.totals, request, row.deepLinkUrl);
+  const publicPaymentOptions = new Set(publicHotelPaymentOptions(hotel));
+  const unfilteredOffers = offersArray(hotel, row.offers, row.totals, request, row.deepLinkUrl);
+  const offers = unfilteredOffers
+    .map((offer) => ({
+      ...offer,
+      paymentOptions: offer.paymentOptions.filter((option) => publicPaymentOptions.has(option)),
+    }))
+    .filter((offer) => offer.paymentOptions.length > 0);
   const freshness = targetQuoteFreshness(
     generatedAt,
     row.sourceFreshness,
     freshnessStatusValue(row.freshnessStatus),
-    dataSources,
+    PUBLIC_QUOTE_DATA_SOURCES,
   );
+  if (status === "bookable" && freshness.status !== "fresh") {
+    status = freshness.status === "stale" ? "stale" : "unavailable";
+    unavailableReasons = dedupeReasons([
+      ...unavailableReasons,
+      { code: freshness.status === "stale" ? "stale_data" : "unavailable_data" },
+    ]);
+  }
+  if (status === "bookable" && offers.length === 0) {
+    status = "unavailable";
+    unavailableReasons = dedupeReasons([
+      ...unavailableReasons,
+      { code: unfilteredOffers.length === 0 ? "sold_out" : "payment_disabled" },
+    ]);
+  }
   const projection: PublicBookabilityQuoteProjection = {
     contractVersion: PUBLIC_BOOKABILITY_CONTRACT_VERSION,
     generatedAt,
@@ -474,7 +580,7 @@ function toTargetPublicHotelQuoteProjection(
           }
         : undefined,
     freshness,
-    dataSources,
+    dataSources: [...new Set([...PUBLIC_QUOTE_DATA_SOURCES, ...dataSources])],
   };
 
   assertPublicBookabilityPublicSafe(projection);
@@ -563,6 +669,14 @@ function parsePublicHotelQuoteRequest(
     referralCode: sanitizePublicCode(query.referral_code),
   };
   const reasons: PublicBookabilityUnavailableReason[] = [];
+  const timezoneValid = isValidTimeZone(hotel.timezone);
+
+  if (!timezoneValid) {
+    reasons.push({
+      code: "unavailable_data",
+      detail: "Hotel timezone is unavailable.",
+    });
+  }
 
   if (!query.check_in || !query.check_out || !checkIn || !checkOut || nights <= 0) {
     reasons.push({
@@ -610,12 +724,13 @@ function parsePublicHotelQuoteRequest(
     reasons.push({ code: "locale_not_supported" });
   }
 
-  if (checkIn && isBeforePropertyToday(checkIn, hotel.timezone, now)) {
+  if (checkIn && timezoneValid && isBeforePropertyToday(checkIn, hotel.timezone, now)) {
     reasons.push({ code: "invalid_request", detail: "check_in cannot be in the past." });
   }
 
   if (
     checkIn &&
+    timezoneValid &&
     daysBetweenDateOnly(propertyDateOnly(hotel.timezone, now), checkIn)! >
       PUBLIC_QUOTE_MAX_ADVANCE_DAYS
   ) {
@@ -635,10 +750,19 @@ function unavailableQuoteFreshness(
   generatedAt: string,
   reasons: PublicBookabilityUnavailableReason[],
 ): PublicBookabilityFreshness {
-  const pmsStatus = reasons.some((reason) => reason.code === "unavailable_data")
+  const pmsStatus: PublicBookabilityFreshnessStatus = reasons.some(
+    (reason) => reason.code === "unavailable_data",
+  )
     ? "unavailable"
-    : "unknown";
-  const pmsReasonCode = pmsStatus === "unavailable" ? "source_unavailable" : "not_configured";
+    : reasons.some((reason) => reason.code === "stale_data")
+      ? "stale"
+      : "unknown";
+  const pmsReasonCode =
+    pmsStatus === "unavailable"
+      ? "source_unavailable"
+      : pmsStatus === "stale"
+        ? "source_stale"
+        : "not_configured";
   const sources: PublicBookabilityFreshnessSource[] = [
     { owner: "hotel_catalog", lastUpdatedAt: generatedAt, status: "fresh" },
     { owner: "booking", lastUpdatedAt: generatedAt, status: "fresh" },
@@ -648,7 +772,7 @@ function unavailableQuoteFreshness(
   ];
 
   return {
-    status: pmsStatus === "unavailable" ? "unavailable" : "unknown",
+    status: pmsStatus,
     generatedAt,
     sources,
   };
@@ -788,12 +912,12 @@ function targetQuoteFreshness(
 
   for (const owner of owners) {
     if (!sourcesByOwner.has(owner)) {
+      const isDistribution = owner === "distribution";
       sourcesByOwner.set(owner, {
         owner,
-        lastUpdatedAt: status === "unavailable" ? undefined : generatedAt,
-        status: owner === "distribution" ? "fresh" : status,
-        reasonCode:
-          status === "unavailable" && owner !== "distribution" ? "source_unavailable" : undefined,
+        lastUpdatedAt: isDistribution ? generatedAt : undefined,
+        status: isDistribution ? "fresh" : "unknown",
+        reasonCode: isDistribution ? undefined : "not_configured",
       });
     }
   }
@@ -806,11 +930,23 @@ function targetQuoteFreshness(
     });
   }
 
+  const effectiveStatus = rollupQuoteFreshness(status, [...sourcesByOwner.values()]);
   return {
-    status,
+    status: effectiveStatus,
     generatedAt,
     sources: [...sourcesByOwner.values()],
   };
+}
+
+function rollupQuoteFreshness(
+  declaredStatus: PublicBookabilityFreshnessStatus,
+  sources: PublicBookabilityFreshnessSource[],
+): PublicBookabilityFreshnessStatus {
+  const statuses = [declaredStatus, ...sources.map((source) => source.status)];
+  if (statuses.includes("unavailable")) return "unavailable";
+  if (statuses.includes("stale")) return "stale";
+  if (statuses.includes("unknown")) return "unknown";
+  return "fresh";
 }
 
 function parseFreshnessSources(
@@ -864,6 +1000,8 @@ function dataSourcesArray(value: unknown): PublicBookabilityDataSourceOwner[] {
 }
 
 function paymentOptionsArray(value: unknown): PublicBookabilityOffer["paymentOptions"] {
+  if (value === null || value === undefined) return ["card"];
+
   const options = Array.isArray(value)
     ? value
         .map(normalizePublicPaymentMethod)
@@ -871,7 +1009,7 @@ function paymentOptionsArray(value: unknown): PublicBookabilityOffer["paymentOpt
           Boolean(method),
         )
     : [];
-  return options.length > 0 ? [...new Set(options)] : ["card"];
+  return [...new Set(options)];
 }
 
 function normalizePublicPaymentMethod(
@@ -1118,18 +1256,6 @@ function publicHotelPaymentOptions(
   return options;
 }
 
-function publicPaymentOptionsForQuote(
-  hotel: PublicBookabilityHotelProfile,
-  offers: PublicBookabilityAvailabilityOfferInput[],
-): PublicBookabilityOffer["paymentOptions"] {
-  return [
-    ...new Set([
-      ...publicHotelPaymentOptions(hotel),
-      ...offers.flatMap((offer) => offer.paymentOptions ?? []),
-    ]),
-  ];
-}
-
 function sanitizePublicCode(value: string | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -1185,6 +1311,16 @@ function roundMoney(value: number): number {
 
 function isBeforePropertyToday(checkIn: string, timezone: string, now: Date): boolean {
   return checkIn < propertyDateOnly(timezone, now);
+}
+
+function isValidTimeZone(timezone: string): boolean {
+  if (!timezone.trim()) return false;
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function propertyDateOnly(timezone: string, now: Date): string {

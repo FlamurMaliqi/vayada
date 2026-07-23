@@ -2,7 +2,12 @@ import {
   SELECTED_PMS_PROPERTY_ID_KEY,
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/pmsPropertySelectionKeys";
-import type { SharedHotelSetupProductStatus } from "@vayada/product-onboarding";
+import type {
+  SharedHotelSetupProductStatus,
+  SharedHotelSetupStatus,
+  SharedPropertyProfile,
+  SharedPropertyProfileInput,
+} from "@vayada/product-onboarding";
 
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { unsupportedPmsNextStackFeature } from "./unsupported";
@@ -62,14 +67,60 @@ export async function resolveSelectedPmsPropertyId(action = "loading PMS data"):
 }
 
 export async function getPmsPropertyProfile(): Promise<PmsPropertyProfile> {
-  return unsupportedPmsNextStackFeature("PMS property profile");
+  const propertyId = await resolveSelectedPmsPropertyId("loading property details");
+  const [status, profile] = await Promise.all([
+    sharedHotelSetupApi.getStatus({ entryProduct: "pms", propertyId }),
+    sharedHotelSetupApi.getPropertyProfile(propertyId),
+  ]);
+
+  return toPmsPropertyProfile(status, profile);
 }
 
 export async function updatePmsPropertyProfile(
   data: Partial<PmsPropertyProfile>,
 ): Promise<PmsPropertyProfile> {
-  void data;
-  return unsupportedPmsNextStackFeature("PMS property profile");
+  const changedFields = Object.entries(data)
+    .filter(([, value]) => value !== undefined)
+    .map(([key]) => key);
+  if (
+    changedFields.length === 0 ||
+    changedFields.some((field) => field !== "country" && field !== "timezone")
+  ) {
+    return unsupportedPmsNextStackFeature("PMS booking acceptance settings");
+  }
+
+  const propertyId = await resolveSelectedPmsPropertyId("saving property details");
+  const [status, current] = await Promise.all([
+    sharedHotelSetupApi.getStatus({ entryProduct: "pms", propertyId }),
+    sharedHotelSetupApi.getPropertyProfile(propertyId),
+  ]);
+  const input: SharedPropertyProfileInput = {
+    displayName: current.displayName,
+    propertyType: current.propertyType,
+    location: current.location,
+    website: current.website,
+    contactEmail: current.contactEmail,
+    phone: current.phone,
+    shortDescription: current.shortDescription,
+    longDescription: current.longDescription,
+    media: current.media,
+    expectedUpdatedAt: current.updatedAt,
+  };
+
+  const updated = await sharedHotelSetupApi.updatePropertyProfile(propertyId, {
+    ...input,
+    location: {
+      ...current.location,
+      countryCode:
+        data.country === undefined
+          ? current.location.countryCode
+          : data.country.trim().toUpperCase(),
+      timezone:
+        data.timezone === undefined ? current.location.timezone : data.timezone.trim() || null,
+    },
+  });
+
+  return toPmsPropertyProfile(status, updated);
 }
 
 export async function getPmsCalendarSettings(): Promise<PmsCalendarSettings> {
@@ -118,4 +169,26 @@ export function clearStoredPmsPropertyId(): void {
 
 function browserStorage(): Storage | null {
   return typeof window === "undefined" ? null : window.localStorage;
+}
+
+function toPmsPropertyProfile(
+  status: SharedHotelSetupStatus,
+  profile: SharedPropertyProfile,
+): PmsPropertyProfile {
+  const property = status.properties.find((item) => item.propertyId === profile.propertyId);
+  if (!property) {
+    throw new Error("The selected PMS property is no longer available.");
+  }
+
+  return {
+    id: profile.propertyId,
+    pmsStatus: property.products.pms.status,
+    name: profile.displayName || "Unnamed hotel",
+    slug: profile.publicId,
+    location:
+      profile.location.rawMarketplaceLocation?.trim() ||
+      [profile.location.city, profile.location.countryCode].filter(Boolean).join(", "),
+    country: profile.location.countryCode ?? "",
+    timezone: profile.location.timezone ?? "",
+  };
 }

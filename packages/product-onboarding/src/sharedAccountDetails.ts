@@ -1,13 +1,14 @@
 export type SharedAccountDetailsInput = {
   firstName: string;
   lastName: string;
-  phone?: string;
+  phone: string;
   profilePictureUrl?: string;
   profilePictureMediaObjectId?: string;
 };
 
 export type SharedAccountDetailsProfile = {
   name?: string | null;
+  phone?: string | null;
   profilePictureUrl?: string | null;
   profilePictureMediaObjectId?: string | null;
 };
@@ -27,9 +28,12 @@ export function isSharedAccountDetailsComplete(
   profile?: SharedAccountDetailsProfile | null,
 ): boolean {
   const { firstName, lastName } = splitSharedAccountName(profile?.name);
+  const phone = profile?.phone?.trim() ?? "";
   return Boolean(
     firstName &&
     lastName &&
+    phone &&
+    isValidSharedAccountPhone(phone) &&
     profile?.profilePictureUrl?.trim() &&
     profile.profilePictureMediaObjectId?.trim(),
   );

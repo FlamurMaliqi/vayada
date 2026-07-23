@@ -905,7 +905,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!sealedSession) {
       return reply.code(401).send({ error: "missing_session" });
     }
-    const session = await options.authKitClient.authenticateSession({ sealedSession });
+    let session = await options.authKitClient.authenticateSession({ sealedSession });
+    if (!session) {
+      session = await options.authKitClient.refreshSession({ sealedSession });
+    }
     if (!session) {
       return reply.code(401).send({ error: "invalid_session" });
     }
@@ -1273,7 +1276,12 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       : (surfacePolicy.logoutReturnUrl ?? options.logoutReturnUrl);
     let logoutUrl = returnTo;
     if (sealedSession) {
-      const session = await options.authKitClient.authenticateSession({ sealedSession });
+      let session: AuthKitSession | null = null;
+      try {
+        session = await options.authKitClient.authenticateSession({ sealedSession });
+      } catch (error) {
+        request.log.warn({ error }, "Unable to authenticate WorkOS logout session");
+      }
       const logoutSealedSession = session?.sealedSession ?? sealedSession;
       if (session) {
         const resolution = await resolveExistingIdentity(
@@ -1282,21 +1290,29 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           surfacePolicy,
           organizationAccessOptionsFromRequest(request, surfacePolicy),
         ).catch(() => null);
-        await options.productAuditSink.record({
-          action: "auth.logout",
-          actorUserId: resolution?.user.userId,
-          organizationId: resolution?.organizationId,
-          workosUserId: session.user.id,
-          workosOrgId: session.organizationId,
-          workosSessionId: session.sessionId,
-          requestId: request.id,
-          occurredAt: new Date().toISOString(),
-        });
+        try {
+          await options.productAuditSink.record({
+            action: "auth.logout",
+            actorUserId: resolution?.user.userId,
+            organizationId: resolution?.organizationId,
+            workosUserId: session.user.id,
+            workosOrgId: session.organizationId,
+            workosSessionId: session.sessionId,
+            requestId: request.id,
+            occurredAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          request.log.warn({ error }, "Unable to record logout audit event");
+        }
       }
-      logoutUrl = await options.authKitClient.getLogoutUrl({
-        sealedSession: logoutSealedSession,
-        returnTo,
-      });
+      try {
+        logoutUrl = await options.authKitClient.getLogoutUrl({
+          sealedSession: logoutSealedSession,
+          returnTo,
+        });
+      } catch (error) {
+        request.log.warn({ error }, "Unable to create WorkOS logout URL");
+      }
     }
 
     reply

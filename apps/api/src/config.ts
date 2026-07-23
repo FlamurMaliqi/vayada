@@ -120,6 +120,8 @@ export type ApiConfig = {
   platformMediaServing?: PlatformMediaServingConfig;
   platformMediaCleanupEnabled: boolean;
   platformMediaCleanupIntervalMs: number;
+  pmsInventoryPublicOfferRetryEnabled: boolean;
+  pmsInventoryPublicOfferRetryIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
   xenditSecretKey?: string;
@@ -618,6 +620,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     affiliatePublicSource: loadAffiliatePublicSource(env),
     pmsOperationsAllowedOrigins: readOptionalCsvEnv(env, "PMS_OPERATIONS_ALLOWED_ORIGINS", [
       "https://pms.localhost",
+      "https://admin.booking.localhost",
     ]),
     bookingCheckoutCommandSource,
     bookingWebEventSink,
@@ -628,6 +631,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       env,
       "PLATFORM_MEDIA_CLEANUP_INTERVAL_MS",
       15 * 60 * 1000,
+    ),
+    pmsInventoryPublicOfferRetryEnabled: readBooleanEnv(
+      env,
+      "PMS_INVENTORY_PUBLIC_OFFER_RETRY_ENABLED",
+      true,
+    ),
+    pmsInventoryPublicOfferRetryIntervalMs: readPositiveIntegerEnv(
+      env,
+      "PMS_INVENTORY_PUBLIC_OFFER_RETRY_INTERVAL_MS",
+      30_000,
     ),
     creatorPlatformConnections,
     providerWebhooks: loadProviderWebhookConfig(env),

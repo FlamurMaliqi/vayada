@@ -151,6 +151,7 @@ export function SharedHotelSetupPage({
     getAuthSessionUser() &&
     !isSharedAccountDetailsComplete({
       name: accountName,
+      phone: accountContactPhone,
       profilePictureUrl: accountProfilePictureUrl,
       profilePictureMediaObjectId: accountProfilePictureMediaObjectId,
     })

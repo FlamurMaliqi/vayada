@@ -77,6 +77,8 @@ export interface BookingStatus {
 }
 
 export interface CancelPreview {
+  amountPaid?: number;
+  cancellationFeeAmount?: number;
   refundAmount: number;
   refundPercentage: number;
   freeCancellationDays: number;

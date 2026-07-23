@@ -10,6 +10,7 @@ export const BOOKING_ADMIN_ADDON_ITEMS_PATH = `/api/booking/hotels/${BOOKING_ADM
 export const BOOKING_ADMIN_PROMO_CODES_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/promo-codes`;
 export const BOOKING_ADMIN_PROPERTY_LINK_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/property-link`;
 export const BOOKING_ADMIN_PROPERTY_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/property`;
+export const BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/public-bookability`;
 export const BOOKING_ADMIN_ADDON_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/addons`;
 export const BOOKING_ADMIN_BENEFITS_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/benefits`;
 export const BOOKING_ADMIN_GUEST_FORM_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/guest-form`;
@@ -314,9 +315,8 @@ export async function mockBookingAdminShellRoutes(
   options: BookingAdminShellMocksOptions = {},
 ): Promise<void> {
   const propertySettings = options.propertySettings ?? defaultBookingAdminPropertySettings;
-  await page.route(
-    `**/api/pms/properties/${BOOKING_ADMIN_PROPERTY_ID}/module-activations`,
-    (route) => route.fulfill({ json: { activations: [] } }),
+  await page.route("**/api/pms/properties/*/module-activations", (route) =>
+    route.fulfill({ json: { activations: [] } }),
   );
   await page.route("**/admin/hotels", (route) =>
     route.fulfill({
@@ -384,6 +384,19 @@ export async function mockBookingAdminShellRoutes(
       },
     }),
   );
+  await page.route(`**${BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH}*`, (route) =>
+    route.fulfill({
+      json: {
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        canonicalSlug: BOOKING_ADMIN_HOTEL_SLUG,
+        canonicalUrl: `https://${BOOKING_ADMIN_HOTEL_SLUG}.booking.localhost/en`,
+        bookingBaseUrl: `https://${BOOKING_ADMIN_HOTEL_SLUG}.booking.localhost`,
+        profileStatus: "public",
+        freshnessStatus: "fresh",
+        missingReadiness: [],
+      },
+    }),
+  );
   await page.route(`**${BOOKING_ADMIN_ROOMS_PATH}*`, (route) =>
     route.fulfill({
       json: {
@@ -398,6 +411,39 @@ export async function mockBookingAdminShellRoutes(
     route.request().method() === "DELETE"
       ? route.fulfill({ status: 204 })
       : route.fulfill({ json: options.customDomain ?? defaultCustomDomain }),
+  );
+  await page.route("**/api/booking/properties/*/dashboard/stats**", (route) =>
+    route.fulfill({
+      json: {
+        metrics: {
+          current: {
+            totalRevenue: { amountDecimal: "0.00", currency: "EUR" },
+            bookingCount: 0,
+            avgNightlyRate: { amountDecimal: "0.00", currency: "EUR" },
+          },
+          previous: {
+            totalRevenue: { amountDecimal: "0.00", currency: "EUR" },
+            bookingCount: 0,
+            avgNightlyRate: { amountDecimal: "0.00", currency: "EUR" },
+          },
+          nextArrivalDate: null,
+          liveSinceDate: null,
+        },
+      },
+    }),
+  );
+  await page.route("**/api/booking/properties/*/dashboard/bookings-by-source**", (route) =>
+    route.fulfill({
+      json: {
+        sourceMix: {
+          totalRevenue: { amountDecimal: "0.00", currency: "EUR" },
+          items: [],
+        },
+      },
+    }),
+  );
+  await page.route("**/api/booking/properties/*/dashboard/sparklines**", (route) =>
+    route.fulfill({ json: { sparklines: { points: [] } } }),
   );
 }
 

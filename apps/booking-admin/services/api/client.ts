@@ -2,11 +2,36 @@
  * API client configuration
  */
 
-import { clearAuthData, getAuthBearerToken } from "../auth/sessionStore";
+import {
+  recoverUnauthorizedResponse,
+  redirectToOrganizationSelection,
+  type ApiSessionRecoveryHandlers,
+} from "@vayada/product-onboarding/apiSessionRecovery";
+import {
+  clearAuthData,
+  getAuthBearerToken,
+  isAuthOrganizationSelectionResponse,
+  isAuthKitLoginEnabled,
+} from "../auth/sessionStore";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.localhost";
 const OMIT_HOTEL_CONTEXT_HEADER = "X-Vayada-Omit-Hotel-Context";
 const LEGACY_BOOKING_API_HOSTS = ["api.booking.localhost", "localhost:8001"];
+
+const defaultSessionRecoveryHandlers: ApiSessionRecoveryHandlers = {
+  async refresh() {
+    const { authService } = await import("../auth");
+    const response = await authService.refreshSession();
+    return isAuthOrganizationSelectionResponse(response)
+      ? { status: "organization_selection_required" }
+      : { status: "session_refreshed" };
+  },
+  onOrganizationSelectionRequired: redirectToOrganizationSelection,
+  async signOut() {
+    const { authService } = await import("../auth");
+    await authService.logout();
+  },
+};
 
 export function isNextApiTarget(
   apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || API_BASE_URL,
@@ -19,13 +44,15 @@ export const omitHotelContext: RequestInit = {
 };
 
 export interface ApiError {
-  detail:
+  detail?:
     | string
     | Array<{
         loc: (string | number)[];
         msg: string;
         type: string;
       }>;
+  message?: string;
+  details?: string[];
 }
 
 export class ApiErrorResponse extends Error {
@@ -38,7 +65,9 @@ export class ApiErrorResponse extends Error {
         ? data.detail
         : Array.isArray(data.detail)
           ? data.detail.map((e) => e.msg).join(", ")
-          : `API Error: ${status}`;
+          : typeof data.message === "string"
+            ? [data.message, ...(data.details ?? [])].join(" ")
+            : `API Error: ${status}`;
     super(message);
     this.name = "ApiErrorResponse";
     this.status = status;
@@ -48,9 +77,14 @@ export class ApiErrorResponse extends Error {
 
 export class ApiClient {
   private baseURL: string;
+  private sessionRecoveryHandlers: ApiSessionRecoveryHandlers | null;
 
-  constructor(baseURL: string = API_BASE_URL) {
+  constructor(
+    baseURL: string = API_BASE_URL,
+    sessionRecoveryHandlers: ApiSessionRecoveryHandlers | null = defaultSessionRecoveryHandlers,
+  ) {
     this.baseURL = baseURL;
+    this.sessionRecoveryHandlers = sessionRecoveryHandlers;
   }
 
   /**
@@ -86,7 +120,9 @@ export class ApiClient {
     const token = publicAuthEndpoints.includes(endpoint) ? null : getAuthBearerToken();
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
+      ...(options.body === undefined || options.body === null
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...(options.headers as Record<string, string>),
     };
     delete headers[OMIT_HOTEL_CONTEXT_HEADER];
@@ -102,7 +138,28 @@ export class ApiClient {
     };
 
     try {
-      const response = await fetch(url, config);
+      let response = await fetch(url, config);
+      if (
+        response.status === 401 &&
+        !endpoint.startsWith("/auth/") &&
+        isAuthKitLoginEnabled() &&
+        this.sessionRecoveryHandlers
+      ) {
+        response = await recoverUnauthorizedResponse({
+          response,
+          failedToken: token,
+          getToken: getAuthBearerToken,
+          handlers: this.sessionRecoveryHandlers,
+          retry: (refreshedToken) =>
+            fetch(url, {
+              ...config,
+              headers: {
+                ...headers,
+                Authorization: `Bearer ${refreshedToken}`,
+              },
+            }),
+        });
+      }
 
       // Handle 204 No Content responses (no body to parse)
       if (response.status === 204) {
@@ -129,7 +186,11 @@ export class ApiClient {
         const error = new ApiErrorResponse(response.status, data as ApiError);
 
         // Handle 401 errors (token expired/invalid)
-        if (response.status === 401 && !endpoint.startsWith("/auth/")) {
+        if (
+          response.status === 401 &&
+          !endpoint.startsWith("/auth/") &&
+          (!isAuthKitLoginEnabled() || !this.sessionRecoveryHandlers)
+        ) {
           this.handleUnauthorized(error);
         }
 

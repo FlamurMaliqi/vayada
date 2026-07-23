@@ -191,7 +191,7 @@ export function createTargetPmsOperationsCommandRepository(
         commandId: command.commandId,
         idempotencyKey: command.idempotencyKey,
         acceptedAt,
-        sideEffects: ["ari_changed", "audit_event"],
+        sideEffects: ["ari_changed", "distribution_refresh", "audit_event"],
       };
 
       try {
@@ -244,6 +244,22 @@ export function createTargetPmsOperationsCommandRepository(
             "Generated room numbers conflict with existing rooms.",
           );
         }
+        const inventoryHorizon = buildRoomTypeInventoryHorizon(command, acceptedAt);
+        await insertRoomTypeRateRules(
+          client,
+          command,
+          roomTypeId,
+          ratePlans,
+          inventoryHorizon,
+          acceptedAt,
+        );
+        await insertRoomTypeInventoryDays(
+          client,
+          command,
+          roomTypeId,
+          inventoryHorizon,
+          acceptedAt,
+        );
         const created = roomTypeFromCommand(command, roomTypeId, ratePlans);
 
         await enqueueRoomTypeCreateSideEffects(
@@ -1456,6 +1472,265 @@ async function insertRoomTypeRatePlan(
   };
 }
 
+export const PMS_ROOM_INVENTORY_HORIZON_DAYS = 366;
+
+export type PmsRoomInventoryDaySeed = {
+  stayDate: string;
+  status: "open" | "closed";
+  totalCount: number;
+  availableCount: number;
+  seasonIndex: number | null;
+  rateAmountDecimal: string | null;
+  minStayNights: number | null;
+  maxStayNights: number | null;
+};
+
+export function buildRoomTypeInventoryHorizon(
+  command: PmsRoomTypeCreateCommand,
+  acceptedAt: string,
+): PmsRoomInventoryDaySeed[] {
+  const firstDate = new Date(`${acceptedAt.slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(firstDate.getTime())) throw new Error("Room inventory horizon requires a date.");
+
+  return Array.from({ length: PMS_ROOM_INVENTORY_HORIZON_DAYS }, (_, offset) => {
+    const date = new Date(firstDate);
+    date.setUTCDate(firstDate.getUTCDate() + offset);
+    const stayDate = date.toISOString().slice(0, 10);
+    const monthDay = stayDate.slice(5);
+    const isOperating = command.operatingPeriods.some((period) =>
+      recurringMonthDayRangeContains(monthDay, period.from, period.to),
+    );
+    const seasonIndex = command.seasons.findIndex((season) =>
+      recurringMonthDayRangeContains(monthDay, season.from, season.to),
+    );
+    const season = seasonIndex >= 0 ? command.seasons[seasonIndex]! : null;
+    const isOpen = command.active && command.roomCount > 0 && isOperating && season !== null;
+
+    return {
+      stayDate,
+      status: isOpen ? "open" : "closed",
+      totalCount: command.roomCount,
+      availableCount: isOpen ? command.roomCount : 0,
+      seasonIndex: isOpen ? seasonIndex : null,
+      rateAmountDecimal: isOpen ? season!.rate.amountDecimal : null,
+      minStayNights: isOpen ? season!.minStayNights : null,
+      maxStayNights: isOpen ? season!.maxStayNights : null,
+    };
+  });
+}
+
+function recurringMonthDayRangeContains(monthDay: string, from: string, to: string): boolean {
+  return from <= to ? monthDay >= from && monthDay <= to : monthDay >= from || monthDay <= to;
+}
+
+type PmsRoomRateRuleSeed = {
+  startsOn: string;
+  endsOn: string;
+  seasonIndex: number;
+  rateAmountDecimal: string;
+  minStayNights: number;
+  maxStayNights: number | null;
+};
+
+function roomTypeRateRuleSeeds(horizon: readonly PmsRoomInventoryDaySeed[]): PmsRoomRateRuleSeed[] {
+  const rules: PmsRoomRateRuleSeed[] = [];
+  for (const day of horizon) {
+    if (
+      day.status !== "open" ||
+      day.seasonIndex === null ||
+      day.rateAmountDecimal === null ||
+      day.minStayNights === null
+    ) {
+      continue;
+    }
+    const previous = rules.at(-1);
+    if (
+      previous &&
+      addUtcDays(previous.endsOn, 1) === day.stayDate &&
+      previous.seasonIndex === day.seasonIndex &&
+      previous.rateAmountDecimal === day.rateAmountDecimal &&
+      previous.minStayNights === day.minStayNights &&
+      previous.maxStayNights === day.maxStayNights
+    ) {
+      previous.endsOn = day.stayDate;
+      continue;
+    }
+    rules.push({
+      startsOn: day.stayDate,
+      endsOn: day.stayDate,
+      seasonIndex: day.seasonIndex,
+      rateAmountDecimal: day.rateAmountDecimal,
+      minStayNights: day.minStayNights,
+      maxStayNights: day.maxStayNights,
+    });
+  }
+  return rules;
+}
+
+function addUtcDays(dateValue: string, days: number): string {
+  const date = new Date(`${dateValue}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+async function insertRoomTypeRateRules(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeCreateCommand,
+  roomTypeId: string,
+  ratePlans: readonly PmsRoomType["ratePlans"][number][],
+  horizon: readonly PmsRoomInventoryDaySeed[],
+  acceptedAt: string,
+): Promise<void> {
+  const baseRateMinor = moneyMinorUnits(command.baseRate.amountDecimal);
+  const rules = roomTypeRateRuleSeeds(horizon).flatMap((rule) =>
+    ratePlans.map((ratePlan) => {
+      const ratePlanMinor = moneyMinorUnits(ratePlan.baseRate.amountDecimal);
+      const seasonMinor = moneyMinorUnits(rule.rateAmountDecimal);
+      const effectiveMinor = Math.round((seasonMinor * ratePlanMinor) / baseRateMinor);
+      return {
+        ...rule,
+        ratePlanId: ratePlan.ratePlanId,
+        priceDeltaAmount: ((effectiveMinor - ratePlanMinor) / 100).toFixed(2),
+        effectiveRateAmount: (effectiveMinor / 100).toFixed(2),
+        ratePlanCode: ratePlan.code,
+      };
+    }),
+  );
+  if (rules.length === 0) return;
+
+  await client.query(
+    `INSERT INTO pms.rate_rules (
+       property_id,
+       room_type_id,
+       rate_plan_id,
+       rule_type,
+       starts_on,
+       ends_on,
+       min_stay_nights,
+       max_stay_nights,
+       price_delta_amount,
+       rule_payload,
+       created_at,
+       updated_at
+     )
+     SELECT
+       $1::uuid,
+       $2::uuid,
+       source."ratePlanId"::uuid,
+       'season',
+       source."startsOn"::date,
+       source."endsOn"::date,
+       source."minStayNights"::integer,
+       source."maxStayNights"::integer,
+       source."priceDeltaAmount"::numeric,
+       jsonb_build_object(
+         'seasonIndex', source."seasonIndex"::integer,
+         'name', source."seasonName",
+         'tier', source."seasonTier",
+         'rateAmount', source."effectiveRateAmount",
+         'ratePlanCode', source."ratePlanCode"
+       ),
+       $4::timestamptz,
+       $4::timestamptz
+     FROM jsonb_to_recordset($3::jsonb) AS source(
+       "ratePlanId" text,
+       "startsOn" text,
+       "endsOn" text,
+       "seasonIndex" integer,
+       "seasonName" text,
+       "seasonTier" text,
+       "minStayNights" integer,
+       "maxStayNights" integer,
+       "priceDeltaAmount" text,
+       "effectiveRateAmount" text,
+       "ratePlanCode" text
+     )`,
+    [
+      command.propertyId,
+      roomTypeId,
+      JSON.stringify(
+        rules.map((rule) => ({
+          ...rule,
+          seasonName: command.seasons[rule.seasonIndex]!.name,
+          seasonTier: command.seasons[rule.seasonIndex]!.tier,
+        })),
+      ),
+      acceptedAt,
+    ],
+  );
+}
+
+function moneyMinorUnits(amountDecimal: string): number {
+  return Math.round(Number(amountDecimal) * 100);
+}
+
+async function insertRoomTypeInventoryDays(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeCreateCommand,
+  roomTypeId: string,
+  horizon: readonly PmsRoomInventoryDaySeed[],
+  acceptedAt: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO pms.inventory_days (
+       property_id,
+       room_type_id,
+       stay_date,
+       total_count,
+       assigned_count,
+       blocked_count,
+       available_count,
+       status,
+       source_freshness,
+       updated_at
+     )
+     SELECT
+       $1::uuid,
+       $2::uuid,
+       source."stayDate"::date,
+       source."totalCount"::integer,
+       0,
+       0,
+       source."availableCount"::integer,
+       source.status,
+       jsonb_build_object(
+         'pms', jsonb_build_object(
+           'status', 'fresh',
+           'generatedAt', $4::timestamptz,
+           'horizonDays', $5::integer
+         )
+       ),
+       $4::timestamptz
+     FROM jsonb_to_recordset($3::jsonb) AS source(
+       "stayDate" text,
+       "totalCount" integer,
+       "availableCount" integer,
+       status text
+     )
+     ON CONFLICT (property_id, room_type_id, stay_date) DO UPDATE SET
+       total_count = EXCLUDED.total_count,
+       available_count = CASE
+         WHEN EXCLUDED.status = 'closed' THEN 0
+         ELSE GREATEST(
+           0,
+           EXCLUDED.total_count
+             - pms.inventory_days.assigned_count
+             - pms.inventory_days.blocked_count
+         )
+       END,
+       status = EXCLUDED.status,
+       source_freshness = EXCLUDED.source_freshness,
+       updated_at = EXCLUDED.updated_at`,
+    [
+      command.propertyId,
+      roomTypeId,
+      JSON.stringify(horizon),
+      acceptedAt,
+      PMS_ROOM_INVENTORY_HORIZON_DAYS,
+    ],
+  );
+}
+
 async function insertInitialRooms(
   client: PmsOperationsCommandClient,
   command: PmsRoomTypeCreateCommand,
@@ -1667,6 +1942,15 @@ async function enqueueRoomTypeCreateSideEffects(
   keyHash: string,
   acceptedAt: string,
 ): Promise<void> {
+  const inventoryChangedPayload = JSON.stringify({
+    propertyId: command.propertyId,
+    roomTypeId: roomType.roomTypeId,
+    dateRange: {
+      from: acceptedAt.slice(0, 10),
+      to: addUtcDays(acceptedAt.slice(0, 10), PMS_ROOM_INVENTORY_HORIZON_DAYS - 1),
+    },
+    inventoryVersion: keyHash,
+  });
   const domainEvent = await client.query<{ eventId: string }>(
     `WITH inserted AS (
        INSERT INTO platform.domain_events (
@@ -1689,7 +1973,7 @@ async function enqueueRoomTypeCreateSideEffects(
        VALUES (
          'pms',
          $1,
-         'pms.inventory.ari_changed',
+         'pms.inventory.changed',
          1,
          $2::timestamptz,
          'property',
@@ -1714,14 +1998,14 @@ async function enqueueRoomTypeCreateSideEffects(
        AND event_key = $1
      LIMIT 1`,
     [
-      `pms.room_type.created.property.${command.propertyId}.key.${keyHash}.v1`,
+      `pms.inventory.changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
       acceptedAt,
       command.propertyId,
       roomType.roomTypeId,
       command.audit.correlationId ?? command.audit.requestId,
       command.commandId,
       keyHash,
-      JSON.stringify({ propertyId: command.propertyId, roomTypeId: roomType.roomTypeId }),
+      inventoryChangedPayload,
       JSON.stringify({ commandMeta, contractVersion: PMS_OPERATIONS_CONTRACT_VERSION }),
     ],
   );
@@ -1765,7 +2049,51 @@ async function enqueueRoomTypeCreateSideEffects(
       roomType.roomTypeId,
       command.audit.correlationId ?? command.audit.requestId,
       keyHash,
-      JSON.stringify({ propertyId: command.propertyId, roomTypeId: roomType.roomTypeId }),
+      inventoryChangedPayload,
+      JSON.stringify({ sideEffects: commandMeta.sideEffects }),
+    ],
+  );
+
+  await client.query(
+    `INSERT INTO platform.outbox_events (
+       domain_event_id,
+       outbox_key,
+       destination,
+       event_type,
+       tenant_scope,
+       property_id,
+       resource_product,
+       resource_type,
+       resource_id,
+       correlation_id,
+       idempotency_key_hash,
+       payload,
+       outbox_metadata
+     )
+     VALUES (
+       $1::uuid,
+       $2,
+       'distribution.public-bookability',
+       'pms.inventory.changed',
+       'property',
+       $3::uuid,
+       'pms',
+       'room_type',
+       $4,
+       $5,
+       $6,
+       $7::jsonb,
+       $8::jsonb
+     )
+     ON CONFLICT (destination, outbox_key) DO NOTHING`,
+    [
+      domainEvent.rows[0]!.eventId,
+      `distribution.inventory_changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
+      command.propertyId,
+      roomType.roomTypeId,
+      command.audit.correlationId ?? command.audit.requestId,
+      keyHash,
+      inventoryChangedPayload,
       JSON.stringify({ sideEffects: commandMeta.sideEffects }),
     ],
   );

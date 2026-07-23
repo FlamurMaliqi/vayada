@@ -110,12 +110,56 @@ function commandMetadata(prefix: string): { commandId: string; idempotencyKey: s
   return { commandId, idempotencyKey: commandId };
 }
 
+function bookingChangeDecisionCommand(
+  decision: "accept" | "decline",
+  guestBookingId: string,
+  changeRequestId: string,
+): { commandId: string; idempotencyKey: string } {
+  const commandId = [
+    "booking.change",
+    decision,
+    encodeURIComponent(guestBookingId),
+    encodeURIComponent(changeRequestId),
+  ].join(":");
+  return { commandId, idempotencyKey: commandId };
+}
+
 async function reservationEndpoint(guestBookingId: string, suffix = ""): Promise<string> {
   const propertyId = await resolveSelectedPmsPropertyId("updating booking");
   return propertyEndpoint(
     propertyId,
     `reservations/${encodeURIComponent(guestBookingId)}${suffix}`,
   );
+}
+
+async function bookingChangeRequestEndpoint(guestBookingId: string): Promise<string> {
+  const propertyId = await resolveSelectedPmsPropertyId("reviewing booking changes");
+  return `/api/booking/hotels/${encodeURIComponent(propertyId)}/reservations/${encodeURIComponent(guestBookingId)}/change-request`;
+}
+
+async function bookingChangeDecisionEndpoint(
+  guestBookingId: string,
+  changeRequestId: string,
+  decision: "accept" | "decline",
+): Promise<string> {
+  return `${await bookingChangeRequestEndpoint(guestBookingId)}/${encodeURIComponent(changeRequestId)}/${decision}`;
+}
+
+type BookingChangeRequestApi = Omit<BookingChangeRequest, "status"> & {
+  status: BookingChangeRequest["status"] | "accepted" | "canceled";
+};
+
+function normalizeBookingChangeRequest(
+  request: BookingChangeRequestApi | null,
+): BookingChangeRequest | null {
+  if (!request) return null;
+  const status =
+    request.status === "accepted"
+      ? "approved"
+      : request.status === "canceled"
+        ? "cancelled"
+        : request.status;
+  return { ...request, status };
 }
 
 async function refreshBooking(guestBookingId: string): Promise<Booking> {
@@ -196,6 +240,9 @@ type PmsOperationalReservation = {
   }>;
   checkin: { completedAt: string | null; pendingFlags: string[] };
   checkout: { completedAt: string | null; pendingFlags: string[] };
+  bookedOffer?: { roomTypeId: string; roomName: string };
+  roomCount?: number;
+  pricing?: { totalAmount: PmsOperationsMoney; balanceAmount: PmsOperationsMoney };
 };
 
 type PmsOperationsListResponse<T> = {
@@ -618,14 +665,45 @@ export const bookingsService = {
     unsupportedPmsNextStackFeature<{ url: string }>("Stripe onboarding links"),
 
   // Guest-initiated booking change requests (VAY-379)
-  getChangeRequest: (_id: string) =>
-    unsupportedPmsNextStackFeature<BookingChangeRequest | null>("Booking change requests"),
+  getChangeRequest: async (id: string) =>
+    normalizeBookingChangeRequest(
+      await pmsOperationsClient.get<BookingChangeRequestApi | null>(
+        await bookingChangeRequestEndpoint(id),
+        pmsOperationsRequestOptions,
+      ),
+    ),
 
-  approveChangeRequest: (_id: string) =>
-    unsupportedPmsNextStackFeature<BookingChangeRequest>("Booking change request approval"),
+  approveChangeRequest: async (id: string, changeRequestId: string) => {
+    const command = bookingChangeDecisionCommand("accept", id, changeRequestId);
+    const response = await pmsOperationsClient.post<BookingChangeRequestApi>(
+      await bookingChangeDecisionEndpoint(id, changeRequestId, "accept"),
+      command,
+      {
+        ...pmsOperationsRequestOptions,
+        headers: {
+          ...(pmsOperationsRequestOptions.headers as Record<string, string>),
+          "Idempotency-Key": command.idempotencyKey,
+        },
+      },
+    );
+    return normalizeBookingChangeRequest(response)!;
+  },
 
-  declineChangeRequest: (_id: string, _reason?: string) =>
-    unsupportedPmsNextStackFeature<BookingChangeRequest>("Booking change request decline"),
+  declineChangeRequest: async (id: string, changeRequestId: string, reason?: string) => {
+    const command = bookingChangeDecisionCommand("decline", id, changeRequestId);
+    const response = await pmsOperationsClient.post<BookingChangeRequestApi>(
+      await bookingChangeDecisionEndpoint(id, changeRequestId, "decline"),
+      { ...command, reason },
+      {
+        ...pmsOperationsRequestOptions,
+        headers: {
+          ...(pmsOperationsRequestOptions.headers as Record<string, string>),
+          "Idempotency-Key": command.idempotencyKey,
+        },
+      },
+    );
+    return normalizeBookingChangeRequest(response)!;
+  },
 
   // VAY-495 booking detail — internal notes, additional guests, cancel-with-reason.
   listNotes: async (id: string) => {
@@ -782,18 +860,22 @@ function toBooking(
   roomTypesById: Map<string, PmsOperationsRoomType>,
 ): Booking {
   const primaryAssignment = reservation.assignments[0] ?? null;
-  const roomType = primaryAssignment ? roomTypesById.get(primaryAssignment.roomTypeId) : undefined;
-  const nightlyRate = moneyAmount(roomType?.baseRate);
-  const numberOfRooms = Math.max(reservation.assignments.length, 1);
+  const roomTypeId = primaryAssignment?.roomTypeId ?? reservation.bookedOffer?.roomTypeId ?? "";
+  const roomType = roomTypesById.get(roomTypeId);
+  const numberOfRooms = Math.max(reservation.roomCount ?? reservation.assignments.length, 1);
   const nights = daysBetweenDateOnly(reservation.stay.checkIn, reservation.stay.checkOut);
-  const totalAmount = nightlyRate * Math.max(nights, 1) * numberOfRooms;
+  const baseRate = moneyAmount(roomType?.baseRate);
+  const totalAmount = reservation.pricing
+    ? moneyAmount(reservation.pricing.totalAmount)
+    : baseRate * Math.max(nights, 1) * numberOfRooms;
+  const nightlyRate = roomType ? baseRate : totalAmount / Math.max(nights, 1) / numberOfRooms;
   const [guestFirstName, guestLastName] = splitGuestName(reservation.primaryGuest.displayName);
 
   return {
     id: reservation.guestBookingId,
     bookingReference: reservation.bookingReference,
-    roomTypeId: primaryAssignment?.roomTypeId ?? "",
-    roomName: roomType?.name ?? "",
+    roomTypeId,
+    roomName: roomType?.name || reservation.bookedOffer?.roomName || "",
     roomMaxOccupancy: maxOccupancy(roomType),
     totalRoomCapacity: maxOccupancy(roomType),
     guestFirstName,
@@ -816,8 +898,10 @@ function toBooking(
     depositRequired: false,
     depositPercentage: null,
     depositAmount: 0,
-    balanceAmount: totalAmount,
-    currency: roomType?.baseRate.currency ?? "EUR",
+    balanceAmount: reservation.pricing
+      ? moneyAmount(reservation.pricing.balanceAmount)
+      : totalAmount,
+    currency: reservation.pricing?.totalAmount.currency ?? roomType?.baseRate.currency ?? "EUR",
     status: toBookingStatus(reservation.status),
     roomId: primaryAssignment?.roomId ?? null,
     roomNumber: primaryAssignment?.roomNumber ?? null,

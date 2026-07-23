@@ -29,6 +29,7 @@ interface MobileCalendarProps {
   onNewBooking: (startDate?: string, endDate?: string) => void;
   onBlockRoom: (startDate: string, endDate: string) => void;
   onSelectBlock: (block: CalendarBlock) => void;
+  writeActionsAvailable?: boolean;
 }
 
 export default function MobileCalendar({
@@ -39,6 +40,7 @@ export default function MobileCalendar({
   onNewBooking,
   onBlockRoom,
   onSelectBlock,
+  writeActionsAvailable = true,
 }: MobileCalendarProps) {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   // Selection model: tap a day to single-select it (so the user can browse
@@ -101,10 +103,7 @@ export default function MobileCalendar({
       const dayAt = findDayUnderPointer(ev.clientX, ev.clientY);
       const nextCurrent = dayAt ?? d.current;
       if (moved && ev.cancelable) ev.preventDefault();
-      if (
-        moved === d.moved &&
-        nextCurrent.getTime() === d.current.getTime()
-      ) {
+      if (moved === d.moved && nextCurrent.getTime() === d.current.getTime()) {
         return;
       }
       setDrag({ start: d.start, current: nextCurrent, moved });
@@ -432,8 +431,11 @@ export default function MobileCalendar({
             <div className="flex items-center gap-1.5 shrink-0">
               {rangeStartStr && rangeEndStr && (
                 <button
+                  type="button"
+                  disabled={!writeActionsAvailable}
+                  title={!writeActionsAvailable ? "Room blocking is not available yet" : undefined}
                   onClick={() => onBlockRoom(rangeStartStr, rangeEndStr)}
-                  className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-red-600 border border-red-200 bg-white rounded-lg hover:bg-red-50 transition-colors"
+                  className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-red-600 border border-red-200 bg-white rounded-lg hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:text-gray-400 disabled:border-gray-200"
                 >
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path
@@ -447,8 +449,15 @@ export default function MobileCalendar({
                 </button>
               )}
               <button
+                type="button"
+                disabled={!writeActionsAvailable}
+                title={
+                  !writeActionsAvailable
+                    ? "Manual booking creation is not available yet"
+                    : undefined
+                }
                 onClick={() => onNewBooking(rangeStartStr ?? undefined, rangeEndStr ?? undefined)}
-                className="px-2.5 py-1 text-[11px] font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
+                className="px-2.5 py-1 text-[11px] font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 + New
               </button>
@@ -470,8 +479,13 @@ export default function MobileCalendar({
                 return (
                   <button
                     key={`block-${bl.id}`}
+                    type="button"
+                    disabled={!writeActionsAvailable}
+                    title={
+                      !writeActionsAvailable ? "Block editing is not available yet" : undefined
+                    }
                     onClick={() => onSelectBlock(bl)}
-                    className="w-full bg-red-50 rounded-lg border border-dashed border-red-200 p-3 text-left hover:bg-red-100 transition-colors"
+                    className="w-full bg-red-50 rounded-lg border border-dashed border-red-200 p-3 text-left hover:bg-red-100 transition-colors disabled:cursor-default disabled:hover:bg-red-50"
                   >
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0">

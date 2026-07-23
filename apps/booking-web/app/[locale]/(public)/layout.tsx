@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 
+import { getRequestHost } from "@/lib/requestHost";
 import { resolveSlugFromHost } from "@/lib/server/resolveSlug";
 import type { PublicHotelUrlPolicy } from "@/lib/server/publicUrls";
 import {
@@ -24,7 +25,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { locale } = await params;
   const headersList = await headers();
-  const hostname = headersList.get("host") || "";
+  const hostname = getRequestHost(headersList);
   const slug = await resolveSlugFromHost(hostname);
   if (!slug) return fallbackHotelMetadata;
 
@@ -43,7 +44,7 @@ export default async function PublicHotelLayout({
 }) {
   const { locale } = await params;
   const headersList = await headers();
-  const hostname = headersList.get("host") || "";
+  const hostname = getRequestHost(headersList);
   const slug = await resolveSlugFromHost(hostname);
   const hotel = slug ? await fetchPublicHotel(slug, locale) : null;
   const policy = hotel

@@ -130,6 +130,9 @@ export type PmsOperationalReservation = {
   checkout: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
   privateNoteCount: number;
   additionalGuestCount: number;
+  bookedOffer?: { roomTypeId: string; roomName: string };
+  roomCount?: number;
+  pricing?: { totalAmount: PmsMoney; balanceAmount: PmsMoney };
 };
 
 export type PmsReservationListFilters = {
@@ -486,6 +489,12 @@ type TargetPmsOperationalReservationRow = {
   checkoutPendingFlags: unknown;
   privateNoteCount: string | number;
   additionalGuestCount: string | number;
+  bookedRoomTypeId: string;
+  bookedRoomName: string;
+  roomCount: string | number;
+  totalAmount: string | number;
+  balanceAmount: string | number;
+  currency: string;
 };
 
 const PMS_OPERATIONAL_RESERVATION_STATUS_SQL = `CASE
@@ -510,8 +519,8 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   booking.public_reference AS "bookingReference",
   ${PMS_OPERATIONAL_RESERVATION_STATUS_SQL} AS "status",
   ${PMS_OPERATIONAL_RESERVATION_SOURCE_SQL} AS "source",
-  booking.check_in AS "checkIn",
-  booking.check_out AS "checkOut",
+  booking.check_in::text AS "checkIn",
+  booking.check_out::text AS "checkOut",
   booking.adults,
   booking.children,
   NULLIF(
@@ -526,6 +535,20 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   ) AS "primaryGuestDisplayName",
   primary_guest.email AS "primaryGuestEmail",
   primary_guest.phone AS "primaryGuestPhone",
+  COALESCE(
+    NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
+    NULLIF(booking.booking_metadata #>> '{selectedOffer,roomTypeId}', ''),
+    ''
+  ) AS "bookedRoomTypeId",
+  COALESCE(
+    NULLIF(quote.selected_offer_snapshot ->> 'roomName', ''),
+    NULLIF(booking.booking_metadata #>> '{selectedOffer,roomName}', ''),
+    ''
+  ) AS "bookedRoomName",
+  booking.room_count AS "roomCount",
+  booking.total_amount AS "totalAmount",
+  booking.balance_amount AS "balanceAmount",
+  booking.currency,
   COALESCE(assignments.items, '[]'::jsonb) AS "assignments",
   checkin.completed_at AS "checkinCompletedAt",
   COALESCE(checkin.pending_flags, '[]'::jsonb) AS "checkinPendingFlags",
@@ -534,6 +557,9 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   COALESCE(private_notes.note_count, 0) AS "privateNoteCount",
   COALESCE(additional_guests.guest_count, 0) AS "additionalGuestCount"
 FROM booking.guest_bookings booking
+LEFT JOIN booking.quote_sessions quote
+  ON quote.id = booking.quote_session_id
+ AND quote.property_id = booking.property_id
 LEFT JOIN LATERAL (
   SELECT assignment.*
   FROM pms.operational_booking_assignments assignment
@@ -761,6 +787,9 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
 function toPmsOperationalReservation(
   row: TargetPmsOperationalReservationRow,
 ): PmsOperationalReservation {
+  const bookedRoomTypeId = row.bookedRoomTypeId.trim();
+  const bookedRoomName = row.bookedRoomName.trim();
+
   return {
     guestBookingId: row.guestBookingId,
     bookingReference: row.bookingReference,
@@ -788,6 +817,20 @@ function toPmsOperationalReservation(
     },
     privateNoteCount: toInteger(row.privateNoteCount),
     additionalGuestCount: toInteger(row.additionalGuestCount),
+    ...(bookedRoomTypeId && bookedRoomName
+      ? { bookedOffer: { roomTypeId: bookedRoomTypeId, roomName: bookedRoomName } }
+      : {}),
+    roomCount: Math.max(toInteger(row.roomCount), 1),
+    pricing: {
+      totalAmount: {
+        amountDecimal: toDecimalString(row.totalAmount),
+        currency: row.currency,
+      },
+      balanceAmount: {
+        amountDecimal: toDecimalString(row.balanceAmount),
+        currency: row.currency,
+      },
+    },
   };
 }
 

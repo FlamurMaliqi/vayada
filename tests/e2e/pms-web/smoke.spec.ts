@@ -49,12 +49,31 @@ test.describe("pms-web smoke", () => {
     await page.goto("/calendar");
     await expect(page.getByRole("heading", { name: /calendar/i })).toBeVisible();
     await expect(page.getByText("Alpine Suite").first()).toBeVisible();
+    await expect(page.getByText(/calendar viewing is active/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /block room/i }).first()).toBeDisabled();
+    await expect(page.getByRole("button", { name: /new booking/i }).first()).toBeDisabled();
 
     await page.goto("/channel-manager");
     await expect(page.getByRole("heading", { level: 1, name: /channel/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Not available yet" })).toBeVisible();
+
+    await page.goto("/inbox");
+    await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Not available yet" })).toBeVisible();
+
+    await page.goto("/financials");
+    await expect(page.getByRole("heading", { level: 1, name: "Financials" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Not available yet" })).toBeVisible();
 
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: /settings/i })).toBeVisible();
+    await expect(page.getByLabel("Timezone")).toHaveValue("Europe/Berlin");
+    await expect(page.getByLabel("Country (ISO code)")).toHaveValue("DE");
+    await expect(page.getByText("Editing not available yet")).toBeVisible();
+
+    await page.goto("/settings/feature-hub");
+    await expect(page.getByText("Inbox", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Financials", { exact: true })).toHaveCount(0);
 
     await page.goto("/bookings");
     await expect(page.getByRole("heading", { name: /reservation|booking/i })).toBeVisible();

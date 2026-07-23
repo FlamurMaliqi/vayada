@@ -152,6 +152,10 @@ export type FinanceRoutesOptions = {
   closePublicHotelProfileRepository?: boolean;
 };
 
+export type PmsFinanceCompatibilityRoutesOptions = {
+  repository: FinancePropertyReadRepository;
+};
+
 export type FinanceXenditBankValidator = {
   validateBankAccount(input: {
     channelCode: string;
@@ -1137,16 +1141,7 @@ export async function registerFinanceRoutes(
   app.get<{ Params: FinancePropertyParams }>(
     "/pms/properties/:propertyId/payment-settings",
     async (request, reply) => {
-      const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
-
-      const settings =
-        (await options.repository.getPaymentSettings(propertyId)) ??
-        setupIncompletePaymentSettings(propertyId, new Date().toISOString());
-      const policy =
-        (await options.repository.getCancellationPolicy(propertyId)) ??
-        cancellationPolicyFromRefundPolicy(settings.refundPolicy, settings.updatedAt);
-      return toPmsPaymentSettingsFacade(settings, policy);
+      return pmsPaymentSettingsFacade(request, reply, options.repository);
     },
   );
 
@@ -1174,6 +1169,43 @@ export async function registerFinanceRoutes(
       return toPublicPaymentCapabilityProjection(settings, policy);
     },
   );
+}
+
+/**
+ * Transitional, read-only Finance facade used by PMS Web while the broader
+ * Finance target source remains behind its independent cutover flag.
+ */
+export async function registerPmsFinanceCompatibilityRoutes(
+  app: FastifyInstance,
+  options: PmsFinanceCompatibilityRoutesOptions,
+): Promise<void> {
+  app.addHook("onClose", async () => {
+    await options.repository.close?.();
+  });
+
+  app.get<{ Params: FinancePropertyParams }>(
+    "/pms/properties/:propertyId/payment-settings",
+    async (request, reply) => {
+      return pmsPaymentSettingsFacade(request, reply, options.repository);
+    },
+  );
+}
+
+async function pmsPaymentSettingsFacade(
+  request: FastifyRequest<{ Params: FinancePropertyParams }>,
+  reply: FastifyReply,
+  repository: FinancePropertyReadRepository,
+) {
+  const propertyId = request.params.propertyId;
+  if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+
+  const settings =
+    (await repository.getPaymentSettings(propertyId)) ??
+    setupIncompletePaymentSettings(propertyId, new Date().toISOString());
+  const policy =
+    (await repository.getCancellationPolicy(propertyId)) ??
+    cancellationPolicyFromRefundPolicy(settings.refundPolicy, settings.updatedAt);
+  return toPmsPaymentSettingsFacade(settings, policy);
 }
 
 async function financeReconciliationView(
@@ -6819,7 +6851,7 @@ function financePropertyWritePolicies(propertyId: string): RouteAuthorizationPol
   const resourceTypes = ["pms_property", "property"] as const;
   return resourceTypes.flatMap((resourceType) => [
     {
-      permission: "pms.finance.manage" as RouteAuthorizationPolicy["permission"],
+      permission: "pms.operations.manage",
       entitlement: {
         product: "pms",
         key: "property-management",
@@ -6837,7 +6869,7 @@ function financePropertyWritePolicies(propertyId: string): RouteAuthorizationPol
       },
     },
     {
-      permission: "pms.finance.manage" as RouteAuthorizationPolicy["permission"],
+      permission: "booking.settings.manage",
       entitlement: {
         product: "booking",
         key: "direct-booking-finance",
@@ -7014,7 +7046,7 @@ function toFinanceAuthorizationMessage(
 ): string {
   switch (code) {
     case "missing_permission":
-      return "Missing required finance read permission.";
+      return "Missing required finance permission.";
     case "inactive_entitlement":
       return "Finance property-management entitlement is not active.";
     case "missing_entitlement":

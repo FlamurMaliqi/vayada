@@ -35,6 +35,10 @@ export type BookingWebPublicHotelResponse = {
     };
     images: Array<{ url: string; alt: string | null }>;
     amenities: string[];
+    publicContacts?: Array<{
+      type: "phone" | "email" | "whatsapp" | "website" | "instagram" | "facebook" | "x";
+      value: string;
+    }>;
     policies: {
       checkInFrom: string | null;
       checkOutUntil: string | null;
@@ -108,6 +112,9 @@ export type BookingWebPublicCalendarResponse = {
     unavailableDates: string[];
     minStayByArrival: Record<string, number>;
     maxStayByArrival: Record<string, number>;
+  };
+  freshness?: {
+    status: "fresh" | "stale" | "unavailable" | "unknown";
   };
 };
 
@@ -244,6 +251,12 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
   const hotel = data.hotel;
   const images = hotel.images.map((image) => image.url).filter(Boolean);
   const heroImage = hotel.branding?.heroImage || images[0] || FALLBACK_IMAGE;
+  const contacts = publicContactValues(hotel.publicContacts);
+  const address = uniqueNonEmpty([
+    hotel.location.city,
+    hotel.location.region,
+    hotel.location.country,
+  ]).join(", ");
 
   return {
     id: hotel.propertyId,
@@ -265,14 +278,19 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     checkOutTime: hotel.policies.checkOutUntil || "",
     timezone: hotel.timezone,
     contact: {
-      address: "",
-      phone: "",
-      email: "",
+      address,
+      phone: contacts.phone || "",
+      email: contacts.email || "",
+      whatsapp: contacts.whatsapp || undefined,
+      website: safePublicHttpUrl(contacts.website),
     },
     bookingFilters: [],
     customFilters: {},
     filterRooms: {},
-    socialLinks: {},
+    socialLinks: {
+      instagram: safePublicHttpUrl(contacts.instagram),
+      facebook: safePublicHttpUrl(contacts.facebook),
+    },
     branding: hotel.branding
       ? {
           heroImage: hotel.branding.heroImage || undefined,
@@ -294,6 +312,45 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     showRoomDetailMap: false,
     pointsOfInterest: [],
   };
+}
+
+function publicContactValues(
+  contacts: BookingWebPublicHotelResponse["hotel"]["publicContacts"],
+): Partial<
+  Record<
+    NonNullable<BookingWebPublicHotelResponse["hotel"]["publicContacts"]>[number]["type"],
+    string
+  >
+> {
+  const values: Partial<
+    Record<
+      NonNullable<BookingWebPublicHotelResponse["hotel"]["publicContacts"]>[number]["type"],
+      string
+    >
+  > = {};
+  for (const contact of contacts ?? []) {
+    const value = contact.value.trim();
+    if (value && !values[contact.type]) values[contact.type] = value;
+  }
+  return values;
+}
+
+function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(
+      values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)),
+    ),
+  );
+}
+
+function safePublicHttpUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function toLegacyRooms(
@@ -380,11 +437,18 @@ export function toLegacyCalendar(data: BookingWebPublicCalendarResponse): {
   dates: string[];
   minStayByArrival: Record<string, number>;
   maxStayByArrival: Record<string, number>;
+  availabilityUnavailable: boolean;
 } {
+  const unavailableDates = new Set(data.calendar.unavailableDates);
+  const hasSelectableCoverage = Object.keys(data.calendar.minStayByArrival).some(
+    (date) => !unavailableDates.has(date),
+  );
+
   return {
     dates: data.calendar.unavailableDates,
     minStayByArrival: data.calendar.minStayByArrival,
     maxStayByArrival: data.calendar.maxStayByArrival,
+    availabilityUnavailable: data.freshness?.status === "unavailable" && !hasSelectableCoverage,
   };
 }
 

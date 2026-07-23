@@ -106,7 +106,12 @@ export function setLegacyCompatibilityToken(token: string, expiresIn: number): v
 export function setPendingOrganizationSelection(
   selection: AuthOrganizationSelectionResponse,
 ): void {
+  authKitSession = null;
+  legacyCompatibilityToken = null;
   pendingOrganizationSelectionCsrfToken = selection.csrfToken ?? null;
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_EXPIRES_AT_KEY);
 }
 
 export function setLegacyPasswordSession(input: {

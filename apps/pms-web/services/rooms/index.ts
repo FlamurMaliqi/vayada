@@ -234,7 +234,7 @@ export interface PmsOperationsCommandMeta {
   commandId: string;
   idempotencyKey: string;
   acceptedAt: string;
-  sideEffects: Array<"calendar_refresh" | "ari_changed" | "audit_event">;
+  sideEffects: Array<"calendar_refresh" | "ari_changed" | "distribution_refresh" | "audit_event">;
 }
 
 export interface PmsOperationsCommandResponse<T> {

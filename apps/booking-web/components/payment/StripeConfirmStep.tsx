@@ -8,7 +8,7 @@ import BookingFooter from "@/components/layout/BookingFooter";
 import HeroSection from "@/components/booking/HeroSection";
 import { Hotel, RoomType, Addon, Booking } from "@/lib/types";
 import { bookingService } from "@/services/api/booking";
-import { saveLastBooking } from "@/lib/storage/bookingDraft";
+import { saveLastBooking, toConfirmationBooking } from "@/lib/storage/bookingDraft";
 
 interface StripeConfirmStepProps {
   hotel: Hotel;
@@ -104,11 +104,13 @@ export default function StripeConfirmStep({
       // shouldn't).
       const handle = draftId || booking.id;
       const materialized = await bookingService.confirmAuthorization(slug, handle);
-      saveLastBooking({
-        ...materialized,
-        paymentMethod: "card",
-        paymentStatus: depositRequired ? "captured" : "authorized",
-      });
+      saveLastBooking(
+        toConfirmationBooking(materialized, {
+          ...booking,
+          paymentMethod: "card",
+          paymentStatus: depositRequired ? "captured" : "authorized",
+        }),
+      );
       router.push(`/booking/${materialized.bookingReference}`);
     } catch (err: any) {
       setError(err.message || "Payment confirmation failed");

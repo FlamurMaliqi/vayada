@@ -141,7 +141,7 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
   };
 }
 
-function scopedPropertyCte(): string {
+export function bookingScopedPropertyCte(): string {
   return `WITH scoped_property_candidates AS (
     SELECT property.id AS property_id, 0 AS precedence
     FROM hotel_catalog.properties property
@@ -164,7 +164,7 @@ function scopedPropertyCte(): string {
 }
 
 function dashboardMetricsSql(): string {
-  return `${scopedPropertyCte()},
+  return `${bookingScopedPropertyCte()},
   scoped_bookings AS (
     SELECT booking.*
     FROM booking.guest_bookings booking
@@ -195,7 +195,7 @@ function dashboardMetricsSql(): string {
 }
 
 function sourceMixSql(): string {
-  return `${scopedPropertyCte()}
+  return `${bookingScopedPropertyCte()}
   SELECT
     COALESCE(
       NULLIF(booking.booking_metadata ->> 'channel', ''),
@@ -219,7 +219,7 @@ function sourceMixSql(): string {
 }
 
 function sparklineSql(): string {
-  return `${scopedPropertyCte()},
+  return `${bookingScopedPropertyCte()},
   buckets AS (
     SELECT
       ($2::date + floor((($3::date - $2::date + 1) * bucket_index)::numeric / 7)::int)

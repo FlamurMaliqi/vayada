@@ -18,6 +18,7 @@ type GuestDraft = BookingAdditionalGuestPayload & { id?: string; position: numbe
 
 const primaryActionClass =
   "rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700 disabled:opacity-60";
+const LEGACY_BOOKING_WRITES_AVAILABLE = false;
 
 type GuestRegistrationDraft = Pick<
   BookingAdditionalGuestPayload,
@@ -110,22 +111,11 @@ function bookerDraftFromBooking(booking: Booking): GuestRegistrationDraft {
 }
 
 function guestComplete(g: GuestRegistrationDraft) {
-  return Boolean(
-    g.firstName && g.lastName && g.gender && g.nationality && g.dateOfBirth && g.passportNumber,
-  );
+  return Boolean(g.firstName && g.lastName);
 }
 
 function guestHasData(g: GuestRegistrationDraft) {
-  return Boolean(
-    g.firstName ||
-    g.lastName ||
-    g.email ||
-    g.phone ||
-    g.gender ||
-    g.nationality ||
-    g.dateOfBirth ||
-    g.passportNumber,
-  );
+  return Boolean(g.firstName || g.lastName || g.email || g.phone || g.nationality);
 }
 
 function formatDateTime(iso: string): string {
@@ -136,19 +126,6 @@ function formatDateTime(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function bookerDraftChanged(draft: GuestRegistrationDraft, b: Booking) {
-  return (
-    draft.firstName !== (b.guestFirstName || "") ||
-    draft.lastName !== (b.guestLastName || "") ||
-    draft.email !== (b.guestEmail || "") ||
-    draft.phone !== (b.guestPhone || "") ||
-    draft.gender !== (b.guestGender || "") ||
-    draft.nationality !== (b.guestCountry || "") ||
-    draft.dateOfBirth !== (b.guestDateOfBirth || null) ||
-    draft.passportNumber !== (b.guestPassportNumber || "")
-  );
 }
 
 function channelIsOta(channel: string | null | undefined) {
@@ -303,11 +280,7 @@ export default function CheckInPage() {
         lastName: draft.lastName || "",
         email: draft.email || "",
         phone: draft.phone || "",
-        gender: draft.gender || "",
         nationality: draft.nationality || "",
-        dateOfBirth: draft.dateOfBirth || null,
-        passportNumber: draft.passportNumber || "",
-        roomPosition: draft.roomPosition ?? 0,
       };
       const saved = draft.id
         ? await bookingsService.updateAdditionalGuest(booking.id, draft.id, payload)
@@ -377,11 +350,7 @@ export default function CheckInPage() {
             lastName: draft.lastName || "",
             email: draft.email || "",
             phone: draft.phone || "",
-            gender: draft.gender || "",
             nationality: draft.nationality || "",
-            dateOfBirth: draft.dateOfBirth || null,
-            passportNumber: draft.passportNumber || "",
-            roomPosition: draft.roomPosition ?? 0,
           };
           const saved = draft.id
             ? await bookingsService.updateAdditionalGuest(booking.id, draft.id, payload)
@@ -399,20 +368,6 @@ export default function CheckInPage() {
         throw new Error("Some guest drafts could not be saved. Please retry.");
       }
 
-      if (bookerDraftChanged(booker, booking)) {
-        const updated = await bookingsService.update(booking.id, {
-          guestFirstName: booker.firstName || "",
-          guestLastName: booker.lastName || "",
-          guestEmail: booker.email || "",
-          guestPhone: booker.phone || "",
-          guestCountry: booker.nationality || "",
-          guestGender: booker.gender || "",
-          guestDateOfBirth: booker.dateOfBirth || null,
-          guestPassportNumber: booker.passportNumber || "",
-        });
-        setBooking(updated);
-        setBooker(bookerDraftFromBooking(updated));
-      }
       const completedAt = new Date().toISOString();
       const checklistResults: CheckinStepResult[] = checklistSteps.map((step) => {
         const value = checklistValues[step.id];
@@ -589,6 +544,7 @@ export default function CheckInPage() {
                   onSave={saveBooker}
                   saving={savingGuest === "booker"}
                   saveLabel="Save booker"
+                  readOnly
                 />
 
                 {guests.map((guest, index) => {
@@ -655,10 +611,11 @@ export default function CheckInPage() {
                     <button
                       type="button"
                       onClick={markPaid}
-                      disabled={actionLoading !== null}
-                      className="rounded-lg bg-green-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                      disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading !== null}
+                      title="Payment status changes are not available yet"
+                      className="cursor-not-allowed rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-400"
                     >
-                      {actionLoading === "markPaid" ? "Marking..." : "Mark as paid"}
+                      Mark as paid · Not available yet
                     </button>
                   </div>
                 )}
@@ -766,6 +723,7 @@ function GuestRegistrationCard({
   onRemove,
   removing,
   saveLabel = "Save guest",
+  readOnly = false,
 }: {
   title: string;
   badge?: string;
@@ -778,8 +736,9 @@ function GuestRegistrationCard({
   onRemove?: () => void;
   removing?: boolean;
   saveLabel?: string;
+  readOnly?: boolean;
 }) {
-  const contactLocked = (value: string | null | undefined) => ota && Boolean(value);
+  const contactLocked = (value: string | null | undefined) => readOnly || (ota && Boolean(value));
 
   return (
     <div
@@ -798,7 +757,7 @@ function GuestRegistrationCard({
             )}
           </p>
           <p className={`text-sm ${complete ? "text-green-700" : "text-amber-700"}`}>
-            {complete ? "Registration complete" : "Missing passport / ID"}
+            {complete ? "Registration complete" : "First and last name required"}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -846,38 +805,28 @@ function GuestRegistrationCard({
           disabled={contactLocked(guest.phone)}
           onChange={(v) => onChange({ phone: v })}
         />
-        <SelectField
-          label="Gender"
-          value={guest.gender || ""}
-          onChange={(v) => onChange({ gender: v })}
-        />
         <Field
           label="Nationality"
           value={guest.nationality || ""}
           disabled={contactLocked(guest.nationality)}
           onChange={(v) => onChange({ nationality: v })}
         />
-        <Field
-          label="Date of birth"
-          type="date"
-          value={guest.dateOfBirth || ""}
-          onChange={(v) => onChange({ dateOfBirth: v || null })}
-        />
-        <Field
-          label="Passport / ID number"
-          value={guest.passportNumber || ""}
-          placeholder="needed for police report"
-          onChange={(v) => onChange({ passportNumber: v })}
-        />
       </div>
-      <button
-        type="button"
-        onClick={onSave}
-        disabled={saving}
-        className={`${primaryActionClass} mt-3`}
-      >
-        {saving ? "Saving..." : saveLabel}
-      </button>
+      <p className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+        Gender, date of birth, and passport details are not stored in PMS yet.
+      </p>
+      {readOnly ? (
+        <p className="mt-3 text-xs text-gray-500">Booker editing is not available yet.</p>
+      ) : (
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          className={`${primaryActionClass} mt-3`}
+        >
+          {saving ? "Saving..." : saveLabel}
+        </button>
+      )}
     </div>
   );
 }
@@ -942,33 +891,6 @@ function Field({
         onChange={(e) => onChange(e.target.value)}
         className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-sm text-gray-950 disabled:bg-gray-100 disabled:text-gray-500"
       />
-    </label>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block">
-      <span className="text-xs font-medium text-gray-600">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-1 h-10 w-full rounded-lg border border-gray-200 px-3 text-sm text-gray-950"
-      >
-        <option value="">Select</option>
-        <option value="female">Female</option>
-        <option value="male">Male</option>
-        <option value="non_binary">Non-binary</option>
-        <option value="prefer_not_to_say">Prefer not to say</option>
-      </select>
     </label>
   );
 }

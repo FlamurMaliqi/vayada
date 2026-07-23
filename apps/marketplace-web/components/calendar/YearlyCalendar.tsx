@@ -285,7 +285,7 @@ export function YearlyCalendar({
               Add Trip
             </button>
           )}
-          {userType === "creator" && (
+          {userType === "creator" ? (
             <button
               onClick={() => {
                 setSelectedExternalCollaboration(null);
@@ -303,12 +303,38 @@ export function YearlyCalendar({
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                className="lucide lucide-plus w-4 h-4"
+                className="lucide lucide-plus h-4 w-4"
               >
                 <path d="M5 12h14"></path>
                 <path d="M12 5v14"></path>
               </svg>
               Add Collaboration
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled
+              title="Adding creators outside Vayada isn’t available yet."
+              className="flex cursor-not-allowed items-center gap-2 rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-sm font-medium text-gray-500"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="lucide lucide-user-plus h-4 w-4"
+              >
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <line x1="19" x2="19" y1="8" y2="14"></line>
+                <line x1="22" x2="16" y1="11" y2="11"></line>
+              </svg>
+              External creators coming soon
             </button>
           )}
         </div>

@@ -73,6 +73,13 @@ function TimeWindow({
   );
 }
 
+export function paymentMethodsAfterPayAtHotelToggle(
+  enabled: boolean,
+  currentMethods: string[],
+): string[] {
+  return enabled && currentMethods.length === 0 ? ["card"] : currentMethods;
+}
+
 interface PoliciesStepProps {
   checkInFrom: string;
   setCheckInFrom: (v: string) => void;
@@ -355,13 +362,24 @@ export default function PoliciesStep({
 
             {/* Pay at Hotel */}
             <div
-              className={`relative flex flex-col p-4 rounded-xl border-2 transition-all text-left cursor-pointer ${
+              className={`relative flex flex-col p-4 rounded-xl border-2 transition-all text-left ${
                 payAtHotel
                   ? "border-primary-500 bg-primary-50/30"
                   : "border-gray-200 hover:border-gray-300"
               }`}
             >
-              <div onClick={() => setPayAtHotel(!payAtHotel)}>
+              <button
+                type="button"
+                aria-pressed={payAtHotel}
+                className="text-left"
+                onClick={() => {
+                  const enabled = !payAtHotel;
+                  setPayAtHotel(enabled);
+                  setPayAtHotelMethods(
+                    paymentMethodsAfterPayAtHotelToggle(enabled, payAtHotelMethods),
+                  );
+                }}
+              >
                 <div
                   className={`absolute top-3 right-3 w-5 h-5 rounded-full border-2 flex items-center justify-center ${payAtHotel ? "border-primary-500 bg-primary-500" : "border-gray-300"}`}
                 >
@@ -442,7 +460,7 @@ export default function PoliciesStep({
                     <span className="text-[10px] text-gray-500">Higher no-show risk</span>
                   </div>
                 </div>
-              </div>
+              </button>
               {payAtHotel && (
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-200 flex-wrap">
                   {[

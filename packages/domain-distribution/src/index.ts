@@ -35,6 +35,16 @@ export const PUBLIC_BOOKABILITY_FRESHNESS_STATUSES = [
   "unknown",
 ] as const;
 
+export const PUBLIC_BOOKABILITY_CONTACT_CHANNEL_TYPES = [
+  "phone",
+  "email",
+  "whatsapp",
+  "website",
+  "instagram",
+  "facebook",
+  "x",
+] as const;
+
 export const FORBIDDEN_PUBLIC_BOOKABILITY_KEYS = [
   "admin",
   "bank",
@@ -71,6 +81,62 @@ export type PublicBookabilityStatus = (typeof PUBLIC_BOOKABILITY_STATUSES)[numbe
 export type PublicBookabilityReasonCode = (typeof PUBLIC_BOOKABILITY_REASON_CODES)[number];
 export type PublicBookabilityFreshnessStatus =
   (typeof PUBLIC_BOOKABILITY_FRESHNESS_STATUSES)[number];
+export type PublicBookabilityContactChannelType =
+  (typeof PUBLIC_BOOKABILITY_CONTACT_CHANNEL_TYPES)[number];
+
+export type PublicBookabilityPublicationStatus =
+  | "public"
+  | "incomplete"
+  | "unpublished"
+  | "stale"
+  | "unavailable";
+
+export type PublishPublicBookabilityProfileCommand = {
+  propertyId: string;
+};
+
+export type PublicBookabilityPublicationResult = {
+  propertyId: string;
+  canonicalSlug: string;
+  canonicalUrl: string;
+  bookingBaseUrl: string;
+  profileStatus: PublicBookabilityPublicationStatus;
+  freshnessStatus: PublicBookabilityFreshnessStatus;
+  missingReadiness: string[];
+};
+
+/**
+ * Distribution-owned command boundary used by product activation flows.
+ * Callers identify the canonical property; the implementation projects only
+ * public-safe catalog, Booking, Finance, and Distribution read models.
+ */
+export interface PublicBookabilityPublicationCommandPort {
+  publish(
+    command: PublishPublicBookabilityProfileCommand,
+  ): Promise<PublicBookabilityPublicationResult | null>;
+  close?(): Promise<void>;
+}
+
+export type ProjectPmsInventoryToPublicOffersCommand = {
+  propertyId: string;
+};
+
+export type PmsInventoryPublicOfferProjectionResult = {
+  profileAvailable: boolean;
+  pendingEvents: number;
+  projectedOfferDays: number;
+};
+
+/**
+ * Distribution-owned consumer for durable PMS inventory events. The consumer
+ * projects public-safe room offers without exposing PMS tables to public reads.
+ */
+export interface PmsInventoryPublicOfferProjectionPort {
+  projectPending(
+    command: ProjectPmsInventoryToPublicOffersCommand,
+  ): Promise<PmsInventoryPublicOfferProjectionResult>;
+  close?(): Promise<void>;
+}
 
 export type PublicBookabilityFreshnessSource = {
   owner: PublicBookabilityDataSourceOwner;
@@ -107,6 +173,11 @@ export type PublicBookabilityLocation = {
 export type PublicBookabilityImage = {
   url: string;
   alt?: string | null;
+};
+
+export type PublicBookabilityPublicContact = {
+  type: PublicBookabilityContactChannelType;
+  value: string;
 };
 
 export type PublicBookabilityPolicies = {
@@ -161,6 +232,7 @@ export type PublicBookabilityHotelProfile = {
   branding?: PublicBookabilityBranding;
   images: PublicBookabilityImage[];
   amenities: string[];
+  publicContacts: PublicBookabilityPublicContact[];
   policies: PublicBookabilityPolicies;
   capabilities: PublicBookabilityCapabilities;
   supportedQuoteParameters: PublicBookabilitySupportedQuoteParameters;
@@ -307,6 +379,7 @@ export type PublicBookabilityProducerInputs = {
     | "images"
     | "amenities"
   > & {
+    publicContacts?: PublicBookabilityPublicContact[];
     profileComplete: boolean;
     profileVerified: boolean;
   } & PublicBookabilityProducerSourceInput;
@@ -415,6 +488,7 @@ export function buildPublicBookabilityProfileProjection(
       branding: inputs.booking.branding ? { ...inputs.booking.branding } : undefined,
       images: inputs.hotelCatalog.images.map(sanitizeImage),
       amenities: copyStrings(inputs.hotelCatalog.amenities),
+      publicContacts: sanitizePublicContacts(inputs.hotelCatalog.publicContacts),
       policies: sanitizePolicies(inputs.booking.policies),
       capabilities,
       supportedQuoteParameters: sanitizeSupportedQuoteParameters(
@@ -660,6 +734,19 @@ function sanitizeImage(image: PublicBookabilityImage): PublicBookabilityImage {
     url: image.url,
     alt: image.alt ?? null,
   };
+}
+
+function sanitizePublicContacts(
+  contacts: PublicBookabilityPublicContact[] | undefined,
+): PublicBookabilityPublicContact[] {
+  return (contacts ?? [])
+    .filter(
+      (contact) =>
+        PUBLIC_BOOKABILITY_CONTACT_CHANNEL_TYPES.includes(contact.type) &&
+        typeof contact.value === "string" &&
+        contact.value.trim().length > 0,
+    )
+    .map((contact) => ({ type: contact.type, value: contact.value.trim() }));
 }
 
 function sanitizePolicies(policies: PublicBookabilityPolicies): PublicBookabilityPolicies {

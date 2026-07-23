@@ -212,11 +212,18 @@ export function createPgSharedHotelSetupStatusRepository(config: {
       }
       return created;
     },
-    async updatePropertyProfile({ organizationId, propertyId, expectedPropertyType, profile }) {
+    async updatePropertyProfile({
+      organizationId,
+      propertyId,
+      expectedPropertyType,
+      expectedUpdatedAt,
+      profile,
+    }) {
       const updatedPropertyId = await writePropertyProfile(pool, {
         organizationId,
         propertyId,
         expectedPropertyType,
+        expectedUpdatedAt,
         profile,
         mode: "update",
       });
@@ -266,6 +273,7 @@ async function writePropertyProfile(
         organizationId: string;
         propertyId: string;
         expectedPropertyType: string | null;
+        expectedUpdatedAt: string | null;
         profile: SharedPropertyProfileInput;
       },
 ): Promise<string | null> {
@@ -287,6 +295,7 @@ async function writePropertyProfile(
           profileStatus,
           missingFields,
           input.expectedPropertyType,
+          input.expectedUpdatedAt,
         ]);
 
   return result.rows[0]?.propertyId ?? null;
@@ -697,7 +706,7 @@ function propertyProfileSql(): string {
       COALESCE(contact.email, legacy_contact.email) AS "contactEmail",
       COALESCE(contact.phone, legacy_contact.phone) AS phone,
       COALESCE(media.items, legacy_media.items, '[]'::jsonb) AS media,
-      updated_at.value AS "updatedAt"
+      property.updated_at AS "updatedAt"
     FROM hotel_catalog.properties property
     JOIN identity.organization_resource_links link
       ON link.organization_id = $1::uuid
@@ -726,8 +735,7 @@ function propertyProfileSql(): string {
           NULLIF(location.country_code::text, '') IS NOT NULL
           OR NULLIF(location.city, '') IS NOT NULL
           OR NULLIF(location.raw_marketplace_location, '') IS NOT NULL
-        ) AS has_location,
-        location.updated_at
+        ) AS has_location
       FROM hotel_catalog.property_locations location
       WHERE location.property_id = property.id
       LIMIT 1
@@ -748,8 +756,7 @@ function propertyProfileSql(): string {
         NULLIF(listing.raw_location_text, '') AS raw_location_text,
         NULLIF(listing.offer_summary, '') AS offer_summary,
         NULLIF(profile.host_summary, '') AS host_summary,
-        listing.image_urls,
-        latest.value AS updated_at
+        listing.image_urls
       FROM marketplace.marketplace_hotel_profiles profile
       LEFT JOIN LATERAL (
         SELECT title, raw_location_text, offer_summary, image_urls, updated_at
@@ -763,10 +770,6 @@ function propertyProfileSql(): string {
           id
         LIMIT 1
       ) listing ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT max(value) AS value
-        FROM (VALUES (profile.updated_at), (listing.updated_at)) AS timestamps(value)
-      ) latest ON TRUE
       WHERE profile.property_id = property.id
         AND profile.organization_id = $1::uuid
       LIMIT 1
@@ -862,8 +865,7 @@ function propertyProfileSql(): string {
         COALESCE(
           max(value) FILTER (WHERE channel_type = 'phone'),
           max(value) FILTER (WHERE channel_type = 'whatsapp')
-        ) AS phone,
-        max(updated_at) AS updated_at
+        ) AS phone
       FROM hotel_catalog.property_contact_channels
       WHERE property_id = property.id
         AND is_public = TRUE
@@ -908,8 +910,7 @@ function propertyProfileSql(): string {
             'sortOrder', media.sort_order
           )
           ORDER BY media.sort_order, media.created_at, media.id
-        ) AS items,
-        max(media.updated_at) AS updated_at
+        ) AS items
       FROM hotel_catalog.property_media media
       WHERE media.property_id = property.id
         AND media.public_approved = TRUE
@@ -974,19 +975,6 @@ function propertyProfileSql(): string {
           + COALESCE(jsonb_array_length(marketplace_media.items), 0)
         ) > 0 AS has_media
     ) legacy_media ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT max(value) AS value
-      FROM (
-        VALUES
-          (property.updated_at),
-          (catalog_location.updated_at),
-          (profile.updated_at),
-          (contact.updated_at),
-          (media.updated_at),
-          (public_profile.projected_at),
-          (marketplace_prefill.updated_at)
-      ) AS timestamps(value)
-    ) updated_at ON TRUE
     WHERE property.id = $2::uuid
     LIMIT 1
   `;
@@ -1193,6 +1181,7 @@ function updatePropertyProfileSql(): string {
       FROM target_property, profile_input
       WHERE property.id = target_property.property_id
         AND NULLIF(BTRIM(property.property_type), '') IS NOT DISTINCT FROM $6::text
+        AND ($7::timestamptz IS NULL OR property.updated_at = $7::timestamptz)
       RETURNING
         property.id AS property_id,
         property.public_id,

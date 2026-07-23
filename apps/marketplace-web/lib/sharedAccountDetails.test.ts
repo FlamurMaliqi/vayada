@@ -9,13 +9,29 @@ import {
 } from "@vayada/product-onboarding";
 
 describe("shared account details", () => {
-  it("requires both first and last name before skipping the shared step", () => {
+  it("requires a full name, valid phone, and canonical photo before skipping the shared step", () => {
     expect(isSharedAccountDetailsComplete(null)).toBe(false);
     expect(isSharedAccountDetailsComplete({ name: "Flamur" })).toBe(false);
     expect(isSharedAccountDetailsComplete({ name: "Flamur Maliqi" })).toBe(false);
     expect(
       isSharedAccountDetailsComplete({
         name: "Flamur Maliqi",
+        profilePictureUrl: "https://media.example/profile.webp",
+        profilePictureMediaObjectId: "media-profile-1",
+      }),
+    ).toBe(false);
+    expect(
+      isSharedAccountDetailsComplete({
+        name: "Flamur Maliqi",
+        phone: "not-a-phone",
+        profilePictureUrl: "https://media.example/profile.webp",
+        profilePictureMediaObjectId: "media-profile-1",
+      }),
+    ).toBe(false);
+    expect(
+      isSharedAccountDetailsComplete({
+        name: "Flamur Maliqi",
+        phone: "+49 89 123456",
         profilePictureUrl: "https://media.example/profile.webp",
         profilePictureMediaObjectId: "media-profile-1",
       }),

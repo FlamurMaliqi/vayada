@@ -16,6 +16,7 @@
     "./LastMinuteStep": "./src/LastMinuteStep.tsx",
     "./PoliciesStep": "./src/PoliciesStep.tsx",
     "./PropertyStep": "./src/PropertyStep.tsx",
+    "./apiSessionRecovery": "./src/apiSessionRecovery.ts",
     "./returnTo": "./src/returnTo.ts",
     "./RoomsStep": "./src/RoomsStep.tsx",
     "./SharedHotelLoginForm": "./src/SharedHotelLoginForm.tsx",

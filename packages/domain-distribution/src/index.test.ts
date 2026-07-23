@@ -123,6 +123,16 @@ describe("@vayada/domain-distribution", () => {
             channexMappingId: "chn_123",
           },
         ] as unknown as PublicBookabilityProducerInputs["hotelCatalog"]["images"],
+        publicContacts: [
+          { type: "email", value: "  stay@alpenrose.example  " },
+          {
+            type: "phone",
+            value: "+43 512 555 0100",
+            privateNote: "must not cross the public boundary",
+          },
+          { type: "admin_email", value: "owner@alpenrose.example" },
+          { type: "website", value: "   " },
+        ] as unknown as PublicBookabilityProducerInputs["hotelCatalog"]["publicContacts"],
       },
       booking: {
         ...inputs.booking,
@@ -142,7 +152,21 @@ describe("@vayada/domain-distribution", () => {
     expect(findForbiddenPublicBookabilityKeys(projection)).toEqual([]);
     expect(projection.hotel.location).not.toHaveProperty("internalNotes");
     expect(projection.hotel.images[0]).not.toHaveProperty("channexMappingId");
+    expect(projection.hotel.publicContacts).toEqual([
+      { type: "email", value: "stay@alpenrose.example" },
+      { type: "phone", value: "+43 512 555 0100" },
+    ]);
+    expect(projection.hotel.publicContacts[1]).not.toHaveProperty("privateNote");
     expect(projection.hotel.policies).not.toHaveProperty("processorAccountId");
+  });
+
+  it("uses an empty public contact list when Catalog has no public channels", () => {
+    const projection = buildPublicBookabilityProfileProjection(
+      "2026-06-06T11:00:00.000Z",
+      profileProducerInputs(),
+    );
+
+    expect(projection.hotel.publicContacts).toEqual([]);
   });
 
   it("builds a public quote projection from producer inputs", () => {

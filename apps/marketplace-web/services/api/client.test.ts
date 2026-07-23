@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiClient, type ApiSessionRecoveryHandlers } from "./client";
+import { ApiClient, type ApiSessionRecoveryHandlers, type ApiSessionRefreshResult } from "./client";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -61,7 +61,6 @@ describe("shared Marketplace API session recovery", () => {
     let token = "expired-token";
     const handlers = recoveryHandlers(async () => {
       token = "fresh-token";
-      return token;
     });
     const fetchMock = vi
       .fn()
@@ -81,9 +80,24 @@ describe("shared Marketplace API session recovery", () => {
     expect(authorizationHeader(fetchMock, 1)).toBe("Bearer fresh-token");
   });
 
-  it("signs out without retrying when session refresh fails", async () => {
+  it("keeps a transient session refresh failure retryable without signing out", async () => {
     const handlers = recoveryHandlers(async () => {
-      throw new Error("refresh failed");
+      throw new TypeError("Failed to fetch");
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: "expired" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = clientFor(() => "expired-token", handlers);
+
+    await expect(client.get("/api/marketplace/offers")).rejects.toMatchObject({ status: 401 });
+    expect(handlers.refresh).toHaveBeenCalledOnce();
+    expect(handlers.signOut).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("signs out when session refresh is definitively rejected", async () => {
+    const handlers = recoveryHandlers(async () => {
+      throw Object.assign(new Error("invalid session"), { status: 401 });
     });
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: "expired" }, 401));
     vi.stubGlobal("fetch", fetchMock);
@@ -96,36 +110,42 @@ describe("shared Marketplace API session recovery", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("allows a later request to recover after a transient refresh failure", async () => {
-    let token = "expired-transient-token";
-    let refreshAttempt = 0;
+  it("signs out when refresh succeeds without replacing the expired token", async () => {
+    const handlers = recoveryHandlers(async () => undefined);
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: "expired" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = clientFor(() => "expired-token", handlers);
+    await expect(client.get("/api/marketplace/offers")).rejects.toMatchObject({ status: 401 });
+
+    expect(handlers.refresh).toHaveBeenCalledOnce();
+    expect(handlers.signOut).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("routes organization selection without signing out the pending session", async () => {
+    let token: string | null = "expired-token";
     const handlers = recoveryHandlers(async () => {
-      refreshAttempt += 1;
-      if (refreshAttempt === 1) return null;
-      token = "fresh-after-transient-failure";
-      return token;
+      token = null;
+      return { status: "organization_selection_required" };
     });
-    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
-      (init.headers as Record<string, string>).Authorization ===
-      "Bearer fresh-after-transient-failure"
-        ? jsonResponse({ ok: true })
-        : jsonResponse({ detail: "expired" }, 401),
-    );
+    handlers.onOrganizationSelectionRequired = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: "expired" }, 401));
     vi.stubGlobal("fetch", fetchMock);
 
     const client = clientFor(() => token, handlers);
     await expect(client.get("/api/marketplace/offers")).rejects.toMatchObject({ status: 401 });
-    await expect(client.get("/api/marketplace/offers")).resolves.toEqual({ ok: true });
 
-    expect(handlers.refresh).toHaveBeenCalledTimes(2);
-    expect(handlers.signOut).toHaveBeenCalledOnce();
+    expect(handlers.refresh).toHaveBeenCalledOnce();
+    expect(handlers.onOrganizationSelectionRequired).toHaveBeenCalledOnce();
+    expect(handlers.signOut).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("stops after one retry and signs out when the refreshed request is also unauthorized", async () => {
     let token = "expired-token";
     const handlers = recoveryHandlers(async () => {
       token = "fresh-but-rejected-token";
-      return token;
     });
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: "unauthorized" }, 401));
     vi.stubGlobal("fetch", fetchMock);
@@ -140,11 +160,10 @@ describe("shared Marketplace API session recovery", () => {
 
   it("shares one refresh across concurrent unauthorized requests from different client families", async () => {
     let token = "expired-token";
-    const refresh = Promise.withResolvers<string | null>();
+    const refresh = Promise.withResolvers<string>();
     const handlers = recoveryHandlers(async () => {
       const refreshed = await refresh.promise;
-      token = refreshed ?? token;
-      return refreshed;
+      token = refreshed;
     });
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
       (init.headers as Record<string, string>).Authorization === "Bearer fresh-token"
@@ -175,7 +194,6 @@ describe("shared Marketplace API session recovery", () => {
     let token = "expired-upload-token";
     const handlers = recoveryHandlers(async () => {
       token = "fresh-upload-token";
-      return token;
     });
     const fetchMock = vi
       .fn()
@@ -203,14 +221,14 @@ function clientFor(
   return new ApiClient("https://api.localhost", tokenProvider, () => handlers);
 }
 
-function recoveryHandlers(refresh: () => Promise<string | null>): ApiSessionRecoveryHandlers & {
-  refresh: ReturnType<typeof vi.fn<() => Promise<void>>>;
+function recoveryHandlers(
+  refresh: () => Promise<ApiSessionRefreshResult | void>,
+): ApiSessionRecoveryHandlers & {
+  refresh: ReturnType<typeof vi.fn<() => Promise<ApiSessionRefreshResult | void>>>;
   signOut: ReturnType<typeof vi.fn<() => Promise<void>>>;
 } {
   return {
-    refresh: vi.fn(async () => {
-      await refresh();
-    }),
+    refresh: vi.fn(refresh),
     signOut: vi.fn(async () => undefined),
   };
 }

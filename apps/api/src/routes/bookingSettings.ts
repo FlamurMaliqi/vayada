@@ -1,4 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type {
+  PmsInventoryPublicOfferProjectionPort,
+  PublicBookabilityPublicationCommandPort,
+} from "@vayada/domain-distribution";
 import pg from "pg";
 import type { QueryResult, QueryResultRow } from "pg";
 
@@ -171,6 +175,12 @@ export const BOOKING_PROPERTY_SETTINGS_WRITE_CONTRACT = {
   ...BOOKING_HOTEL_PROPERTY_LINK_CONTRACT,
   method: "PATCH",
   path: "/api/booking/hotels/:hotelId/settings/property",
+} as const;
+
+export const BOOKING_PUBLIC_BOOKABILITY_PUBLICATION_CONTRACT = {
+  ...BOOKING_HOTEL_PROPERTY_LINK_CONTRACT,
+  method: "POST",
+  path: "/api/booking/hotels/:hotelId/public-bookability",
 } as const;
 
 export type BookingAddonSettingsReadModel = {
@@ -1060,6 +1070,279 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
   LEFT JOIN booking.booking_settings settings
     ON source_link_status.source_link_count = 1
    AND settings.property_id = source_link_status.property_id
+  WHERE source_link_status.source_link_count > 0
+`;
+
+// Saving Booking design settings is the hotel owner's explicit approval boundary
+// for the public copy and hero image. Keep the Booking write and Catalog
+// projection in one statement so retries cannot publish a partial profile.
+const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
+  ${TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE},
+  updated_settings AS (
+    UPDATE booking.booking_settings settings
+    SET hero_image_url = CASE
+          WHEN $2::jsonb ? 'heroImage'
+            THEN NULLIF(BTRIM($2::jsonb ->> 'heroImage'), '')
+          ELSE settings.hero_image_url
+        END,
+        hero_heading = CASE
+          WHEN $2::jsonb ? 'heroHeading'
+            THEN NULLIF(BTRIM($2::jsonb ->> 'heroHeading'), '')
+          ELSE settings.hero_heading
+        END,
+        hero_subtext = CASE
+          WHEN $2::jsonb ? 'heroSubtext'
+            THEN NULLIF(BTRIM($2::jsonb ->> 'heroSubtext'), '')
+          ELSE settings.hero_subtext
+        END,
+        primary_color = CASE
+          WHEN $2::jsonb ? 'primaryColor' THEN $2::jsonb ->> 'primaryColor'
+          ELSE settings.primary_color
+        END,
+        font_pairing = CASE
+          WHEN $2::jsonb ? 'fontPairing' THEN $2::jsonb ->> 'fontPairing'
+          ELSE settings.font_pairing
+        END,
+        updated_at = now()
+    FROM source_link_status
+    WHERE source_link_status.source_link_count = 1
+      AND settings.property_id = source_link_status.property_id
+    RETURNING
+      settings.property_id::text AS settings_property_id,
+      settings.show_addons_step,
+      settings.group_addons_by_category,
+      settings.special_requests_enabled,
+      settings.arrival_time_enabled,
+      settings.guest_count_enabled,
+      settings.phone_required,
+      settings.adult_age_threshold,
+      settings.children_enabled,
+      settings.benefits,
+      settings.default_currency,
+      settings.default_language,
+      settings.supported_currencies,
+      settings.supported_languages,
+      settings.booking_filters,
+      settings.custom_filters,
+      settings.filter_rooms,
+      settings.hero_image_url,
+      settings.hero_heading,
+      settings.hero_subtext,
+      settings.primary_color,
+      settings.font_pairing,
+      settings.last_minute_discount,
+      settings.updated_at
+  ),
+  upserted_booking_description AS (
+    INSERT INTO hotel_catalog.property_profiles (
+      property_id,
+      locale,
+      short_description,
+      source_confidence,
+      updated_at
+    )
+    SELECT
+      property.id,
+      property.default_locale,
+      updated_settings.hero_subtext,
+      'high',
+      now()
+    FROM updated_settings
+    JOIN hotel_catalog.properties property
+      ON property.id = updated_settings.settings_property_id::uuid
+    WHERE $2::jsonb ? 'heroSubtext'
+    ON CONFLICT (property_id, locale) DO UPDATE
+    SET short_description = EXCLUDED.short_description,
+        source_confidence = EXCLUDED.source_confidence,
+        updated_at = now()
+    RETURNING property_id
+  ),
+  retired_booking_hero_media AS (
+    UPDATE hotel_catalog.property_media media
+    SET public_approved = FALSE,
+        updated_at = now()
+    FROM updated_settings
+    WHERE media.property_id = updated_settings.settings_property_id::uuid
+      AND media.media_type = 'hero_image'
+      AND $2::jsonb ? 'heroImage'
+      AND media.url IS DISTINCT FROM updated_settings.hero_image_url
+      AND media.public_approved = TRUE
+    RETURNING media.property_id
+  ),
+  approved_existing_booking_hero_media AS (
+    UPDATE hotel_catalog.property_media media
+    SET public_approved = TRUE,
+        alt_text = COALESCE(
+          NULLIF(BTRIM(updated_settings.hero_heading), ''),
+          property.display_name
+        ),
+        rights_metadata = COALESCE(media.rights_metadata, '{}'::jsonb)
+          || '{"source":"booking_design","ownerApproved":true}'::jsonb,
+        updated_at = now()
+    FROM updated_settings
+    JOIN hotel_catalog.properties property
+      ON property.id = updated_settings.settings_property_id::uuid
+    WHERE media.property_id = property.id
+      AND media.media_type = 'hero_image'
+      AND $2::jsonb ? 'heroImage'
+      AND media.url = updated_settings.hero_image_url
+      AND NOT (
+        media.source_system = 'booking'
+        AND EXISTS (
+          SELECT 1
+          FROM hotel_catalog.property_media platform_media
+          WHERE platform_media.property_id = media.property_id
+            AND platform_media.source_system = 'platform'
+            AND platform_media.media_type = 'hero_image'
+            AND platform_media.url = media.url
+        )
+      )
+    RETURNING media.property_id
+  ),
+  retired_duplicate_booking_hero_media AS (
+    UPDATE hotel_catalog.property_media media
+    SET public_approved = FALSE,
+        updated_at = now()
+    FROM updated_settings
+    WHERE media.property_id = updated_settings.settings_property_id::uuid
+      AND media.source_system = 'booking'
+      AND media.media_type = 'hero_image'
+      AND media.url = updated_settings.hero_image_url
+      AND EXISTS (
+        SELECT 1
+        FROM hotel_catalog.property_media platform_media
+        WHERE platform_media.property_id = media.property_id
+          AND platform_media.source_system = 'platform'
+          AND platform_media.media_type = 'hero_image'
+          AND platform_media.url = media.url
+      )
+    RETURNING media.property_id
+  ),
+  inserted_booking_hero_media AS (
+    INSERT INTO hotel_catalog.property_media (
+      property_id,
+      media_type,
+      url,
+      alt_text,
+      sort_order,
+      source_system,
+      public_approved,
+      rights_metadata,
+      updated_at
+    )
+    SELECT
+      property.id,
+      'hero_image',
+      updated_settings.hero_image_url,
+      COALESCE(NULLIF(BTRIM(updated_settings.hero_heading), ''), property.display_name),
+      0,
+      'booking',
+      TRUE,
+      '{"source":"booking_design","ownerApproved":true}'::jsonb,
+      now()
+    FROM updated_settings
+    JOIN hotel_catalog.properties property
+      ON property.id = updated_settings.settings_property_id::uuid
+    WHERE $2::jsonb ? 'heroImage'
+      AND NULLIF(BTRIM(updated_settings.hero_image_url), '') IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM hotel_catalog.property_media existing
+        WHERE existing.property_id = property.id
+          AND existing.media_type = 'hero_image'
+          AND existing.url = updated_settings.hero_image_url
+      )
+    RETURNING property_id
+  ),
+  resolved_profile AS (
+    SELECT
+      property.id AS property_id,
+      ARRAY(
+        SELECT DISTINCT reason
+        FROM unnest(
+          COALESCE(property.completeness_reasons, '{}'::text[])
+          || CASE
+            WHEN $2::jsonb ? 'heroSubtext'
+              AND NULLIF(BTRIM(updated_settings.hero_subtext), '') IS NULL
+              AND NULLIF(BTRIM(catalog_profile.long_description), '') IS NULL
+              THEN ARRAY['description']::text[]
+            ELSE '{}'::text[]
+          END
+          || CASE
+            WHEN $2::jsonb ? 'heroImage'
+              AND NULLIF(BTRIM(updated_settings.hero_image_url), '') IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM hotel_catalog.property_media remaining_media
+                WHERE remaining_media.property_id = property.id
+                  AND remaining_media.public_approved = TRUE
+              )
+              THEN ARRAY['media']::text[]
+            ELSE '{}'::text[]
+          END
+        ) AS reason
+        WHERE NOT (
+          (
+            reason = 'description'
+            AND $2::jsonb ? 'heroSubtext'
+            AND NULLIF(BTRIM(updated_settings.hero_subtext), '') IS NOT NULL
+          )
+          OR (
+            reason = 'media'
+            AND $2::jsonb ? 'heroImage'
+            AND NULLIF(BTRIM(updated_settings.hero_image_url), '') IS NOT NULL
+          )
+        )
+        ORDER BY reason
+      )::text[] AS completeness_reasons
+    FROM updated_settings
+    JOIN hotel_catalog.properties property
+      ON property.id = updated_settings.settings_property_id::uuid
+    LEFT JOIN hotel_catalog.property_profiles catalog_profile
+      ON catalog_profile.property_id = property.id
+     AND catalog_profile.locale = property.default_locale
+  ),
+  updated_property_profile_status AS (
+    UPDATE hotel_catalog.properties property
+    SET completeness_reasons = resolved_profile.completeness_reasons,
+        profile_status = CASE
+          WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status
+          WHEN cardinality(resolved_profile.completeness_reasons) = 0 THEN 'complete'
+          ELSE 'incomplete'
+        END,
+        updated_at = now()
+    FROM resolved_profile
+    WHERE property.id = resolved_profile.property_id
+    RETURNING property.id
+  )
+  SELECT
+    source_link_status.source_link_count,
+    updated_settings.settings_property_id,
+    updated_settings.show_addons_step,
+    updated_settings.group_addons_by_category,
+    updated_settings.special_requests_enabled,
+    updated_settings.arrival_time_enabled,
+    updated_settings.guest_count_enabled,
+    updated_settings.phone_required,
+    updated_settings.adult_age_threshold,
+    updated_settings.children_enabled,
+    updated_settings.benefits,
+    updated_settings.default_currency,
+    updated_settings.default_language,
+    updated_settings.supported_currencies,
+    updated_settings.supported_languages,
+    updated_settings.booking_filters,
+    updated_settings.custom_filters,
+    updated_settings.filter_rooms,
+    updated_settings.hero_image_url,
+    updated_settings.hero_heading,
+    updated_settings.hero_subtext,
+    updated_settings.primary_color,
+    updated_settings.font_pairing,
+    updated_settings.last_minute_discount,
+    updated_settings.updated_at
+  FROM source_link_status
+  LEFT JOIN updated_settings ON TRUE
   WHERE source_link_status.source_link_count > 0
 `;
 
@@ -1986,28 +2269,11 @@ export function createPgTargetBookingSettingsRepository(config: {
       return row ? toTargetRoomFilterSettings(row) : null;
     },
     async updateDesignSettingsByHotelId(hotelId, settings) {
-      const assignments: string[] = [];
-      const values: unknown[] = [];
-      const assign = (column: string, value: unknown) => {
-        values.push(value);
-        assignments.push(`${column} = $${values.length + 1}`);
-      };
-
-      if (settings.heroImage !== undefined) {
-        assign("hero_image_url", nullableText(settings.heroImage));
-      }
-      if (settings.heroHeading !== undefined) {
-        assign("hero_heading", nullableText(settings.heroHeading));
-      }
-      if (settings.heroSubtext !== undefined) {
-        assign("hero_subtext", nullableText(settings.heroSubtext));
-      }
-      if (settings.primaryColor !== undefined) assign("primary_color", settings.primaryColor);
-      if (settings.fontPairing !== undefined) assign("font_pairing", settings.fontPairing);
-
-      const row = assignments.length
-        ? await updateSettings(hotelId, assignments.join(",\n         "), values)
-        : await findSettings(hotelId);
+      const result = await pool.query<TargetBookingSettingsQueryRow>(
+        TARGET_BOOKING_DESIGN_SETTINGS_UPDATE,
+        [hotelId, JSON.stringify(settings)],
+      );
+      const row = toSingleSettingsRow(result, hotelId);
       return row ? toTargetDesignSettings(row) : null;
     },
     async updateLastMinuteSettingsByHotelId(hotelId, settings) {
@@ -2026,8 +2292,14 @@ export async function registerBookingSettingsRoutes(
   app: FastifyInstance,
   repository: BookingSettingsReadRepository,
   writeRepository?: BookingSettingsWriteRepository,
+  publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort,
+  inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort,
 ): Promise<void> {
-  const closeables = new Set([repository, writeRepository].filter(Boolean));
+  const closeables = new Set(
+    [repository, writeRepository, publicBookabilityPublisher, inventoryPublicOfferProjector].filter(
+      Boolean,
+    ),
+  );
   app.addHook("onClose", async () => {
     await Promise.all([...closeables].map((closeable) => closeable?.close?.()));
   });
@@ -2402,6 +2674,95 @@ export async function registerBookingSettingsRoutes(
       return toLastMinuteSettingsResponse(settings);
     },
   );
+
+  if (publicBookabilityPublisher) {
+    app.post<{ Params: BookingHotelParams }>(
+      "/hotels/:hotelId/public-bookability",
+      async (request, reply) => {
+        const { hotelId } = request.params;
+
+        try {
+          enforceBookingSettingsPolicy(request, hotelId);
+        } catch (error) {
+          const contractError = toBookingSettingsAccessError(error, request, hotelId);
+          if (contractError) return sendBookingSettingsWriteError(reply, contractError);
+          throw error;
+        }
+
+        if (!repository.findPropertyLinkByHotelId) {
+          return sendBookingPropertyLinkError(reply, {
+            statusCode: 500,
+            code: "read_model_unavailable",
+            category: "read_model",
+            message: "Booking hotel property link is unavailable.",
+          });
+        }
+
+        let propertyLink: BookingHotelPropertyLinkReadModel | null;
+        try {
+          propertyLink = await repository.findPropertyLinkByHotelId(hotelId);
+        } catch (error) {
+          request.log.error({ err: error, hotelId }, "Booking property link read failed");
+          return sendBookingPropertyLinkError(reply, {
+            statusCode: 500,
+            code: "read_model_unavailable",
+            category: "read_model",
+            message: "Booking hotel property link is unavailable.",
+          });
+        }
+
+        if (!propertyLink) {
+          return sendBookingPropertyLinkError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "read_model",
+            message: "Booking hotel property link not found.",
+          });
+        }
+
+        try {
+          let publication = await publicBookabilityPublisher.publish({
+            propertyId: propertyLink.propertyId,
+          });
+          if (!publication) {
+            return sendBookingSettingsWriteError(reply, {
+              statusCode: 404,
+              code: "not_found",
+              category: "write_model",
+              message: "Canonical property was not found.",
+            });
+          }
+          if (inventoryPublicOfferProjector) {
+            const projection = await inventoryPublicOfferProjector.projectPending({
+              propertyId: propertyLink.propertyId,
+            });
+            if (projection.projectedOfferDays > 0) {
+              publication = await publicBookabilityPublisher.publish({
+                propertyId: propertyLink.propertyId,
+              });
+              if (!publication) {
+                return sendBookingSettingsWriteError(reply, {
+                  statusCode: 404,
+                  code: "not_found",
+                  category: "write_model",
+                  message: "Canonical property was not found.",
+                });
+              }
+            }
+          }
+          return publication;
+        } catch (error) {
+          request.log.error({ err: error, hotelId }, "Public bookability publication failed");
+          return sendBookingSettingsWriteError(reply, {
+            statusCode: 500,
+            code: "write_model_unavailable",
+            category: "write_model",
+            message: "Booking preview could not be published.",
+          });
+        }
+      },
+    );
+  }
 
   if (!writeRepository) return;
 
@@ -2878,7 +3239,12 @@ function parseDesignSettingsWriteBody(
 
   const value: UpdateBookingDesignSettingsBody = {};
   const heroImage = expectOptionalBoundedString(body, "heroImage", 2048, details);
-  if (heroImage !== undefined) value.heroImage = heroImage;
+  if (heroImage !== undefined) {
+    if (heroImage && !isHttpUrl(heroImage)) {
+      details.push("heroImage must be an http or https URL.");
+    }
+    value.heroImage = heroImage;
+  }
   const heroHeading = expectOptionalBoundedString(body, "heroHeading", 160, details);
   if (heroHeading !== undefined) value.heroHeading = heroHeading;
   const heroSubtext = expectOptionalBoundedString(body, "heroSubtext", 1000, details);
@@ -2902,6 +3268,20 @@ function parseDesignSettingsWriteBody(
 
   if (details.length > 0) return { ok: false, details };
   return { ok: true, value };
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
 }
 
 function parseLastMinuteSettingsWriteBody(

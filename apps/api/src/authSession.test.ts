@@ -5,7 +5,7 @@ import type {
   IdentityUser,
   TokenVerifier,
 } from "@vayada/backend-auth";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import type {
@@ -686,12 +686,12 @@ describe("AuthKit session routes", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(resendCalled).toBe(false);
     expect(response.json()).toMatchObject({
       state: "email_verification_required",
       pendingAuthenticationToken: "pending_email",
       emailVerificationId: "email_verification_123",
     });
+    expect(resendCalled).toBe(false);
   });
 
   it("records a failed password login audit when identity resolution rejects the session", async () => {
@@ -2417,7 +2417,10 @@ describe("AuthKit session routes", () => {
       allowedOrigins: ["https://pms.localhost"],
       authKitClient: createAuthKitClient({
         async authenticateSession() {
-          return pmsSession;
+          return null;
+        },
+        async refreshSession() {
+          return { ...pmsSession, sealedSession: "refreshed-pms-unselected-session" };
         },
       }),
       tokenVerifier: createTokenVerifier(pmsSession),
@@ -2492,6 +2495,9 @@ describe("AuthKit session routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(String(response.headers["set-cookie"])).toContain(
+      "vayada_workos_session=refreshed-pms-unselected-session",
+    );
     expect(response.json()).toMatchObject({
       organizationSelectionRequired: true,
       csrfToken: expect.any(String),
@@ -2512,9 +2518,25 @@ describe("AuthKit session routes", () => {
     });
     expect(response.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("vayada_workos_session=refreshed-ambiguous-pms-session"),
+        expect.stringContaining("vayada_workos_session=refreshed-pms-unselected-session"),
         expect.stringContaining("vayada_auth_csrf="),
       ]),
+    );
+
+    const refreshResponse = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: {
+        cookie: "vayada_workos_session=expired-session; vayada_auth_csrf=csrf-token",
+        origin: "https://pms.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: { surface: "pms-web" },
+    });
+    expect(refreshResponse.statusCode).toBe(200);
+    expect(refreshResponse.json()).toMatchObject({ organizationSelectionRequired: true });
+    expect(String(refreshResponse.headers["set-cookie"])).toContain(
+      "vayada_workos_session=refreshed-pms-unselected-session",
     );
   });
 
@@ -2767,6 +2789,39 @@ describe("AuthKit session routes", () => {
     expect(response.json().accessToken).toBe("refreshed-workos-access-token");
     expect(response.json().csrfToken).toBe("csrf-token");
     expect(response.headers["set-cookie"]).toContain(
+      "vayada_workos_session=refreshed-sealed-session",
+    );
+  });
+
+  it("refreshes an expired sealed session during cookie bootstrap", async () => {
+    const authenticateSession = vi.fn(async () => null);
+    const refreshSession = vi.fn(async () => ({
+      ...session,
+      accessToken: "refreshed-workos-access-token",
+      sealedSession: "refreshed-sealed-session",
+    }));
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({ authenticateSession, refreshSession }),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=platform-admin",
+      headers: {
+        cookie: "vayada_workos_session=expired-sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://admin.localhost",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().accessToken).toBe("refreshed-workos-access-token");
+    expect(authenticateSession).toHaveBeenCalledWith({
+      sealedSession: "expired-sealed-session",
+    });
+    expect(refreshSession).toHaveBeenCalledWith({
+      sealedSession: "expired-sealed-session",
+    });
+    expect(String(response.headers["set-cookie"])).toContain(
       "vayada_workos_session=refreshed-sealed-session",
     );
   });
@@ -3536,6 +3591,79 @@ describe("AuthKit session routes", () => {
     expect(response.statusCode).toBe(200);
     expect(logoutSealedSession).toBe("refreshed-logout-sealed-session");
   });
+
+  it.each([
+    { failedOperation: "session authentication", expectedAuditCalls: 0, usesFallbackUrl: false },
+    { failedOperation: "audit recording", expectedAuditCalls: 1, usesFallbackUrl: false },
+    { failedOperation: "logout URL generation", expectedAuditCalls: 1, usesFallbackUrl: true },
+  ] as const)(
+    "expires every auth cookie when $failedOperation rejects",
+    async ({ failedOperation, expectedAuditCalls, usesFallbackUrl }) => {
+      const authenticateSession = vi.fn(async () => {
+        if (failedOperation === "session authentication") {
+          throw new Error("WorkOS session authentication unavailable");
+        }
+        return session;
+      });
+      const getLogoutUrl = vi.fn(async (input: { returnTo: string }) => {
+        if (failedOperation === "logout URL generation") {
+          throw new Error("WorkOS logout endpoint unavailable");
+        }
+        return `https://auth.workos.test/logout?return_to=${encodeURIComponent(input.returnTo)}`;
+      });
+      const recordAudit = vi.fn(async () => {
+        if (failedOperation === "audit recording") {
+          throw new Error("Audit sink unavailable");
+        }
+      });
+      app = buildAuthSessionApp({
+        authKitClient: createAuthKitClient({ authenticateSession, getLogoutUrl }),
+        productAuditSink: { record: recordAudit },
+        surfacePolicies: {
+          "platform-admin": {
+            requiredOrganizationKind: "platform",
+            logoutReturnUrl: "https://admin.localhost/login",
+            selectedOrganizationCookieName: "vayada_platform_selected_org",
+          },
+        },
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/auth/logout",
+        headers: {
+          cookie:
+            "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token; " +
+            "vayada_platform_selected_org=org_workos_platform",
+          origin: "https://admin.localhost",
+          "x-vayada-csrf": "csrf-token",
+        },
+        payload: { surface: "platform-admin" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        logoutUrl: usesFallbackUrl
+          ? "https://admin.localhost/login"
+          : "https://auth.workos.test/logout?return_to=https%3A%2F%2Fadmin.localhost%2Flogin",
+      });
+      const setCookieHeaders = response.headers["set-cookie"];
+      expect(Array.isArray(setCookieHeaders)).toBe(true);
+      for (const cookieName of [
+        "vayada_workos_session",
+        "vayada_auth_csrf",
+        "vayada_platform_selected_org",
+      ]) {
+        const expiredCookie = (setCookieHeaders as string[]).find((cookie) =>
+          cookie.startsWith(`${cookieName}=`),
+        );
+        expect(expiredCookie).toContain("Max-Age=0");
+      }
+      expect(authenticateSession).toHaveBeenCalledTimes(1);
+      expect(recordAudit).toHaveBeenCalledTimes(expectedAuditCalls);
+      expect(getLogoutUrl).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("rejects refresh when CSRF header is missing", async () => {
     app = buildAuthSessionApp();

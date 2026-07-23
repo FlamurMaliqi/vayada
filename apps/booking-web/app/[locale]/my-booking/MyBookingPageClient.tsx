@@ -343,6 +343,7 @@ export default function MyBookingPageClient() {
               <div className="mb-4 space-y-2">
                 <div
                   className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${
+                    cancelPreview.cancellationFeeAmount === 0 ||
                     cancelPreview.refundPercentage >= 100
                       ? "bg-green-100 text-green-700"
                       : cancelPreview.refundPercentage > 0
@@ -350,21 +351,24 @@ export default function MyBookingPageClient() {
                         : "bg-red-100 text-red-700"
                   }`}
                 >
-                  {cancelPreview.refundPercentage >= 100
+                  {cancelPreview.cancellationFeeAmount === 0 ||
+                  cancelPreview.refundPercentage >= 100
                     ? t("freeCancellation")
                     : t("cancellationFeeApplies")}
                 </div>
                 <p className="text-sm text-gray-700">
-                  {cancelPreview.refundPercentage >= 100
-                    ? t("fullRefund", {
-                        amount: formatPrice(cancelPreview.refundAmount, cancelPreview.currency),
-                      })
-                    : cancelPreview.refundPercentage > 0
-                      ? t("partialRefund", {
+                  {cancelPreview.amountPaid === 0 && cancelPreview.cancellationFeeAmount === 0
+                    ? t("noPaymentToRefund")
+                    : cancelPreview.refundPercentage >= 100
+                      ? t("fullRefund", {
                           amount: formatPrice(cancelPreview.refundAmount, cancelPreview.currency),
-                          percentage: cancelPreview.refundPercentage,
                         })
-                      : t("noRefund")}
+                      : cancelPreview.refundPercentage > 0
+                        ? t("partialRefund", {
+                            amount: formatPrice(cancelPreview.refundAmount, cancelPreview.currency),
+                            percentage: cancelPreview.refundPercentage,
+                          })
+                        : t("noRefund")}
                 </p>
               </div>
             )}

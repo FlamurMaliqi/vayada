@@ -16,14 +16,26 @@ let vayadaBearerTokenProvider: VayadaBearerTokenProvider | null = null;
 let vayadaSessionRecoveryHandlers: ApiSessionRecoveryHandlers | null = null;
 
 type ApiSessionRecoveryState = {
-  refreshPromise: Promise<void> | null;
+  organizationSelectionPromise: Promise<void> | null;
+  refreshPromise: Promise<ApiSessionRefreshResult | void> | null;
   signOutPromise: Promise<void> | null;
+};
+
+type SessionRecoveryResult = {
+  refreshError?: unknown;
+  refreshResult?: ApiSessionRefreshResult | void;
+  token: string | null;
 };
 
 const sessionRecoveryStates = new WeakMap<ApiSessionRecoveryHandlers, ApiSessionRecoveryState>();
 
+export type ApiSessionRefreshResult =
+  | { status: "session_refreshed" }
+  | { status: "organization_selection_required" };
+
 export type ApiSessionRecoveryHandlers = {
-  refresh: () => Promise<void>;
+  refresh: () => Promise<ApiSessionRefreshResult | void>;
+  onOrganizationSelectionRequired?: () => Promise<void> | void;
   signOut: () => Promise<void> | void;
 };
 
@@ -195,9 +207,16 @@ export class ApiClient {
 
     if (!handlers) return response;
 
-    const refreshedToken = await this.recoverSession(failedToken, handlers);
-    if (!refreshedToken) {
-      await this.signOut(handlers);
+    const recovery = await this.recoverSession(failedToken, handlers);
+    if (!recovery.token) {
+      if (recovery.refreshResult?.status === "organization_selection_required") {
+        await this.notifyOrganizationSelectionRequired(handlers);
+      } else if (
+        isDefinitiveAuthenticationFailure(recovery.refreshError) ||
+        recovery.refreshError === undefined
+      ) {
+        await this.signOut(handlers);
+      }
       return response;
     }
 
@@ -205,7 +224,7 @@ export class ApiClient {
       ...config,
       headers: {
         ...(config.headers as Record<string, string>),
-        Authorization: `Bearer ${refreshedToken}`,
+        Authorization: `Bearer ${recovery.token}`,
       },
     });
     if (retryResponse.status === 401) {
@@ -217,10 +236,10 @@ export class ApiClient {
   private async recoverSession(
     failedToken: string | null,
     handlers: ApiSessionRecoveryHandlers,
-  ): Promise<string | null> {
+  ): Promise<SessionRecoveryResult> {
     const state = getSessionRecoveryState(handlers);
     const currentToken = await this.getToken();
-    if (currentToken && currentToken !== failedToken) return currentToken;
+    if (currentToken && currentToken !== failedToken) return { token: currentToken };
 
     if (!state.refreshPromise) {
       state.refreshPromise = Promise.resolve()
@@ -229,13 +248,33 @@ export class ApiClient {
           state.refreshPromise = null;
         });
     }
+    let refreshResult: ApiSessionRefreshResult | void;
     try {
-      await state.refreshPromise;
-    } catch {
-      return null;
+      refreshResult = await state.refreshPromise;
+    } catch (refreshError) {
+      return { refreshError, token: null };
     }
     const refreshedToken = await this.getToken();
-    return refreshedToken && refreshedToken !== failedToken ? refreshedToken : null;
+    return {
+      refreshResult,
+      token: refreshedToken && refreshedToken !== failedToken ? refreshedToken : null,
+    };
+  }
+
+  private async notifyOrganizationSelectionRequired(
+    handlers: ApiSessionRecoveryHandlers,
+  ): Promise<void> {
+    if (!handlers.onOrganizationSelectionRequired) return;
+    const state = getSessionRecoveryState(handlers);
+    if (!state.organizationSelectionPromise) {
+      state.organizationSelectionPromise = Promise.resolve()
+        .then(() => handlers.onOrganizationSelectionRequired?.())
+        .catch(() => undefined)
+        .finally(() => {
+          state.organizationSelectionPromise = null;
+        });
+    }
+    await state.organizationSelectionPromise;
   }
 
   private async signOut(handlers: ApiSessionRecoveryHandlers): Promise<void> {
@@ -377,10 +416,17 @@ export class ApiClient {
   }
 }
 
+function isDefinitiveAuthenticationFailure(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("status" in error)) return false;
+  const status = (error as { status?: unknown }).status;
+  return status === 401 || status === 403;
+}
+
 function getSessionRecoveryState(handlers: ApiSessionRecoveryHandlers): ApiSessionRecoveryState {
   const existing = sessionRecoveryStates.get(handlers);
   if (existing) return existing;
   const created: ApiSessionRecoveryState = {
+    organizationSelectionPromise: null,
     refreshPromise: null,
     signOutPromise: null,
   };

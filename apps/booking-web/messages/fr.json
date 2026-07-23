@@ -89,6 +89,11 @@
     "selectThisRate": "Sélectionner ce tarif",
     "selectingRate": "Préparation du paiement...",
     "soldOut": "Complet",
+    "calendar": {
+      "checkingAvailability": "Vérification des disponibilités",
+      "availabilityUnavailable": "Les disponibilités pour ces dates sont temporairement indisponibles.",
+      "availabilityUnavailableTooltip": "Disponibilités indisponibles"
+    },
     "mobileView": {
       "list": "Liste",
       "map": "Carte"
@@ -212,6 +217,7 @@
     "bankTransfer": "Virement bancaire",
     "bankTransferNote": "Nous vous enverrons les coordonnées bancaires après acceptation",
     "nonRefundablePaymentHint": "Le paiement sur place et le virement bancaire ne sont pas disponibles pour les tarifs non remboursables.",
+    "ratePaymentHint": "Certains moyens de paiement ne sont pas disponibles pour ce tarif.",
     "bankTransferExplanation": "Envoyez votre demande de réservation maintenant. Si nous l'acceptons, nous vous enverrons les coordonnées bancaires et l'échéance de paiement par e-mail.",
     "bankTransferDepositExplanation": "Envoyez votre demande de réservation maintenant. Si nous l'acceptons, nous vous enverrons les coordonnées bancaires pour l'acompte de {deposit}. Le solde de {remaining} sera à régler auprès de nous à l'arrivée.",
     "paypalLabel": "Payer par PayPal",
@@ -226,9 +232,11 @@
     "accountHolder": "Titulaire du compte",
     "accountNumber": "Numéro de compte",
     "submitRequest": "Soumettre la demande de réservation",
+    "confirmBooking": "Confirmer la réservation",
     "processing": "Traitement en cours...",
     "confirmPayment": "Confirmer le paiement",
     "confirmPaymentDesc": "Finalisez votre paiement pour soumettre la demande de réservation. Votre carte sera autorisée mais pas débitée tant que nous n'aurons pas accepté.",
+    "confirmPaymentDescInstant": "Finalisez le paiement pour confirmer la réservation. Votre carte sera débitée maintenant.",
     "authorizePayment": "Autoriser le paiement",
     "authorizationNote": "Votre carte ne sera débitée que si nous acceptons votre réservation dans les 24 heures.",
     "continueToPayment": "Continuer vers le paiement",
@@ -266,6 +274,7 @@
     "fullRefund": "Vous recevrez un remboursement intégral de {amount}.",
     "partialRefund": "Vous recevrez un remboursement partiel de {amount} ({percentage}%).",
     "noRefund": "Aucun remboursement ne sera effectué pour cette annulation.",
+    "noPaymentToRefund": "Aucun paiement n’a été encaissé, il n’y a donc rien à rembourser.",
     "freeCancellation": "Annulation gratuite",
     "cancellationFeeApplies": "Frais d'annulation applicables",
     "confirmCancel": "Oui, annuler",
@@ -279,6 +288,8 @@
     "withdrawn": "Retirée"
   },
   "confirmation": {
+    "loadingDetails": "Chargement des détails de la réservation…",
+    "detailsUnavailable": "Les détails de la réservation ne sont pas disponibles. Utilisez Gérer la réservation pour la retrouver.",
     "title": "Réservation confirmée !",
     "subtitle": "Votre réservation a été confirmée avec succès.",
     "requestSubmitted": "Demande de réservation envoyée",
@@ -306,7 +317,10 @@
     "withdrawing": "Retrait en cours...",
     "backToHotel": "Retour à l'hôtel",
     "manageBooking": "Gérer la réservation",
-    "emailNotice": "Un e-mail de confirmation a été envoyé à votre adresse e-mail."
+    "emailNotice": "Un e-mail de confirmation a été envoyé à votre adresse e-mail.",
+    "requestChanges": "Demander une modification",
+    "changePending": "Demande de modification en attente",
+    "changePendingDesc": "Nous examinerons les nouvelles dates demandées et vous répondrons par e-mail."
   },
   "refer": {
     "title": "Parrainer un client",
@@ -334,6 +348,27 @@
     "yourReferralLink": "Votre lien de parrainage",
     "commissionInfo": "Vous recevrez <strong>5%</strong> du chiffre d'affaires total pour chaque réservation directe effectuée via votre lien.",
     "pendingReview": "Votre candidature est en cours d'examen. Nous vous informerons à <strong>{email}</strong> une fois approuvée."
+  },
+  "requestChange": {
+    "title": "Demander une modification de réservation",
+    "subtitle": "Choisissez de nouvelles dates. Nous vérifierons la disponibilité et le prix avant d’examiner votre demande.",
+    "loading": "Chargement…",
+    "loadError": "Cette réservation n'a pas pu être chargée.",
+    "missingEmail": "Ouvrez cette page depuis le lien de confirmation de votre réservation.",
+    "pendingExists": "Une demande de modification est déjà en attente pour cette réservation.",
+    "newDates": "Nouvelles dates",
+    "checkIn": "Arrivée",
+    "checkOut": "Départ",
+    "summary": "Récapitulatif",
+    "currentDates": "Dates actuelles",
+    "requestedDates": "Dates demandées",
+    "oldTotal": "Ancien total",
+    "newTotal": "Nouveau total",
+    "priceDifference": "Différence de prix",
+    "submit": "Envoyer la demande",
+    "submitting": "Envoi…",
+    "submitError": "Impossible d’envoyer la demande de modification. Veuillez réessayer.",
+    "previewUnavailable": "Impossible de vérifier ces dates. Choisissez-en d'autres ou réessayez."
   },
   "error": {
     "unableToLoad": "Impossible de charger l'hôtel",

@@ -12,7 +12,12 @@ import { useCurrency } from "@/contexts/CurrencyContext";
 import { Booking } from "@/lib/types";
 import { bookingService, BookingChangeRequest } from "@/services/api/booking";
 import { trackEvent } from "@/services/api/tracking";
-import { readLastBooking, saveLastBooking } from "@/lib/storage/bookingDraft";
+import {
+  readGuestDetails,
+  readLastBooking,
+  saveLastBooking,
+  toConfirmationBooking,
+} from "@/lib/storage/bookingDraft";
 
 function CountdownTimer({ deadline }: { deadline: string }) {
   const [timeLeft, setTimeLeft] = useState("");
@@ -53,6 +58,7 @@ export default function BookingConfirmationPageClient({
   const { email: emailParam } = use(searchParams);
   const t = useTranslations("confirmation");
   const tc = useTranslations("common");
+  const tp = useTranslations("payment");
   const { hotel } = useHotel();
   const { slug } = useSlug();
   const { formatPrice } = useCurrency();
@@ -77,8 +83,16 @@ export default function BookingConfirmationPageClient({
     trackEvent(slug, "completed_booking");
     const stored = readLastBooking();
     if (stored && stored.bookingReference === reference) {
-      setBooking(stored);
-      setStatus(stored.status || "pending");
+      const guest = readGuestDetails();
+      const normalized = toConfirmationBooking(stored, {
+        hotelName: hotel.name,
+        guestFirstName: guest?.guestFirstName,
+        guestLastName: guest?.guestLastName,
+        guestEmail: guest?.guestEmail || emailParam,
+      });
+      setBooking(normalized);
+      setStatus(normalized.status);
+      saveLastBooking(normalized);
       return;
     }
 
@@ -91,9 +105,13 @@ export default function BookingConfirmationPageClient({
       .lookup(slug, reference, email)
       .then((fetched) => {
         if (cancelled) return;
-        setBooking(fetched);
-        setStatus(fetched.status || "pending");
-        saveLastBooking(fetched);
+        const normalized = toConfirmationBooking(fetched, {
+          hotelName: hotel.name,
+          guestEmail: email,
+        });
+        setBooking(normalized);
+        setStatus(normalized.status);
+        saveLastBooking(normalized);
       })
       .catch(() => {
         if (cancelled) return;
@@ -106,7 +124,7 @@ export default function BookingConfirmationPageClient({
     return () => {
       cancelled = true;
     };
-  }, [reference, emailParam, slug]);
+  }, [reference, emailParam, hotel.name, slug]);
 
   useEffect(() => {
     if (booking?.paymentMethod !== "paypal") return;
@@ -177,8 +195,10 @@ export default function BookingConfirmationPageClient({
       const updated = { ...booking, status: "cancelled" as const };
       setBooking(updated);
       saveLastBooking(updated);
-    } catch (err: any) {
-      setWithdrawError(err.message || "Failed to withdraw booking");
+    } catch (err: unknown) {
+      setWithdrawError(
+        err instanceof Error && err.message ? err.message : "Failed to withdraw booking",
+      );
     } finally {
       setWithdrawing(false);
     }
@@ -191,6 +211,24 @@ export default function BookingConfirmationPageClient({
   // but uses different copy so the guest doesn't think they cancelled.
   const isDeclined = status === "declined";
   const isExpired = status === "expired";
+  const displayedNights =
+    booking && Number.isInteger(booking.nights) && booking.nights > 0 ? booking.nights : null;
+  const displayedAdults =
+    booking && Number.isInteger(booking.adults) && booking.adults >= 0 ? booking.adults : null;
+  const displayedChildren =
+    booking && Number.isInteger(booking.children) && booking.children >= 0 ? booking.children : 0;
+  const displayedRooms =
+    booking?.numberOfRooms && Number.isInteger(booking.numberOfRooms) && booking.numberOfRooms > 0
+      ? booking.numberOfRooms
+      : 1;
+  const guestEmail = (booking?.guestEmail || emailParam || "").trim();
+  const manageBookingHref = `/my-booking?reference=${encodeURIComponent(reference)}${guestEmail ? `&email=${encodeURIComponent(guestEmail)}` : ""}`;
+  const requestChangesHref = guestEmail
+    ? `/booking/${encodeURIComponent(reference)}/request-change?email=${encodeURIComponent(guestEmail)}`
+    : null;
+  const isPayAtProperty =
+    booking?.paymentMethod === "pay_at_property" || booking?.paymentMethod === "cash";
+  const isTotalPaid = booking?.paymentStatus === "captured" || booking?.paymentStatus === "paid";
 
   return (
     <div className="min-h-screen bg-surface">
@@ -347,7 +385,7 @@ export default function BookingConfirmationPageClient({
                 {t("detailsUnavailable") || "We couldn't load your booking details here."}
               </p>
               <Link
-                href={`/my-booking?reference=${encodeURIComponent(reference)}&email=${encodeURIComponent(emailParam || "")}`}
+                href={manageBookingHref}
                 className="text-sm font-medium text-primary-600 hover:text-primary-700 underline"
               >
                 {t("manageBooking") || "Manage your booking"}
@@ -365,7 +403,7 @@ export default function BookingConfirmationPageClient({
                 <span className="text-gray-600">{t("room")}</span>
                 <span className="font-medium text-gray-900">
                   {booking
-                    ? `${booking.numberOfRooms && booking.numberOfRooms > 1 ? `${booking.numberOfRooms}× ` : ""}${booking.roomName}`
+                    ? `${displayedRooms > 1 ? `${displayedRooms}× ` : ""}${booking.roomName || t("room")}`
                     : "—"}
                 </span>
               </div>
@@ -384,14 +422,14 @@ export default function BookingConfirmationPageClient({
               <div className="flex justify-between py-3">
                 <span className="text-gray-600">{t("duration")}</span>
                 <span className="font-medium text-gray-900">
-                  {booking ? tc("nights", { count: booking.nights }) : "—"}
+                  {displayedNights ? tc("nights", { count: displayedNights }) : "—"}
                 </span>
               </div>
               <div className="flex justify-between py-3">
                 <span className="text-gray-600">{t("guests")}</span>
                 <span className="font-medium text-gray-900">
-                  {booking
-                    ? `${tc("adults", { count: booking.adults })}${booking.children > 0 ? `, ${tc("children", { count: booking.children })}` : ""}`
+                  {displayedAdults !== null
+                    ? `${tc("adults", { count: displayedAdults })}${displayedChildren > 0 ? `, ${tc("children", { count: displayedChildren })}` : ""}`
                     : "—"}
                 </span>
               </div>
@@ -414,7 +452,7 @@ export default function BookingConfirmationPageClient({
               )}
               <div className="flex justify-between py-3">
                 <span className="text-gray-600">
-                  {booking?.depositRequired ? "Booking total" : t("totalPaid")}
+                  {booking?.depositRequired || !isTotalPaid ? tc("total") : t("totalPaid")}
                 </span>
                 <span className="font-bold text-gray-900 text-lg">
                   {booking ? formatPrice(booking.totalAmount, booking.currency) : "—"}
@@ -447,14 +485,16 @@ export default function BookingConfirmationPageClient({
                   <span className="text-gray-600">{t("paymentMethodLabel") || "Payment"}</span>
                   <span className="font-medium text-gray-900">
                     {booking.paymentMethod === "card"
-                      ? "Card"
-                      : booking.paymentMethod === "paypal"
-                        ? "PayPal"
-                        : booking.paymentMethod === "bank_transfer"
-                          ? "Bank transfer"
-                          : booking.paymentMethod === "xendit"
-                            ? "Xendit"
-                            : booking.paymentMethod || "Other"}
+                      ? tp("payWithCard")
+                      : isPayAtProperty
+                        ? tp("payAtProperty")
+                        : booking.paymentMethod === "paypal"
+                          ? tp("paypalLabel")
+                          : booking.paymentMethod === "bank_transfer"
+                            ? tp("bankTransfer")
+                            : booking.paymentMethod === "xendit"
+                              ? tp("xenditTitle")
+                              : booking.paymentMethod || "Other"}
                   </span>
                 </div>
               )}
@@ -509,16 +549,19 @@ export default function BookingConfirmationPageClient({
           )}
 
           {/* Request Changes — only for confirmed bookings without a pending request. */}
-          {isConfirmed && (!changeRequest || changeRequest.status !== "pending") && booking && (
-            <div className="mt-6">
-              <Link
-                href={`/booking/${reference}/request-change?email=${encodeURIComponent(booking.guestEmail || emailParam || "")}`}
-                className="inline-flex px-6 py-3 border border-primary-200 text-primary-700 font-semibold rounded-full hover:bg-primary-50 transition-colors"
-              >
-                {t("requestChanges") || "Request Changes"}
-              </Link>
-            </div>
-          )}
+          {isConfirmed &&
+            (!changeRequest || changeRequest.status !== "pending") &&
+            booking &&
+            requestChangesHref && (
+              <div className="mt-6">
+                <Link
+                  href={requestChangesHref}
+                  className="inline-flex px-6 py-3 border border-primary-200 text-primary-700 font-semibold rounded-full hover:bg-primary-50 transition-colors"
+                >
+                  {t("requestChanges") || "Request Changes"}
+                </Link>
+              </div>
+            )}
 
           {/* Withdraw button for pending bookings */}
           {isPending && (
@@ -545,7 +588,7 @@ export default function BookingConfirmationPageClient({
               {t("backToHotel")}
             </Link>
             <Link
-              href={`/my-booking?reference=${encodeURIComponent(reference)}&email=${encodeURIComponent(booking?.guestEmail || emailParam || "")}`}
+              href={manageBookingHref}
               className="px-6 py-3 border border-gray-300 text-gray-700 font-semibold rounded-full hover:bg-gray-50 transition-colors"
             >
               {t("manageBooking")}

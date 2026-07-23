@@ -3,6 +3,7 @@ import {
   setVayadaApiBearerTokenProvider,
   setVayadaApiSessionRecoveryHandlers,
 } from "@vayada/marketplace-shared/api/client";
+import { redirectToOrganizationSelection } from "@vayada/product-onboarding/apiSessionRecovery";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
 
@@ -60,8 +61,12 @@ setVayadaApiBearerTokenProvider(() => getAuthKitAccessToken());
 setVayadaApiSessionRecoveryHandlers({
   async refresh() {
     const { authService } = await import("./auth");
-    await authService.refreshSession();
+    const response = await authService.refreshSession();
+    return isAuthOrganizationSelectionResponse(response)
+      ? { status: "organization_selection_required" }
+      : { status: "session_refreshed" };
   },
+  onOrganizationSelectionRequired: redirectToOrganizationSelection,
   async signOut() {
     const { authService } = await import("./auth");
     await authService.logout();
@@ -127,7 +132,12 @@ export function setLegacyCompatibilityToken(token: string, expiresIn: number): v
 export function setPendingOrganizationSelection(
   selection: AuthOrganizationSelectionResponse,
 ): void {
+  authKitSession = null;
+  legacyCompatibilityToken = null;
   pendingOrganizationSelectionCsrfToken = selection.csrfToken ?? null;
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_EXPIRES_AT_KEY);
 }
 
 export function clearAuthData(): void {

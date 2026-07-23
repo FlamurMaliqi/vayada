@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 
+import { getRequestHost } from "@/lib/requestHost";
 import {
   buildPublicHotelMetadata,
   fallbackHotelMetadata,
@@ -17,7 +18,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { locale } = await params;
   const headersList = await headers();
-  const hostname = headersList.get("host") || "";
+  const hostname = getRequestHost(headersList);
   const slug = await resolveSlugFromHost(hostname);
   if (!slug) return fallbackHotelMetadata;
 

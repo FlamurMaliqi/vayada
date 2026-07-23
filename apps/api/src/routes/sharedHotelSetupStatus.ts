@@ -127,6 +127,7 @@ export type SharedPropertyProfileInput = {
   shortDescription: string | null;
   longDescription: string | null;
   media: SharedPropertyProfileMedia[];
+  expectedUpdatedAt?: string;
 };
 
 export type SharedPropertyProfile = SharedPropertyProfileInput & {
@@ -155,6 +156,7 @@ export type SharedHotelSetupStatusRepository = {
     organizationId: string;
     propertyId: string;
     expectedPropertyType: string | null;
+    expectedUpdatedAt: string | null;
     profile: SharedPropertyProfileInput;
   }): Promise<SharedPropertyProfile | null>;
   setOrganizationProductSelections?(input: {
@@ -345,6 +347,7 @@ export async function registerSharedHotelSetupStatusRoutes(
       organizationId: access.organizationId,
       propertyId,
       expectedPropertyType: existingProfile.propertyType,
+      expectedUpdatedAt: profileInput.expectedUpdatedAt ?? null,
       profile: profileInput,
     });
     if (!profile) {
@@ -536,6 +539,15 @@ function parseSharedPropertyProfile(
   const longDescription = optionalString(input["longDescription"], "longDescription", errors, {
     maxLength: 5000,
   });
+  const expectedUpdatedAt = optionalString(
+    input["expectedUpdatedAt"],
+    "expectedUpdatedAt",
+    errors,
+    { maxLength: 64 },
+  );
+  if (expectedUpdatedAt && Number.isNaN(Date.parse(expectedUpdatedAt))) {
+    addFieldError(errors, "expectedUpdatedAt", "expectedUpdatedAt must be an ISO timestamp.");
+  }
   const parsedLocation = parseLocation(location, errors);
   const media = parseMedia(input["media"], errors);
 
@@ -558,6 +570,7 @@ function parseSharedPropertyProfile(
     shortDescription,
     longDescription,
     media,
+    ...(expectedUpdatedAt ? { expectedUpdatedAt } : {}),
   };
 }
 

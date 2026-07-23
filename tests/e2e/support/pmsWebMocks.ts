@@ -25,6 +25,39 @@ const propertyProfile = {
   sameDayBookingCutoffTime: "18:00",
 };
 
+const sharedPropertyProfile = {
+  propertyId: PMS_WEB_PROPERTY_ID,
+  publicId: "prop_alpenrose",
+  displayName: "Alpenrose Munich",
+  propertyType: "hotel",
+  location: {
+    countryCode: "DE",
+    region: "Bavaria",
+    city: "Munich",
+    streetAddress: "Alpenstrasse 12",
+    postalCode: "80331",
+    rawMarketplaceLocation: "Munich, Germany",
+    timezone: "Europe/Berlin",
+    latitude: 48.1372,
+    longitude: 11.5756,
+    addressPublic: true,
+    mapDisplayMode: "exact",
+  },
+  website: "https://alpenrose.example",
+  contactEmail: "reservations@alpenrose.example",
+  phone: "+4989123456",
+  shortDescription: "An alpine stay in Munich.",
+  longDescription: "An alpine stay in the center of Munich.",
+  media: [],
+  sharedProfile: {
+    status: "complete",
+    source: "canonical",
+    completionPercent: 100,
+    missingFields: [],
+  },
+  updatedAt: "2026-07-22T10:00:00.000Z",
+};
+
 const roomType = {
   roomTypeId: PMS_WEB_ROOM_TYPE_ID,
   name: "Alpine Suite",
@@ -58,7 +91,7 @@ const room = {
   metadata: { roomTypeName: "Alpine Suite" },
 };
 
-const reservation = {
+export const pmsWebReservation = {
   guestBookingId: PMS_WEB_RESERVATION_ID,
   bookingReference: "VAY-ADA",
   status: "confirmed",
@@ -112,6 +145,15 @@ export async function mockPmsWebAuthenticatedSession(
 }
 
 export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
+  await page.route("**/auth/compat/pms-web-token", (route) =>
+    route.fulfill({
+      json: {
+        accessToken: "e2e-pms-compatibility-token",
+        expiresIn: 900,
+        tokenType: "Bearer",
+      },
+    }),
+  );
   await page.route("**/auth/session?surface=pms-web", (route) =>
     route.fulfill({
       json: {
@@ -123,6 +165,7 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
           id: "user_pms_owner",
           email: "owner@example.com",
           name: "PMS Owner",
+          phone: "+49 89 123456",
           profilePictureUrl: "https://media.example/pms-owner.webp",
           profilePictureMediaObjectId: "media-pms-owner",
           status: "active",
@@ -155,6 +198,17 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
           reasonCodes: ["ready"],
         },
       }),
+    }),
+  );
+  await page.route(`**/api/hotel-setup/properties/${PMS_WEB_PROPERTY_ID}/profile`, (route) =>
+    route.fulfill({
+      json: {
+        ...sharedPropertyProfile,
+        ...readJson(route),
+        propertyId: PMS_WEB_PROPERTY_ID,
+        publicId: sharedPropertyProfile.publicId,
+        sharedProfile: sharedPropertyProfile.sharedProfile,
+      },
     }),
   );
   await page.route("**/admin/module-activations", (route) =>
@@ -190,7 +244,7 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations*`, (route) =>
     route.fulfill({
       json: {
-        ...targetList([reservation]),
+        ...targetList([pmsWebReservation]),
         pagination: { total: 1, limit: 500, offset: 0 },
       },
     }),

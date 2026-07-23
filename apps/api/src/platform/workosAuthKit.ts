@@ -18,14 +18,22 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
     sealedSession: string;
     organizationId?: string;
   }): Promise<AuthKitSession | null> {
-    const loaded = workos.userManagement.loadSealedSession({
-      sessionData: input.sealedSession,
-      cookiePassword: config.cookiePassword,
-    });
-    const refreshed = await loaded.refresh({
-      cookiePassword: config.cookiePassword,
-      organizationId: input.organizationId,
-    });
+    let refreshed: Awaited<
+      ReturnType<ReturnType<typeof workos.userManagement.loadSealedSession>["refresh"]>
+    >;
+    try {
+      const loaded = workos.userManagement.loadSealedSession({
+        sessionData: input.sealedSession,
+        cookiePassword: config.cookiePassword,
+      });
+      refreshed = await loaded.refresh({
+        cookiePassword: config.cookiePassword,
+        organizationId: input.organizationId,
+      });
+    } catch (error) {
+      if (isInvalidSealedSessionError(error) || isExpiredSealedSessionError(error)) return null;
+      throw error;
+    }
     if (!refreshed.authenticated || !refreshed.sealedSession || !refreshed.session) return null;
     const accessToken =
       "accessToken" in refreshed && typeof refreshed.accessToken === "string"

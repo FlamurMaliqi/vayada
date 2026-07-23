@@ -3,6 +3,7 @@ export interface HotelContact {
   phone: string;
   email: string;
   whatsapp?: string;
+  website?: string;
 }
 
 export interface HotelSocialLinks {

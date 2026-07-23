@@ -34,17 +34,21 @@ test.describe("pms-web handoff", () => {
   test("honors a WorkOS-only organization hint for a normal session", async ({ page }) => {
     await mockPmsWebTargetRoutes(page);
     const refreshRequests: unknown[] = [];
+    let selected = false;
     await page.route("**/auth/session/refresh", (route) => {
+      selected = true;
       refreshRequests.push(route.request().postDataJSON());
       return route.fulfill({ json: authenticatedSession(PMS_WEB_PROPERTY_ID) });
     });
     await page.route("**/auth/session?surface=pms-web", (route) =>
       route.fulfill({
-        json: authenticatedSession(
-          OTHER_PROPERTY_ID,
-          OTHER_ORGANIZATION_ID,
-          OTHER_WORKOS_ORGANIZATION_ID,
-        ),
+        json: selected
+          ? authenticatedSession(PMS_WEB_PROPERTY_ID)
+          : authenticatedSession(
+              OTHER_PROPERTY_ID,
+              OTHER_ORGANIZATION_ID,
+              OTHER_WORKOS_ORGANIZATION_ID,
+            ),
       }),
     );
 
@@ -270,6 +274,7 @@ function organizationSelectionResponse() {
       id: "user_pms_owner",
       email: "owner@example.com",
       name: "PMS Owner",
+      phone: "+49 89 123456",
       profilePictureUrl: "https://media.example/pms-owner.webp",
       profilePictureMediaObjectId: "media-pms-owner",
       status: "active",
@@ -295,6 +300,7 @@ function authenticatedSession(
       id: "user_pms_owner",
       email: "owner@example.com",
       name: "PMS Owner",
+      phone: "+49 89 123456",
       profilePictureUrl: "https://media.example/pms-owner.webp",
       profilePictureMediaObjectId: "media-pms-owner",
       status: "active",

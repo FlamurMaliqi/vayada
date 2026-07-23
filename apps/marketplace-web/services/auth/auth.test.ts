@@ -172,8 +172,11 @@ describe("marketplace AuthKit compatibility token", () => {
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const href = String(url);
-        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+        if (href === "https://api.localhost/auth/session/refresh") {
           sessionRefreshes += 1;
+          expect(init?.method).toBe("POST");
+          expect(new Headers(init?.headers).get("x-vayada-csrf")).toBe("expired-csrf-token");
+          expect(init?.body).toBe(JSON.stringify({ surface: "marketplace-web" }));
           return jsonResponse({
             accessToken: "fresh-across-clients",
             csrfToken: "fresh-csrf-token",
@@ -482,6 +485,11 @@ describe("authService", () => {
   });
 
   it("keeps pending organization selection state from password login", async () => {
+    setAuthKitSession({
+      accessToken: "expired-workos-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.test", status: "active" },
+    });
     fetchMock.mockResolvedValue(
       jsonResponse({
         organizationSelectionRequired: true,

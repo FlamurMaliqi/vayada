@@ -163,6 +163,8 @@ export type SharedPropertyProfileInput = {
   shortDescription: string | null;
   longDescription: string | null;
   media: SharedPropertyProfileMedia[];
+  /** Optional compare-and-set guard for updates; ignored when creating a property. */
+  expectedUpdatedAt?: string;
 };
 
 export type SharedPropertyProfile = SharedPropertyProfileInput & {

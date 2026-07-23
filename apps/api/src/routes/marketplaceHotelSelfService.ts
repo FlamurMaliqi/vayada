@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type {
   IdentityLifecycleCommandBus,
@@ -46,6 +46,18 @@ type MarketplaceHotelSelfServiceOfferRecord = {
   offerResourceId: string;
 };
 
+type MarketplaceHotelSelfServiceOfferCreation = MarketplaceHotelSelfServiceOfferRecord & {
+  replayed: boolean;
+};
+
+type MarketplaceHotelSelfServiceOfferCreationContinuation = {
+  organizationId: string;
+  propertyId: string;
+  idempotencyKey: string;
+  request: MarketplaceAdminCreateOfferRequest;
+  offerResourceId: string;
+};
+
 export type MarketplaceHotelSelfServiceRepository = {
   getProfile(
     organizationId: string,
@@ -69,11 +81,13 @@ export type MarketplaceHotelSelfServiceRepository = {
   createOffer(input: {
     organizationId: string;
     propertyId: string;
+    idempotencyKey: string;
     request: MarketplaceAdminCreateOfferRequest;
-  }): Promise<{
-    offer: MarketplaceAdminOffer;
-    offerResourceId: string;
-  } | null>;
+  }): Promise<MarketplaceHotelSelfServiceOfferCreation | null>;
+  completeOfferCreation(
+    input: MarketplaceHotelSelfServiceOfferCreationContinuation,
+  ): Promise<MarketplaceAdminOffer>;
+  failOfferCreation(input: MarketplaceHotelSelfServiceOfferCreationContinuation): Promise<void>;
   updateOffer(input: {
     organizationId: string;
     propertyId: string;
@@ -143,28 +157,43 @@ export async function registerMarketplaceHotelSelfServiceRoutes(
     "/properties/:propertyId/offers",
     async (request, reply) => {
       const access = requireProfileAccess(request, request.params.propertyId);
+      const idempotencyKey = readIdempotencyKey(request);
+      if (!idempotencyKey) return sendError(reply, 400, "idempotency_key_required");
       const validationError = validateCreateOfferRequest(request.body);
       if (validationError) return sendError(reply, 422, validationError);
-      const created = await repository.createOffer({
-        organizationId: access.organizationId,
-        propertyId: request.params.propertyId,
-        request: request.body,
-      });
-      if (!created) return sendError(reply, 404, "marketplace_profile_not_found");
+      let created: MarketplaceHotelSelfServiceOfferCreation | null;
       try {
-        await grantOfferAccess(
-          lifecycleCommandBus,
-          access.context,
-          created.offerResourceId,
-          access.relationship,
-        );
-      } catch (error) {
-        await repository.archiveOffer({
+        created = await repository.createOffer({
           organizationId: access.organizationId,
           propertyId: request.params.propertyId,
-          offerResourceId: created.offerResourceId,
+          idempotencyKey,
+          request: request.body,
         });
+      } catch (error) {
+        if (error instanceof MarketplaceOfferIdempotencyConflictError) {
+          return sendError(reply, 409, "idempotency_conflict");
+        }
         throw error;
+      }
+      if (!created) return sendError(reply, 404, "marketplace_profile_not_found");
+      if (!created.replayed) {
+        const continuation = {
+          organizationId: access.organizationId,
+          propertyId: request.params.propertyId,
+          idempotencyKey,
+          request: request.body,
+          offerResourceId: created.offerResourceId,
+        };
+        try {
+          await grantOfferAccess(lifecycleCommandBus, access.context, created.offerResourceId);
+        } catch (error) {
+          await repository.failOfferCreation(continuation);
+          throw error;
+        }
+        created = {
+          ...created,
+          offer: await repository.completeOfferCreation(continuation),
+        };
       }
       return reply.status(201).send(toSelfServiceOffer(created.offer, created.offerResourceId));
     },
@@ -286,6 +315,25 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
     },
     async createOffer(input) {
       return withTransaction(pool, async (client) => {
+        const keyHash = sha256(input.idempotencyKey);
+        const fingerprint = sha256(stableJson(input.request));
+        const existing = await findOfferCreationIdempotency(client, input, keyHash);
+        if (existing) {
+          return replayOfferCreation(client, input, existing, fingerprint);
+        }
+
+        const idempotencyId = await reserveOfferCreationIdempotency(
+          client,
+          input,
+          keyHash,
+          fingerprint,
+        );
+        if (!idempotencyId) {
+          const raced = await findOfferCreationIdempotency(client, input, keyHash);
+          if (!raced) throw new MarketplaceOfferIdempotencyConflictError();
+          return replayOfferCreation(client, input, raced, fingerprint);
+        }
+
         const offer = await client.query<{ id: string }>(
           `INSERT INTO marketplace.marketplace_offers (
              property_id, organization_id, source_system,
@@ -303,7 +351,12 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
           ],
         );
         const offerId = offer.rows[0]?.id;
-        if (!offerId) return null;
+        if (!offerId) {
+          await client.query(`DELETE FROM platform.idempotency_keys WHERE id = $1::uuid`, [
+            idempotencyId,
+          ]);
+          return null;
+        }
         await replaceOfferChildren(client, {
           offerId,
           propertyId: input.propertyId,
@@ -314,7 +367,91 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
         });
         await syncOfferReadModel(client, offerId, "initialize");
         const offerDocument = await readOffer(client, offerId, "platform_organization_membership");
-        return offerDocument ? { offer: offerDocument, offerResourceId: offerId } : null;
+        if (!offerDocument) throw new Error("Created Marketplace offer could not be reconciled");
+        await attachOfferCreationResource(client, {
+          idempotencyId,
+          fingerprint,
+          offerResourceId: offerId,
+        });
+        return { offer: offerDocument, offerResourceId: offerId, replayed: false };
+      });
+    },
+    async completeOfferCreation(input) {
+      return withTransaction(pool, async (client) => {
+        const keyHash = sha256(input.idempotencyKey);
+        const fingerprint = sha256(stableJson(input.request));
+        const row = await findOfferCreationIdempotency(client, input, keyHash);
+        validateOfferCreationContinuation(row, input, fingerprint);
+
+        if (row.status === "completed") {
+          const replay = await readOfferForOrganization(client, input, input.offerResourceId);
+          if (!replay) {
+            throw new MarketplaceOfferIdempotencyConflictError();
+          }
+          return replay;
+        }
+
+        const restoreArchivedOffer = row.idempotencyMetadata.accessGrantFailed === true;
+        const restored = await client.query<{ id: string }>(
+          `UPDATE marketplace.marketplace_offers
+           SET offer_status = CASE
+                 WHEN offer_status = 'archived' AND $4::boolean THEN 'pending'
+                 ELSE offer_status
+               END,
+               updated_at = CASE
+                 WHEN offer_status = 'archived' AND $4::boolean THEN now()
+                 ELSE updated_at
+               END
+           WHERE id = $1::uuid
+             AND organization_id = $2::uuid
+             AND property_id = $3::uuid
+             AND (offer_status <> 'archived' OR $4::boolean)
+           RETURNING id::text AS id`,
+          [input.offerResourceId, input.organizationId, input.propertyId, restoreArchivedOffer],
+        );
+        if (!restored.rows[0]) throw new MarketplaceOfferIdempotencyConflictError();
+
+        await syncOfferReadModel(client, input.offerResourceId, "initialize");
+        const offer = await readOfferForOrganization(client, input, input.offerResourceId);
+        if (!offer) {
+          throw new MarketplaceOfferIdempotencyConflictError();
+        }
+        await completeOfferCreationIdempotency(client, {
+          idempotencyId: row.id,
+          fingerprint,
+          offerResourceId: input.offerResourceId,
+        });
+        return offer;
+      });
+    },
+    async failOfferCreation(input) {
+      await withTransaction(pool, async (client) => {
+        const keyHash = sha256(input.idempotencyKey);
+        const fingerprint = sha256(stableJson(input.request));
+        const row = await findOfferCreationIdempotency(client, input, keyHash);
+        validateOfferCreationContinuation(row, input, fingerprint);
+        if (row.status === "completed") return;
+
+        const archived = await client.query<{ id: string }>(
+          `UPDATE marketplace.marketplace_offers
+           SET offer_status = 'archived', updated_at = now()
+           WHERE id = $1::uuid
+             AND organization_id = $2::uuid
+             AND property_id = $3::uuid
+             AND offer_status <> 'archived'
+           RETURNING id::text AS id`,
+          [input.offerResourceId, input.organizationId, input.propertyId],
+        );
+        if (archived.rows[0]) {
+          await syncOfferReadModel(client, input.offerResourceId, "disable");
+        }
+        await client.query(
+          `UPDATE platform.idempotency_keys
+           SET last_seen_at = now(),
+               idempotency_metadata = idempotency_metadata || $2::jsonb
+           WHERE id = $1::uuid AND status = 'in_progress'`,
+          [row.id, JSON.stringify({ accessGrantFailed: true })],
+        );
       });
     },
     async updateOffer(input) {
@@ -396,7 +533,6 @@ function requireProfileAccess(
 ): {
   context: RequestContext;
   organizationId: string;
-  relationship: ResourceRelationship;
 } {
   const context = enforceRoutePolicy(request, {
     permission: "marketplace.profile.manage",
@@ -417,29 +553,10 @@ function requireProfileAccess(
       statusCode: 403,
     });
   }
-  const relationship = profileRelationship(context, propertyId);
   return {
     context,
     organizationId: context.selectedOrganization.organizationId,
-    relationship,
   };
-}
-
-function profileRelationship(context: RequestContext, propertyId: string): ResourceRelationship {
-  const relationship = context.linkedResources.find(
-    (resource) =>
-      resource.status === "active" &&
-      resource.product === "marketplace" &&
-      resource.resourceType === "hotel_profile" &&
-      resource.resourceId === propertyId &&
-      (resource.relationship === "owner" || resource.relationship === "operator"),
-  )?.relationship;
-  if (!relationship) {
-    throw Object.assign(new Error("Missing active Marketplace hotel profile link"), {
-      statusCode: 403,
-    });
-  }
-  return relationship;
 }
 
 function requireOfferAccess(request: FastifyRequest, offerResourceId: string): void {
@@ -487,12 +604,11 @@ async function grantOfferAccess(
   lifecycleCommandBus: IdentityLifecycleCommandBus,
   context: RequestContext,
   offerResourceId: string,
-  relationship: ResourceRelationship,
 ): Promise<void> {
   await lifecycleCommandBus.execute({
     commandType: "identity.resource_links.grant",
     commandId: randomUUID(),
-    idempotencyKey: `marketplace-offer:${context.selectedOrganization.organizationId}:${offerResourceId}:${relationship}`,
+    idempotencyKey: `marketplace-offer:${context.selectedOrganization.organizationId}:${offerResourceId}:operator`,
     audit: offerAccessAudit(context, "Grant Marketplace offer access"),
     payload: {
       organizationId: context.selectedOrganization.organizationId,
@@ -501,7 +617,7 @@ async function grantOfferAccess(
           product: "marketplace",
           resourceType: "marketplace_offer",
           resourceId: offerResourceId,
-          relationship,
+          relationship: "operator",
           status: "active",
         },
       ],
@@ -618,6 +734,188 @@ async function withTransaction<T>(
   }
 }
 
+type OfferCreationInput = {
+  organizationId: string;
+  propertyId: string;
+  idempotencyKey: string;
+  request: MarketplaceAdminCreateOfferRequest;
+};
+
+type OfferCreationIdempotencyRow = {
+  id: string;
+  status: string;
+  requestFingerprintHash: string;
+  responseResourceId: string | null;
+  idempotencyMetadata: Record<string, unknown>;
+};
+
+export class MarketplaceOfferIdempotencyConflictError extends Error {
+  constructor() {
+    super("Marketplace offer idempotency key is already in use");
+    this.name = "MarketplaceOfferIdempotencyConflictError";
+  }
+}
+
+async function findOfferCreationIdempotency(
+  client: PoolClient,
+  input: OfferCreationInput,
+  keyHash: string,
+): Promise<OfferCreationIdempotencyRow | null> {
+  const result = await client.query<OfferCreationIdempotencyRow>(
+    `SELECT id::text AS id,
+            status,
+            request_fingerprint_hash AS "requestFingerprintHash",
+            response_resource_id AS "responseResourceId",
+            idempotency_metadata AS "idempotencyMetadata"
+     FROM platform.idempotency_keys
+     WHERE operation_scope = 'marketplace'
+       AND operation = 'marketplace.hotel_offer.create'
+       AND key_hash = $1
+       AND tenant_scope = 'organization'
+       AND organization_id = $2::uuid
+       AND property_id IS NULL
+     LIMIT 1
+     FOR UPDATE`,
+    [keyHash, input.organizationId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function reserveOfferCreationIdempotency(
+  client: PoolClient,
+  input: OfferCreationInput,
+  keyHash: string,
+  fingerprint: string,
+): Promise<string | null> {
+  const result = await client.query<{ id: string }>(
+    `INSERT INTO platform.idempotency_keys (
+       operation_scope, operation, key_hash, request_fingerprint_hash, status,
+       tenant_scope, organization_id, expires_at, idempotency_metadata
+     ) VALUES (
+       'marketplace', 'marketplace.hotel_offer.create', $1, $2, 'in_progress',
+       'organization', $3::uuid, now() + interval '7 days', '{}'::jsonb
+     )
+     ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
+     RETURNING id::text AS id`,
+    [keyHash, fingerprint, input.organizationId],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+async function replayOfferCreation(
+  client: PoolClient,
+  input: OfferCreationInput,
+  row: OfferCreationIdempotencyRow,
+  fingerprint: string,
+): Promise<MarketplaceHotelSelfServiceOfferCreation> {
+  if (row.requestFingerprintHash !== fingerprint || !row.responseResourceId) {
+    throw new MarketplaceOfferIdempotencyConflictError();
+  }
+  if (row.status !== "completed" && row.status !== "in_progress") {
+    throw new MarketplaceOfferIdempotencyConflictError();
+  }
+  const offer = await readOfferForOrganization(client, input, row.responseResourceId);
+  if (!offer) {
+    throw new MarketplaceOfferIdempotencyConflictError();
+  }
+  return {
+    offer,
+    offerResourceId: row.responseResourceId,
+    replayed: row.status === "completed",
+  };
+}
+
+async function readOfferForOrganization(
+  client: PoolClient,
+  input: Pick<OfferCreationInput, "organizationId" | "propertyId">,
+  offerResourceId: string,
+): Promise<MarketplaceAdminOffer | null> {
+  const result = await client.query<OfferRow>(
+    `${OFFER_SELECT_SQL}
+     WHERE offer.id = $1::uuid
+       AND offer.organization_id = $2::uuid
+       AND offer.property_id = $3::uuid
+       AND EXISTS (
+         SELECT 1
+         FROM marketplace.marketplace_hotel_profiles profile
+         WHERE profile.property_id = offer.property_id
+           AND profile.organization_id = offer.organization_id
+       )
+     LIMIT 1`,
+    [offerResourceId, input.organizationId, input.propertyId],
+  );
+  const row = result.rows[0];
+  return row ? mapOfferRow(row, "platform_organization_membership") : null;
+}
+
+function validateOfferCreationContinuation(
+  row: OfferCreationIdempotencyRow | null,
+  input: MarketplaceHotelSelfServiceOfferCreationContinuation,
+  fingerprint: string,
+): asserts row is OfferCreationIdempotencyRow {
+  if (
+    !row ||
+    row.requestFingerprintHash !== fingerprint ||
+    row.responseResourceId !== input.offerResourceId ||
+    (row.status !== "in_progress" && row.status !== "completed")
+  ) {
+    throw new MarketplaceOfferIdempotencyConflictError();
+  }
+}
+
+async function attachOfferCreationResource(
+  client: PoolClient,
+  input: { idempotencyId: string; fingerprint: string; offerResourceId: string },
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE platform.idempotency_keys
+     SET request_fingerprint_hash = $2,
+         response_resource_product = 'marketplace',
+         response_resource_type = 'marketplace_offer',
+         response_resource_id = $3,
+         last_seen_at = now(),
+         idempotency_metadata = idempotency_metadata || $4::jsonb
+     WHERE id = $1::uuid AND status = 'in_progress'`,
+    [
+      input.idempotencyId,
+      input.fingerprint,
+      input.offerResourceId,
+      JSON.stringify({ accessGrantFailed: false }),
+    ],
+  );
+  if (result.rowCount !== 1) throw new MarketplaceOfferIdempotencyConflictError();
+}
+
+async function completeOfferCreationIdempotency(
+  client: PoolClient,
+  input: { idempotencyId: string; fingerprint: string; offerResourceId: string },
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed',
+         request_fingerprint_hash = $2,
+         response_status_code = 201,
+         response_body_hash = $3,
+         response_resource_product = 'marketplace',
+         response_resource_type = 'marketplace_offer',
+         response_resource_id = $4,
+         completed_at = now(),
+         last_seen_at = now(),
+         idempotency_metadata = idempotency_metadata || $5::jsonb
+     WHERE id = $1::uuid
+       AND status = 'in_progress'
+       AND response_resource_id = $4`,
+    [
+      input.idempotencyId,
+      input.fingerprint,
+      sha256(stableJson({ offerResourceId: input.offerResourceId })),
+      input.offerResourceId,
+      JSON.stringify({ accessGrantFailed: false }),
+    ],
+  );
+  if (result.rowCount !== 1) throw new MarketplaceOfferIdempotencyConflictError();
+}
+
 function toSelfServiceOffer(
   offer: MarketplaceAdminOffer,
   mediaResourceId: string,
@@ -634,10 +932,34 @@ function sendError(reply: FastifyReply, statusCode: number, code: string) {
   return reply.status(statusCode).send({ code, detail: code.replaceAll("_", " ") });
 }
 
+function readIdempotencyKey(request: FastifyRequest): string | null {
+  const raw = request.headers["idempotency-key"];
+  const value = typeof raw === "string" ? raw.trim() : "";
+  return value && value.length <= 200 ? value : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toIsoString(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJson(entry)]),
+  );
 }

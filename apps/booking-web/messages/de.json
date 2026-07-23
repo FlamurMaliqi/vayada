@@ -89,6 +89,11 @@
     "selectThisRate": "Diesen Tarif wählen",
     "selectingRate": "Checkout wird vorbereitet...",
     "soldOut": "Ausgebucht",
+    "calendar": {
+      "checkingAvailability": "Verfügbarkeit wird geprüft",
+      "availabilityUnavailable": "Die Verfügbarkeit für diese Reisedaten ist vorübergehend nicht abrufbar.",
+      "availabilityUnavailableTooltip": "Verfügbarkeit derzeit nicht abrufbar"
+    },
     "mobileView": {
       "list": "Liste",
       "map": "Karte"
@@ -212,6 +217,7 @@
     "bankTransfer": "Banküberweisung",
     "bankTransferNote": "Wir senden Bankdaten nach Annahme per E-Mail",
     "nonRefundablePaymentHint": "Zahlung vor Ort und Banküberweisung sind bei nicht erstattbaren Tarifen nicht verfügbar.",
+    "ratePaymentHint": "Einige Zahlungsmethoden sind für diesen Tarif nicht verfügbar.",
     "bankTransferExplanation": "Senden Sie jetzt Ihre Buchungsanfrage. Wenn wir sie annehmen, senden wir Ihnen die Bankdaten und Zahlungsfrist per E-Mail.",
     "bankTransferDepositExplanation": "Senden Sie jetzt Ihre Buchungsanfrage. Wenn wir sie annehmen, senden wir Ihnen die Bankdaten für die Anzahlung von {deposit} per E-Mail. Der Restbetrag von {remaining} ist beim Check-in bei uns fällig.",
     "paypalLabel": "Mit PayPal bezahlen",
@@ -226,9 +232,11 @@
     "accountHolder": "Kontoinhaber",
     "accountNumber": "Kontonummer",
     "submitRequest": "Buchungsanfrage senden",
+    "confirmBooking": "Buchung bestätigen",
     "processing": "Wird verarbeitet...",
     "confirmPayment": "Zahlung bestätigen",
     "confirmPaymentDesc": "Schließen Sie Ihre Zahlung ab, um die Buchungsanfrage zu senden. Ihre Karte wird autorisiert, aber erst belastet, wenn wir sie annehmen.",
+    "confirmPaymentDescInstant": "Schließen Sie die Zahlung ab, um die Buchung zu bestätigen. Ihre Karte wird jetzt belastet.",
     "authorizePayment": "Zahlung autorisieren",
     "authorizationNote": "Ihre Karte wird nur belastet, wenn wir Ihre Buchung innerhalb von 24 Stunden annehmen.",
     "continueToPayment": "Weiter zur Zahlung",
@@ -266,6 +274,7 @@
     "fullRefund": "Sie erhalten eine vollständige Rückerstattung von {amount}.",
     "partialRefund": "Sie erhalten eine teilweise Rückerstattung von {amount} ({percentage}%).",
     "noRefund": "Für diese Stornierung wird keine Rückerstattung gewährt.",
+    "noPaymentToRefund": "Es wurde keine Zahlung eingezogen, daher ist keine Rückerstattung erforderlich.",
     "freeCancellation": "Kostenlose Stornierung",
     "cancellationFeeApplies": "Stornogebühr fällt an",
     "confirmCancel": "Ja, stornieren",
@@ -279,6 +288,8 @@
     "withdrawn": "Zurückgezogen"
   },
   "confirmation": {
+    "loadingDetails": "Buchungsdetails werden geladen…",
+    "detailsUnavailable": "Die Buchungsdetails sind nicht verfügbar. Suchen Sie Ihre Reservierung unter ‚Buchung verwalten‘.",
     "title": "Buchung bestätigt!",
     "subtitle": "Ihre Reservierung wurde erfolgreich bestätigt.",
     "requestSubmitted": "Buchungsanfrage eingereicht",
@@ -306,7 +317,10 @@
     "withdrawing": "Wird zurückgezogen...",
     "backToHotel": "Zurück zum Hotel",
     "manageBooking": "Buchung verwalten",
-    "emailNotice": "Eine Bestätigungs-E-Mail wurde an Ihre E-Mail-Adresse gesendet."
+    "emailNotice": "Eine Bestätigungs-E-Mail wurde an Ihre E-Mail-Adresse gesendet.",
+    "requestChanges": "Änderung anfragen",
+    "changePending": "Änderungsanfrage wird geprüft",
+    "changePendingDesc": "Wir prüfen Ihre gewünschten Reisedaten und informieren Sie per E-Mail."
   },
   "refer": {
     "title": "Gast empfehlen",
@@ -334,6 +348,27 @@
     "yourReferralLink": "Ihr Empfehlungslink",
     "commissionInfo": "Sie erhalten <strong>5%</strong> des gesamten Buchungsumsatzes für jede erfolgreiche Direktbuchung über Ihren Link.",
     "pendingReview": "Ihre Bewerbung wird geprüft. Wir benachrichtigen Sie unter <strong>{email}</strong>, sobald sie genehmigt wurde."
+  },
+  "requestChange": {
+    "title": "Buchungsänderung anfragen",
+    "subtitle": "Wählen Sie neue Reisedaten. Wir prüfen Verfügbarkeit und Preis, bevor wir Ihre Anfrage bearbeiten.",
+    "loading": "Wird geladen…",
+    "loadError": "Diese Buchung konnte nicht geladen werden.",
+    "missingEmail": "Öffnen Sie diese Seite über den Link in Ihrer Buchungsbestätigung.",
+    "pendingExists": "Für diese Buchung wird bereits eine Änderungsanfrage geprüft.",
+    "newDates": "Neue Reisedaten",
+    "checkIn": "Anreise",
+    "checkOut": "Abreise",
+    "summary": "Zusammenfassung",
+    "currentDates": "Aktuelle Reisedaten",
+    "requestedDates": "Gewünschte Reisedaten",
+    "oldTotal": "Bisheriger Gesamtpreis",
+    "newTotal": "Neuer Gesamtpreis",
+    "priceDifference": "Preisdifferenz",
+    "submit": "Änderung anfragen",
+    "submitting": "Wird gesendet…",
+    "submitError": "Die Änderungsanfrage konnte nicht gesendet werden. Bitte versuchen Sie es erneut.",
+    "previewUnavailable": "Diese Reisedaten konnten nicht geprüft werden. Wählen Sie andere Daten oder versuchen Sie es erneut."
   },
   "error": {
     "unableToLoad": "Hotel konnte nicht geladen werden",

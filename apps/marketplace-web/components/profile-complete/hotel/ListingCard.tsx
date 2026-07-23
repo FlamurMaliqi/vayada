@@ -136,9 +136,8 @@ export function ListingCard({
                   <span className="sr-only"> (required)</span>
                 </label>
                 {listing.images.length > 0 ? (
-                  <div className="space-y-3">
-                    {/* Main Featured Image */}
-                    <div className="group relative h-48 w-full overflow-hidden rounded-xl border border-gray-200 sm:h-56">
+                  <div className="grid grid-cols-4 gap-2 md:grid-cols-5">
+                    <div className="group relative aspect-square overflow-hidden rounded-lg border border-gray-200">
                       <img
                         src={listing.images[0]}
                         alt={`${listing.name} - Main photo`}
@@ -147,79 +146,56 @@ export function ListingCard({
                           e.currentTarget.style.display = "none";
                         }}
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-                        <div className="absolute bottom-3 right-3">
-                          <button
-                            type="button"
-                            onClick={() => onRemoveImage(0)}
-                            className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700"
-                          >
-                            <XMarkIcon className="w-4 h-4" />
-                            Remove
-                          </button>
-                        </div>
-                      </div>
+                      <span className="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        Main
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveImage(0)}
+                        className="absolute right-1.5 top-1.5 rounded-full bg-red-600 p-1.5 text-white opacity-100 transition-opacity hover:bg-red-700 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                        title="Remove image"
+                        aria-label="Remove main photo"
+                      >
+                        <XMarkIcon className="h-3.5 w-3.5" />
+                      </button>
                     </div>
 
-                    {/* Thumbnail Grid */}
-                    {listing.images.length > 1 && (
-                      <div className="grid grid-cols-4 md:grid-cols-5 gap-2">
-                        {listing.images.slice(1, 6).map((image, imageIndex) => (
-                          <div key={imageIndex + 1} className="relative group aspect-square">
-                            <img
-                              src={image}
-                              alt={`${listing.name} - Photo ${imageIndex + 2}`}
-                              className="h-full w-full rounded-lg border border-gray-200 object-cover transition-colors group-hover:border-primary-300"
-                              onError={(e) => {
-                                e.currentTarget.style.display = "none";
-                              }}
-                            />
-                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 rounded-lg transition-all flex items-center justify-center">
-                              <button
-                                type="button"
-                                onClick={() => onRemoveImage(imageIndex + 1)}
-                                className="rounded-full bg-red-600 p-1.5 text-white opacity-100 transition-opacity hover:bg-red-700 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-                                title="Remove image"
-                                aria-label={`Remove photo ${imageIndex + 2}`}
-                              >
-                                <XMarkIcon className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-
-                        {/* Add More Button */}
-                        {listing.images.length < 10 && (
-                          <button
-                            type="button"
-                            onClick={() => imageInputRef.current?.click()}
-                            className="group flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-500 transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600"
-                          >
-                            <PlusIcon className="w-5 h-5 mb-1" />
-                            <span className="text-[10px] font-medium">Add</span>
-                          </button>
-                        )}
-
-                        {/* Show remaining count if more than 6 images */}
-                        {listing.images.length > 6 && (
-                          <div className="aspect-square rounded-lg bg-gray-800/80 flex items-center justify-center text-white text-xs font-semibold">
-                            +{listing.images.length - 6}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Add First Image Button (if only one image) */}
-                    {listing.images.length === 1 && listing.images.length < 10 && (
-                      <div className="grid grid-cols-4 md:grid-cols-5 gap-2">
+                    {listing.images.slice(1, 5).map((image, imageIndex) => (
+                      <div key={imageIndex + 1} className="group relative aspect-square">
+                        <img
+                          src={image}
+                          alt={`${listing.name} - Photo ${imageIndex + 2}`}
+                          className="h-full w-full rounded-lg border border-gray-200 object-cover transition-colors group-hover:border-primary-300"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                          }}
+                        />
                         <button
                           type="button"
-                          onClick={() => imageInputRef.current?.click()}
-                          className="group flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-500 transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600"
+                          onClick={() => onRemoveImage(imageIndex + 1)}
+                          className="absolute right-1.5 top-1.5 rounded-full bg-red-600 p-1.5 text-white opacity-100 transition-opacity hover:bg-red-700 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                          title="Remove image"
+                          aria-label={`Remove photo ${imageIndex + 2}`}
                         >
-                          <PlusIcon className="w-5 h-5 mb-1" />
-                          <span className="text-[10px] font-medium">Add More</span>
+                          <XMarkIcon className="h-3.5 w-3.5" />
                         </button>
+                      </div>
+                    ))}
+
+                    {listing.images.length < 10 && (
+                      <button
+                        type="button"
+                        onClick={() => imageInputRef.current?.click()}
+                        className="group flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-500 transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600"
+                      >
+                        <PlusIcon className="mb-1 h-5 w-5" />
+                        <span className="text-[10px] font-medium">Add more</span>
+                      </button>
+                    )}
+
+                    {listing.images.length > 5 && (
+                      <div className="flex aspect-square items-center justify-center rounded-lg bg-gray-800/80 text-xs font-semibold text-white">
+                        +{listing.images.length - 5}
                       </div>
                     )}
                   </div>
