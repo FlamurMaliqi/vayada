@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import { Hotel } from "@/lib/types";
 import { Button, PlatformIcon } from "@/components/ui";
@@ -35,6 +35,7 @@ import {
 import { getCurrentUserInfo } from "@/lib/utils/accessControl";
 import { SuccessModal } from "@/components/ui/SuccessModal";
 import { ErrorModal } from "@/components/ui/ErrorModal";
+import { useModalAccessibility } from "@/components/ui/useModalAccessibility";
 
 interface HotelDetailModalProps {
   hotel: Hotel | null;
@@ -42,10 +43,6 @@ interface HotelDetailModalProps {
   onClose: () => void;
   creatorPlatforms?: string[];
 }
-
-const formatNumber = (num: number): string => {
-  return new Intl.NumberFormat("de-DE").format(num);
-};
 
 export function HotelDetailModal({
   hotel,
@@ -65,12 +62,30 @@ export function HotelDetailModal({
     message: "",
   });
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  const hotelId = hotel?.id;
+  const images = hotel?.images && hotel.images.length > 0 ? hotel.images : [];
+  const imageListKey = JSON.stringify(images);
+  const safeImageIndex = images.length > 0 ? Math.min(currentImageIndex, images.length - 1) : 0;
+  const currentImage = images[safeImageIndex];
+  const isCovered = showApplicationModal || showSuccessModal || errorState.isOpen;
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && hotelId) {
       setCurrentImageIndex(0);
+      setImageError(false);
     }
-  }, [isOpen]);
+  }, [hotelId, imageListKey, isOpen]);
+
+  useModalAccessibility({
+    isOpen: isOpen && Boolean(hotelId),
+    onClose,
+    dialogRef,
+    initialFocusRef: closeButtonRef,
+    isInert: isCovered,
+  });
 
   if (!isOpen || !hotel) return null;
 
@@ -132,8 +147,9 @@ export function HotelDetailModal({
       let displayTitle = "Application Error";
 
       if (
-        rawMessage.includes("unique constraint") &&
-        rawMessage.includes("idx_collaborations_unique_active")
+        rawMessage.includes("An active collaboration already exists") ||
+        (rawMessage.includes("unique constraint") &&
+          rawMessage.includes("idx_collaborations_unique_active"))
       ) {
         displayMessage =
           "You already have an active collaboration or pending request with this hotel. You can only have one active conversation per property.";
@@ -153,18 +169,26 @@ export function HotelDetailModal({
     }
   };
 
-  const images = hotel.images && hotel.images.length > 0 ? hotel.images : [];
   const hasMultipleImages = images.length > 1;
 
   const goToPreviousImage = () => {
-    setCurrentImageIndex((prev) => (prev === 0 ? images.length - 1 : prev - 1));
+    setImageError(false);
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === 0 ? images.length - 1 : index - 1;
+    });
   };
 
   const goToNextImage = () => {
-    setCurrentImageIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
+    setImageError(false);
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === images.length - 1 ? 0 : index + 1;
+    });
   };
 
   const goToImage = (index: number) => {
+    setImageError(false);
     setCurrentImageIndex(index);
   };
 
@@ -245,60 +269,34 @@ export function HotelDetailModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) onClose();
+      }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="hotel-detail-title"
       >
         {/* Hero Image Section */}
         <div className="relative h-56 md:h-64 flex-shrink-0">
-          {images.length > 0 && !imageError ? (
+          {currentImage && !imageError ? (
             <>
               <Image
-                src={images[currentImageIndex]}
-                alt={`${hotel.name} - Image ${currentImageIndex + 1}`}
+                key={currentImage}
+                src={currentImage}
+                alt={`${hotel.name} - Image ${safeImageIndex + 1}`}
                 fill
                 className="object-cover"
                 onError={() => setImageError(true)}
                 unoptimized
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
-
-              {/* Navigation Arrows */}
-              {hasMultipleImages && (
-                <>
-                  <button
-                    onClick={goToPreviousImage}
-                    className="absolute left-4 top-1/2 -translate-y-1/2 p-2 bg-white/90 hover:bg-white rounded-full text-gray-800 transition-colors shadow-lg"
-                  >
-                    <ChevronLeftIcon className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={goToNextImage}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 p-2 bg-white/90 hover:bg-white rounded-full text-gray-800 transition-colors shadow-lg"
-                  >
-                    <ChevronRightIcon className="w-5 h-5" />
-                  </button>
-                </>
-              )}
-
-              {/* Image Dots */}
-              {hasMultipleImages && (
-                <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex gap-1.5">
-                  {images.map((_, index) => (
-                    <button
-                      key={index}
-                      onClick={() => goToImage(index)}
-                      className={`h-2 rounded-full transition-all ${
-                        index === currentImageIndex
-                          ? "w-6 bg-white"
-                          : "w-2 bg-white/50 hover:bg-white/75"
-                      }`}
-                    />
-                  ))}
-                </div>
-              )}
+              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
             </>
           ) : (
             <div className="w-full h-full bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center">
@@ -306,16 +304,57 @@ export function HotelDetailModal({
             </div>
           )}
 
+          {hasMultipleImages && (
+            <>
+              <button
+                type="button"
+                onClick={goToPreviousImage}
+                className="absolute left-4 top-1/2 z-10 -translate-y-1/2 p-2 bg-white/90 hover:bg-white rounded-full text-gray-800 transition-colors shadow-lg"
+                aria-label="Previous detail image"
+              >
+                <ChevronLeftIcon className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={goToNextImage}
+                className="absolute right-4 top-1/2 z-10 -translate-y-1/2 p-2 bg-white/90 hover:bg-white rounded-full text-gray-800 transition-colors shadow-lg"
+                aria-label="Next detail image"
+              >
+                <ChevronRightIcon className="w-5 h-5" />
+              </button>
+
+              <div className="absolute bottom-24 left-1/2 z-20 -translate-x-1/2 flex gap-1.5">
+                {images.map((_, index) => (
+                  <button
+                    key={index}
+                    type="button"
+                    onClick={() => goToImage(index)}
+                    className={`h-2 rounded-full transition-all ${
+                      index === safeImageIndex
+                        ? "w-6 bg-white"
+                        : "w-2 bg-white/50 hover:bg-white/75"
+                    }`}
+                    aria-label={`Show detail image ${index + 1}`}
+                    aria-current={index === safeImageIndex ? "true" : undefined}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+
           {/* Close Button */}
           <button
+            ref={closeButtonRef}
+            type="button"
             onClick={onClose}
-            className="absolute top-4 right-4 p-2 bg-white/90 hover:bg-white rounded-full text-gray-800 transition-colors shadow-lg"
+            className="absolute top-4 right-4 z-20 p-2 bg-white/90 hover:bg-white rounded-full text-gray-800 transition-colors shadow-lg"
+            aria-label="Close hotel details"
           >
             <XMarkIcon className="w-5 h-5" />
           </button>
 
           {/* Hotel Info Overlay */}
-          <div className="absolute bottom-0 left-0 right-0 p-6 text-white">
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[1] p-6 text-white">
             <div className="flex items-center gap-2 mb-2 flex-wrap">
               {hotel.accommodationType && (
                 <span className="px-2.5 py-1 bg-white/20 backdrop-blur-sm rounded-full text-xs font-medium">
@@ -343,7 +382,9 @@ export function HotelDetailModal({
                 </span>
               )}
             </div>
-            <h2 className="text-2xl md:text-3xl font-bold mb-1">{hotel.name}</h2>
+            <h2 id="hotel-detail-title" className="text-2xl md:text-3xl font-bold mb-1">
+              {hotel.name}
+            </h2>
             <div className="flex items-center gap-1 text-white/90">
               <MapPinIcon className="w-4 h-4" />
               <span className="text-sm">{hotel.location}</span>
@@ -607,6 +648,7 @@ export function HotelDetailModal({
         onSubmit={handleApplicationSubmit}
         compensationOptions={offerings}
         creatorPlatforms={creatorPlatforms}
+        isCovered={showSuccessModal || errorState.isOpen}
       />
 
       {/* Success Modal */}

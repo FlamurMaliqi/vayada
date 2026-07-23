@@ -364,7 +364,7 @@ describe("marketplace AuthKit compatibility token", () => {
     expect(logoutRequests).toBe(0);
   });
 
-  it("retries session hydration after compatibility token loading is canceled", async () => {
+  it("keeps the AuthKit session when compatibility token loading is canceled", async () => {
     vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
     mockBrowserStorage();
     const controller = new AbortController();
@@ -389,13 +389,13 @@ describe("marketplace AuthKit compatibility token", () => {
       }),
     );
 
-    await expect(authService.ensureSession(controller.signal)).rejects.toThrow("aborted");
-    expect(getAuthBearerToken()).toBeNull();
+    await expect(authService.ensureSession(controller.signal)).resolves.toBe(true);
+    expect(getAuthBearerToken()).toBe("workos-access-token");
 
     await expect(authService.ensureSession()).resolves.toBe(true);
 
-    expect(compatibilityAttempts).toBe(2);
-    expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
+    expect(compatibilityAttempts).toBe(1);
+    expect(getAuthBearerToken()).toBe("workos-access-token");
   });
 });
 
@@ -747,6 +747,37 @@ describe("authService", () => {
     );
     expect(getAuthBearerToken()).toBe("verified-workos-access-token");
     expect(getAuthCsrfToken()).toBe("verified-csrf-token");
+    expect(getPendingEmailVerification()).toBeNull();
+  });
+
+  it("keeps a verified AuthKit session when the optional compatibility exchange fails", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    mockBrowserStorage();
+    storePendingEmailVerification({
+      pendingAuthenticationToken: "pending-email-token",
+      email: "creator@example.test",
+      emailVerificationId: "email_verification_123",
+      flow: "signup",
+    });
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          accessToken: "verified-workos-access-token",
+          csrfToken: "verified-csrf-token",
+          user: {
+            id: "user_creator",
+            email: "creator@example.test",
+            status: "active",
+            workosUserId: "user_workos_creator",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ error: "compatibility_unavailable" }, 503));
+
+    await expect(authService.confirmEmailVerification("123456")).resolves.toMatchObject({
+      accessToken: "verified-workos-access-token",
+    });
+    expect(getAuthBearerToken()).toBe("verified-workos-access-token");
     expect(getPendingEmailVerification()).toBeNull();
   });
 

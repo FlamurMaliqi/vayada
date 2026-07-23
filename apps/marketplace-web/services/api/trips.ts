@@ -1,7 +1,6 @@
 /**
  * Trip and External Collaboration API service
  */
-import { apiClient } from "./client";
 import {
   buildMarketplaceTripIdempotencyKey,
   createMarketplaceExternalCollaboration,
@@ -39,7 +38,7 @@ export interface ExternalCollaborationResponse {
   title: string;
   hotel_name: string | null;
   location: string | null;
-  collaboration_type: string | null;
+  collaboration_type: ExternalCollaborationType | null;
   start_date: string;
   end_date: string;
   deliverables: string | null;
@@ -48,7 +47,15 @@ export interface ExternalCollaborationResponse {
   updated_at: string;
 }
 
+export type ExternalCollaborationType =
+  | "Custom / External"
+  | "Paid"
+  | "Free Stay"
+  | "Affiliate"
+  | "Other";
+
 export interface CreateTripRequest {
+  idempotency_key?: string;
   name: string;
   location?: string;
   start_date: string;
@@ -58,18 +65,19 @@ export interface CreateTripRequest {
 
 export interface UpdateTripRequest {
   name?: string;
-  location?: string;
+  location?: string | null;
   start_date?: string;
   end_date?: string;
-  notes?: string;
+  notes?: string | null;
 }
 
 export interface CreateExternalCollaborationRequest {
+  idempotency_key?: string;
   trip_id?: string;
   title: string;
   hotel_name?: string;
   location?: string;
-  collaboration_type?: "Custom / External" | "Paid" | "Free Stay";
+  collaboration_type?: ExternalCollaborationType;
   start_date: string;
   end_date: string;
   deliverables?: string;
@@ -77,15 +85,15 @@ export interface CreateExternalCollaborationRequest {
 }
 
 export interface UpdateExternalCollaborationRequest {
-  trip_id?: string;
+  trip_id?: string | null;
   title?: string;
-  hotel_name?: string;
-  location?: string;
-  collaboration_type?: "Custom / External" | "Paid" | "Free Stay";
+  hotel_name?: string | null;
+  location?: string | null;
+  collaboration_type?: ExternalCollaborationType | null;
   start_date?: string;
   end_date?: string;
-  deliverables?: string;
-  notes?: string;
+  deliverables?: string | null;
+  notes?: string | null;
 }
 
 export interface TripWriteOptions {
@@ -100,51 +108,38 @@ export const tripService = {
     data: CreateTripRequest,
     options: TripWriteOptions = {},
   ): Promise<TripResponse> => {
-    const idempotencyKey = resolveTripWriteIdempotencyKey("trip.create", "new", options);
-    try {
-      return toLegacyTripResponse(
-        await createMarketplaceTrip({
-          idempotencyKey,
-          name: data.name,
-          locationText: data.location,
-          startDate: data.start_date,
-          endDate: data.end_date,
-          notes: data.notes,
-        }),
-      );
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.post<TripResponse>(
-        "/trips",
-        data,
-        toLegacyIdempotencyOptions(idempotencyKey),
-      );
-    }
+    const pending = resolvePendingCreate(
+      "trip",
+      tripCreateFingerprint(data),
+      data.idempotency_key ?? options.idempotencyKey,
+    );
+    const created = toLegacyTripResponse(
+      await createMarketplaceTrip({
+        idempotencyKey: pending.idempotencyKey,
+        name: data.name,
+        locationText: data.location,
+        startDate: data.start_date,
+        endDate: data.end_date,
+        notes: data.notes,
+      }),
+    );
+    pending.complete();
+    return created;
   },
 
   /**
    * List all trips for the current creator
    */
   listTrips: async (): Promise<TripResponse[]> => {
-    try {
-      const response = await listMarketplaceTrips();
-      return response.items.map(toLegacyTripResponse);
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.get<TripResponse[]>("/trips");
-    }
+    const response = await listMarketplaceTrips();
+    return response.items.map(toLegacyTripResponse);
   },
 
   /**
    * Get a trip by ID
    */
   getTrip: async (tripId: string): Promise<TripResponse> => {
-    try {
-      return toLegacyTripResponse(await getMarketplaceTrip(tripId));
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.get<TripResponse>(`/trips/${tripId}`);
-    }
+    return toLegacyTripResponse(await getMarketplaceTrip(tripId));
   },
 
   /**
@@ -156,25 +151,16 @@ export const tripService = {
     options: TripWriteOptions = {},
   ): Promise<TripResponse> => {
     const idempotencyKey = resolveTripWriteIdempotencyKey("trip.update", tripId, options);
-    try {
-      return toLegacyTripResponse(
-        await updateMarketplaceTrip(tripId, {
-          idempotencyKey,
-          name: data.name,
-          locationText: data.location,
-          startDate: data.start_date,
-          endDate: data.end_date,
-          notes: data.notes,
-        }),
-      );
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.put<TripResponse>(
-        `/trips/${tripId}`,
-        data,
-        toLegacyIdempotencyOptions(idempotencyKey),
-      );
-    }
+    return toLegacyTripResponse(
+      await updateMarketplaceTrip(tripId, {
+        idempotencyKey,
+        name: data.name,
+        locationText: data.location,
+        startDate: data.start_date,
+        endDate: data.end_date,
+        notes: data.notes,
+      }),
+    );
   },
 
   /**
@@ -182,12 +168,7 @@ export const tripService = {
    */
   deleteTrip: async (tripId: string, options: TripWriteOptions = {}): Promise<void> => {
     const idempotencyKey = resolveTripWriteIdempotencyKey("trip.delete", tripId, options);
-    try {
-      return await deleteMarketplaceTrip(tripId, idempotencyKey);
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.delete<void>(`/trips/${tripId}`, toLegacyIdempotencyOptions(idempotencyKey));
-    }
+    return deleteMarketplaceTrip(tripId, idempotencyKey);
   },
 
   /**
@@ -197,47 +178,35 @@ export const tripService = {
     data: CreateExternalCollaborationRequest,
     options: TripWriteOptions = {},
   ): Promise<ExternalCollaborationResponse> => {
-    const idempotencyKey = resolveTripWriteIdempotencyKey(
-      "external-collaboration.create",
-      "new",
-      options,
+    const pending = resolvePendingCreate(
+      "external-collaboration",
+      externalCollaborationCreateFingerprint(data),
+      data.idempotency_key ?? options.idempotencyKey,
     );
-    try {
-      return toLegacyExternalCollaborationResponse(
-        await createMarketplaceExternalCollaboration({
-          idempotencyKey,
-          tripId: data.trip_id,
-          title: data.title,
-          hotelName: data.hotel_name,
-          locationText: data.location,
-          collaborationType: toTargetExternalCollaborationType(data.collaboration_type),
-          startDate: data.start_date,
-          endDate: data.end_date,
-          deliverablesSummary: data.deliverables,
-          notes: data.notes,
-        }),
-      );
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.post<ExternalCollaborationResponse>(
-        "/trips/external-collaborations",
-        data,
-        toLegacyIdempotencyOptions(idempotencyKey),
-      );
-    }
+    const created = toLegacyExternalCollaborationResponse(
+      await createMarketplaceExternalCollaboration({
+        idempotencyKey: pending.idempotencyKey,
+        tripId: data.trip_id,
+        title: data.title,
+        hotelName: data.hotel_name,
+        locationText: data.location,
+        collaborationType: toTargetExternalCollaborationType(data.collaboration_type),
+        startDate: data.start_date,
+        endDate: data.end_date,
+        deliverablesSummary: data.deliverables,
+        notes: data.notes,
+      }),
+    );
+    pending.complete();
+    return created;
   },
 
   /**
    * List all external collaborations for the current creator
    */
   listExternalCollaborations: async (): Promise<ExternalCollaborationResponse[]> => {
-    try {
-      const response = await listMarketplaceExternalCollaborations();
-      return response.items.map(toLegacyExternalCollaborationResponse);
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.get<ExternalCollaborationResponse[]>("/trips/external-collaborations");
-    }
+    const response = await listMarketplaceExternalCollaborations();
+    return response.items.map(toLegacyExternalCollaborationResponse);
   },
 
   /**
@@ -253,29 +222,20 @@ export const tripService = {
       collabId,
       options,
     );
-    try {
-      return toLegacyExternalCollaborationResponse(
-        await updateMarketplaceExternalCollaboration(collabId, {
-          idempotencyKey,
-          tripId: data.trip_id,
-          title: data.title,
-          hotelName: data.hotel_name,
-          locationText: data.location,
-          collaborationType: toTargetExternalCollaborationType(data.collaboration_type),
-          startDate: data.start_date,
-          endDate: data.end_date,
-          deliverablesSummary: data.deliverables,
-          notes: data.notes,
-        }),
-      );
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.put<ExternalCollaborationResponse>(
-        `/trips/external-collaborations/${collabId}`,
-        data,
-        toLegacyIdempotencyOptions(idempotencyKey),
-      );
-    }
+    return toLegacyExternalCollaborationResponse(
+      await updateMarketplaceExternalCollaboration(collabId, {
+        idempotencyKey,
+        tripId: data.trip_id,
+        title: data.title,
+        hotelName: data.hotel_name,
+        locationText: data.location,
+        collaborationType: toTargetExternalCollaborationType(data.collaboration_type),
+        startDate: data.start_date,
+        endDate: data.end_date,
+        deliverablesSummary: data.deliverables,
+        notes: data.notes,
+      }),
+    );
   },
 
   /**
@@ -290,15 +250,7 @@ export const tripService = {
       collabId,
       options,
     );
-    try {
-      return await deleteMarketplaceExternalCollaboration(collabId, idempotencyKey);
-    } catch (error) {
-      if (!isMissingMarketplaceTripRoute(error)) throw error;
-      return apiClient.delete<void>(
-        `/trips/external-collaborations/${collabId}`,
-        toLegacyIdempotencyOptions(idempotencyKey),
-      );
-    }
+    return deleteMarketplaceExternalCollaboration(collabId, idempotencyKey);
   },
 };
 
@@ -338,7 +290,9 @@ function toLegacyExternalCollaborationResponse(
 }
 
 function toTargetExternalCollaborationType(
-  value?: CreateExternalCollaborationRequest["collaboration_type"],
+  value?:
+    | CreateExternalCollaborationRequest["collaboration_type"]
+    | UpdateExternalCollaborationRequest["collaboration_type"],
 ): MarketplaceExternalCollaborationType | null | undefined {
   if (value === undefined) return undefined;
   switch (value) {
@@ -348,6 +302,10 @@ function toTargetExternalCollaborationType(
       return "paid";
     case "Free Stay":
       return "free_stay";
+    case "Affiliate":
+      return "affiliate";
+    case "Other":
+      return "other";
     default:
       return null;
   }
@@ -372,24 +330,56 @@ function toLegacyExternalCollaborationType(
   }
 }
 
-function isMissingMarketplaceTripRoute(error: unknown): boolean {
-  if (typeof error !== "object" || error === null || !("status" in error)) return false;
-  if ((error as { status: unknown }).status !== 404) return false;
+const pendingCreateKeys = new Map<string, string>();
 
-  const data = (error as { data?: unknown }).data;
-  if (!data || typeof data !== "object") return false;
-  if ("code" in data) return false;
+function resolvePendingCreate(
+  resource: "trip" | "external-collaboration",
+  fingerprint: string,
+  explicitKey?: string,
+): { idempotencyKey: string; complete: () => void } {
+  const provided = explicitKey?.trim();
+  if (provided) {
+    return { idempotencyKey: provided, complete: () => undefined };
+  }
 
-  const detail = (data as { detail?: unknown }).detail;
-  if (detail === "Not Found") return true;
+  const operation = `marketplace.${resource}.create`;
+  const pendingKey = `${operation}:${fingerprint}`;
+  const action: MarketplaceTripWriteAction =
+    resource === "trip" ? "trip.create" : "external-collaboration.create";
+  const idempotencyKey =
+    pendingCreateKeys.get(pendingKey) ?? createTripWriteIdempotencyKey(action, "new");
+  pendingCreateKeys.set(pendingKey, idempotencyKey);
+  return {
+    idempotencyKey,
+    complete: () => {
+      if (pendingCreateKeys.get(pendingKey) === idempotencyKey)
+        pendingCreateKeys.delete(pendingKey);
+    },
+  };
+}
 
-  const fastifyError = data as { error?: unknown; message?: unknown };
-  return (
-    fastifyError.error === "Not Found" &&
-    typeof fastifyError.message === "string" &&
-    fastifyError.message.startsWith("Route ") &&
-    fastifyError.message.includes("/api/marketplace/trips")
-  );
+function tripCreateFingerprint(data: CreateTripRequest): string {
+  return JSON.stringify({
+    name: data.name.trim(),
+    location: data.location?.trim() || null,
+    startDate: data.start_date,
+    endDate: data.end_date,
+    notes: data.notes?.trim() || null,
+  });
+}
+
+function externalCollaborationCreateFingerprint(data: CreateExternalCollaborationRequest): string {
+  return JSON.stringify({
+    tripId: data.trip_id || null,
+    title: data.title.trim(),
+    hotelName: data.hotel_name?.trim() || null,
+    location: data.location?.trim() || null,
+    collaborationType: data.collaboration_type || null,
+    startDate: data.start_date,
+    endDate: data.end_date,
+    deliverables: data.deliverables?.trim() || null,
+    notes: data.notes?.trim() || null,
+  });
 }
 
 function resolveTripWriteIdempotencyKey(
@@ -409,8 +399,4 @@ export function createTripWriteIdempotencyKey(
   const nonce =
     globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return buildMarketplaceTripIdempotencyKey({ action, resourceId, nonce });
-}
-
-function toLegacyIdempotencyOptions(idempotencyKey: string): RequestInit {
-  return { headers: { "Idempotency-Key": idempotencyKey } };
 }

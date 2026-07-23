@@ -24,9 +24,7 @@ export default function VerifyEmailPage() {
   const [loaded, setLoaded] = useState(false);
   const [code, setCode] = useState("");
   const [submitError, setSubmitError] = useState("");
-  const [resendMessage, setResendMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isResending, setIsResending] = useState(false);
   const [verified, setVerified] = useState(false);
   const [organizationSelection, setOrganizationSelection] =
     useState<AuthOrganizationSelectionResponse | null>(null);
@@ -39,7 +37,6 @@ export default function VerifyEmailPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError("");
-    setResendMessage("");
     if (!code.trim()) {
       setSubmitError("Enter the verification code from your email.");
       return;
@@ -62,7 +59,6 @@ export default function VerifyEmailPage() {
 
   async function handleOrganizationSelect(workosOrganizationId: string) {
     setSubmitError("");
-    setResendMessage("");
     setIsSubmitting(true);
     try {
       const response = await authService.refreshSession(workosOrganizationId);
@@ -86,22 +82,6 @@ export default function VerifyEmailPage() {
     clearPendingEmailVerification();
     setVerified(true);
     setTimeout(() => router.push(redirectPath), 1200);
-  }
-
-  async function handleResend() {
-    setSubmitError("");
-    setResendMessage("");
-    setIsResending(true);
-    try {
-      const response = await authService.resendEmailVerification();
-      setResendMessage(response.message);
-    } catch (error) {
-      setSubmitError(
-        error instanceof Error ? error.message : "Failed to resend verification code.",
-      );
-    } finally {
-      setIsResending(false);
-    }
   }
 
   function handleBackToLogin() {
@@ -217,12 +197,6 @@ export default function VerifyEmailPage() {
                     </div>
                   )}
 
-                  {resendMessage && (
-                    <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                      {resendMessage}
-                    </div>
-                  )}
-
                   <button
                     type="submit"
                     disabled={isSubmitting}
@@ -230,19 +204,10 @@ export default function VerifyEmailPage() {
                   >
                     {isSubmitting ? "Verifying..." : "Verify email"}
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={handleResend}
-                    disabled={isResending || !pending.emailVerificationId}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isResending ? "Sending..." : "Send new code"}
-                  </button>
                 </form>
 
                 <p className="mt-5 text-center text-sm text-gray-600">
-                  Wrong email?{" "}
+                  Need a new code or used the wrong email?{" "}
                   <Link
                     href={ROUTES.LOGIN}
                     onClick={handleBackToLogin}

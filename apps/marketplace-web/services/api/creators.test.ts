@@ -15,15 +15,10 @@ vi.mock("@vayada/marketplace-shared/api/platformMedia", () => ({
 }));
 
 function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(status === 204 ? null : JSON.stringify(body), {
     status,
-    headers: {
-      get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null),
-    },
-    text: async () => JSON.stringify(body),
-    json: async () => body,
-  } as Response;
+    headers: status === 204 ? undefined : { "content-type": "application/json" },
+  });
 }
 
 function requestHeader(init: RequestInit | undefined, name: string): string | null {
@@ -193,7 +188,7 @@ describe("creator target self-service client", () => {
       if (href === "https://api.localhost/api/marketplace/creators/me/profile-status") {
         expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");
         return jsonResponse({
-          profilePhotoRequired: false,
+          profilePhotoRequired: true,
           profileComplete: false,
           missingFields: [],
           missingPlatforms: true,
@@ -208,7 +203,7 @@ describe("creator target self-service client", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(status).toMatchObject({
-      profile_photo_required: false,
+      profile_photo_required: true,
       profile_complete: false,
       missing_platforms: true,
     });
@@ -237,7 +232,7 @@ describe("creator target self-service client", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("maps the legacy creator form payload to the target update contract", async () => {
+  it("maps the creator profile form payload to the target update contract", async () => {
     setAuthKitSession({
       accessToken: "workos-access-token",
       organizationKind: "creator_workspace",
@@ -256,6 +251,8 @@ describe("creator target self-service client", () => {
       location: "Berlin",
       creatorType: "Travel",
       shortDescription: "Travel creator",
+      portfolioLink: "https://example.com/lina",
+      phone: "+4915123456789",
       platforms: [
         {
           id: "platform_instagram",
@@ -265,6 +262,22 @@ describe("creator target self-service client", () => {
           followers: 1200,
           engagementRate: 4.2,
         },
+        {
+          id: "platform_blog",
+          name: "Blog",
+          handle: "lina.example.com",
+          profileUrl: "https://lina.example.com",
+          followers: 800,
+          engagementRate: 2.1,
+        },
+        {
+          id: "platform_x",
+          name: "X",
+          handle: "lina",
+          profileUrl: "https://x.com/lina",
+          followers: 600,
+          engagementRate: 1.8,
+        },
       ],
     } as Partial<Creator>);
 
@@ -273,6 +286,8 @@ describe("creator target self-service client", () => {
       locationText: "Berlin",
       creatorType: "travel",
       shortDescription: "Travel creator",
+      portfolioUrl: "https://example.com/lina",
+      phone: "+4915123456789",
       platforms: [
         {
           platformId: "platform_instagram",
@@ -282,6 +297,14 @@ describe("creator target self-service client", () => {
           followerCount: 1200,
           engagementRate: 4.2,
         },
+        expect.objectContaining({
+          platformId: "platform_blog",
+          platform: "blog",
+        }),
+        expect.objectContaining({
+          platformId: "platform_x",
+          platform: "x",
+        }),
       ],
     });
     expect(fetchMock).toHaveBeenCalledWith(

@@ -29,8 +29,8 @@ const completeInput: PlatformMediaRuntimeInput = {
 };
 
 describe("platform media runtime composition", () => {
-  it("keeps the runtime dark until every prerequisite is configured", () => {
-    for (const missing of ["auth", "targetDatabaseUrl", "platformMediaServing"] as const) {
+  it("keeps the runtime dark until auth and media serving are configured", () => {
+    for (const missing of ["auth", "platformMediaServing"] as const) {
       const { factories } = fakeFactories();
 
       expect(

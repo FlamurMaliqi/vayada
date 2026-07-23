@@ -130,8 +130,8 @@ export function HotelFilters({
           value={budgetValue}
           defaultValue={BUDGET_RANGE.min}
           onChange={handleBudgetChange}
-          formatValue={formatBudget}
-          formatMin="€500"
+          formatValue={(value) => (value === BUDGET_RANGE.min ? "No minimum" : formatBudget(value))}
+          formatMin="No minimum"
           formatMax="€10,000"
         />
 

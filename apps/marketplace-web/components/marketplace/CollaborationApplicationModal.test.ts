@@ -44,6 +44,10 @@ vi.mock("@/services/api/collaborations", () => ({
   createCollaborationWriteIdempotencyKey: mocks.createKey,
 }));
 
+vi.mock("@/components/ui/useModalAccessibility", () => ({
+  useModalAccessibility: vi.fn(),
+}));
+
 import {
   CollaborationApplicationModal,
   type CollaborationApplicationData,

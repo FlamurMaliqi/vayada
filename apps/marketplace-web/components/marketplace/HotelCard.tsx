@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Hotel } from "@/lib/types";
@@ -44,6 +44,16 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
     message: "",
   });
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+
+  const images = hotel.images && hotel.images.length > 0 ? hotel.images : [];
+  const imageListKey = JSON.stringify(images);
+  const safeImageIndex = images.length > 0 ? Math.min(currentImageIndex, images.length - 1) : 0;
+  const currentImage = images[safeImageIndex];
+
+  useEffect(() => {
+    setCurrentImageIndex(0);
+    setImageError(false);
+  }, [hotel.id, imageListKey]);
 
   const handleApplicationSubmit = async (
     data: CollaborationApplicationData,
@@ -100,8 +110,9 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
       let displayTitle = "Application Error";
 
       if (
-        rawMessage.includes("unique constraint") &&
-        rawMessage.includes("idx_collaborations_unique_active")
+        rawMessage.includes("An active collaboration already exists") ||
+        (rawMessage.includes("unique constraint") &&
+          rawMessage.includes("idx_collaborations_unique_active"))
       ) {
         displayMessage =
           "You already have an active collaboration or pending request with this hotel. You can only have one active conversation per property.";
@@ -121,21 +132,29 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
     }
   };
 
-  const images = hotel.images && hotel.images.length > 0 ? hotel.images : [];
   const hasMultipleImages = images.length > 1;
   const visibleMonths = hotel.availability ? sortMonths(hotel.availability).slice(0, 3) : [];
 
   const goToPreviousImage = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setCurrentImageIndex((prev) => (prev === 0 ? images.length - 1 : prev - 1));
+    setImageError(false);
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === 0 ? images.length - 1 : index - 1;
+    });
   };
 
   const goToNextImage = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setCurrentImageIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
+    setImageError(false);
+    setCurrentImageIndex((prev) => {
+      const index = Math.min(prev, images.length - 1);
+      return index === images.length - 1 ? 0 : index + 1;
+    });
   };
 
   const goToImage = (index: number) => {
+    setImageError(false);
     setCurrentImageIndex(index);
   };
 
@@ -144,63 +163,61 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
       <div className="flex h-full flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm transition-colors hover:border-gray-300">
         {/* Image Gallery */}
         <div className="relative h-40 flex-shrink-0 overflow-hidden bg-gray-100">
-          {images.length > 0 && !imageError ? (
-            <>
-              {/* Current Image */}
-              <Image
-                src={images[currentImageIndex]}
-                alt={`${hotel.name} - Image ${currentImageIndex + 1}`}
-                fill
-                className="object-cover transition-opacity duration-300"
-                onError={() => setImageError(true)}
-                unoptimized
-              />
-
-              {/* Navigation Arrows */}
-              {hasMultipleImages && (
-                <>
-                  <button
-                    onClick={goToPreviousImage}
-                    className="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-md bg-black/45 p-1.5 text-white transition-colors hover:bg-black/65"
-                    aria-label="Previous image"
-                  >
-                    <ChevronLeftIcon className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={goToNextImage}
-                    className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-md bg-black/45 p-1.5 text-white transition-colors hover:bg-black/65"
-                    aria-label="Next image"
-                  >
-                    <ChevronRightIcon className="w-5 h-5" />
-                  </button>
-                </>
-              )}
-
-              {/* Image Indicators/Dots */}
-              {hasMultipleImages && (
-                <div className="absolute bottom-2 left-1/2 z-10 flex -translate-x-1/2 gap-1.5">
-                  {images.map((_, index) => (
-                    <button
-                      key={index}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        goToImage(index);
-                      }}
-                      className={`h-2 rounded-full transition-all ${
-                        index === currentImageIndex
-                          ? "w-6 bg-white"
-                          : "w-2 bg-white/50 hover:bg-white/75"
-                      }`}
-                      aria-label={`Go to image ${index + 1}`}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
+          {currentImage && !imageError ? (
+            <Image
+              key={currentImage}
+              src={currentImage}
+              alt={`${hotel.name} - Image ${safeImageIndex + 1}`}
+              fill
+              className="object-cover transition-opacity duration-300"
+              onError={() => setImageError(true)}
+              unoptimized
+            />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <span className="text-3xl font-bold text-primary-600">{hotel.name.charAt(0)}</span>
             </div>
+          )}
+
+          {hasMultipleImages && (
+            <>
+              <button
+                type="button"
+                onClick={goToPreviousImage}
+                className="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-md bg-black/45 p-1.5 text-white transition-colors hover:bg-black/65"
+                aria-label="Previous image"
+              >
+                <ChevronLeftIcon className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={goToNextImage}
+                className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-md bg-black/45 p-1.5 text-white transition-colors hover:bg-black/65"
+                aria-label="Next image"
+              >
+                <ChevronRightIcon className="w-5 h-5" />
+              </button>
+
+              <div className="absolute bottom-2 left-1/2 z-10 flex -translate-x-1/2 gap-1.5">
+                {images.map((_, index) => (
+                  <button
+                    key={index}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      goToImage(index);
+                    }}
+                    className={`h-2 rounded-full transition-all ${
+                      index === safeImageIndex
+                        ? "w-6 bg-white"
+                        : "w-2 bg-white/50 hover:bg-white/75"
+                    }`}
+                    aria-label={`Go to image ${index + 1}`}
+                    aria-current={index === safeImageIndex ? "true" : undefined}
+                  />
+                ))}
+              </div>
+            </>
           )}
           <div className="absolute left-3 top-3 flex flex-wrap gap-1.5">
             {hotel.accommodationType && (
@@ -335,6 +352,7 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
         onSubmit={handleApplicationSubmit}
         compensationOptions={hotel.collaborationOfferings}
         creatorPlatforms={creatorPlatforms}
+        isCovered={showSuccessModal || errorState.isOpen}
       />
 
       {/* Success Modal */}

@@ -376,15 +376,14 @@ covered routes try to call a legacy service client.
 
 Remaining legacy-runtime env requirements outside the covered route groups:
 
-| Env requirement                                        | Remaining surface / retirement condition                           | Owner ticket             | Forbidden by `test:legacy-free` |
-| ------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------ | ------------------------------- |
-| `BOOKING_DATABASE_URL`                                 | Legacy Booking settings/profile fallback removed                   | VAY-760, VAY-883         | Yes                             |
-| `BOOKING_RESERVATIONS_READ_DATABASE_URL`               | Booking/PMS reservation reads use target read models only          | VAY-878, VAY-883         | Yes                             |
-| `BOOKING_PUBLIC_API_URL`                               | Public domain/promo and Booking Admin helper fallbacks removed     | VAY-760, VAY-883         | Yes                             |
-| `PMS_API_URL`                                          | PMS guest-form sync and Booking Admin/PMS helper fallbacks removed | VAY-878, VAY-883         | Yes                             |
-| `PMS_PUBLIC_API_URL`                                   | Public checkout/status/lookup proxy fallbacks removed              | VAY-760 follow-up tracks | Yes                             |
-| `AUTH_LEGACY_MARKETPLACE_JWT_SECRET`                   | Marketplace Web no longer needs legacy marketplace JWT handoff     | VAY-737, VAY-803         | No                              |
-| `AUTH_LEGACY_BOOKING_JWT_SECRET`                       | Booking Admin no longer needs legacy Booking JWT handoff           | VAY-883, then VAY-884    | No                              |
-| `AUTH_LEGACY_PMS_JWT_SECRET`                           | PMS Web no longer needs legacy PMS JWT handoff                     | VAY-878, then VAY-879    | No                              |
-| `AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET`                 | Affiliate Dashboard moves to target affiliate/finance routes       | VAY-886                  | No                              |
-| Historical `MARKETPLACE_DATABASE_URL` compatibility DB | Marketplace discovery stays on `TARGET_DATABASE_URL` target mode   | VAY-882                  | Yes                             |
+| Env requirement                          | Remaining surface / retirement condition                           | Owner ticket             | Forbidden by `test:legacy-free` |
+| ---------------------------------------- | ------------------------------------------------------------------ | ------------------------ | ------------------------------- |
+| `BOOKING_DATABASE_URL`                   | Legacy Booking settings/profile fallback removed                   | VAY-760, VAY-883         | Yes                             |
+| `BOOKING_RESERVATIONS_READ_DATABASE_URL` | Booking/PMS reservation reads use target read models only          | VAY-878, VAY-883         | Yes                             |
+| `BOOKING_PUBLIC_API_URL`                 | Public domain/promo and Booking Admin helper fallbacks removed     | VAY-760, VAY-883         | Yes                             |
+| `PMS_API_URL`                            | PMS guest-form sync and Booking Admin/PMS helper fallbacks removed | VAY-878, VAY-883         | Yes                             |
+| `PMS_PUBLIC_API_URL`                     | Public checkout/status/lookup proxy fallbacks removed              | VAY-760 follow-up tracks | Yes                             |
+| `AUTH_LEGACY_MARKETPLACE_JWT_SECRET`     | Marketplace Web no longer needs legacy marketplace JWT handoff     | VAY-737, VAY-803         | No                              |
+| `AUTH_LEGACY_BOOKING_JWT_SECRET`         | Booking Admin no longer needs legacy Booking JWT handoff           | VAY-883, then VAY-884    | No                              |
+| `AUTH_LEGACY_PMS_JWT_SECRET`             | PMS Web no longer needs legacy PMS JWT handoff                     | VAY-878, then VAY-879    | No                              |
+| `AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET`   | Affiliate Dashboard moves to target affiliate/finance routes       | VAY-886                  | No                              |

@@ -86,6 +86,138 @@ describe("createWorkOSAuthKitClient", () => {
     expect(workosMocks.authenticate).not.toHaveBeenCalled();
   });
 
+  it("refreshes an expired access token while restoring a sealed browser session", async () => {
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          loadSealedSession: workosMocks.loadSealedSession,
+        },
+      };
+    });
+    workosMocks.loadSealedSession.mockReturnValue({
+      authenticate: workosMocks.authenticate,
+      refresh: workosMocks.refresh,
+    });
+    workosMocks.authenticate.mockResolvedValue({
+      authenticated: false,
+      reason: "invalid_jwt",
+    });
+    workosMocks.refresh.mockResolvedValue({
+      authenticated: true,
+      accessToken: "refreshed-access-token",
+      sealedSession: "refreshed-sealed-session",
+      session: { accessToken: "nested-access-token" },
+      user: {
+        id: "user_workos_creator",
+        email: "creator@example.com",
+        emailVerified: true,
+        name: "Creator",
+      },
+      sessionId: "session_refreshed",
+    });
+
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await expect(
+      client.authenticateSession({ sealedSession: "expired-access-token-session" }),
+    ).resolves.toMatchObject({
+      accessToken: "refreshed-access-token",
+      sealedSession: "refreshed-sealed-session",
+      sessionId: "session_refreshed",
+      user: { id: "user_workos_creator" },
+    });
+    expect(workosMocks.refresh).toHaveBeenCalledWith({
+      cookiePassword: "a".repeat(32),
+      organizationId: undefined,
+    });
+  });
+
+  it.each([
+    ["name", { name: "JWTExpired" }],
+    ["code", { code: "ERR_JWT_EXPIRED" }],
+  ])(
+    "refreshes when sealed-session authentication throws an expired-token error identified by %s",
+    async (_discriminator, errorShape) => {
+      workosMocks.WorkOS.mockImplementation(function WorkOS() {
+        return {
+          userManagement: {
+            loadSealedSession: workosMocks.loadSealedSession,
+          },
+        };
+      });
+      workosMocks.loadSealedSession.mockReturnValue({
+        authenticate: workosMocks.authenticate,
+        refresh: workosMocks.refresh,
+      });
+      const error = Object.assign(new Error("JWT expired"), errorShape);
+      workosMocks.authenticate.mockRejectedValue(error);
+      workosMocks.refresh.mockResolvedValue({
+        authenticated: true,
+        accessToken: "refreshed-access-token",
+        sealedSession: "refreshed-sealed-session",
+        session: { accessToken: "nested-access-token" },
+        user: {
+          id: "user_workos_creator",
+          email: "creator@example.com",
+          emailVerified: true,
+          name: "Creator",
+        },
+        sessionId: "session_refreshed",
+      });
+
+      const client = createWorkOSAuthKitClient({
+        apiKey: "sk_test",
+        clientId: "client_test",
+        cookiePassword: "a".repeat(32),
+      });
+
+      await expect(
+        client.authenticateSession({ sealedSession: "expired-access-token-session" }),
+      ).resolves.toMatchObject({
+        accessToken: "refreshed-access-token",
+        sealedSession: "refreshed-sealed-session",
+        sessionId: "session_refreshed",
+      });
+      expect(workosMocks.refresh).toHaveBeenCalledWith({
+        cookiePassword: "a".repeat(32),
+        organizationId: undefined,
+      });
+    },
+  );
+
+  it("does not refresh an invalid sealed-session cookie", async () => {
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          loadSealedSession: workosMocks.loadSealedSession,
+        },
+      };
+    });
+    workosMocks.loadSealedSession.mockReturnValue({
+      authenticate: workosMocks.authenticate,
+      refresh: workosMocks.refresh,
+    });
+    workosMocks.authenticate.mockResolvedValue({
+      authenticated: false,
+      reason: "invalid_session_cookie",
+    });
+
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await expect(
+      client.authenticateSession({ sealedSession: "invalid-session" }),
+    ).resolves.toBeNull();
+    expect(workosMocks.refresh).not.toHaveBeenCalled();
+  });
+
   it("treats stale sealed-session JWKS mismatches as invalid sessions", async () => {
     workosMocks.WorkOS.mockImplementation(function WorkOS() {
       return {
@@ -111,6 +243,34 @@ describe("createWorkOSAuthKitClient", () => {
     await expect(
       client.authenticateSession({ sealedSession: "stale-session" }),
     ).resolves.toBeNull();
+    expect(workosMocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("rethrows unclassified sealed-session errors without refreshing", async () => {
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          loadSealedSession: workosMocks.loadSealedSession,
+        },
+      };
+    });
+    workosMocks.loadSealedSession.mockReturnValue({
+      authenticate: workosMocks.authenticate,
+      refresh: workosMocks.refresh,
+    });
+    const error = new Error("WorkOS unavailable");
+    workosMocks.authenticate.mockRejectedValue(error);
+
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await expect(client.authenticateSession({ sealedSession: "valid-session" })).rejects.toBe(
+      error,
+    );
+    expect(workosMocks.refresh).not.toHaveBeenCalled();
   });
 
   it("updates both structured and display names", async () => {

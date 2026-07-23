@@ -193,7 +193,6 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
   connectionString: string;
   max?: number;
   pool?: MarketplaceDiscoveryReadPool;
-  profilePhotoRequired?: boolean;
 }): MarketplaceDiscoveryReadRepository {
   if (!config.connectionString.trim()) {
     throw new Error("Marketplace discovery repository connectionString must not be empty");
@@ -205,8 +204,6 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
       connectionString: config.connectionString,
       max: config.max,
     });
-  const profilePhotoRequired = config.profilePhotoRequired ?? false;
-
   return {
     async listPublicOffers(page) {
       const [offerResult, countResult] = await Promise.all([
@@ -376,26 +373,23 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
            ) ratings ON TRUE
            WHERE marketplace.creator_profile_is_complete(
                creator.id,
-               creator.organization_id,
-               $3::boolean
+               creator.organization_id
              )
              AND creator.profile_status = 'active'
              AND creator.source_creator_id IS NOT NULL
            ORDER BY creator.created_at DESC, creator.source_creator_id ASC
            LIMIT $1 OFFSET $2`,
-          [page.limit, page.offset, profilePhotoRequired],
+          [page.limit, page.offset],
         ),
         pool.query<{ total: string }>(
           `SELECT COUNT(*)::text AS total
            FROM marketplace.creator_profiles creator
            WHERE marketplace.creator_profile_is_complete(
                creator.id,
-               creator.organization_id,
-               $1::boolean
+               creator.organization_id
              )
              AND creator.profile_status = 'active'
              AND creator.source_creator_id IS NOT NULL`,
-          [profilePhotoRequired],
         ),
       ]);
 

@@ -649,8 +649,8 @@ describe("AuthKit session routes", () => {
     );
   });
 
-  it("sends a WorkOS verification email when password login requires email verification", async () => {
-    let emailVerificationId: string | undefined;
+  it("returns WorkOS' existing password-login verification challenge without replacing it", async () => {
+    let resendCalled = false;
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
       authKitClient: createAuthKitClient({
@@ -662,8 +662,8 @@ describe("AuthKit session routes", () => {
             email_verification_id: "email_verification_123",
           };
         },
-        async resendVerificationEmail(input) {
-          emailVerificationId = input.emailVerificationId;
+        async resendVerificationEmail() {
+          resendCalled = true;
           return { email: "creator@example.test" };
         },
       }),
@@ -686,7 +686,7 @@ describe("AuthKit session routes", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(emailVerificationId).toBe("email_verification_123");
+    expect(resendCalled).toBe(false);
     expect(response.json()).toMatchObject({
       state: "email_verification_required",
       pendingAuthenticationToken: "pending_email",
@@ -1792,6 +1792,69 @@ describe("AuthKit session routes", () => {
     expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
   });
 
+  it("persists a refreshed WorkOS session when onboarding is already complete", async () => {
+    const existingCreatorSession: AuthKitSession = {
+      ...session,
+      sealedSession: "creator-onboarding-refreshed-session",
+      organizationId: "org_workos_creator_workspace",
+      user: {
+        ...session.user,
+        id: "user_workos_creator",
+        email: "creator@example.com",
+      },
+    };
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return existingCreatorSession;
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_creator",
+          email: "creator@example.com",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async () => ({
+          organizationId: "org_creator_workspace",
+          workosOrgId: "org_workos_creator_workspace",
+          name: "Creator Workspace",
+          kind: "creator_workspace",
+          status: "active",
+        }),
+        activeMembership: async () => ({
+          membershipId: "membership_creator",
+          status: "active",
+          roleKey: "creator_owner",
+          workosMembershipId: "om_creator",
+          workosRoleSlugs: ["creator_owner"],
+        }),
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/onboarding",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: { type: "creator", surface: "marketplace-web" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(String(response.headers["set-cookie"])).toContain(
+      "vayada_workos_session=creator-onboarding-refreshed-session",
+    );
+  });
+
   it("updates account details and profile media only for the signed-in user", async () => {
     const commands: IdentityLifecycleCommand[] = [];
     const workosNameUpdates: Array<{
@@ -1802,6 +1865,7 @@ describe("AuthKit session routes", () => {
     let failWorkosNameUpdate = false;
     const hotelSession: AuthKitSession = {
       ...session,
+      sealedSession: "profile-refreshed-session",
       organizationId: "org_workos_hotel_group",
       user: {
         ...session.user,
@@ -1882,6 +1946,9 @@ describe("AuthKit session routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(String(response.headers["set-cookie"])).toContain(
+      "vayada_workos_session=profile-refreshed-session",
+    );
     expect(workosNameUpdates).toEqual([
       {
         workosUserId: "user_workos_hotel",
@@ -2162,13 +2229,21 @@ describe("AuthKit session routes", () => {
   it("returns a PMS organization selector filtered to active hotel groups", async () => {
     const noOrgSession: AuthKitSession = {
       ...session,
+      sealedSession: "refreshed-no-org-session",
       organizationId: undefined,
+    };
+    const refreshedNoOrgSession: AuthKitSession = {
+      ...noOrgSession,
+      sealedSession: "refreshed-no-org-session-after-refresh",
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://pms.localhost"],
       authKitClient: createAuthKitClient({
         async authenticateSession() {
           return noOrgSession;
+        },
+        async refreshSession() {
+          return refreshedNoOrgSession;
         },
       }),
       tokenVerifier: createTokenVerifier(noOrgSession),
@@ -2280,7 +2355,7 @@ describe("AuthKit session routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       organizationSelectionRequired: true,
-      csrfToken: "csrf-token",
+      csrfToken: expect.any(String),
       organizations: [
         {
           organizationId: "org_hotel_alpenrose",
@@ -2296,11 +2371,41 @@ describe("AuthKit session routes", () => {
         },
       ],
     });
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=refreshed-no-org-session"),
+        expect.stringContaining("vayada_auth_csrf="),
+      ]),
+    );
+
+    const refreshResponse = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://pms.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: { surface: "pms-web" },
+    });
+
+    expect(refreshResponse.statusCode).toBe(200);
+    expect(refreshResponse.json()).toMatchObject({
+      organizationSelectionRequired: true,
+      csrfToken: expect.any(String),
+    });
+    expect(refreshResponse.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=refreshed-no-org-session-after-refresh"),
+        expect.stringContaining("vayada_auth_csrf="),
+      ]),
+    );
   });
 
   it("requires PMS organization selection when an ambient WorkOS org is ambiguous", async () => {
     const pmsSession: AuthKitSession = {
       ...session,
+      sealedSession: "refreshed-ambiguous-pms-session",
       organizationId: "org_workos_hotel_alpenrose",
       user: {
         ...session.user,
@@ -2389,7 +2494,7 @@ describe("AuthKit session routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       organizationSelectionRequired: true,
-      csrfToken: "csrf-token",
+      csrfToken: expect.any(String),
       organizations: [
         {
           organizationId: "org_hotel_alpenrose",
@@ -2405,6 +2510,12 @@ describe("AuthKit session routes", () => {
         },
       ],
     });
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_workos_session=refreshed-ambiguous-pms-session"),
+        expect.stringContaining("vayada_auth_csrf="),
+      ]),
+    );
   });
 
   it("returns a PMS organization selector from the compatibility token route when selection is required", async () => {
@@ -3015,6 +3126,7 @@ describe("AuthKit session routes", () => {
   it("mints a marketplace compatibility token for creator workspaces", async () => {
     const creatorSession: AuthKitSession = {
       ...session,
+      sealedSession: "marketplace-compat-refreshed-session",
       organizationId: "org_workos_creator_workspace",
       user: {
         ...session.user,
@@ -3071,6 +3183,9 @@ describe("AuthKit session routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(String(response.headers["set-cookie"])).toContain(
+      "vayada_workos_session=marketplace-compat-refreshed-session",
+    );
     expect(readJwtPayload(response.json().accessToken)).toMatchObject({
       sub: "user_creator",
       email: "creator@example.com",
@@ -3254,6 +3369,7 @@ describe("AuthKit session routes", () => {
   it("returns a marketplace session for creator workspace organizations", async () => {
     const marketplaceSession: AuthKitSession = {
       ...session,
+      sealedSession: "refreshed-marketplace-session",
       organizationId: "org_workos_creator_workspace",
       user: {
         ...session.user,
@@ -3318,6 +3434,9 @@ describe("AuthKit session routes", () => {
         email: "creator@example.com",
       },
     });
+    expect(String(response.headers["set-cookie"])).toContain(
+      "vayada_workos_session=refreshed-marketplace-session",
+    );
   });
 
   it("clears the sealed session and returns the WorkOS logout URL", async () => {
@@ -3384,6 +3503,38 @@ describe("AuthKit session routes", () => {
       logoutUrl:
         "https://auth.workos.test/logout?return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
     });
+  });
+
+  it("uses the refreshed sealed session when generating the WorkOS logout URL", async () => {
+    const refreshedSession: AuthKitSession = {
+      ...session,
+      sealedSession: "refreshed-logout-sealed-session",
+    };
+    let logoutSealedSession: string | undefined;
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return refreshedSession;
+        },
+        async getLogoutUrl(input) {
+          logoutSealedSession = input.sealedSession;
+          return `https://auth.workos.test/logout?return_to=${encodeURIComponent(input.returnTo)}`;
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: {
+        cookie: "vayada_workos_session=expired-sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://admin.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(logoutSealedSession).toBe("refreshed-logout-sealed-session");
   });
 
   it("rejects refresh when CSRF header is missing", async () => {

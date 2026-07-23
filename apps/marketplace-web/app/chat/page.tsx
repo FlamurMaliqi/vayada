@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  buildMarketplaceMessageIdempotencyKey,
   collaborationService,
-  PlatformDeliverablesItem,
-  PlatformDeliverable,
+  filterConversations,
+  readChatCollaborationId,
   transformCollaborationResponse,
   DetailedCollaboration,
   MessageResponse,
@@ -31,10 +32,16 @@ import {
 import type { Collaboration, Hotel, Creator } from "@/lib/types";
 import { STORAGE_KEYS, getStatusClasses } from "@/lib/constants";
 import { getInitials, formatCompactNumber, getCurrencySymbol } from "@/lib/utils";
-
-function toMessageSenderSide(userType: string | null): MessageResponse["sender_side"] {
-  return userType === "creator" || userType === "hotel" ? userType : null;
-}
+import {
+  createConversationSummary,
+  isCurrentChatSelection,
+  restoreConversationAfterFailedSend,
+} from "@/lib/utils/chatSelectionGuard";
+import {
+  createChatSendLock,
+  resolveChatMessageRetryAttempt,
+  type ChatMessageRetryAttempt,
+} from "@/lib/utils/chatSendGuard";
 
 function ChatPageContent() {
   const { isCollapsed } = useSidebar();
@@ -50,19 +57,53 @@ function ChatPageContent() {
   const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
   const [conversations, setConversations] = useState<ConversationResponse[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [realMessages, setRealMessages] = useState<MessageResponse[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const [activeCollaboration, setActiveCollaboration] = useState<DetailedCollaboration | null>(
     null,
   );
-  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [cancellationTargetId, setCancellationTargetId] = useState<string | null>(null);
+  const selectedChatIdRef = useRef<string | null>(null);
+  const chatSelectionGenerationRef = useRef(0);
+  const messageSendLockRef = useRef(createChatSendLock());
+  const messageRetryRef = useRef<ChatMessageRetryAttempt | null>(null);
+
+  const selectChat = useCallback((collaborationId: string) => {
+    if (selectedChatIdRef.current === collaborationId) return;
+    selectedChatIdRef.current = collaborationId;
+    chatSelectionGenerationRef.current += 1;
+    setSelectedChatId(collaborationId);
+    setRealMessages([]);
+    setActiveCollaboration(null);
+    setHasMoreMessages(true);
+    setIsLoadingMore(false);
+    setIsLoadingMessages(false);
+    setIsMenuOpen(false);
+    setMessageInput("");
+    setIsSuggestModalOpen(false);
+    setIsCancelModalOpen(false);
+    setCancelReason("");
+    setCancellationTargetId(null);
+  }, []);
+
+  const isSelectionCurrent = useCallback(
+    (collaborationId: string, selectionGeneration: number) =>
+      isCurrentChatSelection(
+        collaborationId,
+        selectionGeneration,
+        selectedChatIdRef.current,
+        chatSelectionGenerationRef.current,
+      ),
+    [],
+  );
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -70,6 +111,12 @@ function ChatPageContent() {
       setUserType(storedUserType);
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const collaborationId = readChatCollaborationId(window.location.search);
+    if (collaborationId) selectChat(collaborationId);
+  }, [selectChat]);
 
   const fetchData = async () => {
     if (!userType) return;
@@ -84,12 +131,7 @@ function ChatPageContent() {
         .filter((collab) => collab.status === "pending")
         .map((collab) => {
           const isReceived = !collab.is_initiator;
-          const derivedPlatforms =
-            collab.platforms ||
-            collab.platform_deliverables?.map((pd) => ({
-              name: pd.platform.toLowerCase(),
-            })) ||
-            [];
+          const derivedPlatforms = collab.platforms || [];
 
           let offerDetails = "";
           if (userType === "creator" && collab.collaboration_type) {
@@ -108,10 +150,14 @@ function ChatPageContent() {
             id: collab.id,
             name: userType === "hotel" ? collab.creator_name : collab.hotel_name || "Hotel",
             time: new Date(collab.created_at).toLocaleDateString(),
-            followers: formatCompactNumber(collab.total_followers),
-            followersPlatform: (collab.active_platform || "instagram").toLowerCase(),
-            engagement: (collab.avg_engagement_rate || 0).toFixed(1) + "%",
-            engagementPlatform: (collab.active_platform || "instagram").toLowerCase(),
+            followers:
+              collab.total_followers == null ? null : formatCompactNumber(collab.total_followers),
+            followersPlatform: collab.active_platform?.toLowerCase() ?? null,
+            engagement:
+              collab.avg_engagement_rate == null
+                ? null
+                : `${collab.avg_engagement_rate.toFixed(1)}%`,
+            engagementPlatform: collab.active_platform?.toLowerCase() ?? null,
             platforms: derivedPlatforms,
             location: collab.listing_location || collab.hotel_location || "",
             collaborationType: collab.collaboration_type || "",
@@ -141,49 +187,62 @@ function ChatPageContent() {
   }, [userType]);
 
   const fetchMessages = async (silent = false, skipDetails = false) => {
-    if (!selectedChatId) return;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    if (!collaborationId || !userType) return;
+    const isCurrentSelection = () => isSelectionCurrent(collaborationId, selectionGeneration);
 
     if (!silent) {
       setIsLoadingMessages(true);
-      if (!skipDetails) setIsLoadingDetails(true);
     }
 
     setHasMoreMessages(true);
-    setConversations((prev) =>
-      prev.map((conv) =>
-        conv.collaboration_id === selectedChatId ? { ...conv, unread_count: 0 } : conv,
-      ),
-    );
 
     try {
-      const msgData = await collaborationService.getMessages(selectedChatId);
+      const msgData = await collaborationService.getMessages(collaborationId);
+      if (!isCurrentSelection()) return;
       const reversed = [...msgData].reverse();
       setRealMessages(reversed);
+      const readThrough = msgData[0];
+      if (readThrough)
+        void collaborationService
+          .markAsRead(collaborationId, readThrough)
+          .then(() => {
+            if (!isCurrentSelection()) return;
+            setConversations((prev) =>
+              prev.map((conversation) =>
+                conversation.collaboration_id === collaborationId
+                  ? { ...conversation, unread_count: 0 }
+                  : conversation,
+              ),
+            );
+          })
+          .catch((error) => {
+            if (isCurrentSelection()) console.error("Failed to mark messages as read:", error);
+          });
       if (msgData.length < 50) {
         setHasMoreMessages(false);
       }
 
-      collaborationService
-        .markAsRead(selectedChatId)
-        .catch((err) => console.error("Failed to mark as read:", err));
-
       if (!skipDetails) {
         const detailResponse =
           userType === "hotel"
-            ? await collaborationService.getHotelCollaborationDetails(selectedChatId)
-            : await collaborationService.getCreatorCollaborationDetails(selectedChatId);
+            ? await collaborationService.getHotelCollaborationDetails(collaborationId)
+            : await collaborationService.getCreatorCollaborationDetails(collaborationId);
+        if (!isCurrentSelection()) return;
 
         const detailedCollaboration = transformCollaborationResponse(detailResponse);
         setActiveCollaboration(detailedCollaboration);
       }
     } catch (error) {
-      console.error("Failed to fetch chat details:", error);
+      if (isCurrentSelection()) console.error("Failed to fetch chat details:", error);
     } finally {
-      if (!silent) {
-        setIsLoadingMessages(false);
-        if (!skipDetails) setIsLoadingDetails(false);
+      if (isCurrentSelection()) {
+        if (!silent) {
+          setIsLoadingMessages(false);
+        }
+        setIsMenuOpen(false);
       }
-      setIsMenuOpen(false);
     }
   };
 
@@ -193,15 +252,19 @@ function ChatPageContent() {
       return;
     }
     fetchMessages();
-  }, [selectedChatId]);
+  }, [selectedChatId, userType]);
 
   const handleLoadMore = async () => {
-    if (isLoadingMore || !hasMoreMessages || !selectedChatId || realMessages.length === 0) return;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    if (isLoadingMore || !hasMoreMessages || !collaborationId || realMessages.length === 0) return;
+    const isCurrentSelection = () => isSelectionCurrent(collaborationId, selectionGeneration);
 
     setIsLoadingMore(true);
     try {
       const oldestMessage = realMessages[0];
-      const data = await collaborationService.getMessages(selectedChatId, oldestMessage.created_at);
+      const data = await collaborationService.getMessages(collaborationId, oldestMessage);
+      if (!isCurrentSelection()) return;
 
       if (data.length === 0) {
         setHasMoreMessages(false);
@@ -213,9 +276,9 @@ function ChatPageContent() {
         }
       }
     } catch (error) {
-      console.error("Failed to load more messages:", error);
+      if (isCurrentSelection()) console.error("Failed to load more messages:", error);
     } finally {
-      setIsLoadingMore(false);
+      if (isCurrentSelection()) setIsLoadingMore(false);
     }
   };
 
@@ -256,104 +319,158 @@ function ChatPageContent() {
     }
   };
 
-  const activeChat = selectedChatId
-    ? conversations.find((c) => c.collaboration_id === selectedChatId)
+  const listedActiveChat = selectedChatId
+    ? conversations.find((conversation) => conversation.collaboration_id === selectedChatId)
     : null;
+  const latestMessage = realMessages[realMessages.length - 1];
+  const activeChat =
+    listedActiveChat ||
+    createConversationSummary(selectedChatId, activeCollaboration, userType, latestMessage);
+  const visibleConversations = useMemo(
+    () => filterConversations(conversations, searchQuery),
+    [conversations, searchQuery],
+  );
+
+  const handleSelectChat = (collaborationId: string) => {
+    selectChat(collaborationId);
+    if (typeof window === "undefined") return;
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("collaborationId", collaborationId);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  };
 
   const toggleDeliverable = async (deliverableId: string) => {
-    if (!selectedChatId) return;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    if (!collaborationId) return;
 
     try {
       const updatedResponse = await collaborationService.toggleDeliverable(
-        selectedChatId,
+        collaborationId,
         deliverableId,
       );
+      if (!isSelectionCurrent(collaborationId, selectionGeneration)) return;
       const detailedCollaboration = transformCollaborationResponse(updatedResponse);
       setActiveCollaboration(detailedCollaboration);
-      fetchMessages(true, true);
+      void fetchMessages(true, true);
     } catch (error) {
-      console.error("Failed to toggle deliverable:", error);
+      if (isSelectionCurrent(collaborationId, selectionGeneration)) {
+        console.error("Failed to toggle deliverable:", error);
+      }
     }
   };
 
   const handleSuggestChanges = async (data: UpdateCollaborationTermsRequest) => {
-    if (!selectedChatId) return;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    if (!collaborationId) return;
 
     try {
-      const updatedResponse = await collaborationService.updateTerms(selectedChatId, data);
+      const updatedResponse = await collaborationService.updateTerms(collaborationId, data);
+      if (!isSelectionCurrent(collaborationId, selectionGeneration)) return;
       const detailedCollaboration = transformCollaborationResponse(updatedResponse);
       setActiveCollaboration(detailedCollaboration);
       setIsSuggestModalOpen(false);
-      fetchMessages(true, true);
+      void fetchMessages(true, true);
     } catch (error) {
-      console.error("Failed to suggest changes:", error);
+      if (isSelectionCurrent(collaborationId, selectionGeneration)) {
+        console.error("Failed to suggest changes:", error);
+      }
     }
   };
 
   const handleApproveTerms = async (id?: string) => {
-    const collabId = id || selectedChatId;
-    if (!collabId) return;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    const targetId = id || collaborationId;
+    if (!collaborationId || targetId !== collaborationId) return;
 
     try {
-      const updatedResponse = await collaborationService.approveCollaboration(collabId);
+      const updatedResponse = await collaborationService.approveCollaboration(targetId);
+      if (!isSelectionCurrent(collaborationId, selectionGeneration)) return;
       const detailedCollaboration = transformCollaborationResponse(updatedResponse);
       setActiveCollaboration(detailedCollaboration);
-      fetchMessages(true, true);
+      void fetchMessages(true, true);
     } catch (error) {
-      console.error("Failed to approve terms:", error);
+      if (isSelectionCurrent(collaborationId, selectionGeneration)) {
+        console.error("Failed to approve terms:", error);
+      }
     }
   };
 
   const handleCancelCollaboration = async () => {
-    if (!cancellationTargetId) return;
+    const targetId = cancellationTargetId;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    const reason = cancelReason;
+    if (!targetId || !collaborationId || targetId !== collaborationId) return;
 
     try {
-      const response = await collaborationService.cancelCollaboration(
-        cancellationTargetId,
-        cancelReason,
-      );
+      const response = await collaborationService.cancelCollaboration(targetId, reason);
+      if (!isSelectionCurrent(collaborationId, selectionGeneration)) return;
 
-      if (cancellationTargetId === selectedChatId) {
-        const detailedCollaboration = transformCollaborationResponse(response);
-        setActiveCollaboration(detailedCollaboration);
-        fetchMessages(true, true);
-      }
-
-      fetchData();
+      const detailedCollaboration = transformCollaborationResponse(response);
+      setActiveCollaboration(detailedCollaboration);
+      void fetchMessages(true, true);
+      void fetchData();
       setIsCancelModalOpen(false);
       setCancelReason("");
       setCancellationTargetId(null);
       setIsMenuOpen(false);
     } catch (error) {
-      console.error("Failed to cancel collaboration:", error);
+      if (isSelectionCurrent(collaborationId, selectionGeneration)) {
+        console.error("Failed to cancel collaboration:", error);
+      }
     }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageInput.trim() || !selectedChatId) return;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    if (!messageInput.trim() || !collaborationId) return;
+
+    const releaseSendLock = messageSendLockRef.current.tryAcquire();
+    if (!releaseSendLock) return;
 
     const content = messageInput.trim();
+    const attempt = resolveChatMessageRetryAttempt(
+      messageRetryRef.current,
+      collaborationId,
+      content,
+      () => buildMarketplaceMessageIdempotencyKey(collaborationId),
+    );
+    const { idempotencyKey } = attempt;
+    messageRetryRef.current = attempt;
+    setIsSendingMessage(true);
+    const previousConversationIndex = conversations.findIndex(
+      (conversation) => conversation.collaboration_id === collaborationId,
+    );
+    const previousConversation =
+      previousConversationIndex === -1 ? null : conversations[previousConversationIndex];
+    const tempMessage: MessageResponse = {
+      id: `temp-${Date.now()}`,
+      collaboration_id: collaborationId,
+      sender_id: "me",
+      sender_name: "Me",
+      sender_avatar: null,
+      content,
+      content_type: "text",
+      metadata: null,
+      created_at: new Date().toISOString(),
+    };
     setMessageInput("");
 
     try {
-      const tempMessage = {
-        id: `temp-${Date.now()}`,
-        collaboration_id: selectedChatId,
-        sender_id: "me",
-        sender_name: "Me",
-        sender_avatar: null,
-        sender_side: toMessageSenderSide(userType),
-        content: content,
-        content_type: "text" as const,
-        metadata: null,
-        created_at: new Date().toISOString(),
-      };
-
       setRealMessages((prev) => [...prev, tempMessage]);
 
       setConversations((prev) => {
-        const chatIndex = prev.findIndex((c) => c.collaboration_id === selectedChatId);
+        const chatIndex = prev.findIndex((c) => c.collaboration_id === collaborationId);
         if (chatIndex === -1) return prev;
 
         const updatedChat = {
@@ -363,44 +480,84 @@ function ChatPageContent() {
           unread_count: 0,
         };
 
-        const filtered = prev.filter((c) => c.collaboration_id !== selectedChatId);
+        const filtered = prev.filter((c) => c.collaboration_id !== collaborationId);
         return [updatedChat, ...filtered];
       });
 
-      await collaborationService.sendMessage(selectedChatId, content);
+      const sentMessage = await collaborationService.sendMessage(
+        collaborationId,
+        content,
+        idempotencyKey,
+      );
+      if (messageRetryRef.current?.idempotencyKey === idempotencyKey) {
+        messageRetryRef.current = null;
+      }
+      if (!isSelectionCurrent(collaborationId, selectionGeneration)) return;
+      setRealMessages((prev) =>
+        prev.map((message) => (message.id === tempMessage.id ? sentMessage : message)),
+      );
     } catch (error) {
+      setConversations((prev) =>
+        restoreConversationAfterFailedSend(
+          prev,
+          collaborationId,
+          tempMessage.created_at,
+          previousConversation,
+          previousConversationIndex,
+        ),
+      );
+      if (!isSelectionCurrent(collaborationId, selectionGeneration)) return;
       console.error("Failed to send message:", error);
-      setRealMessages((prev) => prev.filter((m) => !m.id.toString().startsWith("temp-")));
-      setMessageInput(content);
+      setRealMessages((prev) => prev.filter((message) => message.id !== tempMessage.id));
+      setMessageInput((currentDraft) => currentDraft || content);
+    } finally {
+      releaseSendLock();
+      setIsSendingMessage(false);
     }
   };
 
   const handleSendImageMessage = async (file: File, caption?: string) => {
-    if (!selectedChatId || (userType !== "creator" && userType !== "hotel")) return;
+    const collaborationId = selectedChatIdRef.current;
+    const selectionGeneration = chatSelectionGenerationRef.current;
+    if (!collaborationId || (userType !== "creator" && userType !== "hotel")) {
+      throw new Error("Choose a conversation before sending an image.");
+    }
 
-    const imageMessage = await collaborationService.sendChatImage(
-      selectedChatId,
-      userType,
-      file,
-      caption,
-    );
-    setRealMessages((prev) => [...prev, imageMessage]);
+    const releaseSendLock = messageSendLockRef.current.tryAcquire();
+    if (!releaseSendLock) throw new Error("Another message is still being sent.");
 
-    // Update conversation list
-    setConversations((prev) => {
-      const chatIndex = prev.findIndex((c) => c.collaboration_id === selectedChatId);
-      if (chatIndex === -1) return prev;
+    setIsSendingMessage(true);
+    try {
+      const imageMessage = await collaborationService.sendChatImage(
+        collaborationId,
+        userType,
+        file,
+        caption,
+      );
+      if (!isSelectionCurrent(collaborationId, selectionGeneration)) return;
 
-      const updatedChat = {
-        ...prev[chatIndex],
-        last_message_content: caption || "Sent an image",
-        last_message_at: imageMessage.created_at,
-        unread_count: 0,
-      };
+      setRealMessages((previous) => [...previous, imageMessage]);
+      setConversations((previous) => {
+        const conversationIndex = previous.findIndex(
+          (conversation) => conversation.collaboration_id === collaborationId,
+        );
+        if (conversationIndex === -1) return previous;
 
-      const filtered = prev.filter((c) => c.collaboration_id !== selectedChatId);
-      return [updatedChat, ...filtered];
-    });
+        const updatedConversation = {
+          ...previous[conversationIndex],
+          last_message_content: imageMessage.content,
+          last_message_at: imageMessage.created_at,
+          unread_count: 0,
+        };
+        return [
+          updatedConversation,
+          ...previous.filter((conversation) => conversation.collaboration_id !== collaborationId),
+        ];
+      });
+    } finally {
+      releaseSendLock();
+      setIsSendingMessage(false);
+    }
   };
 
   return (
@@ -427,6 +584,8 @@ function ChatPageContent() {
               <input
                 type="text"
                 placeholder="Search..."
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
                 className="h-10 w-full rounded-md border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm focus:border-primary-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
               />
             </div>
@@ -444,10 +603,10 @@ function ChatPageContent() {
 
             {/* Conversations List */}
             <ConversationsList
-              conversations={conversations}
+              conversations={visibleConversations}
               selectedChatId={selectedChatId}
               isLoading={isLoadingConversations}
-              onSelectChat={setSelectedChatId}
+              onSelectChat={handleSelectChat}
             />
           </div>
         </div>
@@ -548,6 +707,7 @@ function ChatPageContent() {
 
               {/* Messages Area */}
               <ChatMessageArea
+                key={selectedChatId}
                 messages={realMessages}
                 activeChat={activeChat}
                 isLoading={isLoadingMessages}
@@ -556,8 +716,9 @@ function ChatPageContent() {
                 messageInput={messageInput}
                 onMessageInputChange={setMessageInput}
                 onSendMessage={handleSendMessage}
-                onLoadMore={handleLoadMore}
                 onSendImageMessage={handleSendImageMessage}
+                isSending={isSendingMessage}
+                onLoadMore={handleLoadMore}
               />
             </div>
 

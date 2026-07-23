@@ -15,6 +15,7 @@ import {
   type SubmissionIdempotencyState,
 } from "@/lib/utils/submissionIdempotency";
 import { createCollaborationWriteIdempotencyKey } from "@/services/api/collaborations";
+import { useModalAccessibility } from "@/components/ui/useModalAccessibility";
 
 interface CollaborationApplicationModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ interface CollaborationApplicationModalProps {
   ) => Promise<void>;
   compensationOptions?: CollaborationOffering[];
   creatorPlatforms?: string[];
+  isCovered?: boolean;
 }
 
 export interface CollaborationApplicationData {
@@ -89,6 +91,7 @@ export function CollaborationApplicationModal({
   onSubmit,
   compensationOptions = [],
   creatorPlatforms = [],
+  isCovered = false,
 }: CollaborationApplicationModalProps) {
   const defaultCompensationOptionId =
     compensationOptions.length === 1 ? compensationOptions[0]?.id || "" : "";
@@ -103,6 +106,7 @@ export function CollaborationApplicationModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const submissionRef = useRef<SubmissionIdempotencyState | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const {
     platformDeliverables,
@@ -116,6 +120,26 @@ export function CollaborationApplicationModal({
     getPlatformDeliverables,
     resetDeliverables,
   } = usePlatformDeliverables();
+
+  const resetForm = () => {
+    setWhyGreatFit("");
+    setTravelDateFrom("");
+    setTravelDateTo("");
+    setPreferredMonths([]);
+    setSelectedCompensationOptionId(defaultCompensationOptionId);
+    resetDeliverables();
+    setConsent(false);
+    setErrorMessage(null);
+    submissionRef.current = null;
+  };
+
+  const handleCancel = () => {
+    if (isSubmitting) return;
+    resetForm();
+    onClose();
+  };
+
+  useModalAccessibility({ isOpen, onClose: handleCancel, dialogRef, isInert: isCovered });
 
   if (!isOpen) return null;
 
@@ -157,21 +181,9 @@ export function CollaborationApplicationModal({
       list.includes(key) ||
       list.some((item) => item.toLowerCase() === key.toLowerCase()) ||
       (key === "YouTube" && list.includes("YT"));
-    const isHotelDesired = platformMatch(requiredPlatforms, p);
+    const isHotelDesired = requiredPlatforms.length === 0 || platformMatch(requiredPlatforms, p);
     const isCreatorActive = creatorPlatforms.length === 0 || platformMatch(creatorPlatforms, p);
     return isHotelDesired && isCreatorActive;
-  };
-
-  const resetForm = () => {
-    setWhyGreatFit("");
-    setTravelDateFrom("");
-    setTravelDateTo("");
-    setPreferredMonths([]);
-    setSelectedCompensationOptionId(defaultCompensationOptionId);
-    resetDeliverables();
-    setConsent(false);
-    setErrorMessage(null);
-    submissionRef.current = null;
   };
 
   const handleSubmit = async () => {
@@ -196,6 +208,10 @@ export function CollaborationApplicationModal({
       const to = new Date(travelDateTo);
       if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
         const nights = Math.round((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
+        if (nights <= 0) {
+          setErrorMessage("The end date must be after the start date.");
+          return;
+        }
         if (maxNights && nights > maxNights) {
           setErrorMessage(
             `This hotel offers a maximum of ${maxNights} night${maxNights === 1 ? "" : "s"}. Please shorten your stay.`,
@@ -268,30 +284,36 @@ export function CollaborationApplicationModal({
     }
   };
 
-  const handleCancel = () => {
-    if (isSubmitting) return;
-    resetForm();
-    onClose();
-  };
-
   const characterCount = whyGreatFit.length;
   const maxCharacters = 500;
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
-      onClick={handleCancel}
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
+      onClick={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) handleCancel();
+      }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[95vh] overflow-y-auto my-8"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="collaboration-application-title"
       >
         {/* Modal Header */}
         <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
-          <h3 className="text-2xl font-bold text-gray-900">Apply for Collaboration</h3>
+          <h3 id="collaboration-application-title" className="text-2xl font-bold text-gray-900">
+            Apply for Collaboration
+          </h3>
           <button
+            type="button"
             onClick={handleCancel}
             className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+            aria-label="Close application"
           >
             <XMarkIcon className="w-6 h-6 text-gray-600" />
           </button>
@@ -302,7 +324,10 @@ export function CollaborationApplicationModal({
           {/* Why are you a great fit */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="block text-base font-medium text-gray-900">
+              <label
+                htmlFor="application-fit"
+                className="block text-base font-medium text-gray-900"
+              >
                 Why are you a great fit for this collaboration?{" "}
                 <span className="text-red-500">*</span>
               </label>
@@ -311,6 +336,7 @@ export function CollaborationApplicationModal({
               </span>
             </div>
             <Textarea
+              id="application-fit"
               value={whyGreatFit}
               onChange={(e) => {
                 const value = e.target.value;
@@ -389,6 +415,9 @@ export function CollaborationApplicationModal({
             onDateFromChange={(value) => {
               setErrorMessage(null);
               setTravelDateFrom(value);
+              if (value && travelDateTo && travelDateTo <= value) {
+                setTravelDateTo("");
+              }
             }}
             onDateToChange={(value) => {
               setErrorMessage(null);
@@ -417,22 +446,26 @@ export function CollaborationApplicationModal({
           />
 
           {/* Consent Checkbox */}
-          <div
-            className="p-5 flex items-start gap-4 rounded-2xl border border-gray-200 bg-gray-50/30 cursor-pointer transition-all hover:bg-gray-50/50"
-            onClick={() => setConsent(!consent)}
-          >
+          <label className="p-5 flex items-start gap-4 rounded-2xl border border-gray-200 bg-gray-50/30 cursor-pointer transition-all hover:bg-gray-50/50 focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2">
+            <input
+              type="checkbox"
+              checked={consent}
+              onChange={(event) => setConsent(event.target.checked)}
+              className="sr-only"
+            />
             <div
+              aria-hidden="true"
               className={`mt-0.5 w-6 h-6 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all ${
                 consent ? "bg-primary-600 border-primary-600" : "border-primary-400 bg-white"
               }`}
             >
               {consent && <CheckIcon className="w-4 h-4 text-white stroke-[3px]" />}
             </div>
-            <span className="text-sm md:text-base text-gray-400 leading-relaxed font-medium">
+            <span className="text-sm md:text-base text-gray-700 leading-relaxed font-medium">
               I consent to sharing my contact information with the hotel if my application is
               accepted
             </span>
-          </div>
+          </label>
 
           {/* Error Message */}
           {errorMessage && (

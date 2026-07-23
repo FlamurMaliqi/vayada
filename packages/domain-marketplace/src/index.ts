@@ -311,7 +311,7 @@ export type CreatorProfileRatingSummary = {
 export type CreatorProfileStatusResult = {
   creatorProfileId: string;
   organizationId: string;
-  profilePhotoRequired: boolean;
+  profilePhotoRequired: true;
   profileComplete: boolean;
   profileStatus: CreatorProfileStatus;
   missingFields: CreatorProfileMissingField[];
@@ -702,6 +702,25 @@ export type MarketplaceCollaborationParticipant = {
   avatarUrl: string | null;
 };
 
+export type MarketplaceCollaborationCreatorPlatform = {
+  platform: string;
+  handle: string;
+  profileUrl: string | null;
+  followerCount: number;
+  engagementRate: number;
+  audienceCountries: Array<{ country: string; percentage: number }>;
+  audienceAgeGroups: Array<{ ageRange: string; percentage: number }>;
+  audienceGenderSplit: { male: number; female: number; other?: number } | null;
+  verificationStatus: "unverified" | "verified" | "rejected" | "stale";
+};
+
+export type MarketplaceCollaborationCreatorParticipant = MarketplaceCollaborationParticipant & {
+  location: string | null;
+  portfolioUrl: string | null;
+  creatorType: string;
+  platforms: MarketplaceCollaborationCreatorPlatform[];
+};
+
 export type MarketplaceCollaborationDeliverable = {
   deliverableId: string;
   platform: string;
@@ -725,7 +744,11 @@ export type MarketplaceCollaborationRead = {
   compensationType: MarketplaceCompensationType | null;
   offerTitle: string;
   hotelLocation: string | null;
-  creator: MarketplaceCollaborationParticipant;
+  applicationMessage?: string | null;
+  creatorConsent?: boolean | null;
+  creatorAgreedAt?: MarketplaceUtcDateTime | null;
+  hotelAgreedAt?: MarketplaceUtcDateTime | null;
+  creator: MarketplaceCollaborationCreatorParticipant;
   hotel: MarketplaceCollaborationParticipant;
   terms: {
     freeStayMinNights: number | null;
@@ -773,6 +796,13 @@ export type MarketplaceConversationSummary = {
   unreadCount: number;
 };
 
+export type MarketplaceConversationPage = {
+  contractVersion: MarketplaceCollaborationReadsContractVersion;
+  items: MarketplaceConversationSummary[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
 export type MarketplaceMessageContentType = "text" | "image" | "system";
 
 export type MarketplaceCollaborationMessage = {
@@ -794,6 +824,13 @@ export type MarketplaceCollaborationMessagesResponse = {
   collaborationId: string;
   authorizationMode: MarketplaceCollaborationAuthorizationMode;
   items: MarketplaceCollaborationMessage[];
+  nextCursor?: string | null;
+  hasMore?: boolean;
+};
+
+export type MarketplaceMessageCursor = {
+  createdAt: MarketplaceUtcDateTime;
+  messageId: string;
 };
 
 export const MARKETPLACE_COLLABORATION_READ_PRIVATE_KEYS = [

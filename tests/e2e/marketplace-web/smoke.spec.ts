@@ -309,7 +309,7 @@ test.describe("marketplace-web smoke", () => {
       page.getByText(
         "Start with your details. Next, we’ll build the creator profile hotels will see.",
       ),
-    ).toBeVisible();
+    ).toHaveCount(0);
     await expect(page.getByText("Personal account", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/Marketplace, Booking Admin, and PMS/)).toHaveCount(0);
     await expect(page.getByLabel("Email address")).toHaveValue("owner@example.test");
@@ -890,7 +890,7 @@ test.describe("marketplace-web smoke", () => {
       updatedAt: "2026-07-15T10:00:00.000Z",
     });
     await routeJson(page, /\/api\/marketplace\/creators\/me\/profile-status(?:\?|$)/, {
-      profilePhotoRequired: false,
+      profilePhotoRequired: true,
       profileComplete: true,
       missingFields: [],
       missingPlatforms: false,
@@ -1258,7 +1258,7 @@ test.describe("marketplace-web smoke", () => {
         status: 200,
         headers: corsHeaders(route),
         json: {
-          profilePhotoRequired: false,
+          profilePhotoRequired: true,
           profileComplete: true,
           missingFields: [],
           missingPlatforms: false,

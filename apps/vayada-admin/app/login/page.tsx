@@ -25,8 +25,8 @@ function LoginContent() {
     setIsSubmitting(true);
     authService
       .refreshSession()
-      .then(() => {
-        if (!cancelled) router.push("/dashboard");
+      .then((session) => {
+        if (!cancelled && session) router.push("/dashboard");
       })
       .catch((error) => {
         if (!cancelled) {

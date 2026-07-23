@@ -24,7 +24,13 @@ export function ErrorModal({
   const hasMultipleErrors = messages.length > 1;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="lg">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      size="lg"
+      zIndex={60}
+      ariaLabelledBy="error-modal-title"
+    >
       <div className="p-6 md:p-8">
         {/* Close Button */}
         <button
@@ -43,7 +49,9 @@ export function ErrorModal({
           </div>
 
           {/* Title */}
-          <h3 className="text-2xl font-bold text-gray-900 mb-4 text-center">{title}</h3>
+          <h3 id="error-modal-title" className="text-2xl font-bold text-gray-900 mb-4 text-center">
+            {title}
+          </h3>
 
           {/* Error Messages */}
           <div className="mb-6">

@@ -12,24 +12,33 @@ import {
 interface AddCollaborationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCollaborationCreated?: (collab: ExternalCollaborationResponse) => void;
+  collaboration?: ExternalCollaborationResponse | null;
+  onCollaborationSaved?: (collab: ExternalCollaborationResponse) => void;
+  onCollaborationDeleted?: (collaborationId: string) => void;
 }
+
+type CollaborationType = NonNullable<ExternalCollaborationResponse["collaboration_type"]>;
+
+const EMPTY_FORM = {
+  title: "",
+  tripId: "",
+  hotelName: "",
+  location: "",
+  collaborationType: "Custom / External" as CollaborationType,
+  startDate: "",
+  endDate: "",
+  deliverables: "",
+  notes: "",
+};
 
 export function AddCollaborationModal({
   isOpen,
   onClose,
-  onCollaborationCreated,
+  collaboration,
+  onCollaborationSaved,
+  onCollaborationDeleted,
 }: AddCollaborationModalProps) {
-  const [formData, setFormData] = useState({
-    title: "",
-    tripId: "",
-    hotelName: "",
-    location: "",
-    startDate: "",
-    endDate: "",
-    deliverables: "",
-    notes: "",
-  });
+  const [formData, setFormData] = useState(EMPTY_FORM);
 
   const [trips, setTrips] = useState<TripResponse[]>([]);
   const [saving, setSaving] = useState(false);
@@ -41,25 +50,34 @@ export function AddCollaborationModal({
       submissionRef.current = null;
       return;
     }
+    submissionRef.current = null;
+    setFormData(
+      collaboration
+        ? {
+            title: collaboration.title,
+            tripId: collaboration.trip_id || "",
+            hotelName: collaboration.hotel_name || "",
+            location: collaboration.location || "",
+            collaborationType:
+              (collaboration.collaboration_type as CollaborationType | null) || "Custom / External",
+            startDate: collaboration.start_date.split("T")[0],
+            endDate: collaboration.end_date.split("T")[0],
+            deliverables: collaboration.deliverables || "",
+            notes: collaboration.notes || "",
+          }
+        : EMPTY_FORM,
+    );
+    setError("");
     tripService
       .listTrips()
       .then(setTrips)
       .catch(() => {});
-  }, [isOpen]);
+  }, [collaboration, isOpen]);
 
   if (!isOpen) return null;
 
   const resetForm = () => {
-    setFormData({
-      title: "",
-      tripId: "",
-      hotelName: "",
-      location: "",
-      startDate: "",
-      endDate: "",
-      deliverables: "",
-      notes: "",
-    });
+    setFormData(EMPTY_FORM);
     setError("");
     submissionRef.current = null;
   };
@@ -75,33 +93,70 @@ export function AddCollaborationModal({
     setSaving(true);
 
     try {
-      const request = {
-        title: formData.title,
-        trip_id: formData.tripId || undefined,
-        hotel_name: formData.hotelName || undefined,
-        location: formData.location || undefined,
-        start_date: formData.startDate,
-        end_date: formData.endDate,
-        deliverables: formData.deliverables || undefined,
-        notes: formData.notes || undefined,
-      };
+      const action = collaboration
+        ? "external-collaboration.update"
+        : "external-collaboration.create";
       const submission = resolveSubmissionIdempotencyState(
         submissionRef.current,
-        JSON.stringify(request),
+        JSON.stringify({ collaborationId: collaboration?.id ?? null, formData }),
         ["collaboration"],
-        () => createTripWriteIdempotencyKey("external-collaboration.create", "new"),
+        () => createTripWriteIdempotencyKey(action, collaboration?.id ?? "new"),
       );
       submissionRef.current = submission;
-      const collab = await tripService.createExternalCollaboration(request, {
-        idempotencyKey: submission.keys.collaboration,
-      });
+      const collab = collaboration
+        ? await tripService.updateExternalCollaboration(
+            collaboration.id,
+            {
+              title: formData.title,
+              trip_id: formData.tripId || null,
+              hotel_name: formData.hotelName || null,
+              location: formData.location || null,
+              collaboration_type: formData.collaborationType,
+              start_date: formData.startDate,
+              end_date: formData.endDate,
+              deliverables: formData.deliverables || null,
+              notes: formData.notes || null,
+            },
+            { idempotencyKey: submission.keys.collaboration },
+          )
+        : await tripService.createExternalCollaboration(
+            {
+              title: formData.title,
+              trip_id: formData.tripId || undefined,
+              hotel_name: formData.hotelName || undefined,
+              location: formData.location || undefined,
+              collaboration_type: formData.collaborationType,
+              start_date: formData.startDate,
+              end_date: formData.endDate,
+              deliverables: formData.deliverables || undefined,
+              notes: formData.notes || undefined,
+            },
+            { idempotencyKey: submission.keys.collaboration },
+          );
 
-      onCollaborationCreated?.(collab);
+      onCollaborationSaved?.(collab);
       resetForm();
       onClose();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to create collaboration";
+      const message = err instanceof Error ? err.message : "Failed to save collaboration";
       setError(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!collaboration || !window.confirm("Delete this external collaboration?")) return;
+
+    setError("");
+    setSaving(true);
+    try {
+      await tripService.deleteExternalCollaboration(collaboration.id);
+      onCollaborationDeleted?.(collaboration.id);
+      resetForm();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete collaboration");
     } finally {
       setSaving(false);
     }
@@ -152,7 +207,9 @@ export function AddCollaborationModal({
                   <path d="M10 14h4"></path>
                   <path d="M10 18h4"></path>
                 </svg>
-                <h3 className="text-xl font-bold text-gray-900">Add Collaboration</h3>
+                <h3 className="text-xl font-bold text-gray-900">
+                  {collaboration ? "Edit Collaboration" : "Add Collaboration"}
+                </h3>
               </div>
 
               {error && (
@@ -176,6 +233,32 @@ export function AddCollaborationModal({
                     value={formData.title}
                     onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                   />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="collaborationType"
+                    className="block text-sm font-semibold text-gray-700 mb-1"
+                  >
+                    Collaboration Type
+                  </label>
+                  <select
+                    id="collaborationType"
+                    className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-gray-700 transition-all focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                    value={formData.collaborationType}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        collaborationType: e.target.value as CollaborationType,
+                      })
+                    }
+                  >
+                    <option value="Custom / External">Custom / External</option>
+                    <option value="Paid">Paid</option>
+                    <option value="Free Stay">Free Stay</option>
+                    <option value="Affiliate">Affiliate</option>
+                    <option value="Other">Other</option>
+                  </select>
                 </div>
 
                 {/* Link to Trip */}
@@ -329,20 +412,30 @@ export function AddCollaborationModal({
               </div>
 
               {/* Actions */}
-              <div className="flex gap-3 mt-8">
+              <div className="flex flex-wrap gap-3 mt-8">
+                {collaboration && (
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    disabled={saving}
+                    className="rounded-xl border border-red-200 px-4 py-3 font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
+                  className="min-w-28 flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={saving}
-                  className="flex-1 px-4 py-3 rounded-xl bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition-colors shadow-sm disabled:opacity-50"
+                  className="min-w-36 flex-1 px-4 py-3 rounded-xl bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition-colors shadow-sm disabled:opacity-50"
                 >
-                  {saving ? "Saving..." : "Add Collaboration"}
+                  {saving ? "Saving..." : collaboration ? "Save Changes" : "Add Collaboration"}
                 </button>
               </div>
             </form>

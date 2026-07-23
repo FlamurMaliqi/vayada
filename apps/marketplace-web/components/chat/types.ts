@@ -11,10 +11,10 @@ export interface PendingRequest {
   id: string;
   name: string;
   time: string;
-  followers: string;
-  followersPlatform: string;
-  engagement: string;
-  engagementPlatform: string;
+  followers: string | null;
+  followersPlatform: string | null;
+  engagement: string | null;
+  engagementPlatform: string | null;
   platforms: PlatformInfo[];
   location: string;
   collaborationType: string;

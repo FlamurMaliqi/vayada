@@ -15,7 +15,7 @@ import {
 export type PlatformMediaRuntimeInput = {
   auth?: unknown;
   allowedOrigins?: string[];
-  targetDatabaseUrl?: string;
+  targetDatabaseUrl: string;
   platformMediaServing?: PlatformMediaServingConfig;
 };
 
@@ -49,7 +49,7 @@ export function composePlatformMediaRuntime(
   input: PlatformMediaRuntimeInput,
   factories: PlatformMediaRuntimeFactories = productionFactories,
 ): PlatformMediaRuntime | undefined {
-  if (!input.auth || !input.targetDatabaseUrl || !input.platformMediaServing) return undefined;
+  if (!input.auth || !input.platformMediaServing) return undefined;
 
   const repository = factories.createRepository({
     connectionString: input.targetDatabaseUrl,

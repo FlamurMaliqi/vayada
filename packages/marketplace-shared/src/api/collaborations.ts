@@ -53,6 +53,25 @@ export type MarketplaceCollaborationParticipant = {
   avatarUrl: string | null;
 };
 
+export type MarketplaceCollaborationCreatorPlatform = {
+  platform: string;
+  handle: string;
+  profileUrl: string | null;
+  followerCount: number;
+  engagementRate: number;
+  audienceCountries: Array<{ country: string; percentage: number }>;
+  audienceAgeGroups: Array<{ ageRange: string; percentage: number }>;
+  audienceGenderSplit: { male: number; female: number; other?: number } | null;
+  verificationStatus: "unverified" | "verified" | "rejected" | "stale";
+};
+
+export type MarketplaceCollaborationCreatorParticipant = MarketplaceCollaborationParticipant & {
+  location: string | null;
+  portfolioUrl: string | null;
+  creatorType: string;
+  platforms: MarketplaceCollaborationCreatorPlatform[];
+};
+
 export type MarketplaceCollaborationDeliverable = {
   deliverableId: string;
   platform: string;
@@ -76,7 +95,11 @@ export type MarketplaceCollaborationRead = {
   compensationType: MarketplaceCompensationType | null;
   offerTitle: string;
   hotelLocation: string | null;
-  creator: MarketplaceCollaborationParticipant;
+  applicationMessage?: string | null;
+  creatorConsent?: boolean | null;
+  creatorAgreedAt?: string | null;
+  hotelAgreedAt?: string | null;
+  creator: MarketplaceCollaborationCreatorParticipant;
   hotel: MarketplaceCollaborationParticipant;
   terms: {
     freeStayMinNights: number | null;
@@ -124,6 +147,13 @@ export type MarketplaceConversationSummary = {
   unreadCount: number;
 };
 
+export type MarketplaceConversationPage = {
+  contractVersion: MarketplaceCollaborationReadsContractVersion;
+  items: MarketplaceConversationSummary[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
 export type MarketplaceCollaborationMessage = {
   contractVersion: MarketplaceCollaborationReadsContractVersion;
   messageId: string;
@@ -143,6 +173,20 @@ export type MarketplaceCollaborationMessagesResponse = {
   collaborationId: string;
   authorizationMode: MarketplaceCollaborationAuthorizationMode;
   items: MarketplaceCollaborationMessage[];
+  nextCursor?: string | null;
+  hasMore?: boolean;
+};
+
+export type MarketplaceMessageCursor = {
+  createdAt: string;
+  messageId: string;
+};
+
+export type SendMarketplaceCollaborationMessageRequest = {
+  content: string;
+  idempotencyKey: string;
+  contentType?: "text" | "image";
+  mediaObjectId?: string;
 };
 
 export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITES_CONTRACT_VERSION =
@@ -291,14 +335,20 @@ export const marketplaceCollaborationEndpoints = {
     `/api/marketplace/collaborations/me${toCollaborationQuery(input)}`,
   collaboration: (collaborationId: string, side: MarketplaceCollaborationSide) =>
     `/api/marketplace/collaborations/${encodeURIComponent(collaborationId)}?side=${side}`,
-  conversations: (side?: MarketplaceCollaborationSide) =>
-    `/api/marketplace/collaborations/conversations${side ? `?side=${side}` : ""}`,
+  conversations: (
+    input: {
+      side?: MarketplaceCollaborationSide;
+      cursor?: string;
+      limit?: number;
+      search?: string;
+    } = {},
+  ) => `/api/marketplace/collaborations/conversations${toConversationQuery(input)}`,
   messages: (
     collaborationId: string,
-    input: { side?: MarketplaceCollaborationSide; before?: string },
+    input: { side?: MarketplaceCollaborationSide; before?: string; cursor?: string },
   ) =>
     `/api/marketplace/collaborations/${encodeURIComponent(collaborationId)}/messages${toMessageQuery(input)}`,
-  markMessagesRead: (collaborationId: string) =>
+  markRead: (collaborationId: string) =>
     `/api/marketplace/collaborations/${encodeURIComponent(collaborationId)}/read`,
   create: () => "/api/marketplace/collaborations",
   respond: (collaborationId: string) =>
@@ -338,37 +388,56 @@ export async function getMarketplaceConversations(
   side?: MarketplaceCollaborationSide,
 ): Promise<MarketplaceConversationSummary[]> {
   return vayadaApiClient.get<MarketplaceConversationSummary[]>(
-    marketplaceCollaborationEndpoints.conversations(side),
+    marketplaceCollaborationEndpoints.conversations({ side }),
+  );
+}
+
+export async function getMarketplaceConversationPage(
+  input: {
+    side?: MarketplaceCollaborationSide;
+    cursor?: string;
+    limit?: number;
+    search?: string;
+  } = {},
+): Promise<MarketplaceConversationPage> {
+  return vayadaApiClient.get<MarketplaceConversationPage>(
+    marketplaceCollaborationEndpoints.conversations({ ...input, limit: input.limit ?? 100 }),
   );
 }
 
 export async function getMarketplaceMessages(
   collaborationId: string,
-  input: { side?: MarketplaceCollaborationSide; before?: string } = {},
+  input: { side?: MarketplaceCollaborationSide; before?: string; cursor?: string } = {},
 ): Promise<MarketplaceCollaborationMessagesResponse> {
   return vayadaApiClient.get<MarketplaceCollaborationMessagesResponse>(
     marketplaceCollaborationEndpoints.messages(collaborationId, input),
   );
 }
 
-export async function markMarketplaceMessagesRead(collaborationId: string): Promise<void> {
-  return vayadaApiClient.post<void>(
-    marketplaceCollaborationEndpoints.markMessagesRead(collaborationId),
-  );
-}
-
-export async function sendMarketplaceMessage(
+export async function sendMarketplaceCollaborationMessage(
   collaborationId: string,
-  content: string,
-  contentType: "text" | "image" = "text",
-  mediaObjectId?: string,
+  request: SendMarketplaceCollaborationMessageRequest,
 ): Promise<MarketplaceCollaborationMessage> {
   return vayadaApiClient.post<MarketplaceCollaborationMessage>(
     marketplaceCollaborationEndpoints.messages(collaborationId, {}),
-    { content, contentType, ...(mediaObjectId ? { mediaObjectId } : {}) },
+    {
+      content: request.content,
+      contentType: request.contentType ?? "text",
+      ...(request.mediaObjectId ? { mediaObjectId: request.mediaObjectId } : {}),
+      idempotencyKey: request.idempotencyKey,
+    },
+    toIdempotencyOptions(request.idempotencyKey),
   );
 }
 
+export async function markMarketplaceCollaborationMessagesRead(
+  collaborationId: string,
+  readThrough: MarketplaceMessageCursor,
+): Promise<void> {
+  await vayadaApiClient.post<void>(marketplaceCollaborationEndpoints.markRead(collaborationId), {
+    readThrough,
+  });
+}
 export async function createMarketplaceCollaboration(
   request: CreateMarketplaceCollaborationLifecycleWriteRequest,
 ): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
@@ -464,10 +533,30 @@ function toCollaborationQuery(input: MarketplaceCollaborationListInput): string 
   return `?${params.toString()}`;
 }
 
-function toMessageQuery(input: { side?: MarketplaceCollaborationSide; before?: string }): string {
+function toMessageQuery(input: {
+  side?: MarketplaceCollaborationSide;
+  before?: string;
+  cursor?: string;
+}): string {
   const params = new URLSearchParams();
   if (input.side) params.set("side", input.side);
   if (input.before) params.set("before", input.before);
+  if (input.cursor) params.set("cursor", input.cursor);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+function toConversationQuery(input: {
+  side?: MarketplaceCollaborationSide;
+  cursor?: string;
+  limit?: number;
+  search?: string;
+}): string {
+  const params = new URLSearchParams();
+  if (input.side) params.set("side", input.side);
+  if (input.cursor) params.set("cursor", input.cursor);
+  if (input.limit) params.set("limit", String(input.limit));
+  if (input.search?.trim()) params.set("search", input.search.trim());
   const query = params.toString();
   return query ? `?${query}` : "";
 }

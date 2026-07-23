@@ -2,7 +2,6 @@
  * Centralized constants for the application
  * Import from here instead of defining locally to ensure consistency
  */
-
 // Month names - full
 export const MONTHS_FULL = [
   "January",
@@ -97,7 +96,7 @@ export const OFFERING_OPTIONS = ["Free stay", "Paid stay", "Discount", "Affiliat
 
 // Budget filter range
 export const BUDGET_RANGE = {
-  min: 500,
+  min: 0,
   max: 10000,
   step: 100,
 } as const;

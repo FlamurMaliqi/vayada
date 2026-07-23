@@ -136,7 +136,6 @@ export type MarketplaceCreatorPlatformConnectionRepository = {
     credentialRef: string;
     grant: CreatorPlatformGrant;
     projection: ImportedProjection;
-    profilePhotoRequired: boolean;
   }): Promise<CreatorPlatformConnectionDocument>;
   listConnections(access: CreatorProfileAccess): Promise<CreatorPlatformConnectionDocument[]>;
   getConnection(input: {
@@ -208,7 +207,6 @@ export type MarketplaceCreatorPlatformConnectionRoutesOptions = {
   callbackBaseUrl: string;
   webReturnUrl: string;
   credentialSecretPrefix: string;
-  profilePhotoRequired?: boolean;
   now?: () => Date;
   credentialCleanupIntervalMs?: number;
 };
@@ -459,7 +457,6 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
             credentialRef: finalCredentialRef,
             grant: accountGrant,
             projection,
-            profilePhotoRequired: options.profilePhotoRequired ?? false,
           });
         } catch (error) {
           if (
@@ -605,7 +602,6 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
             credentialRef: finalCredentialRef,
             grant: accountGrant,
             projection,
-            profilePhotoRequired: options.profilePhotoRequired ?? false,
           });
         } catch (error) {
           if (
@@ -1377,7 +1373,6 @@ export function createPgMarketplaceCreatorPlatformConnectionRepository(config: {
           credentialRef: input.credentialRef,
           grant: input.grant,
           projection: input.projection,
-          profilePhotoRequired: input.profilePhotoRequired,
         }),
       );
     },
@@ -1840,7 +1835,6 @@ async function persistImportedConnection(
     credentialRef: string;
     grant: CreatorPlatformGrant;
     projection: ImportedProjection;
-    profilePhotoRequired: boolean;
   },
 ): Promise<CreatorPlatformConnectionDocument> {
   const { authorization, projection } = input;
@@ -2034,7 +2028,7 @@ async function persistImportedConnection(
     organizationId: authorization.organizationId,
     projection,
   });
-  await recalculateCreatorProfileCompletion(client, authorization, input.profilePhotoRequired);
+  await recalculateCreatorProfileCompletion(client, authorization);
   return readConnectionDocument(client, connectionId);
 }
 
@@ -2258,14 +2252,12 @@ async function insertMetricSnapshot(
 async function recalculateCreatorProfileCompletion(
   client: PgClient,
   input: Pick<AuthorizationRecord, "creatorProfileId" | "organizationId">,
-  profilePhotoRequired: boolean,
 ): Promise<void> {
   await client.query(
     `WITH completion AS (
        SELECT marketplace.creator_profile_is_complete(
          $1::uuid,
-         $2::uuid,
-         $3::boolean
+         $2::uuid
        ) AS is_complete
      )
      UPDATE marketplace.creator_profiles profile
@@ -2277,7 +2269,7 @@ async function recalculateCreatorProfileCompletion(
          updated_at = now()
      FROM completion
      WHERE profile.id = $1 AND profile.organization_id = $2`,
-    [input.creatorProfileId, input.organizationId, profilePhotoRequired],
+    [input.creatorProfileId, input.organizationId],
   );
 }
 

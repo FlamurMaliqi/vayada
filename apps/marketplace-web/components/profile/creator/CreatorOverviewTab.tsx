@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, RefObject } from "react";
+import { useEffect, useRef, useState, RefObject } from "react";
 import {
   UserIcon,
   MapPinIcon,
@@ -53,9 +53,14 @@ export function CreatorOverviewTab({
 }: CreatorOverviewTabProps) {
   const internalFileInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = externalFileInputRef || internalFileInputRef;
+  const [failedProfilePic, setFailedProfilePic] = useState<string | null>(null);
 
   const profilePic = isEditing ? editFormData.profilePicture : profile.profilePicture;
   const hasPicture = profilePic && profilePic.trim() !== "";
+
+  useEffect(() => {
+    setFailedProfilePic(null);
+  }, [profilePic]);
 
   return (
     <div className="space-y-5">
@@ -179,16 +184,15 @@ export function CreatorOverviewTab({
               }
             }}
           >
-            {hasPicture ? (
+            {hasPicture && failedProfilePic !== profilePic ? (
               <>
+                {/* Native img supports the local blob URL used for an unsaved profile preview. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={profilePic}
                   alt="Profile"
                   className="w-full h-full object-cover"
-                  onError={(e) => {
-                    const target = e.target as HTMLImageElement;
-                    target.style.display = "none";
-                  }}
+                  onError={() => setFailedProfilePic(profilePic)}
                 />
                 {isEditing && (
                   <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -225,12 +229,15 @@ export function CreatorOverviewTab({
             )}
           </div>
           <p className="text-xs text-gray-500 text-center">
-            Optional - JPG, PNG or WebP (max 20MB)
+            Required - JPG, PNG or WebP (max 5 MB)
           </p>
           <input
             type="file"
             ref={fileInputRef}
-            onChange={onImageChange}
+            onChange={(event) => {
+              setFailedProfilePic(null);
+              onImageChange(event);
+            }}
             accept="image/jpeg,image/png,image/webp"
             className="hidden"
           />

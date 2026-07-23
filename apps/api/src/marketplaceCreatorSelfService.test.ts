@@ -84,6 +84,7 @@ describe("marketplace creator self-service routes", () => {
       "displayName",
       "locationText",
       "shortDescription",
+      "profilePicture",
       "platforms",
     ]);
     expect(response.body.missingPlatforms).toBe(true);
@@ -141,9 +142,8 @@ describe("marketplace creator self-service routes", () => {
     expect(calls).toEqual([`org_creator_workspace:${creatorProfileId}`]);
   });
 
-  it("reports a missing approved profile photo when the requirement is enabled", async () => {
+  it("always reports a missing approved profile photo", async () => {
     app = buildMarketplaceCreatorApp({
-      profilePhotoRequired: true,
       repository: {
         async ensureCreatorProfile() {
           throw new Error("existing profile link should not bootstrap");
@@ -202,6 +202,8 @@ describe("marketplace creator self-service routes", () => {
         async getCreatorProfile() {
           return profileDocument({
             phone: null,
+            profilePictureUrl: "https://media.example.test/creator.webp",
+            profilePictureMediaObjectId: "media_creator_profile",
             platforms: [
               {
                 platformId: "platform_instagram",
@@ -808,53 +810,34 @@ describe("marketplace creator platform persistence", () => {
 
   it("persists and reads completeness through the shared profile policy", async () => {
     const target = creatorPlatformRepositoryTarget(["platform-1"]);
-    const photoRequiredRepository = createPgMarketplaceCreatorSelfServiceRepository({
+    const repository = createPgMarketplaceCreatorSelfServiceRepository({
       connectionString: "postgres://unused",
       pool: target.pool as never,
-      profilePhotoRequired: true,
     });
 
-    const photoRequiredProfile = await photoRequiredRepository.updateCreatorProfile({
+    const profile = await repository.updateCreatorProfile({
       organizationId: "org_creator_workspace",
       creatorProfileId,
       patch: { displayName: "Lina Creator" },
     });
 
-    expect(photoRequiredProfile?.profileComplete).toBe(false);
+    expect(profile?.profileComplete).toBe(false);
     const completion = target.queries.find((query) => query.text.includes("WITH completion AS"));
-    expect(completion?.text).toContain("marketplace.creator_profile_is_complete");
-    expect(completion?.values).toEqual([creatorProfileId, "org_creator_workspace", true]);
+    expect(completion?.text).toMatch(
+      /marketplace\.creator_profile_is_complete\(\s*\$1::uuid,\s*\$2::uuid\s*\)/,
+    );
+    expect(completion?.text).toContain("WHERE profile.id = $1::uuid");
+    expect(completion?.text).toContain("profile.organization_id = $2::uuid");
+    expect(completion?.values).toEqual([creatorProfileId, "org_creator_workspace"]);
 
     const profileRead = target.queries.find(
       (query) =>
         query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
     );
-    expect(profileRead?.text).toContain("marketplace.creator_profile_is_complete");
-    expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", true]);
-  });
-
-  it("derives base completeness after photo policy rollback without a profile update", async () => {
-    const target = creatorPlatformRepositoryTarget(["platform-1"]);
-    const photoOptionalRepository = createPgMarketplaceCreatorSelfServiceRepository({
-      connectionString: "postgres://unused",
-      pool: target.pool as never,
-      profilePhotoRequired: false,
-    });
-
-    const photoOptionalProfile = await photoOptionalRepository.getCreatorProfile({
-      organizationId: "org_creator_workspace",
-      creatorProfileId,
-    });
-
-    expect(photoOptionalProfile?.profileComplete).toBe(true);
-    expect(target.queries.some((query) => query.text.includes("WITH completion AS"))).toBe(false);
-    const profileRead = target.queries.find(
-      (query) =>
-        query.text.includes("LEFT JOIN LATERAL") && query.text.includes("profile_complete"),
+    expect(profileRead?.text).toMatch(
+      /marketplace\.creator_profile_is_complete\(\s*profile\.id,\s*profile\.organization_id\s*\)/,
     );
-    expect(profileRead?.text).not.toContain("(profile.profile_complete");
-    expect(profileRead?.text).toContain("marketplace.creator_profile_is_complete");
-    expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace", false]);
+    expect(profileRead?.values).toEqual([creatorProfileId, "org_creator_workspace"]);
   });
 
   it("preserves omitted optional fields and supports explicit clears", async () => {
@@ -1016,17 +999,10 @@ function creatorPlatformRepositoryTarget(
       return { rows: [{ platformId: `platform-new-${insertedPlatformCount}` }] };
     }
     if (normalized.startsWith("WITH completion AS")) {
-      persistedProfileComplete = existingPlatformIds.length > 0 && values?.[2] !== true;
+      persistedProfileComplete = false;
       return { rows: [] };
     }
     if (normalized.startsWith("SELECT") && normalized.includes("LEFT JOIN LATERAL")) {
-      const profilePhotoRequired = values?.[2] === true;
-      const derivesBaseCompleteness = normalized.includes(
-        "marketplace.creator_profile_is_complete",
-      );
-      const baseProfileComplete = derivesBaseCompleteness
-        ? existingPlatformIds.length > 0
-        : persistedProfileComplete;
       return {
         rows: [
           {
@@ -1041,7 +1017,7 @@ function creatorPlatformRepositoryTarget(
             phone: "+49 30 123456",
             profilePictureUrl: null,
             profilePictureMediaObjectId: null,
-            profileComplete: baseProfileComplete && !profilePhotoRequired,
+            profileComplete: false,
             profileCompletedAt: persistedProfileComplete ? "2026-07-05T10:00:00.000Z" : null,
             profileStatus: "pending",
             platforms: [],
@@ -1073,7 +1049,6 @@ function buildMarketplaceCreatorApp(options: {
   repository: MarketplaceCreatorSelfServiceRepository;
   disableProfileMediaRepository?: boolean;
   mediaRepository?: MarketplaceCreatorProfileMediaRepository;
-  profilePhotoRequired?: boolean;
   lifecycleCommandBus?: IdentityLifecycleCommandBus;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
@@ -1082,7 +1057,6 @@ function buildMarketplaceCreatorApp(options: {
   return buildApp({
     logger: false,
     marketplaceCreatorSelfServiceRepository: options.repository,
-    creatorProfilePhotoRequired: options.profilePhotoRequired,
     ...(options.disableProfileMediaRepository
       ? {}
       : {

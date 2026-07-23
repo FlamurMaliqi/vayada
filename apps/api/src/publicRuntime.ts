@@ -60,14 +60,10 @@ export function createPublicRuntimeRepositories(config: ApiConfig, pools: Public
         })
       : undefined;
 
-  const marketplaceDiscoveryRepository =
-    config.marketplaceDiscoverySource === "target"
-      ? createPgMarketplaceDiscoveryReadRepository({
-          connectionString: requireTargetDatabaseUrl(config),
-          pool: pools.marketplaceDiscoveryPool,
-          profilePhotoRequired: config.creatorProfilePhotoRequired,
-        })
-      : undefined;
+  const marketplaceDiscoveryRepository = createPgMarketplaceDiscoveryReadRepository({
+    connectionString: requireTargetDatabaseUrl(config),
+    pool: pools.marketplaceDiscoveryPool,
+  });
 
   return {
     publicHotelProfileRepository,

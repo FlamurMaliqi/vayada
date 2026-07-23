@@ -107,10 +107,23 @@ function relevanceScore(hotel: Hotel, searchQuery: string, creator: Creator | nu
   }
 
   if (creator) {
-    const creatorPlatforms = creator.platforms.map((platform) => normalizeFacet(platform.name));
-    score +=
-      hotel.platforms?.filter((platform) => creatorPlatforms.includes(normalizeFacet(platform)))
-        .length ?? 0;
+    const creatorPlatforms = new Set(
+      creator.platforms.map((platform) => normalizeFacet(platform.name)),
+    );
+    const hotelPlatforms = new Set(
+      [
+        ...(hotel.platforms ?? []),
+        ...(hotel.collaborationOfferings?.flatMap((offering) => offering.platforms) ?? []),
+      ].map(normalizeFacet),
+    );
+    const sharedPlatformCount = Array.from(hotelPlatforms).filter((platform) =>
+      creatorPlatforms.has(platform),
+    ).length;
+    const eligibleOfferingCount = (hotel.collaborationOfferings ?? []).filter(
+      (offering) =>
+        offering.min_followers == null || creator.audienceSize >= offering.min_followers,
+    ).length;
+    score += sharedPlatformCount * 100 + eligibleOfferingCount * 10;
     const creatorCountries = creator.platforms.flatMap(
       (platform) => platform.topCountries?.map(({ country }) => normalizeFacet(country)) ?? [],
     );

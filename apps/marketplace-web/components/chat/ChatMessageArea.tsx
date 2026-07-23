@@ -11,12 +11,13 @@ import {
 import dynamic from "next/dynamic";
 import { AvatarSimple } from "@/components/ui";
 import { SystemMessage } from "./SystemMessage";
-import type { MessageResponse, ConversationResponse } from "@/services/api/collaborations";
 import {
-  getValidatedChatAttachmentUrl,
-  isOwnChatMessage,
-  isSystemChatMessage,
-} from "@/lib/utils/chatMessages";
+  isMessageFromCurrentUser,
+  type MessageResponse,
+  type ConversationResponse,
+} from "@/services/api/collaborations";
+import { getValidatedChatAttachmentUrl } from "@/lib/utils/chatMessages";
+import { CHAT_IMAGE_ACCEPTED_TYPES, getChatImageValidationError } from "@/lib/utils/chatSendGuard";
 
 // Dynamically import EmojiPicker to avoid SSR issues
 const EmojiPicker = dynamic(() => import("emoji-picker-react"), { ssr: false });
@@ -30,12 +31,10 @@ interface ChatMessageAreaProps {
   messageInput: string;
   onMessageInputChange: (value: string) => void;
   onSendMessage: (e: React.FormEvent) => void;
+  onSendImageMessage: (file: File, caption?: string) => Promise<void>;
+  isSending: boolean;
   onLoadMore: () => void;
-  onSendImageMessage?: (file: File, caption?: string) => Promise<void>;
 }
-
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
-const ALLOWED_FILE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 export function ChatMessageArea({
   messages,
@@ -46,15 +45,16 @@ export function ChatMessageArea({
   messageInput,
   onMessageInputChange,
   onSendMessage,
-  onLoadMore,
   onSendImageMessage,
+  isSending,
+  onLoadMore,
 }: ChatMessageAreaProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
 
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string>("");
+  const [imagePreview, setImagePreview] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -82,37 +82,27 @@ export function ChatMessageArea({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showEmojiPicker]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  useEffect(
+    () => () => {
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
+    },
+    [imagePreview],
+  );
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) return;
 
-    setUploadError(null);
-
-    // Validate file type
-    if (!ALLOWED_FILE_TYPES.includes(file.type)) {
-      setUploadError("Please select an image (JPG, PNG, WebP, GIF)");
-      return;
-    }
-
-    // Validate file size
-    if (file.size > MAX_FILE_SIZE) {
-      setUploadError("Image must be smaller than 20MB");
-      return;
-    }
+    const validationError = getChatImageValidationError(file);
+    setUploadError(validationError);
+    if (validationError) return;
 
     setSelectedImage(file);
     setImagePreview(URL.createObjectURL(file));
-
-    // Reset file input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
   };
 
   const handleRemoveImage = () => {
-    if (imagePreview) {
-      URL.revokeObjectURL(imagePreview);
-    }
     setSelectedImage(null);
     setImagePreview("");
     setUploadError(null);
@@ -137,30 +127,31 @@ export function ChatMessageArea({
     setShowEmojiPicker(false);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isSending || isUploading) return;
 
-    if (selectedImage && onSendImageMessage) {
-      setIsUploading(true);
-      setUploadError(null);
+    if (!selectedImage) {
+      if (messageInput.trim()) onSendMessage(event);
+      return;
+    }
 
-      try {
-        const caption = messageInput.trim() || undefined;
-        await onSendImageMessage(selectedImage, caption);
-        handleRemoveImage();
-        onMessageInputChange("");
-      } catch (error) {
-        console.error("Failed to send image:", error);
-        setUploadError("Failed to upload. Please try again.");
-      } finally {
-        setIsUploading(false);
-      }
-    } else if (messageInput.trim()) {
-      onSendMessage(e);
+    setIsUploading(true);
+    setUploadError(null);
+    try {
+      await onSendImageMessage(selectedImage, messageInput.trim() || undefined);
+      handleRemoveImage();
+      onMessageInputChange("");
+    } catch (error) {
+      console.error("Failed to send image:", error);
+      setUploadError("Failed to upload. Please try again.");
+    } finally {
+      setIsUploading(false);
     }
   };
 
-  const canSend = (selectedImage && !isUploading) || messageInput.trim();
+  const isBusy = isSending || isUploading;
+  const canSend = (selectedImage !== null || Boolean(messageInput.trim())) && !isBusy;
 
   return (
     <>
@@ -186,20 +177,13 @@ export function ChatMessageArea({
 
             {messages.length > 0 ? (
               messages.map((msg, idx) => {
-                const isSystem = isSystemChatMessage({
-                  senderId: msg.sender_id,
-                  senderSide: msg.sender_side,
-                  senderName: msg.sender_name,
-                  contentType: msg.content_type,
-                });
-                const isMe =
-                  !isSystem &&
-                  isOwnChatMessage(msg.sender_side, activeChat.my_role, {
-                    adapted: msg.legacy_adapted === true,
-                    senderName: msg.sender_name,
-                    partnerName: activeChat.partner_name,
-                  });
+                const isSystem = msg.sender_id === null || msg.content_type === "system";
+                const isMe = isMessageFromCurrentUser(msg, activeChat);
                 const isThem = !isSystem && !isMe;
+                const senderName =
+                  msg.sender_name === "creator" || msg.sender_name === "hotel"
+                    ? activeChat.partner_name
+                    : msg.sender_name || activeChat.partner_name;
                 const attachmentUrl = getValidatedChatAttachmentUrl(msg.metadata);
 
                 // Simple date grouping
@@ -236,7 +220,7 @@ export function ChatMessageArea({
                           {isThem && (
                             <AvatarSimple
                               src={msg.sender_avatar}
-                              name={msg.sender_name || activeChat.partner_name}
+                              name={senderName}
                               size="sm"
                               variant="blue"
                             />
@@ -305,50 +289,48 @@ export function ChatMessageArea({
 
       {/* Fixed Footer: Message Input */}
       <div className="flex-shrink-0 border-t border-gray-100 bg-white p-3">
-        {/* Image Preview */}
         {imagePreview && (
-          <div className="mb-3 relative inline-block">
+          <div className="relative mb-3 inline-block">
             <img
               src={imagePreview}
-              alt="Preview"
+              alt="Selected attachment preview"
               className="max-h-32 rounded-lg border border-gray-200"
             />
             <button
+              type="button"
               onClick={handleRemoveImage}
-              disabled={isUploading}
-              className="absolute -top-2 -right-2 p-1 bg-gray-800 text-white rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50"
+              disabled={isBusy}
+              className="absolute -right-2 -top-2 rounded-full bg-gray-800 p-1 text-white transition-colors hover:bg-gray-700 disabled:opacity-50"
+              title="Remove attachment"
             >
-              <XMarkIcon className="w-4 h-4" />
+              <XMarkIcon className="h-4 w-4" />
             </button>
           </div>
         )}
 
-        {/* Upload Error */}
         {uploadError && (
-          <div className="mb-3 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">
+          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
             {uploadError}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="flex items-center gap-3">
-          {/* Hidden file input */}
           <input
             ref={fileInputRef}
             type="file"
-            accept={ALLOWED_FILE_TYPES.join(",")}
+            accept={CHAT_IMAGE_ACCEPTED_TYPES.join(",")}
             onChange={handleFileSelect}
             className="hidden"
           />
 
-          {/* Attachment button */}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            className="p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
+            disabled={isBusy}
+            className="rounded-full p-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
             title="Attach image"
           >
-            <PaperClipIcon className="w-5 h-5" />
+            <PaperClipIcon className="h-5 w-5" />
           </button>
 
           <div className="flex-1 relative">
@@ -358,7 +340,7 @@ export function ChatMessageArea({
               placeholder={selectedImage ? "Add a caption (optional)..." : "Type a message..."}
               value={messageInput}
               onChange={(e) => onMessageInputChange(e.target.value)}
-              disabled={isUploading}
+              disabled={isBusy}
               className="h-10 w-full rounded-md border border-gray-200 bg-gray-50 pl-3 pr-10 text-sm text-gray-900 transition-colors focus:border-primary-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50"
             />
           </div>
@@ -368,7 +350,7 @@ export function ChatMessageArea({
             <button
               type="button"
               onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-              disabled={isUploading}
+              disabled={isBusy}
               className="p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
               title="Add emoji"
             >
@@ -386,11 +368,11 @@ export function ChatMessageArea({
           {/* Send button */}
           <button
             type="submit"
-            disabled={!canSend || isUploading}
+            disabled={!canSend}
             className="rounded-md bg-primary-600 p-2.5 text-white shadow-sm transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isUploading ? (
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+            {isBusy ? (
+              <div className="h-5 w-5 animate-spin rounded-full border-b-2 border-white" />
             ) : (
               <PaperAirplaneIcon className="w-5 h-5" />
             )}

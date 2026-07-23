@@ -43,14 +43,9 @@ export function RangeSliderDropdown({
     setLocalValue(value);
   }, [value]);
 
-  // Only update local value during drag (for visual feedback)
   const handleSliderChange = (newValue: number) => {
     setLocalValue(newValue);
-  };
-
-  // Only commit to parent when user releases slider
-  const handleSliderCommit = () => {
-    onChange(localValue);
+    onChange(newValue);
   };
 
   const percentage = ((localValue - min) / (max - min)) * 100;
@@ -85,8 +80,6 @@ export function RangeSliderDropdown({
                 step={step}
                 value={localValue}
                 onChange={(e) => handleSliderChange(Number(e.target.value))}
-                onMouseUp={handleSliderCommit}
-                onTouchEnd={handleSliderCommit}
                 className="w-full h-3 bg-gray-200 rounded-lg appearance-none cursor-pointer"
                 style={{
                   background: `linear-gradient(to right, rgb(14, 165, 233) 0%, rgb(14, 165, 233) ${percentage}%, rgb(229, 231, 235) ${percentage}%, rgb(229, 231, 235) 100%)`,
