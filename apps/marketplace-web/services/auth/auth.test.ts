@@ -474,6 +474,7 @@ describe("authService", () => {
     const localStorage = createStorageMock();
     vi.stubGlobal("window", {
       location: {
+        hostname: "marketplace.localhost",
         protocol: "https:",
         port: "1355",
       },

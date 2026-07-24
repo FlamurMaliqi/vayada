@@ -19,9 +19,13 @@ import {
 } from "./sessionStore";
 import { ensureBookingCompatibilityToken } from "./compatibilityToken";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
+import { resolveLocalApiOrigin } from "@vayada/product-onboarding/localApiOrigin";
 
-const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 const AUTH_SURFACE = "booking-admin";
+
+function authApiBaseUrl(): string {
+  return resolveLocalApiOrigin(process.env.NEXT_PUBLIC_AUTH_API_URL);
+}
 
 export interface LoginRequest {
   email: string;
@@ -35,7 +39,7 @@ export interface SignupRequest {
 }
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
+  const response = await fetch(`${authApiBaseUrl()}${endpoint}`, {
     ...options,
     credentials: "include",
     headers: {
@@ -89,7 +93,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/login", window.location.origin);
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "login");
     url.searchParams.set("return_to", callbackUrl.toString());
@@ -106,7 +110,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/signup", window.location.origin);
-    const url = new URL(`${AUTH_API_BASE_URL}/auth/oauth/google/start`);
+    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "signup");
     url.searchParams.set("type", "hotel");

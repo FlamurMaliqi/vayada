@@ -1,4 +1,4 @@
--- Migration: 0038_repair_marketplace_offer_operator_links
+-- Migration: 0039_repair_marketplace_offer_operator_links
 -- Owner: domain-marketplace
 --
 -- Hotel self-service briefly copied the hotel-profile relationship onto new

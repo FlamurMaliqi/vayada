@@ -3,7 +3,11 @@
 import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/auth";
-import { getAuthSessionUser, getSelectedOrganizationId } from "@/services/auth/sessionStore";
+import {
+  getAuthSessionUser,
+  getAuthWorkosOrganizationId,
+  getSelectedOrganizationId,
+} from "@/services/auth/sessionStore";
 import { settingsService } from "@/services/settings";
 import type { CreateBookingAddonItemBody } from "@/services/api/bookingAddonItemsClient";
 import type { CreateBookingPromoCodeBody } from "@/services/api/bookingPromoCodesClient";
@@ -11,8 +15,10 @@ import { updateBookingBenefitsSettings } from "@/services/api/bookingBenefitsSet
 import { updateBookingLastMinuteSettings } from "@/services/api/bookingLastMinuteSettingsClient";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import {
-  publicationReadinessError,
+  isPublicBookabilityReady,
+  publicationReadinessSteps,
   publishPublicBookabilityProfile,
+  type PublicBookabilityPublication,
 } from "@/services/api/publicBookabilityPublicationClient";
 import {
   buildFinancePaymentSettingsBody,
@@ -48,6 +54,7 @@ import {
   PoliciesStep,
   PropertyStep,
   type SetupAddon,
+  buildProductHandoffUrl,
   useSetupWizardState,
 } from "@vayada/product-onboarding";
 
@@ -151,6 +158,7 @@ function BookingProductSetupPage() {
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [savedSetup, setSavedSetup] = useState<PublicBookabilityPublication | null>(null);
   const [prefilled, setPrefilled] = useState(false);
   const [activationSettingsLoaded, setActivationSettingsLoaded] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
@@ -797,9 +805,10 @@ function BookingProductSetupPage() {
         throw new Error("Booking hotel id is required before publishing the booking page.");
       }
       const publication = await publishPublicBookabilityProfile(createdHotelId);
-      const readinessError = publicationReadinessError(publication);
-      if (readinessError) {
-        setError(readinessError);
+      if (!isPublicBookabilityReady(publication)) {
+        if (draftScope) clearBookingSetupDraft(localStorage, draftScope);
+        localStorage.setItem("setupComplete", "true");
+        setSavedSetup(publication);
         setSaving(false);
         return;
       }
@@ -1020,6 +1029,81 @@ function BookingProductSetupPage() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
       </div>
+    );
+  }
+
+  if (savedSetup) {
+    const readinessSteps = publicationReadinessSteps(savedSetup);
+    const pmsUrl = process.env.NEXT_PUBLIC_PMS_FRONTEND_URL || "https://pms.vayada.com";
+
+    const continueInPms = () => {
+      const organizationId = getSelectedOrganizationId();
+      if (!organizationId) {
+        window.location.href = pmsUrl;
+        return;
+      }
+      window.location.href = buildProductHandoffUrl(
+        pmsUrl,
+        savedSetup.propertyId,
+        organizationId,
+        getAuthWorkosOrganizationId(),
+        `/rooms/new?${new URLSearchParams({
+          onboarding: "booking-readiness",
+          propertyId: savedSetup.propertyId,
+        }).toString()}`,
+      );
+    };
+
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-12">
+        <section className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-10">
+          <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100">
+            <CheckIcon className="h-7 w-7 text-emerald-700" aria-hidden="true" />
+          </div>
+          <p className="mb-2 text-sm font-semibold text-emerald-700">Booking setup complete</p>
+          <h1 className="text-2xl font-bold text-gray-950 sm:text-3xl">
+            Your Booking settings are saved
+          </h1>
+          <p className="mt-3 text-base leading-7 text-gray-600">
+            You did everything right here. Your booking page will go live automatically after the
+            remaining setup is complete.
+          </p>
+
+          <div className="mt-8 rounded-xl bg-indigo-50 p-5">
+            <h2 className="font-semibold text-gray-950">What’s left</h2>
+            <ul className="mt-4 space-y-3">
+              {readinessSteps.map((readinessStep) => (
+                <li key={readinessStep.id} className="flex items-start gap-3 text-sm text-gray-700">
+                  <span
+                    className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-indigo-300 bg-white text-xs font-semibold text-indigo-700"
+                    aria-hidden="true"
+                  >
+                    {readinessStep.id === "pms" ? "1" : "•"}
+                  </span>
+                  <span>{readinessStep.label}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            <button
+              type="button"
+              onClick={continueInPms}
+              className="rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
+            >
+              Continue setup in PMS
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard")}
+              className="rounded-xl border border-gray-300 bg-white px-5 py-3 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              Go to Booking dashboard
+            </button>
+          </div>
+        </section>
+      </main>
     );
   }
 
