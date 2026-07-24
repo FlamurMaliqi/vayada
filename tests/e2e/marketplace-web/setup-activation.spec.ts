@@ -34,18 +34,6 @@ test.describe("marketplace-web shared setup activation", () => {
         },
       });
     });
-    await page.route(/\/auth\/compat\/marketplace-web-token/, async (route) => {
-      if (route.request().method() === "OPTIONS") {
-        await fulfillCorsPreflight(route);
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        headers: corsHeaders(route),
-        json: { accessToken: "legacy-marketplace-token", expiresIn: 900 },
-      });
-    });
-
     await page.goto(setupUrl(baseURL));
 
     await expect(page.getByRole("heading", { name: "Let’s create your profile" })).toBeVisible();
@@ -971,17 +959,6 @@ async function mockAuthSession(page: Page) {
           workosUserId: "user_workos_hotel_owner",
         },
       },
-    });
-  });
-  await page.route(/\/auth\/compat\/marketplace-web-token/, async (route) => {
-    if (route.request().method() === "OPTIONS") {
-      await fulfillCorsPreflight(route);
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      headers: corsHeaders(route),
-      json: { accessToken: "legacy-marketplace-token", expiresIn: 900 },
     });
   });
 }

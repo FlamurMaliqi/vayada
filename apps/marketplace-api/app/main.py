@@ -2,7 +2,6 @@
 Main FastAPI application
 """
 
-import asyncio
 import logging
 import traceback
 from contextlib import asynccontextmanager
@@ -25,12 +24,10 @@ from app.routers import (
     hotels,
     invite_codes,
     marketplace,
-    newsletter,
     notifications,
     trips,
     upload,
 )
-from app.services.newsletter_scheduler import run_forever as run_newsletter_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -44,21 +41,9 @@ async def lifespan(app: FastAPI):
     if settings.PMS_DATABASE_URL:
         await PmsDatabase.get_pool()
 
-    scheduler_task = None
-    if settings.NEWSLETTER_SCHEDULER_ENABLED:
-        scheduler_task = asyncio.create_task(run_newsletter_scheduler())
-    else:
-        logger.info("Newsletter scheduler disabled (NEWSLETTER_SCHEDULER_ENABLED=false)")
-
     yield
 
     # Shutdown
-    if scheduler_task is not None:
-        scheduler_task.cancel()
-        try:
-            await scheduler_task
-        except asyncio.CancelledError:
-            pass
     await PmsDatabase.close_pool()
     await AuthDatabase.close_pool()
     await Database.close_pool()
@@ -130,7 +115,6 @@ app.include_router(chat.router)
 app.include_router(contact.router)
 app.include_router(consent.router)
 app.include_router(gdpr.router)
-app.include_router(newsletter.router)
 app.include_router(trips.router)
 app.include_router(invite_codes.router)
 app.include_router(notifications.router)

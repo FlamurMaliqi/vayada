@@ -67,8 +67,9 @@ The next-stack debt falls into four groups:
      `AUTH_LEGACY_PMS_JWT_SECRET`, and
      `AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET` (`apps/api/src/config.ts` lines
      241-250).
-   - **Current consumer:** `booking-admin`, `pms-web`, `affiliate-dashboard`,
-     and some admin/marketplace compatibility flows.
+   - **Current consumer:** `vayada-admin`, `booking-admin`, `pms-web`, and
+     `affiliate-dashboard`. Marketplace Web's compatibility-token request has
+     been removed.
    - **Target replacement:** AuthKit session plus typed
      `RequestContext`/route-policy authorization; no legacy JWT secret per
      migrated surface.
@@ -304,24 +305,23 @@ The next-stack debt falls into four groups:
       for migrated routes.
     - **Follow-up:** VAY-886.
 
-16. **`next-marketplace`: compatibility methods and auth base**
-    - **Old thing:** Marketplace Web still has legacy compatibility
-      methods/comments for hotel CRUD and collaboration fallback; auth base
-      defaults to `https://api.localhost`; PMS app switcher links default to
-      production PMS (`apps/marketplace-web/services/api/hotels.ts` lines
-      269-289; `apps/marketplace-web/services/api/collaborations.ts` lines
-      386-400; `apps/marketplace-web/services/auth/auth.ts` lines 19-22;
-      `apps/marketplace-web/lib/constants/routes.ts` lines 73-77).
-    - **Current consumer:** Marketplace Web hotel/creator surfaces and product
-      navigation.
-    - **Target replacement:** marketplace vertical contracts, WorkOS auth
-      cutover, and configured product URLs.
+16. **`next-marketplace`: product URL configuration**
+    - **Old thing:** Marketplace Web accepted legacy token/user URL fragments
+      during cross-app handoff and requested a Marketplace compatibility token;
+      PMS app-switcher links defaulted to production PMS.
+    - **Current consumer:** Product navigation only. Marketplace Web now
+      authenticates cross-app handoffs through its AuthKit session and accepts
+      only organization/property hints. Hotel/creator CRUD, collaboration/trip
+      fallbacks, and the Marketplace compatibility-token request have been
+      removed. The newsletter UI, routes, scheduler, and sender are retired;
+      historical preference rows remain target migration data.
+    - **Target replacement:** Configured product URLs.
     - **Owner domain:** marketplace / WorkOS.
-    - **Deletion blocker / proof needed:** migrated marketplace surfaces use
-      typed marketplace clients and no legacy auth or CRUD fallback methods.
-      Product navigation URLs are config, not runtime API dependencies.
+    - **Deletion blocker / proof needed:** Product navigation URLs are config,
+      not runtime API dependencies. No legacy Marketplace auth rollback remains.
     - **Follow-up:** existing marketplace vertical tickets from
-      VAY-737/VAY-803/VAY-801.
+      VAY-737/VAY-803/VAY-801; VAY-1029 tracks a future Marketplace engagement
+      feature rather than restoration of the removed newsletter.
 
 17. **Smoke/proof layer: broad admin mocks**
     - **Old thing:** shared Booking Admin mocks still fulfill broad
@@ -383,7 +383,7 @@ Remaining legacy-runtime env requirements outside the covered route groups:
 | `BOOKING_PUBLIC_API_URL`                 | Public domain/promo and Booking Admin helper fallbacks removed     | VAY-760, VAY-883         | Yes                             |
 | `PMS_API_URL`                            | PMS guest-form sync and Booking Admin/PMS helper fallbacks removed | VAY-878, VAY-883         | Yes                             |
 | `PMS_PUBLIC_API_URL`                     | Public checkout/status/lookup proxy fallbacks removed              | VAY-760 follow-up tracks | Yes                             |
-| `AUTH_LEGACY_MARKETPLACE_JWT_SECRET`     | Marketplace Web no longer needs legacy marketplace JWT handoff     | VAY-737, VAY-803         | No                              |
+| `AUTH_LEGACY_MARKETPLACE_JWT_SECRET`     | Platform Admin no longer needs the marketplace-admin JWT handoff   | VAY-885                  | No                              |
 | `AUTH_LEGACY_BOOKING_JWT_SECRET`         | Booking Admin no longer needs legacy Booking JWT handoff           | VAY-883, then VAY-884    | No                              |
 | `AUTH_LEGACY_PMS_JWT_SECRET`             | PMS Web no longer needs legacy PMS JWT handoff                     | VAY-878, then VAY-879    | No                              |
 | `AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET`   | Affiliate Dashboard moves to target affiliate/finance routes       | VAY-886                  | No                              |

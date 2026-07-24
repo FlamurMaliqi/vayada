@@ -394,11 +394,7 @@ export function isMessageFromCurrentUser(
   conversation: ConversationResponse,
 ): boolean {
   if (message.sender_id === null || message.content_type === "system") return false;
-  if (message.sender_side) return message.sender_side === conversation.my_role;
-  if (message.sender_name === "creator" || message.sender_name === "hotel") {
-    return message.sender_name === conversation.my_role;
-  }
-  return message.sender_name !== conversation.partner_name;
+  return message.sender_side === conversation.my_role;
 }
 
 export function readChatCollaborationId(search: string): string | null {

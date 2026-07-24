@@ -95,13 +95,6 @@ class Settings(BaseSettings):
     )
     S3_USE_PUBLIC_URLS: bool = Field(True, description="Whether to use public URLs or signed URLs")
 
-    # Newsletter Scheduler (in-process; multi-replica unsafe)
-    NEWSLETTER_SCHEDULER_ENABLED: bool = Field(
-        False,
-        description="Whether the in-process weekly newsletter scheduler should run. "
-        "Multi-replica deploys must enable this on at most one replica.",
-    )
-
     # Affiliate / Booking Engine Configuration
     AFFILIATE_LINK_TEMPLATE: str = Field(
         "https://{slug}.booking.vayada.com?ref={referral_code}",

@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Creator } from "@/lib/types";
-import {
-  clearAuthData,
-  setAuthKitSession,
-  setLegacyCompatibilityToken,
-} from "@/services/auth/sessionStore";
+import { clearAuthData, setAuthKitSession } from "@/services/auth/sessionStore";
 import { creatorService, isAbsoluteHttpsUrl } from "./creators";
 
 const uploadPlatformMediaMock = vi.hoisted(() => vi.fn());
@@ -135,14 +131,12 @@ describe("creator target self-service client", () => {
     expect(profile.profilePictureMediaObjectId).toBe("media-id");
   });
 
-  it("uses the AuthKit token, not the legacy compatibility token, for target status reads", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+  it("uses the AuthKit token for target status reads", async () => {
     setAuthKitSession({
       accessToken: "workos-access-token",
       organizationKind: "creator_workspace",
       user: { id: "user_creator", email: "creator@example.com", status: "active" },
     });
-    setLegacyCompatibilityToken("legacy-marketplace-token", 900);
 
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(requestHeader(init, "Authorization")).toBe("Bearer workos-access-token");

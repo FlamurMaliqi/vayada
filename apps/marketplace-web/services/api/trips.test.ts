@@ -93,6 +93,19 @@ describe("tripService idempotency", () => {
     );
   });
 
+  it("surfaces target route failures", async () => {
+    const routeError = { status: 404, data: { detail: "Not Found" } };
+    mocks.createMarketplaceTrip.mockRejectedValue(routeError);
+
+    await expect(
+      tripService.createTrip({
+        name: "Bali campaign",
+        start_date: "2026-09-10",
+        end_date: "2026-09-20",
+      }),
+    ).rejects.toBe(routeError);
+  });
+
   it("lets a logical caller reuse its key across a separate timeout retry", async () => {
     mocks.createMarketplaceTrip.mockRejectedValueOnce(new TypeError("Network request timed out"));
     const data = {

@@ -1,32 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  getValidatedChatAttachmentUrl,
-  isOwnChatMessage,
-  isSystemChatMessage,
-} from "./chatMessages";
+import { getValidatedChatAttachmentUrl, isSystemChatMessage } from "./chatMessages";
 
 describe("chat message presentation", () => {
-  it("uses sender side instead of display names to place messages", () => {
-    expect(isOwnChatMessage("creator", "creator")).toBe(true);
-    expect(isOwnChatMessage("hotel", "creator")).toBe(false);
-    expect(isOwnChatMessage("creator", "hotel")).toBe(false);
-    expect(
-      isOwnChatMessage(null, "creator", {
-        adapted: false,
-        senderName: "platform_admin",
-        partnerName: "Hotel Alpenrose",
-      }),
-    ).toBe(false);
-    expect(
-      isOwnChatMessage(null, "creator", {
-        adapted: true,
-        senderName: "Me",
-        partnerName: "Hotel Alpenrose",
-      }),
-    ).toBe(true);
-  });
-
   it("does not center participant messages merely because sender ID is unavailable", () => {
     expect(
       isSystemChatMessage({

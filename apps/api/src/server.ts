@@ -420,7 +420,6 @@ const app = buildApp({
               allowMissingOrganization: true,
               logoutReturnUrl:
                 config.authSession.authMarketplaceWebLogoutUrl ?? config.authSession.authLogoutUrl,
-              legacyJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,
             },
           },
           cookieSecure: config.authSession.authCookieSecure,

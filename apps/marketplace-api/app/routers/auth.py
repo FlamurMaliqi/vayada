@@ -100,6 +100,7 @@ async def reject_retired_local_auth(user: dict | None) -> None:
     if await is_workos_migrated_platform_user(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=LOCAL_AUTH_RETIRED_DETAIL)
 
+
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
@@ -262,11 +263,6 @@ async def register(request: RegisterRequest):
             elif request.type == "hotel":
                 await HotelRepository.create_profile(user["id"], user["name"])
 
-            # Create newsletter preferences (enabled by default)
-            from app.repositories.newsletter_repo import NewsletterRepository
-
-            await NewsletterRepository.upsert(str(user["id"]), enabled=True)
-
             # Create consent history records for GDPR audit trail
             await ConsentRepository.record(user["id"], "terms", True, version=terms_version)
             await ConsentRepository.record(user["id"], "privacy", True, version=privacy_version)
@@ -343,7 +339,9 @@ async def login(http_request: Request, request: LoginRequest):
                 ip_address=ip,
                 user_agent=ua,
             )
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=LOCAL_AUTH_RETIRED_DETAIL)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=LOCAL_AUTH_RETIRED_DETAIL
+            )
 
         lockout = await RateLimitRepository.check_locked(request.email)
         if lockout:
