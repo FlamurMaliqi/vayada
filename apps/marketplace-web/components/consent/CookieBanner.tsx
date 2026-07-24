@@ -3,7 +3,7 @@
 import { useCookieConsent } from "@/context/CookieConsentContext";
 import Link from "next/link";
 import { ROUTES } from "@/lib/constants";
-import { XMarkIcon } from "@heroicons/react/24/outline";
+import { ShieldCheckIcon } from "@heroicons/react/24/outline";
 
 export function CookieBanner() {
   const { showBanner, isLoading, acceptAll, acceptNecessaryOnly, openSettings } =
@@ -15,55 +15,66 @@ export function CookieBanner() {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-full max-w-sm">
-      <div className="bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
-        {/* Header */}
-        <div className="px-5 pt-5 pb-3">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🍪</span>
-              <h3 className="text-base font-semibold text-gray-900">Cookie Settings</h3>
+    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex justify-center p-3 sm:inset-x-auto sm:bottom-5 sm:right-5 sm:block sm:w-[26rem] sm:p-0">
+      <section
+        role="dialog"
+        aria-labelledby="cookie-banner-title"
+        aria-describedby="cookie-banner-description"
+        className="pointer-events-auto overflow-hidden rounded-2xl border border-border-strong bg-white/95 shadow-elevated backdrop-blur-xl"
+      >
+        <div className="p-5 sm:p-6">
+          <div className="flex items-start gap-3.5">
+            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary-50 text-primary-500 ring-1 ring-primary-100">
+              <ShieldCheckIcon className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div>
+              <h2
+                id="cookie-banner-title"
+                className="font-display text-lg font-semibold tracking-tight text-ink"
+              >
+                Cookie preferences
+              </h2>
+              <p
+                id="cookie-banner-description"
+                className="mt-1.5 text-sm leading-6 text-muted-dark"
+              >
+                We use necessary cookies to keep Vayada working and optional cookies to improve your
+                experience.{" "}
+                <Link
+                  href={ROUTES.PRIVACY}
+                  className="font-medium text-primary-600 underline decoration-primary-200 underline-offset-4 transition-colors hover:text-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
+                >
+                  Privacy policy
+                </Link>
+              </p>
             </div>
           </div>
-        </div>
 
-        {/* Content */}
-        <div className="px-5 pb-4">
-          <p className="text-sm text-gray-600 leading-relaxed">
-            We use cookies to improve your experience on our website.{" "}
-            <Link
-              href={ROUTES.PRIVACY}
-              className="text-primary-600 hover:text-primary-700 underline"
-            >
-              Privacy Policy
-            </Link>
-          </p>
-        </div>
-
-        {/* Buttons */}
-        <div className="px-5 pb-5 space-y-2">
-          <button
-            onClick={acceptAll}
-            className="w-full px-4 py-2.5 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
-          >
-            Accept All
-          </button>
-          <div className="flex gap-2">
+          <div className="mt-5 grid grid-cols-2 gap-2.5">
             <button
-              onClick={acceptNecessaryOnly}
-              className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              type="button"
+              onClick={acceptAll}
+              className="col-span-2 inline-flex h-11 items-center justify-center rounded-full bg-primary-500 px-5 text-sm font-medium text-white shadow-glow transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
             >
-              Necessary Only
+              Accept all
             </button>
             <button
+              type="button"
+              onClick={acceptNecessaryOnly}
+              className="inline-flex h-10 items-center justify-center rounded-full border border-border-strong bg-white px-4 text-sm font-medium text-ink transition-colors hover:bg-surface-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
+            >
+              Necessary only
+            </button>
+            <button
+              type="button"
               onClick={openSettings}
-              className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              className="inline-flex h-10 items-center justify-center rounded-full bg-surface-elevated px-4 text-sm font-medium text-ink transition-colors hover:bg-primary-50 hover:text-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
             >
               Customize
             </button>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

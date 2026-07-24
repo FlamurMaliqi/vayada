@@ -98,7 +98,19 @@ function fallbackHostForSlug(slug: string, requestHost: string): string {
   const port = portFromHost(requestHost);
   const portSuffix = port ? `:${port}` : "";
 
-  if (host.endsWith(".booking.localhost")) return `${slug}.booking.localhost${portSuffix}`;
+  if (host === "booking.localhost") return `${slug}.booking.localhost${portSuffix}`;
+  if (host.endsWith(".booking.localhost")) {
+    const localPrefix = host.slice(0, -".booking.localhost".length);
+    const localLabels = localPrefix.split(".");
+    const worktreePrefix =
+      localLabels.length > 1
+        ? localLabels.slice(1).join(".")
+        : localPrefix === slug.toLowerCase()
+          ? ""
+          : localPrefix;
+    const worktreeSuffix = worktreePrefix ? `.${worktreePrefix}` : "";
+    return `${slug}${worktreeSuffix}.booking.localhost${portSuffix}`;
+  }
   if (host.endsWith(".localhost")) return `${slug}.localhost${portSuffix}`;
   if (host.endsWith(".next-booking.vayada.com")) return `${slug}.next-booking.vayada.com`;
 
