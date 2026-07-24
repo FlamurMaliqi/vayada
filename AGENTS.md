@@ -62,11 +62,24 @@ For Flamur's side-by-side local review deployments, do not use worktree- or
 role-prefixed hostnames such as `creator.*.localhost` or `hotel.*.localhost`.
 Always deploy through portless; do not expose review deployments as plain
 `http://localhost:<app-port>` URLs. Keep the canonical portless hostname and
-isolate checkouts with nearby proxy ports instead (for example,
-`https://marketplace.localhost:1355` and
-`https://marketplace.localhost:1356`). Apply the same proxy-port suffix to each
-checkout's API URLs. This avoids Next.js development-origin hydration failures,
-keeps OAuth callbacks consistent, and makes comparison links predictable.
+isolate each checkout with its own state directory and nearby proxy port:
+
+```bash
+# Run from checkout A
+PORTLESS_STATE_DIR=/tmp/vayada-review-1355 PORTLESS_PORT=1355 npm run dev:workos-local
+
+# Run from checkout B
+PORTLESS_STATE_DIR=/tmp/vayada-review-1356 PORTLESS_PORT=1356 npm run dev:workos-local
+```
+
+These commands start independent proxies and produce matching app and API URLs,
+for example `https://marketplace.localhost:1355` with
+`https://api.localhost:1355`, and the same pair on `:1356`. Do not attach either
+checkout to the default proxy. `dev:workos-local` derives browser origins,
+OAuth callback URLs, and `AUTH_ALLOWED_ORIGINS` from that checkout's suffixed
+URLs; preserve the suffix on any manual overrides too. This avoids Next.js
+development-origin hydration failures, keeps OAuth callbacks consistent, and
+makes comparison links predictable.
 
 ### Multi-tenant subdomains (booking-web)
 
