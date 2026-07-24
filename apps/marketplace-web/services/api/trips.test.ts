@@ -93,7 +93,7 @@ describe("tripService idempotency", () => {
     );
   });
 
-  it("surfaces target route failures without calling the retired legacy API", async () => {
+  it("surfaces target route failures", async () => {
     const routeError = { status: 404, data: { detail: "Not Found" } };
     mocks.createMarketplaceTrip.mockRejectedValue(routeError);
 
