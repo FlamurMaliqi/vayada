@@ -58,6 +58,16 @@ The Next.js apps and `apps/api` register their portless names via a `"portless"`
 
 `git worktree add /tmp/vayada-<branch> <branch>` then `cd /tmp/vayada-<branch>/apps/<name> && portless` automatically prefixes the worktree as a subdomain: `https://<branch>.<name>.localhost`. Worktrees on different branches don't collide.
 
+For Flamur's side-by-side local review deployments, do not use worktree- or
+role-prefixed hostnames such as `creator.*.localhost` or `hotel.*.localhost`.
+Always deploy through portless; do not expose review deployments as plain
+`http://localhost:<app-port>` URLs. Keep the canonical portless hostname and
+isolate checkouts with nearby proxy ports instead (for example,
+`https://marketplace.localhost:1355` and
+`https://marketplace.localhost:1356`). Apply the same proxy-port suffix to each
+checkout's API URLs. This avoids Next.js development-origin hydration failures,
+keeps OAuth callbacks consistent, and makes comparison links predictable.
+
 ### Multi-tenant subdomains (booking-web)
 
 `booking-web` extracts the hotel slug from the hostname (`<slug>.booking.localhost` → that hotel's booking page). portless does not forward arbitrary subdomains in its default proxy mode, but v0.13 supports this with the proxy-level `--wildcard` flag. Verified with curl: after `portless proxy start --wildcard`, both `https://booking.localhost` and `https://acme.booking.localhost` route to the same `booking` app/alias.
