@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getRequestHost } from "./requestHost";
-import { resolvePublicHotelUrls } from "./server/publicUrls";
+import { getCanonicalHostRedirectUrl, resolvePublicHotelUrls } from "./server/publicUrls";
 
 describe("getRequestHost", () => {
   it("prefers the original forwarded host and preserves its port", () => {
@@ -33,5 +33,37 @@ describe("getRequestHost", () => {
         locale: "en",
       }).canonicalUrl,
     ).toBe("https://codex-qa-hotel.booking.localhost:1355/en");
+  });
+
+  it("preserves the portless worktree hostname in public URLs", () => {
+    const requestUrl = new URL(
+      "https://hotel-alpenrose.polish-cookie-banner.booking.localhost:1355/en",
+    );
+    const policy = resolvePublicHotelUrls({
+      requestHost: requestUrl.host,
+      requestProtocol: "https",
+      slug: "hotel-alpenrose",
+      locale: "en",
+    });
+
+    expect(policy.canonicalUrl).toBe(requestUrl.toString().replace(/\/$/, ""));
+    expect(getCanonicalHostRedirectUrl(policy, requestUrl)).toBeNull();
+  });
+
+  it("replaces a legacy tenant slug without treating it as part of the worktree hostname", () => {
+    const requestUrl = new URL(
+      "https://legacy-alpenrose.polish-cookie-banner.booking.localhost:1355/en",
+    );
+    const policy = resolvePublicHotelUrls({
+      requestHost: requestUrl.host,
+      requestProtocol: "https",
+      slug: "alpenrose-resort",
+      locale: "en",
+    });
+
+    expect(policy.canonicalUrl).toBe(
+      "https://alpenrose-resort.polish-cookie-banner.booking.localhost:1355/en",
+    );
+    expect(getCanonicalHostRedirectUrl(policy, requestUrl)).toBe(policy.canonicalUrl);
   });
 });

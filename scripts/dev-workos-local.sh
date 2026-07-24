@@ -117,6 +117,17 @@ ensure_workos_cors() {
   WORKOS_MODE=agent workos config cors add "$origin" --json >/dev/null
 }
 
+get_portless_origin() {
+  local name="$1"
+  local origin
+  origin="$(portless get "$name" 2>/dev/null || true)"
+  if [[ ! "$origin" =~ ^https?://[^/]+$ ]]; then
+    echo "Could not resolve the portless URL for '$name'." >&2
+    return 1
+  fi
+  printf '%s\n' "$origin"
+}
+
 echo "==> Ensuring WorkOS local role slugs exist"
 ensure_workos_role platform_admin "Platform Admin"
 ensure_workos_role hotel_owner "Hotel Owner"
@@ -127,6 +138,7 @@ unset BOOKING_RESERVATIONS_READ_DATABASE_URL
 unset BOOKING_PUBLIC_API_URL
 unset PMS_API_URL
 unset PMS_PUBLIC_API_URL
+unset AUTH_COOKIE_DOMAIN
 
 export PORTLESS_PORT="${PORTLESS_PORT:-443}"
 export PORTLESS_SYNC_HOSTS="${PORTLESS_SYNC_HOSTS:-0}"
@@ -134,31 +146,35 @@ export PORTLESS_SYNC_HOSTS="${PORTLESS_SYNC_HOSTS:-0}"
 echo "==> Starting portless proxy with wildcard routing"
 portless proxy start --wildcard
 
-PORTLESS_API_URL="$(portless get api 2>/dev/null || true)"
-if [[ "$PORTLESS_API_URL" =~ ^https?://api\.localhost:([0-9]+)$ ]]; then
-  export PORTLESS_PORT="${BASH_REMATCH[1]}"
-fi
+echo "==> Ensuring portless API aliases exist"
+portless alias api 8003
+portless alias api.marketplace 8000
+portless alias api.booking 8001
+portless alias api.pms 8002
+portless alias media 9002
 
+# Preserve every worktree-qualified hostname. Browsers do not scope cookies by
+# port, and AuthKit validates the exact browser origin for CORS and CSRF.
+API_ORIGIN="$(get_portless_origin api)"
 PORT_SUFFIX=""
-if [[ "$PORTLESS_PORT" != "443" ]]; then
-  PORT_SUFFIX=":$PORTLESS_PORT"
+if [[ "$API_ORIGIN" =~ :([0-9]+)$ ]]; then
+  export PORTLESS_PORT="${BASH_REMATCH[1]}"
+  PORT_SUFFIX=":${PORTLESS_PORT}"
 fi
-
-API_ORIGIN="https://api.localhost${PORT_SUFFIX}"
-ADMIN_ORIGIN="https://admin.localhost${PORT_SUFFIX}"
-BOOKING_ADMIN_ORIGIN="https://admin.booking.localhost${PORT_SUFFIX}"
-BOOKING_ORIGIN="https://booking.localhost${PORT_SUFFIX}"
-PMS_ORIGIN="https://pms.localhost${PORT_SUFFIX}"
-MARKETPLACE_ORIGIN="https://marketplace.localhost${PORT_SUFFIX}"
-AFFILIATE_ORIGIN="https://affiliate.localhost${PORT_SUFFIX}"
-LANDING_ORIGIN="https://landing.localhost${PORT_SUFFIX}"
-MARKETPLACE_API_ORIGIN="https://api.marketplace.localhost${PORT_SUFFIX}"
-BOOKING_API_ORIGIN="https://api.booking.localhost${PORT_SUFFIX}"
-PMS_API_ORIGIN="https://api.pms.localhost${PORT_SUFFIX}"
+ADMIN_ORIGIN="$(get_portless_origin admin)"
+BOOKING_ADMIN_ORIGIN="$(get_portless_origin admin.booking)"
+BOOKING_ORIGIN="$(get_portless_origin booking)"
+PMS_ORIGIN="$(get_portless_origin pms)"
+MARKETPLACE_ORIGIN="$(get_portless_origin marketplace)"
+AFFILIATE_ORIGIN="$(get_portless_origin affiliate)"
+LANDING_ORIGIN="$(get_portless_origin landing)"
+MARKETPLACE_API_ORIGIN="$(get_portless_origin api.marketplace)"
+BOOKING_API_ORIGIN="$(get_portless_origin api.booking)"
+PMS_API_ORIGIN="$(get_portless_origin api.pms)"
+# Keep media canonical because Next image allowlists use this exact local host.
 MEDIA_CDN_ORIGIN="https://media.localhost${PORT_SUFFIX}"
+BOOKING_PORTLESS_HOST="${BOOKING_ORIGIN#*://}"
 GOOGLE_OAUTH_CALLBACK_URL="${API_ORIGIN}/auth/oauth/google/callback"
-PMS_PORTLESS_ORIGIN="$(portless get pms 2>/dev/null || true)"
-PMS_PORTLESS_ORIGIN="${PMS_PORTLESS_ORIGIN:-${PMS_ORIGIN}}"
 
 export AUTH_COOKIE_SECRET="${AUTH_COOKIE_SECRET:-local-dev-auth-cookie-secret-0123456789abcdef}"
 export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-${AUTH_DATABASE_URL:-}}"
@@ -170,9 +186,9 @@ export BOOKING_SETTINGS_SOURCE="${BOOKING_SETTINGS_SOURCE:-target}"
 export BOOKING_RESERVATIONS_SOURCE="${BOOKING_RESERVATIONS_SOURCE:-target}"
 export FINANCE_SOURCE="${FINANCE_SOURCE:-target}"
 export BOOKING_CHECKOUT_COMMAND_SOURCE="${BOOKING_CHECKOUT_COMMAND_SOURCE:-target}"
-export BOOKING_HOST_BASE="${BOOKING_HOST_BASE:-booking.localhost${PORT_SUFFIX}}"
+export BOOKING_HOST_BASE="${BOOKING_HOST_BASE:-${BOOKING_PORTLESS_HOST}}"
 export PMS_OPERATIONS_SOURCE="${PMS_OPERATIONS_SOURCE:-target}"
-export PMS_OPERATIONS_ALLOWED_ORIGINS="${PMS_OPERATIONS_ALLOWED_ORIGINS:-${PMS_ORIGIN},${PMS_PORTLESS_ORIGIN},${BOOKING_ADMIN_ORIGIN}}"
+export PMS_OPERATIONS_ALLOWED_ORIGINS="${PMS_OPERATIONS_ALLOWED_ORIGINS:-${PMS_ORIGIN},${BOOKING_ADMIN_ORIGIN}}"
 export AUTH_LOGOUT_URL="${AUTH_LOGOUT_URL:-${ADMIN_ORIGIN}/login}"
 export AUTH_ALLOWED_ORIGINS="${AUTH_ALLOWED_ORIGINS:-${API_ORIGIN},${ADMIN_ORIGIN},${BOOKING_ADMIN_ORIGIN},${BOOKING_ORIGIN},${PMS_ORIGIN},${MARKETPLACE_ORIGIN},${AFFILIATE_ORIGIN},${LANDING_ORIGIN}}"
 export AUTH_COOKIE_SECURE="${AUTH_COOKIE_SECURE:-true}"
@@ -212,13 +228,6 @@ docker compose "${COMPOSE_FILES[@]}" up -d "${BACKEND_SERVICES[@]}"
 
 echo "==> Applying target identity/API migrations to local target DB"
 npm --workspace @vayada/backend-migration run target:migrate -- --env local
-
-echo "==> Ensuring portless API aliases exist"
-portless alias api 8003
-portless alias api.marketplace 8000
-portless alias api.booking 8001
-portless alias api.pms 8002
-portless alias media 9002
 
 if [[ "${SKIP_SEED:-0}" != "1" ]]; then
   if [[ ! -x .venv/bin/python ]]; then
@@ -277,7 +286,7 @@ COMMON_FRONTEND_ENV=(
 echo
 echo "==> Starting local apps"
 echo "    Admin: ${ADMIN_ORIGIN}"
-echo "    Booking tenant: https://hotel-alpenrose.booking.localhost${PORT_SUFFIX}"
+echo "    Booking tenant: https://hotel-alpenrose.${BOOKING_HOST_BASE}"
 echo "    Stop with Ctrl-C. Stop Docker services with: npm run dev:workos-local -- --stop"
 echo
 
