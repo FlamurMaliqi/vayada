@@ -1,18 +1,19 @@
-# Marketplace V6 notifications, newsletter, and invite-code contract
+# Marketplace V6 notifications, retired newsletter, and invite-code contract
 
 This is the decision-first contract slice for marketplace vertical **V6** from
 [`marketplace-route-migration-inventory.md`](marketplace-route-migration-inventory.md).
 It covers:
 
 - legacy `/notifications*` disposition;
-- newsletter preference read/write contract;
+- newsletter feature retirement;
 - invite-code admin CRUD and public setup lookup/redeem contract;
 - the consumer map needed before the TypeScript route cutover.
 
 The TypeScript backend target owner is `domain-marketplace`. The target tables
 already exist in `packages/backend-migration/migrations/0008_marketplace.sql`:
 `marketplace.marketplace_notifications`, `marketplace.newsletter_preferences`,
-and `marketplace.invite_codes`.
+and `marketplace.invite_codes`. The newsletter table remains migration history
+and dormant data; it is not an active runtime dependency.
 
 ## Decision
 
@@ -39,17 +40,14 @@ frontend consumer exists.
 
 ### Newsletter
 
-Migrate the authenticated newsletter preference surface as marketplace-owned
-user communication preferences:
+Retire the legacy newsletter settings, preference routes, in-process scheduler,
+sender, and email templates instead of porting them to TypeScript.
 
-| Method | Path                                      | Consumer          |
-| ------ | ----------------------------------------- | ----------------- |
-| `GET`  | `/api/marketplace/newsletter/preferences` | `marketplace-web` |
-| `PUT`  | `/api/marketplace/newsletter/preferences` | `marketplace-web` |
-
-This is not a platform email-delivery/job state table. Weekly send mechanics
-remain outside this slice and should move to jobs/events when newsletter
-delivery is migrated.
+The original feature used basic recommendation logic and an unsafe web-process
+scheduler. Existing preference rows and migrations remain intact so historical
+data is not destroyed. VAY-1029 tracks a future product-led redesign of
+Marketplace engagement communications, including whether email, in-app,
+push, or external channels should be used.
 
 ### Invite codes
 
@@ -73,23 +71,11 @@ in the same PR that routes public lookup/redeem to TypeScript.
 | Surface       | Current route(s)                                              | Current consumers                                                                              | Target action                                                                                                    |
 | ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Notifications | `GET /notifications`, `POST /notifications/{id}/read`         | None found in `marketplace-web`, `vayada-admin`, or `booking-admin`                            | Retire HTTP routes from V6 target; keep `marketplace.marketplace_notifications` migration and product ownership. |
-| Newsletter    | `GET/PUT /newsletter/preferences`                             | `apps/marketplace-web/app/settings/newsletter/page.tsx` via `services/api/newsletter.ts`       | Replace with typed marketplace-web client for `/api/marketplace/newsletter/preferences`.                         |
+| Newsletter    | `GET/PUT /newsletter/preferences`                             | None after the 2026-07-24 feature retirement                                                   | Retire the legacy routes and runtime; retain migration history. Reconsider under VAY-1029.                       |
 | Invite admin  | `/admin/invite-codes*`                                        | `apps/vayada-admin/app/dashboard/invite-codes/page.tsx` via `services/api/inviteCodes.ts`      | Replace with typed vayada-admin client for `/api/marketplace/admin/invite-codes*`.                               |
 | Invite public | `/api/invite-codes/{code}`, `/api/invite-codes/{code}/redeem` | `apps/booking-admin/app/setup/page.tsx` raw `fetch` lookup/redeem in the property setup wizard | Add typed booking-admin client and cut over lookup/redeem with the route migration.                              |
 
 ## Authorization
-
-### Newsletter
-
-Authenticated marketplace user.
-
-Target route requirements:
-
-- Resolve `RequestContext`.
-- Enforce a marketplace profile/session policy at the route boundary.
-- Read/write only the current internal `userId`.
-- Use `organizationId` from the selected organization when present; keep null
-  as a migration-compatible fallback for legacy user-only preferences.
 
 ### Invite admin
 
@@ -125,45 +111,13 @@ Target route requirements:
   the backend update itself must be idempotent for repeated submission by the
   same user.
 
-## Newsletter contract
+## Newsletter retirement
 
-### Request
-
-```ts
-type MarketplaceNewsletterPreferencesUpdate = {
-  enabled?: boolean;
-  countryFilter?: string[] | null;
-};
-```
-
-Rules:
-
-- Missing `enabled` leaves the current value unchanged.
-- Missing `countryFilter` leaves the current filter unchanged.
-- `countryFilter: []` clears the filter and stores `null`.
-- `countryFilter: null` also clears the filter.
-- Country values are trimmed non-empty strings. The existing UI sends display
-  strings, not ISO country codes, so the first target contract keeps strings.
-
-### Response
-
-```ts
-type MarketplaceNewsletterPreferences = {
-  enabled: boolean;
-  countryFilter: string[] | null;
-};
-```
-
-Empty state: if no row exists, return `{ enabled: true, countryFilter: null }`.
-
-### Errors
-
-| Case                           | Status | Code              |
-| ------------------------------ | ------ | ----------------- |
-| Missing or invalid auth        | `401`  | `unauthenticated` |
-| Missing marketplace permission | `403`  | `forbidden`       |
-| Invalid body                   | `400`  | `invalid_request` |
-| Unexpected failure             | `500`  | `internal_error`  |
+V6 exposes no newsletter HTTP routes. Marketplace signup no longer opts users
+in by default, and Marketplace Web does not request a legacy compatibility
+token for newsletter access. A future implementation must begin with the
+engagement outcomes and channel decision in VAY-1029 rather than restoring this
+superseded contract.
 
 ## Invite-code admin contract
 
@@ -277,25 +231,24 @@ Redeem rules:
 ## Cutover requirements
 
 - Add one typed client per consumer app:
-  - marketplace-web newsletter preferences;
   - vayada-admin invite-code admin CRUD;
   - booking-admin invite-code lookup/redeem.
 - Update booking-admin setup in the same cutover as the public invite-code
   routes. Leaving `apps/booking-admin/app/setup/page.tsx` on raw legacy fetches
   breaks prefilled hotel onboarding when marketplace-api routing changes.
-- Keep legacy Python behavior as the production source of truth for these
-  surfaces until the TypeScript routes, typed clients, route tests, frontend
-  builds, and booking-admin setup smoke are accepted.
-- Do not migrate weekly newsletter sending, email delivery, or platform job
-  delivery in this slice.
+- Keep legacy Python invite-code behavior as the production source of truth
+  until the TypeScript routes, typed clients, route tests, frontend builds, and
+  booking-admin setup smoke are accepted.
+- Do not restore newsletter sending, email delivery, or preferences in this
+  slice.
 
 ## Validation target for implementation
 
 The implementation PR should include:
 
-- route tests for newsletter get/update, invite admin list/create/revoke,
-  invite lookup, and idempotent redeem;
-- authorization denial tests for newsletter, invite admin, and redeem;
+- route tests for invite admin list/create/revoke, invite lookup, and
+  idempotent redeem;
+- authorization denial tests for invite admin and redeem;
 - frontend build checks for `marketplace-web`, `vayada-admin`, and
   `booking-admin`;
 - a booking-admin setup browser smoke that applies an invite code and confirms

@@ -1,5 +1,4 @@
 import {
-  setApiBearerTokenProvider,
   setVayadaApiBearerTokenProvider,
   setVayadaApiSessionRecoveryHandlers,
 } from "@vayada/marketplace-shared/api/client";
@@ -50,13 +49,9 @@ const SELECTED_SHARED_PROPERTY_ORG_ID_KEY = "selectedSharedPropertyOrganizationI
 
 let authKitSession: AuthKitSessionResponse | null = null;
 let pendingOrganizationSelectionCsrfToken: string | null = null;
-let legacyCompatibilityToken: { token: string; expiresAt: number } | null = null;
 
-// Legacy FastAPI calls use the compatibility token while migrated API calls use AuthKit.
-// Both providers are wired on import so requests are correct before page bootstrap runs.
-setApiBearerTokenProvider(() =>
-  isCompatibilityTokenEnabled() ? getLegacyCompatibilityToken() : null,
-);
+// Migrated API calls use AuthKit. The legacy client, retained only for the
+// disabled-AuthKit rollback path, reads its own stored legacy token.
 setVayadaApiBearerTokenProvider(() => getAuthKitAccessToken());
 setVayadaApiSessionRecoveryHandlers({
   async refresh() {
@@ -73,18 +68,9 @@ setVayadaApiSessionRecoveryHandlers({
   },
 });
 
-export function isAuthKitLoginEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED !== "false";
-}
-
-export function isCompatibilityTokenEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED === "true";
-}
-
 export function setAuthKitSession(session: AuthKitSessionResponse): void {
   authKitSession = session;
   pendingOrganizationSelectionCsrfToken = null;
-  legacyCompatibilityToken = null;
   if (typeof window === "undefined") return;
 
   clearSharedPropertySelectionIfOrganizationChanged(session.organizationId);
@@ -122,18 +108,10 @@ export function setAuthKitSession(session: AuthKitSessionResponse): void {
   );
 }
 
-export function setLegacyCompatibilityToken(token: string, expiresIn: number): void {
-  legacyCompatibilityToken = {
-    token,
-    expiresAt: Date.now() + expiresIn * 1000,
-  };
-}
-
 export function setPendingOrganizationSelection(
   selection: AuthOrganizationSelectionResponse,
 ): void {
   authKitSession = null;
-  legacyCompatibilityToken = null;
   pendingOrganizationSelectionCsrfToken = selection.csrfToken ?? null;
   if (typeof window === "undefined") return;
   localStorage.removeItem(LEGACY_TOKEN_KEY);
@@ -143,7 +121,6 @@ export function setPendingOrganizationSelection(
 export function clearAuthData(): void {
   authKitSession = null;
   pendingOrganizationSelectionCsrfToken = null;
-  legacyCompatibilityToken = null;
   if (typeof window === "undefined") return;
 
   localStorage.removeItem(LEGACY_TOKEN_KEY);
@@ -166,25 +143,12 @@ export function getAuthCsrfToken(): string | null {
   return pendingOrganizationSelectionCsrfToken ?? authKitSession?.csrfToken ?? null;
 }
 
-export function getAuthBearerToken(): string | null {
-  const compatibilityToken = getLegacyCompatibilityToken();
-  if (isCompatibilityTokenEnabled() && compatibilityToken) return compatibilityToken;
-  return getAuthKitAccessToken();
-}
-
 export function getAuthSessionUser(): AuthUser | null {
   return authKitSession?.user ?? null;
 }
 
 export function getAuthWorkosOrganizationId(): string | null {
   return authKitSession?.workosOrganizationId ?? null;
-}
-
-function getLegacyCompatibilityToken(): string | null {
-  if (legacyCompatibilityToken && Date.now() < legacyCompatibilityToken.expiresAt - 30_000) {
-    return legacyCompatibilityToken.token;
-  }
-  return null;
 }
 
 export function getAuthKitAccessToken(): string | null {

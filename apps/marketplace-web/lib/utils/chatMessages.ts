@@ -1,16 +1,3 @@
-export function isOwnChatMessage(
-  senderSide: "creator" | "hotel" | null,
-  myRole: "creator" | "hotel",
-  legacy?: {
-    adapted: boolean;
-    senderName: string | null;
-    partnerName: string;
-  },
-): boolean {
-  if (senderSide) return senderSide === myRole;
-  return legacy?.adapted === true && legacy.senderName !== legacy.partnerName;
-}
-
 export function isSystemChatMessage(message: {
   senderId: string | null;
   senderSide: string | null;

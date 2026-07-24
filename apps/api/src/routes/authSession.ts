@@ -222,7 +222,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     "/compat/booking-admin-token",
     "/compat/pms-web-token",
     "/compat/affiliate-dashboard-token",
-    "/compat/marketplace-web-token",
     "/profile",
   ]) {
     app.options(path, async (request, reply) => {
@@ -1354,10 +1353,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     path: "/compat/affiliate-dashboard-token",
     surface: "affiliate-dashboard",
     userType: "affiliate",
-  });
-  registerCompatibilityTokenRoute(app, options, {
-    path: "/compat/marketplace-web-token",
-    surface: "marketplace-web",
   });
 };
 

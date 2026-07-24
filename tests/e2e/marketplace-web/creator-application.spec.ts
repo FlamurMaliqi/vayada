@@ -460,10 +460,6 @@ async function primeCreatorSession(page: Page) {
       },
     });
   });
-  await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
-    accessToken: "legacy-marketplace-token",
-    expiresIn: 900,
-  });
 }
 
 async function mockCreatorProfile(page: Page) {

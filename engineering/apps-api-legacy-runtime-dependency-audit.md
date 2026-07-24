@@ -13,9 +13,10 @@ contracts can be implemented behind the same HTTP shape, but activation waits
 for the one-time legacy-to-target migration and cutover window.
 
 `AUTH_LEGACY_MARKETPLACE_JWT_SECRET` is intentionally excluded from this audit.
-Its retirement is owned by the WorkOS/custom auth cutover. All other legacy
-product DB connection strings and legacy product API URLs in
-`apps/api/src/config.ts` are in scope.
+Marketplace Web no longer requests a compatibility token; the remaining secret
+supports Platform Admin's legacy handoff, whose retirement is owned by the
+WorkOS/custom auth cutover. All other legacy product DB connection strings and
+legacy product API URLs in `apps/api/src/config.ts` are in scope.
 `BOOKING_HOST_BASE` and `MARKETPLACE_DISCOVERY_ALLOWED_ORIGINS` are support
 configuration for generated URLs/CORS and are not legacy runtime dependencies;
 they can remain after the legacy DB/API removals if the target routes still

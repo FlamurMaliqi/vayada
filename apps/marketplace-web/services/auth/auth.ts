@@ -11,22 +11,13 @@ import {
   getAuthSessionUser,
   hasAuthenticatedSession,
   isAuthOrganizationSelectionResponse,
-  isAuthKitLoginEnabled,
-  isCompatibilityTokenEnabled,
   setAuthKitSession,
-  setLegacyCompatibilityToken,
   setPendingOrganizationSelection,
-  type AuthKitSessionResponse,
   type AuthSessionResponse,
 } from "./sessionStore";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 
 const AUTH_SURFACE = "marketplace-web";
-
-type CompatibilityTokenResponse = {
-  accessToken: string;
-  expiresIn: number;
-};
 
 type SignupRequest = {
   email: string;
@@ -167,33 +158,7 @@ export function clearPendingEmailVerification(): void {
   }
 }
 
-async function setAuthenticatedSession(
-  session: AuthKitSessionResponse,
-  signal?: AbortSignal,
-): Promise<void> {
-  setAuthKitSession(session);
-  if (!isCompatibilityTokenEnabled() || !session.csrfToken) return;
-
-  try {
-    const compatibilityToken = await authFetch<CompatibilityTokenResponse>(
-      "/auth/compat/marketplace-web-token",
-      {
-        method: "POST",
-        headers: { "x-vayada-csrf": session.csrfToken },
-        signal,
-      },
-    );
-    setLegacyCompatibilityToken(compatibilityToken.accessToken, compatibilityToken.expiresIn);
-  } catch (error) {
-    if (!(error instanceof DOMException && error.name === "AbortError")) {
-      console.warn("Marketplace compatibility token could not be refreshed", error);
-    }
-  }
-}
-
 export const authService = {
-  isAuthKitEnabled: isAuthKitLoginEnabled,
-
   startGoogleLogin: (returnTo?: string): void => {
     if (typeof window === "undefined") return;
 
@@ -254,7 +219,7 @@ export const authService = {
       setPendingOrganizationSelection(response);
       return response;
     }
-    await setAuthenticatedSession(response, signal);
+    setAuthKitSession(response);
     return response;
   },
 
@@ -288,7 +253,7 @@ export const authService = {
         setPendingOrganizationSelection(response);
         return response;
       }
-      await setAuthenticatedSession(response);
+      setAuthKitSession(response);
       return response;
     } catch (error) {
       if (error instanceof ApiErrorResponse || error instanceof AuthStateError) {
@@ -346,7 +311,7 @@ export const authService = {
     const csrfToken = getAuthCsrfToken();
     let logoutUrl = "/login";
 
-    if (isAuthKitLoginEnabled() && csrfToken) {
+    if (csrfToken) {
       try {
         const response = await authFetch<{ logoutUrl: string }>("/auth/logout", {
           method: "POST",
@@ -446,7 +411,7 @@ export const authService = {
         setPendingOrganizationSelection(response);
         return response;
       }
-      await setAuthenticatedSession(response);
+      setAuthKitSession(response);
       clearPendingEmailVerification();
       return response;
     } catch (error) {
@@ -492,7 +457,7 @@ export const authService = {
       setPendingOrganizationSelection(response);
       return response;
     }
-    await setAuthenticatedSession(response);
+    setAuthKitSession(response);
     return response;
   },
 };

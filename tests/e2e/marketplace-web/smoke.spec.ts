@@ -229,11 +229,6 @@ test.describe("marketplace-web smoke", () => {
         },
       });
     });
-    await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
-      accessToken: "restored-marketplace-token",
-      expiresIn: 900,
-    });
-
     await page.goto("/onboarding");
 
     await expect(page).toHaveURL(/\/onboarding$/);
@@ -1600,11 +1595,6 @@ test.describe("marketplace-web smoke", () => {
         },
       });
     });
-    await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
-      accessToken: "legacy-marketplace-token",
-      expiresIn: 900,
-    });
-
     await page.goto("/onboarding");
 
     await expect(
@@ -1716,10 +1706,6 @@ async function mockCreatorSession(
   await page.route(/\/auth\/session\/refresh$/, (route) =>
     route.fulfill({ status: 200, headers: corsHeaders(route), json: sessionResponse() }),
   );
-  await routeJson(page, /\/auth\/compat\/marketplace-web-token(?:\?|$)/, {
-    accessToken: "legacy-marketplace-token",
-    expiresIn: 900,
-  });
   await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
     connections: [],
   });
@@ -1889,10 +1875,6 @@ async function mockOnboardingAuth(
         ],
       },
     });
-  });
-  await routeJson(page, /\/auth\/compat\/marketplace-web-token/, {
-    accessToken: "legacy-marketplace-token",
-    expiresIn: 900,
   });
   await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
     connections: [],

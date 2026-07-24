@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   createMarketplaceCollaboration: vi.fn(),
   getMarketplaceCollaboration: vi.fn(),
+  getMyMarketplaceCollaborations: vi.fn(),
   getMarketplaceConversationPage: vi.fn(),
   sendMarketplaceCollaborationMessage: vi.fn(),
   markMarketplaceCollaborationMessagesRead: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock("@vayada/marketplace-shared/api/collaborations", async (importOriginal) 
     ...actual,
     createMarketplaceCollaboration: mocks.createMarketplaceCollaboration,
     getMarketplaceCollaboration: mocks.getMarketplaceCollaboration,
+    getMyMarketplaceCollaborations: mocks.getMyMarketplaceCollaborations,
     getMarketplaceConversationPage: mocks.getMarketplaceConversationPage,
     sendMarketplaceCollaborationMessage: mocks.sendMarketplaceCollaborationMessage,
     markMarketplaceCollaborationMessagesRead: mocks.markMarketplaceCollaborationMessagesRead,
@@ -24,10 +26,6 @@ vi.mock("@vayada/marketplace-shared/api/collaborations", async (importOriginal) 
 
 vi.mock("@vayada/marketplace-shared/api/platformMedia", () => ({
   uploadPlatformMedia: mocks.uploadPlatformMedia,
-}));
-
-vi.mock("@/lib/utils", () => ({
-  buildQueryString: () => "",
 }));
 
 import { toLegacyCollaborationType } from "@vayada/marketplace-shared/api/collaborations";
@@ -43,6 +41,7 @@ import {
 beforeEach(() => {
   mocks.createMarketplaceCollaboration.mockReset();
   mocks.getMarketplaceCollaboration.mockReset();
+  mocks.getMyMarketplaceCollaborations.mockReset();
   mocks.getMarketplaceConversationPage.mockReset();
   mocks.sendMarketplaceCollaborationMessage.mockReset();
   mocks.markMarketplaceCollaborationMessagesRead.mockReset();
@@ -259,6 +258,12 @@ describe("creator chat integration", () => {
         creatorConversation,
       ),
     ).toBe(false);
+    expect(
+      isMessageFromCurrentUser(
+        message({ sender_name: "platform_admin", sender_side: null }),
+        creatorConversation,
+      ),
+    ).toBe(false);
   });
 
   it("filters conversations and reads nonblank deep links", () => {
@@ -281,6 +286,15 @@ describe("creator chat integration", () => {
     expect(filterConversations(conversations, "COMPLETED")).toEqual([conversations[1]]);
     expect(readChatCollaborationId("?collaborationId=collaboration%202")).toBe("collaboration 2");
     expect(readChatCollaborationId("?collaborationId=%20%20")).toBeNull();
+  });
+});
+
+describe("collaborationService reads", () => {
+  it("surfaces target route failures without calling the retired legacy API", async () => {
+    const routeError = { status: 404, data: { detail: "Not Found" } };
+    mocks.getMyMarketplaceCollaborations.mockRejectedValue(routeError);
+
+    await expect(collaborationService.getCreatorCollaborations()).rejects.toBe(routeError);
   });
 });
 

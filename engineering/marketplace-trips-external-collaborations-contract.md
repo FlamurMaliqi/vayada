@@ -23,8 +23,7 @@ Reads land before writes:
    `GET /api/marketplace/trips/{tripId}`, and
    `GET /api/marketplace/trips/external-collaborations`.
 3. Add the marketplace-web typed client and cut over the calendar trip reads to
-   the typed-client facade with legacy fallback while Python remains source of
-   truth.
+   the typed-client facade.
 4. Implement write routes for create/update/delete trips and external
    collaborations.
 5. Remove fallback once the TypeScript read and write routes are fully wired to

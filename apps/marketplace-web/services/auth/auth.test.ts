@@ -9,11 +9,10 @@ import {
 } from "./auth";
 import {
   clearAuthData,
-  getAuthBearerToken,
+  getAuthKitAccessToken,
   getAuthCsrfToken,
   isAuthOrganizationSelectionResponse,
   setAuthKitSession,
-  setLegacyCompatibilityToken,
 } from "./sessionStore";
 import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
 import { targetApiClient } from "../api/targetClient";
@@ -29,66 +28,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("marketplace AuthKit compatibility token", () => {
-  it("prefers the marketplace compatibility token after session refresh", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-        const href = String(url);
-        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
-          return jsonResponse({
-            accessToken: "workos-access-token",
-            csrfToken: "csrf-token",
-            organizationKind: "creator_workspace",
-            user: { id: "user_creator", email: "creator@example.com", status: "active" },
-          });
-        }
-        if (href === "https://api.localhost/auth/compat/marketplace-web-token") {
-          expect(init?.method).toBe("POST");
-          expect((init?.headers as Record<string, string>)["x-vayada-csrf"]).toBe("csrf-token");
-          return jsonResponse({ accessToken: "legacy-marketplace-token", expiresIn: 900 });
-        }
-        throw new Error(`Unexpected fetch: ${href}`);
-      }),
-    );
-
-    await authService.refreshSession();
-
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
-  });
-
-  it("clears stale compatibility tokens when the AuthKit session changes", () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
-    setAuthKitSession({
-      accessToken: "old-workos-access-token",
-      organizationKind: "creator_workspace",
-      user: { id: "user_creator", email: "creator@example.com", status: "active" },
-    });
-    setLegacyCompatibilityToken("legacy-marketplace-token", 900);
-
-    expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
-
-    setAuthKitSession({
-      accessToken: "new-workos-access-token",
-      organizationKind: "creator_workspace",
-      user: { id: "user_creator", email: "creator@example.com", status: "active" },
-    });
-
-    expect(getAuthBearerToken()).toBe("new-workos-access-token");
-  });
-
+describe("marketplace AuthKit session recovery", () => {
   it("uses the AuthKit token for shared hotel setup requests", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
     setAuthKitSession({
       accessToken: "hotel-workos-access-token",
       csrfToken: "hotel-csrf-token",
       organizationKind: "hotel_group",
       user: { id: "user_hotel", email: "hotel@example.com", status: "active" },
     });
-    setLegacyCompatibilityToken("legacy-marketplace-token", 900);
-    expect(getAuthBearerToken()).toBe("legacy-marketplace-token");
+    expect(getAuthKitAccessToken()).toBe("hotel-workos-access-token");
 
     vi.stubGlobal(
       "fetch",
@@ -108,13 +56,11 @@ describe("marketplace AuthKit compatibility token", () => {
   });
 
   it("uses the AuthKit token for target Marketplace requests", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
     setAuthKitSession({
       accessToken: "hotel-workos-access-token",
       organizationKind: "hotel_group",
       user: { id: "user_hotel", email: "hotel@example.com", status: "active" },
     });
-    setLegacyCompatibilityToken("legacy-marketplace-token", 900);
 
     vi.stubGlobal(
       "fetch",
@@ -138,7 +84,6 @@ describe("marketplace AuthKit compatibility token", () => {
   });
 
   it("never sends an AuthKit access token to the legacy Marketplace API", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
     setAuthKitSession({
       accessToken: "workos-access-token",
       organizationKind: "creator_workspace",
@@ -156,17 +101,14 @@ describe("marketplace AuthKit compatibility token", () => {
     await expect(apiClient.get("/public-bootstrap")).resolves.toEqual({ ok: true });
   });
 
-  it("shares one refresh while each actual client retries with its own token family", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+  it("shares one refresh across concurrent target clients", async () => {
     setAuthKitSession({
       accessToken: "expired-across-clients",
       csrfToken: "expired-csrf-token",
       organizationKind: "creator_workspace",
       user: { id: "user_creator", email: "creator@example.com", status: "active" },
     });
-    setLegacyCompatibilityToken("expired-legacy-token", 900);
     let sessionRefreshes = 0;
-    let compatibilityRefreshes = 0;
     const requests: Array<{ href: string; token: string | null }> = [];
     vi.stubGlobal(
       "fetch",
@@ -184,15 +126,10 @@ describe("marketplace AuthKit compatibility token", () => {
             user: { id: "user_creator", email: "creator@example.com", status: "active" },
           });
         }
-        if (href === "https://api.localhost/auth/compat/marketplace-web-token") {
-          compatibilityRefreshes += 1;
-          expect(new Headers(init?.headers).get("x-vayada-csrf")).toBe("fresh-csrf-token");
-          return jsonResponse({ accessToken: "fresh-legacy-token", expiresIn: 900 });
-        }
 
         const token = new Headers(init?.headers).get("Authorization");
         requests.push({ href, token });
-        if (token === "Bearer expired-across-clients" || token === "Bearer expired-legacy-token") {
+        if (token === "Bearer expired-across-clients") {
           return jsonResponse({ detail: "expired" }, 401);
         }
         if (href === "https://api.localhost/api/media/upload-sessions") {
@@ -237,11 +174,10 @@ describe("marketplace AuthKit compatibility token", () => {
       }),
     );
 
-    const [, , , , uploaded] = await Promise.all([
+    const [, , , uploaded] = await Promise.all([
       targetApiClient.get("/api/target-bootstrap"),
       sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" }),
       getMyMarketplaceCollaborations({ side: "creator" }),
-      apiClient.get("/legacy-bootstrap"),
       uploadPlatformMedia({
         purpose: "marketplace.offer.media",
         resource: {
@@ -254,7 +190,6 @@ describe("marketplace AuthKit compatibility token", () => {
     ]);
 
     expect(sessionRefreshes).toBe(1);
-    expect(compatibilityRefreshes).toBe(1);
     expect(uploaded).toEqual([
       expect.objectContaining({ mediaId: "media-001", url: "https://cdn.example/offer.jpg" }),
     ]);
@@ -262,24 +197,12 @@ describe("marketplace AuthKit compatibility token", () => {
       4,
     );
     expect(requests.filter(({ token }) => token === "Bearer fresh-across-clients")).toHaveLength(5);
-    expect(requests.filter(({ token }) => token === "Bearer expired-legacy-token")).toHaveLength(1);
-    expect(requests.filter(({ token }) => token === "Bearer fresh-legacy-token")).toHaveLength(1);
-    expect(
-      requests
-        .filter(({ href }) => href.startsWith("https://api.marketplace.localhost"))
-        .map(({ token }) => token),
-    ).toEqual(["Bearer expired-legacy-token", "Bearer fresh-legacy-token"]);
-    expect(
-      requests.some(
-        ({ href, token }) =>
-          href.startsWith("https://api.marketplace.localhost") &&
-          token === "Bearer fresh-across-clients",
-      ),
-    ).toBe(false);
+    expect(requests.some(({ href }) => href.startsWith("https://api.marketplace.localhost"))).toBe(
+      false,
+    );
   });
 
   it("shares one cold-session check across concurrent target requests", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
     const sessionStarted = Promise.withResolvers<void>();
     const sessionResponse = Promise.withResolvers<Response>();
     let sessionRequests = 0;
@@ -318,7 +241,6 @@ describe("marketplace AuthKit compatibility token", () => {
   });
 
   it("does not let an aborted cold-session owner sign out or poison another request", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
     const firstSessionStarted = Promise.withResolvers<void>();
     const controller = new AbortController();
     let sessionRequests = 0;
@@ -366,40 +288,6 @@ describe("marketplace AuthKit compatibility token", () => {
     expect(sessionRequests).toBe(2);
     expect(logoutRequests).toBe(0);
   });
-
-  it("keeps the AuthKit session when compatibility token loading is canceled", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
-    mockBrowserStorage();
-    const controller = new AbortController();
-    let compatibilityAttempts = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string | URL | Request) => {
-        if (String(url) === "https://api.localhost/auth/session?surface=marketplace-web") {
-          return jsonResponse({
-            accessToken: "workos-access-token",
-            csrfToken: "csrf-token",
-            organizationKind: "creator_workspace",
-            user: { id: "user_creator", email: "creator@example.com", status: "active" },
-          });
-        }
-        compatibilityAttempts += 1;
-        if (compatibilityAttempts === 1) {
-          controller.abort();
-          throw new DOMException("The operation was aborted", "AbortError");
-        }
-        return jsonResponse({ accessToken: "legacy-marketplace-token", expiresIn: 900 });
-      }),
-    );
-
-    await expect(authService.ensureSession(controller.signal)).resolves.toBe(true);
-    expect(getAuthBearerToken()).toBe("workos-access-token");
-
-    await expect(authService.ensureSession()).resolves.toBe(true);
-
-    expect(compatibilityAttempts).toBe(1);
-    expect(getAuthBearerToken()).toBe("workos-access-token");
-  });
 });
 
 describe("authService", () => {
@@ -442,13 +330,12 @@ describe("authService", () => {
         }),
       }),
     );
-    expect(getAuthBearerToken()).toBe("workos-access-token");
+    expect(getAuthKitAccessToken()).toBe("workos-access-token");
     expect(getAuthCsrfToken()).toBe("csrf-token");
     expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
   });
 
   it("preserves a session committed by a concurrent session check", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
     const firstRequest = Promise.withResolvers<Response>();
     fetchMock.mockReturnValueOnce(firstRequest.promise).mockResolvedValueOnce(
       jsonResponse({
@@ -462,7 +349,7 @@ describe("authService", () => {
     firstRequest.reject(new Error("request failed"));
 
     await expect(failingCheck).resolves.toBe(false);
-    expect(getAuthBearerToken()).toBe("concurrent-workos-access-token");
+    expect(getAuthKitAccessToken()).toBe("concurrent-workos-access-token");
   });
 
   it("preserves controlled backend login errors", async () => {
@@ -511,7 +398,7 @@ describe("authService", () => {
     });
 
     expect(isAuthOrganizationSelectionResponse(response)).toBe(true);
-    expect(getAuthBearerToken()).toBeNull();
+    expect(getAuthKitAccessToken()).toBeNull();
     expect(getAuthCsrfToken()).toBe("pending-csrf-token");
   });
 
@@ -578,7 +465,7 @@ describe("authService", () => {
         }),
       }),
     );
-    expect(getAuthBearerToken()).toBe("signup-workos-access-token");
+    expect(getAuthKitAccessToken()).toBe("signup-workos-access-token");
     expect(getAuthCsrfToken()).toBe("signup-csrf-token");
     expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
   });
@@ -753,39 +640,8 @@ describe("authService", () => {
         }),
       }),
     );
-    expect(getAuthBearerToken()).toBe("verified-workos-access-token");
+    expect(getAuthKitAccessToken()).toBe("verified-workos-access-token");
     expect(getAuthCsrfToken()).toBe("verified-csrf-token");
-    expect(getPendingEmailVerification()).toBeNull();
-  });
-
-  it("keeps a verified AuthKit session when the optional compatibility exchange fails", async () => {
-    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
-    mockBrowserStorage();
-    storePendingEmailVerification({
-      pendingAuthenticationToken: "pending-email-token",
-      email: "creator@example.test",
-      emailVerificationId: "email_verification_123",
-      flow: "signup",
-    });
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({
-          accessToken: "verified-workos-access-token",
-          csrfToken: "verified-csrf-token",
-          user: {
-            id: "user_creator",
-            email: "creator@example.test",
-            status: "active",
-            workosUserId: "user_workos_creator",
-          },
-        }),
-      )
-      .mockResolvedValueOnce(jsonResponse({ error: "compatibility_unavailable" }, 503));
-
-    await expect(authService.confirmEmailVerification("123456")).resolves.toMatchObject({
-      accessToken: "verified-workos-access-token",
-    });
-    expect(getAuthBearerToken()).toBe("verified-workos-access-token");
     expect(getPendingEmailVerification()).toBeNull();
   });
 
@@ -827,7 +683,7 @@ describe("authService", () => {
         }),
       }),
     );
-    expect(getAuthBearerToken()).toBe("creator-workos-access-token");
+    expect(getAuthKitAccessToken()).toBe("creator-workos-access-token");
     expect(getAuthCsrfToken()).toBe("creator-csrf-token");
   });
 

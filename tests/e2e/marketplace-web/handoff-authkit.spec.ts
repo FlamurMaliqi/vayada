@@ -11,7 +11,9 @@ const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const WORKOS_ORGANIZATION_ID = "org_workos_hotel_group";
 
 test.describe("marketplace-web AuthKit handoff", () => {
-  test("selects the hinted hotel group and opens Marketplace activation", async ({ page }) => {
+  test("ignores legacy credentials, selects the hinted hotel group, and opens activation", async ({
+    page,
+  }) => {
     const refreshRequests: unknown[] = [];
     await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
@@ -37,13 +39,6 @@ test.describe("marketplace-web AuthKit handoff", () => {
       refreshRequests.push(route.request().postDataJSON());
       return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
     });
-    await page.route(/\/auth\/compat\/marketplace-web-token$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      return route.fulfill({
-        headers: corsHeaders(route),
-        json: { accessToken: "e2e-marketplace-compat-token", expiresIn: 900 },
-      });
-    });
     await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
       return route.fulfill({
@@ -58,6 +53,13 @@ test.describe("marketplace-web AuthKit handoff", () => {
     const redirect = `/profile/complete?activation=marketplace&propertyId=${PROPERTY_ID}`;
     const handoffQuery = new URLSearchParams({ redirect }).toString();
     const handoffFragment = new URLSearchParams({
+      token: "untrusted-legacy-token",
+      expires_at: String(Date.now() + 60_000),
+      user: JSON.stringify({
+        id: "attacker-controlled-id",
+        email: "attacker@example.test",
+        type: "creator",
+      }),
       organization_id: ORGANIZATION_ID,
       workos_organization_id: WORKOS_ORGANIZATION_ID,
       property_id: PROPERTY_ID,
@@ -68,6 +70,10 @@ test.describe("marketplace-web AuthKit handoff", () => {
     expect(refreshRequests).toEqual([
       { organizationId: WORKOS_ORGANIZATION_ID, surface: "marketplace-web" },
     ]);
+    expect(await page.evaluate(() => localStorage.getItem("access_token"))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("userEmail"))).toBe(
+      "owner@alpenrose.example",
+    );
     expect(page.url()).not.toContain("/login");
   });
 
@@ -117,13 +123,6 @@ async function mockDirectAuthSession(page: Page) {
   await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
     if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
     return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
-  });
-  await page.route(/\/auth\/compat\/marketplace-web-token$/, async (route) => {
-    if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-    return route.fulfill({
-      headers: corsHeaders(route),
-      json: { accessToken: "e2e-marketplace-compat-token", expiresIn: 900 },
-    });
   });
 }
 

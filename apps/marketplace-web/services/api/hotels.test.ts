@@ -1,18 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-  get: vi.fn(),
-  post: vi.fn(),
-  put: vi.fn(),
-  delete: vi.fn(),
-  upload: vi.fn(),
-}));
-
-vi.mock("./client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./client")>();
-  return { ...actual, apiClient: mocks };
-});
-
 vi.mock("@vayada/marketplace-shared/api/discovery", () => ({
   getAllMarketplaceOffers: vi.fn(),
 }));
