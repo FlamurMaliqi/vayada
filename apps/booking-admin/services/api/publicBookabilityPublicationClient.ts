@@ -52,7 +52,8 @@ export function publicationReadinessSteps(
     missing.has("availability_source") ||
     missing.has("availability") ||
     missing.has("sellable_availability") ||
-    missing.has("freshness")
+    missing.has("freshness") ||
+    publication.freshnessStatus !== "fresh"
   ) {
     steps.push({
       id: "pms",
@@ -71,10 +72,17 @@ export function publicationReadinessSteps(
       label: "Complete the remaining Booking settings",
     });
   }
-  if (missing.has("profile") || publication.profileStatus === "unpublished") {
+  if (missing.has("profile") || publication.profileStatus !== "public") {
     steps.push({
       id: "profile",
       label: "Complete the public hotel profile and Brand & Media details",
+    });
+  }
+
+  if (steps.length === 0 && !isPublicBookabilityReady(publication)) {
+    steps.push({
+      id: "booking",
+      label: "Review the remaining Booking settings",
     });
   }
 

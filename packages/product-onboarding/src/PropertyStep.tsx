@@ -55,8 +55,10 @@ interface PropertyStepProps {
   prefilled: boolean;
   sharedBasicsReadOnly?: boolean;
   hideSharedHotelFields?: boolean;
+  bookingSection?: "contact" | "localization";
   error: string;
   canProceed: boolean;
+  onBack?: () => void;
   onContinue: () => void;
   stepIndicators: React.ReactNode;
   countryOptions: CountryOption[];
@@ -372,8 +374,10 @@ export default function PropertyStep({
   prefilled,
   sharedBasicsReadOnly = false,
   hideSharedHotelFields = false,
+  bookingSection,
   error,
   canProceed,
+  onBack,
   onContinue,
   stepIndicators,
   countryOptions,
@@ -384,12 +388,37 @@ export default function PropertyStep({
 }: PropertyStepProps) {
   const inputClassName =
     "w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 transition-colors focus:border-transparent focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500";
+  const showContactSection = bookingSection !== "localization";
+  const showLocalizationSection = bookingSection !== "contact";
+  const additionalCurrencies = supportedCurrencies.filter((code) => code !== currency);
+  const additionalLanguages = supportedLanguages.filter((code) => code !== defaultLanguage);
+  const additionalSelectionCount = additionalCurrencies.length + additionalLanguages.length;
+  const [additionalOptionsOpen, setAdditionalOptionsOpen] = useState(
+    bookingSection === "localization" || additionalSelectionCount > 0,
+  );
+  useEffect(() => {
+    if (bookingSection === "localization") setAdditionalOptionsOpen(true);
+  }, [bookingSection]);
+  const heading =
+    bookingSection === "localization"
+      ? "Currency & Languages"
+      : bookingSection === "contact"
+        ? "Contact details"
+        : "Your Property";
+  const description =
+    bookingSection === "localization"
+      ? ""
+      : bookingSection === "contact"
+        ? "Add the optional contact and social links shown on your booking page."
+        : "Configure how this hotel should appear and communicate in Booking Engine.";
 
   return (
-    <div className="flex-1 overflow-auto bg-gray-50/50">
-      <div className="mx-auto max-w-3xl px-4 py-5 sm:px-6 sm:py-7">
+    <div
+      className={`flex-1 overflow-auto bg-gray-50/50 ${bookingSection ? "flex items-center" : ""}`}
+    >
+      <div className="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6 sm:py-7">
         {stepIndicators}
-        {prefilled && (
+        {prefilled && bookingSection !== "localization" && (
           <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
             {hideSharedHotelFields || sharedBasicsReadOnly
               ? "Hotel basics are reused from shared setup. Configure only Booking-specific settings below."
@@ -398,10 +427,8 @@ export default function PropertyStep({
         )}
 
         <div className="mb-5 text-center">
-          <h2 className="text-2xl font-semibold tracking-tight text-gray-950">Your Property</h2>
-          <p className="mt-1.5 text-sm text-gray-500">
-            Configure how this hotel should appear and communicate in Booking Engine.
-          </p>
+          <h2 className="text-2xl font-semibold tracking-tight text-gray-950">{heading}</h2>
+          {description && <p className="mt-1.5 text-sm text-gray-500">{description}</p>}
         </div>
 
         <div className="divide-y divide-gray-200 rounded-2xl border border-gray-200 bg-white shadow-sm">
@@ -444,7 +471,13 @@ export default function PropertyStep({
                 />
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div
+                className={
+                  bookingSection === "localization"
+                    ? "grid grid-cols-1 gap-4"
+                    : "grid grid-cols-1 gap-3 sm:grid-cols-2"
+                }
+              >
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-800">
                     City <span aria-hidden="true">*</span>
@@ -500,76 +533,18 @@ export default function PropertyStep({
             </section>
           )}
 
-          <section className="grid divide-y divide-gray-200 lg:grid-cols-2 lg:divide-x lg:divide-y-0">
-            <div className="space-y-4 p-4 sm:p-5">
-              <div className="flex items-center gap-2">
-                <svg
-                  className="h-4 w-4 text-primary-500"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"
-                  />
-                </svg>
-                <h3 className="text-base font-semibold text-gray-950">
-                  {hideSharedHotelFields
-                    ? "Booking contact"
-                    : sharedBasicsReadOnly
-                      ? "Shared hotel contact"
-                      : "Hotel contact"}
-                </h3>
-              </div>
-
-              {!hideSharedHotelFields && (
-                <div className="space-y-3">
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                      Hotel contact email <span aria-hidden="true">*</span>
-                    </label>
-                    <input
-                      type="email"
-                      value={reservationEmail}
-                      onChange={(e) => setReservationEmail(e.target.value)}
-                      readOnly={sharedBasicsReadOnly}
-                      className={inputClassName}
-                      placeholder="reservations@yourproperty.com"
-                    />
-                    <p className="mt-1.5 text-xs leading-5 text-gray-400">
-                      {sharedBasicsReadOnly
-                        ? "Managed once in the shared hotel profile."
-                        : "Saved to the shared hotel profile and used by Booking Engine."}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                      Hotel phone <span aria-hidden="true">*</span>
-                    </label>
-                    <input
-                      type="tel"
-                      value={phoneNumber}
-                      onChange={(e) => setPhoneNumber(e.target.value)}
-                      readOnly={sharedBasicsReadOnly}
-                      className={inputClassName}
-                      placeholder="+62 812 3456 7890"
-                    />
-                    <p className="mt-1.5 text-xs leading-5 text-gray-400">
-                      {sharedBasicsReadOnly
-                        ? "Managed once in the shared hotel profile."
-                        : "Saved to the shared hotel profile and used by Booking Engine."}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="mb-1.5 flex items-center gap-1.5 text-sm text-gray-800">
+          {showContactSection && (
+            <section
+              className={
+                hideSharedHotelFields
+                  ? "grid grid-cols-1 gap-4 p-4 sm:p-5"
+                  : "grid divide-y divide-gray-200 lg:grid-cols-2 lg:divide-x lg:divide-y-0"
+              }
+            >
+              <div className={hideSharedHotelFields ? "contents" : "space-y-4 p-4 sm:p-5"}>
+                <div className="flex items-center gap-2">
                   <svg
-                    className="h-3.5 w-3.5 text-gray-400"
+                    className="h-4 w-4 text-primary-500"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -578,24 +553,181 @@ export default function PropertyStep({
                     <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      d="M8.625 9.75a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375m-13.5 3.01c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 01.778-.332 48.294 48.294 0 005.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z"
+                      d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"
                     />
                   </svg>
-                  <span className="font-medium">WhatsApp</span>
-                  <span className="text-xs font-normal text-gray-400">(optional)</span>
-                </label>
-                <input
-                  type="tel"
-                  value={whatsapp}
-                  onChange={(e) => setWhatsapp(e.target.value)}
-                  className={inputClassName}
-                  placeholder="+62 812 ..."
-                />
-              </div>
-            </div>
+                  <h3 className="text-base font-semibold text-gray-950">
+                    {hideSharedHotelFields
+                      ? "Contact & social links"
+                      : sharedBasicsReadOnly
+                        ? "Shared hotel contact"
+                        : "Hotel contact"}
+                  </h3>
+                  {hideSharedHotelFields && (
+                    <span className="text-xs font-normal text-gray-400">(optional)</span>
+                  )}
+                </div>
 
-            <div className="space-y-4 p-4 sm:p-5">
-              <div>
+                {!hideSharedHotelFields && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                        Hotel contact email <span aria-hidden="true">*</span>
+                      </label>
+                      <input
+                        type="email"
+                        value={reservationEmail}
+                        onChange={(e) => setReservationEmail(e.target.value)}
+                        readOnly={sharedBasicsReadOnly}
+                        className={inputClassName}
+                        placeholder="reservations@yourproperty.com"
+                      />
+                      <p className="mt-1.5 text-xs leading-5 text-gray-400">
+                        {sharedBasicsReadOnly
+                          ? "Managed once in the shared hotel profile."
+                          : "Saved to the shared hotel profile and used by Booking Engine."}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                        Hotel phone <span aria-hidden="true">*</span>
+                      </label>
+                      <input
+                        type="tel"
+                        value={phoneNumber}
+                        onChange={(e) => setPhoneNumber(e.target.value)}
+                        readOnly={sharedBasicsReadOnly}
+                        className={inputClassName}
+                        placeholder="+62 812 3456 7890"
+                      />
+                      <p className="mt-1.5 text-xs leading-5 text-gray-400">
+                        {sharedBasicsReadOnly
+                          ? "Managed once in the shared hotel profile."
+                          : "Saved to the shared hotel profile and used by Booking Engine."}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="mb-1.5 flex items-center gap-1.5 text-sm text-gray-800">
+                    <svg
+                      className="h-3.5 w-3.5 text-gray-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M8.625 9.75a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375m-13.5 3.01c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 01.778-.332 48.294 48.294 0 005.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z"
+                      />
+                    </svg>
+                    <span className="font-medium">WhatsApp</span>
+                    {!hideSharedHotelFields && (
+                      <span className="text-xs font-normal text-gray-400">(optional)</span>
+                    )}
+                  </label>
+                  <input
+                    type="tel"
+                    value={whatsapp}
+                    onChange={(e) => setWhatsapp(e.target.value)}
+                    className={inputClassName}
+                    placeholder="+62 812 ..."
+                  />
+                </div>
+              </div>
+
+              <div className={hideSharedHotelFields ? "contents" : "space-y-4 p-4 sm:p-5"}>
+                <div className={hideSharedHotelFields ? "hidden" : undefined}>
+                  <div className="flex items-center gap-2">
+                    <svg
+                      className="h-4 w-4 text-primary-500"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"
+                      />
+                    </svg>
+                    <h3 className="text-base font-semibold text-gray-950">Social Media</h3>
+                    <span className="text-xs font-normal text-gray-400">(optional)</span>
+                  </div>
+                  <p className="mt-1 text-xs text-gray-400">
+                    Links shown in your booking site footer
+                  </p>
+                </div>
+
+                <div
+                  className={
+                    hideSharedHotelFields ? "contents" : "grid grid-cols-1 gap-3 sm:grid-cols-2"
+                  }
+                >
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      Instagram
+                    </label>
+                    <input
+                      type="text"
+                      value={instagram}
+                      onChange={(e) => setInstagram(e.target.value)}
+                      className={inputClassName}
+                      placeholder="https://instagram.com/yourhotel"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      Facebook
+                    </label>
+                    <input
+                      type="text"
+                      value={facebook}
+                      onChange={(e) => setFacebook(e.target.value)}
+                      className={inputClassName}
+                      placeholder="https://facebook.com/yourhotel"
+                    />
+                  </div>
+                  {tiktok !== undefined && setTiktok && (
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                        TikTok
+                      </label>
+                      <input
+                        type="text"
+                        value={tiktok}
+                        onChange={(e) => setTiktok(e.target.value)}
+                        className={inputClassName}
+                        placeholder="https://www.tiktok.com/@yourhotel"
+                      />
+                    </div>
+                  )}
+                  {youtube !== undefined && setYoutube && (
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                        YouTube
+                      </label>
+                      <input
+                        type="text"
+                        value={youtube}
+                        onChange={(e) => setYoutube(e.target.value)}
+                        className={inputClassName}
+                        placeholder="https://youtube.com/@yourhotel"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {showLocalizationSection && (
+            <section className="space-y-4 p-4 sm:p-5">
+              {bookingSection !== "localization" && (
                 <div className="flex items-center gap-2">
                   <svg
                     className="h-4 w-4 text-primary-500"
@@ -610,190 +742,123 @@ export default function PropertyStep({
                       d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"
                     />
                   </svg>
-                  <h3 className="text-base font-semibold text-gray-950">Social Media</h3>
-                  <span className="text-xs font-normal text-gray-400">(optional)</span>
+                  <h3 className="text-base font-semibold text-gray-950">Currency & Languages</h3>
                 </div>
-                <p className="mt-1 text-xs text-gray-400">
-                  Links shown in your booking site footer
-                </p>
-              </div>
+              )}
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                    Instagram
+                    Default Currency <span aria-hidden="true">*</span>
                   </label>
-                  <input
-                    type="text"
-                    value={instagram}
-                    onChange={(e) => setInstagram(e.target.value)}
-                    className={inputClassName}
-                    placeholder="https://instagram.com/yourhotel"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-800">Facebook</label>
-                  <input
-                    type="text"
-                    value={facebook}
-                    onChange={(e) => setFacebook(e.target.value)}
-                    className={inputClassName}
-                    placeholder="https://facebook.com/yourhotel"
-                  />
-                </div>
-                {tiktok !== undefined && setTiktok && (
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">TikTok</label>
-                    <input
-                      type="text"
-                      value={tiktok}
-                      onChange={(e) => setTiktok(e.target.value)}
-                      className={inputClassName}
-                      placeholder="https://www.tiktok.com/@yourhotel"
-                    />
-                  </div>
-                )}
-                {youtube !== undefined && setYoutube && (
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                      YouTube
-                    </label>
-                    <input
-                      type="text"
-                      value={youtube}
-                      onChange={(e) => setYoutube(e.target.value)}
-                      className={inputClassName}
-                      placeholder="https://youtube.com/@yourhotel"
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="space-y-4 p-4 sm:p-5">
-            <div className="flex items-center gap-2">
-              <svg
-                className="h-4 w-4 text-primary-500"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"
-                />
-              </svg>
-              <h3 className="text-base font-semibold text-gray-950">Currency & Languages</h3>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                  Default Currency <span aria-hidden="true">*</span>
-                </label>
-                <FlagSelect<CurrencyOption>
-                  value={currency}
-                  onChange={(code) => {
-                    const oldDefault = currency;
-                    setCurrency(code);
-                    const without = supportedCurrencies.filter((c) => c !== code);
-                    setSupportedCurrencies(
-                      oldDefault && !without.includes(oldDefault)
-                        ? [...without, oldDefault]
-                        : without,
-                    );
-                  }}
-                  options={currencyOptions}
-                  getLabel={(o) => o.name}
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                  Default Language <span aria-hidden="true">*</span>
-                </label>
-                <FlagSelect<LanguageOption>
-                  value={defaultLanguage}
-                  onChange={(code) => {
-                    const oldDefault = defaultLanguage;
-                    setDefaultLanguage(code);
-                    const without = supportedLanguages.filter((l) => l !== code);
-                    setSupportedLanguages(
-                      oldDefault && !without.includes(oldDefault)
-                        ? [...without, oldDefault]
-                        : without,
-                    );
-                  }}
-                  options={languageOptions}
-                  getLabel={(o) => o.name}
-                />
-              </div>
-            </div>
-
-            <details
-              className="rounded-xl bg-gray-50 p-3 sm:p-4"
-              open={supportedCurrencies.length > 0 || supportedLanguages.length > 0 || undefined}
-            >
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-gray-800 [&::-webkit-details-marker]:hidden">
-                <span>Additional currencies &amp; languages</span>
-                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-normal text-gray-500">
-                  Optional
-                </span>
-              </summary>
-              <p className="mt-1 text-xs text-gray-500">
-                Add more display options only when your booking site needs them.
-              </p>
-              <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-2">
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                    Additional Currencies
-                  </label>
-                  <SearchableMultiSelect<CurrencyOption>
-                    selected={supportedCurrencies}
-                    onToggle={(code) => {
+                  <FlagSelect<CurrencyOption>
+                    value={currency}
+                    onChange={(code) => {
+                      const oldDefault = currency;
+                      setCurrency(code);
+                      const without = supportedCurrencies.filter((c) => c !== code);
                       setSupportedCurrencies(
-                        supportedCurrencies.includes(code)
-                          ? supportedCurrencies.filter((x) => x !== code)
-                          : [...supportedCurrencies, code],
+                        oldDefault && !without.includes(oldDefault)
+                          ? [...without, oldDefault]
+                          : without,
                       );
                     }}
                     options={currencyOptions}
-                    excludeCode={currency}
-                    placeholder={`Search currencies, e.g. "Swiss" or "CHF"...`}
-                    getLabel={(o) => o.code}
-                    getSearchLabel={(o) => `${o.name} \u00b7 ${o.code}`}
-                    popularCodes={popularCurrencyCodes}
-                    emptyMessage={`No additional currencies added \u2014 your booking page will show only ${currency}`}
+                    getLabel={(o) => o.name}
                   />
                 </div>
-
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-gray-800">
-                    Additional Languages
+                    Default Language <span aria-hidden="true">*</span>
                   </label>
-                  <SearchableMultiSelect<LanguageOption>
-                    selected={supportedLanguages}
-                    onToggle={(code) => {
+                  <FlagSelect<LanguageOption>
+                    value={defaultLanguage}
+                    onChange={(code) => {
+                      const oldDefault = defaultLanguage;
+                      setDefaultLanguage(code);
+                      const without = supportedLanguages.filter((l) => l !== code);
                       setSupportedLanguages(
-                        supportedLanguages.includes(code)
-                          ? supportedLanguages.filter((x) => x !== code)
-                          : [...supportedLanguages, code],
+                        oldDefault && !without.includes(oldDefault)
+                          ? [...without, oldDefault]
+                          : without,
                       );
                     }}
                     options={languageOptions}
-                    excludeCode={defaultLanguage}
-                    placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
-                    getLabel={(o) => o.nativeName}
-                    getSearchLabel={(o) => `${o.name} \u00b7 ${o.nativeName}`}
-                    popularCodes={popularLanguageCodes}
-                    emptyMessage={`No additional languages added \u2014 your booking page will show only ${defaultLanguage.toUpperCase()}`}
+                    getLabel={(o) => o.name}
                   />
                 </div>
               </div>
-            </details>
-          </section>
+
+              <details
+                className="rounded-xl bg-gray-50 p-3 sm:p-4"
+                open={additionalOptionsOpen}
+                onToggle={(event) => setAdditionalOptionsOpen(event.currentTarget.open)}
+              >
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-gray-800 [&::-webkit-details-marker]:hidden">
+                  <span>Additional currencies &amp; languages</span>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-normal text-gray-500">
+                    {additionalSelectionCount > 0
+                      ? `${additionalSelectionCount} added`
+                      : "Optional"}
+                  </span>
+                </summary>
+                <p className="mt-1 text-xs text-gray-500">
+                  Add more display options only when your booking site needs them.
+                </p>
+                <div
+                  className={`mt-4 grid grid-cols-1 gap-5 ${
+                    bookingSection === "localization" ? "" : "lg:grid-cols-2"
+                  }`}
+                >
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      Additional Currencies
+                    </label>
+                    <SearchableMultiSelect<CurrencyOption>
+                      selected={additionalCurrencies}
+                      onToggle={(code) => {
+                        setSupportedCurrencies(
+                          supportedCurrencies.includes(code)
+                            ? supportedCurrencies.filter((x) => x !== code)
+                            : [...supportedCurrencies, code],
+                        );
+                      }}
+                      options={currencyOptions}
+                      excludeCode={currency}
+                      placeholder={`Search currencies, e.g. "Swiss" or "CHF"...`}
+                      getLabel={(o) => o.code}
+                      getSearchLabel={(o) => `${o.name} \u00b7 ${o.code}`}
+                      popularCodes={popularCurrencyCodes}
+                      emptyMessage={`No additional currencies added \u2014 your booking page will show only ${currency}`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      Additional Languages
+                    </label>
+                    <SearchableMultiSelect<LanguageOption>
+                      selected={additionalLanguages}
+                      onToggle={(code) => {
+                        setSupportedLanguages(
+                          supportedLanguages.includes(code)
+                            ? supportedLanguages.filter((x) => x !== code)
+                            : [...supportedLanguages, code],
+                        );
+                      }}
+                      options={languageOptions}
+                      excludeCode={defaultLanguage}
+                      placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
+                      getLabel={(o) => o.nativeName}
+                      getSearchLabel={(o) => `${o.name} \u00b7 ${o.nativeName}`}
+                      popularCodes={popularLanguageCodes}
+                      emptyMessage={`No additional languages added \u2014 your booking page will show only ${defaultLanguage.toUpperCase()}`}
+                    />
+                  </div>
+                </div>
+              </details>
+            </section>
+          )}
         </div>
 
         {error && (
@@ -802,7 +867,16 @@ export default function PropertyStep({
           </div>
         )}
 
-        <div className="mt-5 flex justify-center">
+        <div className="mt-5 flex flex-col-reverse justify-center gap-3 sm:flex-row">
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="w-full rounded-full border border-gray-200 bg-white px-6 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 sm:w-auto"
+            >
+              Back
+            </button>
+          )}
           <button
             type="button"
             onClick={onContinue}
