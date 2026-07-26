@@ -26,6 +26,18 @@ export interface MultipleUploadResponse {
   total: number;
 }
 
+export function pmsRoomMediaResource(
+  propertyId: string,
+  roomTypeId?: string,
+): PlatformMediaResourceScope {
+  return {
+    product: "pms",
+    resourceType: "pms_property",
+    resourceId: propertyId,
+    targetResourceId: roomTypeId || "pending-room-type",
+  };
+}
+
 export const uploadService = {
   async uploadImages(
     files: File[],

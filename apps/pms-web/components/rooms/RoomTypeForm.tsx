@@ -12,6 +12,7 @@ import {
   RateDepositSetting,
 } from "@/services/rooms";
 import ImageUpload from "@/components/ImageUpload";
+import { pmsRoomMediaResource } from "@/services/upload";
 import {
   getCurrencySymbol,
   CURRENCY_SYMBOLS,
@@ -3460,15 +3461,12 @@ export default function RoomTypeForm({
             <ImageUpload
               images={form.images || []}
               onChange={(images) => updateForm({ images })}
-              mediaResource={{
-                product: "pms",
-                resourceType: "pms_hotel",
-                resourceId:
-                  typeof window !== "undefined"
-                    ? localStorage.getItem(SELECTED_PMS_PROPERTY_ID_KEY) || "pms_hotel_current"
-                    : "pms_hotel_current",
-                targetResourceId: roomTypeId || "pending-room-type",
-              }}
+              mediaResource={pmsRoomMediaResource(
+                typeof window !== "undefined"
+                  ? localStorage.getItem(SELECTED_PMS_PROPERTY_ID_KEY) || "pms_property_current"
+                  : "pms_property_current",
+                roomTypeId,
+              )}
               maxImages={10}
               label="Room Images"
             />
