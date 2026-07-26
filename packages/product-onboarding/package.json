@@ -23,13 +23,16 @@
     "./SharedSignupPage": "./src/SharedSignupPage.tsx"
   },
   "dependencies": {
-    "@vayada/locale-constants": "*"
+    "@vayada/locale-constants": "*",
+    "countries-and-timezones": "^3.9.0",
+    "tz-lookup": "^6.1.25"
   },
   "peerDependencies": {
     "@heroicons/react": "^2.2.0",
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@types/tz-lookup": "^6.1.2",
     "vitest": "^4.1.8"
   }
 }
