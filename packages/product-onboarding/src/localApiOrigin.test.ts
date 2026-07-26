@@ -21,6 +21,18 @@ describe("resolveLocalApiOrigin", () => {
     ).toBe("https://api.localhost:1356");
   });
 
+  it.each(["foo.api.localhost", "notapi.localhost"])(
+    "does not rewrite lookalike API host %s",
+    (hostname) => {
+      expect(
+        resolveLocalApiOrigin(`https://${hostname}`, {
+          hostname: "pms.localhost",
+          port: "1355",
+        }),
+      ).toBe(`https://${hostname}`);
+    },
+  );
+
   it("does not alter production origins", () => {
     expect(
       resolveLocalApiOrigin("https://api.vayada.com", {

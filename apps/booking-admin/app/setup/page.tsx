@@ -1086,7 +1086,7 @@ function BookingProductSetupPage() {
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <button
               type="button"
-              onClick={needsPmsSetup ? continueInPms : () => router.push("/dashboard")}
+              onClick={needsPmsSetup ? continueInPms : () => router.push("/settings")}
               className="rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
             >
               {needsPmsSetup ? "Continue setup in PMS" : "Review Booking settings"}

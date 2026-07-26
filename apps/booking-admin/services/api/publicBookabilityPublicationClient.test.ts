@@ -7,6 +7,16 @@ import {
   publishPublicBookabilityProfile,
 } from "./publicBookabilityPublicationClient";
 
+const readyPublication = {
+  propertyId: "property_1",
+  canonicalSlug: "hotel-alpenrose",
+  canonicalUrl: "https://hotel-alpenrose.booking.localhost/de",
+  bookingBaseUrl: "https://hotel-alpenrose.booking.localhost",
+  profileStatus: "public" as const,
+  freshnessStatus: "fresh" as const,
+  missingReadiness: [],
+};
+
 describe("publishPublicBookabilityProfile", () => {
   it("publishes the selected Booking hotel without a legacy hotel header", async () => {
     const response = {
@@ -32,17 +42,33 @@ describe("publishPublicBookabilityProfile", () => {
   });
 
   it("accepts only a public, fresh, fully ready publication", () => {
+    expect(isPublicBookabilityReady(readyPublication)).toBe(true);
     expect(
       isPublicBookabilityReady({
-        propertyId: "property_1",
-        canonicalSlug: "hotel-alpenrose",
-        canonicalUrl: "https://hotel-alpenrose.booking.localhost/de",
-        bookingBaseUrl: "https://hotel-alpenrose.booking.localhost",
-        profileStatus: "public",
-        freshnessStatus: "fresh",
-        missingReadiness: [],
+        ...readyPublication,
+        freshnessStatus: "stale",
       }),
-    ).toBe(true);
+    ).toBe(false);
+    expect(
+      isPublicBookabilityReady({
+        ...readyPublication,
+        missingReadiness: ["availability"],
+      }),
+    ).toBe(false);
+  });
+
+  it("falls back to reviewing Booking settings for an unmapped readiness blocker", () => {
+    expect(
+      publicationReadinessSteps({
+        ...readyPublication,
+        missingReadiness: ["unexpected_readiness"],
+      }),
+    ).toEqual([
+      {
+        id: "booking",
+        label: "Review the remaining Booking settings",
+      },
+    ]);
   });
 
   it("groups publication blockers into clear next steps", () => {

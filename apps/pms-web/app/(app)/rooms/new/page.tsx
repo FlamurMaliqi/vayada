@@ -176,7 +176,11 @@ export default function NewRoomPage() {
       )}
 
       <div className="flex items-center gap-3 mb-5 md:mb-6">
-        <Link href="/rooms" className="text-gray-400 hover:text-gray-600 shrink-0">
+        <Link
+          href="/rooms"
+          aria-label="Back to rooms"
+          className="text-gray-400 hover:text-gray-600 shrink-0"
+        >
           <ArrowLeftIcon className="w-5 h-5" />
         </Link>
         <h2 className="truncate text-xl font-bold text-gray-900">

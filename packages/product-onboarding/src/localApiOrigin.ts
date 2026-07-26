@@ -13,7 +13,7 @@ export function resolveLocalApiOrigin(
 
   try {
     const apiUrl = new URL(origin);
-    if (apiUrl.port || !apiUrl.hostname.endsWith("api.localhost")) return origin;
+    if (apiUrl.port || apiUrl.hostname !== "api.localhost") return origin;
     apiUrl.port = location.port;
     return apiUrl.origin;
   } catch {

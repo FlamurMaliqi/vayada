@@ -70,6 +70,7 @@ interface PropertyStepProps {
 
 // ── Custom Select Dropdown ───────────────────────────────────────────
 function FlagSelect<T extends { code: string; flag: string }>({
+  id,
   value,
   onChange,
   options,
@@ -77,6 +78,7 @@ function FlagSelect<T extends { code: string; flag: string }>({
   getValue,
   placeholder = "Select...",
 }: {
+  id: string;
   value: string;
   onChange: (value: string) => void;
   options: T[];
@@ -107,6 +109,7 @@ function FlagSelect<T extends { code: string; flag: string }>({
   return (
     <div ref={ref} className="relative">
       <button
+        id={id}
         type="button"
         onClick={() => {
           setOpen(!open);
@@ -186,6 +189,7 @@ function FlagSelect<T extends { code: string; flag: string }>({
 
 // ── Searchable Multi-Select ──────────────────────────────────────────
 function SearchableMultiSelect<T extends { code: string; flag: string }>({
+  id,
   selected,
   onToggle,
   options,
@@ -196,6 +200,7 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
   popularCodes,
   emptyMessage,
 }: {
+  id: string;
   selected: string[];
   onToggle: (code: string) => void;
   options: T[];
@@ -242,6 +247,7 @@ function SearchableMultiSelect<T extends { code: string; flag: string }>({
           />
         </svg>
         <input
+          id={id}
           type="text"
           value={query}
           onChange={(e) => {
@@ -479,10 +485,14 @@ export default function PropertyStep({
                 }
               >
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  <label
+                    htmlFor="property-step-city"
+                    className="mb-1.5 block text-sm font-medium text-gray-800"
+                  >
                     City <span aria-hidden="true">*</span>
                   </label>
                   <input
+                    id="property-step-city"
                     type="text"
                     value={city}
                     onChange={(e) => setCity(e.target.value)}
@@ -492,11 +502,15 @@ export default function PropertyStep({
                   />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  <label
+                    htmlFor="property-step-country"
+                    className="mb-1.5 block text-sm font-medium text-gray-800"
+                  >
                     Country <span aria-hidden="true">*</span>
                   </label>
                   {sharedBasicsReadOnly ? (
                     <input
+                      id="property-step-country"
                       type="text"
                       value={
                         countryOptions.find((option) => option.code === country)?.name ?? country
@@ -506,6 +520,7 @@ export default function PropertyStep({
                     />
                   ) : (
                     <FlagSelect<CountryOption>
+                      id="property-step-country"
                       value={country}
                       onChange={setCountry}
                       options={countryOptions}
@@ -571,10 +586,14 @@ export default function PropertyStep({
                 {!hideSharedHotelFields && (
                   <div className="space-y-3">
                     <div>
-                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      <label
+                        htmlFor="property-step-reservation-email"
+                        className="mb-1.5 block text-sm font-medium text-gray-800"
+                      >
                         Hotel contact email <span aria-hidden="true">*</span>
                       </label>
                       <input
+                        id="property-step-reservation-email"
                         type="email"
                         value={reservationEmail}
                         onChange={(e) => setReservationEmail(e.target.value)}
@@ -589,10 +608,14 @@ export default function PropertyStep({
                       </p>
                     </div>
                     <div>
-                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      <label
+                        htmlFor="property-step-phone"
+                        className="mb-1.5 block text-sm font-medium text-gray-800"
+                      >
                         Hotel phone <span aria-hidden="true">*</span>
                       </label>
                       <input
+                        id="property-step-phone"
                         type="tel"
                         value={phoneNumber}
                         onChange={(e) => setPhoneNumber(e.target.value)}
@@ -610,7 +633,10 @@ export default function PropertyStep({
                 )}
 
                 <div>
-                  <label className="mb-1.5 flex items-center gap-1.5 text-sm text-gray-800">
+                  <label
+                    htmlFor="property-step-whatsapp"
+                    className="mb-1.5 flex items-center gap-1.5 text-sm text-gray-800"
+                  >
                     <svg
                       className="h-3.5 w-3.5 text-gray-400"
                       fill="none"
@@ -630,6 +656,7 @@ export default function PropertyStep({
                     )}
                   </label>
                   <input
+                    id="property-step-whatsapp"
                     type="tel"
                     value={whatsapp}
                     onChange={(e) => setWhatsapp(e.target.value)}
@@ -669,10 +696,14 @@ export default function PropertyStep({
                   }
                 >
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    <label
+                      htmlFor="property-step-instagram"
+                      className="mb-1.5 block text-sm font-medium text-gray-800"
+                    >
                       Instagram
                     </label>
                     <input
+                      id="property-step-instagram"
                       type="text"
                       value={instagram}
                       onChange={(e) => setInstagram(e.target.value)}
@@ -681,10 +712,14 @@ export default function PropertyStep({
                     />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    <label
+                      htmlFor="property-step-facebook"
+                      className="mb-1.5 block text-sm font-medium text-gray-800"
+                    >
                       Facebook
                     </label>
                     <input
+                      id="property-step-facebook"
                       type="text"
                       value={facebook}
                       onChange={(e) => setFacebook(e.target.value)}
@@ -694,10 +729,14 @@ export default function PropertyStep({
                   </div>
                   {tiktok !== undefined && setTiktok && (
                     <div>
-                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      <label
+                        htmlFor="property-step-tiktok"
+                        className="mb-1.5 block text-sm font-medium text-gray-800"
+                      >
                         TikTok
                       </label>
                       <input
+                        id="property-step-tiktok"
                         type="text"
                         value={tiktok}
                         onChange={(e) => setTiktok(e.target.value)}
@@ -708,10 +747,14 @@ export default function PropertyStep({
                   )}
                   {youtube !== undefined && setYoutube && (
                     <div>
-                      <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                      <label
+                        htmlFor="property-step-youtube"
+                        className="mb-1.5 block text-sm font-medium text-gray-800"
+                      >
                         YouTube
                       </label>
                       <input
+                        id="property-step-youtube"
                         type="text"
                         value={youtube}
                         onChange={(e) => setYoutube(e.target.value)}
@@ -748,10 +791,14 @@ export default function PropertyStep({
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  <label
+                    htmlFor="property-step-default-currency"
+                    className="mb-1.5 block text-sm font-medium text-gray-800"
+                  >
                     Default Currency <span aria-hidden="true">*</span>
                   </label>
                   <FlagSelect<CurrencyOption>
+                    id="property-step-default-currency"
                     value={currency}
                     onChange={(code) => {
                       const oldDefault = currency;
@@ -768,10 +815,14 @@ export default function PropertyStep({
                   />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                  <label
+                    htmlFor="property-step-default-language"
+                    className="mb-1.5 block text-sm font-medium text-gray-800"
+                  >
                     Default Language <span aria-hidden="true">*</span>
                   </label>
                   <FlagSelect<LanguageOption>
+                    id="property-step-default-language"
                     value={defaultLanguage}
                     onChange={(code) => {
                       const oldDefault = defaultLanguage;
@@ -811,10 +862,14 @@ export default function PropertyStep({
                   }`}
                 >
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    <label
+                      htmlFor="property-step-additional-currencies"
+                      className="mb-1.5 block text-sm font-medium text-gray-800"
+                    >
                       Additional Currencies
                     </label>
                     <SearchableMultiSelect<CurrencyOption>
+                      id="property-step-additional-currencies"
                       selected={additionalCurrencies}
                       onToggle={(code) => {
                         setSupportedCurrencies(
@@ -834,10 +889,14 @@ export default function PropertyStep({
                   </div>
 
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-gray-800">
+                    <label
+                      htmlFor="property-step-additional-languages"
+                      className="mb-1.5 block text-sm font-medium text-gray-800"
+                    >
                       Additional Languages
                     </label>
                     <SearchableMultiSelect<LanguageOption>
+                      id="property-step-additional-languages"
                       selected={additionalLanguages}
                       onToggle={(code) => {
                         setSupportedLanguages(
