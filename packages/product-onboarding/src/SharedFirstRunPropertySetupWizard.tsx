@@ -1751,15 +1751,17 @@ function ProductSetupCard({
         </p>
       )}
 
-      <button
-        type="button"
-        disabled={!canContinue}
-        onClick={onContinue}
-        className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
-      >
-        <span>{productSetupActionLabel(product, label, activation, canContinue)}</span>
-        {canContinue && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
-      </button>
+      <div className="mt-auto pt-5">
+        <button
+          type="button"
+          disabled={!canContinue}
+          onClick={onContinue}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
+        >
+          <span>{productSetupActionLabel(product, label, activation, canContinue)}</span>
+          {canContinue && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
+        </button>
+      </div>
     </article>
   );
 }
