@@ -12,6 +12,34 @@ export type UpdateTracksRequest = {
   expectedRevision: number;
 };
 
+export type SetupComponentProduct = "pms" | "booking" | "marketplace";
+
+export type TrackStatus = {
+  track: SetupTrack;
+  provisioning: "not_selected" | "active" | "blocked";
+  components: Array<{
+    product: SetupComponentProduct;
+    access: "absent" | "active" | "suspended" | "unavailable";
+  }>;
+  allowedActions: Array<"add" | "manage_service">;
+};
+
+export type UpdateTracksResponse = {
+  trackRevision: number;
+  selectedTracks: SetupTrack[];
+  tracks: TrackStatus[];
+};
+
+export type SetupCommandError = {
+  code:
+    | "invalid_setup_request"
+    | "track_revision_conflict"
+    | "idempotency_key_conflict"
+    | "command_in_progress"
+    | "track_removal_requires_service_management";
+  currentRevision?: number;
+};
+
 const MAX_EXPECTED_REVISION = 2_147_483_646;
 
 export function isSetupTrack(value: unknown): value is SetupTrack {
