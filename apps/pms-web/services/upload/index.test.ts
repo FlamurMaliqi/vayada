@@ -13,8 +13,10 @@ describe("pmsRoomMediaResource", () => {
   });
 
   it("allows media uploads while a room type is being created", () => {
-    expect(pmsRoomMediaResource("property_123")).toMatchObject({
+    expect(pmsRoomMediaResource("property_123")).toEqual({
+      product: "pms",
       resourceType: "pms_property",
+      resourceId: "property_123",
       targetResourceId: "pending-room-type",
     });
   });
