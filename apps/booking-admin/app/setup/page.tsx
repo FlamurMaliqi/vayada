@@ -1,9 +1,14 @@
 "use client";
 
 import { Suspense, useState, useEffect, useRef } from "react";
+import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/auth";
-import { getAuthSessionUser, getSelectedOrganizationId } from "@/services/auth/sessionStore";
+import {
+  getAuthSessionUser,
+  getAuthWorkosOrganizationId,
+  getSelectedOrganizationId,
+} from "@/services/auth/sessionStore";
 import { settingsService } from "@/services/settings";
 import type { CreateBookingAddonItemBody } from "@/services/api/bookingAddonItemsClient";
 import type { CreateBookingPromoCodeBody } from "@/services/api/bookingPromoCodesClient";
@@ -11,8 +16,10 @@ import { updateBookingBenefitsSettings } from "@/services/api/bookingBenefitsSet
 import { updateBookingLastMinuteSettings } from "@/services/api/bookingLastMinuteSettingsClient";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import {
-  publicationReadinessError,
+  isPublicBookabilityReady,
+  publicationReadinessSteps,
   publishPublicBookabilityProfile,
+  type PublicBookabilityPublication,
 } from "@/services/api/publicBookabilityPublicationClient";
 import {
   buildFinancePaymentSettingsBody,
@@ -48,10 +55,12 @@ import {
   PoliciesStep,
   PropertyStep,
   type SetupAddon,
+  buildProductHandoffUrl,
   useSetupWizardState,
 } from "@vayada/product-onboarding";
 
 const BRANDING_STEP = 6;
+const LOCALIZATION_STEP = 7;
 const STEPS = [
   { number: 1, label: "Your Property" },
   { number: 2, label: "Add-ons" },
@@ -60,7 +69,8 @@ const STEPS = [
   { number: 5, label: "Policies" },
 ];
 const ACTIVATION_STEPS = [
-  STEPS[0]!,
+  { number: 1, label: "Contact details" },
+  { number: LOCALIZATION_STEP, label: "Currency & Languages" },
   { number: BRANDING_STEP, label: "Brand & Media" },
   ...STEPS.slice(1),
 ];
@@ -151,6 +161,7 @@ function BookingProductSetupPage() {
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [savedSetup, setSavedSetup] = useState<PublicBookabilityPublication | null>(null);
   const [prefilled, setPrefilled] = useState(false);
   const [activationSettingsLoaded, setActivationSettingsLoaded] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
@@ -593,7 +604,11 @@ function BookingProductSetupPage() {
       }
       setLoading(false);
     }
-    checkAuth();
+    checkAuth().catch(() => {
+      setError("We couldn't load your Booking setup. Refresh the page to try again.");
+      setShowWizard(true);
+      setLoading(false);
+    });
     // This is an initialization boundary. Wizard setters are stable, while
     // re-running hydration after each restored field would overwrite edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -602,7 +617,7 @@ function BookingProductSetupPage() {
   const canProceed = (): boolean => {
     if (step === 1) {
       if (productActivationMode) {
-        return activationSettingsLoaded && Boolean(currency && defaultLanguage);
+        return activationSettingsLoaded;
       }
       return !!(
         propertyName.trim() &&
@@ -613,11 +628,15 @@ function BookingProductSetupPage() {
         phoneNumber.trim()
       );
     }
+    if (step === LOCALIZATION_STEP) {
+      return activationSettingsLoaded && Boolean(currency && defaultLanguage);
+    }
     if (step === BRANDING_STEP) {
       return (
         activationSettingsLoaded &&
         isBookingActivationBrandingReady({
           heroImage,
+          heroHeading,
           heroSubtext: propertyDescription,
           primaryColor,
           selectedFont,
@@ -797,9 +816,9 @@ function BookingProductSetupPage() {
         throw new Error("Booking hotel id is required before publishing the booking page.");
       }
       const publication = await publishPublicBookabilityProfile(createdHotelId);
-      const readinessError = publicationReadinessError(publication);
-      if (readinessError) {
-        setError(readinessError);
+      if (!isPublicBookabilityReady(publication)) {
+        localStorage.removeItem("setupComplete");
+        setSavedSetup(publication);
         setSaving(false);
         return;
       }
@@ -862,47 +881,33 @@ function BookingProductSetupPage() {
 
   const currentStepIdx = setupSteps.findIndex((s) => s.number === step);
   const stepIndicators = (
-    <ol
-      className="mb-4 flex items-center justify-center sm:mb-5"
-      aria-label="Booking Engine setup progress"
-    >
-      {setupSteps.map((s, idx) => {
-        const isCompleted = currentStepIdx > idx;
-        const isActive = currentStepIdx === idx;
-        return (
-          <li
-            key={s.number}
-            className="flex items-center"
-            aria-current={isActive ? "step" : undefined}
-          >
-            <span className="flex shrink-0 items-center gap-1.5">
-              <span
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-colors ${
-                  isCompleted || isActive
-                    ? "bg-primary-600 text-white"
-                    : "bg-gray-200 text-gray-500"
-                }`}
-              >
-                {isCompleted ? <CheckIcon className="h-3.5 w-3.5" aria-hidden="true" /> : idx + 1}
-              </span>
-              <span
-                className={`sr-only whitespace-nowrap text-xs font-medium xl:not-sr-only ${
-                  isCompleted || isActive ? "text-gray-900" : "text-gray-400"
-                }`}
-              >
-                {s.label}
-              </span>
-            </span>
-            {idx < setupSteps.length - 1 && (
-              <span
-                className={`mx-1.5 h-px w-5 shrink-0 sm:mx-2 sm:w-8 xl:mx-3 xl:w-10 ${isCompleted ? "bg-primary-600" : "bg-gray-300"}`}
-                aria-hidden="true"
-              />
-            )}
-          </li>
-        );
-      })}
-    </ol>
+    <div className="mb-5 flex flex-col items-center gap-2.5 sm:mb-6">
+      <p className="text-sm font-semibold text-gray-500" aria-live="polite">
+        Step {currentStepIdx + 1} of {setupSteps.length}
+        {setupSteps[currentStepIdx]?.label ? ` · ${setupSteps[currentStepIdx].label}` : ""}
+      </p>
+      <ol
+        className="flex w-full max-w-xs items-center justify-center gap-2"
+        aria-label="Booking Engine setup progress"
+      >
+        {setupSteps.map((s, idx) => {
+          const isCompleted = currentStepIdx > idx;
+          const isActive = currentStepIdx === idx;
+          return (
+            <li
+              key={s.number}
+              aria-current={isActive ? "step" : undefined}
+              title={s.label}
+              className={`h-2 rounded-full transition-all duration-300 ${
+                isCompleted || isActive ? "w-10 bg-primary-600" : "w-3 bg-primary-100"
+              }`}
+            >
+              <span className="sr-only">{s.label}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 
   const API_URL =
@@ -1023,6 +1028,82 @@ function BookingProductSetupPage() {
     );
   }
 
+  if (savedSetup) {
+    const readinessSteps = publicationReadinessSteps(savedSetup);
+    const needsPmsSetup = readinessSteps.some((readinessStep) => readinessStep.id === "pms");
+    const pmsUrl = process.env.NEXT_PUBLIC_PMS_FRONTEND_URL || "https://pms.vayada.com";
+
+    const continueInPms = () => {
+      const organizationId = getSelectedOrganizationId();
+      if (!organizationId) {
+        window.location.href = pmsUrl;
+        return;
+      }
+      window.location.href = buildProductHandoffUrl(
+        pmsUrl,
+        savedSetup.propertyId,
+        organizationId,
+        getAuthWorkosOrganizationId(),
+        `/rooms/new?${new URLSearchParams({
+          onboarding: "booking-readiness",
+          propertyId: savedSetup.propertyId,
+        }).toString()}`,
+      );
+    };
+
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-12">
+        <section className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-10">
+          <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100">
+            <CheckIcon className="h-7 w-7 text-emerald-700" aria-hidden="true" />
+          </div>
+          <p className="mb-2 text-sm font-semibold text-emerald-700">Booking setup complete</p>
+          <h1 className="text-2xl font-bold text-gray-950 sm:text-3xl">
+            Your Booking settings are saved
+          </h1>
+          <p className="mt-3 text-base leading-7 text-gray-600">
+            You did everything right here. Your booking page will go live automatically after the
+            remaining setup is complete.
+          </p>
+
+          <div className="mt-8 rounded-xl bg-indigo-50 p-5">
+            <h2 className="font-semibold text-gray-950">What’s left</h2>
+            <ul className="mt-4 space-y-3">
+              {readinessSteps.map((readinessStep) => (
+                <li key={readinessStep.id} className="flex items-start gap-3 text-sm text-gray-700">
+                  <span
+                    className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-indigo-300 bg-white text-xs font-semibold text-indigo-700"
+                    aria-hidden="true"
+                  >
+                    {readinessStep.id === "pms" ? "1" : "•"}
+                  </span>
+                  <span>{readinessStep.label}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            <button
+              type="button"
+              onClick={needsPmsSetup ? continueInPms : () => router.push("/settings")}
+              className="rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
+            >
+              {needsPmsSetup ? "Continue setup in PMS" : "Review Booking settings"}
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard")}
+              className="rounded-xl border border-gray-300 bg-white px-5 py-3 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              Go to Booking dashboard
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   // Welcome screen with invite code option
   if (!showWizard && !prefilled) {
     return (
@@ -1118,47 +1199,20 @@ function BookingProductSetupPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-gray-50">
+    <div className="relative flex min-h-screen flex-col overflow-x-clip bg-[#fbfbfa] text-gray-950">
       <link rel="stylesheet" href={GOOGLE_FONTS_URL} />
-      {/* Top bar */}
-      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3 sm:px-8">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <svg
-              width="28"
-              height="28"
-              viewBox="0 0 32 32"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <rect width="32" height="32" rx="6" fill="#4338CA" />
-              <path
-                d="M10 16.5L14 20.5L22 12.5"
-                stroke="white"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-            <span className="text-[15px] font-semibold text-gray-900">Booking Engine Setup</span>
-          </div>
-          <span className="whitespace-nowrap text-xs text-gray-500 sm:text-[13px]">
-            Step {setupSteps.findIndex((s) => s.number === step) + 1} of {setupSteps.length}
-          </span>
-        </div>
-      </div>
-
-      {/* Progress bar */}
-      <div className="h-[3px] shrink-0 bg-gray-100">
-        <div
-          className="h-full bg-primary-600 transition-all duration-300"
-          style={{
-            width: `${((setupSteps.findIndex((s) => s.number === step) + 1) / setupSteps.length) * 100}%`,
-          }}
+      <header className="relative z-10 mx-auto flex w-full max-w-6xl shrink-0 items-center justify-center px-5 py-4 sm:px-8">
+        <Image
+          src="/vayada-logo.png"
+          alt="vayada"
+          width={120}
+          height={40}
+          className="h-7 w-auto"
+          priority
         />
-      </div>
+      </header>
 
-      {step === 1 && (
+      {(step === 1 || (productActivationMode && step === LOCALIZATION_STEP)) && (
         <PropertyStep
           propertyName={propertyName}
           setPropertyName={setPropertyName}
@@ -1188,11 +1242,27 @@ function BookingProductSetupPage() {
           setSupportedLanguages={setSupportedLanguages}
           prefilled={prefilled}
           hideSharedHotelFields={productActivationMode}
+          bookingSection={
+            productActivationMode
+              ? step === LOCALIZATION_STEP
+                ? "localization"
+                : "contact"
+              : undefined
+          }
           error={error}
           canProceed={canProceed()}
+          onBack={
+            productActivationMode && step === LOCALIZATION_STEP ? () => setStep(1) : undefined
+          }
           onContinue={() => {
             setError("");
-            setStep(productActivationMode ? BRANDING_STEP : 2);
+            setStep(
+              productActivationMode
+                ? step === LOCALIZATION_STEP
+                  ? BRANDING_STEP
+                  : LOCALIZATION_STEP
+                : 2,
+            );
           }}
           stepIndicators={stepIndicators}
           countryOptions={COUNTRY_OPTIONS}
@@ -1210,6 +1280,7 @@ function BookingProductSetupPage() {
           heroImageRequired
           heroHeading={heroHeading}
           setHeroHeading={setHeroHeading}
+          heroHeadingRequired
           primaryColor={primaryColor}
           setPrimaryColor={setPrimaryColor}
           selectedFont={selectedFont}
@@ -1225,7 +1296,7 @@ function BookingProductSetupPage() {
           defaultLanguage={defaultLanguage}
           error={error}
           canProceed={canProceed()}
-          onBack={() => setStep(1)}
+          onBack={() => setStep(LOCALIZATION_STEP)}
           onContinue={() => {
             setError("");
             setStep(2);

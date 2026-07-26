@@ -4,6 +4,7 @@ import { isBookingActivationBrandingReady } from "./bookingActivationBranding";
 
 const readyBranding = {
   heroImage: "https://cdn.vayada.test/hotel/hero.jpg",
+  heroHeading: "Welcome to Hotel Alpenrose",
   heroSubtext: "A quiet stay in the mountains.",
   primaryColor: "#2563EB",
   selectedFont: "modern-minimalist",
@@ -15,6 +16,7 @@ describe("isBookingActivationBrandingReady", () => {
   it("requires public profile copy and media before Booking activation can continue", () => {
     expect(isBookingActivationBrandingReady(readyBranding)).toBe(true);
     expect(isBookingActivationBrandingReady({ ...readyBranding, heroImage: " " })).toBe(false);
+    expect(isBookingActivationBrandingReady({ ...readyBranding, heroHeading: " " })).toBe(false);
     expect(isBookingActivationBrandingReady({ ...readyBranding, heroSubtext: " " })).toBe(false);
   });
 

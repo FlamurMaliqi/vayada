@@ -123,7 +123,12 @@ export function SharedHotelSetupPage({
       return;
     }
     if (input.action === "complete_product_activation" && input.product === "pms") {
-      router.push("/rooms");
+      router.push(
+        `/rooms/new?${new URLSearchParams({
+          onboarding: "pms-activation",
+          propertyId: input.propertyId,
+        }).toString()}`,
+      );
       return;
     }
     if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {

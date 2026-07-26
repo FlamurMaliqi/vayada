@@ -2,9 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "./client";
 import {
-  publicationReadinessError,
+  isPublicBookabilityReady,
+  publicationReadinessSteps,
   publishPublicBookabilityProfile,
 } from "./publicBookabilityPublicationClient";
+
+const readyPublication = {
+  propertyId: "property_1",
+  canonicalSlug: "hotel-alpenrose",
+  canonicalUrl: "https://hotel-alpenrose.booking.localhost/de",
+  bookingBaseUrl: "https://hotel-alpenrose.booking.localhost",
+  profileStatus: "public" as const,
+  freshnessStatus: "fresh" as const,
+  missingReadiness: [],
+};
 
 describe("publishPublicBookabilityProfile", () => {
   it("publishes the selected Booking hotel without a legacy hotel header", async () => {
@@ -30,9 +41,39 @@ describe("publishPublicBookabilityProfile", () => {
     );
   });
 
-  it("maps the backend readiness keys to concrete hotel-owner actions", () => {
+  it("accepts only a public, fresh, fully ready publication", () => {
+    expect(isPublicBookabilityReady(readyPublication)).toBe(true);
     expect(
-      publicationReadinessError({
+      isPublicBookabilityReady({
+        ...readyPublication,
+        freshnessStatus: "stale",
+      }),
+    ).toBe(false);
+    expect(
+      isPublicBookabilityReady({
+        ...readyPublication,
+        missingReadiness: ["availability"],
+      }),
+    ).toBe(false);
+  });
+
+  it("falls back to reviewing Booking settings for an unmapped readiness blocker", () => {
+    expect(
+      publicationReadinessSteps({
+        ...readyPublication,
+        missingReadiness: ["unexpected_readiness"],
+      }),
+    ).toEqual([
+      {
+        id: "booking",
+        label: "Review the remaining Booking settings",
+      },
+    ]);
+  });
+
+  it("groups publication blockers into clear next steps", () => {
+    expect(
+      publicationReadinessSteps({
         propertyId: "property_1",
         canonicalSlug: "hotel-alpenrose",
         canonicalUrl: "https://hotel-alpenrose.booking.localhost/de",
@@ -42,29 +83,15 @@ describe("publishPublicBookabilityProfile", () => {
         missingReadiness: [
           "availability_source",
           "sellable_availability",
-          "payment_method",
-          "booking_settings",
-          "default_currency",
           "freshness",
+          "payment_method",
           "profile",
         ],
       }),
-    ).toBe(
-      "Your Booking settings were saved, but the booking page is not ready to go live. Please connect and configure the property's availability source in PMS, add future room inventory and rates in PMS, choose a usable payment method and finish its setup, complete the required Booking settings, set the property's default booking currency, refresh the PMS availability data, and complete the public hotel profile and Brand & Media details, then try again.",
-    );
-  });
-
-  it("accepts only a public, fresh, fully ready publication", () => {
-    expect(
-      publicationReadinessError({
-        propertyId: "property_1",
-        canonicalSlug: "hotel-alpenrose",
-        canonicalUrl: "https://hotel-alpenrose.booking.localhost/de",
-        bookingBaseUrl: "https://hotel-alpenrose.booking.localhost",
-        profileStatus: "public",
-        freshnessStatus: "fresh",
-        missingReadiness: [],
-      }),
-    ).toBeNull();
+    ).toEqual([
+      expect.objectContaining({ id: "pms" }),
+      expect.objectContaining({ id: "payments" }),
+      expect.objectContaining({ id: "profile" }),
+    ]);
   });
 });

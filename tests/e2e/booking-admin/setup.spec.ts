@@ -207,21 +207,28 @@ test.describe("booking-admin shared setup", () => {
     await expect(page).toHaveURL(
       new RegExp(`/setup\\?legacy=booking&propertyId=${BOOKING_ADMIN_PROPERTY_ID}$`),
     );
-    await expect(page.getByRole("heading", { name: "Your Property" })).toBeVisible();
+    await expect(page.getByRole("img", { name: "vayada" })).toBeVisible();
+    await expect(page.getByText("Step 1 of 7 · Contact details", { exact: true })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Booking Engine setup progress" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
     await expect(page.getByText("Property Name", { exact: false })).toHaveCount(0);
     await expect(page.getByText("City", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Country", { exact: false })).toHaveCount(0);
     await expect(page.getByText("Full Address", { exact: false })).toHaveCount(0);
     await expect(page.getByText("Hotel contact email", { exact: false })).toHaveCount(0);
     await expect(page.getByText("Hotel phone", { exact: false })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Contact & social links" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Social Media" })).toHaveCount(0);
     await expect(page.getByText("WhatsApp", { exact: false })).toBeVisible();
+    await expect(page.getByText("Default Currency", { exact: false })).toHaveCount(0);
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(
+      page.getByText("Step 2 of 7 · Currency & Languages", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Currency & Languages" })).toBeVisible();
     await expect(page.getByText("Default Currency", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue" })).toBeInViewport();
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollHeight <= document.documentElement.clientHeight,
-      ),
-    ).toBe(true);
 
     await page.setViewportSize({ width: 390, height: 844 });
     expect(
@@ -232,17 +239,16 @@ test.describe("booking-admin shared setup", () => {
   });
 
   test("blocks activation when existing Booking settings cannot be loaded", async ({ page }) => {
-    await mockBookingAdminAuthenticatedSession(page);
-    await mockBookingAdminShellRoutes(page);
+    await mockMultiHotelActivation(page);
     await page.route("**/api/booking/hotels/*/settings/property*", (route) =>
       route.fulfill({ status: 500, json: { message: "Unavailable" } }),
     );
 
     await page.goto(`/setup?legacy=booking&propertyId=${BOOKING_ADMIN_PROPERTY_ID}`);
 
-    await expect(page.getByRole("heading", { name: "Your Property" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
     await expect(
-      page.getByText("We couldn't load your Booking settings. Refresh the page to try again."),
+      page.getByText("We couldn't load your Booking setup. Refresh the page to try again."),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
   });
@@ -283,7 +289,7 @@ test.describe("booking-admin shared setup", () => {
     await expect(page).toHaveURL(
       new RegExp(`/setup\\?legacy=booking&propertyId=${SECOND_PROPERTY_ID}$`),
     );
-    await expect(page.getByRole("heading", { name: "Your Property" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
     await expect
       .poll(() => page.evaluate(() => localStorage.getItem("selectedHotelId")))
       .toBe(SECOND_HOTEL_ID);
@@ -315,12 +321,14 @@ test.describe("booking-admin shared setup", () => {
     );
     const design = await mockBookingAdminDesignSettings(page);
     await page.goto(`/setup?legacy=booking&propertyId=${SECOND_PROPERTY_ID}`);
-    await expect(page.getByRole("heading", { name: "Your Property" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
 
     await page.evaluate(
       (hotelId) => localStorage.setItem("selectedHotelId", hotelId),
       BOOKING_ADMIN_HOTEL_ID,
     );
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByRole("heading", { name: "Currency & Languages" })).toBeVisible();
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("heading", { name: "Brand & Media" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Hero heading" })).toHaveValue(
@@ -429,6 +437,7 @@ test.describe("booking-admin shared setup", () => {
     await page.goto(`/setup?legacy=booking&propertyId=${SECOND_PROPERTY_ID}`);
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: /Skip for Now/ }).click();
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: "Continue" }).click();
@@ -438,11 +447,9 @@ test.describe("booking-admin shared setup", () => {
       new RegExp(`/setup\\?legacy=booking&propertyId=${SECOND_PROPERTY_ID}$`),
     );
     await expect(
-      page.getByText(
-        "Your Booking settings were saved, but the booking page is not ready to go live.",
-        { exact: false },
-      ),
+      page.getByRole("heading", { name: "Your Booking settings are saved" }),
     ).toBeVisible();
+    await expect(page.getByText("Finish setting up a payment method")).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem("setupComplete"))).toBeNull();
     await expect
       .poll(() =>

@@ -24,6 +24,7 @@ interface BrandMediaStepProps {
   heroImageRequired?: boolean;
   heroHeading?: string;
   setHeroHeading?: (v: string) => void;
+  heroHeadingRequired?: boolean;
   primaryColor: string;
   setPrimaryColor: (v: string) => void;
   accentColor?: string;
@@ -57,6 +58,7 @@ export default function BrandMediaStep({
   heroImageRequired = true,
   heroHeading,
   setHeroHeading,
+  heroHeadingRequired = false,
   primaryColor,
   setPrimaryColor,
   accentColor,
@@ -312,11 +314,13 @@ export default function BrandMediaStep({
                       className="block text-[12px] font-medium text-gray-700 mb-0.5"
                     >
                       Heading
+                      {heroHeadingRequired && <span className="text-red-500"> *</span>}
                     </label>
                     <input
                       id="brand-media-hero-heading"
                       type="text"
                       aria-label="Hero heading"
+                      aria-required={heroHeadingRequired}
                       value={heroHeading ?? ""}
                       onChange={(e) => setHeroHeading(e.target.value)}
                       maxLength={160}

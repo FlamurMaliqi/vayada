@@ -16,6 +16,7 @@ import {
   type AuthSessionResponse,
 } from "./sessionStore";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
+import { resolveLocalApiOrigin } from "@vayada/product-onboarding/localApiOrigin";
 
 const AUTH_SURFACE = "marketplace-web";
 
@@ -96,9 +97,7 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 function authApiBaseUrl(): string {
-  if (process.env.NEXT_PUBLIC_AUTH_API_URL) return process.env.NEXT_PUBLIC_AUTH_API_URL;
-  if (typeof window === "undefined" || !window.location?.port) return "https://api.localhost";
-  return `${window.location.protocol}//api.localhost:${window.location.port}`;
+  return resolveLocalApiOrigin(process.env.NEXT_PUBLIC_AUTH_API_URL);
 }
 
 function isAuthStateResponse(value: unknown): value is AuthStateResponse {
