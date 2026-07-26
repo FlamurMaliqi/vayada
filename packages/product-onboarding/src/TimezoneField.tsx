@@ -21,6 +21,7 @@ export default function TimezoneField({
   const visibleOptions = useMemo(() => filterTimezones(options, query), [options, query]);
   const [activeTimezone, setActiveTimezone] = useState(value);
   const activeOption = useRef<HTMLLIElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) activeOption.current?.scrollIntoView({ block: "nearest" });
@@ -42,6 +43,7 @@ export default function TimezoneField({
       </p>
       <div className="relative mt-2">
         <input
+          ref={inputRef}
           id={id}
           role="combobox"
           aria-expanded={open}
@@ -90,9 +92,13 @@ export default function TimezoneField({
         />
         <button
           type="button"
+          tabIndex={-1}
           aria-label="Open time zone options"
           onMouseDown={(event) => event.preventDefault()}
-          onClick={openPicker}
+          onClick={() => {
+            inputRef.current?.focus();
+            openPicker();
+          }}
           className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-gray-500"
         >
           <span aria-hidden="true">⌄</span>

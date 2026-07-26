@@ -943,6 +943,7 @@ function ProfileForm({
   const editAddressButton = useRef<HTMLButtonElement>(null);
   const focusAddressFieldsWhenShown = useRef(false);
   const stepHeading = useRef<HTMLHeadingElement>(null);
+  const timezoneWasAutoDetected = useRef(false);
 
   useEffect(() => {
     const errorStep = PROFILE_STEP_FIELDS.findIndex((fields) =>
@@ -991,9 +992,13 @@ function ProfileForm({
   const setField = (field: keyof ProfileDraft, value: string) => {
     const locationReset = locationResetForManualAddressEdit(field);
     if ("latitude" in locationReset) addressRevision.current += 1;
+    if (field === "timezone") timezoneWasAutoDetected.current = false;
     onChange({
       ...draft,
       [field]: value,
+      ...(timezoneWasAutoDetected.current && "latitude" in locationReset
+        ? { timezone: defaultTimezoneForCountry(draft.countryCode) }
+        : {}),
       ...locationReset,
     });
   };
@@ -1273,6 +1278,7 @@ function ProfileForm({
                         typeof address.longitude === "number"
                           ? timezoneForCoordinates(address.latitude, address.longitude)
                           : defaultTimezoneForCountry(address.countryCode);
+                      timezoneWasAutoDetected.current = true;
                       const nextDraft = { ...draft, ...address, timezone };
                       const canCollapse =
                         isExactAddress &&
@@ -1374,6 +1380,7 @@ function ProfileForm({
                         }))}
                         onChange={(value) => {
                           addressRevision.current += 1;
+                          timezoneWasAutoDetected.current = true;
                           onChange({
                             ...draft,
                             countryCode: value,
