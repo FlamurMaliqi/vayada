@@ -2,6 +2,10 @@
 
 _VAY-966 contract record. Parent: VAY-965._
 
+The additive V2 onboarding direction is defined in
+[`adaptive-hotel-onboarding.md`](adaptive-hotel-onboarding.md). This document
+remains the authoritative V1 compatibility contract until consumers migrate.
+
 ## Purpose
 
 Vayada hotel users should choose the systems their hotel group uses once, then
