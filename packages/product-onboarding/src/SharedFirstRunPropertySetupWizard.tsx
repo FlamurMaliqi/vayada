@@ -28,11 +28,13 @@ import {
   SunIcon,
   UsersIcon,
 } from "@heroicons/react/24/outline";
-import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from "@vayada/locale-constants";
+import { COUNTRY_OPTIONS } from "@vayada/locale-constants";
 
 import { HotelIcon } from "./HotelIcon";
 import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
+import TimezoneField from "./TimezoneField";
+import { availableTimezones, defaultTimezoneForCountry, timezoneForCoordinates } from "./timezones";
 import { isValidSharedAccountPhone } from "./sharedAccountDetails";
 import {
   SHARED_HOTEL_SETUP_PRODUCTS,
@@ -252,9 +254,7 @@ const PROPERTY_TYPE_ICONS = new Map<string, IconComponent>([
   ["other", EllipsisHorizontalIcon],
 ]);
 
-const TIMEZONE_DATALIST_OPTIONS = TIMEZONE_OPTIONS.map((timezone) =>
-  timezone === "UTC" ? "Etc/UTC" : timezone,
-);
+const TIMEZONE_PICKER_OPTIONS = availableTimezones();
 
 export default function SharedFirstRunPropertySetupWizard({
   api,
@@ -388,7 +388,7 @@ export default function SharedFirstRunPropertySetupWizard({
         setDraft(
           nextProfile
             ? draftFromProfile(nextProfile)
-            : newPropertyDraft(accountContactEmail, accountContactPhone, browserTimezone()),
+            : newPropertyDraft(accountContactEmail, accountContactPhone),
         );
       })
       .catch((err) => {
@@ -573,7 +573,7 @@ export default function SharedFirstRunPropertySetupWizard({
           properties={status.properties}
           onSelect={handleSelectProperty}
           onAdd={() => {
-            setDraft(newPropertyDraft(accountContactEmail, accountContactPhone, browserTimezone()));
+            setDraft(newPropertyDraft(accountContactEmail, accountContactPhone));
             setLoadedProfile(null);
             setForceCreateProperty(true);
           }}
@@ -1028,8 +1028,6 @@ function ProfileForm({
   const countryName = country?.name ?? draft.countryCode;
   const hasCompleteLocation = canConfirmLocation(draft);
   const hasMappedLocation = hasCompleteLocation && hasMapCoordinates(draft);
-  const timezoneMatchesBrowser =
-    mode === "create" && draft.timezone && draft.timezone === browserTimezone();
   const profileProgress = (
     <div
       className={
@@ -1270,7 +1268,12 @@ function ProfileForm({
                     }}
                     onSelect={(address, isExactAddress) => {
                       setAddressSearchUnavailable(false);
-                      const nextDraft = { ...draft, ...address };
+                      const timezone =
+                        typeof address.latitude === "number" &&
+                        typeof address.longitude === "number"
+                          ? timezoneForCoordinates(address.latitude, address.longitude)
+                          : defaultTimezoneForCountry(address.countryCode);
+                      const nextDraft = { ...draft, ...address, timezone };
                       const canCollapse =
                         isExactAddress &&
                         canConfirmLocation(nextDraft) &&
@@ -1369,16 +1372,20 @@ function ProfileForm({
                           value: country.code,
                           label: `${country.flag} ${country.name}`,
                         }))}
-                        onChange={(value) => setField("countryCode", value)}
+                        onChange={(value) => {
+                          addressRevision.current += 1;
+                          onChange({
+                            ...draft,
+                            countryCode: value,
+                            timezone: defaultTimezoneForCountry(value),
+                            ...locationResetForManualAddressEdit("countryCode"),
+                          });
+                        }}
                       />
-                      <TextField
-                        label="Time zone"
+                      <TimezoneField
                         value={draft.timezone}
-                        placeholder="Europe/Berlin"
-                        helper="Detected automatically. Change it if needed."
-                        required={mode === "create"}
                         error={fieldErrors["location.timezone"]?.[0]}
-                        listOptions={TIMEZONE_DATALIST_OPTIONS}
+                        options={TIMEZONE_PICKER_OPTIONS}
                         onChange={(value) => setField("timezone", value)}
                       />
                       {showRawLocation && (
@@ -1428,11 +1435,6 @@ function ProfileForm({
                       </p>
                       {draft.timezone && (
                         <p className="mt-0.5 text-xs text-gray-500">Time zone · {draft.timezone}</p>
-                      )}
-                      {timezoneMatchesBrowser && (
-                        <p className="mt-0.5 text-xs text-gray-500">
-                          This matches your device. Verify it if the hotel is elsewhere.
-                        </p>
                       )}
                     </div>
                   </div>
@@ -2336,12 +2338,6 @@ function newPropertyDraft(
     longDescription: "",
     mediaUrl: "",
   };
-}
-
-function browserTimezone(): string {
-  if (typeof window === "undefined") return "";
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return timezone === "UTC" ? "Etc/UTC" : timezone;
 }
 
 function isHttpUrl(value: string): boolean {
