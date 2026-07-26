@@ -12,6 +12,7 @@ import {
 } from "@vayada/backend-authorization";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
+import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
 import type { AskAuditRepository, AskRoutesOptions } from "./routes/ask.js";
@@ -179,6 +180,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
+  hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
   identityAdminUsersReadRepository?: IdentityAdminUsersReadRepository;
@@ -358,9 +360,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
   if (options.sharedHotelSetupStatusRepository) {
+    if (!options.hotelSetupTrackCommandRepository) {
+      throw new Error(
+        "hotelSetupTrackCommandRepository is required with sharedHotelSetupStatusRepository",
+      );
+    }
     app.register(registerSharedHotelSetupStatusRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
+      trackCommandRepository: options.hotelSetupTrackCommandRepository,
     });
   }
   if (options.identityPrivacyRepository) {

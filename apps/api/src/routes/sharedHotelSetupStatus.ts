@@ -1,7 +1,12 @@
 import type { PermissionKey } from "@vayada/backend-auth";
-import { SHARED_PROPERTY_TYPE_OPTIONS, type SharedPropertyTypeOption } from "@vayada/domain-hotels";
+import {
+  parseUpdateTracksRequest,
+  SHARED_PROPERTY_TYPE_OPTIONS,
+  type SharedPropertyTypeOption,
+} from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
+import type { HotelSetupTrackCommandRepository } from "../domains/hotelSetupTrackCommandRepository.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export type SharedHotelSetupEntryProduct = "booking" | "pms" | "marketplace";
@@ -90,12 +95,6 @@ export type SharedHotelSetupStatus = {
   updatedAt: string;
 };
 
-export type SharedHotelSetupAccountProductSelection = {
-  organizationId: string;
-  selectedProducts: SharedHotelSetupEntryProduct[];
-  updatedAt: string;
-};
-
 export type SharedPropertyProfileLocation = {
   countryCode: string | null;
   region: string | null;
@@ -159,15 +158,12 @@ export type SharedHotelSetupStatusRepository = {
     expectedUpdatedAt: string | null;
     profile: SharedPropertyProfileInput;
   }): Promise<SharedPropertyProfile | null>;
-  setOrganizationProductSelections?(input: {
-    organizationId: string;
-    selectedProducts: SharedHotelSetupEntryProduct[];
-  }): Promise<SharedHotelSetupAccountProductSelection>;
   close?(): Promise<void>;
 };
 
 type SharedHotelSetupStatusRoutesOptions = {
   repository: SharedHotelSetupStatusRepository;
+  trackCommandRepository: HotelSetupTrackCommandRepository;
   now?: () => Date;
 };
 
@@ -175,10 +171,6 @@ type SharedHotelSetupQuery = {
   entryProduct?: string;
   returnTo?: string;
   propertyId?: string;
-};
-
-type SharedHotelSetupAccountProductSelectionBody = {
-  selectedProducts?: unknown;
 };
 
 type SharedPropertyProfileParams = {
@@ -202,10 +194,10 @@ export async function registerSharedHotelSetupStatusRoutes(
   app: FastifyInstance,
   options: SharedHotelSetupStatusRoutesOptions,
 ): Promise<void> {
-  const { repository, now = () => new Date() } = options;
+  const { repository, trackCommandRepository, now = () => new Date() } = options;
 
   app.addHook("onClose", async () => {
-    await repository.close?.();
+    await Promise.all([repository.close?.(), trackCommandRepository.close()]);
   });
 
   app.get("/property-types", async (request, reply) => {
@@ -370,27 +362,31 @@ export async function registerSharedHotelSetupStatusRoutes(
     return profile;
   });
 
-  app.put("/products", async (request, reply) => {
-    const selectedProducts = parseSelectedProducts(
-      request.body as SharedHotelSetupAccountProductSelectionBody | undefined,
-      reply,
-    );
-    if (selectedProducts === false) return reply;
-
+  app.put("/tracks", async (request, reply) => {
     const access = resolveSharedSetupAccess(request, reply, null, "hotel_catalog.products.manage");
     if (!access) return reply;
 
-    if (!repository.setOrganizationProductSelections) {
-      return reply.status(501).send({
-        code: "organization_product_selection_unavailable",
-        detail: "Account-level product selection is not available.",
-      });
+    const update = parseUpdateTracksRequest(request.body);
+    if (!update) {
+      return invalidSetupRequest(
+        reply,
+        "Request must include valid selectedTracks and expectedRevision.",
+      );
     }
 
-    return repository.setOrganizationProductSelections({
+    const idempotencyKey = parseIdempotencyKey(request, reply);
+    if (!idempotencyKey) return reply;
+
+    const context = access.context;
+    const result = await trackCommandRepository.updateTracks({
       organizationId: access.organizationId,
-      selectedProducts,
+      actorUserId: context.actor.internalUserId,
+      audit: context.audit,
+      idempotencyKey,
+      ...update,
     });
+    if (!result.ok) return reply.status(409).send(result.error);
+    return result.response;
   });
 }
 
@@ -399,7 +395,11 @@ function resolveSharedSetupAccess(
   reply: FastifyReply,
   requestedPropertyId: string | null,
   permission: PermissionKey = "hotel_catalog.setup.read",
-): { organizationId: string; propertyIds: string[] } | null {
+): {
+  context: ReturnType<typeof enforceRoutePolicy>;
+  organizationId: string;
+  propertyIds: string[];
+} | null {
   try {
     const context = enforceRoutePolicy(request, { permission });
     if (context.selectedOrganization.kind !== "hotel_group") {
@@ -429,6 +429,7 @@ function resolveSharedSetupAccess(
     }
 
     return {
+      context,
       organizationId: context.selectedOrganization.organizationId,
       propertyIds,
     };
@@ -472,33 +473,35 @@ function parsePropertyId(value: string | undefined, reply: FastifyReply): string
   return false;
 }
 
-function parseSelectedProducts(
-  body: SharedHotelSetupAccountProductSelectionBody | undefined,
-  reply: FastifyReply,
-): SharedHotelSetupEntryProduct[] | false {
-  if (!body || !Array.isArray(body.selectedProducts)) {
-    reply.status(422).send({
-      code: "invalid_selected_products",
-      detail: "selectedProducts must be an array of booking, pms, or marketplace.",
-    });
-    return false;
+function parseIdempotencyKey(request: FastifyRequest, reply: FastifyReply): string | null {
+  const headerOccurrences = request.raw.rawHeaders.filter(
+    (value, index) => index % 2 === 0 && value.toLowerCase() === "idempotency-key",
+  ).length;
+  const header = request.headers["idempotency-key"];
+  if (headerOccurrences !== 1 || typeof header !== "string") {
+    invalidSetupRequest(
+      reply,
+      "Idempotency-Key must be provided exactly once and contain 1 to 200 characters.",
+    );
+    return null;
   }
 
-  if (
-    !body.selectedProducts.every(
-      (value): value is SharedHotelSetupEntryProduct =>
-        typeof value === "string" && (ENTRY_PRODUCTS as readonly string[]).includes(value),
-    )
-  ) {
-    reply.status(422).send({
-      code: "invalid_selected_products",
-      detail: "selectedProducts must contain only booking, pms, or marketplace.",
-    });
-    return false;
+  const idempotencyKey = header.trim();
+  if (idempotencyKey.length === 0 || idempotencyKey.length > 200) {
+    invalidSetupRequest(
+      reply,
+      "Idempotency-Key must be provided exactly once and contain 1 to 200 characters.",
+    );
+    return null;
   }
+  return idempotencyKey;
+}
 
-  const requested = new Set(body.selectedProducts);
-  return ENTRY_PRODUCTS.filter((product) => requested.has(product));
+function invalidSetupRequest(reply: FastifyReply, detail: string): FastifyReply {
+  return reply.status(422).send({
+    code: "invalid_setup_request",
+    detail,
+  });
 }
 
 function parseSharedPropertyProfile(

@@ -29,6 +29,7 @@ import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperati
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { createTargetPublicHotelProfileRepository } from "./routes/aiHotels.js";
@@ -260,6 +261,9 @@ const financePublicHotelPropertyResolver =
     : undefined;
 
 const sharedHotelSetupStatusRepository = createPgSharedHotelSetupStatusRepository({
+  connectionString: targetDatabaseUrl,
+});
+const hotelSetupTrackCommandRepository = createPgHotelSetupTrackCommandRepository({
   connectionString: targetDatabaseUrl,
 });
 
@@ -513,6 +517,7 @@ const app = buildApp({
   marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
+  hotelSetupTrackCommandRepository,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
     ? createPgIdentityPrivacyRepository({

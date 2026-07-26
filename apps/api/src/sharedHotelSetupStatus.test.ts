@@ -1,3 +1,5 @@
+import { request as httpRequest } from "node:http";
+
 import {
   createFakeVerifier,
   type IdentityRepository,
@@ -6,11 +8,16 @@ import {
   type VerifiedSession,
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
+import type { SetupCommandError, UpdateTracksResponse } from "@vayada/domain-hotels";
 import type { FastifyInstance } from "fastify";
 import type { QueryResultRow } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import type {
+  HotelSetupTrackCommand,
+  HotelSetupTrackCommandRepository,
+} from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import {
   type SharedHotelSetupEntryProduct,
@@ -289,62 +296,258 @@ describe("shared hotel setup status route", () => {
     });
   });
 
-  it("stores selected systems at hotel-group account level", async () => {
-    const calls: Array<{
-      organizationId: string;
-      selectedProducts: SharedHotelSetupEntryProduct[];
-    }> = [];
+  it("canonicalizes and delegates setup tracks with authenticated audit context", async () => {
+    const calls: HotelSetupTrackCommand[] = [];
+    const responseBody: UpdateTracksResponse = {
+      trackRevision: 3,
+      selectedTracks: ["hotel_operations", "creator_marketplace"],
+      tracks: [
+        {
+          track: "hotel_operations",
+          provisioning: "active",
+          components: [
+            { product: "pms", access: "active" },
+            { product: "booking", access: "active" },
+          ],
+          allowedActions: [],
+        },
+        {
+          track: "creator_marketplace",
+          provisioning: "active",
+          components: [{ product: "marketplace", access: "active" }],
+          allowedActions: [],
+        },
+      ],
+    };
     app = buildSharedSetupApp({
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.products.manage"],
-      repository: {
-        ...repositoryWith([]),
-        async setOrganizationProductSelections(input) {
-          calls.push(input);
-          return {
-            organizationId: input.organizationId,
-            selectedProducts: productOrder.filter((product) =>
-              input.selectedProducts.includes(product),
-            ),
-            updatedAt: "2026-06-30T08:00:00.000Z",
-          };
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        async updateTracks(command) {
+          calls.push(command);
+          return { ok: true, response: responseBody };
         },
+        async close() {},
       },
+    });
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: "/api/hotel-setup/tracks",
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "  setup-tracks-001  ",
+      },
+      payload: {
+        organizationId: unrelatedPropertyId,
+        selectedTracks: ["creator_marketplace", "hotel_operations"],
+        expectedRevision: 2,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual(responseBody);
+    expect(calls).toEqual([
+      {
+        selectedTracks: ["hotel_operations", "creator_marketplace"],
+        expectedRevision: 2,
+        idempotencyKey: "setup-tracks-001",
+        actorUserId: "user_hotel_owner",
+        audit: expect.objectContaining({
+          requestId: expect.any(String),
+          source: "api",
+          receivedAt: expect.any(String),
+        }),
+        organizationId,
+      },
+    ]);
+  });
+
+  it("rejects invalid track requests and Idempotency-Key headers before delegation", async () => {
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.products.manage"],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        updateTracks,
+        async close() {},
+      },
+    });
+
+    const validPayload = {
+      selectedTracks: ["hotel_operations"],
+      expectedRevision: 0,
+    };
+    const cases = [
+      {
+        name: "invalid payload",
+        headers: {
+          authorization: "Bearer valid-token",
+          "idempotency-key": "invalid-payload",
+        },
+        payload: { selectedTracks: ["booking"], expectedRevision: 0 },
+      },
+      {
+        name: "missing key",
+        headers: { authorization: "Bearer valid-token" },
+        payload: validPayload,
+      },
+      {
+        name: "blank key",
+        headers: { authorization: "Bearer valid-token", "idempotency-key": "   " },
+        payload: validPayload,
+      },
+      {
+        name: "oversized key",
+        headers: { authorization: "Bearer valid-token", "idempotency-key": "x".repeat(201) },
+        payload: validPayload,
+      },
+    ];
+
+    for (const request of cases) {
+      const response = await injectJson<{ code: string; detail: string }>(app, {
+        method: "PUT",
+        url: "/api/hotel-setup/tracks",
+        headers: request.headers,
+        payload: request.payload,
+      });
+
+      expect(response.statusCode, `${request.name}: ${JSON.stringify(response.body)}`).toBe(422);
+      expect(response.body).toMatchObject({
+        code: "invalid_setup_request",
+        detail: expect.any(String),
+      });
+    }
+    expect(updateTracks).not.toHaveBeenCalled();
+  });
+
+  it("rejects repeated Idempotency-Key headers", async () => {
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.products.manage"],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        updateTracks,
+        async close() {},
+      },
+    });
+    const payload = JSON.stringify({
+      selectedTracks: ["hotel_operations"],
+      expectedRevision: 0,
+    });
+
+    const response = await requestWithRawHeaders(app, payload, {
+      authorization: "Bearer valid-token",
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(payload)),
+      "idempotency-key": ["first", "second"],
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toMatchObject({ code: "invalid_setup_request" });
+    expect(updateTracks).not.toHaveBeenCalled();
+  });
+
+  it("returns setup track command conflicts unchanged with status 409", async () => {
+    const conflict: SetupCommandError = {
+      code: "track_revision_conflict",
+      currentRevision: 2,
+    };
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.products.manage"],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        async updateTracks() {
+          return { ok: false, error: conflict };
+        },
+        async close() {},
+      },
+    });
+
+    const response = await injectJson<SetupCommandError>(app, {
+      method: "PUT",
+      url: "/api/hotel-setup/tracks",
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "revision-conflict",
+      },
+      payload: {
+        selectedTracks: ["hotel_operations"],
+        expectedRevision: 0,
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual(conflict);
+  });
+
+  it("requires the owner-level permission for setup track changes", async () => {
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        updateTracks,
+        async close() {},
+      },
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: "/api/hotel-setup/tracks",
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "permission-denied",
+      },
+      payload: { selectedTracks: ["hotel_operations"], expectedRevision: 0 },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(updateTracks).not.toHaveBeenCalled();
+  });
+
+  it("rejects setup track changes outside an active hotel group", async () => {
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+    app = buildSharedSetupApp({
+      organizationKind: "creator_workspace",
+      permissions: ["hotel_catalog.products.manage"],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        updateTracks,
+        async close() {},
+      },
+    });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/hotel-setup/tracks",
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "wrong-organization",
+      },
+      payload: { selectedTracks: ["creator_marketplace"], expectedRevision: 0 },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.body).toEqual({
+      detail: "This endpoint is only available for hotel groups.",
+    });
+    expect(updateTracks).not.toHaveBeenCalled();
+  });
+
+  it("does not expose the legacy product-selection write endpoint", async () => {
+    app = buildSharedSetupApp({
+      repository: repositoryWith([]),
     });
 
     const response = await injectJson(app, {
       method: "PUT",
       url: "/api/hotel-setup/products",
       headers: { authorization: "Bearer valid-token" },
-      payload: { selectedProducts: ["marketplace", "booking"] },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({
-      organizationId,
-      selectedProducts: ["booking", "marketplace"],
-    });
-    expect(calls).toEqual([{ organizationId, selectedProducts: ["booking", "marketplace"] }]);
-  });
-
-  it("requires the owner-level permission for account system changes", async () => {
-    app = buildSharedSetupApp({
-      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
-      repository: {
-        ...repositoryWith([]),
-        async setOrganizationProductSelections() {
-          throw new Error("unauthorized account system changes must not reach the repository");
-        },
-      },
-    });
-
-    const response = await injectJson<{ code: string }>(app, {
-      method: "PUT",
-      url: "/api/hotel-setup/products",
-      headers: { authorization: "Bearer valid-token" },
       payload: { selectedProducts: ["booking"] },
     });
 
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(404);
   });
 
   it("creates the first shared property profile inside the resolved hotel group", async () => {
@@ -1948,54 +2151,6 @@ describe("shared hotel setup status route", () => {
     });
   });
 
-  it("links every enabled system to every canonical hotel", async () => {
-    const query = vi.fn(async (_text: string, _values?: readonly unknown[]) => ({
-      rows: [{ product: "booking", updatedAt: "2026-06-30T08:00:00.000Z" }],
-    }));
-    const repository = createPgSharedHotelSetupStatusRepository({
-      connectionString: "postgresql://target-db",
-      pool: {
-        query: async <T extends QueryResultRow = QueryResultRow>(
-          text: string,
-          values?: readonly unknown[],
-        ) => {
-          const result = await query(text, values);
-          return { rows: result.rows as unknown as T[] };
-        },
-        end: vi.fn(async () => undefined),
-      },
-    });
-
-    await repository.setOrganizationProductSelections?.({
-      organizationId,
-      selectedProducts: ["booking", "pms"],
-    });
-
-    const sql = query.mock.calls[0]![0];
-    expect(sql).toContain("organization_properties AS");
-    expect(sql).toContain("WHEN 'booking' THEN 'booking_hotel'");
-    expect(sql).toContain("WHEN 'pms' THEN 'pms_property'");
-    expect(sql).toContain("WHEN 'marketplace' THEN 'hotel_profile'");
-    expect(sql).toContain("CROSS JOIN organization_properties");
-    expect(sql).toContain("WHEN 'booking' THEN 'booking-engine'");
-    expect(sql).toContain("WHEN 'pms' THEN 'property-management'");
-    expect(sql).toContain("WHEN 'marketplace' THEN 'marketplace-hotel-profile'");
-    expect(sql).toContain("INSERT INTO booking.booking_settings (property_id)");
-    expect(sql).toContain("INSERT INTO marketplace.marketplace_hotel_profiles");
-    expect(sql).toContain("metadata ->> 'source' = 'shared_hotel_setup'");
-    expect(sql).toContain("identity.product_entitlements.status IN ('active', 'expired')");
-    expect(sql).toContain("IS DISTINCT FROM 'shared_hotel_setup'");
-    expect(sql).toContain("identity.product_entitlements.status = 'suspended'");
-    expect(sql).toContain("identity.product_entitlements.expires_at <= now()");
-    expect(sql).toContain("requested_state AS");
-    expect(sql).toContain("LEFT JOIN upserted");
-    expect(sql).toContain("upserted.product IS NOT NULL");
-    expect(sql).toContain("entitlement.entitlement_key IN (requested.entitlement_key");
-    expect(sql).toContain("WHERE active AND NOT suspended");
-    expect(sql).toContain("FROM active_requested");
-    expect(sql).toContain("identity.organization_resource_links.status <> 'suspended'");
-  });
-
   it("does not treat product rows or entitlements as product-selection intent", async () => {
     const query = vi.fn(async (text: string, _values?: readonly unknown[]) => {
       if (text.includes("FROM identity.organizations")) {
@@ -2237,10 +2392,9 @@ describe("shared hotel setup status route", () => {
   });
 });
 
-const productOrder: readonly SharedHotelSetupEntryProduct[] = ["booking", "pms", "marketplace"];
-
 function buildSharedSetupApp(options: {
   repository: SharedHotelSetupStatusRepository;
+  trackCommandRepository?: HotelSetupTrackCommandRepository;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
   organizationKind?: "hotel_group" | "creator_workspace" | "affiliate_partner" | "platform";
@@ -2248,6 +2402,8 @@ function buildSharedSetupApp(options: {
   return buildApp({
     logger: false,
     sharedHotelSetupStatusRepository: options.repository,
+    hotelSetupTrackCommandRepository:
+      options.trackCommandRepository ?? unusedTrackCommandRepository(),
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options),
@@ -2258,6 +2414,52 @@ function buildSharedSetupApp(options: {
       },
     },
   });
+}
+
+async function requestWithRawHeaders(
+  target: FastifyInstance,
+  payload: string,
+  headers: Record<string, string | string[]>,
+): Promise<{ statusCode: number; body: Record<string, unknown> }> {
+  await target.listen({ host: "127.0.0.1", port: 0 });
+  const address = target.server.address();
+  if (!address || typeof address === "string") throw new Error("Test server did not bind to TCP");
+
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: "127.0.0.1",
+        port: address.port,
+        path: "/api/hotel-setup/tracks",
+        method: "PUT",
+        headers,
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            body: body ? (JSON.parse(body) as Record<string, unknown>) : {},
+          });
+        });
+      },
+    );
+    request.on("error", reject);
+    request.end(payload);
+  });
+}
+
+function unusedTrackCommandRepository(): HotelSetupTrackCommandRepository {
+  return {
+    async updateTracks() {
+      throw new Error("setup track writes are not used by this test");
+    },
+    async close() {},
+  };
 }
 
 function identityRepository(options: {
