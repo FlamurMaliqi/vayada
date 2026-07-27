@@ -1461,10 +1461,6 @@ function TrackSelection({
 
   return (
     <section className="mx-auto max-w-5xl">
-      <p className="mb-6 text-center text-sm text-gray-600">
-        Choose one or both options. Your selection applies to every hotel in this group.
-      </p>
-
       <div className="grid gap-5 md:grid-cols-2">
         {(["hotel_operations", "creator_marketplace"] as const).map((track) => {
           const content = TRACK_CONTENT[track];
@@ -1536,12 +1532,6 @@ function TrackSelection({
         </div>
       )}
 
-      {needsSelection && canManageTracks && (
-        <p className="mt-5 text-center text-sm text-red-600" role="alert">
-          Select at least one option to continue.
-        </p>
-      )}
-
       <div className="mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
         {onCancel && (
           <button
@@ -1557,7 +1547,7 @@ function TrackSelection({
           type="button"
           disabled={saving || needsSelection || !canManageTracks}
           onClick={onSave}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:hover:bg-gray-200 sm:w-auto"
         >
           {saving && (
             <span
