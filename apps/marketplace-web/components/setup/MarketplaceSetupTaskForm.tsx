@@ -669,6 +669,7 @@ export function MarketplaceSetupTaskForm({
           hasSelectedCoverPhoto={Boolean(coverSelection.file)}
           showLocalityConsent={taskId === "public_profile"}
           submitLabel={taskId === "public_profile" ? "Save public profile" : "Save creator profile"}
+          embedded
           imageInputRefs={hotelForm.listingImageInputRefs}
           coverPhotoInputRef={coverInputRef}
           onFormChange={hotelForm.handleFormChange}

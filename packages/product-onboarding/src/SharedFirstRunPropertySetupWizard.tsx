@@ -734,6 +734,7 @@ function WizardShell({
           ? null
           : "Complete one guided step at a time. We only include tasks for the services you selected.";
   const isProfileScreen = view.screen === "property_profile";
+  const isSetupPlan = view.screen === "setup_plan";
   const useWideSetupLayout = view.screen === "track_selection" || view.screen === "setup_plan";
 
   if (embedded) {
@@ -776,7 +777,7 @@ function WizardShell({
   return (
     <main
       className={`flex min-h-[100dvh] text-gray-900 ${
-        mapFirst ? "" : "items-center px-4 py-6 sm:px-6 lg:px-8"
+        mapFirst ? "" : `${isSetupPlan ? "items-start" : "items-center"} px-4 py-6 sm:px-6 lg:px-8`
       } ${isProfileScreen || useWideSetupLayout ? "bg-gray-50" : "bg-white"}`}
     >
       <div
@@ -790,7 +791,7 @@ function WizardShell({
                 : "max-w-5xl"
         }`}
       >
-        {!mapFirst && (
+        {!mapFirst && !isSetupPlan && (
           <header
             className={`mx-auto text-center ${
               isProfileScreen
@@ -1815,12 +1816,44 @@ function SetupPlan({
 
   return (
     <section className="mx-auto max-w-5xl">
+      <div className="mb-3 flex justify-center">
+        <img src="/vayada-logo.png" alt="vayada" width={120} height={40} className="h-7 w-auto" />
+      </div>
+      <div className="mx-auto mb-10 w-full max-w-xl" data-testid="hotel-setup-progress">
+        <p className="text-center text-xs font-semibold text-gray-500">
+          Step {currentStepNumber} of {totalSteps}
+        </p>
+        <div
+          className="mt-3 flex w-full gap-2"
+          role="progressbar"
+          aria-label="Hotel setup progress"
+          aria-valuemin={1}
+          aria-valuemax={totalSteps}
+          aria-valuenow={currentStepNumber}
+          aria-valuetext={`Step ${currentStepNumber} of ${totalSteps}: ${currentStepTitle}`}
+        >
+          {Array.from({ length: totalSteps }, (_, index) => {
+            const reached = index < currentStepNumber;
+            return (
+              <span
+                key={index}
+                className={`h-2 flex-1 rounded-full transition-colors duration-300 motion-reduce:transition-none ${
+                  reached ? "bg-primary-600" : "bg-primary-100"
+                }`}
+                data-state={reached ? "reached" : "upcoming"}
+                aria-hidden="true"
+              />
+            );
+          })}
+        </div>
+      </div>
+
       <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-sm font-medium text-gray-500">Setting up</p>
-          <h2 className="mt-1 text-xl font-semibold text-gray-950">
+          <p className="mt-1 text-xl font-semibold text-gray-950">
             {selectedProperty?.displayName ?? "Your hotel"}
-          </h2>
+          </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {status.organization.selectedTracks.map((track) => (
               <span
@@ -1881,81 +1914,39 @@ function SetupPlan({
         </div>
       )}
 
-      <div className="overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-sm">
-        <div
-          className="border-b border-gray-100 px-5 py-5 sm:px-8 sm:py-6"
-          data-testid="hotel-setup-progress"
-        >
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
-            <p className="min-w-0 text-base font-semibold text-gray-500 sm:max-w-[55%] sm:text-lg">
-              <span className="text-gray-600">
-                Step {currentStepNumber} of {totalSteps}
-              </span>{" "}
-              · {currentStepTitle}
-            </p>
-            <div
-              className="flex w-full gap-2 sm:max-w-sm"
-              role="progressbar"
-              aria-label="Hotel setup progress"
-              aria-valuemin={1}
-              aria-valuemax={totalSteps}
-              aria-valuenow={currentStepNumber}
-              aria-valuetext={`Step ${currentStepNumber} of ${totalSteps}: ${currentStepTitle}`}
-            >
-              {Array.from({ length: totalSteps }, (_, index) => {
-                const reached = index < currentStepNumber;
-                return (
-                  <span
-                    key={index}
-                    className={`h-2.5 flex-1 rounded-full transition-colors duration-300 motion-reduce:transition-none ${
-                      reached ? "bg-primary-600" : "bg-primary-100"
-                    }`}
-                    data-state={reached ? "reached" : "upcoming"}
-                    aria-hidden="true"
-                  />
-                );
+      <div className="min-w-0" onChangeCapture={() => setHasUnsavedChanges(true)}>
+        <div className="mx-auto max-w-3xl">
+          {currentTask ? (
+            <InlineSetupTaskStep
+              key={currentTask.taskId}
+              task={currentTask}
+              onReturnToReview={
+                canReturnToReview ? () => navigateFromTask(() => onSelectTask(null)) : null
+              }
+              form={renderTaskForm({
+                task: currentTask,
+                propertyId: plan.propertyId,
+                onBeforeSave: () => onBeforeSaveTask(currentTask, plan.planRevision),
+                onComplete: () => {
+                  setHasUnsavedChanges(false);
+                  return onCompleteTask(currentTask);
+                },
+                onBack: previousTaskId ? () => selectTask(previousTaskId) : null,
+                onDirty: () => setHasUnsavedChanges(true),
               })}
-            </div>
-          </div>
-        </div>
-
-        <div
-          className="min-w-0 px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-10"
-          onChangeCapture={() => setHasUnsavedChanges(true)}
-        >
-          <div className="mx-auto max-w-3xl">
-            {currentTask ? (
-              <InlineSetupTaskStep
-                key={currentTask.taskId}
-                task={currentTask}
-                onReturnToReview={
-                  canReturnToReview ? () => navigateFromTask(() => onSelectTask(null)) : null
-                }
-                form={renderTaskForm({
-                  task: currentTask,
-                  propertyId: plan.propertyId,
-                  onBeforeSave: () => onBeforeSaveTask(currentTask, plan.planRevision),
-                  onComplete: () => {
-                    setHasUnsavedChanges(false);
-                    return onCompleteTask(currentTask);
-                  },
-                  onBack: previousTaskId ? () => selectTask(previousTaskId) : null,
-                  onDirty: () => setHasUnsavedChanges(true),
-                })}
-              />
-            ) : attentionTask ? (
-              <SetupAttentionStep
-                key={attentionTask.taskId}
-                task={attentionTask}
-                onBack={previousTaskId ? () => selectTask(previousTaskId) : null}
-              />
-            ) : (
-              <SetupReview
-                launchReadiness={plan.launchReadiness}
-                onBack={reviewBackTaskId ? () => selectTask(reviewBackTaskId) : null}
-              />
-            )}
-          </div>
+            />
+          ) : attentionTask ? (
+            <SetupAttentionStep
+              key={attentionTask.taskId}
+              task={attentionTask}
+              onBack={previousTaskId ? () => selectTask(previousTaskId) : null}
+            />
+          ) : (
+            <SetupReview
+              launchReadiness={plan.launchReadiness}
+              onBack={reviewBackTaskId ? () => selectTask(reviewBackTaskId) : null}
+            />
+          )}
         </div>
       </div>
     </section>
@@ -1975,14 +1966,14 @@ function SetupAttentionStep({ task, onBack }: { task: SetupTask; onBack: (() => 
 
   return (
     <section aria-labelledby="current-setup-step-title">
-      <h2
+      <h1
         ref={headingRef}
         id="current-setup-step-title"
         tabIndex={-1}
         className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         {content.title}
-      </h2>
+      </h1>
       <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
       {onBack && <SetupBackButton onClick={onBack} />}
       <div className={`mt-7 rounded-2xl border px-4 py-3 text-sm ${toneClass}`} role="status">
@@ -2010,26 +2001,35 @@ function InlineSetupTaskStep({
 
   return (
     <section aria-labelledby="current-setup-step-title">
-      <h2
-        ref={headingRef}
-        id="current-setup-step-title"
-        tabIndex={-1}
-        className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
-      >
-        {content.title}
-      </h2>
-      <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
-      {onReturnToReview && (
-        <button
-          type="button"
-          onClick={onReturnToReview}
-          className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+      <div className="text-center">
+        <h1
+          ref={headingRef}
+          id="current-setup-step-title"
+          tabIndex={-1}
+          className="text-2xl font-semibold tracking-tight text-gray-950 outline-none sm:text-3xl"
         >
-          Return to review
-          <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
-        </button>
-      )}
-      <div className="mt-8">{form}</div>
+          {content.title}
+        </h1>
+        <p className="mx-auto mt-3 max-w-2xl text-base leading-7 text-gray-600">
+          {content.description}
+        </p>
+        {onReturnToReview && (
+          <button
+            type="button"
+            onClick={onReturnToReview}
+            className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+          >
+            Return to review
+            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      <div
+        className="mt-8 rounded-3xl border border-gray-200 bg-white p-5 shadow-sm sm:p-8"
+        data-testid="hotel-setup-form-card"
+      >
+        {form}
+      </div>
     </section>
   );
 }
@@ -2062,14 +2062,14 @@ function SetupReview({
 
   return (
     <section aria-labelledby="setup-review-title">
-      <h2
+      <h1
         ref={headingRef}
         id="setup-review-title"
         tabIndex={-1}
         className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         Review and next steps
-      </h2>
+      </h1>
       <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">
         Each Vayada service has its own readiness status. You can use ready services while another
         one is still being reviewed.

@@ -19,6 +19,7 @@ interface HotelBasicInfoStepProps {
   coverPhotoInputRef?: RefObject<HTMLInputElement>;
   onCoverPhotoChange?: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onClearCoverPhoto?: () => void;
+  showIntro?: boolean;
 }
 
 export function HotelBasicInfoStep({
@@ -34,24 +35,27 @@ export function HotelBasicInfoStep({
   coverPhotoInputRef,
   onCoverPhotoChange,
   onClearCoverPhoto,
+  showIntro = true,
 }: HotelBasicInfoStepProps) {
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-3 pb-1">
-        <HotelBadgeIcon active={false} />
-        <div>
-          <h3 className="text-base font-semibold text-gray-950">
-            {publicProfileMode
-              ? "Complete your public hotel profile"
-              : "Introduce your hotel to creators"}
-          </h3>
-          <p className="mt-1 text-sm leading-5 text-gray-500">
-            {publicProfileMode
-              ? "Add the description and visibility choices used across Vayada’s public surfaces."
-              : "Your shared hotel details are already saved. Add only the pitch creators should see."}
-          </p>
+      {showIntro && (
+        <div className="flex items-center gap-3 pb-1">
+          <HotelBadgeIcon active={false} />
+          <div>
+            <h3 className="text-base font-semibold text-gray-950">
+              {publicProfileMode
+                ? "Complete your public hotel profile"
+                : "Introduce your hotel to creators"}
+            </h3>
+            <p className="mt-1 text-sm leading-5 text-gray-500">
+              {publicProfileMode
+                ? "Add the description and visibility choices used across Vayada’s public surfaces."
+                : "Your shared hotel details are already saved. Add only the pitch creators should see."}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="space-y-3">
         <Textarea

@@ -32,6 +32,7 @@ interface HotelProfileFormProps {
   hasSelectedCoverPhoto?: boolean;
   showLocalityConsent?: boolean;
   submitLabel?: string;
+  embedded?: boolean;
 
   // Refs
   imageInputRefs: MutableRefObject<(HTMLInputElement | null)[]>;
@@ -77,6 +78,7 @@ export function HotelProfileForm({
   hasSelectedCoverPhoto,
   showLocalityConsent,
   submitLabel,
+  embedded = false,
   imageInputRefs,
   coverPhotoInputRef,
   onFormChange,
@@ -113,15 +115,18 @@ export function HotelProfileForm({
     <div className="space-y-4">
       <form
         onSubmit={handleFormSubmit}
-        className={`rounded-xl border border-gray-200 bg-white ${
-          !isProfileSection ? "space-y-4 border-0 bg-transparent" : "space-y-6 p-5 sm:p-6"
-        }`}
+        className={
+          isProfileSection
+            ? `space-y-6 ${embedded ? "" : "rounded-xl border border-gray-200 bg-white p-5 sm:p-6"}`
+            : "space-y-4"
+        }
       >
         {isProfileSection && (
           <HotelBasicInfoStep
             form={form}
             onFormChange={onFormChange}
             error={error}
+            showIntro={!embedded}
             publicProfileMode={activeSection === "public_profile"}
             showLocalityConsent={showLocalityConsent}
             showCoverPhotoPicker={showCoverPhotoPicker}

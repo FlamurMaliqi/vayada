@@ -299,7 +299,10 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
     await page.getByRole("button", { name: "Save and continue" }).click();
 
-    await expect(page.getByRole("heading", { name: "Set up your hotel", level: 1 })).toBeVisible();
+    await expect(page.getByRole("img", { name: "vayada" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Review and next steps", level: 1 }),
+    ).toBeVisible();
     const marketplaceProgress = page.getByRole("progressbar", {
       name: "Hotel setup progress",
     });
@@ -348,7 +351,10 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByRole("heading", { level: 1, name: "Set up your hotel" })).toBeVisible();
+    await expect(page.getByRole("img", { name: "vayada" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Create your public hotel profile" }),
+    ).toBeVisible();
     await expect(page.getByText("Hotel Operations", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Creator Marketplace", { exact: true }).first()).toBeVisible();
     const setupProgress = page.getByRole("progressbar", { name: "Hotel setup progress" });
@@ -363,9 +369,19 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByText("Step 2 of 9", { exact: true })).toBeVisible();
     await expect(page.locator("aside")).toHaveCount(0);
     const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    const formCard = page.getByTestId("hotel-setup-form-card");
     await expect(
       currentStep.getByRole("textbox", { name: "Public hotel description" }),
     ).toBeVisible();
+    await expect(formCard.getByRole("textbox", { name: "Public hotel description" })).toBeVisible();
+    await expect(
+      formCard.getByRole("heading", { name: "Create your public hotel profile" }),
+    ).toHaveCount(0);
+    await expect(
+      formCard.getByRole("heading", { name: "Complete your public hotel profile" }),
+    ).toHaveCount(0);
+    await expect(formCard.getByText("Step 2 of 9", { exact: true })).toHaveCount(0);
+    await expect(formCard.locator("form")).toHaveCount(1);
     await expect(currentStep.getByRole("button", { name: "Save public profile" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue setup" })).toHaveCount(0);
     await expect(page).toHaveURL(/\/setup\?/);
@@ -375,11 +391,13 @@ test.describe("marketplace-web shared setup activation", () => {
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       ),
     ).toBe(true);
-    const currentStepBox = await page
-      .locator('section[aria-labelledby="current-setup-step-title"]')
-      .boundingBox();
     const progressBox = await setupProgress.boundingBox();
-    expect(progressBox?.y).toBeLessThan(currentStepBox?.y ?? Number.POSITIVE_INFINITY);
+    const stepHeadingBox = await currentStep
+      .getByRole("heading", { name: "Create your public hotel profile" })
+      .boundingBox();
+    const formCardBox = await formCard.boundingBox();
+    expect(progressBox?.y).toBeLessThan(stepHeadingBox?.y ?? Number.POSITIVE_INFINITY);
+    expect(stepHeadingBox?.y).toBeLessThan(formCardBox?.y ?? Number.POSITIVE_INFINITY);
   });
 
   test("keeps future Operations forms in the guided sequence", async ({ page, baseURL }) => {
@@ -643,7 +661,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.goto(setupUrl(baseURL));
 
     await expect(
-      page.getByRole("heading", { level: 2, name: "Introduce your hotel to creators" }),
+      page.getByRole("heading", { level: 1, name: "Introduce your hotel to creators" }),
     ).toBeVisible();
 
     const introduction = page.getByLabel("Creator-facing introduction", { exact: true });
@@ -824,7 +842,7 @@ test.describe("marketplace-web shared setup activation", () => {
     const inlineSetupUrl = page.url();
 
     await expect(
-      page.getByRole("heading", { level: 2, name: "Prepare your collaboration offer" }),
+      page.getByRole("heading", { level: 1, name: "Prepare your collaboration offer" }),
     ).toBeVisible();
     await expect(page.getByRole("heading", { name: "Offer details" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Offerings" })).toBeVisible();
@@ -899,7 +917,7 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
     await expect(
-      page.getByRole("heading", { level: 2, name: "Prepare your collaboration offer" }),
+      page.getByRole("heading", { level: 1, name: "Prepare your collaboration offer" }),
     ).toBeVisible();
     await expect(page.getByTestId("marketplace-offer-draft-note")).toContainText(
       "you may need to select them again",
@@ -1009,7 +1027,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.goto(setupUrl(baseURL));
 
     await expect(
-      page.getByRole("heading", { level: 2, name: "Prepare your collaboration offer" }),
+      page.getByRole("heading", { level: 1, name: "Prepare your collaboration offer" }),
     ).toBeVisible();
     await expect(page.getByLabel("Offer title", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Creator-facing introduction", { exact: true })).toHaveCount(0);
