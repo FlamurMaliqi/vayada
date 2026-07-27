@@ -1,17 +1,27 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { EyeIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { settingsService } from "@/services/settings";
 import { requireSelectedBookingHotelId } from "@/services/api/bookingHotelScope";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
-import { publishPublicBookabilityProfile } from "@/services/api/publicBookabilityPublicationClient";
+import {
+  isPublicBookabilityReady,
+  publicationReadinessSteps,
+  publishPublicBookabilityProfile,
+} from "@/services/api/publicBookabilityPublicationClient";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { FeedbackAlert, SaveButton } from "@/components/ui";
 import { uploadSingleImage } from "@/lib/utils/uploadImage";
 import { generateColorPalette } from "@/lib/utils/colors";
 import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
+import {
+  hasBookingSetupTaskContext,
+  parseBookingSetupTaskContext,
+  type BookingSetupTaskContext,
+} from "@/lib/utils/bookingSetupTaskRoute";
 
 import MediaTab from "@/components/design-studio/MediaTab";
 import ColorsTab from "@/components/design-studio/ColorsTab";
@@ -19,11 +29,21 @@ import FontsTab from "@/components/design-studio/FontsTab";
 
 const GOOGLE_FONTS_URL =
   "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Sans+Pro:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,700;1,400&family=Cinzel:wght@400;600;700&family=Italiana&display=swap";
+const MARKETPLACE_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
+const SETUP_HUB_URL = new URL("/setup", MARKETPLACE_FRONTEND_URL).toString();
 
 type Tab = "media" | "colors" | "fonts";
 
 export default function DesignStudioPage() {
+  const searchParams = useSearchParams();
+  const setupQuery = searchParams.toString();
+  const setupTaskRequested = hasBookingSetupTaskContext(new URLSearchParams(setupQuery));
+  const directPublicationSetupRequested =
+    new URLSearchParams(setupQuery).get("taskId") === "direct_booking_publication";
   const [activeTab, setActiveTab] = useState<Tab>("media");
+  const [setupTaskContext, setSetupTaskContext] = useState<BookingSetupTaskContext | null>(null);
+  const [resolvedSetupQuery, setResolvedSetupQuery] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -37,6 +57,7 @@ export default function DesignStudioPage() {
   const [heroImage, setHeroImage] = useState("");
   const [heroHeading, setHeroHeading] = useState("");
   const [heroSubtext, setHeroSubtext] = useState("");
+  const [publicDescription, setPublicDescription] = useState("");
   const [propertyName, setPropertyName] = useState("");
   const [propertySlug, setPropertySlug] = useState("");
   const [propertyAddress, setPropertyAddress] = useState("");
@@ -44,7 +65,11 @@ export default function DesignStudioPage() {
   const [propertyEmail, setPropertyEmail] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const designHotelIdRef = useRef<string | null>(null);
+  const propertyIdRef = useRef<string | null>(null);
   const profileRevisionRef = useRef<number | null>(null);
+  const canonicalLocalityPublicRef = useRef(false);
+  const [localityPublic, setLocalityPublic] = useState(false);
+  const [hasCanonicalPublicMedia, setHasCanonicalPublicMedia] = useState(false);
 
   // Colors state
   const [primaryColor, setPrimaryColor] = useState("#4F46E5");
@@ -59,6 +84,21 @@ export default function DesignStudioPage() {
         location: typeof window === "undefined" ? undefined : window.location,
       })
     : null;
+  const saveLabel = setupTaskContext ? "Save and return to setup" : "Save Changes";
+
+  useEffect(() => {
+    setSetupTaskContext(
+      window.location.hash
+        ? null
+        : parseBookingSetupTaskContext(
+            new URLSearchParams(setupQuery),
+            window.localStorage,
+            MARKETPLACE_FRONTEND_URL,
+            "/design-studio",
+          ),
+    );
+    setResolvedSetupQuery(setupQuery);
+  }, [setupQuery]);
 
   // Mirror the live booking engine's palette onto the preview pane so the
   // preview renders with the same shade tokens (bg-primary-600 for CTAs,
@@ -74,8 +114,10 @@ export default function DesignStudioPage() {
   }, [primaryColor, loading]);
 
   useEffect(() => {
+    setLoading(true);
     setLoadFailed(false);
     profileRevisionRef.current = null;
+    propertyIdRef.current = null;
     try {
       designHotelIdRef.current ??= requireSelectedBookingHotelId();
     } catch {
@@ -87,15 +129,33 @@ export default function DesignStudioPage() {
     Promise.all([
       settingsService.getDesignSettings(hotelId),
       settingsService.getPropertySettings(hotelId).catch(() => null),
-      getBookingHotelPropertyLink({ hotelId }).then(({ propertyId }) =>
-        sharedHotelSetupApi.getPropertyProfile(propertyId),
-      ),
+      getBookingHotelPropertyLink({ hotelId }).then(async ({ propertyId }) => {
+        propertyIdRef.current = propertyId;
+        const [canonicalProfile, publicProfile] = await Promise.all([
+          sharedHotelSetupApi.getPropertyProfile(propertyId),
+          directPublicationSetupRequested
+            ? sharedHotelSetupApi.getPublicPropertyProfile(propertyId)
+            : Promise.resolve(null),
+        ]);
+        return { canonicalProfile, publicProfile };
+      }),
     ])
-      .then(([settings, property, canonicalProfile]) => {
-        profileRevisionRef.current = canonicalProfile.profileRevision;
+      .then(([settings, property, { canonicalProfile, publicProfile }]) => {
+        profileRevisionRef.current = Math.max(
+          canonicalProfile.profileRevision,
+          publicProfile?.profileRevision ?? 0,
+        );
+        canonicalLocalityPublicRef.current = canonicalProfile.profile.location.localityPublic;
+        setLocalityPublic(canonicalProfile.profile.location.localityPublic);
+        setHasCanonicalPublicMedia(Boolean(publicProfile?.publicProfile.media.length));
         if (settings.hero_image) setHeroImage(settings.hero_image);
         if (settings.hero_heading) setHeroHeading(settings.hero_heading);
         if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
+        if (publicProfile) {
+          setPublicDescription(
+            publicProfile.publicProfile.shortDescription ?? settings.hero_subtext ?? "",
+          );
+        }
         if (settings.primary_color) setPrimaryColor(settings.primary_color);
         if (settings.font_pairing) setSelectedFont(settings.font_pairing);
         if (property?.property_name) setPropertyName(property.property_name);
@@ -108,7 +168,7 @@ export default function DesignStudioPage() {
         setLoadFailed(true);
       })
       .finally(() => setLoading(false));
-  }, [loadAttempt]);
+  }, [directPublicationSetupRequested, loadAttempt]);
 
   const [uploading, setUploading] = useState(false);
 
@@ -140,6 +200,7 @@ export default function DesignStudioPage() {
         expectedProfileRevision,
       );
       profileRevisionRef.current = expectedProfileRevision + 1;
+      setHasCanonicalPublicMedia(true);
       URL.revokeObjectURL(previewUrl);
       setHeroImage(s3Url);
 
@@ -178,6 +239,25 @@ export default function DesignStudioPage() {
   const handleSave = async () => {
     const hotelId = designHotelIdRef.current;
     if (!hotelId) return;
+    const isDirectPublicationSetup = setupTaskContext?.taskId === "direct_booking_publication";
+
+    if (isDirectPublicationSetup) {
+      const missingRequirements = [
+        !publicDescription.trim() && "add a public description",
+        publicDescription.trim().length > 500 && "shorten the public description to 500 characters",
+        !localityPublic && "allow Vayada to show the city and country",
+        !hasCanonicalPublicMedia && "upload a hero image for the public booking profile",
+      ].filter(Boolean);
+      if (missingRequirements.length > 0) {
+        setActiveTab("media");
+        setFeedback({
+          type: "error",
+          message: `Before publishing, ${missingRequirements.join(", ")}.`,
+        });
+        return;
+      }
+    }
+
     try {
       setSaving(true);
       setFeedback(null);
@@ -191,8 +271,48 @@ export default function DesignStudioPage() {
         },
         hotelId,
       );
+
+      if (isDirectPublicationSetup) {
+        const propertyId = propertyIdRef.current;
+        let expectedProfileRevision = profileRevisionRef.current;
+        if (!propertyId || expectedProfileRevision === null) {
+          setFeedback({
+            type: "error",
+            message:
+              "Your design was saved, but the public booking profile could not be loaded. Refresh and try again.",
+          });
+          return;
+        }
+
+        try {
+          if (!canonicalLocalityPublicRef.current) {
+            const canonicalProfile = await sharedHotelSetupApi.updatePropertyProfile(propertyId, {
+              expectedProfileRevision,
+              patch: { location: { localityPublic: true } },
+            });
+            expectedProfileRevision = canonicalProfile.profileRevision;
+            profileRevisionRef.current = expectedProfileRevision;
+            canonicalLocalityPublicRef.current = true;
+          }
+
+          const publicProfile = await sharedHotelSetupApi.updatePublicPropertyProfile(propertyId, {
+            expectedProfileRevision,
+            patch: { shortDescription: publicDescription.trim() },
+          });
+          profileRevisionRef.current = publicProfile.profileRevision;
+        } catch {
+          setFeedback({
+            type: "error",
+            message:
+              "Your design was saved, but the public booking profile could not be updated. Refresh and try again.",
+          });
+          return;
+        }
+      }
+
+      let publication;
       try {
-        await publishPublicBookabilityProfile(hotelId);
+        publication = await publishPublicBookabilityProfile(hotelId);
       } catch {
         setFeedback({
           type: "error",
@@ -200,7 +320,22 @@ export default function DesignStudioPage() {
         });
         return;
       }
+
+      if (isDirectPublicationSetup && !isPublicBookabilityReady(publication)) {
+        const remainingSteps = publicationReadinessSteps(publication)
+          .map(({ label }) => label)
+          .join(". ");
+        setFeedback({
+          type: "error",
+          message: `Your design and public profile were saved, but direct booking is not ready yet. ${remainingSteps}.`,
+        });
+        return;
+      }
+
       setFeedback({ type: "success", message: "Design settings saved successfully" });
+      if (isDirectPublicationSetup) {
+        window.location.replace(setupTaskContext.returnUrl);
+      }
     } catch {
       setFeedback({ type: "error", message: "Failed to save design settings" });
     } finally {
@@ -219,6 +354,35 @@ export default function DesignStudioPage() {
   ];
 
   const currentFont = FONT_PAIRINGS.find((f) => f.id === selectedFont) || FONT_PAIRINGS[0];
+
+  if (setupTaskRequested && resolvedSetupQuery !== setupQuery) {
+    return (
+      <div className="flex min-h-[calc(100vh-5rem)] items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (setupTaskRequested && !setupTaskContext) {
+    return (
+      <main className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-2xl items-center p-4 md:p-6">
+        <section className="w-full rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm sm:p-10">
+          <h1 className="text-xl font-semibold text-gray-950">Setup task unavailable</h1>
+          <p className="mt-3 text-sm leading-6 text-gray-600">
+            This Booking setup context is invalid or no longer matches the selected hotel. Return to
+            the setup plan to continue with the current next step.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.replace(SETUP_HUB_URL)}
+            className="mt-6 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
+          >
+            Return to setup plan
+          </button>
+        </section>
+      </main>
+    );
+  }
 
   if (loading) {
     return (
@@ -261,18 +425,34 @@ export default function DesignStudioPage() {
       <link rel="stylesheet" href={GOOGLE_FONTS_URL} />
       <div className="shrink-0 flex items-start justify-between gap-3">
         <div className="min-w-0">
+          {setupTaskContext && (
+            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-primary-700">
+              Hotel setup
+            </p>
+          )}
           <h1 className="text-2xl md:text-xl font-bold text-gray-900">Design Studio</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Customize your booking engine&apos;s look and feel
           </p>
         </div>
-        <button
-          onClick={() => setPreviewOpen(true)}
-          className="lg:hidden inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shrink-0"
-        >
-          <EyeIcon className="w-4 h-4" />
-          Preview
-        </button>
+        <div className="flex items-center gap-3">
+          {setupTaskContext && (
+            <button
+              type="button"
+              onClick={() => window.location.replace(setupTaskContext.returnUrl)}
+              className="text-xs font-semibold text-primary-700 hover:text-primary-800"
+            >
+              Exit setup
+            </button>
+          )}
+          <button
+            onClick={() => setPreviewOpen(true)}
+            className="lg:hidden inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shrink-0"
+          >
+            <EyeIcon className="w-4 h-4" />
+            Preview
+          </button>
+        </div>
       </div>
 
       {/* Feedback banner */}
@@ -317,6 +497,17 @@ export default function DesignStudioPage() {
                 handleImageUpload={handleImageUpload}
                 removeHeroImage={removeHeroImage}
                 resetContent={resetContent}
+                publicationSetup={
+                  setupTaskContext?.taskId === "direct_booking_publication"
+                    ? {
+                        localityPublic,
+                        hasCanonicalPublicMedia,
+                        publicDescription,
+                        onLocalityPublicChange: setLocalityPublic,
+                        onPublicDescriptionChange: setPublicDescription,
+                      }
+                    : null
+                }
               />
             )}
 
@@ -335,7 +526,9 @@ export default function DesignStudioPage() {
 
           {/* Save button — desktop inline */}
           <div className="hidden lg:block pt-3 shrink-0 border-t border-gray-100">
-            <SaveButton onClick={handleSave} saving={saving} disabled={uploading} />
+            <SaveButton onClick={handleSave} saving={saving} disabled={uploading}>
+              {saveLabel}
+            </SaveButton>
           </div>
         </div>
 
@@ -977,7 +1170,7 @@ export default function DesignStudioPage() {
               />
             </svg>
           )}
-          Save Changes
+          {saveLabel}
         </button>
       </div>
     </div>

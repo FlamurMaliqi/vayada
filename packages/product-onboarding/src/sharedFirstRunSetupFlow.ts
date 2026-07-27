@@ -1,4 +1,5 @@
 import {
+  isSetupTaskLaunchable,
   PRODUCT_ENTRY_PRODUCTS,
   type AdaptiveHotelSetupStatus,
   type ProductEntryDecision,
@@ -108,7 +109,7 @@ export function resolveSharedFirstRunSetupView(
     selectedPropertyId,
     selectedProperty,
     setupPlan: status.setupPlan,
-    title: "Set up your Vayada tools",
+    title: "Set up your hotel",
   };
 }
 
@@ -127,9 +128,9 @@ export function toggleSetupTrackSelection(
 }
 
 export function isSetupTaskActionable(
-  task: Pick<SetupTask, "readiness" | "callerCapability">,
+  task: Pick<SetupTask, "track" | "readiness" | "callerCapability">,
 ): boolean {
-  return task.readiness === "actionable" && task.callerCapability === "allowed";
+  return isSetupTaskLaunchable(task);
 }
 
 function emptyView(screen: SharedFirstRunSetupScreen, title: string): SharedFirstRunSetupViewModel {

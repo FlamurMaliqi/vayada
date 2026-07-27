@@ -7,6 +7,7 @@ import type {
 import { describe, expect, it } from "vitest";
 
 import {
+  isSetupTaskActionable,
   resolveSharedFirstRunSetupView,
   toggleSetupTrackSelection,
 } from "./sharedFirstRunSetupFlow";
@@ -87,6 +88,35 @@ describe("toggleSetupTrackSelection", () => {
     expect(
       toggleSetupTrackSelection(["hotel_operations"], ["hotel_operations"], "creator_marketplace"),
     ).toEqual(["hotel_operations", "creator_marketplace"]);
+  });
+});
+
+describe("isSetupTaskActionable", () => {
+  it("lets an owner reopen rejected Marketplace work for correction", () => {
+    expect(
+      isSetupTaskActionable({
+        track: "creator_marketplace",
+        readiness: "rejected",
+        callerCapability: "allowed",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not make rejected Operations work or denied tasks launchable", () => {
+    expect(
+      isSetupTaskActionable({
+        track: "hotel_operations",
+        readiness: "rejected",
+        callerCapability: "allowed",
+      }),
+    ).toBe(false);
+    expect(
+      isSetupTaskActionable({
+        track: "creator_marketplace",
+        readiness: "rejected",
+        callerCapability: "forbidden",
+      }),
+    ).toBe(false);
   });
 });
 

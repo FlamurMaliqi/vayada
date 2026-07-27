@@ -33,7 +33,12 @@ export function LoginContent({
     useState<AuthOrganizationSelectionResponse | null>(null);
 
   const redirectAfterLogin = useCallback(async () => {
-    router.push(await getMarketplacePostLoginRedirect(returnTo));
+    const destination = await getMarketplacePostLoginRedirect(returnTo);
+    if (new URL(destination, "https://vayada.local").pathname === "/handoff") {
+      router.replace(destination);
+      return;
+    }
+    router.push(destination);
   }, [returnTo, router]);
 
   const handleLogin = useCallback(

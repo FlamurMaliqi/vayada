@@ -1,7 +1,11 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 import { createAdaptiveHotelSetupStatusMock } from "../support/sharedHotelSetupMocks";
-import { PMS_WEB_PROPERTY_ID } from "../support/pmsWebMocks";
+import {
+  PMS_WEB_PROPERTY_ID,
+  mockPmsWebAuthenticatedSession,
+  mockPmsWebTargetRoutes,
+} from "../support/pmsWebMocks";
 
 const HANDOFF_CODE = "A".repeat(43);
 const LOGIN_RESUME_CODE = "B".repeat(43);
@@ -63,11 +67,14 @@ test.describe("pms-web opaque setup handoff", () => {
     expect(loginUrl.searchParams.get("returnTo")).not.toContain("property");
   });
 
-  test("keeps the exact opaque return path through explicit hotel-group selection", async ({
+  test("keeps the exact opaque return path through hotel-group selection without retaining the consumed handoff", async ({
     page,
   }) => {
     let selected = false;
     const refreshRequests: unknown[] = [];
+    await page.route(/\/history-start$/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Start</title>" }),
+    );
     await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
       return route.fulfill({
@@ -82,9 +89,10 @@ test.describe("pms-web opaque setup handoff", () => {
       return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
     });
     await mockPmsStatus(page);
-    await mockHandoffExchange(page);
+    const exchangeRequests = await mockHandoffExchange(page);
     await interceptRoomsDestination(page);
 
+    await page.goto("/history-start");
     await page.goto(`/handoff?code=${HANDOFF_CODE}`);
 
     await expect(page).toHaveURL(/\/login\?auth=callback/);
@@ -95,6 +103,10 @@ test.describe("pms-web opaque setup handoff", () => {
     expect(refreshRequests).toEqual([
       { organizationId: WORKOS_ORGANIZATION_ID, surface: "pms-web" },
     ]);
+
+    await page.goBack();
+    await expect.poll(() => new URL(page.url()).pathname).toBe("/history-start");
+    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
   });
 
   test("rejects extra query or fragment context before authentication or exchange", async ({
@@ -123,6 +135,148 @@ test.describe("pms-web opaque setup handoff", () => {
     ).toBeVisible();
     expect(authRequests).toBe(0);
     expect(exchangeRequests).toBe(0);
+  });
+
+  test("returns to the exact setup property after a post-exchange property lookup failure", async ({
+    page,
+  }) => {
+    await mockAuthenticatedSession(page);
+    const exchangeRequests = await mockHandoffExchange(page);
+    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      return route.fulfill({
+        status: 503,
+        headers: corsHeaders(route),
+        json: { code: "setup_status_unavailable" },
+      });
+    });
+    await page.route(/\/handoff-history-start$/, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Before handoff</title>",
+      }),
+    );
+    await page.route(marketplaceSetupReturnUrl(PMS_WEB_PROPERTY_ID), (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Setup wizard</title>",
+      }),
+    );
+
+    await page.goto("/handoff-history-start");
+    await page.goto(`/handoff?code=${HANDOFF_CODE}`);
+
+    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
+    await page.getByRole("button", { name: "Return to setup" }).click();
+    await expect.poll(() => page.url()).toBe(marketplaceSetupReturnUrl(PMS_WEB_PROPERTY_ID));
+
+    await page.goBack();
+    await expect.poll(() => new URL(page.url()).pathname).toBe("/handoff-history-start");
+    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
+  });
+
+  test("rejects untrusted context on the exchanged PMS task route", async ({ page }) => {
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    const params = pmsTaskParams("https://attacker.example/setup");
+
+    await page.goto(`/rooms/new?${params.toString()}`);
+
+    await expect(page.getByRole("heading", { name: "Setup task unavailable" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Return to setup plan" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your first room type" })).toHaveCount(0);
+  });
+
+  test("keeps ordinary room creation outside the setup flow", async ({ page }) => {
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+
+    await page.goto("/rooms/new");
+
+    await expect(page.getByRole("heading", { name: "New Room Type" })).toBeVisible();
+    await expect(page.getByText("Hotel setup", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create Room Type" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Cancel" })).toHaveAttribute("href", "/rooms");
+  });
+
+  test("returns to the canonical setup wizard after the room task is saved", async ({ page }) => {
+    await mockPmsWebAuthenticatedSession(page);
+    await page.addInitScript((propertyId) => {
+      localStorage.setItem("selectedSharedPropertyId", propertyId);
+    }, PMS_WEB_PROPERTY_ID);
+    await mockPmsWebTargetRoutes(page);
+    const returnUrl = marketplaceSetupReturnUrl(PMS_WEB_PROPERTY_ID);
+    const createRequests: unknown[] = [];
+    await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types`, async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      createRequests.push(route.request().postDataJSON());
+      return route.fulfill({
+        json: {
+          contractVersion: "pms-operations.v1",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          item: {
+            roomTypeId: "room_type_setup",
+            name: "Alpine Double",
+            description: "",
+            category: null,
+            occupancyLimits: { total: 2, adults: null, children: null },
+            attributes: {},
+            amenities: [],
+            media: [],
+            baseRate: { amountDecimal: "120.00", currency: "EUR" },
+            active: true,
+            sortOrder: 0,
+            ratePlans: [],
+            rateRulesSummary: {
+              minStayNights: 1,
+              maxStayNights: null,
+              closedToArrival: false,
+              closedToDeparture: false,
+              activeRuleCount: 0,
+            },
+            roomCount: 2,
+          },
+          commandMeta: {
+            contractVersion: "pms-operations.v1",
+            commandId: "room-type-setup",
+            idempotencyKey: "room-type-setup",
+            acceptedAt: "2026-07-27T10:00:00.000Z",
+            sideEffects: ["calendar_refresh"],
+          },
+        },
+      });
+    });
+    await page.route(returnUrl, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Canonical setup wizard</title>",
+      }),
+    );
+
+    await page.goto(`/rooms/new?${pmsTaskParams(returnUrl).toString()}`);
+
+    await expect(page.getByRole("heading", { name: "Your first room type" })).toBeVisible();
+    await expect(page.getByText("Hotel setup", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Exit setup" })).toBeVisible();
+    await page.getByPlaceholder("e.g. Two-Bedroom Villa").fill("Alpine Double");
+    await page.getByRole("button", { name: "Pricing & Rates" }).click();
+    await page.getByRole("button", { name: "Add season" }).click();
+
+    const seasonCard = page.getByPlaceholder("Season name").locator("xpath=../..");
+    await seasonCard.getByPlaceholder("Season name").fill("All year");
+    const seasonSelects = seasonCard.locator("select");
+    await seasonSelects.nth(1).selectOption("1");
+    await seasonSelects.nth(2).selectOption("1");
+    await seasonSelects.nth(3).selectOption("31");
+    await seasonSelects.nth(4).selectOption("12");
+    await page.locator('input[placeholder="0"][required]').fill("120");
+
+    const finishButton = page.getByRole("button", { name: "Save and return to setup" });
+    await expect(finishButton).toBeEnabled();
+    await finishButton.click();
+
+    await expect.poll(() => page.url()).toBe(returnUrl);
+    expect(createRequests).toHaveLength(1);
   });
 });
 
@@ -201,6 +355,16 @@ function marketplaceSetupReturnUrl(propertyId: string): string {
   const url = new URL("/setup", origin);
   url.searchParams.set("propertyId", propertyId);
   return url.toString();
+}
+
+function pmsTaskParams(returnUrl: string): URLSearchParams {
+  return new URLSearchParams({
+    onboarding: "pms-activation",
+    taskId: "rooms_rates_availability",
+    destinationRouteKey: "pms.rooms_rates_availability",
+    planRevision: "e2e-plan-1",
+    returnUrl,
+  });
 }
 
 function organizationSelectionResponse() {

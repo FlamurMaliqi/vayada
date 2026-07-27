@@ -1064,9 +1064,9 @@ function publicationFact(row: AdaptiveHotelSetupFactsRow): AdaptiveSetupTaskFact
   const complete = isPublic && projectionFresh && setupComplete;
   const readiness = complete
     ? "complete"
-    : status === null
+    : status === null || !setupComplete
       ? "actionable"
-      : !setupComplete || status === "unavailable"
+      : status === "unavailable"
         ? "blocked"
         : "pending_sync";
   return {

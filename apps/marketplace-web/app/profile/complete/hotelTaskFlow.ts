@@ -20,6 +20,7 @@ export type MarketplaceHotelTaskHandoff = {
 };
 
 export type MarketplaceHotelTaskFlow = {
+  title: string;
   steps: ReadonlyArray<{ title: string; section: HotelTaskSection }>;
   ensureCover: boolean;
   submitPublicProfile: boolean;
@@ -35,13 +36,15 @@ const TASK_DESTINATIONS: Record<MarketplaceHotelSetupTaskId, string> = {
 
 const TASK_FLOWS: Record<MarketplaceHotelSetupTaskId, MarketplaceHotelTaskFlow> = {
   public_profile: {
-    steps: [{ title: "Complete your public hotel profile", section: "public_profile" }],
+    title: "Create your public hotel profile",
+    steps: [{ title: "Public hotel profile", section: "public_profile" }],
     ensureCover: true,
     submitPublicProfile: true,
     submitMarketplaceProfile: false,
     submitOffers: false,
   },
   creator_profile: {
+    title: "Introduce your hotel to creators",
     steps: [{ title: "Introduce your hotel to creators", section: "creator_profile" }],
     ensureCover: false,
     submitPublicProfile: false,
@@ -49,6 +52,7 @@ const TASK_FLOWS: Record<MarketplaceHotelSetupTaskId, MarketplaceHotelTaskFlow> 
     submitOffers: false,
   },
   creator_offer: {
+    title: "Prepare your collaboration offer",
     steps: [
       { title: "Describe your offer", section: "offer_details" },
       { title: "What are you offering?", section: "offerings" },
@@ -100,14 +104,15 @@ export function parseMarketplaceHotelTaskHandoff(
   if (!propertyId) return null;
 
   const returnUrlValue = params.get("returnUrl") ?? "";
-  if (!canonicalSetupReturnUrl(returnUrlValue, propertyId, marketplaceOrigin)) return null;
+  const returnUrl = canonicalSetupReturnUrl(returnUrlValue, propertyId, marketplaceOrigin);
+  if (!returnUrl) return null;
 
   return {
     propertyId,
     taskId,
     planRevision,
     destinationRouteKey,
-    returnUrl: returnUrlValue,
+    returnUrl,
   };
 }
 

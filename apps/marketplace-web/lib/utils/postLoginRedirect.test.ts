@@ -127,14 +127,14 @@ describe("getMarketplacePostLoginRedirect", () => {
     vi.mocked(resolveMarketplaceSetupGuard).mockResolvedValue({
       action: "redirect_to_setup",
       propertyId: "property-1",
-      redirectPath: "/setup?entryProduct=marketplace",
+      redirectPath: "/setup?entryProduct=marketplace&returnProduct=marketplace",
       entryDecision: "setup_required",
       reasonCode: "product_access_pending",
     });
     const storage = memoryStorage({ [STORAGE_KEYS.USER_TYPE]: "hotel" });
 
     await expect(getMarketplacePostLoginRedirect(ROUTES.MARKETPLACE, storage)).resolves.toBe(
-      "/setup?entryProduct=marketplace",
+      "/setup?entryProduct=marketplace&returnProduct=marketplace",
     );
     expect(storage.getItem(STORAGE_KEYS.PROFILE_COMPLETE)).toBe("false");
   });

@@ -41,7 +41,11 @@ test.describe("marketplace-web opaque setup handoff", () => {
     await page.route(/\/profile\/complete\?activation=marketplace/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Activation</title>" }),
     );
+    await page.route(/\/before-handoff$/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Before</title>" }),
+    );
 
+    await page.goto("/before-handoff");
     await page.goto(`/handoff?code=${HANDOFF_CODE}`);
 
     await expect(page).toHaveURL(/\/profile\/complete\?activation=marketplace/);
@@ -59,18 +63,52 @@ test.describe("marketplace-web opaque setup handoff", () => {
     expect(await page.evaluate(() => localStorage.getItem("selectedSharedPropertyId"))).toBe(
       PROPERTY_ID,
     );
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/before-handoff$/);
+    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
   });
 
-  test("preserves only the opaque code when authentication is required", async ({ page }) => {
+  test("resumes authentication with only the opaque code and leaves no consumed history entry", async ({
+    page,
+  }) => {
+    let sessionRequests = 0;
+    let resumeAuthentication!: () => void;
+    const resumeAuthenticationGate = new Promise<void>((resolve) => {
+      resumeAuthentication = resolve;
+    });
     await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      sessionRequests += 1;
+      if (sessionRequests > 1) {
+        await resumeAuthenticationGate;
+        return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
+      }
       return route.fulfill({
         status: 401,
         headers: corsHeaders(route),
         json: { error: "session_expired" },
       });
     });
+    await page.route(/\/auth\/session\/refresh$/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
+    });
+    await mockMarketplaceStatus(page);
+    const exchangeRequests: unknown[] = [];
+    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      exchangeRequests.push(route.request().postDataJSON());
+      return route.fulfill({ headers: corsHeaders(route), json: exchangedHandoff() });
+    });
+    await page.route(/\/profile\/complete\?activation=marketplace/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Activation</title>" }),
+    );
+    await page.route(/\/before-handoff$/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Before</title>" }),
+    );
 
+    await page.goto("/before-handoff");
     await page.goto(`/handoff?code=${LOGIN_RESUME_CODE}`);
 
     await expect(page).toHaveURL(/\/login\?auth=callback/);
@@ -78,6 +116,12 @@ test.describe("marketplace-web opaque setup handoff", () => {
     expect(loginUrl.searchParams.get("returnTo")).toBe(`/handoff?code=${LOGIN_RESUME_CODE}`);
     expect(loginUrl.searchParams.get("returnTo")).not.toContain("#");
     expect(loginUrl.searchParams.get("returnTo")).not.toContain("property");
+
+    resumeAuthentication();
+    await expect(page).toHaveURL(/\/profile\/complete\?activation=marketplace/);
+    expect(exchangeRequests).toEqual([{ code: LOGIN_RESUME_CODE }]);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/before-handoff$/);
   });
 
   test("routes the shared identity task back to the canonical setup hub", async ({ page }) => {
@@ -107,6 +151,52 @@ test.describe("marketplace-web opaque setup handoff", () => {
     const destination = new URL(page.url());
     expect([...destination.searchParams.keys()]).toEqual(["propertyId"]);
     expect(destination.hash).toBe("");
+  });
+
+  test("does not replay a consumed handoff when post-exchange validation fails", async ({
+    page,
+  }) => {
+    await mockDirectAuthSession(page);
+    const exchangeRequests: unknown[] = [];
+    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      exchangeRequests.push(route.request().postDataJSON());
+      return route.fulfill({
+        headers: corsHeaders(route),
+        json: exchangedHandoff(),
+      });
+    });
+    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, (route) =>
+      route.fulfill({
+        status: 500,
+        headers: corsHeaders(route),
+        json: { code: "read_model_unavailable" },
+      }),
+    );
+    await page.route(/\/before-handoff$/, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Before</title><h1>Before handoff</h1>",
+      }),
+    );
+    await page.route(/\/setup\?propertyId=/, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Setup</title><h1>Setup refreshed</h1>",
+      }),
+    );
+
+    await page.goto("/before-handoff");
+    await page.goto(`/handoff?code=${HANDOFF_CODE}`);
+
+    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
+    await page.getByRole("button", { name: "Return to setup" }).click();
+    await expect(page.getByRole("heading", { name: "Setup refreshed" })).toBeVisible();
+    expect(page.url()).toBe(marketplaceSetupReturnUrl());
+
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Before handoff" })).toBeVisible();
+    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
   });
 
   test("shows a terminal error for an invalid, expired, or reused code", async ({ page }) => {

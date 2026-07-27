@@ -14,7 +14,12 @@ type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem"> &
 export const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
 
 export function marketplaceSetupRedirectPath(returnTo: string, propertyId?: string | null): string {
-  return buildSharedHotelSetupRedirectPath({ entryProduct: "marketplace", returnTo, propertyId });
+  return buildSharedHotelSetupRedirectPath({
+    entryProduct: "marketplace",
+    returnProduct: "marketplace",
+    returnTo,
+    propertyId,
+  });
 }
 
 export function marketplaceGuardRedirectPath(
@@ -30,6 +35,7 @@ export async function resolveMarketplaceSetupGuard(
 ): Promise<SharedHotelSetupGuardDecision> {
   const decision = await resolveSharedHotelSetupGuard(api, {
     entryProduct: "marketplace",
+    returnProduct: "marketplace",
     returnTo,
     propertyId: readSelectedSharedPropertyId(storage),
     onInvalidPropertyId: () => storage?.removeItem?.(SELECTED_SHARED_PROPERTY_ID_KEY),
@@ -58,6 +64,7 @@ export async function resolveMarketplaceActivationGuard(
   );
   return resolveSharedHotelSetupGuardDecision(status, {
     entryProduct: "marketplace",
+    returnProduct: "marketplace",
     returnTo,
   });
 }

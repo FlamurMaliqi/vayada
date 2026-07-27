@@ -30,7 +30,11 @@ export default function Home() {
           return;
         }
         if (cancelled) return;
-        router.replace(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
+        if (decision.action === "redirect_to_setup") {
+          window.location.replace(decision.redirectPath);
+          return;
+        }
+        router.replace("/dashboard");
       } else {
         router.replace("/login");
       }

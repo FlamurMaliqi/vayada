@@ -319,6 +319,117 @@ describe("shared hotel setup status route", () => {
     expect(response.body.setupPlan?.recommendedTaskId).toBeNull();
   });
 
+  it("recommends a rejected Marketplace task for an allowed owner to correct", async () => {
+    app = buildSharedSetupApp({
+      permissions: [
+        "hotel_catalog.setup.read",
+        "hotel_catalog.setup.manage",
+        "marketplace.profile.manage",
+      ],
+      repository: repositoryWith([
+        adaptiveProperty(propertyId, {
+          taskFacts: taskFacts({
+            shared_identity: completedTaskFact("shared_identity"),
+            public_profile: completedTaskFact("public_profile"),
+            creator_profile: taskFact("creator_profile", {
+              ownerProgress: "in_progress",
+              readiness: "rejected",
+              reasonCodes: ["creator_profile_rejected"],
+            }),
+          }),
+        }),
+      ]),
+      trackCommandRepository: trackRepository(["creator_marketplace"]),
+    });
+
+    const response = await injectJson<AdaptiveHotelSetupStatus>(app, {
+      method: "GET",
+      url: "/api/hotel-setup/status",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.body.setupPlan?.recommendedTaskId).toBe("creator_profile");
+    expect(
+      response.body.setupPlan?.tasks.find(({ taskId }) => taskId === "creator_profile"),
+    ).toMatchObject({
+      callerCapability: "allowed",
+      ownerProgress: "in_progress",
+      readiness: "rejected",
+      actionableBy: "owner",
+      reasonCodes: ["creator_profile_rejected"],
+    });
+  });
+
+  it("keeps publication repair actionable only after its true dependencies are complete", async () => {
+    const completedFacts = taskFacts({
+      shared_identity: completedTaskFact("shared_identity"),
+      rooms_rates_availability: completedTaskFact("rooms_rates_availability"),
+      guest_settings_policies: completedTaskFact("guest_settings_policies"),
+      payment: completedTaskFact("payment"),
+      direct_booking_publication: taskFact("direct_booking_publication", {
+        ownerProgress: "in_progress",
+        readiness: "actionable",
+        reasonCodes: ["bookability_setup_missing"],
+      }),
+    });
+    const appOptions: {
+      permissions: PermissionKey[];
+      trackCommandRepository: HotelSetupTrackCommandRepository;
+    } = {
+      permissions: [
+        "hotel_catalog.setup.read",
+        "hotel_catalog.setup.manage",
+        "pms.operations.manage",
+        "booking.settings.manage",
+      ],
+      trackCommandRepository: trackRepository(["hotel_operations"]),
+    };
+    app = buildSharedSetupApp({
+      ...appOptions,
+      repository: repositoryWith([adaptiveProperty(propertyId, { taskFacts: completedFacts })]),
+    });
+
+    const repairable = await injectJson<AdaptiveHotelSetupStatus>(app, {
+      method: "GET",
+      url: "/api/hotel-setup/status",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(repairable.body.setupPlan?.recommendedTaskId).toBe("direct_booking_publication");
+    expect(
+      repairable.body.setupPlan?.tasks.find(
+        ({ taskId }) => taskId === "direct_booking_publication",
+      ),
+    ).toMatchObject({ readiness: "actionable", callerCapability: "allowed" });
+
+    await app.close();
+    app = buildSharedSetupApp({
+      ...appOptions,
+      repository: repositoryWith([
+        adaptiveProperty(propertyId, {
+          taskFacts: {
+            ...completedFacts,
+            payment: taskFact("payment"),
+          },
+        }),
+      ]),
+    });
+
+    const dependencyBlocked = await injectJson<AdaptiveHotelSetupStatus>(app, {
+      method: "GET",
+      url: "/api/hotel-setup/status",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(
+      dependencyBlocked.body.setupPlan?.tasks.find(
+        ({ taskId }) => taskId === "direct_booking_publication",
+      ),
+    ).toMatchObject({
+      readiness: "blocked",
+      callerCapability: "allowed",
+      reasonCodes: expect.arrayContaining(["task_dependencies_incomplete", "payment_incomplete"]),
+    });
+  });
+
   it("derives a stable plan revision from the complete authoritative plan state", () => {
     const property = adaptiveProperty(propertyId, {
       taskFacts: taskFacts({
@@ -1166,7 +1277,7 @@ describe("shared hotel setup status route", () => {
     });
   });
 
-  it("keeps private identity operator-editable but reserves locality publication for owners", async () => {
+  it("keeps private identity operator-editable but denies publication to a catalog-only operator", async () => {
     const profiles = new Map<string, SharedPropertyProfile>([
       [propertyId, profileResponse(propertyId, minimalHotelInput(), 2)],
     ]);
@@ -1201,7 +1312,10 @@ describe("shared hotel setup status route", () => {
       },
     });
     expect(localityUpdate.statusCode).toBe(403);
-    expect(localityUpdate.body.code).toBe("missing_permission");
+    expect(localityUpdate.body).toEqual({
+      code: "missing_permission",
+      detail: "Public profile and location publication require hotel-owner access.",
+    });
 
     const exactMapUpdate = await injectJson<{ code: string }>(app, {
       method: "PUT",
@@ -1253,7 +1367,65 @@ describe("shared hotel setup status route", () => {
     expect(updatePublicPropertyProfile).not.toHaveBeenCalled();
   });
 
-  it("reads and sparsely updates the default-locale public property profile", async () => {
+  it("allows Booking owners to publish shared location and public profile data", async () => {
+    const profiles = new Map<string, SharedPropertyProfile>([
+      [propertyId, profileResponse(propertyId, minimalHotelInput(), 2)],
+    ]);
+    const publicProfile = {
+      ...publicProfileResponse(3),
+      publicProfile: {
+        ...publicProfileResponse(3).publicProfile,
+        shortDescription: "Book direct at Hotel Alpenrose.",
+      },
+    } satisfies PublicPropertyProfileResponse;
+    const updatePublicPropertyProfile = vi.fn(async () => ({
+      status: "updated" as const,
+      profile: publicProfile,
+    }));
+    app = buildSharedSetupApp({
+      permissions: [
+        "hotel_catalog.setup.read",
+        "hotel_catalog.setup.manage",
+        "booking.settings.manage",
+      ],
+      repository: {
+        ...profileRepository(profiles),
+        updatePublicPropertyProfile,
+      },
+    });
+
+    const locationUpdate = await injectJson<SharedPropertyProfile>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        expectedProfileRevision: 2,
+        patch: { location: { localityPublic: true } },
+      },
+    });
+    expect(locationUpdate.statusCode).toBe(200);
+    expect(locationUpdate.body.profile.location.localityPublic).toBe(true);
+
+    const profileUpdate = await injectJson<PublicPropertyProfileResponse>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/public-profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        expectedProfileRevision: 3,
+        patch: { shortDescription: "Book direct at Hotel Alpenrose." },
+      },
+    });
+    expect(profileUpdate.statusCode).toBe(200);
+    expect(profileUpdate.body).toEqual(publicProfile);
+    expect(updatePublicPropertyProfile).toHaveBeenCalledWith({
+      organizationId,
+      propertyId,
+      expectedProfileRevision: 3,
+      patch: { shortDescription: "Book direct at Hotel Alpenrose." },
+    });
+  });
+
+  it("allows Marketplace owners to read and sparsely update the public property profile", async () => {
     const current = publicProfileResponse(4);
     const updated = {
       ...current,
@@ -1686,7 +1858,10 @@ describe("shared hotel setup status route", () => {
       readiness: "actionable",
       reasonCodes: ["no_supported_checkout_payment_method"],
     });
-    expect(facts.direct_booking_publication).toMatchObject({ readiness: "blocked" });
+    expect(facts.direct_booking_publication).toMatchObject({
+      readiness: "actionable",
+      ownerProgress: "in_progress",
+    });
   });
 
   it("blocks a verified creator offer whose projection is private", async () => {
@@ -1764,6 +1939,44 @@ describe("shared hotel setup status route", () => {
       readiness: "actionable",
       ownerProgress: "not_started",
       freshness: "fresh",
+    });
+  });
+
+  it("keeps an incomplete attempted publication actionable for repair", async () => {
+    const repository = createPgSharedHotelSetupStatusRepository({
+      connectionString: "postgresql://target-db",
+      pool: {
+        async query<T extends QueryResultRow = QueryResultRow>(text: string) {
+          const rows = text.includes("FROM identity.organizations")
+            ? [{ displayName: "Alpenrose Hotel Group", websiteUrl: null }]
+            : [
+                adaptiveStatusRow({
+                  bookabilityStatus: "incomplete",
+                  bookabilityFreshness: "fresh",
+                  bookabilitySetupReady: false,
+                  bookabilityMissingEmpty: false,
+                  bookabilityExpired: false,
+                  bookabilityUpdatedAt: "2026-07-26T12:30:00.000Z",
+                }),
+              ];
+          return { rows: rows as unknown as T[] };
+        },
+        end: vi.fn(async () => undefined),
+      },
+    });
+
+    const publication = (
+      await repository.getHotelSetupStatus({ organizationId, propertyIds: [propertyId] })
+    ).properties[0]!.taskFacts.direct_booking_publication;
+
+    expect(publication).toMatchObject({
+      readiness: "actionable",
+      ownerProgress: "in_progress",
+      reasonCodes: expect.arrayContaining([
+        "direct_booking_not_public",
+        "bookability_setup_not_ready",
+        "bookability_setup_missing",
+      ]),
     });
   });
 

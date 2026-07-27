@@ -2,6 +2,7 @@ import type { RequestContext } from "@vayada/backend-auth";
 import { requireAuthContext } from "@vayada/backend-auth";
 import { hasPermission } from "@vayada/backend-authorization";
 import {
+  isSetupTaskLaunchable,
   parseCreateHotelSetupHandoffRequest,
   parseExchangeHotelSetupHandoffRequest,
   SETUP_TASK_DESTINATION_ROUTE_KEYS,
@@ -85,7 +86,7 @@ export async function registerHotelSetupHandoffRoutes(
     if (current?.planRevision !== input.planRevision) {
       return current ? refreshPlan(reply) : invalidHandoff(reply, 422);
     }
-    if (!current.actionable || !current.task) return invalidHandoff(reply, 422);
+    if (!current.launchable || !current.task) return invalidHandoff(reply, 422);
     const destination = destinationForRouteKey(current.task.destinationRouteKey);
     if (!destination) return invalidHandoff(reply, 422);
 
@@ -134,7 +135,7 @@ export async function registerHotelSetupHandoffRoutes(
     if (current?.planRevision !== handoff.issuedPlanRevision) {
       return current ? refreshPlan(reply) : invalidHandoff(reply, 409);
     }
-    if (!current.actionable || current.task?.destinationRouteKey !== handoff.destinationRouteKey) {
+    if (!current.launchable || current.task?.destinationRouteKey !== handoff.destinationRouteKey) {
       return invalidHandoff(reply, 409);
     }
 
@@ -166,7 +167,7 @@ export async function registerHotelSetupHandoffRoutes(
       return revalidated ? refreshPlan(reply) : invalidHandoff(reply, 409);
     }
     if (
-      !revalidated.actionable ||
+      !revalidated.launchable ||
       revalidated.task?.destinationRouteKey !== consumed.destinationRouteKey
     ) {
       return invalidHandoff(reply, 409);
@@ -250,7 +251,7 @@ async function resolveCurrentTask(input: {
 }): Promise<{
   task: SetupTask | null;
   planRevision: string;
-  actionable: boolean;
+  launchable: boolean;
 } | null> {
   const [status, trackStatus] = await Promise.all([
     input.setupStatusRepository.getHotelSetupStatus({
@@ -277,7 +278,7 @@ async function resolveCurrentTask(input: {
   return {
     task,
     planRevision: plan.planRevision,
-    actionable: task?.readiness === "actionable" && task.callerCapability === "allowed",
+    launchable: isSetupTaskLaunchable(task),
   };
 }
 

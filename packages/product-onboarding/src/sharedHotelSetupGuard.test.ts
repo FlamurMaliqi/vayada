@@ -17,7 +17,9 @@ describe("resolveSharedHotelSetupGuardDecision", () => {
     expect(
       resolveSharedHotelSetupGuardDecision(status, {
         entryProduct: "booking",
+        returnProduct: "booking",
         returnTo: "/dashboard",
+        setupBaseUrl: "https://marketplace.localhost:1355",
       }),
     ).toEqual({
       action: "enter_product",
@@ -40,16 +42,56 @@ describe("resolveSharedHotelSetupGuardDecision", () => {
     expect(
       resolveSharedHotelSetupGuardDecision(status, {
         entryProduct: "booking",
+        returnProduct: "booking",
         returnTo: "/dashboard",
+        setupBaseUrl: "https://marketplace.localhost:1355",
       }),
     ).toEqual({
       action: "redirect_to_setup",
       propertyId: null,
-      redirectPath: "/setup?entryProduct=booking&returnTo=%2Fdashboard",
+      redirectPath:
+        "https://marketplace.localhost:1355/setup?entryProduct=booking&returnProduct=booking&returnTo=%2Fdashboard",
       entryDecision: "setup_required",
       reasonCode: "track_not_selected",
     });
     expect(status.organization.selectedTracks).toEqual([]);
+  });
+
+  it("preserves the selected property and safe product return path on the canonical origin", () => {
+    const status = baseStatus();
+    status.propertySelection = {
+      state: "single_property",
+      selectedPropertyId: " property-1 ",
+      availableProperties: [],
+    };
+
+    expect(
+      resolveSharedHotelSetupGuardDecision(status, {
+        entryProduct: "pms",
+        returnProduct: "booking",
+        returnTo: "/settings?section=booking",
+        setupBaseUrl: "https://marketplace.localhost:1355",
+      }),
+    ).toMatchObject({
+      redirectPath:
+        "https://marketplace.localhost:1355/setup?entryProduct=pms&returnProduct=booking&returnTo=%2Fsettings%3Fsection%3Dbooking&propertyId=property-1",
+    });
+  });
+
+  it("drops unsafe return paths from the canonical redirect", () => {
+    const status = baseStatus();
+
+    expect(
+      resolveSharedHotelSetupGuardDecision(status, {
+        entryProduct: "booking",
+        returnProduct: "booking",
+        returnTo: "https://attacker.example/dashboard",
+        setupBaseUrl: "https://marketplace.localhost:1355",
+      }),
+    ).toMatchObject({
+      redirectPath:
+        "https://marketplace.localhost:1355/setup?entryProduct=booking&returnProduct=booking",
+    });
   });
 });
 

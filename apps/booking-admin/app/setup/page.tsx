@@ -1,15 +1,45 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
+import {
+  buildSharedHotelSetupRedirectPath,
+  parseSharedHotelSetupEntryProduct,
+  safeSharedHotelSetupReturnTo,
+} from "@vayada/product-onboarding";
 
-import { SharedHotelSetupPage } from "@/components/setup/SharedHotelSetupPage";
+const MARKETPLACE_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
 
 export default function SetupPage() {
   return (
     <Suspense fallback={<SetupLoading />}>
-      <SharedHotelSetupPage defaultEntryProduct="booking" defaultReturnTo="/dashboard" />
+      <CanonicalSetupRedirect />
     </Suspense>
   );
+}
+
+function CanonicalSetupRedirect() {
+  const searchParams = useSearchParams();
+  const redirectUrl = useMemo(
+    () =>
+      buildSharedHotelSetupRedirectPath({
+        entryProduct:
+          parseSharedHotelSetupEntryProduct(searchParams.get("entryProduct")) ?? "booking",
+        returnProduct: "booking",
+        returnTo: safeSharedHotelSetupReturnTo(searchParams.get("returnTo"), "/dashboard"),
+        propertyId: searchParams.get("propertyId"),
+        setupBaseUrl: MARKETPLACE_FRONTEND_URL,
+        mode: searchParams.get("mode") === "add" ? "add" : undefined,
+      }),
+    [searchParams],
+  );
+
+  useEffect(() => {
+    window.location.replace(redirectUrl);
+  }, [redirectUrl]);
+
+  return <SetupLoading />;
 }
 
 function SetupLoading() {

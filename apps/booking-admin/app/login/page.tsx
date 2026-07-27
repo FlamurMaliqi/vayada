@@ -29,11 +29,15 @@ function LoginContent() {
 
   const redirectAfterLogin = useCallback(async () => {
     if (new URL(returnTo, "https://vayada.local").pathname === "/handoff") {
-      router.push(returnTo);
+      router.replace(returnTo);
       return;
     }
     const decision = await resolveBookingSetupGuard(returnTo);
-    router.push(decision.action === "enter_product" ? returnTo : decision.redirectPath);
+    if (decision.action === "redirect_to_setup") {
+      window.location.replace(decision.redirectPath);
+      return;
+    }
+    router.push(returnTo);
   }, [returnTo, router]);
 
   const handleOrganizationSelect = useCallback(

@@ -16,6 +16,7 @@ import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStor
 export default function HandoffPage() {
   const [handoffError, setHandoffError] = useState<HandoffError | null>(null);
   const startedRef = useRef(false);
+  const setupReturnUrlRef = useRef("/setup?entryProduct=marketplace&returnProduct=marketplace");
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -33,19 +34,19 @@ export default function HandoffPage() {
         let session = await authService.refreshSession();
         if (isAuthOrganizationSelectionResponse(session)) {
           if (session.organizations.length !== 1) {
-            window.location.href = loginPath;
+            window.location.replace(loginPath);
             return;
           }
           session = await authService.refreshSession(
             session.organizations[0]!.workosOrganizationId,
           );
           if (isAuthOrganizationSelectionResponse(session)) {
-            window.location.href = loginPath;
+            window.location.replace(loginPath);
             return;
           }
         }
       } catch {
-        window.location.href = loginPath;
+        window.location.replace(loginPath);
         return;
       }
 
@@ -55,6 +56,9 @@ export default function HandoffPage() {
         if (!destination) {
           throw new Error("The requested setup task does not have a Marketplace destination.");
         }
+        setupReturnUrlRef.current =
+          canonicalSetupReturnUrl(handoff.returnUrl, handoff.propertyId, window.location.origin) ??
+          setupReturnUrlRef.current;
 
         const status = await sharedHotelSetupApi.getStatus({
           entryProduct: "marketplace",
@@ -68,7 +72,9 @@ export default function HandoffPage() {
         }
 
         localStorage.setItem("selectedSharedPropertyId", selectedProperty.propertyId);
-        window.location.href = destination;
+        // The handoff code is single-use. Replace the consumed URL so browser Back
+        // returns to the setup hub instead of retrying an already-used code.
+        window.location.replace(destination);
       } catch (error: unknown) {
         setHandoffError(errorForHandoffFailure(error));
       }
@@ -86,7 +92,7 @@ export default function HandoffPage() {
           <button
             type="button"
             onClick={() => {
-              window.location.href = "/setup?entryProduct=marketplace";
+              window.location.replace(setupReturnUrlRef.current);
             }}
             className="mt-5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700"
           >

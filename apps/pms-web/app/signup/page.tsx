@@ -23,7 +23,11 @@ export default function SignupPage() {
     try {
       await authService.signup(data);
       const decision = await resolvePmsSetupGuard("/dashboard");
-      router.push(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
+      if (decision.action === "redirect_to_setup") {
+        window.location.replace(decision.redirectPath);
+        return;
+      }
+      router.push("/dashboard");
     } catch (error) {
       if (
         error instanceof AuthStateError &&

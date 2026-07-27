@@ -25,7 +25,9 @@ export function resolveSharedHotelSetupGuardDecision(
   status: AdaptiveHotelSetupStatus,
   input: {
     entryProduct: SharedHotelSetupEntryProduct;
+    returnProduct?: SharedHotelSetupEntryProduct;
     returnTo: string;
+    setupBaseUrl?: string;
   },
 ): SharedHotelSetupGuardDecision {
   const entryDecision = status.entryDecision;
@@ -57,8 +59,10 @@ export async function resolveSharedHotelSetupGuard(
   api: Pick<SharedHotelSetupApi, "getStatus">,
   input: {
     entryProduct: SharedHotelSetupEntryProduct;
+    returnProduct?: SharedHotelSetupEntryProduct;
     returnTo: string;
     propertyId?: string | null;
+    setupBaseUrl?: string;
     onInvalidPropertyId?: () => void;
   },
 ): Promise<SharedHotelSetupGuardDecision> {
@@ -92,11 +96,17 @@ function isMissingPropertyResourceLinkError(error: unknown): boolean {
 
 export function buildSharedHotelSetupRedirectPath(input: {
   entryProduct: SharedHotelSetupEntryProduct;
+  returnProduct?: SharedHotelSetupEntryProduct;
   returnTo: string;
   propertyId?: string | null;
+  setupBaseUrl?: string;
+  mode?: "add";
 }): string {
   const query = new URLSearchParams({ entryProduct: input.entryProduct });
+  if (input.returnProduct) query.set("returnProduct", input.returnProduct);
   if (isSafeSharedHotelSetupReturnTo(input.returnTo)) query.set("returnTo", input.returnTo);
   if (input.propertyId?.trim()) query.set("propertyId", input.propertyId.trim());
-  return `/setup?${query.toString()}`;
+  if (input.mode === "add") query.set("mode", "add");
+  const path = `/setup?${query.toString()}`;
+  return input.setupBaseUrl ? new URL(path, input.setupBaseUrl).toString() : path;
 }

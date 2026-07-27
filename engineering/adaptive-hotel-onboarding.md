@@ -124,7 +124,40 @@ The flow asks the outcome question before detailed property fields:
 3. select an existing property or add one;
 4. collect shared property identity once;
 5. show only tasks required by the selected tracks;
-6. return to one property setup plan after each task.
+6. continue through one property setup wizard, reloading authoritative status
+   after each task.
+
+The wizard renders one active task at a time with a compact ordered step list.
+It does not render one card per task. When both tracks are selected, the order
+is:
+
+1. shared hotel basics;
+2. public hotel profile;
+3. creator-facing hotel introduction;
+4. collaboration offer;
+5. rooms, rates, and availability;
+6. guest settings and policies;
+7. payment;
+8. direct-booking publication;
+9. review and next steps.
+
+Marketplace steps appear before Operations steps, but this is presentation
+order rather than a cross-track dependency. A Marketplace review, sync, or
+permission constraint does not prevent the wizard from recommending an
+independent Operations task.
+
+The Marketplace-only public-profile step is hidden for Operations-only hotels.
+Their final direct-booking publication step still collects the minimum canonical
+public facts needed for a guest-facing booking page: a description, approved
+hero media, and explicit city/country visibility. When both tracks are selected,
+the earlier public-profile work is reused rather than collected twice. A
+successful projection command is not treated as completion unless Distribution
+reports the booking profile as publicly ready and fresh.
+
+The final review reports Creator Marketplace publication, PMS operations use,
+and direct-booking publication separately. Owner-complete work may still be
+under review or pending launch, so the UI never collapses these states into one
+"launch everything" action.
 
 ### New Property Minimum
 
@@ -147,7 +180,7 @@ property.
 | Form/task group                  | Marketplace | Operations | Both |
 | -------------------------------- | ----------- | ---------- | ---- |
 | Shared identity and contacts     | Required    | Required   | Once |
-| Public description and media     | Required    | Optional   | Once |
+| Public description and media     | Required    | Required   | Once |
 | Creator pitch and offer          | Required    | Hidden     | Yes  |
 | Rooms, rates, and availability   | Hidden      | Required   | Yes  |
 | Guest settings and policies      | Hidden      | Required   | Yes  |
@@ -160,7 +193,7 @@ or Distribution views.
 
 ## Domain-Owned Readiness
 
-Domains return typed readiness facts; the setup hub sequences them without
+Domains return typed readiness facts; the setup wizard sequences them without
 reimplementing their completion rules:
 
 ```ts
@@ -191,13 +224,16 @@ permissions, and dependencies. Initial task groups are:
 | Payment capability          | Operations  | Finance       |
 | Direct-booking publication  | Operations  | Distribution  |
 
-The hub recommends only an actionable task the current caller may perform.
-Pending review, pending sync, suspended work, and owner-only work for an
-operator are never recommended. Returning from another app reloads authoritative
-readiness; it does not mark the task complete.
+The wizard recommends only a launchable task the current caller may perform.
+That includes actionable work and rejected Marketplace work that an owner must
+correct. Pending review, pending sync, suspended work, and owner-only work for an
+operator are never recommended. An incomplete direct-booking projection remains
+actionable after its dependencies are complete so the owner can fix and retry
+publication. Returning from another app reloads authoritative readiness; it does
+not mark the task complete.
 
 Stale required facts are not complete and never permit Booking or Marketplace
-publication. The hub may preserve displayed owner progress while it refreshes
+publication. The wizard may preserve displayed owner progress while it refreshes
 the owning domain.
 
 ## Replacement API
@@ -394,19 +430,36 @@ Handoff creation accepts `{ propertyId, taskId, planRevision }` and returns
 Invalid, expired, reused, or unauthorized handoffs return `invalid_handoff`; a
 changed plan returns `refresh_plan`.
 
-## Canonical Hub and Handoff
+## Canonical Wizard and Handoff
 
-`HOTEL_SETUP_BASE_URL` points to the canonical `marketplace-web /setup` hub.
+`HOTEL_SETUP_BASE_URL` points to the canonical `marketplace-web /setup` wizard.
+Canonical setup links keep the requested `entryProduct` separate from the
+allowlisted `returnProduct`. The latter identifies the app that sent the owner
+into setup; `returnTo` remains a validated relative path. Booking, PMS, and
+Marketplace set their own return product rather than trusting query input, and
+the canonical wizard resolves that pair against the configured product origin.
+This preserves exact product-local return paths without accepting an arbitrary
+redirect origin.
+
 Task launches use a short-lived, single-use server handoff containing the
 organization, property, task, plan revision, allowlisted destination route, and
-hub return route.
+wizard return route.
+
+Before launching a task, Marketplace stores the already validated entry and
+return context in tab-scoped session storage for that property. The server-issued
+task return remains the minimal canonical property URL; on the same-tab return,
+Marketplace restores the validated context before rendering the wizard. The
+context is cleared when the owner exits setup or enters a product, so completing
+one task does not silently change the original return app.
 
 The browser receives only an opaque code. The destination exchanges it once and
 independently rechecks the current session, organization membership, entitlement,
 permission, and property resource link. Handoff context never grants access.
 
 Every actionable task must have a tested destination adapter, consistent
-onboarding header, and “Back to setup plan” route before it appears in the hub.
+onboarding header, and a validated return to the canonical wizard before it
+appears in the step list. "Save and exit" returns to the wizard without
+implicitly submitting incomplete data.
 
 ## Implementation and Cutover
 

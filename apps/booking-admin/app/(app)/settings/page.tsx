@@ -44,7 +44,11 @@ import {
 import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
 import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
 import { useTranslation } from "@/lib/i18n";
-import { bookingSettingsSectionForSetupTask } from "@/lib/utils/bookingSetupTaskRoute";
+import {
+  hasBookingSetupTaskContext,
+  parseBookingSetupTaskContext,
+  type BookingSetupTaskContext,
+} from "@/lib/utils/bookingSetupTaskRoute";
 
 // Audit-driven section IDs (VAY-400):
 // - "account" replaces the old "security" tab — those are personal-account
@@ -66,6 +70,9 @@ const PROPERTY_MAP_CENTERING_UNAVAILABLE =
   "Automatic property map centering is not available on next-api yet.";
 const BILLING_PLAN_SWITCH_UNAVAILABLE = "Billing plan switching is not available on next-api yet.";
 const BILLING_SETTINGS_UNAVAILABLE = "Billing settings are not available on next-api yet.";
+const MARKETPLACE_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
+const SETUP_HUB_URL = new URL("/setup", MARKETPLACE_FRONTEND_URL).toString();
 
 function readBookingHotelId(settings: PropertySettings): string {
   if (settings.id?.trim()) return settings.id.trim();
@@ -182,6 +189,8 @@ function buildTargetSettingsUpdate(
     return {
       ok: true,
       data: {
+        check_in_time: settings.check_in_time,
+        check_out_time: settings.check_out_time,
         cancellation_policy_text: settings.cancellation_policy_text,
       },
     };
@@ -206,11 +215,11 @@ function buildTargetSettingsUpdate(
 export default function SettingsPage() {
   const { t } = useTranslation();
   const searchParams = useSearchParams();
-  const requestedSetupSection = bookingSettingsSectionForSetupTask(
-    searchParams.get("taskId"),
-    searchParams.get("destinationRouteKey"),
-  );
-  const [activeSection, setActiveSection] = useState<Section>(requestedSetupSection ?? "property");
+  const setupQuery = searchParams.toString();
+  const setupTaskRequested = hasBookingSetupTaskContext(new URLSearchParams(setupQuery));
+  const [activeSection, setActiveSection] = useState<Section>("property");
+  const [setupTaskContext, setSetupTaskContext] = useState<BookingSetupTaskContext | null>(null);
+  const [resolvedSetupQuery, setResolvedSetupQuery] = useState<string | null>(null);
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -241,10 +250,27 @@ export default function SettingsPage() {
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
   const billingPlanSwitchUnavailable = true;
   const billingPlanSwitchDisabled = saving || billingPlanSwitchUnavailable;
+  const setupSaveLabel =
+    setupTaskContext?.settingsSection === activeSection
+      ? "Save and return to setup"
+      : t("common.save");
+  const isGuestSettingsSetupTask =
+    setupTaskContext?.taskId === "guest_settings_policies" &&
+    setupTaskContext.settingsSection === activeSection;
 
   useEffect(() => {
-    if (requestedSetupSection) setActiveSection(requestedSetupSection);
-  }, [requestedSetupSection]);
+    const context = window.location.hash
+      ? null
+      : parseBookingSetupTaskContext(
+          new URLSearchParams(setupQuery),
+          window.localStorage,
+          MARKETPLACE_FRONTEND_URL,
+          "/settings",
+        );
+    setSetupTaskContext(context);
+    setResolvedSetupQuery(setupQuery);
+    if (context?.settingsSection) setActiveSection(context.settingsSection);
+  }, [setupQuery]);
 
   const fetchSettings = useCallback(async (): Promise<PropertySettings | null> => {
     try {
@@ -407,6 +433,12 @@ export default function SettingsPage() {
       const message = t("settings.billing.paymentSettingsSaved");
       setPaymentSuccess(message);
       if (showPageFeedback) setFeedback({ type: "success", message });
+      if (
+        setupTaskContext?.taskId === "payment" &&
+        setupTaskContext.settingsSection === activeSection
+      ) {
+        window.location.replace(setupTaskContext.returnUrl);
+      }
       return true;
     } catch (err: unknown) {
       fail(err instanceof Error ? err.message : t("settings.billing.errorPaymentSaveFailed"));
@@ -433,6 +465,19 @@ export default function SettingsPage() {
       paypalEmail === (settings.paypal_email || "")
         ? settings
         : { ...settings, paypal_email: paypalEmail };
+    if (
+      isGuestSettingsSetupTask &&
+      (!normalizedSettings.check_in_time?.trim() ||
+        !normalizedSettings.check_out_time?.trim() ||
+        !normalizedSettings.cancellation_policy_text?.trim())
+    ) {
+      setFeedback({
+        type: "error",
+        message:
+          "Add a check-in time, check-out time, and cancellation policy before returning to setup.",
+      });
+      return;
+    }
     const targetSettingsUpdate = buildTargetSettingsUpdate(activeSection, normalizedSettings);
     if (!targetSettingsUpdate.ok) {
       setFeedback({ type: "error", message: targetSettingsUpdate.message });
@@ -460,6 +505,9 @@ export default function SettingsPage() {
       const data = await settingsService.updatePropertySettings(targetSettingsUpdate.data);
       setSettings(data);
       setFeedback({ type: "success", message: t("settings.feedback.saveSuccess") });
+      if (isGuestSettingsSetupTask && setupTaskContext) {
+        window.location.replace(setupTaskContext.returnUrl);
+      }
     } catch (err: unknown) {
       setFeedback({ type: "error", message: errorMessage(err, t("settings.feedback.saveError")) });
     } finally {
@@ -611,6 +659,35 @@ export default function SettingsPage() {
     { id: "payments", label: "Payments", icon: BanknotesIcon },
   ];
 
+  if (setupTaskRequested && resolvedSetupQuery !== setupQuery) {
+    return (
+      <div className="flex min-h-[calc(100vh-5rem)] items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (setupTaskRequested && !setupTaskContext) {
+    return (
+      <main className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-2xl items-center p-4 md:p-6">
+        <section className="w-full rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm sm:p-10">
+          <h1 className="text-xl font-semibold text-gray-950">Setup task unavailable</h1>
+          <p className="mt-3 text-sm leading-6 text-gray-600">
+            This Booking setup context is invalid or no longer matches the selected hotel. Return to
+            the setup plan to continue with the current next step.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.replace(SETUP_HUB_URL)}
+            className="mt-6 rounded-xl bg-primary-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
+          >
+            Return to setup plan
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <SettingsLayout
       title={t("settings.title")}
@@ -621,6 +698,24 @@ export default function SettingsPage() {
         setActiveSection(id as Section);
       }}
     >
+      {setupTaskContext && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Hotel setup</p>
+            <p className="text-xs text-gray-600">
+              Save this Booking Engine step to refresh your setup plan and continue.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => window.location.replace(setupTaskContext.returnUrl)}
+            className="shrink-0 text-xs font-semibold text-primary-700 hover:text-primary-800"
+          >
+            Exit setup
+          </button>
+        </div>
+      )}
+
       {/* Feedback banner */}
       {feedback && (
         <FeedbackAlert type={feedback.type} message={feedback.message} className="mb-4" />
@@ -800,7 +895,7 @@ export default function SettingsPage() {
               {/* Save button */}
               <div className="flex justify-end">
                 <SaveButton onClick={handleSave} saving={saving}>
-                  {t("common.save")}
+                  {setupSaveLabel}
                 </SaveButton>
               </div>
             </>
@@ -833,6 +928,38 @@ export default function SettingsPage() {
             />
           </div>
 
+          {/* Arrival and departure */}
+          <div className="rounded-lg border border-gray-200 bg-white p-4 md:p-5">
+            <h2 className="text-sm font-semibold text-gray-900">Check-in and check-out</h2>
+            <p className="mb-4 mt-0.5 text-[13px] text-gray-500">
+              Set the standard times guests can arrive and should leave.
+              {isGuestSettingsSetupTask ? " Both are required for hotel setup." : ""}
+            </p>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block text-[13px] font-medium text-gray-700">
+                Check-in time
+                <input
+                  type="time"
+                  value={settings.check_in_time ?? ""}
+                  onChange={(event) => updateSetting("check_in_time", event.target.value)}
+                  required={isGuestSettingsSetupTask}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-2.5 py-2 text-[13px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </label>
+              <label className="block text-[13px] font-medium text-gray-700">
+                Check-out time
+                <input
+                  type="time"
+                  value={settings.check_out_time ?? ""}
+                  onChange={(event) => updateSetting("check_out_time", event.target.value)}
+                  required={isGuestSettingsSetupTask}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-2.5 py-2 text-[13px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </label>
+            </div>
+          </div>
+
           {/* Booking Policies */}
           <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
             <h2 className="text-sm font-semibold text-gray-900">
@@ -856,12 +983,17 @@ export default function SettingsPage() {
             </div>
 
             <div>
-              <label className="block text-[13px] font-medium text-gray-700 mb-1">
+              <label
+                htmlFor="cancellation-policy-text"
+                className="block text-[13px] font-medium text-gray-700 mb-1"
+              >
                 {t("settings.booking.cancellationLabel")}
               </label>
               <textarea
+                id="cancellation-policy-text"
                 value={settings.cancellation_policy_text ?? ""}
                 onChange={(e) => updateSetting("cancellation_policy_text", e.target.value)}
+                required={isGuestSettingsSetupTask}
                 rows={6}
                 placeholder={t("settings.booking.cancellationPlaceholder")}
                 className="w-full px-2.5 py-2 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-y"
@@ -978,7 +1110,7 @@ export default function SettingsPage() {
           {/* Save button */}
           <div className="flex justify-end">
             <SaveButton onClick={handleSave} saving={saving}>
-              {t("common.save")}
+              {setupSaveLabel}
             </SaveButton>
           </div>
         </div>
@@ -1188,7 +1320,7 @@ export default function SettingsPage() {
 
           <div className="flex justify-end">
             <SaveButton onClick={handleSave} saving={saving}>
-              {t("common.save")}
+              {setupSaveLabel}
             </SaveButton>
           </div>
         </div>
@@ -1240,7 +1372,7 @@ export default function SettingsPage() {
           {/* Save button */}
           <div className="flex justify-end">
             <SaveButton onClick={handleSave} saving={saving}>
-              {t("common.save")}
+              {setupSaveLabel}
             </SaveButton>
           </div>
         </div>
@@ -1909,7 +2041,7 @@ export default function SettingsPage() {
             </div>
             <div className="flex justify-end pt-4">
               <SaveButton onClick={handleSave} saving={saving}>
-                {t("common.save")}
+                {setupSaveLabel}
               </SaveButton>
             </div>
           </div>
@@ -2029,7 +2161,7 @@ export default function SettingsPage() {
 
               <div className="flex justify-end pt-2">
                 <SaveButton onClick={handleSave} saving={saving}>
-                  {t("common.save")}
+                  {setupSaveLabel}
                 </SaveButton>
               </div>
             </div>
@@ -2197,8 +2329,11 @@ export default function SettingsPage() {
                       </p>
                     </div>
                     <div className="flex justify-end pt-2">
-                      <SaveButton onClick={savePaymentProviderSettings} saving={savingPayment}>
-                        {t("common.save")}
+                      <SaveButton
+                        onClick={() => void savePaymentProviderSettings()}
+                        saving={savingPayment}
+                      >
+                        {setupSaveLabel}
                       </SaveButton>
                     </div>
                   </div>
@@ -2252,8 +2387,11 @@ export default function SettingsPage() {
                       />
                     </div>
                     <div className="flex justify-end pt-2">
-                      <SaveButton onClick={savePaymentProviderSettings} saving={savingPayment}>
-                        {t("common.save")}
+                      <SaveButton
+                        onClick={() => void savePaymentProviderSettings()}
+                        saving={savingPayment}
+                      >
+                        {setupSaveLabel}
                       </SaveButton>
                     </div>
                   </div>
@@ -2285,8 +2423,11 @@ export default function SettingsPage() {
                       </div>
                     )}
                     <div className="flex justify-end pt-2">
-                      <SaveButton onClick={savePaymentProviderSettings} saving={savingPayment}>
-                        {t("common.save")}
+                      <SaveButton
+                        onClick={() => void savePaymentProviderSettings()}
+                        saving={savingPayment}
+                      >
+                        {setupSaveLabel}
                       </SaveButton>
                     </div>
                   </div>

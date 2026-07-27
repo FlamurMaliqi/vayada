@@ -54,7 +54,7 @@ describe("Marketplace setup guards", () => {
       action: "redirect_to_setup",
       propertyId: "property-1",
       redirectPath:
-        "/setup?entryProduct=marketplace&returnTo=%2Fmarketplace%3Ftab%3Dcreators&propertyId=property-1",
+        "/setup?entryProduct=marketplace&returnProduct=marketplace&returnTo=%2Fmarketplace%3Ftab%3Dcreators&propertyId=property-1",
       entryDecision: "setup_required",
       reasonCode: "product_access_pending",
     });

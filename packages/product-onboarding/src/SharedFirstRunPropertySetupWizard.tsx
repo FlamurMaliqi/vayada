@@ -83,6 +83,7 @@ export type SharedFirstRunPropertySetupWizardProps = {
   embedded?: boolean;
   productLabels?: Partial<ProductLabels>;
   onContinue: (input: SharedFirstRunContinueInput) => void | Promise<void>;
+  onExit?: () => void;
 };
 
 type ProfileDraft = {
@@ -262,6 +263,7 @@ export default function SharedFirstRunPropertySetupWizard({
   embedded = false,
   productLabels,
   onContinue,
+  onExit,
 }: SharedFirstRunPropertySetupWizardProps) {
   const labels = { ...DEFAULT_PRODUCT_LABELS, ...productLabels };
   const [status, setStatus] = useState<AdaptiveHotelSetupStatus | null>(null);
@@ -278,6 +280,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const [selectedTracks, setSelectedTracks] = useState<SetupTrack[]>([]);
   const [saving, setSaving] = useState(false);
   const [continuingTaskId, setContinuingTaskId] = useState<SetupTaskId | null>(null);
+  const [selectedPlanTaskId, setSelectedPlanTaskId] = useState<SetupTaskId | null>(null);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [profileStep, setProfileStep] = useState(0);
@@ -305,6 +308,10 @@ export default function SharedFirstRunPropertySetupWizard({
   useEffect(() => {
     setProfileStep(0);
   }, [view.profileMode, view.selectedPropertyId]);
+
+  useEffect(() => {
+    setSelectedPlanTaskId(status?.setupPlan?.recommendedTaskId ?? null);
+  }, [status?.setupPlan?.planRevision, status?.setupPlan?.recommendedTaskId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -629,6 +636,9 @@ export default function SharedFirstRunPropertySetupWizard({
           labels={labels}
           onContinueTask={handleContinueTask}
           continuingTaskId={continuingTaskId}
+          selectedTaskId={selectedPlanTaskId}
+          onSelectTask={setSelectedPlanTaskId}
+          onExit={onExit}
           onEnterProduct={entryContinueInput ? () => onContinue(entryContinueInput) : undefined}
           onAddTrack={
             status.organization.selectedTracks.length < 2 && status.organization.canManageTracks
@@ -671,7 +681,7 @@ function WizardShell({
         ? "Pick an existing property or add a new one to this hotel group."
         : view.screen === "property_profile"
           ? null
-          : "Work through the recommended next step or choose any task that is ready.";
+          : "Complete one guided step at a time. We only include tasks for the services you selected.";
   const isProfileScreen = view.screen === "property_profile";
   const useWideSetupLayout = view.screen === "track_selection" || view.screen === "setup_plan";
 
@@ -691,9 +701,11 @@ function WizardShell({
                 </h2>
                 {subtitle && <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>}
               </div>
-              <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
-                Step {progress} of 3
-              </span>
+              {view.screen !== "setup_plan" && (
+                <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
+                  Step {progress} of 3
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -712,7 +724,7 @@ function WizardShell({
 
   return (
     <main
-      className={`flex min-h-screen text-gray-900 ${
+      className={`flex min-h-[100dvh] text-gray-900 ${
         mapFirst ? "" : "items-center px-4 py-6 sm:px-6 lg:px-8"
       } ${isProfileScreen || useWideSetupLayout ? "bg-gray-50" : "bg-white"}`}
     >
@@ -1568,6 +1580,9 @@ function SetupPlan({
   labels,
   onContinueTask,
   continuingTaskId,
+  selectedTaskId,
+  onSelectTask,
+  onExit,
   onEnterProduct,
   onAddTrack,
 }: {
@@ -1575,6 +1590,9 @@ function SetupPlan({
   labels: ProductLabels;
   onContinueTask: (task: SetupTask) => void;
   continuingTaskId: SetupTaskId | null;
+  selectedTaskId: SetupTaskId | null;
+  onSelectTask: (taskId: SetupTaskId) => void;
+  onExit?: () => void;
   onEnterProduct?: () => void;
   onAddTrack?: () => void;
 }) {
@@ -1590,17 +1608,44 @@ function SetupPlan({
   const entryDecision = status.entryDecision;
   const requestedProduct = entryDecision?.requestedProduct;
   const completed = plan.ownerProgress.complete;
+  const selectedProperty = status.propertySelection.availableProperties.find(
+    ({ propertyId }) => propertyId === plan.propertyId,
+  );
+  const recommendedTask = plan.recommendedTaskId
+    ? (plan.tasks.find(
+        (task) => task.taskId === plan.recommendedTaskId && isSetupTaskActionable(task),
+      ) ?? null)
+    : null;
+  const selectedTask = selectedTaskId
+    ? (plan.tasks.find((task) => task.taskId === selectedTaskId && isSetupTaskActionable(task)) ??
+      null)
+    : null;
+  const currentTask = selectedTask ?? recommendedTask;
+  const attentionTask =
+    currentTask === null && plan.ownerProgress.complete < plan.ownerProgress.total
+      ? (plan.tasks.find(({ ownerProgress }) => ownerProgress !== "owner_complete") ?? null)
+      : null;
+  const activeTask = currentTask ?? attentionTask;
+  const currentTaskIndex = activeTask
+    ? plan.tasks.findIndex(({ taskId }) => taskId === activeTask.taskId)
+    : -1;
+  const reviewActive = activeTask === null;
+  const totalSteps = plan.tasks.length + 1;
+  const currentStepNumber = reviewActive ? totalSteps : currentTaskIndex + 1;
+  const progressPercentage =
+    plan.ownerProgress.total === 0
+      ? 100
+      : Math.round((plan.ownerProgress.complete / plan.ownerProgress.total) * 100);
 
   return (
     <section className="mx-auto max-w-6xl">
-      <div className="mb-6 flex flex-col gap-4 rounded-3xl border border-gray-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-sm font-semibold text-gray-950">
-            {plan.ownerProgress.total === 0
-              ? "No setup tasks"
-              : `${completed} of ${plan.ownerProgress.total} setup tasks complete`}
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
+          <p className="text-sm font-medium text-gray-500">Setting up</p>
+          <h2 className="mt-1 text-xl font-semibold text-gray-950">
+            {selectedProperty?.displayName ?? "Your hotel"}
+          </h2>
+          <div className="mt-3 flex flex-wrap gap-2">
             {status.organization.selectedTracks.map((track) => (
               <span
                 key={track}
@@ -1611,15 +1656,14 @@ function SetupPlan({
             ))}
           </div>
         </div>
-        <div className="flex flex-col gap-2 sm:items-end">
-          {onEnterProduct && requestedProduct && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {onExit && (
             <button
               type="button"
-              onClick={onEnterProduct}
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-gray-950 px-5 py-2.5 text-sm font-semibold text-white hover:bg-gray-800"
+              onClick={onExit}
+              className="text-sm font-semibold text-gray-600 hover:text-gray-950"
             >
-              Open {labels[requestedProduct]}
-              <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+              Exit setup
             </button>
           )}
           {onAddTrack && (
@@ -1629,6 +1673,16 @@ function SetupPlan({
               className="text-sm font-semibold text-primary-700 hover:text-primary-800"
             >
               Add another service
+            </button>
+          )}
+          {onEnterProduct && requestedProduct && (
+            <button
+              type="button"
+              onClick={onEnterProduct}
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-gray-950 px-5 py-2.5 text-sm font-semibold text-white hover:bg-gray-800"
+            >
+              Open {labels[requestedProduct]}
+              <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
             </button>
           )}
           {!onAddTrack &&
@@ -1651,111 +1705,340 @@ function SetupPlan({
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {plan.tasks.map((task) => (
-          <SetupTaskCard
-            key={task.taskId}
-            task={task}
-            recommended={task.taskId === plan.recommendedTaskId}
-            loading={task.taskId === continuingTaskId}
-            disabled={continuingTaskId !== null}
-            onContinue={() => onContinueTask(task)}
-          />
-        ))}
+      <div className="flex flex-col overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-sm lg:grid lg:grid-cols-[minmax(17rem,0.78fr)_minmax(0,1.5fr)]">
+        <aside className="order-2 border-t border-gray-200 bg-gray-50/80 p-5 sm:p-6 lg:order-1 lg:border-t-0 lg:border-r">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold text-gray-950">Your work</p>
+              <p className="mt-1 text-xs text-gray-500">
+                {completed} of {plan.ownerProgress.total} tasks done
+              </p>
+            </div>
+            <p className="text-xs font-semibold text-gray-600">{progressPercentage}%</p>
+          </div>
+          <div
+            className="mt-4 h-1.5 overflow-hidden rounded-full bg-gray-200"
+            role="progressbar"
+            aria-label="Hotel setup progress"
+            aria-valuemin={0}
+            aria-valuemax={plan.ownerProgress.total}
+            aria-valuenow={completed}
+          >
+            <div
+              className="h-full rounded-full bg-primary-600 transition-[width] duration-300"
+              style={{ width: `${progressPercentage}%` }}
+            />
+          </div>
+
+          <ol className="mt-6 space-y-1" aria-label="Hotel setup steps">
+            {plan.tasks.map((task, index) => (
+              <SetupStepRow
+                key={task.taskId}
+                task={task}
+                position={index + 1}
+                current={task.taskId === activeTask?.taskId}
+                selectable={isSetupTaskActionable(task)}
+                onSelect={() => onSelectTask(task.taskId)}
+              />
+            ))}
+            <li
+              className={`flex gap-3 rounded-2xl px-3 py-3 ${
+                reviewActive ? "bg-white shadow-sm ring-1 ring-gray-200" : ""
+              }`}
+              aria-current={reviewActive ? "step" : undefined}
+            >
+              <span
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                  reviewActive
+                    ? "bg-primary-600 text-white"
+                    : "border border-gray-300 bg-white text-gray-500"
+                }`}
+                aria-hidden="true"
+              >
+                {totalSteps}
+              </span>
+              <span className="min-w-0 pt-0.5">
+                <span className="block text-sm font-semibold text-gray-950">
+                  Review and next steps
+                </span>
+                <span className="mt-0.5 block text-xs text-gray-500">
+                  See what is ready to use or publish
+                </span>
+              </span>
+            </li>
+          </ol>
+        </aside>
+
+        <div className="order-1 min-w-0 p-6 sm:p-8 lg:order-2 lg:p-10">
+          {currentTask ? (
+            <CurrentSetupStep
+              task={currentTask}
+              stepNumber={currentStepNumber}
+              totalSteps={totalSteps}
+              loading={currentTask.taskId === continuingTaskId}
+              disabled={continuingTaskId !== null}
+              onContinue={() => onContinueTask(currentTask)}
+            />
+          ) : attentionTask ? (
+            <SetupAttentionStep
+              task={attentionTask}
+              stepNumber={currentStepNumber}
+              totalSteps={totalSteps}
+            />
+          ) : (
+            <SetupReview launchReadiness={plan.launchReadiness} />
+          )}
+        </div>
       </div>
     </section>
   );
 }
 
-function SetupTaskCard({
+function SetupStepRow({
   task,
-  recommended,
+  position,
+  current,
+  selectable,
+  onSelect,
+}: {
+  task: SetupTask;
+  position: number;
+  current: boolean;
+  selectable: boolean;
+  onSelect: () => void;
+}) {
+  const content = TASK_CONTENT[task.taskId];
+  const state = setupTaskStateCopy(task);
+  const indicatorClass = {
+    neutral: "border-gray-300 bg-white text-gray-500",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    warning: "border-amber-200 bg-amber-50 text-amber-800",
+    danger: "border-red-200 bg-red-50 text-red-700",
+  }[state.tone];
+  const trackLabel =
+    task.track === "creator_marketplace"
+      ? "Creator Marketplace"
+      : task.track === "hotel_operations"
+        ? "Hotel Operations"
+        : "Hotel details";
+  const isComplete = task.readiness === "complete";
+
+  return (
+    <li
+      className={`rounded-2xl ${current ? "bg-white shadow-sm ring-1 ring-gray-200" : ""}`}
+      aria-current={current ? "step" : undefined}
+    >
+      <button
+        type="button"
+        disabled={!selectable || current}
+        onClick={onSelect}
+        className="flex w-full gap-3 rounded-2xl px-3 py-3 text-left outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-primary-300 disabled:cursor-default disabled:hover:bg-transparent"
+      >
+        <span
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
+            current ? "border-primary-600 bg-primary-600 text-white" : indicatorClass
+          }`}
+          aria-hidden="true"
+        >
+          {isComplete ? <CheckIcon className="h-4 w-4" /> : position}
+        </span>
+        <span className="min-w-0 pt-0.5">
+          <span className="block text-sm font-semibold leading-5 text-gray-950">
+            {content.title}
+          </span>
+          <span className="mt-0.5 block text-xs leading-5 text-gray-500">
+            {trackLabel} · {state.label}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
+}
+
+function SetupAttentionStep({
+  task,
+  stepNumber,
+  totalSteps,
+}: {
+  task: SetupTask;
+  stepNumber: number;
+  totalSteps: number;
+}) {
+  const content = TASK_CONTENT[task.taskId];
+  const state = setupTaskStateCopy(task);
+  const toneClass = {
+    neutral: "border-gray-200 bg-gray-50 text-gray-700",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    warning: "border-amber-200 bg-amber-50 text-amber-900",
+    danger: "border-red-200 bg-red-50 text-red-800",
+  }[state.tone];
+
+  return (
+    <section aria-labelledby="current-setup-step-title">
+      <p className="text-sm font-semibold text-primary-700">
+        Step {stepNumber} of {totalSteps}
+      </p>
+      <h2
+        id="current-setup-step-title"
+        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950"
+      >
+        {content.title}
+      </h2>
+      <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
+      <div className={`mt-7 rounded-2xl border px-4 py-3 text-sm ${toneClass}`} role="status">
+        <p className="font-semibold">{state.label}</p>
+        <p className="mt-1 leading-6">{state.description}</p>
+      </div>
+      <p className="mt-5 max-w-xl text-sm leading-6 text-gray-600">
+        Your saved work is safe. Return later or ask the indicated person to resolve this step.
+      </p>
+    </section>
+  );
+}
+
+function CurrentSetupStep({
+  task,
+  stepNumber,
+  totalSteps,
   loading,
   disabled,
   onContinue,
 }: {
   task: SetupTask;
-  recommended: boolean;
+  stepNumber: number;
+  totalSteps: number;
   loading: boolean;
   disabled: boolean;
   onContinue: () => void;
 }) {
   const content = TASK_CONTENT[task.taskId];
   const state = setupTaskStateCopy(task);
-  const actionable = isSetupTaskActionable(task);
   const toneClass = {
-    neutral: "bg-gray-100 text-gray-700",
-    success: "bg-emerald-50 text-emerald-700",
-    warning: "bg-amber-50 text-amber-900",
-    danger: "bg-red-50 text-red-800",
+    neutral: "border-gray-200 bg-gray-50 text-gray-700",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    warning: "border-amber-200 bg-amber-50 text-amber-900",
+    danger: "border-red-200 bg-red-50 text-red-800",
   }[state.tone];
 
   return (
-    <article
-      className={`flex min-w-0 flex-col rounded-3xl bg-white p-5 shadow-sm ${
-        recommended ? "ring-2 ring-primary-500" : "ring-1 ring-gray-200"
-      }`}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${toneClass}`}>
-          {state.label}
-        </span>
-        {recommended && (
-          <span className="rounded-full bg-primary-50 px-2.5 py-1 text-xs font-semibold text-primary-700">
-            Recommended next
-          </span>
-        )}
+    <section aria-labelledby="current-setup-step-title">
+      <p className="text-sm font-semibold text-primary-700">
+        Step {stepNumber} of {totalSteps}
+      </p>
+      <h2
+        id="current-setup-step-title"
+        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950"
+      >
+        {content.title}
+      </h2>
+      <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
+
+      <div className={`mt-7 rounded-2xl border px-4 py-3 text-sm ${toneClass}`} role="status">
+        <p className="font-semibold">{state.label}</p>
+        <p className="mt-1 leading-6">{state.description}</p>
       </div>
-      <h2 className="mt-4 text-lg font-semibold text-gray-950">{content.title}</h2>
-      <p className="mt-2 text-sm leading-6 text-gray-600">{content.description}</p>
-      <p className="mt-4 text-sm leading-6 text-gray-700">{state.description}</p>
-      {actionable && (
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={onContinue}
-          className={`mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60 ${
-            recommended
-              ? "bg-primary-600 text-white hover:bg-primary-700"
-              : "bg-primary-50 text-primary-700 hover:bg-primary-100"
-          }`}
-        >
-          {loading && (
-            <span
-              className="h-4 w-4 animate-spin rounded-full border-2 border-current/30 border-t-current"
-              aria-hidden="true"
-            />
-          )}
-          {loading ? "Opening task..." : recommended ? "Continue recommended step" : "Open task"}
-          {!loading && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
-        </button>
-      )}
-    </article>
+
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onContinue}
+        className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+      >
+        {loading && (
+          <span
+            className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+            aria-hidden="true"
+          />
+        )}
+        {loading ? "Opening step..." : "Continue setup"}
+        {!loading && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
+      </button>
+      <p className="mt-4 max-w-xl text-xs leading-5 text-gray-500">
+        After you save this step, you will return here and continue with the next relevant task.
+      </p>
+    </section>
   );
 }
 
+function SetupReview({
+  launchReadiness,
+}: {
+  launchReadiness: NonNullable<AdaptiveHotelSetupStatus["setupPlan"]>["launchReadiness"];
+}) {
+  const readinessItems = [
+    {
+      label: "Creator Marketplace",
+      description: "Your public profile and creator collaboration offer.",
+      value: launchReadiness.marketplacePublish,
+    },
+    {
+      label: "Hotel operations",
+      description: "Your PMS rooms, rates, availability, and operating settings.",
+      value: launchReadiness.operationsUse,
+    },
+    {
+      label: "Direct booking",
+      description: "Your guest-facing booking page, policies, and payment setup.",
+      value: launchReadiness.directBookingPublish,
+    },
+  ] as const;
+
+  return (
+    <section aria-labelledby="setup-review-title">
+      <p className="text-sm font-semibold text-primary-700">Final review</p>
+      <h2
+        id="setup-review-title"
+        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950"
+      >
+        Review and next steps
+      </h2>
+      <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">
+        Each Vayada service has its own readiness status. You can use ready services while another
+        one is still being reviewed.
+      </p>
+
+      <dl className="mt-8 divide-y divide-gray-200 border-y border-gray-200">
+        {readinessItems.map((item) => {
+          const copy = launchReadinessCopy(item.value);
+          return (
+            <div
+              key={item.label}
+              className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <dt className="text-sm font-semibold text-gray-950">{item.label}</dt>
+                <dd className="mt-1 text-sm leading-6 text-gray-600">{item.description}</dd>
+              </div>
+              <dd className={`shrink-0 text-sm font-semibold ${copy.className}`}>{copy.label}</dd>
+            </div>
+          );
+        })}
+      </dl>
+
+      <p className="mt-6 text-sm leading-6 text-gray-600">
+        Your saved progress is safe. You can leave setup and return whenever a pending service is
+        ready.
+      </p>
+    </section>
+  );
+}
+
+function launchReadinessCopy(
+  readiness: NonNullable<
+    AdaptiveHotelSetupStatus["setupPlan"]
+  >["launchReadiness"][keyof NonNullable<AdaptiveHotelSetupStatus["setupPlan"]>["launchReadiness"]],
+): { label: string; className: string } {
+  if (readiness === "ready") return { label: "Ready", className: "text-emerald-700" };
+  if (readiness === "pending") {
+    return { label: "Pending", className: "text-amber-800" };
+  }
+  if (readiness === "blocked") {
+    return { label: "Needs attention", className: "text-red-700" };
+  }
+  return { label: "Not selected", className: "text-gray-500" };
+}
+
 function setupTaskStateCopy(task: SetupTask): TaskStateCopy {
-  if (task.callerCapability === "ask_owner") {
-    return {
-      label: "Ask an owner",
-      description: "A hotel group owner has permission to complete this step.",
-      tone: "warning",
-    };
-  }
-  if (task.callerCapability === "forbidden") {
-    return {
-      label: "Permission required",
-      description: "You do not have permission to complete this step.",
-      tone: "warning",
-    };
-  }
-  if (task.callerCapability === "waiting") {
-    return {
-      label: "Waiting",
-      description: "Another team or an automated process needs to finish this step.",
-      tone: "neutral",
-    };
-  }
   if (task.readiness === "complete") {
     return {
       label: "Complete",
@@ -1782,6 +2065,27 @@ function setupTaskStateCopy(task: SetupTask): TaskStateCopy {
       label: "Needs changes",
       description: "Review the feedback in this workspace before submitting again.",
       tone: "danger",
+    };
+  }
+  if (task.callerCapability === "ask_owner") {
+    return {
+      label: "Ask an owner",
+      description: "A hotel group owner has permission to complete this step.",
+      tone: "warning",
+    };
+  }
+  if (task.callerCapability === "forbidden") {
+    return {
+      label: "Permission required",
+      description: "You do not have permission to complete this step.",
+      tone: "warning",
+    };
+  }
+  if (task.callerCapability === "waiting") {
+    return {
+      label: "Waiting",
+      description: "Another team or an automated process needs to finish this step.",
+      tone: "neutral",
     };
   }
   if (task.readiness === "blocked") {

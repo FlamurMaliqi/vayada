@@ -13,6 +13,7 @@ import type {
   AdaptiveHotelSetupStatus,
   CreateHotelSetupHandoffResponse,
   ExchangeHotelSetupHandoffResponse,
+  SetupTrack,
   SetupTaskId,
   TrackStatus,
 } from "@vayada/domain-hotels";
@@ -94,6 +95,73 @@ describe("hotel setup handoff routes", () => {
       taskId: "rooms_rates_availability",
       destinationRouteKey: "pms.rooms_rates_availability",
       returnUrl: `https://marketplace.localhost:1355/setup?propertyId=${propertyId}`,
+    });
+  });
+
+  it("issues and exchanges a correction handoff for a rejected Marketplace task", async () => {
+    const fixture = handoffFixture();
+    app = fixture.app;
+    fixture.setup.selectedTracks = ["creator_marketplace"];
+    fixture.setup.tracks = [
+      {
+        track: "hotel_operations",
+        provisioning: "not_selected",
+        components: [
+          { product: "pms", access: "absent" },
+          { product: "booking", access: "absent" },
+        ],
+        allowedActions: ["add"],
+      },
+      {
+        track: "creator_marketplace",
+        provisioning: "active",
+        components: [{ product: "marketplace", access: "active" }],
+        allowedActions: ["manage_service"],
+      },
+    ];
+    fixture.setup.entitlements = [
+      { product: "marketplace", key: "marketplace-hotel-profile", status: "active" },
+    ];
+    fixture.setup.property.taskFacts.public_profile = taskFact("public_profile", true);
+    fixture.setup.property.taskFacts.creator_profile = {
+      ...taskFact("creator_profile"),
+      ownerProgress: "in_progress",
+      readiness: "rejected",
+      reasonCodes: ["creator_profile_rejected"],
+    };
+
+    const status = await injectJson<AdaptiveHotelSetupStatus>(app, {
+      method: "GET",
+      url: `/api/hotel-setup/status?propertyId=${propertyId}`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(status.body.setupPlan?.recommendedTaskId).toBe("creator_profile");
+    expect(
+      status.body.setupPlan?.tasks.find(({ taskId }) => taskId === "creator_profile"),
+    ).toMatchObject({
+      readiness: "rejected",
+      reasonCodes: ["creator_profile_rejected"],
+      callerCapability: "allowed",
+    });
+
+    const created = await createHandoff(
+      app,
+      status.body.setupPlan!.planRevision,
+      "creator_profile",
+    );
+    expect(created.statusCode).toBe(201);
+    const launch = new URL(created.body.launchUrl);
+    expect(launch.origin).toBe("https://marketplace.localhost:1355");
+
+    const code = launch.searchParams.get("code")!;
+    const exchanged = await exchangeHandoff(app, code);
+    expect(exchanged).toMatchObject({
+      statusCode: 200,
+      body: {
+        propertyId,
+        taskId: "creator_profile",
+        destinationRouteKey: "marketplace.creator_profile",
+      },
     });
   });
 
@@ -363,12 +431,16 @@ async function currentPlanRevision(target: FastifyInstance): Promise<string> {
   return response.body.setupPlan!.planRevision;
 }
 
-function createHandoff(target: FastifyInstance, planRevision: string) {
+function createHandoff(
+  target: FastifyInstance,
+  planRevision: string,
+  taskId: SetupTaskId = "rooms_rates_availability",
+) {
   return injectJson<CreateHotelSetupHandoffResponse>(target, {
     method: "POST",
     url: "/api/hotel-setup/handoffs",
     headers: { authorization: "Bearer valid-token" },
-    payload: { propertyId, taskId: "rooms_rates_availability", planRevision },
+    payload: { propertyId, taskId, planRevision },
   });
 }
 
@@ -384,7 +456,7 @@ function exchangeHandoff(target: FastifyInstance, code: string, token = "valid-t
 function mutableSetup(): {
   property: AdaptivePropertySetupFacts;
   trackRevision: number;
-  selectedTracks: ["hotel_operations"];
+  selectedTracks: SetupTrack[];
   tracks: TrackStatus[];
   permissions: PermissionKey[];
   entitlements: ProductEntitlement[];
@@ -557,6 +629,13 @@ function propertyLinks(): LinkedResource[] {
     {
       product: "booking",
       resourceType: "booking_hotel",
+      resourceId: propertyId,
+      relationship: "owner",
+      status: "active",
+    },
+    {
+      product: "marketplace",
+      resourceType: "hotel_profile",
       resourceId: propertyId,
       relationship: "owner",
       status: "active",

@@ -4,6 +4,7 @@ import type { PermissionKey } from "@vayada/backend-auth";
 import { hasPermission } from "@vayada/backend-authorization";
 import {
   ADAPTIVE_HOTEL_SETUP_CONTRACT_VERSION,
+  isSetupTaskLaunchable,
   parseUpdateTracksRequest,
   PROPERTY_PROFILE_CHANNEL_TYPES,
   PROPERTY_PROFILE_CONTACT_PURPOSES,
@@ -261,7 +262,7 @@ export async function registerSharedHotelSetupStatusRoutes(
     if (!access) return reply;
     if (
       hasPublishedPropertySurface(profileInput) &&
-      !ensureMarketplacePublicationPermission(access.context, reply)
+      !ensurePublicPropertyPublicationPermission(access.context, reply)
     ) {
       return reply;
     }
@@ -319,7 +320,7 @@ export async function registerSharedHotelSetupStatusRoutes(
     if (update === false) return reply;
     if (
       publishedPropertySurfaceChanged(existingProfile.profile, update.profile) &&
-      !ensureMarketplacePublicationPermission(access.context, reply)
+      !ensurePublicPropertyPublicationPermission(access.context, reply)
     ) {
       return reply;
     }
@@ -384,7 +385,7 @@ export async function registerSharedHotelSetupStatusRoutes(
       "hotel_catalog.setup.manage",
     );
     if (!access) return reply;
-    if (!ensureMarketplacePublicationPermission(access.context, reply)) return reply;
+    if (!ensurePublicPropertyPublicationPermission(access.context, reply)) return reply;
 
     const update = parsePublicPropertyProfileUpdate(
       request.body as SharedPropertyProfileBody,
@@ -448,14 +449,19 @@ export async function registerSharedHotelSetupStatusRoutes(
   });
 }
 
-function ensureMarketplacePublicationPermission(
+function ensurePublicPropertyPublicationPermission(
   context: ReturnType<typeof enforceRoutePolicy>,
   reply: FastifyReply,
 ): boolean {
-  if (hasPermission(context, "marketplace.profile.manage")) return true;
+  if (
+    hasPermission(context, "marketplace.profile.manage") ||
+    hasPermission(context, "booking.settings.manage")
+  ) {
+    return true;
+  }
   reply.status(403).send({
     code: "missing_permission",
-    detail: "Marketplace publication settings require hotel-owner access.",
+    detail: "Public profile and location publication require hotel-owner access.",
   });
   return false;
 }
@@ -1444,11 +1450,7 @@ export function buildPropertySetupPlan(input: {
       evaluatedAt,
     };
   });
-  const recommendedTask =
-    tasks.find(
-      ({ readiness, callerCapability }) =>
-        readiness === "actionable" && callerCapability === "allowed",
-    ) ?? null;
+  const recommendedTask = tasks.find(isSetupTaskLaunchable) ?? null;
   const ownerComplete = tasks.filter(
     ({ ownerProgress }) => ownerProgress === "owner_complete",
   ).length;

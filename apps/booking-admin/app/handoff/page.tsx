@@ -21,6 +21,7 @@ const MARKETPLACE_FRONTEND_URL =
 export default function HandoffPage() {
   const [handoffError, setHandoffError] = useState<HandoffError | null>(null);
   const startedRef = useRef(false);
+  const setupReturnUrlRef = useRef(new URL("/setup", MARKETPLACE_FRONTEND_URL).toString());
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -37,45 +38,46 @@ export default function HandoffPage() {
       try {
         if (!authService.isAuthKitEnabled()) {
           if (!(await authService.ensureSession())) {
-            window.location.href = loginPath;
+            window.location.replace(loginPath);
             return;
           }
         } else {
           let session = await authService.refreshSession();
           if (isAuthOrganizationSelectionResponse(session)) {
             if (session.organizations.length !== 1) {
-              window.location.href = loginPath;
+              window.location.replace(loginPath);
               return;
             }
             session = await authService.refreshSession(
               session.organizations[0]!.workosOrganizationId,
             );
             if (isAuthOrganizationSelectionResponse(session)) {
-              window.location.href = loginPath;
+              window.location.replace(loginPath);
               return;
             }
           }
         }
       } catch {
-        window.location.href = loginPath;
+        window.location.replace(loginPath);
         return;
       }
 
       try {
         const handoff = await sharedHotelSetupApi.exchangeHandoff({ code });
-        const returnUrl = canonicalSetupReturnUrl(
-          handoff.returnUrl,
-          handoff.propertyId,
-          MARKETPLACE_FRONTEND_URL,
-        );
-        const destination = returnUrl
-          ? resolveBookingSetupTaskDestination({
-              taskId: handoff.taskId,
-              destinationRouteKey: handoff.destinationRouteKey,
-              planRevision: handoff.issuedPlanRevision,
-              returnUrl,
-            })
-          : null;
+        setupReturnUrlRef.current =
+          canonicalSetupReturnUrl(
+            handoff.returnUrl,
+            handoff.propertyId,
+            MARKETPLACE_FRONTEND_URL,
+          ) ?? setupReturnUrlRef.current;
+        const destination = resolveBookingSetupTaskDestination({
+          propertyId: handoff.propertyId,
+          taskId: handoff.taskId,
+          destinationRouteKey: handoff.destinationRouteKey,
+          planRevision: handoff.issuedPlanRevision,
+          returnUrl: handoff.returnUrl,
+          marketplaceOrigin: MARKETPLACE_FRONTEND_URL,
+        });
         if (!destination) {
           throw new Error("The requested setup task does not have a Booking destination.");
         }
@@ -90,7 +92,7 @@ export default function HandoffPage() {
 
         localStorage.setItem("selectedSharedPropertyId", handoff.propertyId);
         localStorage.setItem("selectedHotelId", selected.id);
-        window.location.href = destination;
+        window.location.replace(destination);
       } catch (error: unknown) {
         setHandoffError(errorForHandoffFailure(error));
       }
@@ -108,7 +110,7 @@ export default function HandoffPage() {
           <button
             type="button"
             onClick={() => {
-              window.location.href = new URL("/setup", MARKETPLACE_FRONTEND_URL).toString();
+              window.location.replace(setupReturnUrlRef.current);
             }}
             className="mt-5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700"
           >

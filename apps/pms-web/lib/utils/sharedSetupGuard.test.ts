@@ -4,7 +4,7 @@ import type { AdaptiveHotelSetupStatus } from "@vayada/product-onboarding";
 import { resolvePmsSetupGuard } from "./sharedSetupGuard";
 
 describe("resolvePmsSetupGuard", () => {
-  it("routes setup_required decisions to the shared hub", async () => {
+  it("routes setup_required decisions to the canonical Marketplace wizard", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
@@ -17,11 +17,18 @@ describe("resolvePmsSetupGuard", () => {
     };
     const storage = memoryStorage({ selectedSharedPropertyId: "property-1" });
 
-    await expect(resolvePmsSetupGuard("/dashboard?view=rooms", api, storage)).resolves.toEqual({
+    await expect(
+      resolvePmsSetupGuard(
+        "/dashboard?view=rooms",
+        api,
+        storage,
+        "https://marketplace.localhost:1355",
+      ),
+    ).resolves.toEqual({
       action: "redirect_to_setup",
       propertyId: "property-1",
       redirectPath:
-        "/setup?entryProduct=pms&returnTo=%2Fdashboard%3Fview%3Drooms&propertyId=property-1",
+        "https://marketplace.localhost:1355/setup?entryProduct=pms&returnProduct=pms&returnTo=%2Fdashboard%3Fview%3Drooms&propertyId=property-1",
       entryDecision: "setup_required",
       reasonCode: "product_access_pending",
     });

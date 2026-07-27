@@ -187,6 +187,8 @@ interface RoomTypeFormProps {
   success?: string;
   submitLabel?: string;
   cancelHref?: string;
+  cancelLabel?: string;
+  onCancel?: () => void;
   // 'create' seeds how many physical rooms get auto-created. 'edit' lets
   // the user nudge the count up or down: the backend reconciles the
   // generated room units to match (VAY-406). The DB trigger keeps
@@ -756,6 +758,8 @@ export default function RoomTypeForm({
   success,
   submitLabel = "Save",
   cancelHref = "/rooms",
+  cancelLabel = "Cancel",
+  onCancel,
   mode = "create",
   roomTypeId,
 }: RoomTypeFormProps) {
@@ -4059,12 +4063,22 @@ export default function RoomTypeForm({
 
       {/* Submit / Cancel — sticky on mobile, inline on desktop */}
       <div className="mt-6 flex items-center justify-end gap-3 sticky bottom-0 -mx-4 md:mx-0 px-4 md:px-0 py-3 md:py-0 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-0 bg-gray-50/95 md:bg-transparent backdrop-blur md:backdrop-blur-none border-t border-gray-200 md:border-t-0 z-10">
-        <Link
-          href={cancelHref}
-          className="flex-1 md:flex-initial text-center px-4 py-2.5 md:py-2 text-[13px] md:text-[12px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white transition-colors"
-        >
-          Cancel
-        </Link>
+        {onCancel ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 md:flex-initial text-center px-4 py-2.5 md:py-2 text-[13px] md:text-[12px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white transition-colors"
+          >
+            {cancelLabel}
+          </button>
+        ) : (
+          <Link
+            href={cancelHref}
+            className="flex-1 md:flex-initial text-center px-4 py-2.5 md:py-2 text-[13px] md:text-[12px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white transition-colors"
+          >
+            {cancelLabel}
+          </Link>
+        )}
         <button
           type="submit"
           disabled={

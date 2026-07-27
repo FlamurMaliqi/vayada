@@ -15,6 +15,11 @@ import {
 } from "@vayada/product-onboarding";
 
 import { ROUTES } from "@/lib/constants";
+import {
+  clearSetupReturnContext,
+  readSetupReturnContext,
+  saveSetupReturnContext,
+} from "@/lib/utils/setupReturnContext";
 import { authService } from "@/services/auth";
 import {
   sharedAccountProfileImageUploader,
@@ -79,16 +84,58 @@ export function SharedHotelSetupPage({
       parseSharedHotelSetupEntryProduct(searchParams.get("entryProduct")) ?? defaultEntryProduct,
     [defaultEntryProduct, searchParams],
   );
+  const returnProduct = useMemo(
+    () => parseSharedHotelSetupEntryProduct(searchParams.get("returnProduct")) ?? "marketplace",
+    [searchParams],
+  );
   const returnTo = useMemo(
-    () => safeSharedHotelSetupReturnTo(searchParams.get("returnTo"), defaultReturnTo),
-    [defaultReturnTo, searchParams],
+    () =>
+      safeSharedHotelSetupReturnTo(
+        searchParams.get("returnTo"),
+        returnProduct === "marketplace" ? defaultReturnTo : "/dashboard",
+      ),
+    [defaultReturnTo, returnProduct, searchParams],
   );
   const initialAddProperty = searchParams.get("mode") === "add";
   const initialPropertyId = searchParams.get("propertyId");
+  const setupQuery = searchParams.toString();
+  const hasExplicitReturnContext =
+    parseSharedHotelSetupEntryProduct(searchParams.get("entryProduct")) !== null &&
+    parseSharedHotelSetupEntryProduct(searchParams.get("returnProduct")) !== null &&
+    isSafeSharedHotelSetupReturnTo(searchParams.get("returnTo"));
+  const [restoringReturnContext, setRestoringReturnContext] = useState(() =>
+    Boolean(initialPropertyId && !hasExplicitReturnContext),
+  );
+
+  useEffect(() => {
+    if (!initialPropertyId || hasExplicitReturnContext) {
+      setRestoringReturnContext(false);
+      return;
+    }
+
+    const storedContext = readSetupReturnContext(initialPropertyId);
+    if (!storedContext) {
+      setRestoringReturnContext(false);
+      return;
+    }
+
+    setRestoringReturnContext(true);
+    const restored = new URLSearchParams(setupQuery);
+    restored.set("entryProduct", storedContext.entryProduct);
+    restored.set("returnProduct", storedContext.returnProduct);
+    restored.set("returnTo", storedContext.returnTo);
+    router.replace(`/setup?${restored.toString()}`);
+  }, [hasExplicitReturnContext, initialPropertyId, router, setupQuery]);
 
   const handleContinue = async (input: SharedFirstRunContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
     if (input.action === "continue_setup") {
+      saveSetupReturnContext({
+        propertyId: input.propertyId,
+        entryProduct,
+        returnProduct,
+        returnTo,
+      });
       const handoff = await sharedHotelSetupApi.createHandoff({
         propertyId: input.propertyId,
         taskId: input.taskId,
@@ -97,22 +144,24 @@ export function SharedHotelSetupPage({
       window.location.href = handoff.launchUrl;
       return;
     }
+    clearSetupReturnContext();
+    const requestedReturnTo = input.product === returnProduct ? input.returnTo : null;
     if (input.product === "booking") {
-      window.location.href = new URL("/dashboard", BOOKING_ADMIN_URL).toString();
+      window.location.replace(productReturnUrl("booking", requestedReturnTo));
       return;
     }
     if (input.product === "pms") {
-      window.location.href = new URL("/dashboard", PMS_FRONTEND_URL).toString();
+      window.location.replace(productReturnUrl("pms", requestedReturnTo));
       return;
     }
-    if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {
-      router.push(input.returnTo);
-      return;
-    }
-    router.push(input.product === "marketplace" ? ROUTES.MARKETPLACE : returnTo);
+    router.replace(
+      returnProduct === "marketplace" && isSafeSharedHotelSetupReturnTo(input.returnTo)
+        ? input.returnTo
+        : ROUTES.MARKETPLACE,
+    );
   };
 
-  if (checkingAuth || !authorized) {
+  if (checkingAuth || !authorized || restoringReturnContext) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
@@ -166,6 +215,25 @@ export function SharedHotelSetupPage({
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
       onContinue={handleContinue}
+      onExit={() => {
+        clearSetupReturnContext();
+        if (returnProduct === "marketplace") {
+          router.replace(returnTo);
+          return;
+        }
+        window.location.replace(productReturnUrl(returnProduct, returnTo));
+      }}
     />
   );
+}
+
+function productReturnUrl(
+  product: Exclude<SharedHotelSetupEntryProduct, "marketplace">,
+  returnTo: string | null,
+): string {
+  const safeReturnTo = safeSharedHotelSetupReturnTo(returnTo, "/dashboard");
+  return new URL(
+    safeReturnTo,
+    product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL,
+  ).toString();
 }

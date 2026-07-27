@@ -119,6 +119,16 @@ export type SetupTask = {
   evaluatedAt: string;
 };
 
+export function isSetupTaskLaunchable(
+  task: Pick<SetupTask, "track" | "callerCapability" | "readiness"> | null | undefined,
+): boolean {
+  return (
+    task?.callerCapability === "allowed" &&
+    (task.readiness === "actionable" ||
+      (task.track === "creator_marketplace" && task.readiness === "rejected"))
+  );
+}
+
 export type ProductEntryDecision = {
   requestedProduct: (typeof PRODUCT_ENTRY_PRODUCTS)[number];
   propertyId: string | null;
@@ -476,9 +486,7 @@ function isPropertySetupPlan(
     (marketplaceSelected
       ? launch["marketplacePublish"] !== "not_applicable"
       : launch["marketplacePublish"] === "not_applicable") &&
-    (recommendedTaskId === null ||
-      (recommendedTask?.readiness === "actionable" &&
-        recommendedTask.callerCapability === "allowed")) &&
+    (recommendedTaskId === null || isSetupTaskLaunchable(recommendedTask)) &&
     launchReadinessMatchesTasks(value as unknown as PropertySetupPlan, selectedTracks)
   );
 }

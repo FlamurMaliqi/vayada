@@ -68,6 +68,7 @@ describe("Marketplace hotel setup task handoff", () => {
 
   it("defines isolated UI and write scopes for every task", () => {
     expect(hotelTaskFlow("public_profile")).toMatchObject({
+      title: "Create your public hotel profile",
       ensureCover: true,
       submitPublicProfile: true,
       submitMarketplaceProfile: false,
@@ -75,6 +76,7 @@ describe("Marketplace hotel setup task handoff", () => {
       steps: [{ section: "public_profile" }],
     });
     expect(hotelTaskFlow("creator_profile")).toMatchObject({
+      title: "Introduce your hotel to creators",
       ensureCover: false,
       submitPublicProfile: false,
       submitMarketplaceProfile: true,
@@ -82,6 +84,7 @@ describe("Marketplace hotel setup task handoff", () => {
       steps: [{ section: "creator_profile" }],
     });
     expect(hotelTaskFlow("creator_offer")).toMatchObject({
+      title: "Prepare your collaboration offer",
       ensureCover: false,
       submitPublicProfile: false,
       submitMarketplaceProfile: false,

@@ -302,21 +302,24 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
     await page.getByRole("button", { name: "Save and continue" }).click();
 
+    await expect(page.getByRole("heading", { name: "Set up your hotel", level: 1 })).toBeVisible();
+    const marketplaceSteps = page.getByRole("list", { name: "Hotel setup steps" });
+    await expect(marketplaceSteps.getByRole("listitem")).toHaveCount(5);
+    await expect(marketplaceSteps).toContainText("Create your public hotel profile");
+    await expect(marketplaceSteps).toContainText("Introduce your hotel to creators");
+    await expect(marketplaceSteps).toContainText("Prepare your collaboration offer");
+    await expect(marketplaceSteps).not.toContainText("Set up rooms, rates, and availability");
+    const review = page.locator('section[aria-labelledby="setup-review-title"]');
+    await expect(review).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "Set up your Vayada tools", level: 1 }),
-    ).toBeVisible();
+      review.locator("dt", { hasText: /^Creator Marketplace$/ }).locator("xpath=../.."),
+    ).toContainText("Ready");
     await expect(
-      page.getByRole("heading", { name: "Create your public hotel profile" }),
-    ).toBeVisible();
+      review.locator("dt", { hasText: /^Hotel operations$/ }).locator("xpath=../.."),
+    ).toContainText("Not selected");
     await expect(
-      page.getByRole("heading", { name: "Introduce your hotel to creators" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "Prepare your collaboration offer" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
-    ).toHaveCount(0);
+      review.locator("dt", { hasText: /^Direct booking$/ }).locator("xpath=../.."),
+    ).toContainText("Not selected");
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
@@ -334,22 +337,20 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Set up your Vayada tools" }),
-    ).toBeVisible();
-    await expect(page.getByText("1 of 8 setup tasks complete")).toBeVisible();
-    await expect(page.getByText("Hotel Operations", { exact: true })).toBeVisible();
-    await expect(page.getByText("Creator Marketplace", { exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "Review guest settings and policies" }),
-    ).toBeVisible();
-    await expect(page.getByText("Introduce your hotel to creators")).toBeVisible();
-    await expect(page.getByText("Prepare your collaboration offer")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Continue recommended step" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Open task" })).toHaveCount(6);
+    await expect(page.getByRole("heading", { level: 1, name: "Set up your hotel" })).toBeVisible();
+    await expect(page.getByText("1 of 8 tasks done")).toBeVisible();
+    await expect(page.getByText("Hotel Operations", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Creator Marketplace", { exact: true }).first()).toBeVisible();
+    const setupSteps = page.getByRole("list", { name: "Hotel setup steps" });
+    const orderedSteps = setupSteps.getByRole("listitem");
+    await expect(orderedSteps).toHaveCount(9);
+    await expect(orderedSteps.nth(1)).toContainText("Create your public hotel profile");
+    await expect(orderedSteps.nth(2)).toContainText("Introduce your hotel to creators");
+    await expect(orderedSteps.nth(3)).toContainText("Prepare your collaboration offer");
+    await expect(orderedSteps.nth(4)).toContainText("Set up rooms, rates, and availability");
+    await expect(orderedSteps.nth(5)).toContainText("Review guest settings and policies");
+    await expect(page.getByRole("button", { name: "Continue setup" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open task" })).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Hotel Name" })).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Website" })).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Phone" })).toHaveCount(0);
@@ -359,13 +360,224 @@ test.describe("marketplace-web shared setup activation", () => {
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       ),
     ).toBe(true);
+    const currentStepBox = await page
+      .locator('section[aria-labelledby="current-setup-step-title"]')
+      .boundingBox();
+    const roadmapBox = await setupSteps.boundingBox();
+    expect(currentStepBox?.y).toBeLessThan(roadmapBox?.y ?? Number.POSITIVE_INFINITY);
+  });
+
+  test("lets the owner switch to an independent Operations task", async ({ page, baseURL }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus());
+
+    await page.goto(setupUrl(baseURL));
+
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await expect(
+      currentStep.getByRole("heading", { name: "Create your public hotel profile" }),
+    ).toBeVisible();
+
+    const setupSteps = page.getByRole("list", { name: "Hotel setup steps" });
+    await setupSteps.getByRole("button", { name: /Set up rooms, rates, and availability/ }).click();
+
+    await expect(
+      currentStep.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
+    ).toBeVisible();
+    await expect(currentStep.getByRole("button", { name: "Continue setup" })).toBeEnabled();
+  });
+
+  test("shows only Hotel Operations steps when Marketplace is not selected", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, operationsOnlyStatus());
+
+    await page.goto(setupUrl(baseURL));
+
+    const setupSteps = page.getByRole("list", { name: "Hotel setup steps" });
+    await expect(setupSteps.getByRole("listitem")).toHaveCount(6);
+    await expect(setupSteps).toContainText("Set up rooms, rates, and availability");
+    await expect(setupSteps).toContainText("Review guest settings and policies");
+    await expect(setupSteps).not.toContainText("Create your public hotel profile");
+    await expect(setupSteps).not.toContainText("Introduce your hotel to creators");
+    await expect(setupSteps).not.toContainText("Prepare your collaboration offer");
+  });
+
+  for (const returnCase of [
+    {
+      source: "Booking",
+      entryProduct: "pms",
+      returnProduct: "booking",
+      returnTo: "/settings?section=booking",
+      requestedProductCanOpen: true,
+    },
+    {
+      source: "PMS",
+      entryProduct: "marketplace",
+      returnProduct: "pms",
+      returnTo: "/reservations?view=arrivals",
+      requestedProductCanOpen: false,
+    },
+  ] as const) {
+    test(`exits to the exact ${returnCase.source} path independently of the requested product`, async ({
+      page,
+      baseURL,
+    }) => {
+      await primeBrowserState(page, true);
+      await mockAuthSession(page);
+      await mockSharedSetupStatus(
+        page,
+        operationsOnlyStatus(returnCase.entryProduct, returnCase.requestedProductCanOpen),
+      );
+
+      const expectedReturnUrl = new URL(
+        returnCase.returnTo,
+        productAppOrigin(returnCase.returnProduct),
+      ).toString();
+      await page.route(/\/__before-canonical-setup$/, (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: "<!doctype html><title>Before setup</title><h1>Before setup</h1>",
+        }),
+      );
+      await page.route(
+        (url) => url.toString() === expectedReturnUrl,
+        (route) =>
+          route.fulfill({
+            contentType: "text/html",
+            body: `<!doctype html><title>${returnCase.source}</title><h1>${returnCase.source} return</h1>`,
+          }),
+      );
+
+      await page.goto("/__before-canonical-setup");
+      await page.goto(
+        productSetupUrl(baseURL, {
+          entryProduct: returnCase.entryProduct,
+          returnProduct: returnCase.returnProduct,
+          returnTo: returnCase.returnTo,
+        }),
+      );
+      if (returnCase.requestedProductCanOpen) {
+        await expect(page.getByRole("button", { name: "Open PMS" })).toBeVisible();
+      }
+      await page.getByRole("button", { name: "Exit setup" }).click();
+
+      await expect.poll(() => page.url()).toBe(expectedReturnUrl);
+      await expect(
+        page.getByRole("heading", { name: `${returnCase.source} return` }),
+      ).toBeVisible();
+      await page.goBack();
+      await expect(page.getByRole("heading", { name: "Before setup" })).toBeVisible();
+    });
+  }
+
+  test("keeps the source return context after a product task returns to the canonical wizard", async ({
+    page,
+    baseURL,
+  }) => {
+    test.skip(!baseURL, "Playwright base URL is required.");
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, operationsOnlyStatus("pms", true));
+
+    const taskUrl = new URL(`/handoff?code=${"U".repeat(43)}`, productAppOrigin("pms")).toString();
+    const propertySetupUrl = canonicalPropertySetupUrl(baseURL);
+    const bookingReturnUrl = new URL(
+      "/settings?section=booking",
+      productAppOrigin("booking"),
+    ).toString();
+    const handoffRequests: Array<Record<string, unknown>> = [];
+    await page.route(/\/api\/hotel-setup\/handoffs$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      handoffRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({
+        status: 201,
+        headers: corsHeaders(route),
+        json: {
+          launchUrl: taskUrl,
+          expiresAt: "2026-07-27T14:00:00.000Z",
+        },
+      });
+    });
+    await page.route(taskUrl, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>PMS setup task</title><h1>PMS setup task</h1>",
+      }),
+    );
+    await page.route(
+      (url) => url.toString() === bookingReturnUrl,
+      (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: "<!doctype html><title>Booking</title><h1>Booking return</h1>",
+        }),
+    );
+
+    await page.goto(
+      productSetupUrl(baseURL, {
+        entryProduct: "pms",
+        returnProduct: "booking",
+        returnTo: "/settings?section=booking",
+      }),
+    );
+    await page.getByRole("button", { name: "Continue setup" }).click();
+    await expect(page.getByRole("heading", { name: "PMS setup task" })).toBeVisible();
+
+    await page.evaluate((returnUrl) => window.location.replace(returnUrl), propertySetupUrl);
+    await expect
+      .poll(() => {
+        const url = new URL(page.url());
+        return {
+          pathname: url.pathname,
+          propertyId: url.searchParams.get("propertyId"),
+          entryProduct: url.searchParams.get("entryProduct"),
+          returnProduct: url.searchParams.get("returnProduct"),
+          returnTo: url.searchParams.get("returnTo"),
+        };
+      })
+      .toEqual({
+        pathname: "/setup",
+        propertyId,
+        entryProduct: "pms",
+        returnProduct: "booking",
+        returnTo: "/settings?section=booking",
+      });
+
+    await page.getByRole("button", { name: "Exit setup" }).click();
+    await expect.poll(() => page.url()).toBe(bookingReturnUrl);
+    expect(handoffRequests).toEqual([
+      {
+        propertyId,
+        taskId: "rooms_rates_availability",
+        planRevision: "e2e-plan-1",
+      },
+    ]);
   });
 
   test("hands Booking and PMS tasks off with the selected property", async ({ page, baseURL }) => {
     test.skip(!baseURL, "Playwright base URL is required.");
     await primeBrowserState(page, true);
     await mockAuthSession(page);
-    await mockSharedSetupStatus(page, sharedRoadmapStatus());
+    let recommendedTaskId: SetupTaskId = "guest_settings_policies";
+    await page.route(/\/api\/hotel-setup\/status/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: sharedRoadmapStatus(recommendedTaskId),
+      });
+    });
     const handoffRequests: Array<Record<string, unknown>> = [];
     await page.route(/\/api\/hotel-setup\/handoffs$/, async (route) => {
       if (route.request().method() === "OPTIONS") {
@@ -393,11 +605,10 @@ test.describe("marketplace-web shared setup activation", () => {
     );
 
     await page.goto(setupUrl(baseURL));
-    await page
-      .getByRole("article")
-      .filter({ has: page.getByRole("heading", { name: "Review guest settings and policies" }) })
-      .getByRole("button", { name: "Open task" })
-      .click();
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Review guest settings and policies" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Continue setup" }).click();
 
     await expect.poll(() => new URL(page.url()).hostname).toContain("admin.booking");
     const bookingHandoffUrl = new URL(page.url());
@@ -405,12 +616,12 @@ test.describe("marketplace-web shared setup activation", () => {
     expect([...bookingHandoffUrl.searchParams.keys()]).toEqual(["code"]);
     expect(bookingHandoffUrl.hash).toBe("");
 
+    recommendedTaskId = "rooms_rates_availability";
     await page.goto(setupUrl(baseURL));
-    await page
-      .getByRole("article")
-      .filter({ has: page.getByRole("heading", { name: "Set up rooms, rates, and availability" }) })
-      .getByRole("button", { name: "Open task" })
-      .click();
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Set up rooms, rates, and availability" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Continue setup" }).click();
 
     await expect.poll(() => new URL(page.url()).hostname).toMatch(/^pms\./);
     const pmsHandoffUrl = new URL(page.url());
@@ -440,7 +651,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await mockMarketplaceTaskHandoff(page, baseURL, "creator_profile");
 
     await page.goto(setupUrl(baseURL));
-    await page.getByRole("button", { name: "Continue recommended step" }).click();
+    await page.getByRole("button", { name: "Continue setup" }).click();
 
     await expectMarketplaceActivationTask(page, 1, "creator_profile");
     await expect(
@@ -459,6 +670,12 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByLabel("Offer title", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Hotel location", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Property type", { exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Save creator profile" }).click();
+    await expect.poll(() => new URL(page.url()).pathname).toBe("/setup");
+    const returnedToSetup = new URL(page.url());
+    expect([...returnedToSetup.searchParams.keys()]).toEqual(["propertyId"]);
+    expect(returnedToSetup.searchParams.get("propertyId")).toBe(propertyId);
   });
 
   test("keeps Marketplace pages accessible while creator setup tasks remain", async ({
@@ -621,15 +838,18 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByText("Prepare your collaboration offer")).toBeVisible();
-    const continueSetup = page.getByRole("button", { name: "Continue recommended step" });
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Prepare your collaboration offer" }),
+    ).toBeVisible();
+    const continueSetup = page.getByRole("button", { name: "Continue setup" });
     await expect(continueSetup).toBeEnabled();
     await continueSetup.click();
 
     await expectMarketplaceActivationTask(page, 3, "creator_offer");
     await expect(
-      page.getByRole("heading", { level: 1, name: "Describe your offer" }),
+      page.getByRole("heading", { level: 1, name: "Prepare your collaboration offer" }),
     ).toBeVisible();
+    await expect(page.getByTestId("marketplace-task-substep")).toHaveText("Describe your offer.");
     await expect(page.getByRole("heading", { name: "Offer details" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Offerings" })).toHaveCount(0);
     await expect(page.getByText("Your collaboration offer is already saved")).toHaveCount(0);
@@ -658,9 +878,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await continueButton.click();
 
     await expect(page.getByText("Step 2 of 3", { exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("heading", { level: 1, name: "What are you offering?" }),
-    ).toBeVisible();
+    await expect(page.getByTestId("marketplace-task-substep")).toHaveText("What are you offering?");
     await expect(page.getByRole("heading", { name: "Offerings" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Offer details" })).toHaveCount(0);
     await expect(continueButton).toBeDisabled();
@@ -671,9 +889,9 @@ test.describe("marketplace-web shared setup activation", () => {
     await continueButton.click();
 
     await expect(page.getByText("Step 3 of 3", { exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Who are you looking for?" }),
-    ).toBeVisible();
+    await expect(page.getByTestId("marketplace-task-substep")).toHaveText(
+      "Who are you looking for?",
+    );
     await expect(page.getByRole("heading", { name: "Looking For", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Offerings" })).toHaveCount(0);
     const completeSetup = page.getByRole("button", { name: "Save collaboration offer" });
@@ -710,6 +928,49 @@ test.describe("marketplace-web shared setup activation", () => {
     });
     await expect.poll(() => uploadFinalized).toBe(true);
     await expect.poll(() => updatedOfferPayload).not.toBeNull();
+    await expect.poll(() => new URL(page.url()).pathname).toBe("/setup");
+    expect([...new URL(page.url()).searchParams.keys()]).toEqual(["propertyId"]);
+  });
+
+  test("saves an unfinished collaboration draft before exiting to the setup hub", async ({
+    page,
+    baseURL,
+  }) => {
+    test.skip(!baseURL, "Playwright base URL is required.");
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedSetupStatus(["marketplaceOffer"]));
+    await mockMarketplaceProfileApis(page, []);
+
+    await page.goto(profileActivationUrl(baseURL));
+    await expectMarketplaceActivationTask(page, 3, "creator_offer");
+    await expect(page.getByTestId("marketplace-offer-draft-note")).toContainText(
+      "you will need to select them again",
+    );
+    await page.getByLabel("Offer title", { exact: true }).fill("Draft creator stay");
+    await page
+      .getByLabel(/Description/)
+      .fill("A draft collaboration stay that can be completed after returning.");
+
+    await page.getByRole("button", { name: "Save and exit" }).click();
+
+    await expect.poll(() => new URL(page.url()).pathname).toBe("/setup");
+    const returnedToSetup = new URL(page.url());
+    expect([...returnedToSetup.searchParams.keys()]).toEqual(["propertyId"]);
+    expect(returnedToSetup.searchParams.get("propertyId")).toBe(propertyId);
+    const savedDraft = await page.evaluate((draftPropertyId) => {
+      const value = localStorage.getItem(`vayada_hotel_marketplace_draft:${draftPropertyId}`);
+      return value ? JSON.parse(value) : null;
+    }, propertyId);
+    expect(savedDraft).toMatchObject({
+      currentStep: 1,
+      listings: [
+        {
+          name: "Draft creator stay",
+          description: "A draft collaboration stay that can be completed after returning.",
+        },
+      ],
+    });
   });
 
   test("restores a hotel offer draft after a reload and asks only for local photos again", async ({
@@ -790,7 +1051,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await mockMarketplaceTaskHandoff(page, baseURL, "creator_offer");
 
     await page.goto(setupUrl(baseURL));
-    await page.getByRole("button", { name: "Continue recommended step" }).click();
+    await page.getByRole("button", { name: "Continue setup" }).click();
 
     await expectMarketplaceActivationTask(page, 3, "creator_offer");
     await expect(page.getByLabel("Offer title", { exact: true })).toBeVisible();
@@ -813,11 +1074,7 @@ test.describe("marketplace-web shared setup activation", () => {
         exact: false,
       }),
     ).toBeVisible();
-    const taskCard = page
-      .getByRole("article")
-      .filter({ has: page.getByRole("heading", { name: "Prepare your collaboration offer" }) });
-    await expect(taskCard.getByText("Permission required", { exact: true })).toBeVisible();
-    await expect(taskCard.getByRole("button")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Continue setup" })).toHaveCount(0);
   });
 
   test("blocks a direct suspended activation URL before loading Marketplace profile data", async ({
@@ -877,10 +1134,11 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByText("Waiting", { exact: true })).toBeVisible();
+    const review = page.locator('section[aria-labelledby="setup-review-title"]');
     await expect(
-      page.getByText("Another team or an automated process", { exact: false }),
-    ).toBeVisible();
+      review.locator("dt", { hasText: /^Creator Marketplace$/ }).locator("xpath=../.."),
+    ).toContainText("Pending");
+    await expect(page.getByRole("button", { name: "Continue setup" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Open Creator Marketplace" })).toBeEnabled();
   });
 });
@@ -896,8 +1154,14 @@ async function expectMarketplaceActivationTask(
   expect(taskUrl.searchParams.get("taskId")).toBe(taskId);
   expect(taskUrl.searchParams.get("destinationRouteKey")).toBe(`marketplace.${taskId}`);
   expect(taskUrl.searchParams.has("propertyId")).toBe(false);
-  await expect(page.getByText("Creator Marketplace Setup", { exact: true })).toBeVisible();
-  await expect(page.getByText(`Step 1 of ${totalSteps}`, { exact: true })).toBeVisible();
+  await expect(page.getByText("Hotel setup", { exact: true })).toBeVisible();
+  if (totalSteps > 1) {
+    await expect(page.getByText(`Step 1 of ${totalSteps}`, { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save and exit" })).toBeVisible();
+  } else {
+    await expect(page.getByText("Step 1 of 1", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Exit setup" })).toBeVisible();
+  }
   for (const field of ["Hotel Name", "Creator-facing location", "Location", "Website", "Phone"]) {
     await expect(page.getByLabel(field, { exact: true })).toHaveCount(0);
   }
@@ -992,17 +1256,62 @@ async function selectExactGoogleAddress(autocomplete: Locator) {
 }
 
 function setupUrl(baseURL: string | undefined) {
-  const path = "/setup?entryProduct=marketplace&returnTo=/marketplace";
+  const path = "/setup?entryProduct=marketplace&returnProduct=marketplace&returnTo=/marketplace";
   if (!baseURL) return path;
 
   const url = new URL(baseURL);
   if (url.hostname === "127.0.0.1" && url.port === "3000") {
     url.hostname = "localhost";
     url.pathname = "/setup";
-    url.search = "?entryProduct=marketplace&returnTo=/marketplace";
+    url.search = "?entryProduct=marketplace&returnProduct=marketplace&returnTo=/marketplace";
     return url.toString();
   }
   return path;
+}
+
+function productSetupUrl(
+  baseURL: string | undefined,
+  input: {
+    entryProduct: "booking" | "marketplace" | "pms";
+    returnProduct: "booking" | "marketplace" | "pms";
+    returnTo: string;
+  },
+): string {
+  const query = new URLSearchParams(input);
+  if (!baseURL) return `/setup?${query.toString()}`;
+
+  const url = new URL(baseURL);
+  if (url.hostname === "127.0.0.1" && url.port === "3000") {
+    url.hostname = "localhost";
+  }
+  url.pathname = "/setup";
+  url.search = query.toString();
+  return url.toString();
+}
+
+function productAppOrigin(product: "booking" | "pms"): string {
+  const startServers = process.env.CI === "true" || process.env.E2E_START_SERVERS === "1";
+  if (product === "booking") {
+    return (
+      process.env.E2E_BOOKING_ADMIN_BASE_URL ||
+      (startServers ? "http://admin.booking.localhost:3003" : "https://admin.booking.localhost")
+    );
+  }
+  return (
+    process.env.E2E_PMS_BASE_URL ||
+    (startServers ? "http://pms.localhost:3004" : "https://pms.localhost")
+  );
+}
+
+function canonicalPropertySetupUrl(baseURL: string): string {
+  const url = new URL(baseURL);
+  if (url.hostname === "127.0.0.1" && url.port === "3000") {
+    url.hostname = "localhost";
+  }
+  url.pathname = "/setup";
+  url.search = "";
+  url.searchParams.set("propertyId", propertyId);
+  return url.toString();
 }
 
 function profileActivationUrl(baseURL: string | undefined) {
@@ -1438,7 +1747,9 @@ function sharedSetupStatus(
   });
 }
 
-function sharedRoadmapStatus(): AdaptiveHotelSetupStatus {
+function sharedRoadmapStatus(
+  recommendedTaskId: SetupTaskId = "public_profile",
+): AdaptiveHotelSetupStatus {
   return createAdaptiveHotelSetupStatusMock({
     entryProduct: "marketplace",
     organizationId: "11111111-1111-4111-8111-111111111111",
@@ -1467,13 +1778,51 @@ function sharedRoadmapStatus(): AdaptiveHotelSetupStatus {
         },
       ]),
     ),
-    recommendedTaskId: "public_profile",
+    recommendedTaskId,
     entryDecision: {
       propertyId,
       decision: "enter",
       destinationRouteKey: "marketplace.workspace",
       reasonCode: null,
     },
+  });
+}
+
+function operationsOnlyStatus(
+  entryProduct: "booking" | "marketplace" | "pms" = "marketplace",
+  requestedProductCanOpen = false,
+): AdaptiveHotelSetupStatus {
+  return createAdaptiveHotelSetupStatusMock({
+    entryProduct,
+    organizationId: "11111111-1111-4111-8111-111111111111",
+    organizationDisplayName: "Alpenrose Hotel Group",
+    selectedTracks: ["hotel_operations"],
+    propertyId,
+    publicId: "alpenrose-munich",
+    propertyDisplayName: "Alpenrose Munich",
+    locationSummary: "Munich, DE",
+    taskOverrides: {
+      rooms_rates_availability: {
+        ownerProgress: "not_started",
+        readiness: "actionable",
+        actionableBy: "operator",
+        reasonCodes: ["rooms_rates_availability_required"],
+      },
+    },
+    recommendedTaskId: "rooms_rates_availability",
+    entryDecision: requestedProductCanOpen
+      ? {
+          propertyId,
+          decision: "enter",
+          destinationRouteKey: `${entryProduct}.workspace`,
+          reasonCode: null,
+        }
+      : {
+          propertyId,
+          decision: "setup_required",
+          destinationRouteKey: "hotel_setup",
+          reasonCode: "track_not_selected",
+        },
   });
 }
 

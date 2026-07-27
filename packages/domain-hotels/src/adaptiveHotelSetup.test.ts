@@ -5,9 +5,11 @@ import {
   SETUP_TRACK_COMPONENT_PRODUCTS,
   SETUP_TRACKS,
   isSetupTrack,
+  isSetupTaskLaunchable,
   parseAdaptiveHotelSetupStatus,
   parseUpdateTracksRequest,
   type AdaptiveHotelSetupStatus,
+  type SetupTask,
   type UpdateTracksRequest,
 } from "./adaptiveHotelSetup.js";
 
@@ -345,5 +347,140 @@ describe("adaptive hotel setup contracts", () => {
     });
     value.setupPlan.ownerProgress.total = 6;
     expect(parseAdaptiveHotelSetupStatus(value)).toBeNull();
+  });
+
+  it("accepts a rejected Marketplace task as a correction recommendation", () => {
+    const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const evaluatedAt = "2026-07-26T12:00:00.000Z";
+    const task = (
+      input: Pick<
+        SetupTask,
+        | "taskId"
+        | "track"
+        | "requirementOwnerDomain"
+        | "destinationRouteKey"
+        | "ownerProgress"
+        | "readiness"
+        | "actionableBy"
+        | "reasonCodes"
+      >,
+    ): SetupTask => ({
+      ...input,
+      propertyId,
+      callerCapability: "allowed",
+      sourceRevision: `${input.taskId}-r1`,
+      freshness: "fresh",
+      evaluatedAt,
+    });
+    const status: AdaptiveHotelSetupStatus = {
+      contractVersion: ADAPTIVE_HOTEL_SETUP_CONTRACT_VERSION,
+      organization: {
+        organizationId: "11111111-1111-4111-8111-111111111111",
+        displayName: "Alpenrose Hotel Group",
+        websiteUrl: null,
+        selectedTracks: ["creator_marketplace"],
+        trackRevision: 1,
+        canManageTracks: true,
+        tracks: [
+          {
+            track: "hotel_operations",
+            provisioning: "not_selected",
+            components: [
+              { product: "pms", access: "absent" },
+              { product: "booking", access: "absent" },
+            ],
+            allowedActions: ["add"],
+          },
+          {
+            track: "creator_marketplace",
+            provisioning: "active",
+            components: [{ product: "marketplace", access: "active" }],
+            allowedActions: ["manage_service"],
+          },
+        ],
+      },
+      propertySelection: {
+        state: "single_property",
+        selectedPropertyId: propertyId,
+        availableProperties: [
+          {
+            propertyId,
+            publicId: "hotel-alpenrose",
+            displayName: "Hotel Alpenrose",
+            locationSummary: "Munich, DE",
+          },
+        ],
+      },
+      entryDecision: null,
+      setupPlan: {
+        propertyId,
+        planRevision: "plan.v2:rejected-correction",
+        tasks: [
+          task({
+            taskId: "shared_identity",
+            track: "shared",
+            requirementOwnerDomain: "hotel_catalog",
+            destinationRouteKey: "hotel_catalog.shared_identity",
+            ownerProgress: "owner_complete",
+            readiness: "complete",
+            actionableBy: null,
+            reasonCodes: [],
+          }),
+          task({
+            taskId: "public_profile",
+            track: "creator_marketplace",
+            requirementOwnerDomain: "hotel_catalog",
+            destinationRouteKey: "hotel_catalog.public_profile",
+            ownerProgress: "owner_complete",
+            readiness: "complete",
+            actionableBy: null,
+            reasonCodes: [],
+          }),
+          task({
+            taskId: "creator_profile",
+            track: "creator_marketplace",
+            requirementOwnerDomain: "marketplace",
+            destinationRouteKey: "marketplace.creator_profile",
+            ownerProgress: "in_progress",
+            readiness: "rejected",
+            actionableBy: "owner",
+            reasonCodes: ["creator_profile_rejected"],
+          }),
+          task({
+            taskId: "creator_offer",
+            track: "creator_marketplace",
+            requirementOwnerDomain: "marketplace",
+            destinationRouteKey: "marketplace.creator_offer",
+            ownerProgress: "not_started",
+            readiness: "blocked",
+            actionableBy: null,
+            reasonCodes: ["creator_profile_incomplete"],
+          }),
+        ],
+        recommendedTaskId: "creator_profile",
+        ownerProgress: { complete: 2, total: 4 },
+        launchReadiness: {
+          operationsUse: "not_applicable",
+          directBookingPublish: "not_applicable",
+          marketplacePublish: "blocked",
+        },
+      },
+      updatedAt: evaluatedAt,
+    };
+
+    expect(isSetupTaskLaunchable(status.setupPlan!.tasks[2])).toBe(true);
+    expect(parseAdaptiveHotelSetupStatus(status)).toEqual(status);
+
+    const invalid = structuredClone(status);
+    const sharedTask = invalid.setupPlan!.tasks[0]!;
+    sharedTask.ownerProgress = "in_progress";
+    sharedTask.readiness = "rejected";
+    sharedTask.actionableBy = "operator";
+    sharedTask.reasonCodes = ["shared_identity_rejected"];
+    invalid.setupPlan!.ownerProgress.complete = 1;
+    invalid.setupPlan!.recommendedTaskId = "shared_identity";
+
+    expect(isSetupTaskLaunchable(sharedTask)).toBe(false);
+    expect(parseAdaptiveHotelSetupStatus(invalid)).toBeNull();
   });
 });

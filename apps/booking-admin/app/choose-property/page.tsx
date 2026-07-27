@@ -17,7 +17,7 @@ import { useTranslation } from "@/lib/i18n";
  * drives target route resource selection on subsequent API calls.
  *
  * Edge cases handled inline:
- *   - 0 hotels → send to /setup (onboarding not yet started)
+ *   - 0 hotels → send through /setup to the canonical Marketplace wizard
  *   - 1 hotel  → auto-select and bounce to /dashboard (no modal spam)
  *   - 2+ hotels → render the picker
  *   - Not logged in → /login
@@ -53,7 +53,7 @@ export default function ChoosePropertyPage() {
           if (cancelled) return;
           if (decision.action === "redirect_to_setup") {
             localStorage.removeItem("selectedHotelId");
-            router.replace(decision.redirectPath);
+            window.location.replace(decision.redirectPath);
           } else {
             localStorage.setItem("selectedHotelId", hotel.id);
             router.replace("/dashboard");
@@ -80,7 +80,7 @@ export default function ChoosePropertyPage() {
       const decision = await resolveBookingSetupGuard("/dashboard");
       if (decision.action === "redirect_to_setup") {
         localStorage.removeItem("selectedHotelId");
-        router.replace(decision.redirectPath);
+        window.location.replace(decision.redirectPath);
         return;
       }
       localStorage.setItem("selectedHotelId", hotel.id);
@@ -180,7 +180,7 @@ export default function ChoosePropertyPage() {
               try {
                 localStorage.removeItem("selectedHotelId");
               } catch {}
-              router.push("/setup?mode=add");
+              window.location.replace("/setup?mode=add");
             }}
             className="w-full flex items-center justify-center gap-2 text-[13px] text-primary-600 hover:text-primary-700 font-medium py-2"
           >

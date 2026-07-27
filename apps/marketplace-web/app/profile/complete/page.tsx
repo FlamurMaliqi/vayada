@@ -162,6 +162,8 @@ export default function ProfileCompletePage() {
   const hotelSteps = activeHotelTaskFlow.steps.map(({ title }) => title);
   const activeHotelSection =
     activeHotelTaskFlow.steps[currentStep - 1]?.section ?? activeHotelTaskFlow.steps[0]!.section;
+  const hotelSetupExitLabel =
+    activeHotelTaskFlow.submitOffers && hotelDraftReady ? "Save and exit" : "Exit setup";
   const showExistingOfferCoverPicker = activeHotelTaskFlow.ensureCover && !canonicalHotelCoverUrl;
   const requiresExistingOfferCoverSelection =
     showExistingOfferCoverPicker && !existingMarketplaceOfferCoverUrl;
@@ -852,6 +854,26 @@ export default function ProfileCompletePage() {
     }
   };
 
+  const handleHotelSetupExit = () => {
+    if (!hotelTaskHandoff) return;
+
+    if (activeHotelTaskFlow.submitOffers && hotelDraftReady && marketplacePropertyIdRef.current) {
+      try {
+        saveHotelMarketplaceDraft(
+          localStorage,
+          marketplacePropertyIdRef.current,
+          createHotelMarketplaceDraft(hotelForm.form, hotelForm.listings, currentStep),
+        );
+      } catch (draftError) {
+        console.warn("Could not save the Marketplace setup draft", draftError);
+        setError("We couldn't save your Marketplace draft. Please try again.");
+        return;
+      }
+    }
+
+    window.location.replace(hotelTaskHandoff.returnUrl);
+  };
+
   const canProceedToNextStep = (): boolean => {
     if (userType === "creator") {
       if (currentStep === 1) return creatorForm.canProceedCreatorType();
@@ -1163,7 +1185,7 @@ export default function ProfileCompletePage() {
       if (activeHotelTaskFlow.submitOffers) {
         clearHotelMarketplaceDraft(localStorage, propertyId);
       }
-      window.location.href = hotelTaskHandoff.returnUrl;
+      window.location.replace(hotelTaskHandoff.returnUrl);
     } catch (err) {
       if (err instanceof HotelCoverPhotoRequiredError) {
         setExistingOfferCoverPicker((current) => ({
@@ -1329,10 +1351,13 @@ export default function ProfileCompletePage() {
     if (userType === "hotel") {
       return (
         <HotelMarketplaceSetupLayout
+          taskTitle={activeHotelTaskFlow.title}
           steps={hotelSteps}
           currentStep={currentStep}
           activeSection={activeHotelSection}
           returnUrl={hotelTaskHandoff?.returnUrl}
+          exitLabel={hotelSetupExitLabel}
+          onExit={handleHotelSetupExit}
         >
           <div
             role="alert"
@@ -1397,11 +1422,24 @@ export default function ProfileCompletePage() {
   if (userType === "hotel") {
     return (
       <HotelMarketplaceSetupLayout
+        taskTitle={activeHotelTaskFlow.title}
         steps={hotelSteps}
         currentStep={currentStep}
         activeSection={activeHotelSection}
         returnUrl={hotelTaskHandoff?.returnUrl}
+        exitLabel={hotelSetupExitLabel}
+        exitDisabled={submitting}
+        onExit={handleHotelSetupExit}
       >
+        {activeHotelTaskFlow.submitOffers && hotelDraftReady && (
+          <p
+            data-testid="marketplace-offer-draft-note"
+            className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800"
+          >
+            Save and exit keeps your text and selections in this browser. Photos stay on this
+            device, so you will need to select them again when you return.
+          </p>
+        )}
         <HotelProfileForm
           form={hotelForm.form}
           listings={hotelForm.listings}
@@ -1523,20 +1561,33 @@ export default function ProfileCompletePage() {
 }
 
 function HotelMarketplaceSetupLayout({
+  taskTitle,
   steps,
   currentStep,
   activeSection,
   returnUrl,
+  exitLabel,
+  exitDisabled = false,
+  onExit,
   children,
 }: {
+  taskTitle: string;
   steps: string[];
   currentStep: number;
   activeSection: import("./hotelTaskFlow").HotelTaskSection;
   returnUrl?: string;
+  exitLabel: "Save and exit" | "Exit setup";
+  exitDisabled?: boolean;
+  onExit: () => void;
   children: React.ReactNode;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const currentTitle = steps[currentStep - 1] ?? steps[0];
+  const currentSubstepTitle = steps[currentStep - 1] ?? steps[0];
+  const currentSubstepLead =
+    currentSubstepTitle && /[.!?]$/.test(currentSubstepTitle)
+      ? currentSubstepTitle
+      : `${currentSubstepTitle}.`;
+  const hasTaskSubsteps = steps.length > 1;
   const currentDescription =
     activeSection === "public_profile"
       ? "Add the description, locality visibility, and cover used across Vayada’s public surfaces."
@@ -1560,44 +1611,57 @@ function HotelMarketplaceSetupLayout({
             <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary-600 text-white">
               <CheckIcon className="h-4 w-4" aria-hidden="true" />
             </span>
-            <span className="text-[15px] font-semibold text-gray-900">
-              Creator Marketplace Setup
-            </span>
+            <span className="text-[15px] font-semibold text-gray-900">Hotel setup</span>
           </div>
           <div className="flex items-center gap-4">
             {returnUrl && (
-              <a
-                href={returnUrl}
-                className="text-xs font-semibold text-primary-700 hover:text-primary-800"
+              <button
+                type="button"
+                onClick={onExit}
+                disabled={exitDisabled}
+                className="text-xs font-semibold text-primary-700 hover:text-primary-800 disabled:cursor-not-allowed disabled:text-gray-400"
               >
-                Back to setup plan
-              </a>
+                {exitLabel}
+              </button>
             )}
-            <span className="whitespace-nowrap text-xs text-gray-500 sm:text-[13px]">
-              Step {currentStep} of {steps.length}
-            </span>
+            {hasTaskSubsteps && (
+              <span className="whitespace-nowrap text-xs text-gray-500 sm:text-[13px]">
+                Step {currentStep} of {steps.length}
+              </span>
+            )}
           </div>
         </div>
       </header>
 
-      <div className="h-[3px] bg-gray-100" aria-hidden="true">
-        <div
-          className="h-full bg-primary-600 transition-all duration-300"
-          style={{ width: `${(currentStep / steps.length) * 100}%` }}
-        />
-      </div>
+      {hasTaskSubsteps && (
+        <div className="h-[3px] bg-gray-100" aria-hidden="true">
+          <div
+            className="h-full bg-primary-600 transition-all duration-300"
+            style={{ width: `${(currentStep / steps.length) * 100}%` }}
+          />
+        </div>
+      )}
 
       <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-        <HotelMarketplaceStepIndicators steps={steps} currentStep={currentStep} />
+        {hasTaskSubsteps && (
+          <HotelMarketplaceStepIndicators steps={steps} currentStep={currentStep} />
+        )}
         <header className="mx-auto max-w-2xl text-center">
           <h1
             ref={headingRef}
             tabIndex={-1}
             className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
           >
-            {currentTitle}
+            {taskTitle}
           </h1>
-          <p className="mt-2 text-sm text-gray-500">{currentDescription}</p>
+          <p className="mt-2 text-sm text-gray-500">
+            {hasTaskSubsteps && (
+              <span data-testid="marketplace-task-substep" className="font-medium text-gray-700">
+                {currentSubstepLead}{" "}
+              </span>
+            )}
+            {currentDescription}
+          </p>
         </header>
         <div className="mx-auto mt-4 max-w-3xl">{children}</div>
       </div>

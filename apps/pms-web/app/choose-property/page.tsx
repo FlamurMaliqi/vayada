@@ -13,9 +13,6 @@ import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
 import { pmsSettingsService } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
 
-const BOOKING_ADMIN_URL =
-  process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
-
 /**
  * Post-login hotel picker for the PMS.
  *
@@ -24,8 +21,8 @@ const BOOKING_ADMIN_URL =
  * selection is persisted to localStorage.selectedHotelId. Typed PMS
  * operations use this as the path-scoped pms_property id.
  *
- * The "Add a new property" action opens the booking-admin setup wizard,
- * which is the canonical onboarding flow for both systems.
+ * The "Add a new property" action passes through the local setup alias
+ * to the canonical Marketplace wizard while retaining PMS as the return product.
  */
 export default function PmsChoosePropertyPage() {
   const { t } = useTranslation();
@@ -55,9 +52,11 @@ export default function PmsChoosePropertyPage() {
           storeSelectedPmsPropertyId(list[0].id);
           const decision = await resolvePmsSetupGuard("/dashboard");
           if (cancelled) return;
-          router.replace(
-            decision.action === "enter_product" ? "/dashboard" : decision.redirectPath,
-          );
+          if (decision.action === "redirect_to_setup") {
+            window.location.replace(decision.redirectPath);
+            return;
+          }
+          router.replace("/dashboard");
           return;
         }
         setHotels(list);
@@ -81,7 +80,11 @@ export default function PmsChoosePropertyPage() {
     storeSelectedPmsPropertyId(hotel.id);
     try {
       const decision = await resolvePmsSetupGuard("/dashboard");
-      router.replace(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
+      if (decision.action === "redirect_to_setup") {
+        window.location.replace(decision.redirectPath);
+        return;
+      }
+      router.replace("/dashboard");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("auth.chooseProperty.loadError"));
     }
@@ -189,7 +192,7 @@ export default function PmsChoosePropertyPage() {
           <button
             onClick={() => {
               clearStoredPmsPropertyId();
-              window.location.href = new URL("/setup?mode=add", BOOKING_ADMIN_URL).toString();
+              window.location.replace("/setup?mode=add");
             }}
             className="w-full flex items-center justify-center gap-2 text-[13px] text-primary-600 hover:text-primary-700 font-medium py-2"
           >

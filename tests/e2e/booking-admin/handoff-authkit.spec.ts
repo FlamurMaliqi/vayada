@@ -123,6 +123,63 @@ test.describe("booking-admin opaque AuthKit handoff", () => {
     expect(authRequests).toBe(0);
     expect(exchangeRequests).toBe(0);
   });
+
+  test("returns to the exact setup property after a post-exchange hotel lookup failure", async ({
+    page,
+  }) => {
+    await mockBookingAdminShellRoutes(page);
+    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
+    });
+    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      return route.fulfill({
+        status: 503,
+        headers: corsHeaders(route),
+        json: { code: "setup_status_unavailable" },
+      });
+    });
+
+    const exchangeRequests: unknown[] = [];
+    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      exchangeRequests.push(route.request().postDataJSON());
+      return route.fulfill({
+        headers: corsHeaders(route),
+        json: {
+          propertyId: BOOKING_ADMIN_PROPERTY_ID,
+          taskId: "guest_settings_policies",
+          issuedPlanRevision: "e2e-plan-1",
+          destinationRouteKey: "booking.guest_settings_policies",
+          returnUrl: marketplaceSetupReturnUrl(),
+        },
+      });
+    });
+    await page.route(/\/handoff-history-start$/, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Before handoff</title>",
+      }),
+    );
+    await page.route(marketplaceSetupReturnUrl(), (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Setup wizard</title>",
+      }),
+    );
+
+    await page.goto("/handoff-history-start");
+    await page.goto(`/handoff?code=${HANDOFF_CODE}`);
+
+    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
+    await page.getByRole("button", { name: "Return to setup" }).click();
+    await expect.poll(() => page.url()).toBe(marketplaceSetupReturnUrl());
+
+    await page.goBack();
+    await expect.poll(() => new URL(page.url()).pathname).toBe("/handoff-history-start");
+    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
+  });
 });
 
 function organizationSelectionResponse() {
