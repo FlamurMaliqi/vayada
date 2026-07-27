@@ -122,12 +122,11 @@ describe("hotel setup handoff routes", () => {
     fixture.setup.entitlements = [
       { product: "marketplace", key: "marketplace-hotel-profile", status: "active" },
     ];
-    fixture.setup.property.taskFacts.public_profile = taskFact("public_profile", true);
-    fixture.setup.property.taskFacts.creator_profile = {
-      ...taskFact("creator_profile"),
+    fixture.setup.property.taskFacts.public_profile = {
+      ...taskFact("public_profile"),
       ownerProgress: "in_progress",
       readiness: "rejected",
-      reasonCodes: ["creator_profile_rejected"],
+      reasonCodes: ["marketplace_profile_rejected"],
     };
 
     const status = await injectJson<AdaptiveHotelSetupStatus>(app, {
@@ -135,20 +134,16 @@ describe("hotel setup handoff routes", () => {
       url: `/api/hotel-setup/status?propertyId=${propertyId}`,
       headers: { authorization: "Bearer valid-token" },
     });
-    expect(status.body.setupPlan?.recommendedTaskId).toBe("creator_profile");
+    expect(status.body.setupPlan?.recommendedTaskId).toBe("public_profile");
     expect(
-      status.body.setupPlan?.tasks.find(({ taskId }) => taskId === "creator_profile"),
+      status.body.setupPlan?.tasks.find(({ taskId }) => taskId === "public_profile"),
     ).toMatchObject({
       readiness: "rejected",
-      reasonCodes: ["creator_profile_rejected"],
+      reasonCodes: ["marketplace_profile_rejected"],
       callerCapability: "allowed",
     });
 
-    const created = await createHandoff(
-      app,
-      status.body.setupPlan!.planRevision,
-      "creator_profile",
-    );
+    const created = await createHandoff(app, status.body.setupPlan!.planRevision, "public_profile");
     expect(created.statusCode).toBe(201);
     const launch = new URL(created.body.launchUrl);
     expect(launch.origin).toBe("https://marketplace.localhost:1355");
@@ -159,8 +154,8 @@ describe("hotel setup handoff routes", () => {
       statusCode: 200,
       body: {
         propertyId,
-        taskId: "creator_profile",
-        destinationRouteKey: "marketplace.creator_profile",
+        taskId: "public_profile",
+        destinationRouteKey: "hotel_catalog.public_profile",
       },
     });
   });
@@ -350,6 +345,20 @@ describe("hotel setup handoff routes", () => {
       statusCode: 422,
       body: { code: "invalid_handoff" },
     });
+    const legacyCreatorProfile = await injectJson<{ code: string }>(app, {
+      method: "POST",
+      url: "/api/hotel-setup/handoffs",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        propertyId,
+        taskId: "creator_profile",
+        planRevision,
+      },
+    });
+    expect(legacyCreatorProfile).toMatchObject({
+      statusCode: 422,
+      body: { code: "invalid_handoff" },
+    });
 
     const created = await createHandoff(app, planRevision);
     const code = new URL(created.body.launchUrl).searchParams.get("code")!;
@@ -470,7 +479,6 @@ function mutableSetup(): {
       taskFacts: {
         shared_identity: taskFact("shared_identity", true),
         public_profile: taskFact("public_profile"),
-        creator_profile: taskFact("creator_profile"),
         creator_offer: taskFact("creator_offer"),
         rooms_rates_availability: taskFact("rooms_rates_availability"),
         guest_settings_policies: taskFact("guest_settings_policies"),

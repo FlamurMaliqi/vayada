@@ -450,7 +450,7 @@ describe("hotel operations setup client", () => {
     ).toBe(false);
   });
 
-  it("uploads operations-only hero media once and reuses its URL for settings retries", async () => {
+  it("writes the minimum public description for Operations-only setup", async () => {
     const file = new File(["image"], "hotel.webp", { type: "image/webp" });
     mocks.getPropertyProfile.mockResolvedValue({
       propertyId: "property-1",
@@ -488,7 +488,7 @@ describe("hotel operations setup client", () => {
     );
     await hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {
       localityPublic: true,
-      shortDescription: "A small city hotel.",
+      publicDescription: "A small city hotel.",
       heroHeading: "Stay with us",
       heroSubtext: "Book directly for our best available rooms.",
       primaryColor: "#1E3EDB",
@@ -497,7 +497,7 @@ describe("hotel operations setup client", () => {
     });
     await hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {
       localityPublic: true,
-      shortDescription: "A small city hotel.",
+      publicDescription: "A small city hotel.",
       heroHeading: "Stay with us",
       heroSubtext: "Book directly for our best available rooms.",
       primaryColor: "#1E3EDB",
@@ -528,6 +528,37 @@ describe("hotel operations setup client", () => {
       "/api/booking/hotels/property-1/settings/design",
       expect.objectContaining({ heroImage: "https://cdn/hotel" }),
     );
+  });
+
+  it("does not read or write the canonical description for a both-track setup", async () => {
+    mocks.getPropertyProfile.mockResolvedValue({
+      propertyId: "property-1",
+      profileRevision: 8,
+      profile: {
+        displayName: "Hotel One",
+        location: { localityPublic: true },
+      },
+    });
+    mocks.patch.mockResolvedValue({});
+
+    await hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {
+      localityPublic: true,
+      heroHeading: "Stay with us",
+      heroSubtext: "Book directly for our best available rooms.",
+      primaryColor: "#1E3EDB",
+      fontPairing: "modern-minimalist",
+      heroImageUrl: "https://cdn/hotel",
+    });
+
+    expect(mocks.getPublicPropertyProfile).not.toHaveBeenCalled();
+    expect(mocks.updatePublicPropertyProfile).not.toHaveBeenCalled();
+    expect(mocks.patch).toHaveBeenCalledWith("/api/booking/hotels/property-1/settings/design", {
+      heroImage: "https://cdn/hotel",
+      heroHeading: "Stay with us",
+      heroSubtext: "Book directly for our best available rooms.",
+      primaryColor: "#1E3EDB",
+      fontPairing: "modern-minimalist",
+    });
   });
 
   it("requires the authoritative publication to be public, fresh, and complete", () => {

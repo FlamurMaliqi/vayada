@@ -94,6 +94,7 @@ export function parseMarketplaceHotelTaskHandoff(
   if (
     params.get("activation") !== "marketplace" ||
     !taskId ||
+    taskId === "creator_profile" ||
     TASK_DESTINATIONS[taskId] !== destinationRouteKey ||
     !planRevision
   ) {

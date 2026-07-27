@@ -44,12 +44,6 @@ const TASK_DEFINITIONS: Array<
     destinationRouteKey: "hotel_catalog.public_profile",
   },
   {
-    taskId: "creator_profile",
-    track: "creator_marketplace",
-    requirementOwnerDomain: "marketplace",
-    destinationRouteKey: "marketplace.creator_profile",
-  },
-  {
     taskId: "creator_offer",
     track: "creator_marketplace",
     requirementOwnerDomain: "marketplace",
@@ -131,7 +125,6 @@ export function createAdaptiveHotelSetupStatusMock(
     marketplacePublish: setupLaunchReadiness(selectedTracks, tasks, "creator_marketplace", [
       "shared_identity",
       "public_profile",
-      "creator_profile",
       "creator_offer",
     ]),
   } as const;

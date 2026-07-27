@@ -44,7 +44,6 @@ type DestinationRouteKey =
 const HANDOFF_DESTINATION_BY_ROUTE_KEY = {
   "hotel_catalog.shared_identity": "marketplace",
   "hotel_catalog.public_profile": "marketplace",
-  "marketplace.creator_profile": "marketplace",
   "marketplace.creator_offer": "marketplace",
   "pms.rooms_rates_availability": "pms",
   "booking.guest_settings_policies": "bookingAdmin",

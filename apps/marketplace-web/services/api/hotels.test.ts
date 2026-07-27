@@ -234,7 +234,7 @@ describe("hotel target self-service client", () => {
       name: "Hotel Alpenrose",
       location: "Munich, Germany",
       picture: "https://images.example/hotel-hero.jpg",
-      about: "A friendly independent hotel.",
+      about: "A welcoming independent hotel.",
       email: "hello@alpenrose.example",
       listings: [
         {
@@ -262,7 +262,7 @@ describe("hotel target self-service client", () => {
     });
   });
 
-  it("falls back to the public description when the creator-facing summary is empty", async () => {
+  it("uses the canonical public description when the Marketplace copy is empty", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL | Request) => {
@@ -544,7 +544,7 @@ describe("hotel target self-service client", () => {
     );
   });
 
-  it("resumes the public description after locality saved but the public write failed", async () => {
+  it("resumes the shared hotel description after locality saved but the public write failed", async () => {
     const requests: Array<{ url: string; method: string; body: unknown }> = [];
     let currentProfile = sharedProfile;
     let currentPublicProfile = publicProfile;
@@ -637,6 +637,98 @@ describe("hotel target self-service client", () => {
         expectedProfileRevision: 4,
         patch: { shortDescription: "A public description saved after retry." },
       },
+    ]);
+    expect(
+      requests
+        .filter(
+          ({ url, method }) =>
+            url.endsWith(`/marketplace/properties/${propertyId}/profile`) && method === "PUT",
+        )
+        .map(({ body }) => body),
+    ).toEqual([{ hostSummary: "A public description saved after retry." }]);
+  });
+
+  it("retries only the Marketplace copy when the canonical description already saved", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    let currentPublicProfile = publicProfile;
+    let currentMarketplaceProfile = marketplaceProfile;
+    let marketplaceWriteAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        requests.push({ url: href, method, body });
+
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          return jsonResponse(sharedProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          if (method === "PUT") {
+            currentPublicProfile = {
+              ...publicProfile,
+              profileRevision: 8,
+              publicProfile: {
+                ...publicProfile.publicProfile,
+                shortDescription: "One description for guests and creators.",
+              },
+            };
+          }
+          return jsonResponse(currentPublicProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
+          if (method === "PUT") {
+            marketplaceWriteAttempts += 1;
+            if (marketplaceWriteAttempts === 1) {
+              return jsonResponse({ detail: "Temporary Marketplace profile failure" }, 503);
+            }
+            currentMarketplaceProfile = {
+              ...marketplaceProfile,
+              hostSummary: "One description for guests and creators.",
+            };
+          }
+          return jsonResponse(currentMarketplaceProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/offers`)) {
+          return jsonResponse({ offers: [targetOffer] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    const save = () =>
+      hotelService.updatePublicSetupProfile(
+        {
+          about: "One description for guests and creators.",
+          localityPublic: false,
+        },
+        propertyId,
+        profileRevisions,
+      );
+
+    await expect(save()).rejects.toBeTruthy();
+    await expect(save()).resolves.toMatchObject({
+      publicAbout: "One description for guests and creators.",
+      marketplaceAbout: "One description for guests and creators.",
+    });
+
+    expect(
+      requests.filter(
+        ({ url, method }) =>
+          url.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`) && method === "PUT",
+      ),
+    ).toHaveLength(1);
+    expect(
+      requests
+        .filter(
+          ({ url, method }) =>
+            url.endsWith(`/marketplace/properties/${propertyId}/profile`) && method === "PUT",
+        )
+        .map(({ body }) => body),
+    ).toEqual([
+      { hostSummary: "One description for guests and creators." },
+      { hostSummary: "One description for guests and creators." },
     ]);
   });
 

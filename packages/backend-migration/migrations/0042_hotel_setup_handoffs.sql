@@ -38,8 +38,6 @@ CREATE TABLE hotel_catalog.setup_handoffs (
       OR
       (task_id = 'public_profile' AND destination_route_key = 'hotel_catalog.public_profile')
       OR
-      (task_id = 'creator_profile' AND destination_route_key = 'marketplace.creator_profile')
-      OR
       (task_id = 'creator_offer' AND destination_route_key = 'marketplace.creator_offer')
       OR
       (task_id = 'rooms_rates_availability' AND destination_route_key = 'pms.rooms_rates_availability')

@@ -59,10 +59,8 @@ export function HotelBasicInfoStep({
 
       <div className="space-y-3">
         <Textarea
-          label={publicProfileMode ? "Public hotel description" : "Creator-facing introduction"}
-          aria-label={
-            publicProfileMode ? "Public hotel description" : "Creator-facing introduction"
-          }
+          label={publicProfileMode ? "Hotel description" : "Creator-facing introduction"}
+          aria-label={publicProfileMode ? "Hotel description" : "Creator-facing introduction"}
           value={form.about}
           onChange={(e) => onFormChange({ about: e.target.value })}
           placeholder={
@@ -80,7 +78,7 @@ export function HotelBasicInfoStep({
               ? error
               : undefined) ||
             (form.about.trim().length > 0 && form.about.trim().length < 50
-              ? `Introduction must be at least 50 characters (${form.about.length}/5000)`
+              ? `${publicProfileMode ? "Description" : "Introduction"} must be at least 50 characters (${form.about.length}/5000)`
               : undefined)
           }
         />

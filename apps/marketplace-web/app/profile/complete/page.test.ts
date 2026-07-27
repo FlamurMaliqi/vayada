@@ -18,14 +18,12 @@ import {
 } from "./hotelTaskFlow";
 
 describe("Marketplace hotel setup task handoff", () => {
-  const destinations: Record<MarketplaceHotelSetupTaskId, string> = {
-    public_profile: "hotel_catalog.public_profile",
-    creator_profile: "marketplace.creator_profile",
-    creator_offer: "marketplace.creator_offer",
-  };
+  const destinations = [
+    ["public_profile", "hotel_catalog.public_profile"],
+    ["creator_offer", "marketplace.creator_offer"],
+  ] as const satisfies ReadonlyArray<readonly [MarketplaceHotelSetupTaskId, string]>;
 
-  it.each(Object.entries(destinations))("preserves the %s task and return route", (task, route) => {
-    const taskId = task as MarketplaceHotelSetupTaskId;
+  it.each(destinations)("preserves the %s task and return route", (taskId, route) => {
     const returnUrl = "https://marketplace.localhost/setup?propertyId=property-one";
     const params = new URLSearchParams({
       activation: "marketplace",
@@ -48,6 +46,22 @@ describe("Marketplace hotel setup task handoff", () => {
       planRevision: "plan.v2:one",
       returnUrl,
     });
+  });
+
+  it("rejects the removed creator-profile task", () => {
+    expect(
+      parseMarketplaceHotelTaskHandoff(
+        new URLSearchParams({
+          activation: "marketplace",
+          taskId: "creator_profile",
+          destinationRouteKey: "marketplace.creator_profile",
+          planRevision: "plan.v2:one",
+          returnUrl: "https://marketplace.localhost/setup?propertyId=property-one",
+        }),
+        { getItem: () => "property-one" },
+        "https://marketplace.localhost",
+      ),
+    ).toBeNull();
   });
 
   it("rejects a task whose destination does not match", () => {
@@ -74,14 +88,6 @@ describe("Marketplace hotel setup task handoff", () => {
       submitMarketplaceProfile: false,
       submitOffers: false,
       steps: [{ section: "public_profile" }],
-    });
-    expect(hotelTaskFlow("creator_profile")).toMatchObject({
-      title: "Introduce your hotel to creators",
-      ensureCover: false,
-      submitPublicProfile: false,
-      submitMarketplaceProfile: true,
-      submitOffers: false,
-      steps: [{ section: "creator_profile" }],
     });
     expect(hotelTaskFlow("creator_offer")).toMatchObject({
       title: "Prepare your collaboration offer",

@@ -234,7 +234,7 @@ describe("shared hotel setup status route", () => {
     [
       "marketplace",
       ["creator_marketplace"],
-      ["shared_identity", "public_profile", "creator_profile", "creator_offer"],
+      ["shared_identity", "public_profile", "creator_offer"],
     ],
     [
       "both",
@@ -242,7 +242,6 @@ describe("shared hotel setup status route", () => {
       [
         "shared_identity",
         "public_profile",
-        "creator_profile",
         "creator_offer",
         "rooms_rates_availability",
         "guest_settings_policies",
@@ -280,7 +279,6 @@ describe("shared hotel setup status route", () => {
               ownerProgress: "owner_complete",
               readiness: "complete",
             }),
-            creator_profile: taskFact("creator_profile", { readiness: "actionable" }),
             creator_offer: taskFact("creator_offer", {
               readiness: "pending_review",
               ownerProgress: "owner_complete",
@@ -305,11 +303,6 @@ describe("shared hotel setup status route", () => {
           actionableBy: "owner",
         }),
         expect.objectContaining({
-          taskId: "creator_profile",
-          callerCapability: "ask_owner",
-          actionableBy: "owner",
-        }),
-        expect.objectContaining({
           taskId: "creator_offer",
           callerCapability: "waiting",
           actionableBy: "support",
@@ -330,11 +323,10 @@ describe("shared hotel setup status route", () => {
         adaptiveProperty(propertyId, {
           taskFacts: taskFacts({
             shared_identity: completedTaskFact("shared_identity"),
-            public_profile: completedTaskFact("public_profile"),
-            creator_profile: taskFact("creator_profile", {
+            public_profile: taskFact("public_profile", {
               ownerProgress: "in_progress",
               readiness: "rejected",
-              reasonCodes: ["creator_profile_rejected"],
+              reasonCodes: ["marketplace_profile_rejected"],
             }),
           }),
         }),
@@ -348,15 +340,15 @@ describe("shared hotel setup status route", () => {
       headers: { authorization: "Bearer valid-token" },
     });
 
-    expect(response.body.setupPlan?.recommendedTaskId).toBe("creator_profile");
+    expect(response.body.setupPlan?.recommendedTaskId).toBe("public_profile");
     expect(
-      response.body.setupPlan?.tasks.find(({ taskId }) => taskId === "creator_profile"),
+      response.body.setupPlan?.tasks.find(({ taskId }) => taskId === "public_profile"),
     ).toMatchObject({
       callerCapability: "allowed",
       ownerProgress: "in_progress",
       readiness: "rejected",
       actionableBy: "owner",
-      reasonCodes: ["creator_profile_rejected"],
+      reasonCodes: ["marketplace_profile_rejected"],
     });
   });
 
@@ -1778,19 +1770,26 @@ describe("shared hotel setup status route", () => {
     ]);
   });
 
-  it("derives pending, rejected, blocked, and complete task facts from canonical adaptive status data", async () => {
-    for (const [marketplaceProfileStatus, readiness] of [
-      ["pending", "pending_review"],
-      ["rejected", "rejected"],
-      ["suspended", "blocked"],
-      ["verified", "complete"],
+  it("merges canonical profile completeness and Marketplace lifecycle into one public-profile fact", async () => {
+    for (const [marketplaceProfileStatus, readiness, ownerProgress, reasonCodes] of [
+      [null, "actionable", "in_progress", ["marketplace_profile_not_started"]],
+      ["pending", "pending_review", "owner_complete", ["marketplace_profile_pending"]],
+      ["rejected", "rejected", "in_progress", ["marketplace_profile_rejected"]],
+      ["suspended", "blocked", "in_progress", ["marketplace_profile_suspended"]],
+      ["verified", "complete", "owner_complete", []],
     ] as const) {
       const query = vi.fn(async (text: string) => {
         if (text.includes("FROM identity.organizations")) {
           return { rows: [{ displayName: "Alpenrose Hotel Group", websiteUrl: null }] };
         }
         return {
-          rows: [adaptiveStatusRow({ marketplaceProfileStatus, marketplaceProfileComplete: true })],
+          rows: [
+            adaptiveStatusRow({
+              marketplaceProfileStatus,
+              marketplaceProfileComplete: marketplaceProfileStatus !== null,
+              marketplaceProfileDescriptionInSync: marketplaceProfileStatus !== null,
+            }),
+          ],
         };
       });
       const repository = createPgSharedHotelSetupStatusRepository({
@@ -1808,9 +1807,73 @@ describe("shared hotel setup status route", () => {
         organizationId,
         propertyIds: [propertyId],
       });
-      expect(status.properties[0]!.taskFacts.creator_profile).toMatchObject({ readiness });
+      expect(status.properties[0]!.taskFacts.public_profile).toMatchObject({
+        readiness,
+        ownerProgress,
+        reasonCodes,
+      });
       expect(query.mock.calls[1]![0]).not.toMatch(/legacy_/i);
     }
+  });
+
+  it("reopens a complete public profile when the Catalog description changes before Marketplace syncs", async () => {
+    let catalogDescriptionUpdatedAt = "2026-07-26T12:00:00.000Z";
+    let marketplaceProfileDescriptionInSync = true;
+    const query = vi.fn(async (text: string) => {
+      if (text.includes("FROM identity.organizations")) {
+        return { rows: [{ displayName: "Alpenrose Hotel Group", websiteUrl: null }] };
+      }
+      return {
+        rows: [
+          adaptiveStatusRow({
+            profileUpdatedAt: catalogDescriptionUpdatedAt,
+            marketplaceProfileStatus: "verified",
+            marketplaceProfileComplete: true,
+            marketplaceProfileDescriptionInSync,
+            marketplaceProfileUpdatedAt: "2026-07-26T12:00:00.000Z",
+          }),
+        ],
+      };
+    });
+    const repository = createPgSharedHotelSetupStatusRepository({
+      connectionString: "postgresql://target-db",
+      pool: {
+        query: async <T extends QueryResultRow = QueryResultRow>(text: string) => {
+          const result = await query(text);
+          return { rows: result.rows as unknown as T[] };
+        },
+        end: vi.fn(async () => undefined),
+      },
+    });
+
+    const complete = (
+      await repository.getHotelSetupStatus({ organizationId, propertyIds: [propertyId] })
+    ).properties[0]!.taskFacts.public_profile;
+    expect(complete).toMatchObject({
+      readiness: "complete",
+      ownerProgress: "owner_complete",
+      reasonCodes: [],
+    });
+
+    catalogDescriptionUpdatedAt = "2026-07-27T12:00:00.000Z";
+    marketplaceProfileDescriptionInSync = false;
+    const outOfSync = (
+      await repository.getHotelSetupStatus({ organizationId, propertyIds: [propertyId] })
+    ).properties[0]!.taskFacts.public_profile;
+
+    expect(outOfSync).toMatchObject({
+      readiness: "actionable",
+      ownerProgress: "in_progress",
+      reasonCodes: ["marketplace_profile_description_out_of_sync"],
+      sourceRevision: JSON.stringify(["2026-07-27T12:00:00.000Z", "verified", true, [], false]),
+    });
+    expect(outOfSync.sourceRevision).not.toBe(complete.sourceRevision);
+
+    const factsSql = query.mock.calls[3]![0];
+    expect(factsSql).toContain("public_profile.normalized_description");
+    expect(factsSql).toContain("BTRIM(profile.short_description)");
+    expect(factsSql).toContain("BTRIM(profile.long_description)");
+    expect(factsSql).toContain("BTRIM(marketplace_profile.host_summary)");
   });
 
   it("requires a fresh creator projection, supported checkout method, and ready booking setup", async () => {
@@ -2087,7 +2150,14 @@ describe("shared hotel setup status route", () => {
         async query<T extends QueryResultRow = QueryResultRow>(text: string) {
           const rows = text.includes("FROM identity.organizations")
             ? [{ displayName: "Alpenrose Hotel Group", websiteUrl: null }]
-            : [adaptiveStatusRow({ localityPublic })];
+            : [
+                adaptiveStatusRow({
+                  localityPublic,
+                  marketplaceProfileStatus: "verified",
+                  marketplaceProfileComplete: true,
+                  marketplaceProfileDescriptionInSync: true,
+                }),
+              ];
           return { rows: rows as unknown as T[] };
         },
         end: vi.fn(async () => undefined),
@@ -2651,6 +2721,7 @@ function adaptiveStatusRow(overrides: Record<string, unknown> = {}): Record<stri
     mediaUpdatedAt: "2026-07-26T12:00:00.000Z",
     marketplaceProfileStatus: null,
     marketplaceProfileComplete: false,
+    marketplaceProfileDescriptionInSync: false,
     marketplaceProfileUpdatedAt: null,
     marketplaceOfferStatus: null,
     marketplaceOfferHasTitle: false,
@@ -2765,7 +2836,6 @@ function taskFacts(
     [
       "shared_identity",
       "public_profile",
-      "creator_profile",
       "creator_offer",
       "rooms_rates_availability",
       "guest_settings_policies",

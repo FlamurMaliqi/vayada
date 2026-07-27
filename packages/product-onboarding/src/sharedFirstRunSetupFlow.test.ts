@@ -51,12 +51,7 @@ describe("resolveSharedFirstRunSetupView", () => {
     {
       name: "Creator Marketplace",
       tracks: ["creator_marketplace"] as SetupTrack[],
-      tasks: [
-        "shared_identity",
-        "public_profile",
-        "creator_profile",
-        "creator_offer",
-      ] as SetupTaskId[],
+      tasks: ["shared_identity", "public_profile", "creator_offer"] as SetupTaskId[],
     },
     {
       name: "both tracks",
@@ -64,7 +59,6 @@ describe("resolveSharedFirstRunSetupView", () => {
       tasks: [
         "shared_identity",
         "public_profile",
-        "creator_profile",
         "creator_offer",
         "rooms_rates_availability",
         "guest_settings_policies",
@@ -82,7 +76,7 @@ describe("resolveSharedFirstRunSetupView", () => {
   it("reopens the selected property's existing profile inside setup when hotel basics are edited", () => {
     const status = statusFor(
       ["creator_marketplace"],
-      ["shared_identity", "public_profile", "creator_profile", "creator_offer"],
+      ["shared_identity", "public_profile", "creator_offer"],
     );
 
     expect(resolveSharedFirstRunSetupView(status, { editPropertyProfile: true })).toMatchObject({
@@ -208,7 +202,7 @@ function setupTask(taskId: SetupTaskId): SetupTask {
   const track =
     taskId === "shared_identity"
       ? "shared"
-      : ["public_profile", "creator_profile", "creator_offer"].includes(taskId)
+      : ["public_profile", "creator_offer"].includes(taskId)
         ? "creator_marketplace"
         : "hotel_operations";
   return {

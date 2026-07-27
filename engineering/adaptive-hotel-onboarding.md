@@ -18,7 +18,8 @@ atomic bundle, but the domains remain separate:
 - PMS owns inventory, operational reservations, room assignment, and channel
   connectivity.
 - Booking owns the guest-facing booking profile, policies, quote, and checkout.
-- Marketplace owns creator-facing content and collaboration offers.
+- Marketplace owns collaboration offers and the review state for hotel profiles
+  shown to creators.
 - Hotel Catalog owns canonical property identity and shared public-profile facts.
 - Finance owns billing and payment capability.
 - Distribution owns public bookability.
@@ -132,14 +133,13 @@ It does not render one card per task. When both tracks are selected, the order
 is:
 
 1. shared hotel basics;
-2. public hotel profile;
-3. creator-facing hotel introduction;
-4. collaboration offer;
-5. rooms, rates, and availability;
-6. guest settings and policies;
-7. payment;
-8. direct-booking publication;
-9. review and next steps.
+2. one hotel description and public profile for guests and creators;
+3. collaboration offer;
+4. rooms, rates, and availability;
+5. guest settings and policies;
+6. payment;
+7. direct-booking publication;
+8. review and next steps.
 
 Marketplace steps appear before Operations steps, but this is presentation
 order rather than a cross-track dependency. A Marketplace review, sync, or
@@ -181,7 +181,7 @@ property.
 | -------------------------------- | ----------- | ---------- | ---- |
 | Shared identity and contacts     | Required    | Required   | Once |
 | Public description and media     | Required    | Required   | Once |
-| Creator pitch and offer          | Required    | Hidden     | Yes  |
+| Collaboration offer              | Required    | Hidden     | Yes  |
 | Rooms, rates, and availability   | Hidden      | Required   | Yes  |
 | Guest settings and policies      | Hidden      | Required   | Yes  |
 | Payment and direct publication   | Hidden      | Required   | Yes  |
@@ -214,15 +214,15 @@ type SetupTask = {
 The shared task registry owns stable labels, owner domains, route keys,
 permissions, and dependencies. Initial task groups are:
 
-| Task group                  | Track       | Owner         |
-| --------------------------- | ----------- | ------------- |
-| Shared property identity    | All         | Hotel Catalog |
-| Public property profile     | Marketplace | Hotel Catalog |
-| Creator pitch and offer     | Marketplace | Marketplace   |
-| Inventory, rooms, rates     | Operations  | PMS           |
-| Guest settings and policies | Operations  | Booking       |
-| Payment capability          | Operations  | Finance       |
-| Direct-booking publication  | Operations  | Distribution  |
+| Task group                    | Track       | Owner                       |
+| ----------------------------- | ----------- | --------------------------- |
+| Shared property identity      | All         | Hotel Catalog               |
+| Hotel description and profile | Marketplace | Hotel Catalog + Marketplace |
+| Collaboration offer           | Marketplace | Marketplace                 |
+| Inventory, rooms, rates       | Operations  | PMS                         |
+| Guest settings and policies   | Operations  | Booking                     |
+| Payment capability            | Operations  | Finance                     |
+| Direct-booking publication    | Operations  | Distribution                |
 
 The wizard recommends only a launchable task the current caller may perform.
 That includes actionable work and rejected Marketplace work that an owner must
@@ -422,7 +422,10 @@ only active, approved Platform Media objects linked to that property. Omitting
 `media` preserves the current ordering; supplying it replaces the approved
 public list. Upload approval and public-profile writes both advance the same
 `profileRevision`, so a stale description or media edit cannot overwrite newer
-public content.
+public content. For Marketplace hotels, the shared profile task remains
+actionable until the normalized Catalog description and Marketplace host
+summary match, so a failed second write cannot advance the wizard with divergent
+copy.
 
 Handoff creation accepts `{ propertyId, taskId, planRevision }` and returns
 `{ launchUrl, expiresAt }`. The destination exchanges the opaque code once for

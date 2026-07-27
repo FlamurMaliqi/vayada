@@ -123,7 +123,6 @@ function marketplaceSetupTaskDestination(
   const destinations: Record<string, string> = {
     shared_identity: "hotel_catalog.shared_identity",
     public_profile: "hotel_catalog.public_profile",
-    creator_profile: "marketplace.creator_profile",
     creator_offer: "marketplace.creator_offer",
   };
   if (destinations[handoff.taskId] !== handoff.destinationRouteKey) return null;

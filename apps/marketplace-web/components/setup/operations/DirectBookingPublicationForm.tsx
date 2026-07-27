@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { SetupTrack } from "@vayada/product-onboarding";
 
 import {
   hotelOperationsErrorMessage,
@@ -23,11 +24,13 @@ export function DirectBookingPublicationForm({
   onBeforeSave,
   onCompleted,
   propertyId,
+  selectedTracks,
 }: {
   onBack: (() => void) | null;
   onBeforeSave: () => Promise<void>;
   onCompleted: () => void | Promise<void>;
   propertyId: string;
+  selectedTracks: readonly SetupTrack[];
 }) {
   const [setup, setSetup] = useState<DirectBookingSetup | null>(null);
   const [heroImage, setHeroImage] = useState<File | null>(null);
@@ -40,6 +43,7 @@ export function DirectBookingPublicationForm({
   const [completionRefreshPending, setCompletionRefreshPending] = useState(false);
   const [error, setError] = useState("");
   const heroImageInput = useRef<HTMLInputElement>(null);
+  const collectPublicDescription = shouldCollectDirectBookingDescription(selectedTracks);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -110,7 +114,7 @@ export function DirectBookingPublicationForm({
         }
         await hotelOperationsSetupApi.saveDirectBookingSetup(propertyId, {
           localityPublic: setup.localityPublic,
-          shortDescription: setup.shortDescription,
+          ...(collectPublicDescription ? { publicDescription: setup.shortDescription } : {}),
           heroHeading: setup.heroHeading,
           heroSubtext: setup.heroSubtext,
           primaryColor: setup.primaryColor,
@@ -213,24 +217,26 @@ export function DirectBookingPublicationForm({
           value={setup.heroHeading}
         />
       </OperationField>
-      <OperationField
-        className="sm:col-span-2"
-        hint="This public description also helps guests understand what makes your hotel distinct."
-        label="Public hotel description"
-      >
-        <textarea
-          className={`${operationInputClassName} min-h-28 resize-y`}
-          maxLength={500}
-          onChange={(event) => {
-            update("shortDescription", event.target.value);
-            if (!setup.heroSubtext || setup.heroSubtext === setup.shortDescription) {
-              update("heroSubtext", event.target.value);
-            }
-          }}
-          required
-          value={setup.shortDescription}
-        />
-      </OperationField>
+      {collectPublicDescription && (
+        <OperationField
+          className="sm:col-span-2"
+          hint="This public description also helps guests understand what makes your hotel distinct."
+          label="Public hotel description"
+        >
+          <textarea
+            className={`${operationInputClassName} min-h-28 resize-y`}
+            maxLength={500}
+            onChange={(event) => {
+              update("shortDescription", event.target.value);
+              if (!setup.heroSubtext || setup.heroSubtext === setup.shortDescription) {
+                update("heroSubtext", event.target.value);
+              }
+            }}
+            required
+            value={setup.shortDescription}
+          />
+        </OperationField>
+      )}
       <OperationField className="sm:col-span-2" label="Booking page introduction">
         <textarea
           className={`${operationInputClassName} min-h-24 resize-y`}
@@ -328,6 +334,12 @@ export function DirectBookingPublicationForm({
       </label>
     </OperationFormShell>
   );
+}
+
+export function shouldCollectDirectBookingDescription(
+  selectedTracks: readonly SetupTrack[],
+): boolean {
+  return !selectedTracks.includes("creator_marketplace");
 }
 
 function directBookingValidationError(

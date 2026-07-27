@@ -55,6 +55,7 @@ type AdaptiveHotelSetupFactsRow = {
   mediaUpdatedAt: unknown;
   marketplaceProfileStatus: string | null;
   marketplaceProfileComplete: boolean;
+  marketplaceProfileDescriptionInSync: boolean;
   marketplaceProfileUpdatedAt: unknown;
   marketplaceOfferStatus: string | null;
   marketplaceOfferHasTitle: boolean;
@@ -869,13 +870,7 @@ function toAdaptivePropertySetupFacts(row: AdaptiveHotelSetupFactsRow): Adaptive
         Boolean(nonEmpty(row.displayName)),
         latest(row.propertyUpdatedAt, row.locationUpdatedAt, row.contactUpdatedAt),
       ),
-      public_profile: basicTaskFact(
-        "public_profile",
-        publicProfileReasons,
-        row.hasDescription || row.hasApprovedMedia || row.localityPublic,
-        latest(row.profileUpdatedAt, row.mediaUpdatedAt, row.locationUpdatedAt),
-      ),
-      creator_profile: creatorProfileFact(row),
+      public_profile: publicProfileFact(row, publicProfileReasons),
       creator_offer: creatorOfferFact(row),
       rooms_rates_availability: basicTaskFact(
         "rooms_rates_availability",
@@ -920,37 +915,69 @@ function basicTaskFact(
   };
 }
 
-function creatorProfileFact(row: AdaptiveHotelSetupFactsRow): AdaptiveSetupTaskFact {
+function publicProfileFact(
+  row: AdaptiveHotelSetupFactsRow,
+  canonicalReasons: string[],
+): AdaptiveSetupTaskFact {
   const status = row.marketplaceProfileStatus;
-  const complete = row.marketplaceProfileComplete === true;
-  if (!status) {
-    return basicTaskFact(
-      "creator_profile",
-      ["creator_profile_not_started"],
-      false,
-      toIsoString(row.marketplaceProfileUpdatedAt),
-    );
-  }
+  const marketplaceComplete = row.marketplaceProfileComplete === true;
+  const marketplaceDescriptionInSync = row.marketplaceProfileDescriptionInSync === true;
+  const canonicalComplete = canonicalReasons.length === 0;
+  const canonicalStarted = row.hasDescription || row.hasApprovedMedia || row.localityPublic;
   const readiness =
     status === "rejected"
       ? "rejected"
       : status === "suspended" || status === "archived"
         ? "blocked"
-        : status === "pending" && complete
+        : status === "pending" &&
+            marketplaceComplete &&
+            marketplaceDescriptionInSync &&
+            canonicalComplete
           ? "pending_review"
-          : status === "verified" && complete
+          : status === "verified" &&
+              marketplaceComplete &&
+              marketplaceDescriptionInSync &&
+              canonicalComplete
             ? "complete"
             : "actionable";
+  const actionableReasons = [
+    ...canonicalReasons,
+    !status && "marketplace_profile_not_started",
+    status !== null &&
+      (!marketplaceComplete || (status !== "pending" && status !== "verified")) &&
+      "marketplace_profile_incomplete",
+    row.hasDescription &&
+      marketplaceComplete &&
+      !marketplaceDescriptionInSync &&
+      "marketplace_profile_description_out_of_sync",
+  ].filter(isReasonCode);
   return {
-    taskId: "creator_profile",
+    taskId: "public_profile",
     ownerProgress:
-      readiness === "complete" || readiness === "pending_review" ? "owner_complete" : "in_progress",
+      readiness === "complete" || readiness === "pending_review"
+        ? "owner_complete"
+        : canonicalStarted || status !== null
+          ? "in_progress"
+          : "not_started",
     readiness,
     reasonCodes:
       readiness === "complete"
         ? []
-        : [readiness === "actionable" ? "creator_profile_incomplete" : `creator_profile_${status}`],
-    sourceRevision: taskRevision(toIsoString(row.marketplaceProfileUpdatedAt), status, complete),
+        : readiness === "actionable"
+          ? actionableReasons
+          : [...canonicalReasons, `marketplace_profile_${status}`],
+    sourceRevision: taskRevision(
+      latest(
+        row.profileUpdatedAt,
+        row.mediaUpdatedAt,
+        row.locationUpdatedAt,
+        row.marketplaceProfileUpdatedAt,
+      ),
+      status,
+      marketplaceComplete,
+      canonicalReasons,
+      marketplaceDescriptionInSync,
+    ),
     freshness: "fresh",
   };
 }
@@ -1608,13 +1635,18 @@ function adaptiveHotelSetupFactsSql(): string {
       property.updated_at AS "propertyUpdatedAt",
       location.updated_at AS "locationUpdatedAt",
       contacts.updated_at AS "contactUpdatedAt",
-      COALESCE(public_profile.has_description, FALSE) AS "hasDescription",
+      public_profile.normalized_description IS NOT NULL AS "hasDescription",
       COALESCE(public_media.has_approved_media, FALSE) AS "hasApprovedMedia",
       COALESCE(location.address_public, FALSE) AS "localityPublic",
       public_profile.updated_at AS "profileUpdatedAt",
       public_media.updated_at AS "mediaUpdatedAt",
       marketplace_profile.marketplace_profile_status AS "marketplaceProfileStatus",
       COALESCE(marketplace_profile.profile_complete, FALSE) AS "marketplaceProfileComplete",
+      COALESCE(
+        public_profile.normalized_description =
+          NULLIF(BTRIM(marketplace_profile.host_summary), ''),
+        FALSE
+      ) AS "marketplaceProfileDescriptionInSync",
       marketplace_profile.updated_at AS "marketplaceProfileUpdatedAt",
       marketplace_offer.offer_status AS "marketplaceOfferStatus",
       COALESCE(marketplace_offer.has_title, FALSE) AS "marketplaceOfferHasTitle",
@@ -1718,10 +1750,10 @@ function adaptiveHotelSetupFactsSql(): string {
     ) contacts ON TRUE
     LEFT JOIN LATERAL (
       SELECT
-        (
-          NULLIF(profile.short_description, '') IS NOT NULL
-          OR NULLIF(profile.long_description, '') IS NOT NULL
-        ) AS has_description,
+        COALESCE(
+          NULLIF(BTRIM(profile.short_description), ''),
+          NULLIF(BTRIM(profile.long_description), '')
+        ) AS normalized_description,
         profile.updated_at
       FROM hotel_catalog.property_profiles profile
       WHERE profile.property_id = property.id

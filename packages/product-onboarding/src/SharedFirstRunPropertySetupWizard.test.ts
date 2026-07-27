@@ -201,7 +201,7 @@ describe("inline setup task navigation", () => {
   it("lets an authorized user revisit completed work without reopening blocked work", () => {
     expect(
       isInlineSetupTaskEditable({
-        taskId: "creator_profile",
+        taskId: "public_profile",
         track: "creator_marketplace",
         readiness: "complete",
         callerCapability: "allowed",
@@ -209,7 +209,7 @@ describe("inline setup task navigation", () => {
     ).toBe(true);
     expect(
       isInlineSetupTaskEditable({
-        taskId: "creator_profile",
+        taskId: "public_profile",
         track: "creator_marketplace",
         readiness: "complete",
         callerCapability: "ask_owner",
@@ -234,8 +234,8 @@ describe("inline setup task navigation", () => {
   });
 
   it("keeps future ready tasks locked until they become the recommended wizard step", () => {
-    const creatorProfile = inlineTask(
-      "creator_profile",
+    const creatorOffer = inlineTask(
+      "creator_offer",
       "actionable",
       "allowed",
       "creator_marketplace",
@@ -253,9 +253,9 @@ describe("inline setup task navigation", () => {
       "creator_marketplace",
     );
 
-    expect(isInlineSetupTaskSelectable(creatorProfile, "creator_profile")).toBe(true);
-    expect(isInlineSetupTaskSelectable(rooms, "creator_profile")).toBe(false);
-    expect(isInlineSetupTaskSelectable(completedProfile, "creator_profile")).toBe(true);
+    expect(isInlineSetupTaskSelectable(creatorOffer, "creator_offer")).toBe(true);
+    expect(isInlineSetupTaskSelectable(rooms, "creator_offer")).toBe(false);
+    expect(isInlineSetupTaskSelectable(completedProfile, "creator_offer")).toBe(true);
   });
 
   it("backs up to the nearest editable task and skips permission-blocked steps", () => {
@@ -264,12 +264,12 @@ describe("inline setup task navigation", () => {
         [
           inlineTask("shared_identity", "complete", "allowed", "shared"),
           inlineTask("public_profile", "blocked", "forbidden", "creator_marketplace"),
-          inlineTask("creator_profile", "complete", "allowed", "creator_marketplace"),
-          inlineTask("creator_offer", "actionable", "allowed", "creator_marketplace"),
+          inlineTask("creator_offer", "complete", "allowed", "creator_marketplace"),
+          inlineTask("rooms_rates_availability", "actionable", "allowed", "hotel_operations"),
         ],
-        "creator_offer",
+        "rooms_rates_availability",
       ),
-    ).toBe("creator_profile");
+    ).toBe("creator_offer");
     expect(
       previousEditableSetupTaskId(
         [
@@ -286,7 +286,7 @@ describe("inline setup task navigation", () => {
       setupPlan: {
         recommendedTaskId: "creator_offer",
         tasks: [
-          inlineTask("creator_profile", "complete", "allowed", "creator_marketplace"),
+          inlineTask("public_profile", "complete", "allowed", "creator_marketplace"),
           inlineTask("creator_offer", "actionable", "allowed", "creator_marketplace"),
         ],
       },
@@ -299,13 +299,13 @@ describe("inline setup task navigation", () => {
   });
 
   it("permits a save only while the task and plan revision are still current", () => {
-    const status = inlineStatus("plan-1", "creator_profile", [
+    const status = inlineStatus("plan-1", "public_profile", [
       inlineTask("shared_identity", "complete", "allowed", "shared"),
-      inlineTask("creator_profile", "actionable", "allowed", "creator_marketplace"),
+      inlineTask("public_profile", "actionable", "allowed", "creator_marketplace"),
     ]);
     const expected = {
       propertyId: "property-1",
-      taskId: "creator_profile" as const,
+      taskId: "public_profile" as const,
       planRevision: "plan-1",
     };
 
@@ -323,7 +323,7 @@ describe("inline setup task navigation", () => {
       ),
     ).toBe(false);
     const revisitedStatus = inlineStatus("plan-1", "creator_offer", [
-      inlineTask("creator_profile", "complete", "allowed", "creator_marketplace"),
+      inlineTask("public_profile", "complete", "allowed", "creator_marketplace"),
       inlineTask("creator_offer", "actionable", "allowed", "creator_marketplace"),
     ]);
     expect(isInlineSetupTaskSaveCurrent(revisitedStatus, expected)).toBe(true);

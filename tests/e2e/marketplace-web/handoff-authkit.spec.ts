@@ -9,6 +9,7 @@ const HANDOFF_CODE = "D".repeat(43);
 const LOGIN_RESUME_CODE = "E".repeat(43);
 const USED_CODE = "F".repeat(43);
 const SHARED_IDENTITY_CODE = "J".repeat(43);
+const LEGACY_CREATOR_PROFILE_CODE = "K".repeat(43);
 
 test.describe("marketplace-web opaque setup handoff", () => {
   test("selects the only hotel group, exchanges the code, and opens the canonical setup flow", async ({
@@ -149,6 +150,29 @@ test.describe("marketplace-web opaque setup handoff", () => {
     expect(destination.hash).toBe("");
   });
 
+  test("rejects a legacy hotel creator_profile handoff", async ({ page }) => {
+    await mockDirectAuthSession(page);
+    await mockMarketplaceStatus(page);
+    const exchangeRequests: unknown[] = [];
+    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      exchangeRequests.push(route.request().postDataJSON());
+      return route.fulfill({
+        headers: corsHeaders(route),
+        json: {
+          ...exchangedHandoff(),
+          taskId: "creator_profile",
+          destinationRouteKey: "marketplace.creator_profile",
+        },
+      });
+    });
+
+    await page.goto(`/handoff?code=${LEGACY_CREATOR_PROFILE_CODE}`);
+
+    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
+    expect(exchangeRequests).toEqual([{ code: LEGACY_CREATOR_PROFILE_CODE }]);
+  });
+
   test("does not replay a consumed handoff when post-exchange validation fails", async ({
     page,
   }) => {
@@ -283,14 +307,14 @@ function marketplaceStatus() {
     propertyDisplayName: "Alpenrose",
     locationSummary: "Munich, DE",
     taskOverrides: {
-      creator_profile: {
+      public_profile: {
         ownerProgress: "not_started",
         readiness: "actionable",
         actionableBy: "owner",
-        reasonCodes: ["creator_profile_required"],
+        reasonCodes: ["public_profile_required"],
       },
     },
-    recommendedTaskId: "creator_profile",
+    recommendedTaskId: "public_profile",
     entryDecision: {
       propertyId: PROPERTY_ID,
       decision: "enter",
@@ -303,9 +327,9 @@ function marketplaceStatus() {
 function exchangedHandoff() {
   return {
     propertyId: PROPERTY_ID,
-    taskId: "creator_profile",
+    taskId: "public_profile",
     issuedPlanRevision: "e2e-plan-1",
-    destinationRouteKey: "marketplace.creator_profile",
+    destinationRouteKey: "hotel_catalog.public_profile",
     returnUrl: marketplaceSetupReturnUrl(),
   };
 }

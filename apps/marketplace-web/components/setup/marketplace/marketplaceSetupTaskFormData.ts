@@ -4,7 +4,7 @@ import {
   initialHotelMarketplaceOfferImages,
 } from "@/lib/utils/hotelMarketplaceDraft";
 
-export type MarketplaceSetupTaskId = "public_profile" | "creator_profile" | "creator_offer";
+export type MarketplaceSetupTaskId = "public_profile" | "creator_offer";
 
 export type MarketplaceSetupTaskHydration = {
   form: HotelFormState;
@@ -29,12 +29,7 @@ export function hydrateMarketplaceSetupTask(
 
   return {
     form: {
-      about:
-        taskId === "public_profile"
-          ? (profile.publicAbout ?? "")
-          : taskId === "creator_profile"
-            ? (profile.marketplaceAbout ?? "")
-            : "",
+      about: taskId === "public_profile" ? (profile.publicAbout ?? "") : "",
       localityPublic: profile.localityPublic,
     },
     listings:

@@ -1231,20 +1231,12 @@ const SETUP_TASK_REGISTRY: readonly SetupTaskDefinition[] = [
     dependencies: ["shared_identity"],
   },
   {
-    taskId: "creator_profile",
-    track: "creator_marketplace",
-    requirementOwnerDomain: "marketplace",
-    permissions: ["marketplace.profile.manage"],
-    actionableBy: "owner",
-    dependencies: ["shared_identity"],
-  },
-  {
     taskId: "creator_offer",
     track: "creator_marketplace",
     requirementOwnerDomain: "marketplace",
     permissions: ["marketplace.profile.manage"],
     actionableBy: "owner",
-    dependencies: ["shared_identity", "creator_profile"],
+    dependencies: ["shared_identity", "public_profile"],
   },
   {
     taskId: "rooms_rates_availability",
@@ -1470,7 +1462,6 @@ export function buildPropertySetupPlan(input: {
     marketplacePublish: launchReadiness(tasks, selectedTracks, "creator_marketplace", [
       "shared_identity",
       "public_profile",
-      "creator_profile",
       "creator_offer",
     ]),
   };
@@ -1673,7 +1664,7 @@ function launchReadiness(
 }
 
 function setupTaskProduct(taskId: SetupTaskId): SharedHotelSetupEntryProduct | null {
-  if (taskId === "creator_profile" || taskId === "creator_offer") return "marketplace";
+  if (taskId === "public_profile" || taskId === "creator_offer") return "marketplace";
   if (taskId === "rooms_rates_availability") return "pms";
   if (
     taskId === "guest_settings_policies" ||

@@ -9,17 +9,19 @@ import {
 import { hydrateMarketplaceSetupTask } from "./marketplaceSetupTaskFormData";
 
 describe("Marketplace inline setup task data", () => {
-  it("hydrates public and creator descriptions from their owning domains", () => {
+  it("hydrates the one shared hotel description from the canonical public profile", () => {
     const profile = hotelProfile();
 
     expect(hydrateMarketplaceSetupTask(profile, "public_profile").form).toEqual({
       about: "The canonical public hotel description.",
       localityPublic: true,
     });
-    expect(hydrateMarketplaceSetupTask(profile, "creator_profile").form).toEqual({
-      about: "The Marketplace-only creator introduction.",
-      localityPublic: true,
-    });
+  });
+
+  it("does not restore a legacy Marketplace-only description", () => {
+    const profile = hotelProfile({ publicAbout: null });
+
+    expect(hydrateMarketplaceSetupTask(profile, "public_profile").form.about).toBe("");
   });
 
   it("hydrates the active offer for editing", () => {

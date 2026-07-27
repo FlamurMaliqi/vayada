@@ -137,7 +137,7 @@ const ROOM_SETUP_MISSING_REASON_CODES = [
 
 export type SaveDirectBookingSetupInput = {
   localityPublic: boolean;
-  shortDescription: string;
+  publicDescription?: string;
   heroHeading: string;
   heroSubtext: string;
   primaryColor: string;
@@ -306,13 +306,15 @@ export const hotelOperationsSetupApi = {
       });
     }
 
-    const publicProfile = await sharedHotelSetupApi.getPublicPropertyProfile(propertyId);
-    const description = input.shortDescription.trim();
-    if (publicProfile.publicProfile.shortDescription !== description) {
-      await sharedHotelSetupApi.updatePublicPropertyProfile(propertyId, {
-        expectedProfileRevision: publicProfile.profileRevision,
-        patch: { shortDescription: description },
-      });
+    if (input.publicDescription !== undefined) {
+      const publicProfile = await sharedHotelSetupApi.getPublicPropertyProfile(propertyId);
+      const description = input.publicDescription.trim();
+      if (publicProfile.publicProfile.shortDescription !== description) {
+        await sharedHotelSetupApi.updatePublicPropertyProfile(propertyId, {
+          expectedProfileRevision: publicProfile.profileRevision,
+          patch: { shortDescription: description },
+        });
+      }
     }
 
     await targetApiClient.patch(`/api/booking/hotels/${encoded(propertyId)}/settings/design`, {

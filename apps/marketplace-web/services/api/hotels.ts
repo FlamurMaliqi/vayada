@@ -325,7 +325,7 @@ export const hotelService = {
   ): Promise<HotelProfile> => {
     return updateHotelProfile(data, propertyId, revisions, {
       publicProfile: true,
-      marketplaceProfile: false,
+      marketplaceProfile: true,
       resumeAppliedCanonicalUpdate: true,
     });
   },
@@ -699,7 +699,6 @@ function toLegacyHotelProfile(
     picture,
     website: profileContactValue(property, "website"),
     about:
-      normalizedOptionalText(marketplaceProfile.hostSummary) ??
       normalizedOptionalText(publicProfile.publicProfile.shortDescription) ??
       normalizedOptionalText(publicProfile.publicProfile.longDescription),
     publicAbout:

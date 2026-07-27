@@ -46,7 +46,6 @@ export const ADAPTIVE_HOTEL_SETUP_CONTRACT_VERSION = "adaptive-hotel-setup.v1" a
 export const SETUP_TASK_IDS = [
   "shared_identity",
   "public_profile",
-  "creator_profile",
   "creator_offer",
   "rooms_rates_availability",
   "guest_settings_policies",
@@ -56,7 +55,6 @@ export const SETUP_TASK_IDS = [
 export const SETUP_TASK_DESTINATION_ROUTE_KEYS = {
   shared_identity: "hotel_catalog.shared_identity",
   public_profile: "hotel_catalog.public_profile",
-  creator_profile: "marketplace.creator_profile",
   creator_offer: "marketplace.creator_offer",
   rooms_rates_availability: "pms.rooms_rates_availability",
   guest_settings_policies: "booking.guest_settings_policies",
@@ -179,7 +177,6 @@ export type AdaptiveHotelSetupStatus = {
 const SETUP_TASK_TRACK: Record<SetupTaskId, SetupTask["track"]> = {
   shared_identity: "shared",
   public_profile: "creator_marketplace",
-  creator_profile: "creator_marketplace",
   creator_offer: "creator_marketplace",
   rooms_rates_availability: "hotel_operations",
   guest_settings_policies: "hotel_operations",
@@ -567,12 +564,7 @@ function launchReadinessMatchesTasks(
         "direct_booking_publication",
       ]) &&
     plan.launchReadiness.marketplacePublish ===
-      expected("creator_marketplace", [
-        "shared_identity",
-        "public_profile",
-        "creator_profile",
-        "creator_offer",
-      ])
+      expected("creator_marketplace", ["shared_identity", "public_profile", "creator_offer"])
   );
 }
 

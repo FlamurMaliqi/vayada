@@ -67,7 +67,6 @@ export function MarketplaceSetupTaskForm({
   onDirty,
 }: MarketplaceSetupTaskFormProps) {
   const submitPublicProfile = taskId === "public_profile";
-  const submitMarketplaceProfile = taskId === "creator_profile";
   const submitCreatorOffer = taskId === "creator_offer";
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -95,11 +94,9 @@ export function MarketplaceSetupTaskForm({
   const canProceed =
     taskId === "public_profile"
       ? hotelForm.canProceedStep1(true) && (!coverSelectionRequired || Boolean(coverSelection.file))
-      : taskId === "creator_profile"
-        ? hotelForm.canProceedStep1(false)
-        : hotelForm.canProceedListingStep("details") &&
-          hotelForm.canProceedListingStep("offerings") &&
-          hotelForm.canProceedListingStep("requirements");
+      : hotelForm.canProceedListingStep("details") &&
+        hotelForm.canProceedListingStep("offerings") &&
+        hotelForm.canProceedListingStep("requirements");
 
   useEffect(() => {
     if (submitCreatorOffer && taskReady && !completionRefreshPending) {
@@ -489,10 +486,10 @@ export function MarketplaceSetupTaskForm({
 
     if (
       !hotelForm.validateForm({
-        validateProfile: submitPublicProfile || submitMarketplaceProfile,
+        validateProfile: submitPublicProfile,
         requireLocalityConsent: submitPublicProfile,
         validateOffers: submitCreatorOffer,
-        profileFieldName: submitPublicProfile ? "Public hotel description" : undefined,
+        profileFieldName: submitPublicProfile ? "Hotel description" : undefined,
       })
     ) {
       return;
@@ -519,9 +516,6 @@ export function MarketplaceSetupTaskForm({
           canonicalProfileRevision: updatedProfile.canonicalProfileRevision,
           publicProfileRevision: updatedProfile.publicProfileRevision,
         };
-      }
-      if (submitMarketplaceProfile) {
-        await hotelService.updateMarketplaceHostSummary(hotelForm.form.about.trim(), propertyId);
       }
       if (submitCreatorOffer && !(await submitOffers())) return;
 
@@ -668,7 +662,7 @@ export function MarketplaceSetupTaskForm({
           coverPhotoRequired={coverSelectionRequired}
           hasSelectedCoverPhoto={Boolean(coverSelection.file)}
           showLocalityConsent={taskId === "public_profile"}
-          submitLabel={taskId === "public_profile" ? "Save public profile" : "Save creator profile"}
+          submitLabel="Save hotel profile"
           embedded
           imageInputRefs={hotelForm.listingImageInputRefs}
           coverPhotoInputRef={coverInputRef}

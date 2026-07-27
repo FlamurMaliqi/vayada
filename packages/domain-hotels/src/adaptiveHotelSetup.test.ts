@@ -431,20 +431,10 @@ describe("adaptive hotel setup contracts", () => {
             track: "creator_marketplace",
             requirementOwnerDomain: "hotel_catalog",
             destinationRouteKey: "hotel_catalog.public_profile",
-            ownerProgress: "owner_complete",
-            readiness: "complete",
-            actionableBy: null,
-            reasonCodes: [],
-          }),
-          task({
-            taskId: "creator_profile",
-            track: "creator_marketplace",
-            requirementOwnerDomain: "marketplace",
-            destinationRouteKey: "marketplace.creator_profile",
             ownerProgress: "in_progress",
             readiness: "rejected",
             actionableBy: "owner",
-            reasonCodes: ["creator_profile_rejected"],
+            reasonCodes: ["marketplace_profile_rejected"],
           }),
           task({
             taskId: "creator_offer",
@@ -454,11 +444,11 @@ describe("adaptive hotel setup contracts", () => {
             ownerProgress: "not_started",
             readiness: "blocked",
             actionableBy: null,
-            reasonCodes: ["creator_profile_incomplete"],
+            reasonCodes: ["public_profile_incomplete"],
           }),
         ],
-        recommendedTaskId: "creator_profile",
-        ownerProgress: { complete: 2, total: 4 },
+        recommendedTaskId: "public_profile",
+        ownerProgress: { complete: 1, total: 3 },
         launchReadiness: {
           operationsUse: "not_applicable",
           directBookingPublish: "not_applicable",
@@ -468,7 +458,7 @@ describe("adaptive hotel setup contracts", () => {
       updatedAt: evaluatedAt,
     };
 
-    expect(isSetupTaskLaunchable(status.setupPlan!.tasks[2])).toBe(true);
+    expect(isSetupTaskLaunchable(status.setupPlan!.tasks[1])).toBe(true);
     expect(parseAdaptiveHotelSetupStatus(status)).toEqual(status);
 
     const invalid = structuredClone(status);
@@ -477,7 +467,7 @@ describe("adaptive hotel setup contracts", () => {
     sharedTask.readiness = "rejected";
     sharedTask.actionableBy = "operator";
     sharedTask.reasonCodes = ["shared_identity_rejected"];
-    invalid.setupPlan!.ownerProgress.complete = 1;
+    invalid.setupPlan!.ownerProgress.complete = 0;
     invalid.setupPlan!.recommendedTaskId = "shared_identity";
 
     expect(isSetupTaskLaunchable(sharedTask)).toBe(false);

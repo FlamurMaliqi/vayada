@@ -86,6 +86,7 @@ export type SharedFirstRunPropertySetupWizardProps = {
 export type SharedSetupTaskFormContext = {
   task: SetupTask;
   propertyId: string;
+  selectedTracks: readonly SetupTrack[];
   onBeforeSave: () => Promise<void>;
   onComplete: () => Promise<void>;
   onBack: (() => void) | null;
@@ -179,7 +180,7 @@ const TRACK_CONTENT: Record<
   creator_marketplace: {
     title: "Creator Marketplace",
     subtitle: null,
-    description: "Build your creator profile and prepare a collaboration offer.",
+    description: "Create your hotel profile and prepare a collaboration offer.",
     icon: SparklesIcon,
   },
 };
@@ -196,12 +197,8 @@ const TASK_CONTENT: Record<
     description: "Confirm the hotel name, type, address, timezone, and contact details.",
   },
   public_profile: {
-    title: "Create your public hotel profile",
-    description: "Add the description and images creators need to understand your hotel.",
-  },
-  creator_profile: {
-    title: "Introduce your hotel to creators",
-    description: "Write the creator-facing story shown on your profile.",
+    title: "Describe your hotel",
+    description: "Add one description and cover that guests and creators will see.",
   },
   creator_offer: {
     title: "Prepare your collaboration offer",
@@ -1926,6 +1923,7 @@ function SetupPlan({
               form={renderTaskForm({
                 task: currentTask,
                 propertyId: plan.propertyId,
+                selectedTracks: status.organization.selectedTracks,
                 onBeforeSave: () => onBeforeSaveTask(currentTask, plan.planRevision),
                 onComplete: () => {
                   setHasUnsavedChanges(false);
