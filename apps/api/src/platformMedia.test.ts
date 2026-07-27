@@ -18,6 +18,7 @@ import {
   createInMemoryPlatformMediaRepository,
   type PlatformMediaObjectRecord,
   type PlatformMediaPurpose,
+  PlatformMediaProfileRevisionConflictError,
   type PlatformMediaRepository,
   type PlatformMediaTargetResolver,
   type PlatformMediaUploadFinalizer,
@@ -953,6 +954,7 @@ describe("platform media upload routes", () => {
       payload: {
         purpose: "property.hero_image",
         visibility: "public",
+        expectedProfileRevision: 4,
         resource: {
           product: "marketplace",
           resourceType: "hotel_profile",
@@ -971,6 +973,178 @@ describe("platform media upload routes", () => {
     });
 
     expect(response.statusCode).toBe(201);
+    expect(response.body).toMatchObject({
+      uploadSession: { expectedProfileRevision: 4 },
+    });
+  });
+
+  it("requires a valid profile revision for every property hero media session", async () => {
+    const app = buildMediaApp({
+      permissions: ["marketplace.profile.manage"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel_profile_alpenrose",
+          relationship: "owner",
+        },
+      ],
+    });
+    const payload = {
+      purpose: "property.hero_image",
+      visibility: "public",
+      resource: {
+        product: "marketplace",
+        resourceType: "hotel_profile",
+        resourceId: "hotel_profile_alpenrose",
+      },
+      files: [
+        {
+          filename: "hero.webp",
+          contentType: "image/webp",
+          sizeBytes: 1024,
+        },
+      ],
+    };
+
+    const missing = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const invalid = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...payload, expectedProfileRevision: 0 },
+    });
+    const bookingMissing = await injectJson(buildMediaApp(), {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        ...payload,
+        resource: {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+        },
+      },
+    });
+
+    for (const response of [missing, invalid, bookingMissing]) {
+      expect(response.statusCode).toBe(400);
+      expect((response.body as ErrorResponse).code).toBe("invalid_profile_revision");
+    }
+  });
+
+  it("returns a stable conflict when the property changes before hero finalization", async () => {
+    const delegate = createInMemoryPlatformMediaRepository();
+    const repository: PlatformMediaRepository = {
+      ...delegate,
+      async completeUploadSession() {
+        throw new PlatformMediaProfileRevisionConflictError(5);
+      },
+    };
+    const cleanupGeneratedVariants = vi.fn(async () => {
+      throw new Error("variant cleanup unavailable");
+    });
+    const cleanupUploadedFile = vi.fn(async () => undefined);
+    const finalizer = {
+      ...createDeterministicPlatformMediaFinalizer(),
+      cleanupGeneratedVariants,
+      cleanupUploadedFile,
+    };
+    const app = buildMediaApp({
+      repository,
+      finalizer,
+      permissions: ["marketplace.profile.manage"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel_profile_alpenrose",
+          relationship: "owner",
+        },
+      ],
+      targetResolver: {
+        async resolveTarget({ policy }) {
+          return {
+            ok: true,
+            target: {
+              resourceProduct: policy.targetResourceProduct,
+              resourceType: policy.targetResourceType,
+              resourceId: "property_alpenrose",
+              propertyId: "property_alpenrose",
+            },
+          };
+        },
+      },
+    });
+    const created = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "property.hero_image",
+        visibility: "public",
+        expectedProfileRevision: 4,
+        resource: {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel_profile_alpenrose",
+        },
+        files: [
+          {
+            filename: "hero.webp",
+            contentType: "image/webp",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    });
+    const createBody = created.body as MediaCreateResponse;
+
+    const finalized = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${createBody.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: createBody.uploadTargets.map((target) => ({
+          uploadTargetId: target.uploadTargetId,
+          contentType: "image/webp",
+          sizeBytes: 1024,
+        })),
+      },
+    });
+
+    expect(finalized.statusCode).toBe(409);
+    expect(finalized.body).toEqual({
+      code: "profile_revision_conflict",
+      message: "The property profile changed while its hero image was being finalized.",
+      currentRevision: 5,
+    });
+    expect(cleanupGeneratedVariants).toHaveBeenCalledOnce();
+    expect(cleanupGeneratedVariants).toHaveBeenCalledWith({
+      session: expect.objectContaining({
+        expectedProfileRevision: 4,
+        status: "signed",
+      }),
+      file: expect.objectContaining({
+        sessionFile: expect.objectContaining({ filename: "hero.webp" }),
+      }),
+      variants: expect.arrayContaining([
+        expect.objectContaining({ variantName: "original_safe" }),
+        expect.objectContaining({ variantName: "large" }),
+        expect.objectContaining({ variantName: "thumbnail" }),
+        expect.objectContaining({ variantName: "blur_preview" }),
+      ]),
+    });
+    expect(cleanupUploadedFile).toHaveBeenCalledOnce();
+    expect(cleanupGeneratedVariants.mock.invocationCallOrder[0]).toBeLessThan(
+      cleanupUploadedFile.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("rejects unsupported content types before signing", async () => {
@@ -1325,6 +1499,7 @@ describe("platform media upload routes", () => {
       payload: {
         purpose: "property.hero_image",
         visibility: "public",
+        expectedProfileRevision: 1,
         resource: {
           product: "booking",
           resourceType: "booking_hotel",
@@ -1467,6 +1642,7 @@ describe("platform media upload routes", () => {
         headers: auth ? { authorization: auth } : undefined,
         payload: {
           purpose: "property.hero_image",
+          expectedProfileRevision: 1,
           resource: {
             product: "booking",
             resourceType: "booking_hotel",

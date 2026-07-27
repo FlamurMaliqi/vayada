@@ -10,6 +10,116 @@ import {
   resolveHotelMarketplaceDraftResume,
   saveHotelMarketplaceDraft,
 } from "@/lib/utils/hotelMarketplaceDraft";
+import {
+  hotelTaskFlow,
+  hotelTaskResumeStep,
+  parseMarketplaceHotelTaskHandoff,
+  type MarketplaceHotelSetupTaskId,
+} from "./hotelTaskFlow";
+
+describe("Marketplace hotel setup task handoff", () => {
+  const destinations: Record<MarketplaceHotelSetupTaskId, string> = {
+    public_profile: "hotel_catalog.public_profile",
+    creator_profile: "marketplace.creator_profile",
+    creator_offer: "marketplace.creator_offer",
+  };
+
+  it.each(Object.entries(destinations))("preserves the %s task and return route", (task, route) => {
+    const taskId = task as MarketplaceHotelSetupTaskId;
+    const returnUrl = "https://marketplace.localhost/setup?propertyId=property-one";
+    const params = new URLSearchParams({
+      activation: "marketplace",
+      taskId,
+      destinationRouteKey: route,
+      planRevision: "plan.v2:one",
+      returnUrl,
+    });
+
+    expect(
+      parseMarketplaceHotelTaskHandoff(
+        params,
+        { getItem: () => "property-one" },
+        "https://marketplace.localhost",
+      ),
+    ).toEqual({
+      propertyId: "property-one",
+      taskId,
+      destinationRouteKey: route,
+      planRevision: "plan.v2:one",
+      returnUrl,
+    });
+  });
+
+  it("rejects a task whose destination does not match", () => {
+    expect(
+      parseMarketplaceHotelTaskHandoff(
+        new URLSearchParams({
+          activation: "marketplace",
+          taskId: "public_profile",
+          destinationRouteKey: "marketplace.creator_offer",
+          planRevision: "plan.v2:one",
+          returnUrl: "https://marketplace.localhost/setup?propertyId=property-one",
+        }),
+        { getItem: () => "property-one" },
+        "https://marketplace.localhost",
+      ),
+    ).toBeNull();
+  });
+
+  it("defines isolated UI and write scopes for every task", () => {
+    expect(hotelTaskFlow("public_profile")).toMatchObject({
+      ensureCover: true,
+      submitPublicProfile: true,
+      submitMarketplaceProfile: false,
+      submitOffers: false,
+      steps: [{ section: "public_profile" }],
+    });
+    expect(hotelTaskFlow("creator_profile")).toMatchObject({
+      ensureCover: false,
+      submitPublicProfile: false,
+      submitMarketplaceProfile: true,
+      submitOffers: false,
+      steps: [{ section: "creator_profile" }],
+    });
+    expect(hotelTaskFlow("creator_offer")).toMatchObject({
+      ensureCover: false,
+      submitPublicProfile: false,
+      submitMarketplaceProfile: false,
+      submitOffers: true,
+      steps: [{ section: "offer_details" }, { section: "offerings" }, { section: "requirements" }],
+    });
+  });
+
+  it("clamps public-profile resume to the visible consent step", () => {
+    expect(
+      hotelTaskResumeStep({
+        taskId: "public_profile",
+        savedStep: 4,
+        authoritativeLocalityPublic: false,
+        needsPhotos: false,
+      }),
+    ).toBe(1);
+  });
+
+  it("keeps offer progress independent from public locality consent", () => {
+    expect(
+      hotelTaskResumeStep({
+        taskId: "creator_offer",
+        savedStep: 3,
+        authoritativeLocalityPublic: false,
+        needsPhotos: false,
+      }),
+    ).toBe(3);
+    expect(
+      hotelTaskResumeStep({
+        taskId: "creator_offer",
+        savedStep: 3,
+        authoritativeLocalityPublic: true,
+        needsPhotos: true,
+      }),
+    ).toBe(1);
+  });
+});
 
 describe("Marketplace hotel profile completion offer resume", () => {
   it("keeps unfinished draft offers when an earlier offer already exists", () => {
@@ -77,7 +187,7 @@ describe("Marketplace hotel profile completion offer resume", () => {
       storage,
       "property-one",
       createHotelMarketplaceDraft(
-        { about: "About the hotel" },
+        { about: "About the hotel", localityPublic: false },
         [completedOffer, pendingMedia],
         4,
         100,

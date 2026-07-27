@@ -223,12 +223,12 @@ import its types and runtime parsers.
 ```ts
 type TrackStatus = {
   track: SetupTrack;
-  provisioning: "not_selected" | "pending" | "active" | "blocked";
+  provisioning: "not_selected" | "active" | "blocked";
   components: Array<{
     product: "booking" | "pms" | "marketplace";
     access: "absent" | "active" | "suspended" | "unavailable";
   }>;
-  allowedActions: Array<"select" | "add" | "manage_service">;
+  allowedActions: Array<"add" | "manage_service">;
 };
 
 type ProductEntryDecision = {
@@ -328,7 +328,7 @@ type PropertyProfileResponse = {
       timezone: string;
       latitude: number | null;
       longitude: number | null;
-      addressPublic: boolean;
+      localityPublic: boolean;
       geoPublic: boolean;
       mapDisplayMode: "hidden" | "approximate" | "exact";
     };
@@ -347,7 +347,46 @@ Catalog property link, and `{ expectedProfileRevision, patch }`. Reads require
 `hotel_catalog.setup.read` and the same link. Patches preserve omitted values;
 validation returns `422` with `{ code: "invalid_setup_request", fields }`, and a
 stale revision returns the current revision with `409 profile_revision_conflict`.
-Public-profile patches own localized descriptions and ordered, approved media.
+Public-profile patches own localized descriptions and ordered, approved media:
+
+```ts
+type PublicPropertyProfileResponse = {
+  propertyId: string;
+  profileRevision: number;
+  publicProfile: {
+    locale: string;
+    shortDescription: string | null;
+    longDescription: string | null;
+    media: Array<{
+      mediaObjectId: string;
+      mediaType: "hero_image" | "gallery_image" | "logo";
+      url: string;
+      altText: string | null;
+      sortOrder: number;
+    }>;
+  };
+};
+
+type UpdatePublicPropertyProfileRequest = {
+  expectedProfileRevision: number;
+  patch: {
+    shortDescription?: string | null;
+    longDescription?: string | null;
+    media?: Array<{
+      mediaObjectId: string;
+      altText: string | null;
+      sortOrder: number;
+    }>;
+  };
+};
+```
+
+The endpoint edits the property's default locale. Media commands may reference
+only active, approved Platform Media objects linked to that property. Omitting
+`media` preserves the current ordering; supplying it replaces the approved
+public list. Upload approval and public-profile writes both advance the same
+`profileRevision`, so a stale description or media edit cannot overwrite newer
+public content.
 
 Handoff creation accepts `{ propertyId, taskId, planRevision }` and returns
 `{ launchUrl, expiresAt }`. The destination exchanges the opaque code once for

@@ -145,6 +145,17 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
       idempotencyKey: "setup-operations",
     });
 
+    expect(
+      await repository.getTrackStatus({ organizationId: fixture.organizationId }),
+    ).toMatchObject({
+      trackRevision: 0,
+      selectedTracks: [],
+      tracks: [
+        { track: "hotel_operations", provisioning: "not_selected" },
+        { track: "creator_marketplace", provisioning: "not_selected" },
+      ],
+    });
+
     const created = await repository.updateTracks(operations);
     expect(created).toMatchObject({
       ok: true,
@@ -164,12 +175,44 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         ],
       },
     });
-    expect(await selectedProducts(fixture.organizationId)).toEqual(["booking", "pms"]);
+    expect(await activeEntitlementProducts(fixture.organizationId)).toEqual(["booking", "pms"]);
     expect(await linkedProducts(fixture.organizationId)).toEqual(["booking", "pms"]);
     expect(await count("booking.booking_settings", "property_id", fixture.propertyId)).toBe(1);
     expect(
       await count("platform.product_audit_events", "organization_id", fixture.organizationId),
     ).toBe(1);
+    expect(await repository.getTrackStatus({ organizationId: fixture.organizationId })).toEqual(
+      created.ok ? created.response : null,
+    );
+    const statusRepository = createPgSharedHotelSetupStatusRepository({
+      connectionString: TEST_DATABASE_URL!,
+    });
+    try {
+      const status = await statusRepository.getHotelSetupStatus({
+        organizationId: fixture.organizationId,
+        propertyIds: [fixture.propertyId],
+      });
+      expect(status.properties).toMatchObject([
+        {
+          propertyId: fixture.propertyId,
+          taskFacts: {
+            shared_identity: {
+              readiness: "actionable",
+              reasonCodes: expect.arrayContaining([
+                "missing_property_type",
+                "missing_street_address",
+                "missing_email_contact",
+              ]),
+            },
+            direct_booking_publication: {
+              readiness: "actionable",
+            },
+          },
+        },
+      ]);
+    } finally {
+      await statusRepository.close?.();
+    }
 
     const replay = await repository.updateTracks(operations);
     expect(replay).toEqual(created);
@@ -220,7 +263,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         selectedTracks: ["hotel_operations", "creator_marketplace"],
       },
     });
-    expect(await selectedProducts(fixture.organizationId)).toEqual([
+    expect(await activeEntitlementProducts(fixture.organizationId)).toEqual([
       "booking",
       "marketplace",
       "pms",
@@ -341,7 +384,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         { product: "booking", access: "suspended" },
       ],
     });
-    expect(await selectedProducts(suspended.organizationId)).toEqual([]);
+    expect(await activeEntitlementProducts(suspended.organizationId)).toEqual([]);
     expect(await linkedProducts(suspended.organizationId)).toEqual([]);
 
     await client.query(
@@ -367,7 +410,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         ],
       },
     });
-    expect(await selectedProducts(suspended.organizationId)).toEqual(["booking", "pms"]);
+    expect(await activeEntitlementProducts(suspended.organizationId)).toEqual(["booking", "pms"]);
     expect(await linkedProducts(suspended.organizationId)).toEqual(["booking", "pms"]);
 
     const scheduledOwnSuspension = await createFixture();
@@ -425,7 +468,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         { product: "booking", access: "absent" },
       ],
     });
-    expect(await selectedProducts(billing.organizationId)).toEqual([]);
+    expect(await activeEntitlementProducts(billing.organizationId)).toEqual([]);
     expect(await linkedProducts(billing.organizationId)).toEqual([]);
 
     const activeBilling = await createFixture();
@@ -513,6 +556,64 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
       ],
     });
     expect(await linkedProducts(suspendedBilling.organizationId)).toEqual([]);
+    const blockedPropertyRepository = createPgSharedHotelSetupStatusRepository({
+      connectionString: TEST_DATABASE_URL!,
+    });
+    try {
+      const blockedProperty = await blockedPropertyRepository.createPropertyProfile({
+        organizationId: suspendedBilling.organizationId,
+        idempotencyKey: "blocked-operations-property",
+        correlationId: "blocked-operations-property",
+        profile: completePropertyProfile("Blocked Operations Test Hotel"),
+      });
+      propertyIds.push(blockedProperty.propertyId);
+      expect(blockedProperty).toMatchObject({
+        profile: {
+          contacts: expect.arrayContaining([
+            expect.objectContaining({
+              channelType: "email",
+              value: "hotel@example.test",
+            }),
+            expect.objectContaining({
+              channelType: "phone",
+              value: "+49 30 123456",
+            }),
+          ]),
+          location: {
+            localityPublic: false,
+            geoPublic: false,
+            mapDisplayMode: "hidden",
+          },
+        },
+      });
+      expect(
+        await linkedProductsForProperty(
+          suspendedBilling.organizationId,
+          blockedProperty.propertyId,
+        ),
+      ).toEqual([]);
+      expect(
+        await count("booking.booking_settings", "property_id", blockedProperty.propertyId),
+      ).toBe(0);
+      await expect(
+        blockedPropertyRepository.createPropertyProfile({
+          organizationId: suspendedBilling.organizationId,
+          idempotencyKey: "blocked-operations-property",
+          correlationId: "blocked-operations-property-replay",
+          profile: completePropertyProfile("Blocked Operations Test Hotel"),
+        }),
+      ).resolves.toMatchObject({ propertyId: blockedProperty.propertyId });
+      await expect(
+        blockedPropertyRepository.createPropertyProfile({
+          organizationId: suspendedBilling.organizationId,
+          idempotencyKey: "blocked-operations-property",
+          correlationId: "blocked-operations-property-conflict",
+          profile: completePropertyProfile("Different Hotel"),
+        }),
+      ).rejects.toMatchObject({ code: "idempotency_key_conflict" });
+    } finally {
+      await blockedPropertyRepository.close?.();
+    }
 
     const futureBilling = await createFixture();
     const futureBillingIdentity = await client.query<{ id: string }>(
@@ -631,7 +732,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
       provisioning: "blocked",
       components: [{ product: "marketplace", access: "absent" }],
     });
-    expect(await selectedProducts(profileOperator.organizationId)).toEqual([]);
+    expect(await activeEntitlementProducts(profileOperator.organizationId)).toEqual([]);
     expect(await linkedProducts(profileOperator.organizationId)).toEqual([]);
 
     const strayMarketplaceLink = await createFixture();
@@ -670,19 +771,10 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
        VALUES ($1::uuid, $2::uuid, 'marketplace', $1)`,
       [conflictedPropertyId, conflictedOwner.organizationId],
     );
-    const mixedMarketplaceStatus = await repository.updateTracks(
-      command(mixedMarketplace, {
-        selectedTracks: ["creator_marketplace"],
-        expectedRevision: 1,
-        idempotencyKey: "setup-mixed-marketplace-status",
-      }),
-    );
     expect(
-      mixedMarketplaceStatus.ok
-        ? mixedMarketplaceStatus.response.tracks.find(
-            (track) => track.track === "creator_marketplace",
-          )
-        : null,
+      (
+        await repository.getTrackStatus({ organizationId: mixedMarketplace.organizationId })
+      ).tracks.find(({ track }) => track === "creator_marketplace"),
     ).toMatchObject({
       provisioning: "blocked",
       components: [{ product: "marketplace", access: "active" }],
@@ -756,7 +848,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
       marketplaceProfile.rows[0]?.organizationId === sharedPropertyOwner.organizationId
         ? sharedPropertyOperator.organizationId
         : sharedPropertyOwner.organizationId;
-    expect(await selectedProducts(losingOrganizationId)).toEqual([]);
+    expect(await activeEntitlementProducts(losingOrganizationId)).toEqual([]);
     expect(await linkedProducts(losingOrganizationId)).toEqual([]);
 
     const propertyRace = await createFixture();
@@ -783,9 +875,11 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
 
       propertyPromise = propertyRepository.createPropertyProfile({
         organizationId: propertyRace.organizationId,
+        idempotencyKey: "setup-property-create-race",
+        correlationId: "setup-property-create-race",
         profile: completePropertyProfile("Concurrent Track Test Hotel"),
       });
-      await waitForBlockedQuery("FROM identity.organizations");
+      await waitForBlockedQuery("hotel_setup.property.create");
       await client.query("COMMIT");
       blockerOpen = false;
 
@@ -824,7 +918,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         actorUserId: randomUUID(),
       }),
     ).rejects.toMatchObject({ code: "23503" });
-    expect(await selectedProducts(rollback.organizationId)).toEqual([]);
+    expect(await activeEntitlementProducts(rollback.organizationId)).toEqual([]);
     expect(await linkedProducts(rollback.organizationId)).toEqual([]);
     expect(
       await count(
@@ -928,7 +1022,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     };
   }
 
-  async function selectedProducts(organizationId: string): Promise<string[]> {
+  async function activeEntitlementProducts(organizationId: string): Promise<string[]> {
     const result = await client.query<{ product: string }>(
       `SELECT product
        FROM identity.product_entitlements
@@ -1040,23 +1134,30 @@ function completePropertyProfile(displayName: string) {
     propertyType: "hotel",
     location: {
       countryCode: "DE",
-      region: "Berlin",
       city: "Berlin",
       streetAddress: "1 Test Street",
       postalCode: "10115",
-      rawMarketplaceLocation: null,
       timezone: "Europe/Berlin",
       latitude: null,
       longitude: null,
-      addressPublic: false,
+      localityPublic: false,
+      geoPublic: false,
       mapDisplayMode: "hidden" as const,
     },
-    website: null,
-    contactEmail: "hotel@example.test",
-    phone: "+49 30 123456",
-    shortDescription: null,
-    longDescription: null,
-    media: [],
+    contacts: [
+      {
+        channelType: "email" as const,
+        value: "hotel@example.test",
+        purpose: "guest" as const,
+        isPublic: false,
+      },
+      {
+        channelType: "phone" as const,
+        value: "+49 30 123456",
+        purpose: "operations" as const,
+        isPublic: false,
+      },
+    ],
   };
 }
 

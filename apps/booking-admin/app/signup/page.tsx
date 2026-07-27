@@ -23,7 +23,6 @@ export default function SignupPage() {
     try {
       await authService.signup(data);
       const decision = await resolveBookingSetupGuard("/dashboard");
-      localStorage.setItem("setupComplete", decision.action === "enter_product" ? "true" : "false");
       router.push(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : t("auth.register.errorUnexpected"));

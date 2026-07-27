@@ -6,6 +6,10 @@ import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 
 import type { MarketplaceOfferIdentityAccessCommandPort } from "../platform/marketplaceOfferIdentityAccess.js";
 import type { MarketplaceOfferMediaPromotionPort } from "../platform/marketplaceOfferMediaPromotion.js";
+import {
+  ensureCanonicalPropertySlug,
+  PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE,
+} from "../platform/publicBookabilityPublication.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
@@ -663,6 +667,7 @@ export function createPgMarketplaceAdminRepository(config: {
       return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
         if (!profile) return null;
+        assertMarketplaceProfileComplete(profile);
         const offer = await client.query<{ id: string }>(
           `INSERT INTO marketplace.marketplace_offers (
              property_id,
@@ -733,13 +738,14 @@ export function createPgMarketplaceAdminRepository(config: {
             creatorRequirements: input.request.creatorRequirements,
           });
         }
-        await syncOfferReadModel(client, target.offerResourceId, "preserve");
+        await syncOfferReadModel(client, target.offerResourceId, "initialize");
         return readOffer(client, target.offerResourceId, input.authorizationMode);
       });
     },
     async verifyOfferForUser(input) {
       const profile = await resolveAdminHotelProfile(pool, input.hotelUserId);
       if (!profile || !["pending", "verified"].includes(profile.profileStatus)) return null;
+      assertMarketplaceProfileComplete(profile);
       const target = await resolveOfferForProfile(pool, profile, input.offerId);
       if (!target || !["pending", "verified"].includes(target.offerStatus)) return null;
       if (!(await hasEligibleOfferMedia(pool, profile.organizationId, target.offerResourceId))) {
@@ -765,6 +771,7 @@ export function createPgMarketplaceAdminRepository(config: {
            SET marketplace_profile_status = 'verified', updated_at = now()
            WHERE property_id = $1::uuid
              AND organization_id = $2::uuid
+             AND profile_complete = TRUE
              AND marketplace_profile_status IN ('pending', 'verified')
            RETURNING property_id::text AS "propertyId"`,
           [profile.propertyId, profile.organizationId],
@@ -1538,7 +1545,15 @@ type AdminHotelProfile = {
   propertyId: string;
   organizationId: string;
   profileStatus: "pending" | "verified" | "rejected" | "suspended" | "archived";
+  profileComplete: boolean;
 };
+
+function assertMarketplaceProfileComplete(profile: AdminHotelProfile): void {
+  if (profile.profileComplete) return;
+  throw Object.assign(new Error("Marketplace profile must be complete before offer verification"), {
+    statusCode: 422,
+  });
+}
 
 type AdminHotelReviewRow = AdminHotelProfile & {
   displayName: string;
@@ -1585,7 +1600,8 @@ async function resolveAdminHotelProfile(
     `SELECT
        profile.property_id::text AS "propertyId",
        profile.organization_id::text AS "organizationId",
-       profile.marketplace_profile_status AS "profileStatus"
+       profile.marketplace_profile_status AS "profileStatus",
+       profile.profile_complete AS "profileComplete"
      FROM marketplace.marketplace_hotel_profiles profile
      JOIN identity.organization_memberships membership
        ON membership.organization_id = profile.organization_id
@@ -1607,17 +1623,14 @@ const ADMIN_HOTEL_REVIEW_SELECT_SQL = `
     profile.property_id::text AS "propertyId",
     profile.organization_id::text AS "organizationId",
     profile.marketplace_profile_status AS "profileStatus",
+    profile.profile_complete AS "profileComplete",
     COALESCE(NULLIF(public_profile.display_name, ''), property.display_name) AS "displayName",
-    COALESCE(
-      NULLIF(public_profile.location->>'rawMarketplaceLocation', ''),
-      NULLIF(concat_ws(
-        ', ',
-        NULLIF(public_profile.location->>'city', ''),
-        NULLIF(public_profile.location->>'countryCode', '')
-      ), ''),
-      NULLIF(location.raw_marketplace_location, ''),
-      NULLIF(concat_ws(', ', NULLIF(location.city, ''), NULLIF(location.country_code::text, '')), '')
-    ) AS location,
+    NULLIF(concat_ws(
+      ', ',
+      NULLIF(public_profile.location->>'city', ''),
+      NULLIF(public_profile.location->>'region', ''),
+      NULLIF(public_profile.location->>'countryCode', '')
+    ), '') AS location,
     profile.host_summary AS "hostSummary",
     profile.created_at AS "createdAt",
     profile.updated_at AS "updatedAt"
@@ -1633,8 +1646,6 @@ const ADMIN_HOTEL_REVIEW_SELECT_SQL = `
   JOIN hotel_catalog.properties property ON property.id = profile.property_id
   LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
     ON public_profile.property_id = profile.property_id
-  LEFT JOIN hotel_catalog.property_locations location
-    ON location.property_id = profile.property_id
   ORDER BY profile.updated_at DESC, profile.property_id ASC
   LIMIT 1
 `;
@@ -1929,8 +1940,23 @@ const PUBLIC_OFFER_MEDIA_LATERAL_SQL = offerMediaLateralSql(true);
 export async function syncOfferReadModel(
   client: Pick<MarketplaceAdminPool, "query">,
   offerId: string,
-  visibilityMode: "initialize" | "preserve" | "disable",
+  visibilityMode: "initialize" | "disable",
+  options: { catalogAlreadyProjected?: boolean } = {},
 ): Promise<void> {
+  const source = await client.query<{ propertyId: string }>(
+    `SELECT offer.property_id::text AS "propertyId"
+     FROM marketplace.marketplace_offers offer
+     WHERE offer.id = $1::uuid
+     LIMIT 1`,
+    [offerId],
+  );
+  const propertyId = source.rows[0]?.propertyId;
+  if (!propertyId) return;
+
+  if (!options.catalogAlreadyProjected) {
+    if (!(await ensureCanonicalPropertySlug(client, propertyId))) return;
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [propertyId]);
+  }
   await client.query(
     `INSERT INTO marketplace.marketplace_offer_read_model (
        offer_id,
@@ -1960,45 +1986,43 @@ export async function syncOfferReadModel(
        offer.accommodation_type,
        CASE
          WHEN $2 = 'disable' THEN 'disabled'
-         WHEN $2 = 'preserve' AND current_projection.visibility_status IS NOT NULL
-           THEN current_projection.visibility_status
          WHEN offer.offer_status = 'verified'
           AND marketplace_profile.marketplace_profile_status = 'verified'
+          AND marketplace_profile.profile_complete = TRUE
+          AND COALESCE(public_profile.profile_status, property.profile_status) = 'complete'
           AND COALESCE(cardinality(offer_media.urls), 0) > 0
           AND NULLIF(btrim(COALESCE(public_profile.display_name, property.display_name)), '')
             IS NOT NULL
           AND (
-            NULLIF(public_profile.location->>'rawMarketplaceLocation', '') IS NOT NULL
-            OR NULLIF(public_profile.location->>'city', '') IS NOT NULL
+            NULLIF(public_profile.location->>'city', '') IS NOT NULL
             OR NULLIF(public_profile.location->>'countryCode', '') IS NOT NULL
-            OR NULLIF(property_location.raw_marketplace_location, '') IS NOT NULL
-            OR NULLIF(property_location.city, '') IS NOT NULL
-            OR NULLIF(property_location.country_code::text, '') IS NOT NULL
+            OR NULLIF(public_profile.location->>'region', '') IS NOT NULL
           )
            THEN 'public'
          ELSE 'private'
        END,
        jsonb_strip_nulls(jsonb_build_object(
-         'rawMarketplaceLocation', property_location.raw_marketplace_location,
-         'city', property_location.city,
-         'countryCode', property_location.country_code
-       )) || COALESCE(public_profile.location, '{}'::jsonb),
+         'countryCode', public_profile.location ->> 'countryCode',
+         'region', public_profile.location ->> 'region',
+         'city', public_profile.location ->> 'city',
+         'geo', public_profile.location -> 'geo',
+         'mapDisplayMode', public_profile.location ->> 'mapDisplayMode'
+       )),
        COALESCE(offer_media.urls, offer.image_urls, '{}'::text[]),
        COALESCE(compensation.items, '[]'::jsonb),
        COALESCE(requirements.item, '{}'::jsonb),
-       jsonb_build_object('source', 'marketplace_admin'),
+       jsonb_strip_nulls(jsonb_build_object(
+         'source', 'marketplace_admin',
+         'catalogProjectedAt', public_profile.projected_at
+       )),
        now()
      FROM marketplace.marketplace_offers offer
      JOIN hotel_catalog.properties property ON property.id = offer.property_id
      JOIN marketplace.marketplace_hotel_profiles marketplace_profile
        ON marketplace_profile.property_id = offer.property_id
       AND marketplace_profile.organization_id = offer.organization_id
-     LEFT JOIN marketplace.marketplace_offer_read_model current_projection
-       ON current_projection.offer_id = offer.id
      LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
        ON public_profile.property_id = offer.property_id
-     LEFT JOIN hotel_catalog.property_locations property_location
-       ON property_location.property_id = offer.property_id
      ${PUBLIC_OFFER_MEDIA_LATERAL_SQL}
      LEFT JOIN LATERAL (
        SELECT slug.slug
@@ -2061,6 +2085,29 @@ export async function syncOfferReadModel(
          projected_at = EXCLUDED.projected_at`,
     [offerId, visibilityMode],
   );
+}
+
+export async function syncPropertyOfferReadModels(
+  client: Pick<MarketplaceAdminPool, "query">,
+  input: { organizationId: string; propertyId: string },
+): Promise<void> {
+  if (!(await ensureCanonicalPropertySlug(client, input.propertyId))) return;
+  await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [input.propertyId]);
+
+  const offers = await client.query<{ offerId: string }>(
+    `SELECT offer.id::text AS "offerId"
+     FROM marketplace.marketplace_offers offer
+     WHERE offer.organization_id = $1::uuid
+       AND offer.property_id = $2::uuid
+       AND offer.offer_status <> 'archived'
+     ORDER BY offer.id`,
+    [input.organizationId, input.propertyId],
+  );
+  for (const { offerId } of offers.rows) {
+    await syncOfferReadModel(client, offerId, "initialize", {
+      catalogAlreadyProjected: true,
+    });
+  }
 }
 
 export async function readOffer(
@@ -2601,14 +2648,12 @@ const COLLABORATION_SELECT_SQL = `
     collaboration.lifecycle_status AS status,
     collaboration.compensation_type AS "compensationType",
     offer.title AS "offerTitle",
-    COALESCE(
-      NULLIF(public_profile.location->>'rawMarketplaceLocation', ''),
-      NULLIF(concat_ws(
-        ', ',
-        NULLIF(public_profile.location->>'city', ''),
-        NULLIF(public_profile.location->>'countryCode', '')
-      ), '')
-    ) AS "hotelLocation",
+    NULLIF(concat_ws(
+      ', ',
+      NULLIF(public_profile.location->>'city', ''),
+      NULLIF(public_profile.location->>'region', ''),
+      NULLIF(public_profile.location->>'countryCode', '')
+    ), '') AS "hotelLocation",
     creator.display_name AS "creatorName",
     creator.profile_picture_url AS "creatorAvatarUrl",
     COALESCE(public_profile.display_name, property.display_name) AS "hotelName",

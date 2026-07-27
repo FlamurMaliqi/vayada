@@ -162,14 +162,13 @@ async function listScopedBookingHotels(): Promise<HotelSummary[]> {
     }
   }
 
-  return status.properties.map((property) => {
+  return status.propertySelection.availableProperties.map((property) => {
     const canonical = canonicalByPropertyId.get(property.propertyId);
     const selected = canonical ?? selfFallbackByPropertyId.get(property.propertyId);
     return {
       id: selected?.hotelId ?? property.propertyId,
       propertyId: property.propertyId,
       bookingHotelId: canonical?.hotelId,
-      productReady: true,
       name: property.displayName ?? "Unnamed hotel",
       slug: selected?.slug ?? "",
       location: property.locationSummary ?? "",
@@ -261,25 +260,10 @@ async function updateTargetDesignSettings(
   );
 }
 
-export interface SetupPrefillData {
-  property_name?: string;
-  reservation_email?: string;
-  phone_number?: string;
-  address?: string;
-  hero_image?: string;
-}
-
-export interface SetupStatusResponse {
-  setup_complete: boolean;
-  missing_fields: string[];
-  prefill_data?: SetupPrefillData | null;
-}
-
 export interface HotelSummary {
   id: string;
   propertyId?: string;
   bookingHotelId?: string;
-  productReady?: boolean;
   name: string;
   slug: string;
   location: string;
@@ -380,11 +364,6 @@ export const settingsService = {
   updatePropertySettings: (data: PropertySettingsUpdate, hotelId?: string) =>
     updateTargetPropertySettings(data, hotelId),
 
-  createHotel: (data: PropertySettingsUpdate) => {
-    void data;
-    return unavailableTargetRoute<PropertySettings>("Legacy Booking setup creation");
-  },
-
   changePassword: (current_password: string, new_password: string) =>
     apiClient.post("/auth/change-password", { current_password, new_password }),
 
@@ -420,15 +399,6 @@ export const settingsService = {
 
   disconnectCustomDomain: async (): Promise<void> =>
     deleteBookingCustomDomain({ hotelId: await resolveBookingHotelId() }),
-
-  getSetupStatus: async () => {
-    const hotels = await listScopedBookingHotels();
-    return {
-      setup_complete: hotels.length > 0,
-      missing_fields: hotels.length > 0 ? [] : ["property"],
-      prefill_data: null,
-    };
-  },
 };
 
 function unavailableTargetRoute<T>(surface: string): Promise<T> {

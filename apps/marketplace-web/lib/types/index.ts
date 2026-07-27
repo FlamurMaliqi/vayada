@@ -156,13 +156,18 @@ export interface HotelListing {
 export interface HotelProfile {
   id: string;
   user_id: string; // Reference to the user account
+  canonicalProfileRevision: number;
+  publicProfileRevision: number;
   name: string; // Company/Chain name
   propertyType?: string | null;
   category: string;
   location: string;
+  localityPublic: boolean;
   picture?: string | null;
   website?: string | null;
   about?: string | null;
+  publicAbout?: string | null;
+  marketplaceAbout?: string | null;
   email: string;
   phone?: string | null;
   status: UserStatus;
@@ -443,6 +448,7 @@ export interface ListingFormData {
     createdOfferId?: string;
     createdOfferMediaResourceId?: string;
     mediaPending?: boolean;
+    existingOffer?: boolean;
   };
 }
 
@@ -457,4 +463,5 @@ export interface CreatorFormState {
 
 export interface HotelFormState {
   about: string;
+  localityPublic: boolean;
 }

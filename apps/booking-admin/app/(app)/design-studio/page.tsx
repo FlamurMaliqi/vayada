@@ -4,7 +4,9 @@ import { useState, useRef, useEffect } from "react";
 import { EyeIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { settingsService } from "@/services/settings";
 import { requireSelectedBookingHotelId } from "@/services/api/bookingHotelScope";
+import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import { publishPublicBookabilityProfile } from "@/services/api/publicBookabilityPublicationClient";
+import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { FeedbackAlert, SaveButton } from "@/components/ui";
 import { uploadSingleImage } from "@/lib/utils/uploadImage";
@@ -42,6 +44,7 @@ export default function DesignStudioPage() {
   const [propertyEmail, setPropertyEmail] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const designHotelIdRef = useRef<string | null>(null);
+  const profileRevisionRef = useRef<number | null>(null);
 
   // Colors state
   const [primaryColor, setPrimaryColor] = useState("#4F46E5");
@@ -72,6 +75,7 @@ export default function DesignStudioPage() {
 
   useEffect(() => {
     setLoadFailed(false);
+    profileRevisionRef.current = null;
     try {
       designHotelIdRef.current ??= requireSelectedBookingHotelId();
     } catch {
@@ -79,11 +83,16 @@ export default function DesignStudioPage() {
       setLoading(false);
       return;
     }
+    const hotelId = designHotelIdRef.current;
     Promise.all([
-      settingsService.getDesignSettings(designHotelIdRef.current),
-      settingsService.getPropertySettings(designHotelIdRef.current).catch(() => null),
+      settingsService.getDesignSettings(hotelId),
+      settingsService.getPropertySettings(hotelId).catch(() => null),
+      getBookingHotelPropertyLink({ hotelId }).then(({ propertyId }) =>
+        sharedHotelSetupApi.getPropertyProfile(propertyId),
+      ),
     ])
-      .then(([settings, property]) => {
+      .then(([settings, property, canonicalProfile]) => {
+        profileRevisionRef.current = canonicalProfile.profileRevision;
         if (settings.hero_image) setHeroImage(settings.hero_image);
         if (settings.hero_heading) setHeroHeading(settings.hero_heading);
         if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
@@ -107,7 +116,16 @@ export default function DesignStudioPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     const hotelId = designHotelIdRef.current;
-    if (!hotelId) return;
+    const expectedProfileRevision = profileRevisionRef.current;
+    if (!hotelId || expectedProfileRevision === null) {
+      e.target.value = "";
+      setFeedback({
+        type: "error",
+        message:
+          "The property profile version is unavailable. Refresh Design Studio before uploading a hero image.",
+      });
+      return;
+    }
 
     const previousImage = heroImage;
     const previewUrl = URL.createObjectURL(file);
@@ -115,7 +133,13 @@ export default function DesignStudioPage() {
 
     try {
       setUploading(true);
-      const s3Url = await uploadSingleImage(file, "property.hero_image", hotelId);
+      const s3Url = await uploadSingleImage(
+        file,
+        "property.hero_image",
+        hotelId,
+        expectedProfileRevision,
+      );
+      profileRevisionRef.current = expectedProfileRevision + 1;
       URL.revokeObjectURL(previewUrl);
       setHeroImage(s3Url);
 
@@ -129,7 +153,13 @@ export default function DesignStudioPage() {
       console.error("Image upload failed:", err);
       URL.revokeObjectURL(previewUrl);
       setHeroImage(previousImage);
-      setFeedback({ type: "error", message: "Image upload failed. Please try again." });
+      setFeedback({
+        type: "error",
+        message:
+          err instanceof Error && err.message.includes("property profile changed")
+            ? "This property changed in another session. Refresh Design Studio before uploading a new hero image."
+            : "Image upload failed. Please try again.",
+      });
     } finally {
       setUploading(false);
     }

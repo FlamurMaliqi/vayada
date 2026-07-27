@@ -4,11 +4,15 @@ import {
   clearHotelMarketplaceDraft,
   createHotelMarketplaceDraft,
   ensureHotelMarketplaceOfferIdempotency,
+  firstHotelMarketplaceOfferCoverSource,
   initialHotelMarketplaceOfferImages,
   markHotelMarketplaceDraftOfferCreated,
   markHotelMarketplaceDraftOfferProgress,
   pendingHotelMarketplaceDraftListings,
   readHotelMarketplaceDraft,
+  replaceFirstOfferPhotoWithCanonicalCover,
+  resolveHotelMarketplaceCoverSource,
+  restoreHotelMarketplaceDraftForm,
   saveHotelMarketplaceDraft,
 } from "./hotelMarketplaceDraft";
 
@@ -48,17 +52,74 @@ describe("hotel Marketplace draft", () => {
     expect(initialHotelMarketplaceOfferImages(null)).toEqual([]);
   });
 
+  it("promotes one selected local photo to the canonical cover without uploading the file twice", () => {
+    const firstFile = new File(["first"], "first.webp", { type: "image/webp" });
+    const secondFile = new File(["second"], "second.webp", { type: "image/webp" });
+    const offer = listing({
+      images: ["data:image/webp;base64,Zmlyc3Q=", "data:image/webp;base64,c2Vjb25k"],
+      imageMediaObjectIds: [],
+      imageFiles: [firstFile, secondFile],
+    });
+
+    expect(firstHotelMarketplaceOfferCoverSource(offer)).toEqual({
+      kind: "file",
+      file: firstFile,
+    });
+    expect(
+      replaceFirstOfferPhotoWithCanonicalCover(offer, "https://cdn.example/canonical-cover.webp"),
+    ).toMatchObject({
+      images: ["https://cdn.example/canonical-cover.webp", "data:image/webp;base64,c2Vjb25k"],
+      imageFiles: [secondFile],
+    });
+  });
+
+  it("can promote the first remote photo from a restored draft", () => {
+    const offer = listing({
+      images: ["https://source.example/first.webp", "https://source.example/second.webp"],
+      imageMediaObjectIds: [],
+      imageFiles: [],
+    });
+
+    expect(firstHotelMarketplaceOfferCoverSource(offer)).toEqual({
+      kind: "remote_url",
+      url: "https://source.example/first.webp",
+    });
+    expect(
+      replaceFirstOfferPhotoWithCanonicalCover(offer, "https://cdn.example/canonical-cover.webp"),
+    ).toMatchObject({
+      images: ["https://cdn.example/canonical-cover.webp", "https://source.example/second.webp"],
+      imageFiles: [],
+    });
+  });
+
+  it("uses a selected replacement when an existing offer has no reusable cover media", () => {
+    const selectedFile = new File(["replacement"], "replacement.jpg", { type: "image/jpeg" });
+
+    expect(resolveHotelMarketplaceCoverSource({ existingOfferCoverUrl: null })).toBeNull();
+    expect(
+      resolveHotelMarketplaceCoverSource({
+        selectedFile,
+        existingOfferCoverUrl: null,
+      }),
+    ).toEqual({ kind: "file", file: selectedFile });
+  });
+
   it("restores serializable offer fields and remote media", () => {
     const storage = memoryStorage();
     saveHotelMarketplaceDraft(
       storage,
       "property-1",
-      createHotelMarketplaceDraft({ about: "About the hotel" }, [listing()], 3, 100),
+      createHotelMarketplaceDraft(
+        { about: "About the hotel", localityPublic: false },
+        [listing()],
+        3,
+        100,
+      ),
     );
 
     expect(readHotelMarketplaceDraft(storage, "property-1", 200)).toMatchObject({
       currentStep: 3,
-      form: { about: "About the hotel" },
+      form: { about: "About the hotel", localityPublic: false },
       listings: [
         { name: "Creator stay", images: ["https://cdn.example/hotel.jpg"], imageFiles: [] },
       ],
@@ -66,12 +127,51 @@ describe("hotel Marketplace draft", () => {
     });
   });
 
+  it("restores draft copy without overwriting current locality consent", () => {
+    expect(
+      restoreHotelMarketplaceDraftForm(
+        { about: "Saved creator-facing copy", localityPublic: true },
+        false,
+      ),
+    ).toEqual({
+      about: "Saved creator-facing copy",
+      localityPublic: false,
+    });
+    expect(
+      restoreHotelMarketplaceDraftForm(
+        { about: "Saved creator-facing copy", localityPublic: false },
+        true,
+      ),
+    ).toEqual({
+      about: "Saved creator-facing copy",
+      localityPublic: true,
+    });
+  });
+
+  it("discards drafts that predate explicit locality consent", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "vayada_hotel_marketplace_draft:property-1",
+      JSON.stringify({
+        version: 2,
+        savedAt: 100,
+        currentStep: 1,
+        form: { about: "About the hotel" },
+        listings: [listing()],
+        omittedLocalPhotos: false,
+      }),
+    );
+
+    expect(readHotelMarketplaceDraft(storage, "property-1", 200)).toBeNull();
+    expect(storage.removeItem).toHaveBeenCalledWith("vayada_hotel_marketplace_draft:property-1");
+  });
+
   it("persists one stable idempotency key per draft offer", () => {
     const storage = memoryStorage();
     const first = ensureHotelMarketplaceOfferIdempotency(listing({ name: "First offer" }));
     const second = ensureHotelMarketplaceOfferIdempotency(listing({ name: "Second offer" }));
     const draft = createHotelMarketplaceDraft(
-      { about: "About the hotel" },
+      { about: "About the hotel", localityPublic: false },
       [first, second],
       4,
       100,
@@ -96,7 +196,12 @@ describe("hotel Marketplace draft", () => {
     saveHotelMarketplaceDraft(
       storage,
       "property-1",
-      createHotelMarketplaceDraft({ about: "About" }, [first, second], 4, 100),
+      createHotelMarketplaceDraft(
+        { about: "About", localityPublic: false },
+        [first, second],
+        4,
+        100,
+      ),
     );
 
     markHotelMarketplaceDraftOfferCreated(
@@ -116,7 +221,12 @@ describe("hotel Marketplace draft", () => {
     saveHotelMarketplaceDraft(
       storage,
       "property-1",
-      createHotelMarketplaceDraft({ about: "About" }, [first, second], 4, 250),
+      createHotelMarketplaceDraft(
+        { about: "About", localityPublic: false },
+        [first, second],
+        4,
+        250,
+      ),
     );
     expect(
       readHotelMarketplaceDraft(storage, "property-1", 300)?.listings[0]?.marketplaceOnboarding
@@ -131,7 +241,7 @@ describe("hotel Marketplace draft", () => {
     saveHotelMarketplaceDraft(
       storage,
       "property-1",
-      createHotelMarketplaceDraft({ about: "About" }, [offer], 4, 100),
+      createHotelMarketplaceDraft({ about: "About", localityPublic: false }, [offer], 4, 100),
     );
 
     markHotelMarketplaceDraftOfferProgress(
@@ -175,7 +285,7 @@ describe("hotel Marketplace draft", () => {
     const storage = memoryStorage();
     const file = new File(["image"], "hotel.png", { type: "image/png" });
     const draft = createHotelMarketplaceDraft(
-      { about: "About the hotel" },
+      { about: "About the hotel", localityPublic: false },
       [listing({ images: ["data:image/png;base64,aGVsbG8="], imageFiles: [file] })],
       4,
       100,
@@ -196,14 +306,14 @@ describe("hotel Marketplace draft", () => {
     saveHotelMarketplaceDraft(
       storage,
       "expired",
-      createHotelMarketplaceDraft({ about: "About" }, [listing()], 2, 0),
+      createHotelMarketplaceDraft({ about: "About", localityPublic: false }, [listing()], 2, 0),
     );
     expect(readHotelMarketplaceDraft(storage, "expired", 8 * 24 * 60 * 60 * 1_000)).toBeNull();
 
     saveHotelMarketplaceDraft(
       storage,
       "complete",
-      createHotelMarketplaceDraft({ about: "About" }, [listing()], 2),
+      createHotelMarketplaceDraft({ about: "About", localityPublic: false }, [listing()], 2),
     );
     clearHotelMarketplaceDraft(storage, "complete");
     expect(readHotelMarketplaceDraft(storage, "complete")).toBeNull();

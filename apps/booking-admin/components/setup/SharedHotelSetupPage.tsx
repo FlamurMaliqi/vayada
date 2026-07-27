@@ -5,18 +5,17 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   SharedAccountDetailsStep,
   SharedFirstRunPropertySetupWizard,
-  buildProductHandoffUrl,
   isSharedAccountDetailsComplete,
   isSafeSharedHotelSetupReturnTo,
   normalizeSharedAccountName,
   parseSharedHotelSetupEntryProduct,
   safeSharedHotelSetupReturnTo,
-  type SharedFirstRunProductContinueInput,
+  type SharedFirstRunContinueInput,
   type SharedHotelSetupEntryProduct,
 } from "@vayada/product-onboarding";
 
 import { authService } from "@/services/auth";
-import { getAuthSessionUser, getAuthWorkosOrganizationId } from "@/services/auth/sessionStore";
+import { getAuthSessionUser } from "@/services/auth/sessionStore";
 import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
@@ -87,33 +86,23 @@ export function SharedHotelSetupPage({
   const initialAddProperty = searchParams.get("mode") === "add";
   const initialPropertyId = searchParams.get("propertyId");
 
-  const handleProductContinue = async (input: SharedFirstRunProductContinueInput) => {
+  const handleContinue = async (input: SharedFirstRunContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
-    const workosOrganizationId = getAuthWorkosOrganizationId();
+    if (input.action === "continue_setup") {
+      const handoff = await sharedHotelSetupApi.createHandoff({
+        propertyId: input.propertyId,
+        taskId: input.taskId,
+        planRevision: input.planRevision,
+      });
+      window.location.href = handoff.launchUrl;
+      return;
+    }
     if (input.product === "pms") {
-      window.location.href = buildProductHandoffUrl(
-        PMS_FRONTEND_URL,
-        input.propertyId,
-        input.organizationId,
-        workosOrganizationId,
-      );
+      window.location.href = new URL("/dashboard", PMS_FRONTEND_URL).toString();
       return;
     }
     if (input.product === "marketplace") {
-      const redirect =
-        input.action === "complete_product_activation"
-          ? `/profile/complete?${new URLSearchParams({
-              activation: "marketplace",
-              propertyId: input.propertyId,
-            }).toString()}`
-          : undefined;
-      window.location.href = buildProductHandoffUrl(
-        MARKETPLACE_FRONTEND_URL,
-        input.propertyId,
-        input.organizationId,
-        workosOrganizationId,
-        redirect,
-      );
+      window.location.href = new URL("/marketplace", MARKETPLACE_FRONTEND_URL).toString();
       return;
     }
     if (input.product === "booking") {
@@ -125,12 +114,8 @@ export function SharedHotelSetupPage({
         );
         if (bookingHotel) localStorage.setItem("selectedHotelId", bookingHotel.id);
       } catch {
-        // The legacy setup route retries the scoped mapping and handles missing access.
+        // The destination guard resolves scoped access again before entering Booking.
       }
-    }
-    if (input.action === "complete_product_activation" && input.product === "booking") {
-      window.location.href = `/setup?legacy=booking&propertyId=${encodeURIComponent(input.propertyId)}`;
-      return;
     }
     if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {
       router.push(input.returnTo);
@@ -193,10 +178,7 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
-      autoContinueToProduct
-      accountContactEmail={accountContactEmail}
-      accountContactPhone={accountContactPhone}
-      onProductContinue={handleProductContinue}
+      onContinue={handleContinue}
     />
   );
 }

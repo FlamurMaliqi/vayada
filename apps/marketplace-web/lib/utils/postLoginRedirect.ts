@@ -1,3 +1,5 @@
+import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
+
 import { ROUTES, STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
 import { creatorService } from "@/services/api/creators";
@@ -14,6 +16,13 @@ export async function getMarketplacePostLoginRedirect(
   returnTo: string = ROUTES.MARKETPLACE,
   storage: ProfileStorage | null = browserStorage(),
 ): Promise<string> {
+  if (
+    isSafeRelativeReturnTo(returnTo) &&
+    new URL(returnTo, "https://vayada.local").pathname === "/handoff"
+  ) {
+    return returnTo;
+  }
+
   const userType = storage?.getItem(STORAGE_KEYS.USER_TYPE) as UserType | null;
 
   if (userType === "hotel") {

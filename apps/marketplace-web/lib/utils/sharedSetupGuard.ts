@@ -1,6 +1,5 @@
 import {
   buildSharedHotelSetupRedirectPath,
-  canOpenMarketplaceProfileTools,
   resolveSharedHotelSetupGuardDecision,
   resolveSharedHotelSetupGuard,
   type SharedHotelSetupApi,
@@ -13,34 +12,15 @@ type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem"> &
   Partial<Pick<Storage, "removeItem">>;
 
 export const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
-export { canOpenMarketplaceProfileTools };
 
 export function marketplaceSetupRedirectPath(returnTo: string, propertyId?: string | null): string {
   return buildSharedHotelSetupRedirectPath({ entryProduct: "marketplace", returnTo, propertyId });
 }
 
-export function marketplaceActivationPath(propertyId: string): string {
-  return `/profile/complete?${new URLSearchParams({
-    activation: "marketplace",
-    propertyId,
-  }).toString()}`;
-}
-
-export function isMarketplaceActivationDecision(decision: SharedHotelSetupGuardDecision): boolean {
-  return (
-    decision.action === "redirect_to_setup" &&
-    decision.setupAction === "complete_product_activation" &&
-    canOpenMarketplaceProfileTools(decision)
-  );
-}
-
 export function marketplaceGuardRedirectPath(
   decision: SharedHotelSetupGuardDecision,
 ): string | null {
-  if (decision.action !== "redirect_to_setup") return null;
-  return isMarketplaceActivationDecision(decision) && decision.propertyId
-    ? marketplaceActivationPath(decision.propertyId)
-    : decision.redirectPath;
+  return decision.action === "redirect_to_setup" ? decision.redirectPath : null;
 }
 
 export async function resolveMarketplaceSetupGuard(
@@ -54,9 +34,8 @@ export async function resolveMarketplaceSetupGuard(
     propertyId: readSelectedSharedPropertyId(storage),
     onInvalidPropertyId: () => storage?.removeItem?.(SELECTED_SHARED_PROPERTY_ID_KEY),
   });
-  const workspaceDecision = allowPendingMarketplaceWorkspace(decision);
-  persistEnteredSharedProperty(workspaceDecision, storage);
-  return workspaceDecision;
+  persistEnteredSharedProperty(decision, storage);
+  return decision;
 }
 
 export async function resolveMarketplaceActivationGuard(
@@ -73,36 +52,14 @@ export async function resolveMarketplaceActivationGuard(
   const status = await (options.api ?? sharedHotelSetupApi).getStatus(
     {
       entryProduct: "marketplace",
-      returnTo,
       propertyId: requestedPropertyId,
     },
     { signal: options.signal },
   );
-  return allowPendingMarketplaceWorkspace(
-    resolveSharedHotelSetupGuardDecision(status, {
-      entryProduct: "marketplace",
-      returnTo,
-    }),
-  );
-}
-
-function allowPendingMarketplaceWorkspace(
-  decision: SharedHotelSetupGuardDecision,
-): SharedHotelSetupGuardDecision {
-  if (
-    decision.action === "redirect_to_setup" &&
-    decision.product === "marketplace" &&
-    decision.productStatus === "selected_incomplete" &&
-    decision.missingSteps.length === 0 &&
-    decision.propertyId
-  ) {
-    return {
-      action: "enter_product",
-      propertyId: decision.propertyId,
-      redirectPath: null,
-    };
-  }
-  return decision;
+  return resolveSharedHotelSetupGuardDecision(status, {
+    entryProduct: "marketplace",
+    returnTo,
+  });
 }
 
 export function persistEnteredSharedProperty(

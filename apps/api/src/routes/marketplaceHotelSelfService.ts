@@ -14,6 +14,7 @@ import {
   readOffer,
   replaceOfferChildren,
   syncOfferReadModel,
+  syncPropertyOfferReadModels,
   validateCreateOfferRequest,
   validateUpdateOfferRequest,
   type MarketplaceAdminCreateOfferRequest,
@@ -263,29 +264,36 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
       return readProfile(pool, organizationId, propertyId);
     },
     async updateProfile(input) {
-      const result = await pool.query<{ propertyId: string }>(
-        `UPDATE marketplace.marketplace_hotel_profiles
-         SET host_summary = CASE WHEN $3::boolean THEN $4 ELSE host_summary END,
-             collaboration_guidelines = CASE WHEN $5::boolean THEN $6 ELSE collaboration_guidelines END,
-             profile_complete = NULLIF(btrim(CASE WHEN $3::boolean THEN COALESCE($4, '') ELSE COALESCE(host_summary, '') END), '') IS NOT NULL,
-             profile_completed_at = CASE
-               WHEN NULLIF(btrim(CASE WHEN $3::boolean THEN COALESCE($4, '') ELSE COALESCE(host_summary, '') END), '') IS NOT NULL
-                 THEN COALESCE(profile_completed_at, now())
-               ELSE NULL
-             END,
-             updated_at = now()
-         WHERE organization_id = $1::uuid AND property_id = $2::uuid
-         RETURNING property_id::text AS "propertyId"`,
-        [
-          input.organizationId,
-          input.propertyId,
-          input.hostSummary !== undefined,
-          input.hostSummary ?? null,
-          input.collaborationGuidelines !== undefined,
-          input.collaborationGuidelines ?? null,
-        ],
-      );
-      return result.rows[0] ? readProfile(pool, input.organizationId, input.propertyId) : null;
+      return withTransaction(pool, async (client) => {
+        const result = await client.query<{ propertyId: string }>(
+          `UPDATE marketplace.marketplace_hotel_profiles
+           SET host_summary = CASE WHEN $3::boolean THEN $4 ELSE host_summary END,
+               collaboration_guidelines = CASE WHEN $5::boolean THEN $6 ELSE collaboration_guidelines END,
+               profile_complete = NULLIF(btrim(CASE WHEN $3::boolean THEN COALESCE($4, '') ELSE COALESCE(host_summary, '') END), '') IS NOT NULL,
+               profile_completed_at = CASE
+                 WHEN NULLIF(btrim(CASE WHEN $3::boolean THEN COALESCE($4, '') ELSE COALESCE(host_summary, '') END), '') IS NOT NULL
+                   THEN COALESCE(profile_completed_at, now())
+                 ELSE NULL
+               END,
+               updated_at = now()
+           WHERE organization_id = $1::uuid AND property_id = $2::uuid
+           RETURNING property_id::text AS "propertyId"`,
+          [
+            input.organizationId,
+            input.propertyId,
+            input.hostSummary !== undefined,
+            input.hostSummary ?? null,
+            input.collaborationGuidelines !== undefined,
+            input.collaborationGuidelines ?? null,
+          ],
+        );
+        if (!result.rows[0]) return null;
+        await syncPropertyOfferReadModels(client, {
+          organizationId: input.organizationId,
+          propertyId: input.propertyId,
+        });
+        return readProfile(client, input.organizationId, input.propertyId);
+      });
     },
     async listOffers(organizationId, propertyId) {
       const result = await pool.query<OfferRow>(
@@ -489,7 +497,7 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
             creatorRequirements: input.request.creatorRequirements,
           });
         }
-        await syncOfferReadModel(client, input.offerResourceId, "preserve");
+        await syncOfferReadModel(client, input.offerResourceId, "initialize");
         return readOffer(client, input.offerResourceId, "platform_organization_membership");
       });
     },

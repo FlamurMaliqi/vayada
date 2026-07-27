@@ -1,132 +1,210 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  canContinueProductSetup,
   canConfirmLocation,
+  createProfileFromDraft,
   hasMapCoordinates,
+  idempotencyKeyForRetry,
   locationResetForManualAddressEdit,
-  productSetupTasks,
+  mergeTrackSelectionAfterConflict,
+  profileUpdateFromDraft,
   validateProfileDraft,
 } from "./SharedFirstRunPropertySetupWizard";
 
-describe("product setup roadmap", () => {
-  it("groups technical Marketplace requirements into two owner tasks", () => {
-    expect(
-      productSetupTasks("marketplace", {
-        status: "selected_incomplete",
-        missingSteps: [
-          "creatorPitch",
-          "marketplaceOffer",
-          "offerDeliverables",
-          "compensationOptions",
-          "creatorRequirements",
-        ],
-      }),
-    ).toMatchObject([
-      { id: "creator-profile", complete: false },
+describe("idempotencyKeyForRetry", () => {
+  it("keeps one key for retries and creates a new key only after reset", () => {
+    let sequence = 0;
+    const create = () => `key-${++sequence}`;
+    const first = idempotencyKeyForRetry(null, create);
+
+    expect(idempotencyKeyForRetry(first, create)).toBe(first);
+    expect(idempotencyKeyForRetry(null, create)).toBe("key-2");
+  });
+});
+
+describe("property profile requests", () => {
+  const draft = {
+    displayName: "Hotel Alpenrose",
+    propertyType: "hotel",
+    countryCode: "DE",
+    city: "Munich",
+    streetAddress: "Marienplatz 1",
+    postalCode: "80331",
+    latitude: 48.137,
+    longitude: 11.575,
+    timezone: "Europe/Berlin",
+    website: "https://alpenrose.example",
+    contactEmail: "hello@alpenrose.example",
+    phone: "+49 89 123456",
+  } as Parameters<typeof createProfileFromDraft>[0];
+
+  it("creates private general contacts and private location defaults", () => {
+    const request = createProfileFromDraft(draft);
+
+    expect(request.location).toMatchObject({
+      localityPublic: false,
+      geoPublic: false,
+      mapDisplayMode: "hidden",
+    });
+    expect(request.contacts).toEqual([
       {
-        id: "collaboration-offer",
-        title: "Prepare your collaboration offer",
-        complete: false,
+        channelType: "email",
+        value: "hello@alpenrose.example",
+        purpose: "general",
+        isPublic: false,
+      },
+      {
+        channelType: "phone",
+        value: "+49 89 123456",
+        purpose: "general",
+        isPublic: false,
+      },
+      {
+        channelType: "website",
+        value: "https://alpenrose.example",
+        purpose: "general",
+        isPublic: false,
       },
     ]);
   });
 
-  it("marks completed task groups without treating the product as ready", () => {
-    expect(
-      productSetupTasks("booking", {
-        status: "selected_incomplete",
-        missingSteps: ["paymentReadiness"],
-      }),
-    ).toMatchObject([
-      { id: "booking-settings", complete: true },
-      { id: "booking-readiness", complete: false },
-    ]);
+  it("adds changed setup contacts privately without overwriting published contacts", () => {
+    const request = profileUpdateFromDraft(draft, {
+      propertyId: "property-1",
+      profileRevision: 7,
+      profile: {
+        ...createProfileFromDraft(draft),
+        location: {
+          ...createProfileFromDraft(draft).location,
+          localityPublic: true,
+          geoPublic: true,
+          mapDisplayMode: "exact",
+        },
+        contacts: [
+          {
+            channelType: "email",
+            value: "old@alpenrose.example",
+            purpose: "general",
+            isPublic: true,
+          },
+          {
+            channelType: "phone",
+            value: "+49 89 000000",
+            purpose: "general",
+            isPublic: false,
+          },
+          {
+            channelType: "instagram",
+            value: "@alpenrose",
+            purpose: "creator",
+            isPublic: true,
+          },
+        ],
+      },
+    });
+
+    expect(request).not.toBeNull();
+    if (!request) throw new Error("Expected a profile update.");
+    expect(request.expectedProfileRevision).toBe(7);
+    expect(request.patch.displayName).toBeUndefined();
+    expect(request.patch.propertyType).toBeUndefined();
+    expect(request.patch.location).toBeUndefined();
+    expect(request.patch.contacts).toContainEqual({
+      channelType: "email",
+      value: "old@alpenrose.example",
+      purpose: "general",
+      isPublic: true,
+    });
+    expect(request.patch.contacts).toContainEqual({
+      channelType: "email",
+      value: "hello@alpenrose.example",
+      purpose: "general",
+      isPublic: false,
+    });
+    expect(request.patch.contacts).toContainEqual({
+      channelType: "instagram",
+      value: "@alpenrose",
+      purpose: "creator",
+      isPublic: true,
+    });
   });
 
-  it("keeps additive backend requirements actionable as additional setup", () => {
+  it("leaves an existing published contact unchanged when the entered value matches", () => {
+    const profile = createProfileFromDraft(draft);
+    profile.contacts = profile.contacts.map((contact) => ({ ...contact, isPublic: true }));
+
     expect(
-      productSetupTasks("marketplace", {
-        status: "selected_incomplete",
-        missingSteps: ["marketplaceListing"],
+      profileUpdateFromDraft(draft, {
+        propertyId: "property-1",
+        profileRevision: 8,
+        profile,
       }),
-    ).toMatchObject([
-      { id: "creator-profile", complete: true },
-      { id: "collaboration-offer", complete: true },
-      { id: "additional-setup", complete: false },
-    ]);
-    expect(
-      canContinueProductSetup({
-        status: "selected_incomplete",
-        missingSteps: ["marketplaceListing"],
-      }),
-    ).toBe(true);
-    expect(
-      canContinueProductSetup({
-        status: "selected_incomplete",
-        missingSteps: ["futureBookingRequirement"],
-      }),
-    ).toBe(true);
+    ).toBeNull();
   });
 
-  it("only opens product-owned setup for actionable requirements", () => {
+  it("skips an update when no shared identity field changed", () => {
+    const profile = createProfileFromDraft(draft);
+
     expect(
-      canContinueProductSetup({
-        status: "selected_incomplete",
-        missingSteps: ["roomTypes", "rooms", "ratePlans"],
+      profileUpdateFromDraft(draft, {
+        propertyId: "property-1",
+        profileRevision: 3,
+        profile,
       }),
-    ).toBe(true);
+    ).toBeNull();
+  });
+
+  it("includes only changed location fields in the patch", () => {
+    const profile = createProfileFromDraft(draft);
+    const request = profileUpdateFromDraft(
+      { ...draft, city: "Berlin" },
+      {
+        propertyId: "property-1",
+        profileRevision: 4,
+        profile,
+      },
+    );
+
+    expect(request).toEqual({
+      expectedProfileRevision: 4,
+      patch: { location: { city: "Berlin" } },
+    });
+  });
+});
+
+describe("mergeTrackSelectionAfterConflict", () => {
+  it("preserves the owner’s intent while retaining tracks another session already added", () => {
+    expect(mergeTrackSelectionAfterConflict(["hotel_operations"], ["creator_marketplace"])).toEqual(
+      ["hotel_operations", "creator_marketplace"],
+    );
+  });
+
+  it("keeps canonical order and removes duplicates", () => {
     expect(
-      canContinueProductSetup({
-        status: "selected_incomplete",
-        missingSteps: ["productEntitlement", "rooms"],
-      }),
-    ).toBe(false);
-    expect(
-      canContinueProductSetup({
-        status: "selected_incomplete",
-        missingSteps: ["creatorPitch"],
-      }),
-    ).toBe(true);
-    expect(
-      canContinueProductSetup({
-        status: "selected_incomplete",
-        missingSteps: [],
-      }),
-    ).toBe(true);
-    expect(
-      canContinueProductSetup({
-        status: "suspended",
-        missingSteps: ["marketplaceListing"],
-      }),
-    ).toBe(false);
-    expect(
-      canContinueProductSetup({
-        status: "unavailable",
-        missingSteps: ["marketplaceListing"],
-      }),
-    ).toBe(false);
+      mergeTrackSelectionAfterConflict(
+        ["creator_marketplace", "hotel_operations"],
+        ["hotel_operations"],
+      ),
+    ).toEqual(["hotel_operations", "creator_marketplace"]);
   });
 });
 
 describe("locationResetForManualAddressEdit", () => {
-  it("clears a Google-selected region when the city changes", () => {
+  it("clears Google coordinates when the city changes", () => {
     expect(locationResetForManualAddressEdit("city")).toEqual({
       latitude: null,
       longitude: null,
-      region: "",
     });
   });
 
-  it("clears a Google-selected region when the country changes", () => {
+  it("clears Google coordinates when the country changes", () => {
     expect(locationResetForManualAddressEdit("countryCode")).toEqual({
       latitude: null,
       longitude: null,
-      region: "",
     });
   });
 
-  it("keeps the region when only the street changes", () => {
+  it("clears Google coordinates when the street changes", () => {
     expect(locationResetForManualAddressEdit("streetAddress")).toEqual({
       latitude: null,
       longitude: null,
@@ -161,7 +239,7 @@ describe("canConfirmLocation", () => {
 });
 
 describe("validateProfileDraft", () => {
-  it("rejects invalid time zones in create and update mode", () => {
+  it("rejects invalid time zones", () => {
     const draft = {
       displayName: "Hotel Alpenrose",
       propertyType: "hotel",
@@ -175,10 +253,7 @@ describe("validateProfileDraft", () => {
       phone: "+49 89 123456",
     } as Parameters<typeof validateProfileDraft>[0];
 
-    expect(validateProfileDraft(draft, "create")["location.timezone"]).toEqual([
-      "Enter a valid IANA time zone.",
-    ]);
-    expect(validateProfileDraft(draft, "update")["location.timezone"]).toEqual([
+    expect(validateProfileDraft(draft)["location.timezone"]).toEqual([
       "Enter a valid IANA time zone.",
     ]);
   });
@@ -197,13 +272,11 @@ describe("validateProfileDraft", () => {
       phone: "not a phone",
     } as Parameters<typeof validateProfileDraft>[0];
 
-    expect(validateProfileDraft(draft, "create").phone).toEqual(["Enter a valid phone number."]);
-    expect(validateProfileDraft({ ...draft, phone: "+49 12" }, "create").phone).toEqual([
+    expect(validateProfileDraft(draft).phone).toEqual(["Enter a valid phone number."]);
+    expect(validateProfileDraft({ ...draft, phone: "+49 12" }).phone).toEqual([
       "Enter a valid phone number.",
     ]);
-    expect(validateProfileDraft({ ...draft, phone: "+49 89 123456" }, "create").phone).toBe(
-      undefined,
-    );
+    expect(validateProfileDraft({ ...draft, phone: "+49 89 123456" }).phone).toBe(undefined);
   });
 });
 

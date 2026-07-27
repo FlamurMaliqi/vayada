@@ -52,6 +52,7 @@ import {
   type PublicHotelProfileRepository,
 } from "./routes/aiHotels.js";
 import {
+  BookingContactPublicationConflictError,
   createPgBookingSettingsReadRepository,
   createPgTargetBookingSettingsRepository,
   type BookingSettingsPool,
@@ -2356,6 +2357,36 @@ describe("vayada-api", () => {
     });
   });
 
+  it("requires canonical setup repositories before mounting hotel handoffs", () => {
+    expect(() =>
+      buildApp({
+        logger: false,
+        hotelSetupHandoffs: {
+          repository: {
+            async issue() {
+              throw new Error("not used");
+            },
+            async findActive() {
+              return null;
+            },
+            async consume() {
+              return null;
+            },
+            async close() {},
+          },
+          hotelSetupBaseUrl: "https://marketplace.localhost/setup",
+          destinationOrigins: {
+            marketplace: "https://marketplace.localhost",
+            bookingAdmin: "https://admin.booking.localhost",
+            pms: "https://pms.localhost",
+          },
+        },
+      }),
+    ).toThrow(
+      "shared hotel setup status and track repositories are required with hotelSetupHandoffs",
+    );
+  });
+
   it("allows configured browser CORS origins on authenticated booking routes", async () => {
     app = buildAuthenticatedApp({
       browserAllowedOrigins: ["https://next-booking-admin.vayada.com"],
@@ -4524,6 +4555,35 @@ describe("vayada-api", () => {
       code: "write_model_unavailable",
       category: "write_model",
       message: "Booking settings could not be saved.",
+    });
+  });
+
+  it("returns an actionable conflict instead of publishing shared private contacts", async () => {
+    app = buildAuthenticatedApp({
+      settingsWriteRepository: {
+        ...bookingSettingsWriteRepository,
+        async updatePropertySettingsByHotelId() {
+          throw new BookingContactPublicationConflictError();
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/property",
+      headers: {
+        authorization: "Bearer valid-token",
+      },
+      payload: { phone_number: "+43 1 2345" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({
+      statusCode: 409,
+      code: "private_contact_conflict",
+      category: "validation",
+      message:
+        "That contact is stored as private hotel information. Publish it from Hotel setup or use a different Booking contact.",
     });
   });
 
@@ -7112,6 +7172,44 @@ describe("vayada-api", () => {
         values?: readonly unknown[],
       ): Promise<Pick<QueryResult<T>, "rows">> {
         queries.push({ text, values });
+        if (["BEGIN", "COMMIT", "ROLLBACK"].includes(text)) {
+          return { rows: [] };
+        }
+        if (
+          text.includes('source_link_status.property_id::text AS "propertyId"') &&
+          !text.includes("finance.payment_settings")
+        ) {
+          return {
+            rows: [
+              {
+                source_link_count: 1,
+                propertyId: propertyState.property_id,
+              },
+            ] as unknown as T[],
+          };
+        }
+        if (text.includes("FOR UPDATE OF property")) {
+          return {
+            rows: [
+              {
+                propertyId: propertyState.property_id,
+                publicId: propertyState.id,
+                displayName: propertyState.property_name,
+                defaultLocale: state.default_language,
+                canonicalSlug: propertyState.slug,
+              },
+            ] as unknown as T[],
+          };
+        }
+        if (
+          text.includes("FROM marketplace.marketplace_offers offer") &&
+          text.includes('offer.id::text AS "offerId"')
+        ) {
+          return { rows: [] };
+        }
+        if (text.includes("INSERT INTO hotel_catalog.property_public_profile_read_model")) {
+          return { rows: [] };
+        }
         if (text.includes("property.display_name AS property_name")) {
           return {
             rows: [
@@ -7127,39 +7225,35 @@ describe("vayada-api", () => {
           text.includes("UPDATE hotel_catalog.properties property") &&
           !text.includes("upserted_booking_description")
         ) {
-          propertyState.property_name = values?.[1] as string;
-          propertyState.address = values?.[2] as string;
-          propertyState.city = values?.[3] as string;
-          propertyState.country = values?.[4] as string;
-          const contacts = JSON.parse(values?.[5] as string) as {
+          const contacts = JSON.parse(values?.[1] as string) as {
             channel_type: string;
             value: string;
           }[];
-          propertyState.reservation_email =
-            contacts.find((contact) => contact.channel_type === "email")?.value ?? null;
-          propertyState.phone_number =
-            contacts.find((contact) => contact.channel_type === "phone")?.value ?? null;
-          propertyState.whatsapp_number =
-            contacts.find((contact) => contact.channel_type === "whatsapp")?.value ?? null;
-          propertyState.instagram =
-            contacts.find((contact) => contact.channel_type === "instagram")?.value ?? null;
-          propertyState.facebook =
-            contacts.find((contact) => contact.channel_type === "facebook")?.value ?? null;
-          propertyState.check_in_time = values?.[6] as string;
-          propertyState.check_out_time = values?.[7] as string;
-          propertyState.cancellation_policy_text = values?.[8] as string;
-          state.default_language = values?.[9] as string;
-          state.default_currency = values?.[11] as string;
-          state.supported_currencies = values?.[12] as string[];
-          state.supported_languages = values?.[13] as string[];
-          state.special_requests_enabled = values?.[14] as boolean;
-          state.arrival_time_enabled = values?.[15] as boolean;
-          state.guest_count_enabled = values?.[16] as boolean;
+          for (const contact of contacts) {
+            const value = contact.value || null;
+            if (contact.channel_type === "email") propertyState.reservation_email = value;
+            if (contact.channel_type === "phone") propertyState.phone_number = value;
+            if (contact.channel_type === "whatsapp") propertyState.whatsapp_number = value;
+            if (contact.channel_type === "instagram") propertyState.instagram = value;
+            if (contact.channel_type === "facebook") propertyState.facebook = value;
+          }
+          propertyState.check_in_time = values?.[2] as string;
+          propertyState.check_out_time = values?.[3] as string;
+          propertyState.cancellation_policy_text = values?.[4] as string;
+          state.default_language = values?.[5] as string;
+          state.default_currency = values?.[6] as string;
+          state.supported_currencies = values?.[7] as string[];
+          state.supported_languages = values?.[8] as string[];
+          state.special_requests_enabled = values?.[9] as boolean;
+          state.arrival_time_enabled = values?.[10] as boolean;
+          state.guest_count_enabled = values?.[11] as boolean;
           return {
             rows: [
               {
                 source_link_count: 1,
                 id: propertyState.id,
+                propertyId: propertyState.property_id,
+                privateContactConflict: false,
               },
             ] as unknown as T[],
           };
@@ -7177,7 +7271,7 @@ describe("vayada-api", () => {
           };
         }
 
-        if (text.includes("upserted_booking_description")) {
+        if (text.includes("SET hero_image_url = CASE")) {
           const design = JSON.parse(values?.[1] as string) as Record<string, string>;
           if (Object.hasOwn(design, "heroImage")) state.hero_image_url = design.heroImage || null;
           if (Object.hasOwn(design, "heroHeading")) state.hero_heading = design.heroHeading || null;
@@ -7236,6 +7330,12 @@ describe("vayada-api", () => {
               ...state,
             },
           ] as unknown as T[],
+        };
+      },
+      async connect() {
+        return {
+          query: pool.query.bind(pool),
+          release() {},
         };
       },
       async end() {
@@ -7348,10 +7448,10 @@ describe("vayada-api", () => {
     });
     expect(propertyPatchResponse.statusCode).toBe(200);
     expect(propertyPatchResponse.body).toMatchObject({
-      property_name: "Target Alpenrose",
+      property_name: "Hotel Alpenrose",
       reservation_email: "target@alpenrose.example",
-      address: "Target lane 1",
-      city: "Vienna",
+      address: "Alpenweg 1, Innsbruck, AT",
+      city: "Innsbruck",
       default_currency: "EUR",
       default_language: "en-US",
       supported_currencies: ["CHF"],
@@ -7362,22 +7462,58 @@ describe("vayada-api", () => {
       bank_transfer: false,
       cancellation_policy_text: "Target cancellation policy.",
     });
-    const propertyUpdateQuery = queries.find((query) =>
-      query.text.includes("UPDATE hotel_catalog.property_public_profile_read_model profile"),
+    const propertyUpdateQuery = queries.find(
+      (query) =>
+        query.text.includes("UPDATE hotel_catalog.properties property") &&
+        query.text.includes("upserted_contacts"),
     );
-    expect(propertyUpdateQuery?.text).toContain("'rawMarketplaceLocation', CASE");
-    expect(propertyUpdateQuery?.text).toContain("'city', $4::text");
-    expect(propertyUpdateQuery?.text).toContain("'countryCode', $5::text");
-    expect(propertyUpdateQuery?.text).toContain("'cancellationSummary', $9::text");
-    expect(propertyUpdateQuery?.text).toContain("default_locale = $10");
-    expect(propertyUpdateQuery?.text).toContain("supported_locales = $11::text[]");
+    expect(propertyUpdateQuery?.text).not.toContain("display_name =");
+    expect(propertyUpdateQuery?.text).not.toContain("INSERT INTO hotel_catalog.property_locations");
+    expect(propertyUpdateQuery?.text).not.toContain("UPDATE hotel_catalog.property_locations");
+    expect(propertyUpdateQuery?.text).toContain("profile_revision = property.profile_revision + 1");
     expect(propertyUpdateQuery?.text).toContain("default_currency = EXCLUDED.default_currency");
     expect(propertyUpdateQuery?.text).toContain(
       "guest_count_enabled = EXCLUDED.guest_count_enabled",
     );
     expect(propertyUpdateQuery?.text).toContain("contact.source_system = 'booking'");
-    expect(propertyUpdateQuery?.text).toContain("existing.source_system <> 'booking'");
+    expect(propertyUpdateQuery?.text).toContain("WHERE input.channel_type = contact.channel_type");
+    expect(propertyUpdateQuery?.text).toContain(
+      "hotel_catalog.property_contact_channels.source_system = 'booking'",
+    );
     expect(propertyUpdateQuery?.text).not.toContain("address_public = TRUE");
+    expect(queries.some((query) => query.text === "BEGIN")).toBe(true);
+    expect(queries.some((query) => query.text === "COMMIT")).toBe(true);
+    const transactionStart = queries.findIndex((query) => query.text === "BEGIN");
+    const propertyLock = queries.findIndex(
+      (query, index) =>
+        index > transactionStart &&
+        query.text.includes("FROM hotel_catalog.properties") &&
+        query.text.includes("FOR UPDATE"),
+    );
+    const bookingSettingsLock = queries.findIndex(
+      (query, index) =>
+        index > propertyLock &&
+        query.text.includes("FROM booking.booking_settings") &&
+        query.text.includes("FOR UPDATE"),
+    );
+    const mergedSettingsRead = queries.findIndex(
+      (query, index) =>
+        index > bookingSettingsLock &&
+        query.text.includes("property.display_name AS property_name"),
+    );
+    const transactionalUpdate = queries.findIndex(
+      (query, index) => index > mergedSettingsRead && query === propertyUpdateQuery,
+    );
+    expect(transactionStart).toBeGreaterThanOrEqual(0);
+    expect(propertyLock).toBeGreaterThan(transactionStart);
+    expect(bookingSettingsLock).toBeGreaterThan(propertyLock);
+    expect(mergedSettingsRead).toBeGreaterThan(bookingSettingsLock);
+    expect(transactionalUpdate).toBeGreaterThan(mergedSettingsRead);
+    expect(
+      queries.some((query) =>
+        query.text.includes("INSERT INTO hotel_catalog.property_public_profile_read_model"),
+      ),
+    ).toBe(true);
 
     const designResponse = await injectJson(app, {
       method: "PATCH",
@@ -7400,23 +7536,17 @@ describe("vayada-api", () => {
     const firstDesignUpdateQuery = queries.find(
       (query) =>
         query.text.includes("UPDATE booking.booking_settings settings") &&
-        query.text.includes("upserted_booking_description"),
+        query.text.includes("SET hero_image_url = CASE"),
     );
     expect(firstDesignUpdateQuery?.text).toContain("$2::jsonb ? 'heroHeading'");
     expect(firstDesignUpdateQuery?.text).toContain("$2::jsonb ? 'primaryColor'");
     expect(firstDesignUpdateQuery?.text).toContain("$2::jsonb ? 'fontPairing'");
-    expect(firstDesignUpdateQuery?.text).toContain("retired_duplicate_booking_hero_media AS");
-    expect(firstDesignUpdateQuery?.text).toContain("platform_media.source_system = 'platform'");
-    const approvedExistingMediaSection = firstDesignUpdateQuery?.text
-      .split("retired_duplicate_booking_hero_media AS")[0]
-      ?.split("approved_existing_booking_hero_media AS")[1];
-    expect(approvedExistingMediaSection).toContain("AND NOT (");
-    expect(approvedExistingMediaSection).toContain("media.source_system = 'booking'");
-    expect(firstDesignUpdateQuery?.text).toContain("public_approved = TRUE");
-    expect(firstDesignUpdateQuery?.text).toContain("reason = 'description'");
-    expect(firstDesignUpdateQuery?.text).toContain("reason = 'media'");
-    expect(firstDesignUpdateQuery?.text).toContain(
-      "WHEN cardinality(resolved_profile.completeness_reasons) = 0 THEN 'complete'",
+    expect(firstDesignUpdateQuery?.text).not.toContain("INSERT INTO hotel_catalog.property_media");
+    expect(firstDesignUpdateQuery?.text).not.toContain("UPDATE hotel_catalog.property_media");
+    expect(firstDesignUpdateQuery?.text).not.toContain("hotel_catalog.property_descriptions");
+    expect(firstDesignUpdateQuery?.text).not.toContain("UPDATE hotel_catalog.properties property");
+    expect(firstDesignUpdateQuery?.text).not.toContain(
+      "hotel_catalog.property_public_profile_read_model",
     );
     expect(firstDesignUpdateQuery?.values).toEqual([
       "booking_hotel_alpenrose",
@@ -7447,11 +7577,7 @@ describe("vayada-api", () => {
         query.values?.[1] ===
           JSON.stringify({ heroSubtext: "Come for the mountains. Stay for the quiet." }),
     );
-    expect(partialDesignUpdateQuery?.text).toContain("ON CONFLICT (property_id, locale) DO UPDATE");
-    expect(partialDesignUpdateQuery?.text).toContain(
-      "short_description = EXCLUDED.short_description",
-    );
-    expect(partialDesignUpdateQuery?.text).toContain("AND NOT EXISTS (");
+    expect(partialDesignUpdateQuery?.text).not.toContain("hotel_catalog.property_descriptions");
 
     const clearedDesignResponse = await injectJson(app, {
       method: "PATCH",
@@ -7466,24 +7592,11 @@ describe("vayada-api", () => {
         query.text.includes("UPDATE booking.booking_settings settings") &&
         query.values?.[1] === JSON.stringify({ heroImage: "", heroSubtext: "" }),
     );
-    expect(clearedDesignUpdateQuery?.text).toMatch(
-      /WHERE \$2::jsonb \? 'heroSubtext'\s+ON CONFLICT/,
-    );
-    const clearedDesignSql = clearedDesignUpdateQuery?.text ?? "";
-    const retiredHeroCte = clearedDesignSql.slice(
-      clearedDesignSql.indexOf("retired_booking_hero_media AS"),
-      clearedDesignSql.indexOf("approved_existing_booking_hero_media AS"),
-    );
-    expect(retiredHeroCte).toContain("media.url IS DISTINCT FROM updated_settings.hero_image_url");
-    expect(retiredHeroCte).not.toContain("media.source_system = 'booking'");
-    expect(retiredHeroCte).not.toContain(
-      "NULLIF(BTRIM(updated_settings.hero_image_url), '') IS NOT NULL",
-    );
-    expect(clearedDesignUpdateQuery?.text).toContain("THEN ARRAY['description']::text[]");
-    expect(clearedDesignUpdateQuery?.text).toContain("THEN ARRAY['media']::text[]");
     expect(clearedDesignUpdateQuery?.text).not.toContain(
-      "remaining_media.source_system = 'booking'",
+      "INSERT INTO hotel_catalog.property_media",
     );
+    expect(clearedDesignUpdateQuery?.text).not.toContain("UPDATE hotel_catalog.property_media");
+    expect(clearedDesignUpdateQuery?.text).not.toContain("completeness_reasons");
 
     const cases = [
       {
@@ -7584,12 +7697,27 @@ describe("vayada-api", () => {
     }
 
     expect(queries.length).toBeGreaterThanOrEqual(10);
-    expect(queries.every((query) => query.values?.[0] === "booking_hotel_alpenrose")).toBe(true);
+    expect(
+      queries
+        .filter((query) => query.values && query.values.length > 0)
+        .every((query) =>
+          [
+            "booking_hotel_alpenrose",
+            "d3000000-0000-0000-0000-000000000682",
+            "org_hotel_group",
+          ].includes(String(query.values?.[0])),
+        ),
+    ).toBe(true);
     const settingsQueries = queries.filter((query) =>
       query.text.includes("booking.booking_settings"),
     );
     expect(
-      settingsQueries.every((query) => query.text.includes("scoped_property_candidates")),
+      settingsQueries.every(
+        (query) =>
+          query.text.includes("scoped_property_candidates") ||
+          (query.text.includes("WHERE property_id = $1::uuid") &&
+            query.text.includes("FOR UPDATE")),
+      ),
     ).toBe(true);
     const sql = queries.map((query) => query.text).join("\n");
     expect(sql).toContain("relationship = 'canonical_input'");

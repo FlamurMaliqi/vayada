@@ -1,7 +1,7 @@
 import type { HotelFormState, ListingFormData } from "@/lib/types";
 
 const DRAFT_KEY_PREFIX = "vayada_hotel_marketplace_draft";
-const DRAFT_VERSION = 2;
+const DRAFT_VERSION = 3;
 const MAX_DRAFT_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 type PersistedListing = Omit<ListingFormData, "imageFiles">;
@@ -40,6 +40,50 @@ export function ensureHotelMarketplaceOfferIdempotency(listing: ListingFormData)
 export function initialHotelMarketplaceOfferImages(picture?: string | null): string[] {
   const image = picture?.trim();
   return image ? [image] : [];
+}
+
+export type HotelMarketplaceCoverSource =
+  | { kind: "file"; file: File }
+  | { kind: "remote_url"; url: string };
+
+export function firstHotelMarketplaceOfferCoverSource(
+  listing: ListingFormData,
+): HotelMarketplaceCoverSource | null {
+  const firstImage = listing.images[0]?.trim();
+  if (firstImage && isPersistableImage(firstImage)) {
+    return { kind: "remote_url", url: firstImage };
+  }
+  const firstFile = listing.imageFiles[0];
+  return firstFile ? { kind: "file", file: firstFile } : null;
+}
+
+export function resolveHotelMarketplaceCoverSource({
+  listing,
+  selectedFile,
+  existingOfferCoverUrl,
+}: {
+  listing?: ListingFormData;
+  selectedFile?: File | null;
+  existingOfferCoverUrl?: string | null;
+}): HotelMarketplaceCoverSource | null {
+  if (selectedFile) return { kind: "file", file: selectedFile };
+  const listingSource = listing ? firstHotelMarketplaceOfferCoverSource(listing) : null;
+  if (listingSource) return listingSource;
+  const existingCover = existingOfferCoverUrl?.trim();
+  return existingCover ? { kind: "remote_url", url: existingCover } : null;
+}
+
+export function replaceFirstOfferPhotoWithCanonicalCover(
+  listing: ListingFormData,
+  coverUrl: string,
+): ListingFormData {
+  const firstImage = listing.images[0];
+  const firstImageWasLocal = !firstImage || !isPersistableImage(firstImage);
+  return {
+    ...listing,
+    images: [coverUrl, ...listing.images.slice(firstImage ? 1 : 0)],
+    imageFiles: firstImageWasLocal ? listing.imageFiles.slice(1) : listing.imageFiles,
+  };
 }
 
 export function recoverHotelMarketplaceOfferFromSourceMediaFailure(
@@ -102,6 +146,16 @@ export function createHotelMarketplaceDraft(
   };
 }
 
+export function restoreHotelMarketplaceDraftForm(
+  draftForm: HotelFormState,
+  currentLocalityPublic: boolean,
+): HotelFormState {
+  return {
+    about: draftForm.about,
+    localityPublic: currentLocalityPublic,
+  };
+}
+
 export function recoverHotelMarketplaceDraftFromSourceMediaFailure(
   draft: Omit<HotelMarketplaceDraft, "listings"> & { listings: ListingFormData[] },
   idempotencyKey: string,
@@ -154,11 +208,12 @@ export function readHotelMarketplaceDraft(
       version?: number;
     };
     if (
-      (parsed.version !== 1 && parsed.version !== DRAFT_VERSION) ||
+      parsed.version !== DRAFT_VERSION ||
       typeof parsed.savedAt !== "number" ||
       now - parsed.savedAt > MAX_DRAFT_AGE_MS ||
       typeof parsed.currentStep !== "number" ||
       typeof parsed.form?.about !== "string" ||
+      typeof parsed.form.localityPublic !== "boolean" ||
       !Array.isArray(parsed.listings)
     ) {
       storage.removeItem(draftKey(propertyId));

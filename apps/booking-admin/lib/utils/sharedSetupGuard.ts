@@ -1,5 +1,4 @@
 import {
-  isActionableSharedProductActivation,
   resolveSharedHotelSetupGuard,
   type SharedHotelSetupApi,
   type SharedHotelSetupGuardDecision,
@@ -22,28 +21,8 @@ export async function resolveBookingSetupGuard(
     propertyId: readSelectedSharedPropertyId(storage),
     onInvalidPropertyId: () => storage?.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY),
   });
-  const resolvedDecision = isBookingWorkspaceActivationDecision(decision)
-    ? {
-        action: "enter_product" as const,
-        propertyId: decision.propertyId!,
-        redirectPath: null,
-      }
-    : decision;
-  persistEnteredSharedProperty(resolvedDecision, storage);
-  return resolvedDecision;
-}
-
-export function isBookingWorkspaceActivationDecision(
-  decision: SharedHotelSetupGuardDecision,
-): boolean {
-  return (
-    decision.action === "redirect_to_setup" &&
-    decision.setupAction === "complete_product_activation" &&
-    decision.product === "booking" &&
-    decision.propertyId !== null &&
-    !decision.missingSteps.includes("bookingSettings") &&
-    isActionableSharedProductActivation(decision)
-  );
+  persistEnteredSharedProperty(decision, storage);
+  return decision;
 }
 
 export function persistEnteredSharedProperty(

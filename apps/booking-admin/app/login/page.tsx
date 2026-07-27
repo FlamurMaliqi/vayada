@@ -3,14 +3,10 @@
 import { Suspense, useCallback, useEffect, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import SharedHotelLoginForm from "@vayada/product-onboarding/SharedHotelLoginForm";
-import {
-  handoffReturnToForOrganization,
-  safeRelativeReturnTo,
-} from "@vayada/product-onboarding/returnTo";
+import { safeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
 import { authService } from "@/services/auth";
 import {
   isAuthOrganizationSelectionResponse,
-  type AuthKitSessionResponse,
   type AuthOrganizationSelectionResponse,
 } from "@/services/auth/sessionStore";
 import { resolveBookingSetupGuard } from "@/lib/utils/sharedSetupGuard";
@@ -31,21 +27,14 @@ function LoginContent() {
     useState<AuthOrganizationSelectionResponse | null>(null);
   const returnTo = safeRelativeReturnTo(searchParams.get("returnTo"), "/dashboard");
 
-  const redirectAfterLogin = useCallback(
-    async (session: AuthKitSessionResponse, organizationExplicitlySelected = false) => {
-      const confirmedReturnTo = organizationExplicitlySelected
-        ? handoffReturnToForOrganization(returnTo, session)
-        : returnTo;
-      if (new URL(confirmedReturnTo, "https://vayada.local").pathname === "/handoff") {
-        router.push(confirmedReturnTo);
-        return;
-      }
-      const decision = await resolveBookingSetupGuard(returnTo);
-      localStorage.setItem("setupComplete", decision.action === "enter_product" ? "true" : "false");
-      router.push(decision.action === "enter_product" ? returnTo : decision.redirectPath);
-    },
-    [returnTo, router],
-  );
+  const redirectAfterLogin = useCallback(async () => {
+    if (new URL(returnTo, "https://vayada.local").pathname === "/handoff") {
+      router.push(returnTo);
+      return;
+    }
+    const decision = await resolveBookingSetupGuard(returnTo);
+    router.push(decision.action === "enter_product" ? returnTo : decision.redirectPath);
+  }, [returnTo, router]);
 
   const handleOrganizationSelect = useCallback(
     async (workosOrganizationId: string) => {
@@ -57,7 +46,7 @@ function LoginContent() {
           setOrganizationSelection(response);
           return;
         }
-        await redirectAfterLogin(response, true);
+        await redirectAfterLogin();
       } catch (error) {
         setSubmitError(error instanceof Error ? error.message : t("auth.login.errorUnexpected"));
       } finally {
@@ -78,7 +67,7 @@ function LoginContent() {
           setOrganizationSelection(response);
           return;
         }
-        await redirectAfterLogin(response);
+        await redirectAfterLogin();
       } catch (error) {
         setSubmitError(error instanceof Error ? error.message : t("auth.login.errorUnexpected"));
       } finally {
@@ -100,7 +89,7 @@ function LoginContent() {
           setOrganizationSelection(response);
           return;
         }
-        await redirectAfterLogin(response);
+        await redirectAfterLogin();
       })
       .catch((error) => {
         if (cancelled) return;

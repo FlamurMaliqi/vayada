@@ -18,6 +18,51 @@ const completeCreatorPlatformConnectionEnv = {
 };
 
 describe("api config", () => {
+  it("loads allowlisted local hotel setup handoff destinations", () => {
+    expect(loadConfig({}).hotelSetupHandoffs).toEqual({
+      hotelSetupBaseUrl: "https://marketplace.localhost/setup",
+      destinationOrigins: {
+        marketplace: "https://marketplace.localhost",
+        bookingAdmin: "https://admin.booking.localhost",
+        pms: "https://pms.localhost",
+      },
+    });
+  });
+
+  it("preserves a portless proxy suffix on every hotel setup destination", () => {
+    expect(
+      loadConfig({
+        HOTEL_SETUP_BASE_URL: "https://marketplace.localhost:1355/setup",
+        HOTEL_SETUP_MARKETPLACE_ORIGIN: "https://marketplace.localhost:1355",
+        HOTEL_SETUP_BOOKING_ADMIN_ORIGIN: "https://admin.booking.localhost:1355",
+        HOTEL_SETUP_PMS_ORIGIN: "https://pms.localhost:1355",
+      }).hotelSetupHandoffs,
+    ).toEqual({
+      hotelSetupBaseUrl: "https://marketplace.localhost:1355/setup",
+      destinationOrigins: {
+        marketplace: "https://marketplace.localhost:1355",
+        bookingAdmin: "https://admin.booking.localhost:1355",
+        pms: "https://pms.localhost:1355",
+      },
+    });
+  });
+
+  it("rejects incomplete or routed hotel setup destination config", () => {
+    expect(() =>
+      loadConfig({
+        HOTEL_SETUP_BASE_URL: "https://marketplace.vayada.com/setup",
+      }),
+    ).toThrow("Incomplete hotel setup handoff config");
+    expect(() =>
+      loadConfig({
+        HOTEL_SETUP_BASE_URL: "https://marketplace.vayada.com/setup",
+        HOTEL_SETUP_MARKETPLACE_ORIGIN: "https://marketplace.vayada.com/handoff",
+        HOTEL_SETUP_BOOKING_ADMIN_ORIGIN: "https://admin.booking.vayada.com",
+        HOTEL_SETUP_PMS_ORIGIN: "https://pms.vayada.com",
+      }),
+    ).toThrow("HOTEL_SETUP_MARKETPLACE_ORIGIN must be an absolute app origin");
+  });
+
   it("keeps auth disabled when auth env values are absent", () => {
     expect(loadConfig({}).auth).toBeUndefined();
   });

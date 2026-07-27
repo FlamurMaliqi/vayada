@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SharedHotelSetupStatus, SharedPropertyProfile } from "@vayada/product-onboarding";
+import type { AdaptiveHotelSetupStatus } from "@vayada/product-onboarding";
 
 const mocks = vi.hoisted(() => ({
   getStatus: vi.fn(),
@@ -15,59 +15,103 @@ vi.mock("./sharedHotelSetupClient", () => ({
   },
 }));
 
-import {
-  getPmsPropertyProfile,
-  isPmsPropertyReady,
-  updatePmsPropertyProfile,
-  type PmsPropertySummary,
-} from "./pmsPropertyClient";
+import { getPmsPropertyProfile, updatePmsPropertyProfile } from "./pmsPropertyClient";
 
 const propertyId = "property-1";
-const status = {
-  properties: [
-    {
-      propertyId,
-      sharedProfile: {
-        status: "complete" as const,
-        source: "canonical" as const,
-        completionPercent: 100,
-        missingFields: [],
+const status: AdaptiveHotelSetupStatus = {
+  contractVersion: "adaptive-hotel-setup.v1",
+  organization: {
+    organizationId: "organization-1",
+    displayName: "Berlin Hotels",
+    websiteUrl: null,
+    selectedTracks: ["hotel_operations"],
+    trackRevision: 1,
+    canManageTracks: true,
+    tracks: [
+      {
+        track: "hotel_operations",
+        provisioning: "active",
+        components: [
+          { product: "pms", access: "active" },
+          { product: "booking", access: "active" },
+        ],
+        allowedActions: ["manage_service"],
       },
-      products: {
-        pms: {
-          status: "active" as const,
-        },
+      {
+        track: "creator_marketplace",
+        provisioning: "not_selected",
+        components: [{ product: "marketplace", access: "absent" }],
+        allowedActions: ["add"],
       },
-    },
-  ],
-} as unknown as SharedHotelSetupStatus;
-
-const profile: SharedPropertyProfile = {
-  propertyId,
-  publicId: "berlin-house",
-  displayName: "Berlin House",
-  propertyType: "hotel",
-  location: {
-    countryCode: "DE",
-    region: "Berlin",
-    city: "Berlin",
-    streetAddress: "Teststrasse 42",
-    postalCode: "10115",
-    rawMarketplaceLocation: "Berlin, Germany",
-    timezone: "Europe/Berlin",
-    latitude: 52.52,
-    longitude: 13.405,
-    addressPublic: true,
-    mapDisplayMode: "exact" as const,
+    ],
   },
-  website: "https://berlin-house.example",
-  contactEmail: "hotel@example.com",
-  phone: "+4930123456",
-  shortDescription: "A hotel in Berlin.",
-  longDescription: "A centrally located hotel in Berlin.",
-  media: [],
-  sharedProfile: status.properties[0]!.sharedProfile,
+  propertySelection: {
+    state: "single_property",
+    selectedPropertyId: propertyId,
+    availableProperties: [
+      {
+        propertyId,
+        publicId: "berlin-house",
+        displayName: "Berlin House",
+        locationSummary: "Berlin, Germany",
+      },
+    ],
+  },
+  entryDecision: {
+    requestedProduct: "pms",
+    propertyId,
+    decision: "enter",
+    destinationRouteKey: "pms.workspace",
+    reasonCode: "ready",
+  },
+  setupPlan: {
+    propertyId,
+    planRevision: "plan-1",
+    tasks: [],
+    recommendedTaskId: null,
+    ownerProgress: { complete: 0, total: 0 },
+    launchReadiness: {
+      operationsUse: "ready",
+      directBookingPublish: "pending",
+      marketplacePublish: "not_applicable",
+    },
+  },
   updatedAt: "2026-07-22T10:00:00.000Z",
+};
+
+const profile = {
+  propertyId,
+  profileRevision: 4,
+  profile: {
+    displayName: "Berlin House",
+    propertyType: "hotel",
+    location: {
+      countryCode: "DE",
+      city: "Berlin",
+      streetAddress: "Teststrasse 42",
+      postalCode: "10115",
+      timezone: "Europe/Berlin",
+      latitude: 52.52,
+      longitude: 13.405,
+      localityPublic: true,
+      geoPublic: true,
+      mapDisplayMode: "exact" as const,
+    },
+    contacts: [
+      {
+        channelType: "email" as const,
+        value: "hotel@example.com",
+        purpose: "general" as const,
+        isPublic: false,
+      },
+      {
+        channelType: "phone" as const,
+        value: "+4930123456",
+        purpose: "general" as const,
+        isPublic: false,
+      },
+    ],
+  },
 };
 
 describe("PMS property profile", () => {
@@ -82,13 +126,16 @@ describe("PMS property profile", () => {
     });
     mocks.getStatus.mockResolvedValue(status);
     mocks.getPropertyProfile.mockResolvedValue(profile);
-    mocks.updatePropertyProfile.mockImplementation(async (_id, input) => ({
+    mocks.updatePropertyProfile.mockImplementation(async (_id, request) => ({
       ...profile,
-      ...input,
-      propertyId,
-      publicId: profile.publicId,
-      sharedProfile: profile.sharedProfile,
-      updatedAt: "2026-07-22T11:00:00.000Z",
+      profileRevision: profile.profileRevision + 1,
+      profile: {
+        ...profile.profile,
+        location: {
+          ...profile.profile.location,
+          ...request.patch.location,
+        },
+      },
     }));
   });
 
@@ -102,7 +149,7 @@ describe("PMS property profile", () => {
       name: "Berlin House",
       country: "DE",
       timezone: "Europe/Berlin",
-      location: "Berlin, Germany",
+      location: "Berlin, DE",
     });
     expect(mocks.getPropertyProfile).toHaveBeenCalledWith(propertyId);
   });
@@ -113,14 +160,13 @@ describe("PMS property profile", () => {
     expect(mocks.updatePropertyProfile).toHaveBeenCalledWith(
       propertyId,
       expect.objectContaining({
-        displayName: "Berlin House",
-        contactEmail: "hotel@example.com",
-        expectedUpdatedAt: "2026-07-22T10:00:00.000Z",
-        location: expect.objectContaining({
-          countryCode: "AT",
-          timezone: "Europe/Vienna",
-          streetAddress: "Teststrasse 42",
-        }),
+        expectedProfileRevision: 4,
+        patch: {
+          location: {
+            countryCode: "AT",
+            timezone: "Europe/Vienna",
+          },
+        },
       }),
     );
     expect(result).toMatchObject({ country: "AT", timezone: "Europe/Vienna" });
@@ -131,19 +177,5 @@ describe("PMS property profile", () => {
       "PMS booking acceptance settings is not available on PMS next-stack yet.",
     );
     expect(mocks.updatePropertyProfile).not.toHaveBeenCalled();
-  });
-});
-
-describe("isPmsPropertyReady", () => {
-  it.each([
-    ["active", true],
-    ["selected_incomplete", false],
-    ["not_selected", false],
-    ["suspended", false],
-    ["unavailable", false],
-  ] as const)("treats %s PMS access as ready: %s", (pmsStatus, expected) => {
-    const property = { pmsStatus } as PmsPropertySummary;
-
-    expect(isPmsPropertyReady(property)).toBe(expected);
   });
 });

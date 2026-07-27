@@ -30,10 +30,6 @@ export default function Home() {
           return;
         }
         if (cancelled) return;
-        localStorage.setItem(
-          "setupComplete",
-          decision.action === "enter_product" ? "true" : "false",
-        );
         router.replace(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
       } else {
         router.replace("/login");

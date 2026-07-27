@@ -17,19 +17,24 @@ import type {
   CreatorProfileStatus,
   HotelProfileStatus,
   HotelProfile,
+  HotelListing,
   ListingFormData,
   Platform,
   PlatformFormData,
 } from "@/lib/types";
 import { creatorService } from "@/services/api/creators";
-import { CanonicalHotelPhotoReuseError, hotelService } from "@/services/api/hotels";
+import {
+  advanceHotelProfileRevisionsAfterCoverUpload,
+  CanonicalHotelPhotoReuseError,
+  hotelService,
+  type HotelProfileRevisionSnapshot,
+} from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
 import { authService } from "@/services/auth";
 import { useCreatorProfileForm } from "@/hooks/useCreatorProfileForm";
 import { useHotelProfileForm } from "@/hooks/useHotelProfileForm";
 import { formatErrorDetail } from "@/hooks/useErrorModal";
 import {
-  isMarketplaceActivationDecision,
   marketplaceSetupRedirectPath,
   resolveMarketplaceActivationGuard,
   SELECTED_SHARED_PROPERTY_ID_KEY,
@@ -46,11 +51,13 @@ import {
   ensureHotelMarketplaceOfferIdempotency,
   initialHotelMarketplaceOfferImages,
   markHotelMarketplaceDraftOfferProgress,
-  pendingHotelMarketplaceDraftListings,
   readHotelMarketplaceDraft,
   recoverHotelMarketplaceDraftFromSourceMediaFailure,
   recoverHotelMarketplaceOfferFromSourceMediaFailure,
+  replaceFirstOfferPhotoWithCanonicalCover,
+  resolveHotelMarketplaceCoverSource,
   resolveHotelMarketplaceDraftResume,
+  restoreHotelMarketplaceDraftForm,
   saveHotelMarketplaceDraft,
 } from "@/lib/utils/hotelMarketplaceDraft";
 import {
@@ -60,6 +67,13 @@ import {
   CreatorProfileForm,
   HotelProfileForm,
 } from "@/components/profile-complete";
+import {
+  hotelTaskFlow,
+  hotelTaskResumeStep,
+  parseMarketplaceHotelTaskHandoff,
+  type MarketplaceHotelTaskHandoff,
+  type MarketplaceHotelSetupTaskId,
+} from "./hotelTaskFlow";
 
 const CREATOR_PLATFORM_DRAFT_KEY = "vayada_creator_platform_connection_draft";
 const PLATFORM_CONNECTIONS_LOAD_ERROR =
@@ -78,6 +92,18 @@ type CreatorPlatformDraft = {
   managePlatforms?: boolean;
 };
 
+type ExistingOfferCoverSelection = {
+  file: File | null;
+  previewUrl: string | null;
+};
+
+class HotelCoverPhotoRequiredError extends Error {
+  constructor() {
+    super("Choose a hotel cover photo to continue.");
+    this.name = "HotelCoverPhotoRequiredError";
+  }
+}
+
 export default function ProfileCompletePage() {
   const router = useRouter();
   const [userType, setUserType] = useState<UserType | null>(null);
@@ -91,6 +117,20 @@ export default function ProfileCompletePage() {
   const [profileCompleted, setProfileCompleted] = useState(false);
   const [hasExistingMarketplaceOffer, setHasExistingMarketplaceOffer] = useState(false);
   const marketplacePropertyIdRef = useRef<string | null>(null);
+  const hotelProfileRevisionsRef = useRef<HotelProfileRevisionSnapshot | null>(null);
+  const [hotelTaskHandoff, setHotelTaskHandoff] = useState<MarketplaceHotelTaskHandoff | null>(
+    null,
+  );
+  const [canonicalHotelCoverUrl, setCanonicalHotelCoverUrl] = useState<string | null>(null);
+  const [existingMarketplaceOfferCoverUrl, setExistingMarketplaceOfferCoverUrl] = useState<
+    string | null
+  >(null);
+  const existingOfferCoverInputRef = useRef<HTMLInputElement>(null);
+  const [existingOfferCoverPicker, setExistingOfferCoverPicker] =
+    useState<ExistingOfferCoverSelection>({
+      file: null,
+      previewUrl: null,
+    });
   const [hotelDraftPropertyId, setHotelDraftPropertyId] = useState<string | null>(null);
   const [hotelDraftReady, setHotelDraftReady] = useState(false);
   const creatorProfilePhotoRef = useRef<{
@@ -118,21 +158,27 @@ export default function ProfileCompletePage() {
   const [reviewingConnectionCallback, setReviewingConnectionCallback] = useState(false);
 
   const creatorSteps = ["Creator category", "About your work", "Audience & platforms"];
-  const hotelSteps = hasExistingMarketplaceOffer
-    ? ["Introduce your hotel"]
-    : [
-        "Introduce your hotel",
-        "Describe your offer",
-        "What are you offering?",
-        "Who are you looking for?",
-      ];
+  const activeHotelTaskFlow = hotelTaskFlow(hotelTaskHandoff?.taskId ?? "public_profile");
+  const hotelSteps = activeHotelTaskFlow.steps.map(({ title }) => title);
+  const activeHotelSection =
+    activeHotelTaskFlow.steps[currentStep - 1]?.section ?? activeHotelTaskFlow.steps[0]!.section;
+  const showExistingOfferCoverPicker = activeHotelTaskFlow.ensureCover && !canonicalHotelCoverUrl;
+  const requiresExistingOfferCoverSelection =
+    showExistingOfferCoverPicker && !existingMarketplaceOfferCoverUrl;
 
   // Initialize hooks with error handler
   const creatorForm = useCreatorProfileForm({ onError: setError });
   const hotelForm = useHotelProfileForm({ onError: setError });
 
   useEffect(() => {
-    if (userType !== "hotel" || !hotelDraftReady || !hotelDraftPropertyId) return;
+    if (
+      userType !== "hotel" ||
+      hotelTaskHandoff?.taskId !== "creator_offer" ||
+      !hotelDraftReady ||
+      !hotelDraftPropertyId
+    ) {
+      return;
+    }
 
     const saveTimeout = window.setTimeout(() => {
       try {
@@ -151,6 +197,7 @@ export default function ProfileCompletePage() {
     currentStep,
     hotelDraftPropertyId,
     hotelDraftReady,
+    hotelTaskHandoff?.taskId,
     hotelForm.form,
     hotelForm.listings,
     userType,
@@ -164,12 +211,17 @@ export default function ProfileCompletePage() {
       if (storedUserType === "hotel") {
         localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
         const activationParams = new URLSearchParams(window.location.search);
-        const isMarketplaceActivation = activationParams.get("activation") === "marketplace";
-        const requestedPropertyId = activationParams.get("propertyId")?.trim() || null;
-        if (!isMarketplaceActivation || !requestedPropertyId) {
+        const taskHandoff = parseMarketplaceHotelTaskHandoff(
+          activationParams,
+          localStorage,
+          window.location.origin,
+        );
+        if (!taskHandoff) {
           router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE));
           return;
         }
+        const requestedPropertyId = taskHandoff.propertyId;
+        setHotelTaskHandoff(taskHandoff);
 
         const hydrationController = new AbortController();
         const hydrationTimeout = window.setTimeout(() => hydrationController.abort(), 5_000);
@@ -178,9 +230,10 @@ export default function ProfileCompletePage() {
         setLoading(true);
         void (async () => {
           try {
-            const savedDraft = readHotelMarketplaceDraft(localStorage, requestedPropertyId);
-            const hasPendingDraftOffers =
-              savedDraft !== null && pendingHotelMarketplaceDraftListings(savedDraft).length > 0;
+            const savedDraft =
+              taskHandoff.taskId === "creator_offer"
+                ? readHotelMarketplaceDraft(localStorage, requestedPropertyId)
+                : null;
             const decision = await resolveMarketplaceActivationGuard(
               ROUTES.MARKETPLACE,
               requestedPropertyId,
@@ -193,13 +246,7 @@ export default function ProfileCompletePage() {
               router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE));
               return;
             }
-            if (decision.action === "enter_product" && !hasPendingDraftOffers) {
-              localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, requestedPropertyId);
-              navigatingAway = true;
-              router.replace(ROUTES.MARKETPLACE);
-              return;
-            }
-            if (decision.action !== "enter_product" && !isMarketplaceActivationDecision(decision)) {
+            if (decision.action !== "enter_product") {
               navigatingAway = true;
               router.replace(decision.redirectPath);
               return;
@@ -212,15 +259,17 @@ export default function ProfileCompletePage() {
             });
             if (cancelled) return;
 
-            const hasExistingOffer = hydrateHotelMarketplaceProfile(
-              profile,
-              decision.action === "enter_product" ||
-                !decision.missingSteps.some((step) => MARKETPLACE_OFFER_SETUP_STEPS.has(step)),
-            );
+            hotelProfileRevisionsRef.current = {
+              canonicalProfileRevision: profile.canonicalProfileRevision,
+              publicProfileRevision: profile.publicProfileRevision,
+            };
+            const hasExistingOffer = hydrateHotelMarketplaceProfile(profile, taskHandoff.taskId);
             if (savedDraft) {
               const resumedDraft = resolveHotelMarketplaceDraftResume(savedDraft, hasExistingOffer);
               const pendingListings = resumedDraft.listings;
-              hotelForm.setForm(savedDraft.form);
+              hotelForm.setForm(
+                restoreHotelMarketplaceDraftForm(savedDraft.form, profile.localityPublic),
+              );
               if (pendingListings.length > 0) {
                 setHasExistingMarketplaceOffer(resumedDraft.hasExistingMarketplaceOffer);
                 hotelForm.setListings(pendingListings);
@@ -228,7 +277,12 @@ export default function ProfileCompletePage() {
                   savedDraft.omittedLocalPhotos &&
                   pendingListings.some((listing) => listing.images.length === 0);
                 setCurrentStep(
-                  needsPhotos ? Math.min(savedDraft.currentStep, 2) : savedDraft.currentStep,
+                  hotelTaskResumeStep({
+                    taskId: taskHandoff.taskId,
+                    savedStep: savedDraft.currentStep,
+                    authoritativeLocalityPublic: profile.localityPublic,
+                    needsPhotos,
+                  }),
                 );
                 if (needsPhotos) {
                   setError(
@@ -422,18 +476,133 @@ export default function ProfileCompletePage() {
 
   const hydrateHotelMarketplaceProfile = (
     profile: HotelProfile,
-    canReuseExistingOffer: boolean,
+    taskId: MarketplaceHotelSetupTaskId,
   ): boolean => {
-    const hasExistingOffer = profile.listings.some(
-      (listing) =>
-        canReuseExistingOffer && (listing.status === "pending" || listing.status === "verified"),
+    const profileCoverUrl = profile.picture?.trim() || null;
+    const existingOffer = profile.listings.find(
+      (listing) => listing.status === "pending" || listing.status === "verified",
     );
+    const coverSourceOffer =
+      existingOffer ?? profile.listings.find((listing) => listing.status === "rejected");
+    const existingOfferCoverUrl =
+      coverSourceOffer?.images.find((image) => image.trim())?.trim() || null;
+    setCanonicalHotelCoverUrl(profileCoverUrl);
+    setExistingMarketplaceOfferCoverUrl(existingOfferCoverUrl);
+    const hasExistingOffer = Boolean(existingOffer);
+    const needsExistingOfferCover = Boolean(existingOfferCoverUrl) && !profileCoverUrl;
+    setExistingOfferCoverPicker({
+      file: null,
+      previewUrl: needsExistingOfferCover ? existingOfferCoverUrl : null,
+    });
     hotelForm.setForm({
-      about: profile.about ?? "",
+      about:
+        taskId === "public_profile"
+          ? (profile.publicAbout ?? "")
+          : taskId === "creator_profile"
+            ? (profile.marketplaceAbout ?? "")
+            : "",
+      localityPublic: profile.localityPublic,
     });
     setHasExistingMarketplaceOffer(hasExistingOffer);
-    hotelForm.setListings(hasExistingOffer ? [] : [newMarketplaceOffer(profile)]);
+    hotelForm.setListings(
+      taskId !== "creator_offer"
+        ? []
+        : existingOffer
+          ? [existingMarketplaceOfferDraft(existingOffer)]
+          : [newMarketplaceOffer(profile)],
+    );
     return hasExistingOffer;
+  };
+
+  const ensureCanonicalHotelCover = async (
+    listings: ListingFormData[],
+    propertyId: string,
+  ): Promise<ListingFormData[]> => {
+    if (canonicalHotelCoverUrl) return listings;
+    const revisions = hotelProfileRevisionsRef.current;
+    if (!revisions) {
+      throw new Error("Marketplace setup is missing the hotel profile revision");
+    }
+
+    const firstListing = listings[0];
+    const source = resolveHotelMarketplaceCoverSource({
+      listing: firstListing,
+      selectedFile: existingOfferCoverPicker.file,
+      existingOfferCoverUrl: existingMarketplaceOfferCoverUrl,
+    });
+    if (!source) throw new HotelCoverPhotoRequiredError();
+
+    const uploaded =
+      source.kind === "file"
+        ? await hotelService.uploadProfileImage(
+            source.file,
+            propertyId,
+            revisions.canonicalProfileRevision,
+          )
+        : await hotelService.uploadProfileImageFromSource(
+            source.url,
+            propertyId,
+            revisions.canonicalProfileRevision,
+          );
+    hotelProfileRevisionsRef.current = advanceHotelProfileRevisionsAfterCoverUpload(revisions);
+    setCanonicalHotelCoverUrl(uploaded.url);
+    setExistingOfferCoverPicker((current) => ({
+      ...current,
+      previewUrl: uploaded.url,
+    }));
+    if (!firstListing) return listings;
+
+    const preparedListings = [
+      replaceFirstOfferPhotoWithCanonicalCover(firstListing, uploaded.url),
+      ...listings.slice(1),
+    ];
+    hotelForm.setListings(preparedListings);
+    saveHotelMarketplaceDraft(
+      localStorage,
+      propertyId,
+      createHotelMarketplaceDraft(hotelForm.form, preparedListings, currentStep),
+    );
+    return preparedListings;
+  };
+
+  const handleExistingOfferCoverChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setError("Choose a JPG, PNG, or WEBP hotel cover photo.");
+      event.target.value = "";
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError("Hotel cover photo must be 10 MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+
+    setError("");
+    setExistingOfferCoverPicker((current) => ({
+      ...current,
+      file,
+    }));
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result !== "string") return;
+      setExistingOfferCoverPicker((current) =>
+        current.file === file ? { ...current, previewUrl: reader.result as string } : current,
+      );
+    };
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  };
+
+  const clearExistingOfferCoverSelection = () => {
+    setExistingOfferCoverPicker({
+      file: null,
+      previewUrl: existingMarketplaceOfferCoverUrl,
+    });
+    if (existingOfferCoverInputRef.current) {
+      existingOfferCoverInputRef.current.value = "";
+    }
   };
 
   const refreshCreatorPlatformData = async () => {
@@ -690,9 +859,15 @@ export default function ProfileCompletePage() {
       return true;
     }
     if (userType === "hotel") {
-      if (currentStep === 1) return hotelForm.canProceedStep1();
-      if (currentStep === 2) return hotelForm.canProceedListingStep("details");
-      if (currentStep === 3) return hotelForm.canProceedListingStep("offerings");
+      if (activeHotelSection === "public_profile") {
+        return (
+          hotelForm.canProceedStep1(true) &&
+          (!requiresExistingOfferCoverSelection || Boolean(existingOfferCoverPicker.file))
+        );
+      }
+      if (activeHotelSection === "creator_profile") return hotelForm.canProceedStep1(false);
+      if (activeHotelSection === "offer_details") return hotelForm.canProceedListingStep("details");
+      if (activeHotelSection === "offerings") return hotelForm.canProceedListingStep("offerings");
       return hotelForm.canProceedListingStep("requirements");
     }
     return false;
@@ -762,194 +937,263 @@ export default function ProfileCompletePage() {
   const handleHotelSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!hotelForm.validateForm(hasExistingMarketplaceOffer)) return;
+    if (
+      !hotelForm.validateForm({
+        validateProfile:
+          activeHotelTaskFlow.submitPublicProfile || activeHotelTaskFlow.submitMarketplaceProfile,
+        requireLocalityConsent: activeHotelTaskFlow.submitPublicProfile,
+        validateOffers: activeHotelTaskFlow.submitOffers,
+        profileFieldName: activeHotelTaskFlow.submitPublicProfile
+          ? "Public hotel description"
+          : undefined,
+      })
+    ) {
+      return;
+    }
     const propertyId = marketplacePropertyIdRef.current;
-    if (!propertyId) {
+    const revisions = hotelProfileRevisionsRef.current;
+    if (!propertyId || !hotelTaskHandoff) {
       setError("Marketplace setup is missing its hotel. Return to setup and try again.");
+      return;
+    }
+    if (activeHotelTaskFlow.submitPublicProfile && !revisions) {
+      setError("Marketplace setup is missing the hotel profile revision. Refresh and try again.");
       return;
     }
 
     setSubmitting(true);
     try {
-      const submissionListings = hotelForm.listings.map(ensureHotelMarketplaceOfferIdempotency);
-      hotelForm.setListings(submissionListings);
-      saveHotelMarketplaceDraft(
-        localStorage,
-        propertyId,
-        createHotelMarketplaceDraft(hotelForm.form, submissionListings, currentStep),
-      );
-      await hotelService.updateMyProfile(
-        {
-          about: hotelForm.form.about.trim(),
-        },
-        propertyId,
-      );
+      let submissionListings = activeHotelTaskFlow.submitOffers
+        ? hotelForm.listings.map(ensureHotelMarketplaceOfferIdempotency)
+        : [];
+      if (activeHotelTaskFlow.submitOffers) {
+        hotelForm.setListings(submissionListings);
+        saveHotelMarketplaceDraft(
+          localStorage,
+          propertyId,
+          createHotelMarketplaceDraft(hotelForm.form, submissionListings, currentStep),
+        );
+      }
+      if (activeHotelTaskFlow.ensureCover) {
+        submissionListings = await ensureCanonicalHotelCover(submissionListings, propertyId);
+      }
+      if (activeHotelTaskFlow.submitPublicProfile) {
+        await hotelService.updatePublicSetupProfile(
+          {
+            about: hotelForm.form.about.trim(),
+            localityPublic: hotelForm.form.localityPublic,
+          },
+          propertyId,
+          hotelProfileRevisionsRef.current!,
+        );
+      }
+      if (activeHotelTaskFlow.submitMarketplaceProfile) {
+        await hotelService.updateMarketplaceHostSummary(hotelForm.form.about.trim(), propertyId);
+      }
 
-      for (const listing of submissionListings) {
-        const onboarding = listing.marketplaceOnboarding!;
-        if (onboarding.createdOfferId && onboarding.mediaPending !== true) continue;
-        const offerings = buildListingOfferings(listing);
-        let imageUrls = listing.images.filter((img) => !img.startsWith("data:"));
-        let imageMediaObjectIds = listing.imageMediaObjectIds ?? [];
+      if (activeHotelTaskFlow.submitOffers) {
+        for (const listing of submissionListings) {
+          const onboarding = listing.marketplaceOnboarding!;
+          if (
+            onboarding.createdOfferId &&
+            onboarding.mediaPending !== true &&
+            !onboarding.existingOffer
+          ) {
+            continue;
+          }
+          const offerings = buildListingOfferings(listing);
+          let imageUrls = listing.images.filter((img) => !img.startsWith("data:"));
+          let imageMediaObjectIds = listing.imageMediaObjectIds ?? [];
 
-        if (imageUrls.length === 0 && !listing.imageFiles?.length) {
-          setError(`Offer "${listing.name}": At least one image is required`);
-          setSubmitting(false);
-          return;
-        }
+          if (imageUrls.length === 0 && !listing.imageFiles?.length) {
+            setError(`Offer "${listing.name}": At least one image is required`);
+            setSubmitting(false);
+            return;
+          }
 
-        const offerPayload = {
-          name: listing.name,
-          location: listing.location,
-          description: listing.description,
-          accommodation_type: listing.accommodation_type || undefined,
-          images: imageUrls,
-          image_media_object_ids: imageMediaObjectIds,
-          deliverables: listing.platforms.map((platform) => ({
-            platform,
-            deliverable_type: "content",
-            quantity: 1,
-            timing_guidance: null,
-          })),
-          collaboration_offerings: offerings,
-          creator_requirements: buildCreatorRequirements(listing),
-        };
-        let createdOfferId = onboarding.createdOfferId;
-        let mediaResourceId = onboarding.createdOfferMediaResourceId;
+          const offerPayload = {
+            name: listing.name,
+            location: listing.location,
+            description: listing.description,
+            accommodation_type: listing.accommodation_type || undefined,
+            images: imageUrls,
+            image_media_object_ids: imageMediaObjectIds,
+            deliverables: listing.platforms.map((platform) => ({
+              platform,
+              deliverable_type: "content",
+              quantity: 1,
+              timing_guidance: null,
+            })),
+            collaboration_offerings: offerings,
+            creator_requirements: buildCreatorRequirements(listing),
+          };
+          let createdOfferId = onboarding.createdOfferId;
+          let mediaResourceId = onboarding.createdOfferMediaResourceId;
 
-        const copiedImageUrls = imageUrls.slice(imageMediaObjectIds.length);
-        const mediaPending = copiedImageUrls.length > 0 || Boolean(listing.imageFiles?.length);
-        if (!createdOfferId) {
-          const createdListing = await hotelService.createListing(offerPayload, propertyId, {
-            idempotencyKey: onboarding.idempotencyKey,
-          });
-          createdOfferId = createdListing.id;
-          mediaResourceId = createdListing.media_resource_id;
-          const progress = {
+          const copiedImageUrls = imageUrls.slice(imageMediaObjectIds.length);
+          const mediaPending = copiedImageUrls.length > 0 || Boolean(listing.imageFiles?.length);
+          if (!createdOfferId) {
+            const createdListing = await hotelService.createListing(offerPayload, propertyId, {
+              idempotencyKey: onboarding.idempotencyKey,
+            });
+            createdOfferId = createdListing.id;
+            mediaResourceId = createdListing.media_resource_id;
+            const progress = {
+              idempotencyKey: onboarding.idempotencyKey,
+              createdOfferId,
+              createdOfferMediaResourceId: mediaResourceId,
+              mediaPending,
+            };
+            markHotelMarketplaceDraftOfferProgress(
+              localStorage,
+              propertyId,
+              onboarding.idempotencyKey,
+              progress,
+            );
+            hotelForm.setListings((current) =>
+              current.map((currentListing) =>
+                currentListing.marketplaceOnboarding?.idempotencyKey === onboarding.idempotencyKey
+                  ? { ...currentListing, marketplaceOnboarding: progress }
+                  : currentListing,
+              ),
+            );
+          } else {
+            await hotelService.updateListing(createdOfferId, offerPayload, propertyId);
+          }
+
+          if (mediaPending) {
+            try {
+              if (!mediaResourceId) {
+                throw new Error("The listing media resource is unavailable");
+              }
+              const uploadResponse = await hotelService.uploadListingImagesFromSources(
+                copiedImageUrls,
+                listing.imageFiles ?? [],
+                mediaResourceId,
+              );
+              imageUrls = [
+                ...imageUrls.slice(0, imageMediaObjectIds.length),
+                ...uploadResponse.images.map((img) => img.url),
+              ];
+              imageMediaObjectIds = [
+                ...imageMediaObjectIds,
+                ...uploadResponse.images.map((img) => img.mediaObjectId),
+              ];
+
+              await hotelService.updateListing(
+                createdOfferId,
+                {
+                  images: imageUrls,
+                  image_media_object_ids: imageMediaObjectIds,
+                },
+                propertyId,
+              );
+            } catch (err) {
+              if (err instanceof CanonicalHotelPhotoReuseError) {
+                const recoveryProgress = {
+                  idempotencyKey: onboarding.idempotencyKey,
+                  createdOfferId,
+                  ...(mediaResourceId ? { createdOfferMediaResourceId: mediaResourceId } : {}),
+                  mediaPending: true,
+                };
+                const recoverListing = (currentListing: ListingFormData) =>
+                  currentListing.marketplaceOnboarding?.idempotencyKey === onboarding.idempotencyKey
+                    ? recoverHotelMarketplaceOfferFromSourceMediaFailure(
+                        currentListing,
+                        copiedImageUrls,
+                        recoveryProgress,
+                      )
+                    : currentListing;
+
+                hotelForm.setListings((current) => current.map(recoverListing));
+                const latestDraft = readHotelMarketplaceDraft(localStorage, propertyId);
+                const recoveredDraft = latestDraft
+                  ? recoverHotelMarketplaceDraftFromSourceMediaFailure(
+                      latestDraft,
+                      onboarding.idempotencyKey,
+                      copiedImageUrls,
+                      recoveryProgress,
+                    )
+                  : createHotelMarketplaceDraft(
+                      hotelForm.form,
+                      submissionListings.map(recoverListing),
+                      1,
+                    );
+                saveHotelMarketplaceDraft(localStorage, propertyId, recoveredDraft);
+                setCurrentStep(1);
+                setError(
+                  `We couldn't reuse the shared hotel photo for offer "${listing.name}". Please upload the photo manually to continue.`,
+                );
+              } else if (err instanceof ApiErrorResponse) {
+                setError(
+                  formatErrorDetail(err.data.detail) ||
+                    `Failed to upload images for offer "${listing.name}"`,
+                );
+              } else {
+                setError(`Failed to upload images for offer "${listing.name}". Please try again.`);
+              }
+              setSubmitting(false);
+              return;
+            }
+          }
+
+          const completedProgress = {
             idempotencyKey: onboarding.idempotencyKey,
             createdOfferId,
-            createdOfferMediaResourceId: mediaResourceId,
-            mediaPending,
+            ...(mediaResourceId ? { createdOfferMediaResourceId: mediaResourceId } : {}),
+            mediaPending: false,
+            ...(onboarding.existingOffer ? { existingOffer: true } : {}),
           };
           markHotelMarketplaceDraftOfferProgress(
             localStorage,
             propertyId,
             onboarding.idempotencyKey,
-            progress,
+            completedProgress,
           );
           hotelForm.setListings((current) =>
             current.map((currentListing) =>
               currentListing.marketplaceOnboarding?.idempotencyKey === onboarding.idempotencyKey
-                ? { ...currentListing, marketplaceOnboarding: progress }
+                ? { ...currentListing, marketplaceOnboarding: completedProgress }
                 : currentListing,
             ),
           );
-        } else {
-          await hotelService.updateListing(createdOfferId, offerPayload, propertyId);
         }
-
-        if (mediaPending) {
-          try {
-            if (!mediaResourceId) {
-              throw new Error("The listing media resource is unavailable");
-            }
-            const uploadResponse = await hotelService.uploadListingImagesFromSources(
-              copiedImageUrls,
-              listing.imageFiles ?? [],
-              mediaResourceId,
-            );
-            imageUrls = [
-              ...imageUrls.slice(0, imageMediaObjectIds.length),
-              ...uploadResponse.images.map((img) => img.url),
-            ];
-            imageMediaObjectIds = [
-              ...imageMediaObjectIds,
-              ...uploadResponse.images.map((img) => img.mediaObjectId),
-            ];
-
-            await hotelService.updateListing(
-              createdOfferId,
-              {
-                images: imageUrls,
-                image_media_object_ids: imageMediaObjectIds,
-              },
-              propertyId,
-            );
-          } catch (err) {
-            if (err instanceof CanonicalHotelPhotoReuseError) {
-              const recoveryProgress = {
-                idempotencyKey: onboarding.idempotencyKey,
-                createdOfferId,
-                ...(mediaResourceId ? { createdOfferMediaResourceId: mediaResourceId } : {}),
-                mediaPending: true,
-              };
-              const recoverListing = (currentListing: ListingFormData) =>
-                currentListing.marketplaceOnboarding?.idempotencyKey === onboarding.idempotencyKey
-                  ? recoverHotelMarketplaceOfferFromSourceMediaFailure(
-                      currentListing,
-                      copiedImageUrls,
-                      recoveryProgress,
-                    )
-                  : currentListing;
-
-              hotelForm.setListings((current) => current.map(recoverListing));
-              const latestDraft = readHotelMarketplaceDraft(localStorage, propertyId);
-              const recoveredDraft = latestDraft
-                ? recoverHotelMarketplaceDraftFromSourceMediaFailure(
-                    latestDraft,
-                    onboarding.idempotencyKey,
-                    copiedImageUrls,
-                    recoveryProgress,
-                  )
-                : createHotelMarketplaceDraft(
-                    hotelForm.form,
-                    submissionListings.map(recoverListing),
-                    2,
-                  );
-              saveHotelMarketplaceDraft(localStorage, propertyId, recoveredDraft);
-              setCurrentStep(2);
-              setError(
-                `We couldn't reuse the shared hotel photo for offer "${listing.name}". Please upload the photo manually to continue.`,
-              );
-            } else if (err instanceof ApiErrorResponse) {
-              setError(
-                formatErrorDetail(err.data.detail) ||
-                  `Failed to upload images for offer "${listing.name}"`,
-              );
-            } else {
-              setError(`Failed to upload images for offer "${listing.name}". Please try again.`);
-            }
-            setSubmitting(false);
-            return;
-          }
-        }
-
-        const completedProgress = {
-          idempotencyKey: onboarding.idempotencyKey,
-          createdOfferId,
-          ...(mediaResourceId ? { createdOfferMediaResourceId: mediaResourceId } : {}),
-          mediaPending: false,
-        };
-        markHotelMarketplaceDraftOfferProgress(
-          localStorage,
-          propertyId,
-          onboarding.idempotencyKey,
-          completedProgress,
-        );
-        hotelForm.setListings((current) =>
-          current.map((currentListing) =>
-            currentListing.marketplaceOnboarding?.idempotencyKey === onboarding.idempotencyKey
-              ? { ...currentListing, marketplaceOnboarding: completedProgress }
-              : currentListing,
-          ),
-        );
       }
 
-      clearHotelMarketplaceDraft(localStorage, propertyId);
-      router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE, propertyId));
+      if (activeHotelTaskFlow.submitOffers) {
+        clearHotelMarketplaceDraft(localStorage, propertyId);
+      }
+      window.location.href = hotelTaskHandoff.returnUrl;
     } catch (err) {
-      if (err instanceof ApiErrorResponse) {
-        setError(formatErrorDetail(err.data.detail) || "Failed to update profile");
+      if (err instanceof HotelCoverPhotoRequiredError) {
+        setExistingOfferCoverPicker((current) => ({
+          ...current,
+          previewUrl: null,
+        }));
+        setError(err.message);
+      } else if (err instanceof CanonicalHotelPhotoReuseError) {
+        if (hasExistingMarketplaceOffer) {
+          setExistingMarketplaceOfferCoverUrl(null);
+          setCurrentStep(1);
+          setExistingOfferCoverPicker({
+            file: null,
+            previewUrl: null,
+          });
+          setError(
+            "We couldn't reuse the existing offer photo as your hotel cover. Choose a replacement in the Public hotel cover section.",
+          );
+        } else {
+          setCurrentStep(Math.min(currentStep, 2));
+          setError(
+            "We couldn't reuse the first offer photo as your hotel cover. Please select the photo again.",
+          );
+        }
+      } else if (err instanceof ApiErrorResponse) {
+        setError(
+          err.data.code === "profile_revision_conflict"
+            ? "This hotel profile changed in another tab. Refresh the page before choosing the cover photo again."
+            : formatErrorDetail(err.data.detail) || err.message || "Failed to update profile",
+        );
       } else {
         setError("Failed to update profile. Please try again.");
       }
@@ -1084,7 +1328,12 @@ export default function ProfileCompletePage() {
   if (profileStatusLoadFailed) {
     if (userType === "hotel") {
       return (
-        <HotelMarketplaceSetupLayout steps={hotelSteps} currentStep={currentStep}>
+        <HotelMarketplaceSetupLayout
+          steps={hotelSteps}
+          currentStep={currentStep}
+          activeSection={activeHotelSection}
+          returnUrl={hotelTaskHandoff?.returnUrl}
+        >
           <div
             role="alert"
             className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
@@ -1147,20 +1396,41 @@ export default function ProfileCompletePage() {
 
   if (userType === "hotel") {
     return (
-      <HotelMarketplaceSetupLayout steps={hotelSteps} currentStep={currentStep}>
+      <HotelMarketplaceSetupLayout
+        steps={hotelSteps}
+        currentStep={currentStep}
+        activeSection={activeHotelSection}
+        returnUrl={hotelTaskHandoff?.returnUrl}
+      >
         <HotelProfileForm
           form={hotelForm.form}
           listings={hotelForm.listings}
           currentStep={currentStep}
           totalSteps={totalSteps}
+          activeSection={activeHotelSection}
           error={error}
           submitting={submitting}
           canProceed={canProceedToNextStep()}
           collapsedCards={hotelForm.collapsedCards}
           countryInputs={hotelForm.countryInputs}
           countries={hotelForm.countries}
+          showCoverPhotoPicker={showExistingOfferCoverPicker}
+          coverPhotoPreview={existingOfferCoverPicker.previewUrl}
+          coverPhotoRequired={requiresExistingOfferCoverSelection}
+          hasSelectedCoverPhoto={Boolean(existingOfferCoverPicker.file)}
+          showLocalityConsent={activeHotelSection === "public_profile"}
+          submitLabel={
+            activeHotelSection === "public_profile"
+              ? "Save public profile"
+              : activeHotelSection === "creator_profile"
+                ? "Save creator profile"
+                : "Save collaboration offer"
+          }
           imageInputRefs={hotelForm.listingImageInputRefs}
+          coverPhotoInputRef={existingOfferCoverInputRef}
           onFormChange={hotelForm.handleFormChange}
+          onCoverPhotoChange={handleExistingOfferCoverChange}
+          onClearCoverPhoto={clearExistingOfferCoverSelection}
           onToggleCollapse={hotelForm.toggleListingCollapse}
           onUpdateListing={hotelForm.updateListing}
           onImageChange={hotelForm.handleListingImageChange}
@@ -1255,22 +1525,28 @@ export default function ProfileCompletePage() {
 function HotelMarketplaceSetupLayout({
   steps,
   currentStep,
+  activeSection,
+  returnUrl,
   children,
 }: {
   steps: string[];
   currentStep: number;
+  activeSection: import("./hotelTaskFlow").HotelTaskSection;
+  returnUrl?: string;
   children: React.ReactNode;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const currentTitle = steps[currentStep - 1] ?? steps[0];
   const currentDescription =
-    currentStep === 1
-      ? "Write the short introduction creators will see on your Marketplace profile."
-      : currentStep === 2
-        ? "Give creators a clear title, short description, and photos of the experience."
-        : currentStep === 3
-          ? "Choose how you want to collaborate, when the offer is available, and where creators should publish content."
-          : "Choose the creator platforms and audience fit that best match this collaboration.";
+    activeSection === "public_profile"
+      ? "Add the description, locality visibility, and cover used across Vayada’s public surfaces."
+      : activeSection === "creator_profile"
+        ? "Write the short introduction creators will see on your Marketplace profile."
+        : activeSection === "offer_details"
+          ? "Give creators a clear title, short description, and photos of the experience."
+          : activeSection === "offerings"
+            ? "Choose how you want to collaborate, when the offer is available, and where creators should publish content."
+            : "Choose the creator platforms and audience fit that best match this collaboration.";
 
   useEffect(() => {
     headingRef.current?.focus();
@@ -1288,9 +1564,19 @@ function HotelMarketplaceSetupLayout({
               Creator Marketplace Setup
             </span>
           </div>
-          <span className="whitespace-nowrap text-xs text-gray-500 sm:text-[13px]">
-            Step {currentStep} of {steps.length}
-          </span>
+          <div className="flex items-center gap-4">
+            {returnUrl && (
+              <a
+                href={returnUrl}
+                className="text-xs font-semibold text-primary-700 hover:text-primary-800"
+              >
+                Back to setup plan
+              </a>
+            )}
+            <span className="whitespace-nowrap text-xs text-gray-500 sm:text-[13px]">
+              Step {currentStep} of {steps.length}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -1496,12 +1782,59 @@ function newMarketplaceOffer(profile: HotelProfile): ListingFormData {
   });
 }
 
-const MARKETPLACE_OFFER_SETUP_STEPS = new Set([
-  "marketplaceOffer",
-  "offerDeliverables",
-  "compensationOptions",
-  "creatorRequirements",
-]);
+function existingMarketplaceOfferDraft(listing: HotelListing): ListingFormData {
+  const offerings = listing.collaboration_offerings;
+  return ensureHotelMarketplaceOfferIdempotency({
+    name: listing.name,
+    location: listing.location,
+    description: listing.description,
+    accommodation_type: listing.accommodation_type ?? "",
+    images: listing.images,
+    imageMediaObjectIds: listing.image_media_object_ids ?? [],
+    imageFiles: [],
+    collaborationTypes: Array.from(
+      new Set(offerings.map(({ collaboration_type }) => collaboration_type)),
+    ),
+    availability: Array.from(
+      new Set(offerings.flatMap(({ availability_months }) => availability_months)),
+    ),
+    platforms: Array.from(new Set(offerings.flatMap(({ platforms }) => platforms))),
+    freeStayMinNights:
+      offerings.find(({ collaboration_type }) => collaboration_type === "Free Stay")
+        ?.free_stay_min_nights ?? undefined,
+    freeStayMaxNights:
+      offerings.find(({ collaboration_type }) => collaboration_type === "Free Stay")
+        ?.free_stay_max_nights ?? undefined,
+    paidMaxAmount:
+      offerings.find(({ collaboration_type }) => collaboration_type === "Paid")?.paid_max_amount ??
+      undefined,
+    currency:
+      offerings.find(({ collaboration_type }) => collaboration_type === "Paid")?.currency ??
+      undefined,
+    discountPercentage:
+      offerings.find(({ collaboration_type }) => collaboration_type === "Discount")
+        ?.discount_percentage ?? undefined,
+    commissionPercentage:
+      offerings.find(({ collaboration_type }) => collaboration_type === "Affiliate")
+        ?.commission_percentage ?? undefined,
+    lookingForPlatforms: listing.creator_requirements.platforms,
+    targetGroupCountries: listing.creator_requirements.target_countries,
+    targetGroupAgeMin: listing.creator_requirements.target_age_min ?? undefined,
+    targetGroupAgeMax: listing.creator_requirements.target_age_max ?? undefined,
+    targetGroupAgeGroups: listing.creator_requirements.target_age_groups ?? [],
+    lookingForCreatorTypes: (listing.creator_requirements.creator_types ??
+      []) as ListingFormData["lookingForCreatorTypes"],
+    marketplaceOnboarding: {
+      idempotencyKey: `marketplace.hotel-offer.edit:${listing.id}:v1`,
+      createdOfferId: listing.id,
+      ...(listing.media_resource_id
+        ? { createdOfferMediaResourceId: listing.media_resource_id }
+        : {}),
+      mediaPending: false,
+      existingOffer: true,
+    },
+  });
+}
 
 function emptyProfileStatus(
   userType: "creator" | "hotel",

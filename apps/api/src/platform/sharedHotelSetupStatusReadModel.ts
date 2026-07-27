@@ -1,148 +1,164 @@
+import { createHash } from "node:crypto";
+
+import type {
+  PropertyProfileContact,
+  PropertyProfileMapDisplayMode,
+  PublicPropertyProfileMedia,
+  PublicPropertyProfilePatch,
+} from "@vayada/domain-hotels";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import type {
-  SharedHotelSetupEntryProduct,
+  AdaptivePropertySetupFacts,
+  AdaptiveSetupTaskFact,
   SharedHotelSetupStatusRepository,
   SharedPropertyProfile,
   SharedPropertyProfileInput,
-  SharedPropertyProfileLocation,
-  SharedPropertyProfileMedia,
-  SharedProductActivation,
-  SharedPropertyProfileMissingField,
-  SharedSetupProperty,
+  SharedPublicPropertyProfile,
+  UpdatePublicPropertyProfileResult,
 } from "../routes/sharedHotelSetupStatus.js";
+import { syncPropertyOfferReadModels } from "../routes/marketplaceAdmin.js";
 
-type SharedHotelSetupStatusPool = {
+type SharedHotelSetupQueryClient = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     values?: readonly unknown[],
   ): Promise<Pick<QueryResult<T>, "rows">>;
-  connect?(): Promise<{
-    query<T extends QueryResultRow = QueryResultRow>(
-      text: string,
-      values?: readonly unknown[],
-    ): Promise<Pick<QueryResult<T>, "rows">>;
-    release(): void;
-  }>;
+};
+
+type SharedHotelSetupStatusPool = SharedHotelSetupQueryClient & {
+  connect?(): Promise<SharedHotelSetupQueryClient & { release(): void }>;
   end(): Promise<void>;
 };
 
-type SharedHotelSetupRow = {
-  propertyId: string;
-  publicId: string;
-  displayName: string | null;
-  profileStatus: string | null;
-  profileSource: string | null;
-  location: unknown;
-  descriptions: unknown;
-  media: unknown;
-  publicContacts: unknown;
-  bookingSelected: boolean;
-  bookingSelectionUpdatedAt: unknown;
-  hasBookingSettings: boolean;
-  bookingSettingsUpdatedAt: unknown;
-  bookingEntitlementActive: boolean;
-  bookingEntitlementSuspended: boolean;
-  bookingEntitlementUpdatedAt: unknown;
-  bookabilityStatus: string | null;
-  bookabilityFreshnessStatus: string | null;
-  bookabilityUpdatedAt: unknown;
-  paymentsEnabled: boolean | null;
-  paymentSettingsUpdatedAt: unknown;
-  pmsSelected: boolean;
-  pmsSelectionUpdatedAt: unknown;
-  pmsEntitlementActive: boolean;
-  pmsEntitlementSuspended: boolean;
-  pmsEntitlementUpdatedAt: unknown;
-  pmsRoomTypeCount: number | string;
-  pmsRoomUpdatedAt: unknown;
-  pmsRoomCount: number | string;
-  pmsRatePlanCount: number | string;
-  pmsRateUpdatedAt: unknown;
-  marketplaceSelected: boolean;
-  marketplaceSelectionUpdatedAt: unknown;
-  marketplaceEntitlementActive: boolean;
-  marketplaceEntitlementSuspended: boolean;
-  marketplaceEntitlementUpdatedAt: unknown;
-  marketplaceProfileStatus: string | null;
-  marketplaceProfileComplete: boolean | null;
-  marketplaceProfileUpdatedAt: unknown;
-  marketplaceOfferCount: number | string;
-  marketplaceVerifiedOfferCount: number | string;
-  marketplacePublicOfferCount: number | string;
-  marketplaceOfferUpdatedAt: unknown;
-  marketplaceDeliverableCount: number | string;
-  marketplaceDeliverableUpdatedAt: unknown;
-  marketplaceCompensationCount: number | string;
-  marketplaceCompensationUpdatedAt: unknown;
-  marketplaceRequirementCount: number | string;
-  marketplaceRequirementUpdatedAt: unknown;
-};
-
-type AccountProductSelectionRow = {
-  product: SharedHotelSetupEntryProduct;
-  updatedAt: unknown;
-};
-
-type SharedPropertyProfileRow = {
+type AdaptiveHotelSetupFactsRow = {
   propertyId: string;
   publicId: string;
   displayName: string | null;
   propertyType: string | null;
-  profileStatus: string | null;
-  profileSource: string | null;
+  city: string | null;
   countryCode: string | null;
-  region: string | null;
+  hasStreetAddress: boolean;
+  hasPostalCode: boolean;
+  hasCity: boolean;
+  hasCountryCode: boolean;
+  hasTimezone: boolean;
+  hasEmail: boolean;
+  hasPhone: boolean;
+  propertyUpdatedAt: unknown;
+  locationUpdatedAt: unknown;
+  contactUpdatedAt: unknown;
+  hasDescription: boolean;
+  hasApprovedMedia: boolean;
+  localityPublic: boolean;
+  profileUpdatedAt: unknown;
+  mediaUpdatedAt: unknown;
+  marketplaceProfileStatus: string | null;
+  marketplaceProfileComplete: boolean;
+  marketplaceProfileUpdatedAt: unknown;
+  marketplaceOfferStatus: string | null;
+  marketplaceOfferHasTitle: boolean;
+  marketplaceOfferHasDeliverable: boolean;
+  marketplaceOfferHasCompensation: boolean;
+  marketplaceOfferHasRequirement: boolean;
+  marketplaceOfferPublic: boolean;
+  marketplaceOfferUpdatedAt: unknown;
+  marketplaceOfferChildrenUpdatedAt: unknown;
+  marketplaceOfferProjectedAt: unknown;
+  marketplaceOfferProjectionFresh: boolean;
+  hasActiveRoomType: boolean;
+  hasNonRetiredRoom: boolean;
+  hasActiveRatePlan: boolean;
+  hasFutureInventory: boolean;
+  roomTypeUpdatedAt: unknown;
+  roomUpdatedAt: unknown;
+  ratePlanUpdatedAt: unknown;
+  inventoryUpdatedAt: unknown;
+  hasCheckInPolicy: boolean;
+  hasCheckOutPolicy: boolean;
+  hasCancellationPolicy: boolean;
+  policyUpdatedAt: unknown;
+  paymentsEnabled: boolean | null;
+  hasAcceptedPaymentMethod: boolean;
+  hasEffectivePaymentMethod: boolean;
+  paymentRequiresManualReview: boolean;
+  paymentSettingsUpdatedAt: unknown;
+  bookabilityStatus: string | null;
+  bookabilityFreshness: string | null;
+  bookabilitySetupReady: boolean;
+  bookabilityMissingEmpty: boolean;
+  bookabilityExpired: boolean;
+  bookabilityUpdatedAt: unknown;
+};
+
+type SharedPropertyProfileRow = {
+  propertyId: string;
+  profileRevision: unknown;
+  displayName: string | null;
+  propertyType: string | null;
+  countryCode: string | null;
   city: string | null;
   streetAddress: string | null;
   postalCode: string | null;
-  rawMarketplaceLocation: string | null;
   timezone: string | null;
   latitude: unknown;
   longitude: unknown;
-  addressPublic: boolean | null;
+  localityPublic: boolean | null;
+  geoPublic: boolean | null;
   mapDisplayMode: string | null;
-  shortDescription: string | null;
-  longDescription: string | null;
-  website: string | null;
-  contactEmail: string | null;
-  phone: string | null;
-  media: unknown;
-  updatedAt: unknown;
+  contacts: unknown;
 };
 
 type PropertyProfileWriteRow = {
   propertyId: string;
 };
 
+type PropertyCreateIdempotencyRow = {
+  status: string;
+  requestFingerprintHash: string;
+  propertyId: string | null;
+};
+
+type PublicPropertyProfileRow = {
+  propertyId: string;
+  profileRevision: unknown;
+  locale: string;
+  shortDescription: string | null;
+  longDescription: string | null;
+  media: unknown;
+};
+
+type LockedPublicPropertyRow = {
+  profileRevision: unknown;
+  locale: string;
+};
+
+type ApprovedPropertyMediaRow = {
+  mediaObjectId: string;
+  mediaType: PublicPropertyProfileMedia["mediaType"];
+  url: string;
+};
+
 type SharedPropertyProfileWritePayload = {
   display_name: string;
   property_type: SharedPropertyProfileInput["propertyType"];
-  country_code: string | null;
-  region: string | null;
-  city: string | null;
-  street_address: string | null;
-  postal_code: string | null;
-  raw_marketplace_location: string | null;
-  timezone: string | null;
+  country_code: string;
+  city: string;
+  street_address: string;
+  postal_code: string;
+  timezone: string;
   latitude: number | null;
   longitude: number | null;
   address_public: boolean;
-  map_display_mode: SharedPropertyProfileLocation["mapDisplayMode"];
-  short_description: string | null;
-  long_description: string | null;
-  website: string | null;
-  contact_email: string | null;
-  phone: string | null;
-  media: Array<{
-    media_type: SharedPropertyProfileMedia["mediaType"];
-    url: string;
-    alt_text: string | null;
-    sort_order: number;
+  geo_public: boolean;
+  map_display_mode: SharedPropertyProfileInput["location"]["mapDisplayMode"];
+  contacts: Array<{
+    channel_type: SharedPropertyProfileInput["contacts"][number]["channelType"];
+    value: string;
+    purpose: SharedPropertyProfileInput["contacts"][number]["purpose"];
+    is_public: boolean;
   }>;
 };
-
-const PRODUCT_ORDER: readonly SharedHotelSetupEntryProduct[] = ["booking", "pms", "marketplace"];
 
 export function createPgSharedHotelSetupStatusRepository(config: {
   connectionString: string;
@@ -171,24 +187,15 @@ export function createPgSharedHotelSetupStatusRepository(config: {
          LIMIT 1`,
         [organizationId],
       );
-      const accountProducts = await pool.query<AccountProductSelectionRow>(
-        organizationProductSelectionsSql(),
-        [organizationId, PRODUCT_ORDER],
-      );
-      const hotelGroupSelectedProducts = PRODUCT_ORDER.filter((product) =>
-        accountProducts.rows.some((row) => row.product === product),
-      );
-
       if (propertyIds.length === 0) {
         return {
           hotelGroupDisplayName: hotelGroup.rows[0]?.displayName ?? null,
           hotelGroupWebsiteUrl: hotelGroup.rows[0]?.websiteUrl ?? null,
-          hotelGroupSelectedProducts,
           properties: [],
         };
       }
 
-      const result = await pool.query<SharedHotelSetupRow>(sharedHotelSetupStatusSql(), [
+      const result = await pool.query<AdaptiveHotelSetupFactsRow>(adaptiveHotelSetupFactsSql(), [
         organizationId,
         propertyIds,
       ]);
@@ -196,16 +203,17 @@ export function createPgSharedHotelSetupStatusRepository(config: {
       return {
         hotelGroupDisplayName: hotelGroup.rows[0]?.displayName ?? null,
         hotelGroupWebsiteUrl: hotelGroup.rows[0]?.websiteUrl ?? null,
-        hotelGroupSelectedProducts,
-        properties: result.rows.map(toSharedSetupProperty),
+        properties: result.rows.map(toAdaptivePropertySetupFacts),
       };
     },
     async getPropertyProfile({ organizationId, propertyId }) {
       return loadPropertyProfile(pool, organizationId, propertyId);
     },
-    async createPropertyProfile({ organizationId, profile }) {
+    async createPropertyProfile({ organizationId, idempotencyKey, correlationId, profile }) {
       const propertyId = await writePropertyProfile(pool, {
         organizationId,
+        idempotencyKey,
+        correlationId,
         profile,
         mode: "create",
       });
@@ -218,23 +226,22 @@ export function createPgSharedHotelSetupStatusRepository(config: {
       }
       return created;
     },
-    async updatePropertyProfile({
-      organizationId,
-      propertyId,
-      expectedPropertyType,
-      expectedUpdatedAt,
-      profile,
-    }) {
+    async updatePropertyProfile({ organizationId, propertyId, expectedProfileRevision, profile }) {
       const updatedPropertyId = await writePropertyProfile(pool, {
         organizationId,
         propertyId,
-        expectedPropertyType,
-        expectedUpdatedAt,
+        expectedProfileRevision,
         profile,
         mode: "update",
       });
       if (!updatedPropertyId) return null;
       return loadPropertyProfile(pool, organizationId, updatedPropertyId);
+    },
+    async getPublicPropertyProfile({ organizationId, propertyId }) {
+      return loadPublicPropertyProfile(pool, organizationId, propertyId);
+    },
+    async updatePublicPropertyProfile(input) {
+      return writePublicPropertyProfile(pool, input);
     },
     async close() {
       if (ownsPool) {
@@ -257,29 +264,369 @@ async function loadPropertyProfile(
   return row ? toSharedPropertyProfile(row) : null;
 }
 
+async function loadPublicPropertyProfile(
+  queryable: SharedHotelSetupQueryClient,
+  organizationId: string,
+  propertyId: string,
+): Promise<SharedPublicPropertyProfile | null> {
+  const result = await queryable.query<PublicPropertyProfileRow>(publicPropertyProfileSql(), [
+    organizationId,
+    propertyId,
+  ]);
+  const row = result.rows[0];
+  return row ? toPublicPropertyProfile(row) : null;
+}
+
+async function writePublicPropertyProfile(
+  pool: SharedHotelSetupStatusPool,
+  input: {
+    organizationId: string;
+    propertyId: string;
+    expectedProfileRevision: number;
+    patch: PublicPropertyProfilePatch;
+  },
+): Promise<UpdatePublicPropertyProfileResult> {
+  if (!pool.connect) {
+    throw new Error("Public property profile writes require a transactional database pool");
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query<LockedPublicPropertyRow>(
+      `SELECT
+         property.profile_revision AS "profileRevision",
+         property.default_locale AS locale
+       FROM hotel_catalog.properties property
+       JOIN identity.organization_resource_links link
+         ON link.organization_id = $1::uuid
+        AND link.product = 'hotel_catalog'
+        AND link.resource_type = 'property'
+        AND link.resource_id = property.id::text
+        AND link.relationship IN ('owner', 'operator')
+        AND link.status = 'active'
+       WHERE property.id = $2::uuid
+       FOR UPDATE OF property`,
+      [input.organizationId, input.propertyId],
+    );
+    const property = locked.rows[0];
+    if (!property) {
+      await client.query("ROLLBACK");
+      return { status: "not_found" };
+    }
+    const currentRevision = positiveInteger(property.profileRevision);
+    if (currentRevision !== input.expectedProfileRevision) {
+      await client.query("ROLLBACK");
+      return { status: "conflict", currentRevision };
+    }
+
+    let approvedMedia: ApprovedPropertyMediaRow[] = [];
+    if (input.patch.media !== undefined && input.patch.media.length > 0) {
+      const mediaObjectIds = input.patch.media.map(({ mediaObjectId }) => mediaObjectId);
+      const approved = await client.query<ApprovedPropertyMediaRow>(
+        `SELECT
+           media.id::text AS "mediaObjectId",
+           CASE media.purpose
+             WHEN 'property.hero_image' THEN 'hero_image'
+             WHEN 'property.logo' THEN 'logo'
+             ELSE 'gallery_image'
+           END AS "mediaType",
+           variant.public_cdn_url AS url
+         FROM platform.media_objects media
+         JOIN platform.media_variants variant
+           ON variant.media_object_id = media.id
+          AND variant.variant_name = 'original_safe'
+          AND variant.visibility = 'public'
+          AND NULLIF(variant.public_cdn_url, '') IS NOT NULL
+         WHERE media.id = ANY($2::uuid[])
+           AND media.property_id = $1::uuid
+           AND media.purpose IN (
+             'property.hero_image',
+             'property.gallery_image',
+             'property.logo'
+           )
+           AND media.visibility = 'public'
+           AND media.public_approved = TRUE
+           AND media.lifecycle_status = 'active'
+         FOR SHARE OF media`,
+        [input.propertyId, mediaObjectIds],
+      );
+      approvedMedia = approved.rows;
+      const validIds = new Set(approvedMedia.map(({ mediaObjectId }) => mediaObjectId));
+      const invalidIds = mediaObjectIds.filter((mediaObjectId) => !validIds.has(mediaObjectId));
+      if (invalidIds.length > 0) {
+        await client.query("ROLLBACK");
+        return { status: "invalid_media", mediaObjectIds: invalidIds };
+      }
+    }
+
+    if (
+      Object.hasOwn(input.patch, "shortDescription") ||
+      Object.hasOwn(input.patch, "longDescription")
+    ) {
+      await client.query(
+        `INSERT INTO hotel_catalog.property_profiles (
+           property_id,
+           locale,
+           short_description,
+           long_description,
+           source_confidence,
+           updated_at
+         )
+         VALUES (
+           $1::uuid,
+           $2,
+           CASE WHEN $3::boolean THEN $4::text ELSE NULL END,
+           CASE WHEN $5::boolean THEN $6::text ELSE NULL END,
+           'verified',
+           now()
+         )
+         ON CONFLICT (property_id, locale) DO UPDATE
+         SET short_description = CASE
+               WHEN $3::boolean THEN EXCLUDED.short_description
+               ELSE hotel_catalog.property_profiles.short_description
+             END,
+             long_description = CASE
+               WHEN $5::boolean THEN EXCLUDED.long_description
+               ELSE hotel_catalog.property_profiles.long_description
+             END,
+             source_confidence = 'verified',
+             updated_at = now()`,
+        [
+          input.propertyId,
+          property.locale,
+          Object.hasOwn(input.patch, "shortDescription"),
+          input.patch.shortDescription ?? null,
+          Object.hasOwn(input.patch, "longDescription"),
+          input.patch.longDescription ?? null,
+        ],
+      );
+    }
+
+    if (input.patch.media !== undefined) {
+      await replacePublicPropertyMedia(client, input.propertyId, input.patch.media, approvedMedia);
+    }
+
+    await advancePublicProfileRevision(client, input.propertyId);
+    await syncPropertyOfferReadModels(client, {
+      organizationId: input.organizationId,
+      propertyId: input.propertyId,
+    });
+    const updated = await loadPublicPropertyProfile(client, input.organizationId, input.propertyId);
+    if (!updated) throw new Error("Updated public property profile could not be loaded");
+    await client.query("COMMIT");
+    return { status: "updated", profile: updated };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function replacePublicPropertyMedia(
+  client: SharedHotelSetupQueryClient,
+  propertyId: string,
+  mediaPatch: NonNullable<PublicPropertyProfilePatch["media"]>,
+  approvedMedia: ApprovedPropertyMediaRow[],
+): Promise<void> {
+  await client.query(
+    `UPDATE hotel_catalog.property_media
+     SET public_approved = FALSE,
+         updated_at = now()
+     WHERE property_id = $1::uuid
+       AND public_approved = TRUE`,
+    [propertyId],
+  );
+  if (mediaPatch.length === 0) return;
+
+  const presentation = new Map(mediaPatch.map((item) => [item.mediaObjectId, item] as const));
+  const payload = approvedMedia.map((media) => {
+    const item = presentation.get(media.mediaObjectId)!;
+    return {
+      media_object_id: media.mediaObjectId,
+      media_type: media.mediaType,
+      url: media.url,
+      alt_text: item.altText,
+      sort_order: item.sortOrder,
+    };
+  });
+  await client.query(
+    `WITH media_input AS (
+       SELECT *
+       FROM jsonb_to_recordset($2::jsonb) AS input(
+         media_object_id uuid,
+         media_type text,
+         url text,
+         alt_text text,
+         sort_order integer
+       )
+     ),
+     updated AS (
+       UPDATE hotel_catalog.property_media media
+       SET media_type = input.media_type,
+           url = input.url,
+           alt_text = input.alt_text,
+           sort_order = input.sort_order,
+           source_system = 'platform',
+           public_approved = TRUE,
+           rights_metadata = COALESCE(media.rights_metadata, '{}'::jsonb)
+             || jsonb_build_object('platformMediaObjectId', input.media_object_id),
+           updated_at = now()
+       FROM media_input input
+       WHERE media.property_id = $1::uuid
+         AND media.platform_media_object_id = input.media_object_id
+       RETURNING media.platform_media_object_id
+     )
+     INSERT INTO hotel_catalog.property_media (
+       property_id,
+       media_type,
+       url,
+       alt_text,
+       sort_order,
+       source_system,
+       public_approved,
+       rights_metadata,
+       platform_media_object_id,
+       updated_at
+     )
+     SELECT
+       $1::uuid,
+       input.media_type,
+       input.url,
+       input.alt_text,
+       input.sort_order,
+       'platform',
+       TRUE,
+       jsonb_build_object('platformMediaObjectId', input.media_object_id),
+       input.media_object_id,
+       now()
+     FROM media_input input
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM updated
+       WHERE updated.platform_media_object_id = input.media_object_id
+     )`,
+    [propertyId, JSON.stringify(payload)],
+  );
+}
+
+async function advancePublicProfileRevision(
+  client: SharedHotelSetupQueryClient,
+  propertyId: string,
+): Promise<void> {
+  await client.query(
+    `WITH completeness AS (
+       SELECT
+         property.id AS property_id,
+         ARRAY_REMOVE(
+           ARRAY[
+             CASE WHEN NOT EXISTS (
+               SELECT 1
+               FROM hotel_catalog.property_profiles profile
+               WHERE profile.property_id = property.id
+                 AND profile.locale = property.default_locale
+                 AND COALESCE(
+                   NULLIF(BTRIM(profile.short_description), ''),
+                   NULLIF(BTRIM(profile.long_description), '')
+                 ) IS NOT NULL
+             ) THEN 'description' END,
+             CASE WHEN NOT EXISTS (
+               SELECT 1
+               FROM hotel_catalog.property_media media
+               JOIN platform.media_objects media_object
+                 ON media_object.id = media.platform_media_object_id
+                AND media_object.property_id = media.property_id
+                AND media_object.visibility = 'public'
+                AND media_object.public_approved = TRUE
+                AND media_object.lifecycle_status = 'active'
+               JOIN platform.media_variants variant
+                 ON variant.media_object_id = media_object.id
+                AND variant.variant_name = 'original_safe'
+                AND variant.visibility = 'public'
+                AND NULLIF(variant.public_cdn_url, '') IS NOT NULL
+               WHERE media.property_id = property.id
+                 AND media.public_approved = TRUE
+                 AND media.source_system = 'platform'
+             ) THEN 'media' END
+           ]::text[],
+           NULL
+         ) AS reasons
+       FROM hotel_catalog.properties property
+       WHERE property.id = $1::uuid
+     )
+     UPDATE hotel_catalog.properties property
+     SET completeness_reasons = completeness.reasons,
+         profile_status = CASE
+           WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status
+           WHEN cardinality(completeness.reasons) = 0 THEN 'complete'
+           ELSE 'incomplete'
+         END,
+         profile_revision = property.profile_revision + 1,
+         updated_at = now()
+     FROM completeness
+     WHERE property.id = completeness.property_id`,
+    [propertyId],
+  );
+}
+
 async function writePropertyProfile(
   pool: SharedHotelSetupStatusPool,
   input:
-    | { mode: "create"; organizationId: string; profile: SharedPropertyProfileInput }
+    | {
+        mode: "create";
+        organizationId: string;
+        idempotencyKey: string;
+        correlationId: string;
+        profile: SharedPropertyProfileInput;
+      }
     | {
         mode: "update";
         organizationId: string;
         propertyId: string;
-        expectedPropertyType: string | null;
-        expectedUpdatedAt: string | null;
+        expectedProfileRevision: number;
         profile: SharedPropertyProfileInput;
       },
 ): Promise<string | null> {
-  const missingFields = profileInputMissingFields(input.profile);
-  const profileStatus = missingFields.length === 0 ? "complete" : "incomplete";
   const payload = propertyProfileWritePayload(input.profile);
   if (input.mode === "create") {
     if (!pool.connect) {
       throw new Error("Property creation requires a transactional database pool");
     }
     const client = await pool.connect();
+    const keyHash = sha256(input.idempotencyKey);
+    const fingerprint = sha256(
+      JSON.stringify({ organizationId: input.organizationId, profile: payload }),
+    );
     try {
       await client.query("BEGIN");
+      const replay = await findPropertyCreateReplay(
+        client,
+        input.organizationId,
+        keyHash,
+        fingerprint,
+      );
+      if (replay) {
+        await client.query("COMMIT");
+        return replay;
+      }
+      const idempotencyId = await reservePropertyCreate(
+        client,
+        input.organizationId,
+        input.correlationId,
+        keyHash,
+        fingerprint,
+      );
+      if (!idempotencyId) {
+        const concurrentReplay = await findPropertyCreateReplay(
+          client,
+          input.organizationId,
+          keyHash,
+          fingerprint,
+        );
+        if (!concurrentReplay) throw propertyCreateConflict("command_in_progress");
+        await client.query("COMMIT");
+        return concurrentReplay;
+      }
       const organization = await client.query(
         `SELECT id
          FROM identity.organizations
@@ -295,11 +642,39 @@ async function writePropertyProfile(
       const result = await client.query<PropertyProfileWriteRow>(createPropertyProfileSql(), [
         input.organizationId,
         payload,
-        profileStatus,
-        missingFields,
       ]);
+      const propertyId = result.rows[0]?.propertyId;
+      if (!propertyId)
+        throw new Error("Created shared property profile did not return a property id");
+      await completePropertyCreate(client, idempotencyId, propertyId);
       await client.query("COMMIT");
-      return result.rows[0]?.propertyId ?? null;
+      return propertyId;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  if (input.mode === "update" && pool.connect) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<PropertyProfileWriteRow>(updatePropertyProfileSql(), [
+        input.organizationId,
+        input.propertyId,
+        payload,
+        input.expectedProfileRevision,
+      ]);
+      const propertyId = result.rows[0]?.propertyId ?? null;
+      if (propertyId) {
+        await syncPropertyOfferReadModels(client, {
+          organizationId: input.organizationId,
+          propertyId,
+        });
+      }
+      await client.query("COMMIT");
+      return propertyId;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -311,133 +686,421 @@ async function writePropertyProfile(
     input.organizationId,
     input.propertyId,
     payload,
-    profileStatus,
-    missingFields,
-    input.expectedPropertyType,
-    input.expectedUpdatedAt,
+    input.expectedProfileRevision,
   ]);
 
   return result.rows[0]?.propertyId ?? null;
 }
 
-function toSharedPropertyProfile(row: SharedPropertyProfileRow): SharedPropertyProfile {
-  const media = mediaItems(row.media);
-  const profile: SharedPropertyProfileInput = {
-    displayName: nonEmpty(row.displayName) ?? "",
-    propertyType: nonEmpty(row.propertyType),
-    location: {
-      countryCode: nonEmpty(row.countryCode),
-      region: nonEmpty(row.region),
-      city: nonEmpty(row.city),
-      streetAddress: nonEmpty(row.streetAddress),
-      postalCode: nonEmpty(row.postalCode),
-      rawMarketplaceLocation: nonEmpty(row.rawMarketplaceLocation),
-      timezone: nonEmpty(row.timezone),
-      latitude: numberOrNull(row.latitude),
-      longitude: numberOrNull(row.longitude),
-      addressPublic: row.addressPublic ?? true,
-      mapDisplayMode: mapDisplayMode(row.mapDisplayMode),
-    },
-    website: nonEmpty(row.website),
-    contactEmail: nonEmpty(row.contactEmail),
-    phone: nonEmpty(row.phone),
-    shortDescription: nonEmpty(row.shortDescription),
-    longDescription: nonEmpty(row.longDescription),
-    media,
-  };
-  const computedMissingFields = profileInputMissingFields(profile);
-  const status = sharedProfileStatus(row.profileStatus, computedMissingFields);
-  const missingFields = status === "complete" ? [] : computedMissingFields;
-  const source = sharedProfileSource(row.profileSource);
+async function findPropertyCreateReplay(
+  client: SharedHotelSetupQueryClient,
+  organizationId: string,
+  keyHash: string,
+  fingerprint: string,
+): Promise<string | null> {
+  const result = await client.query<PropertyCreateIdempotencyRow>(
+    `SELECT
+       status,
+       request_fingerprint_hash AS "requestFingerprintHash",
+       response_resource_id AS "propertyId"
+     FROM platform.idempotency_keys
+     WHERE operation_scope = 'hotel_catalog'
+       AND operation = 'hotel_setup.property.create'
+       AND key_hash = $1
+       AND tenant_scope = 'organization'
+       AND organization_id = $2::uuid
+     FOR UPDATE`,
+    [keyHash, organizationId],
+  );
+  const existing = result.rows[0];
+  if (!existing) return null;
+  if (existing.requestFingerprintHash !== fingerprint) {
+    throw propertyCreateConflict("idempotency_key_conflict");
+  }
+  if (existing.status !== "completed" || !existing.propertyId) {
+    throw propertyCreateConflict("command_in_progress");
+  }
+  return existing.propertyId;
+}
 
+async function reservePropertyCreate(
+  client: SharedHotelSetupQueryClient,
+  organizationId: string,
+  correlationId: string,
+  keyHash: string,
+  fingerprint: string,
+): Promise<string | null> {
+  const result = await client.query<{ id: string }>(
+    `INSERT INTO platform.idempotency_keys (
+       operation_scope,
+       operation,
+       key_hash,
+       request_fingerprint_hash,
+       tenant_scope,
+       organization_id,
+       correlation_id,
+       expires_at
+     )
+     VALUES (
+       'hotel_catalog',
+       'hotel_setup.property.create',
+       $1,
+       $2,
+       'organization',
+       $3::uuid,
+       $4,
+       now() + interval '24 hours'
+     )
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
+    [keyHash, fingerprint, organizationId, correlationId],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+async function completePropertyCreate(
+  client: SharedHotelSetupQueryClient,
+  idempotencyId: string,
+  propertyId: string,
+): Promise<void> {
+  const result = await client.query<{ id: string }>(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed',
+         response_status_code = 201,
+         response_resource_product = 'hotel_catalog',
+         response_resource_type = 'property',
+         response_resource_id = $2,
+         completed_at = now(),
+         last_seen_at = now()
+     WHERE id = $1::uuid
+       AND status = 'in_progress'
+     RETURNING id`,
+    [idempotencyId, propertyId],
+  );
+  if (!result.rows[0]) throw new Error("Property creation idempotency completion failed");
+}
+
+function propertyCreateConflict(
+  code: "idempotency_key_conflict" | "command_in_progress",
+): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function toSharedPropertyProfile(row: SharedPropertyProfileRow): SharedPropertyProfile {
   return {
     propertyId: row.propertyId,
-    publicId: row.publicId,
-    ...profile,
-    sharedProfile: {
-      status,
-      source,
-      completionPercent: completionPercent(missingFields),
-      missingFields,
+    profileRevision: positiveInteger(row.profileRevision),
+    profile: {
+      displayName: nonEmpty(row.displayName) ?? "",
+      propertyType: nonEmpty(row.propertyType) ?? "",
+      location: {
+        countryCode: nonEmpty(row.countryCode) ?? "",
+        city: nonEmpty(row.city) ?? "",
+        streetAddress: nonEmpty(row.streetAddress) ?? "",
+        postalCode: nonEmpty(row.postalCode) ?? "",
+        timezone: nonEmpty(row.timezone) ?? "",
+        latitude: numberOrNull(row.latitude),
+        longitude: numberOrNull(row.longitude),
+        localityPublic: row.localityPublic ?? false,
+        geoPublic: row.geoPublic ?? false,
+        mapDisplayMode: mapDisplayMode(row.mapDisplayMode),
+      },
+      contacts: contactItems(row.contacts),
     },
-    updatedAt: toIsoString(row.updatedAt) ?? new Date().toISOString(),
   };
 }
 
-function toSharedSetupProperty(row: SharedHotelSetupRow): SharedSetupProperty {
-  const computedMissingFields = sharedProfileMissingFields(row);
-  const sharedStatus = sharedProfileStatus(row.profileStatus, computedMissingFields);
-  const missingFields = sharedStatus === "complete" ? [] : computedMissingFields;
-  const source = sharedProfileSource(row.profileSource);
+function toPublicPropertyProfile(row: PublicPropertyProfileRow): SharedPublicPropertyProfile {
+  return {
+    propertyId: row.propertyId,
+    profileRevision: positiveInteger(row.profileRevision),
+    publicProfile: {
+      locale: nonEmpty(row.locale) ?? "en",
+      shortDescription: nonEmpty(row.shortDescription),
+      longDescription: nonEmpty(row.longDescription),
+      media: publicPropertyMediaItems(row.media),
+    },
+  };
+}
+
+function toAdaptivePropertySetupFacts(row: AdaptiveHotelSetupFactsRow): AdaptivePropertySetupFacts {
+  const identityReasons = [
+    !nonEmpty(row.displayName) && "missing_display_name",
+    !nonEmpty(row.propertyType) && "missing_property_type",
+    !row.hasStreetAddress && "missing_street_address",
+    !row.hasPostalCode && "missing_postal_code",
+    !row.hasCity && "missing_city",
+    !row.hasCountryCode && "missing_country_code",
+    !row.hasTimezone && "missing_timezone",
+    !row.hasEmail && "missing_email_contact",
+    !row.hasPhone && "missing_phone_contact",
+  ].filter(isReasonCode);
+  const publicProfileReasons = [
+    !row.hasDescription && "missing_default_locale_description",
+    !row.hasApprovedMedia && "missing_public_media",
+    !row.localityPublic && "missing_public_locality_consent",
+  ].filter(isReasonCode);
+  const roomReasons = [
+    !row.hasActiveRoomType && "missing_active_room_type",
+    !row.hasNonRetiredRoom && "missing_non_retired_room",
+    !row.hasActiveRatePlan && "missing_active_rate_plan",
+    !row.hasFutureInventory && "missing_future_inventory",
+  ].filter(isReasonCode);
+  const policyReasons = [
+    !row.hasCheckInPolicy && "missing_check_in_policy",
+    !row.hasCheckOutPolicy && "missing_check_out_policy",
+    !row.hasCancellationPolicy && "missing_cancellation_policy",
+  ].filter(isReasonCode);
 
   return {
     propertyId: row.propertyId,
     publicId: row.publicId,
     displayName: nonEmpty(row.displayName),
-    locationSummary: locationSummary(row.location),
-    sharedProfile: {
-      status: sharedStatus,
-      source,
-      completionPercent: completionPercent(missingFields),
-      missingFields,
-    },
-    products: {
-      booking: bookingActivation(row),
-      pms: pmsActivation(row),
-      marketplace: marketplaceActivation(row),
+    locationSummary:
+      [nonEmpty(row.city), nonEmpty(row.countryCode)].filter(Boolean).join(", ") || null,
+    taskFacts: {
+      shared_identity: basicTaskFact(
+        "shared_identity",
+        identityReasons,
+        Boolean(nonEmpty(row.displayName)),
+        latest(row.propertyUpdatedAt, row.locationUpdatedAt, row.contactUpdatedAt),
+      ),
+      public_profile: basicTaskFact(
+        "public_profile",
+        publicProfileReasons,
+        row.hasDescription || row.hasApprovedMedia || row.localityPublic,
+        latest(row.profileUpdatedAt, row.mediaUpdatedAt, row.locationUpdatedAt),
+      ),
+      creator_profile: creatorProfileFact(row),
+      creator_offer: creatorOfferFact(row),
+      rooms_rates_availability: basicTaskFact(
+        "rooms_rates_availability",
+        roomReasons,
+        row.hasActiveRoomType ||
+          row.hasNonRetiredRoom ||
+          row.hasActiveRatePlan ||
+          row.hasFutureInventory,
+        latest(
+          row.roomTypeUpdatedAt,
+          row.roomUpdatedAt,
+          row.ratePlanUpdatedAt,
+          row.inventoryUpdatedAt,
+        ),
+      ),
+      guest_settings_policies: basicTaskFact(
+        "guest_settings_policies",
+        policyReasons,
+        Boolean(row.policyUpdatedAt),
+        toIsoString(row.policyUpdatedAt),
+      ),
+      payment: paymentFact(row),
+      direct_booking_publication: publicationFact(row),
     },
   };
 }
 
-function sharedProfileStatus(
-  value: string | null,
-  missingFields: SharedPropertyProfileMissingField[],
-): SharedSetupProperty["sharedProfile"]["status"] {
-  if (value === "disabled" || value === "private") return value;
-  return missingFields.length === 0 ? "complete" : "incomplete";
+function basicTaskFact(
+  taskId: AdaptiveSetupTaskFact["taskId"],
+  reasonCodes: string[],
+  started: boolean,
+  sourceRevision: string | null,
+): AdaptiveSetupTaskFact {
+  const complete = reasonCodes.length === 0;
+  return {
+    taskId,
+    ownerProgress: complete ? "owner_complete" : started ? "in_progress" : "not_started",
+    readiness: complete ? "complete" : "actionable",
+    reasonCodes,
+    sourceRevision: taskRevision(sourceRevision, reasonCodes),
+    freshness: "fresh",
+  };
 }
 
-function sharedProfileSource(value: string | null): SharedSetupProperty["sharedProfile"]["source"] {
-  return value === "legacy_prefill" ? "legacy_prefill" : "canonical";
-}
-
-function sharedProfileMissingFields(row: SharedHotelSetupRow): SharedPropertyProfileMissingField[] {
-  const missing: SharedPropertyProfileMissingField[] = [];
-  const needsGuestProfile = row.bookingSelected || row.marketplaceSelected;
-  if (!nonEmpty(row.displayName)) missing.push("displayName");
-  if (!hasLocation(row.location)) missing.push("location");
-  if (needsGuestProfile && !hasContact(row.publicContacts, ["website"])) missing.push("website");
-  if (needsGuestProfile && !hasContact(row.publicContacts, ["phone", "whatsapp"])) {
-    missing.push("phone");
+function creatorProfileFact(row: AdaptiveHotelSetupFactsRow): AdaptiveSetupTaskFact {
+  const status = row.marketplaceProfileStatus;
+  const complete = row.marketplaceProfileComplete === true;
+  if (!status) {
+    return basicTaskFact(
+      "creator_profile",
+      ["creator_profile_not_started"],
+      false,
+      toIsoString(row.marketplaceProfileUpdatedAt),
+    );
   }
-  if (needsGuestProfile && !hasDescription(row.descriptions)) missing.push("description");
-  if (needsGuestProfile && !hasMedia(row.media)) missing.push("media");
-  return missing;
+  const readiness =
+    status === "rejected"
+      ? "rejected"
+      : status === "suspended" || status === "archived"
+        ? "blocked"
+        : status === "pending" && complete
+          ? "pending_review"
+          : status === "verified" && complete
+            ? "complete"
+            : "actionable";
+  return {
+    taskId: "creator_profile",
+    ownerProgress:
+      readiness === "complete" || readiness === "pending_review" ? "owner_complete" : "in_progress",
+    readiness,
+    reasonCodes:
+      readiness === "complete"
+        ? []
+        : [readiness === "actionable" ? "creator_profile_incomplete" : `creator_profile_${status}`],
+    sourceRevision: taskRevision(toIsoString(row.marketplaceProfileUpdatedAt), status, complete),
+    freshness: "fresh",
+  };
 }
 
-function profileInputMissingFields(
-  profile: SharedPropertyProfileInput,
-): SharedPropertyProfileMissingField[] {
-  const missing: SharedPropertyProfileMissingField[] = [];
-  if (!nonEmpty(profile.displayName)) missing.push("displayName");
-  if (!hasProfileLocation(profile.location)) missing.push("location");
-  if (!nonEmpty(profile.website)) missing.push("website");
-  if (!nonEmpty(profile.phone)) missing.push("phone");
-  if (!nonEmpty(profile.shortDescription) && !nonEmpty(profile.longDescription)) {
-    missing.push("description");
+function creatorOfferFact(row: AdaptiveHotelSetupFactsRow): AdaptiveSetupTaskFact {
+  const status = row.marketplaceOfferStatus;
+  const structuralReasons = [
+    !row.marketplaceOfferHasTitle && "missing_offer_title",
+    !row.marketplaceOfferHasDeliverable && "missing_offer_deliverable",
+    !row.marketplaceOfferHasCompensation && "missing_offer_compensation",
+    !row.marketplaceOfferHasRequirement && "missing_offer_requirement",
+  ].filter(isReasonCode);
+  if (!status) {
+    return basicTaskFact(
+      "creator_offer",
+      ["creator_offer_not_started"],
+      false,
+      latest(row.marketplaceOfferUpdatedAt, row.marketplaceOfferChildrenUpdatedAt),
+    );
   }
-  if (profile.media.length === 0) missing.push("media");
-  return missing;
+  const structurallyComplete = structuralReasons.length === 0;
+  const projectionReady =
+    row.marketplaceOfferPublic === true && row.marketplaceOfferProjectionFresh === true;
+  const readiness =
+    status === "rejected"
+      ? "rejected"
+      : status === "suspended" || status === "archived"
+        ? "blocked"
+        : status === "pending" && structurallyComplete
+          ? "pending_review"
+          : status === "verified" && structurallyComplete && projectionReady
+            ? "complete"
+            : status === "verified" && structurallyComplete && row.marketplaceOfferPublic !== true
+              ? "blocked"
+              : status === "verified" &&
+                  structurallyComplete &&
+                  !row.marketplaceOfferProjectionFresh
+                ? "pending_sync"
+                : "actionable";
+  return {
+    taskId: "creator_offer",
+    ownerProgress:
+      structurallyComplete && (status === "pending" || status === "verified")
+        ? "owner_complete"
+        : "in_progress",
+    readiness,
+    reasonCodes:
+      readiness === "complete"
+        ? []
+        : readiness === "actionable"
+          ? structuralReasons.length > 0
+            ? structuralReasons
+            : ["creator_offer_not_submitted"]
+          : readiness === "blocked" && status === "verified"
+            ? ["creator_offer_not_public"]
+            : [`creator_offer_${readiness}`],
+    sourceRevision: taskRevision(
+      latest(
+        row.marketplaceOfferUpdatedAt,
+        row.marketplaceOfferChildrenUpdatedAt,
+        row.marketplaceOfferProjectedAt,
+      ),
+      status,
+      structuralReasons,
+      row.marketplaceOfferPublic,
+      row.marketplaceOfferProjectionFresh,
+    ),
+    freshness:
+      status === "verified" && structurallyComplete && !row.marketplaceOfferProjectionFresh
+        ? "stale"
+        : "fresh",
+  };
 }
 
-function hasProfileLocation(location: SharedPropertyProfileLocation): boolean {
-  return [location.rawMarketplaceLocation, location.city, location.countryCode].some(
-    (value) => nonEmpty(value) !== null,
-  );
+function paymentFact(row: AdaptiveHotelSetupFactsRow): AdaptiveSetupTaskFact {
+  const enabled = row.paymentsEnabled === true;
+  const configured = enabled && row.hasAcceptedPaymentMethod;
+  const paymentEffective = enabled && row.hasEffectivePaymentMethod;
+  const pendingReview = paymentEffective && row.paymentRequiresManualReview;
+  const complete = paymentEffective && !row.paymentRequiresManualReview;
+  return {
+    taskId: "payment",
+    ownerProgress: paymentEffective ? "owner_complete" : configured ? "in_progress" : "not_started",
+    readiness: complete ? "complete" : pendingReview ? "pending_review" : "actionable",
+    reasonCodes: complete
+      ? []
+      : unique([
+          !enabled ? "payments_not_enabled" : "",
+          enabled && !row.hasAcceptedPaymentMethod ? "missing_accepted_payment_method" : "",
+          enabled && row.hasAcceptedPaymentMethod && !row.hasEffectivePaymentMethod
+            ? "no_supported_checkout_payment_method"
+            : "",
+          pendingReview ? "manual_payment_review_pending" : "",
+        ]).filter(isReasonCode),
+    sourceRevision: taskRevision(
+      toIsoString(row.paymentSettingsUpdatedAt),
+      enabled,
+      row.hasAcceptedPaymentMethod,
+      row.hasEffectivePaymentMethod,
+      row.paymentRequiresManualReview,
+    ),
+    freshness: "fresh",
+  };
 }
 
-function completionPercent(missingFields: SharedPropertyProfileMissingField[]): number {
-  return missingFields.length === 0 ? 100 : Math.round(((6 - missingFields.length) / 6) * 100);
+function publicationFact(row: AdaptiveHotelSetupFactsRow): AdaptiveSetupTaskFact {
+  const status = row.bookabilityStatus;
+  const isPublic = status === "public";
+  const projectionFresh = row.bookabilityFreshness === "fresh" && !row.bookabilityExpired;
+  const setupComplete = row.bookabilitySetupReady && row.bookabilityMissingEmpty;
+  const complete = isPublic && projectionFresh && setupComplete;
+  const readiness = complete
+    ? "complete"
+    : status === null
+      ? "actionable"
+      : !setupComplete || status === "unavailable"
+        ? "blocked"
+        : "pending_sync";
+  return {
+    taskId: "direct_booking_publication",
+    ownerProgress: setupComplete ? "owner_complete" : status ? "in_progress" : "not_started",
+    readiness,
+    reasonCodes:
+      readiness === "complete"
+        ? []
+        : unique([
+            !isPublic ? "direct_booking_not_public" : "",
+            row.bookabilityFreshness !== "fresh" ? "bookability_stale" : "",
+            row.bookabilityExpired ? "bookability_expired" : "",
+            !row.bookabilitySetupReady ? "bookability_setup_not_ready" : "",
+            !row.bookabilityMissingEmpty ? "bookability_setup_missing" : "",
+          ]).filter(isReasonCode),
+    sourceRevision: taskRevision(
+      toIsoString(row.bookabilityUpdatedAt),
+      status,
+      row.bookabilityFreshness,
+      row.bookabilitySetupReady,
+      row.bookabilityMissingEmpty,
+      row.bookabilityExpired,
+    ),
+    freshness: status === null || projectionFresh ? "fresh" : "stale",
+  };
+}
+
+function isReasonCode(value: string | false): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function taskRevision(...facts: unknown[]): string {
+  return JSON.stringify(facts);
 }
 
 function propertyProfileWritePayload(
@@ -447,285 +1110,42 @@ function propertyProfileWritePayload(
     display_name: profile.displayName,
     property_type: profile.propertyType,
     country_code: profile.location.countryCode,
-    region: profile.location.region,
     city: profile.location.city,
     street_address: profile.location.streetAddress,
     postal_code: profile.location.postalCode,
-    raw_marketplace_location: profile.location.rawMarketplaceLocation,
     timezone: profile.location.timezone,
     latitude: profile.location.latitude,
     longitude: profile.location.longitude,
-    address_public: profile.location.addressPublic,
+    address_public: profile.location.localityPublic,
+    geo_public: profile.location.geoPublic,
     map_display_mode: profile.location.mapDisplayMode,
-    short_description: profile.shortDescription,
-    long_description: profile.longDescription,
-    website: profile.website,
-    contact_email: profile.contactEmail,
-    phone: profile.phone,
-    media: profile.media.map((item) => ({
-      media_type: item.mediaType,
-      url: item.url,
-      alt_text: item.altText,
-      sort_order: item.sortOrder,
+    contacts: profile.contacts.map((item) => ({
+      channel_type: item.channelType,
+      value: item.value,
+      purpose: item.purpose,
+      is_public: item.isPublic,
     })),
   };
-}
-
-function bookingActivation(row: SharedHotelSetupRow): SharedProductActivation<"booking"> {
-  if (!row.bookingSelected) return notSelected("booking");
-  if (row.bookingEntitlementSuspended) {
-    return productActivation(
-      "booking",
-      "suspended",
-      [],
-      ["booking_suspended"],
-      row.bookingEntitlementUpdatedAt,
-    );
-  }
-  const missingSteps: string[] = [];
-  if (!row.bookingEntitlementActive) missingSteps.push("productEntitlement");
-  if (!row.hasBookingSettings) missingSteps.push("bookingSettings");
-  if (row.bookabilityStatus !== "public") missingSteps.push("publicBookability");
-  if (row.bookabilityStatus === "public" && row.bookabilityFreshnessStatus !== "fresh") {
-    missingSteps.push("bookabilityFreshness");
-  }
-  if (row.paymentsEnabled !== true) missingSteps.push("paymentReadiness");
-
-  if (row.bookabilityStatus === "unavailable") {
-    return productActivation(
-      "booking",
-      "unavailable",
-      missingSteps,
-      ["booking_unavailable"],
-      latest(
-        row.bookingSelectionUpdatedAt,
-        row.bookingSettingsUpdatedAt,
-        row.bookabilityUpdatedAt,
-        row.paymentSettingsUpdatedAt,
-        row.bookingEntitlementUpdatedAt,
-      ),
-    );
-  }
-
-  return missingSteps.length === 0
-    ? productActivation(
-        "booking",
-        "active",
-        [],
-        [],
-        latest(
-          row.bookingSelectionUpdatedAt,
-          row.bookingSettingsUpdatedAt,
-          row.bookabilityUpdatedAt,
-          row.paymentSettingsUpdatedAt,
-          row.bookingEntitlementUpdatedAt,
-        ),
-      )
-    : productActivation(
-        "booking",
-        "selected_incomplete",
-        missingSteps,
-        ["booking_activation_incomplete"],
-        latest(
-          row.bookingSelectionUpdatedAt,
-          row.bookingSettingsUpdatedAt,
-          row.bookabilityUpdatedAt,
-          row.paymentSettingsUpdatedAt,
-          row.bookingEntitlementUpdatedAt,
-        ),
-      );
-}
-
-function pmsActivation(row: SharedHotelSetupRow): SharedProductActivation<"pms"> {
-  const roomTypes = toCount(row.pmsRoomTypeCount);
-  const rooms = toCount(row.pmsRoomCount);
-  const ratePlans = toCount(row.pmsRatePlanCount);
-  if (!row.pmsSelected) return notSelected("pms");
-  if (row.pmsEntitlementSuspended) {
-    return productActivation(
-      "pms",
-      "suspended",
-      [],
-      ["pms_suspended"],
-      row.pmsEntitlementUpdatedAt,
-    );
-  }
-
-  const missingSteps: string[] = [];
-  if (!row.pmsEntitlementActive) missingSteps.push("productEntitlement");
-  if (roomTypes === 0) missingSteps.push("roomTypes");
-  if (rooms === 0) missingSteps.push("rooms");
-  if (ratePlans === 0) missingSteps.push("ratePlans");
-
-  return missingSteps.length === 0
-    ? productActivation(
-        "pms",
-        "active",
-        [],
-        [],
-        latest(
-          row.pmsSelectionUpdatedAt,
-          row.pmsRoomUpdatedAt,
-          row.pmsRateUpdatedAt,
-          row.pmsEntitlementUpdatedAt,
-        ),
-      )
-    : productActivation(
-        "pms",
-        "selected_incomplete",
-        missingSteps,
-        ["pms_activation_incomplete"],
-        latest(
-          row.pmsSelectionUpdatedAt,
-          row.pmsRoomUpdatedAt,
-          row.pmsRateUpdatedAt,
-          row.pmsEntitlementUpdatedAt,
-        ),
-      );
-}
-
-function marketplaceActivation(row: SharedHotelSetupRow): SharedProductActivation<"marketplace"> {
-  if (!row.marketplaceSelected) return notSelected("marketplace");
-  if (row.marketplaceEntitlementSuspended) {
-    return productActivation(
-      "marketplace",
-      "suspended",
-      [],
-      ["marketplace_suspended"],
-      row.marketplaceEntitlementUpdatedAt,
-    );
-  }
-  if (row.marketplaceProfileStatus === "suspended") {
-    return productActivation(
-      "marketplace",
-      "suspended",
-      [],
-      ["marketplace_suspended"],
-      row.marketplaceProfileUpdatedAt,
-    );
-  }
-  if (row.marketplaceProfileStatus === "rejected" || row.marketplaceProfileStatus === "archived") {
-    return productActivation(
-      "marketplace",
-      "unavailable",
-      [],
-      ["marketplace_unavailable"],
-      row.marketplaceProfileUpdatedAt,
-    );
-  }
-
-  const missingSteps: string[] = [];
-  const offerCount = toCount(row.marketplaceOfferCount);
-  const verifiedOfferCount = toCount(row.marketplaceVerifiedOfferCount);
-  const publicOfferCount = toCount(row.marketplacePublicOfferCount);
-  const deliverableCount = toCount(row.marketplaceDeliverableCount);
-  const compensationCount = toCount(row.marketplaceCompensationCount);
-  if (!row.marketplaceEntitlementActive) missingSteps.push("productEntitlement");
-  if (row.marketplaceProfileComplete !== true) missingSteps.push("creatorPitch");
-  if (offerCount === 0) missingSteps.push("marketplaceOffer");
-  if (verifiedOfferCount > 0 && publicOfferCount === 0) missingSteps.push("marketplaceOffer");
-  if (deliverableCount === 0) missingSteps.push("offerDeliverables");
-  if (compensationCount === 0) missingSteps.push("compensationOptions");
-  if (toCount(row.marketplaceRequirementCount) === 0) missingSteps.push("creatorRequirements");
-
-  return missingSteps.length === 0 &&
-    row.marketplaceProfileStatus === "verified" &&
-    publicOfferCount > 0
-    ? productActivation("marketplace", "active", [], [], marketplaceUpdatedAt(row))
-    : productActivation(
-        "marketplace",
-        "selected_incomplete",
-        unique(missingSteps),
-        ["marketplace_activation_incomplete"],
-        marketplaceUpdatedAt(row),
-      );
-}
-
-function notSelected<Product extends SharedHotelSetupEntryProduct>(
-  product: Product,
-): SharedProductActivation<Product> {
-  return { product, status: "not_selected", missingSteps: [], statusReasons: [], updatedAt: null };
-}
-
-function productActivation<Product extends SharedHotelSetupEntryProduct>(
-  product: Product,
-  status: SharedProductActivation<Product>["status"],
-  missingSteps: string[],
-  statusReasons: string[],
-  updatedAt: unknown,
-): SharedProductActivation<Product> {
-  return { product, status, missingSteps, statusReasons, updatedAt: toIsoString(updatedAt) };
-}
-
-function marketplaceUpdatedAt(row: SharedHotelSetupRow): string | null {
-  return latest(
-    row.marketplaceSelectionUpdatedAt,
-    row.marketplaceEntitlementUpdatedAt,
-    row.marketplaceProfileUpdatedAt,
-    row.marketplaceOfferUpdatedAt,
-    row.marketplaceDeliverableUpdatedAt,
-    row.marketplaceCompensationUpdatedAt,
-    row.marketplaceRequirementUpdatedAt,
-  );
 }
 
 function propertyProfileSql(): string {
   return `
     SELECT
       property.id::text AS "propertyId",
-      property.public_id AS "publicId",
-      COALESCE(
-        NULLIF(property.display_name, ''),
-        NULLIF(public_profile.display_name, ''),
-        marketplace_prefill.display_name
-      ) AS "displayName",
+      property.profile_revision AS "profileRevision",
+      NULLIF(property.display_name, '') AS "displayName",
       NULLIF(property.property_type, '') AS "propertyType",
-      property.profile_status AS "profileStatus",
-      CASE
-        WHEN (
-            NULLIF(property.display_name, '') IS NULL
-            AND COALESCE(NULLIF(public_profile.display_name, ''), marketplace_prefill.display_name) IS NOT NULL
-          )
-          OR (catalog_location.country_code IS NULL AND legacy_location.country_code IS NOT NULL)
-          OR (catalog_location.region IS NULL AND legacy_location.region IS NOT NULL)
-          OR (catalog_location.city IS NULL AND legacy_location.city IS NOT NULL)
-          OR (catalog_location.street_address IS NULL AND legacy_location.street_address IS NOT NULL)
-          OR (catalog_location.postal_code IS NULL AND legacy_location.postal_code IS NOT NULL)
-          OR (
-            catalog_location.raw_marketplace_location IS NULL
-            AND legacy_location.raw_marketplace_location IS NOT NULL
-          )
-          OR (catalog_location.timezone IS NULL AND legacy_location.timezone IS NOT NULL)
-          OR (catalog_location.latitude IS NULL AND legacy_location.latitude IS NOT NULL)
-          OR (catalog_location.longitude IS NULL AND legacy_location.longitude IS NOT NULL)
-          OR (catalog_location.map_display_mode IS NULL AND legacy_location.map_display_mode IS NOT NULL)
-          OR (NULLIF(profile.short_description, '') IS NULL AND legacy_description.short_description IS NOT NULL)
-          OR (NULLIF(profile.long_description, '') IS NULL AND legacy_description.long_description IS NOT NULL)
-          OR (contact.website IS NULL AND legacy_contact.website IS NOT NULL)
-          OR (contact.email IS NULL AND legacy_contact.email IS NOT NULL)
-          OR (contact.phone IS NULL AND legacy_contact.phone IS NOT NULL)
-          OR (COALESCE(jsonb_array_length(media.items), 0) = 0 AND legacy_media.has_media)
-          THEN 'legacy_prefill'
-        ELSE 'canonical'
-      END AS "profileSource",
-      COALESCE(catalog_location.country_code, legacy_location.country_code) AS "countryCode",
-      COALESCE(catalog_location.region, legacy_location.region) AS region,
-      COALESCE(catalog_location.city, legacy_location.city) AS city,
-      COALESCE(catalog_location.street_address, legacy_location.street_address) AS "streetAddress",
-      COALESCE(catalog_location.postal_code, legacy_location.postal_code) AS "postalCode",
-      COALESCE(catalog_location.raw_marketplace_location, legacy_location.raw_marketplace_location) AS "rawMarketplaceLocation",
-      COALESCE(catalog_location.timezone, legacy_location.timezone) AS timezone,
-      COALESCE(catalog_location.latitude, legacy_location.latitude) AS latitude,
-      COALESCE(catalog_location.longitude, legacy_location.longitude) AS longitude,
-      COALESCE(catalog_location.address_public, TRUE) AS "addressPublic",
-      COALESCE(catalog_location.map_display_mode, legacy_location.map_display_mode, 'hidden') AS "mapDisplayMode",
-      COALESCE(NULLIF(profile.short_description, ''), legacy_description.short_description) AS "shortDescription",
-      COALESCE(NULLIF(profile.long_description, ''), legacy_description.long_description) AS "longDescription",
-      COALESCE(contact.website, legacy_contact.website) AS website,
-      COALESCE(contact.email, legacy_contact.email) AS "contactEmail",
-      COALESCE(contact.phone, legacy_contact.phone) AS phone,
-      COALESCE(media.items, legacy_media.items, '[]'::jsonb) AS media,
-      property.updated_at AS "updatedAt"
+      NULLIF(location.country_code::text, '') AS "countryCode",
+      NULLIF(location.city, '') AS city,
+      NULLIF(location.street_address, '') AS "streetAddress",
+      NULLIF(location.postal_code, '') AS "postalCode",
+      NULLIF(location.timezone, '') AS timezone,
+      location.latitude,
+      location.longitude,
+      COALESCE(location.address_public, FALSE) AS "localityPublic",
+      COALESCE(location.geo_public, FALSE) AS "geoPublic",
+      COALESCE(location.map_display_mode, 'hidden') AS "mapDisplayMode",
+      COALESCE(contacts.items, '[]'::jsonb) AS contacts
     FROM hotel_catalog.properties property
     JOIN identity.organization_resource_links link
       ON link.organization_id = $1::uuid
@@ -734,266 +1154,84 @@ function propertyProfileSql(): string {
      AND link.resource_id = property.id::text
      AND link.relationship IN ('owner', 'operator')
      AND link.status = 'active'
-    LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
-      ON public_profile.property_id = property.id
+    LEFT JOIN hotel_catalog.property_locations location
+      ON location.property_id = property.id
     LEFT JOIN LATERAL (
       SELECT
-        NULLIF(location.country_code::text, '') AS country_code,
-        NULLIF(location.region, '') AS region,
-        NULLIF(location.city, '') AS city,
-        NULLIF(location.street_address, '') AS street_address,
-        NULLIF(location.postal_code, '') AS postal_code,
-        NULLIF(location.raw_marketplace_location, '') AS raw_marketplace_location,
-        NULLIF(location.timezone, '') AS timezone,
-        location.latitude,
-        location.longitude,
-        location.address_public,
-        location.map_display_mode,
-        location.source_confidence,
-        (
-          NULLIF(location.country_code::text, '') IS NOT NULL
-          OR NULLIF(location.city, '') IS NOT NULL
-          OR NULLIF(location.raw_marketplace_location, '') IS NOT NULL
-        ) AS has_location
-      FROM hotel_catalog.property_locations location
-      WHERE location.property_id = property.id
-      LIMIT 1
-    ) catalog_location ON TRUE
+        jsonb_agg(
+          jsonb_build_object(
+            'channelType', contact.channel_type,
+            'value', contact.value,
+            'purpose', contact.purpose,
+            'isPublic', contact.is_public
+          )
+          ORDER BY contact.created_at, contact.id
+        ) AS items
+      FROM hotel_catalog.property_contact_channels contact
+      WHERE contact.property_id = property.id
+        AND contact.source_system = 'platform'
+    ) contacts ON TRUE
+    WHERE property.id = $2::uuid
+    LIMIT 1
+  `;
+}
+
+function publicPropertyProfileSql(): string {
+  return `
+    SELECT
+      property.id::text AS "propertyId",
+      property.profile_revision AS "profileRevision",
+      property.default_locale AS locale,
+      NULLIF(profile.short_description, '') AS "shortDescription",
+      NULLIF(profile.long_description, '') AS "longDescription",
+      COALESCE(public_media.items, '[]'::jsonb) AS media
+    FROM hotel_catalog.properties property
+    JOIN identity.organization_resource_links link
+      ON link.organization_id = $1::uuid
+     AND link.product = 'hotel_catalog'
+     AND link.resource_type = 'property'
+     AND link.resource_id = property.id::text
+     AND link.relationship IN ('owner', 'operator')
+     AND link.status = 'active'
     LEFT JOIN hotel_catalog.property_profiles profile
       ON profile.property_id = property.id
      AND profile.locale = property.default_locale
     LEFT JOIN LATERAL (
-      SELECT
-        (
-          NULLIF(profile.short_description, '') IS NOT NULL
-          OR NULLIF(profile.long_description, '') IS NOT NULL
-        ) AS has_description
-    ) catalog_profile ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        NULLIF(listing.title, '') AS display_name,
-        NULLIF(listing.raw_location_text, '') AS raw_location_text,
-        NULLIF(listing.offer_summary, '') AS offer_summary,
-        NULLIF(profile.host_summary, '') AS host_summary,
-        listing.image_urls
-      FROM marketplace.marketplace_hotel_profiles profile
-      LEFT JOIN LATERAL (
-        SELECT title, raw_location_text, offer_summary, image_urls, updated_at
-        FROM marketplace.marketplace_offers
-        WHERE property_id = property.id
-          AND organization_id = $1::uuid
-          AND offer_status <> 'archived'
-        ORDER BY
-          CASE offer_status WHEN 'verified' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-          updated_at DESC,
-          id
-        LIMIT 1
-      ) listing ON TRUE
-      WHERE profile.property_id = property.id
-        AND profile.organization_id = $1::uuid
-      LIMIT 1
-    ) marketplace_prefill ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        CASE
-          WHEN length(COALESCE(
-            public_profile.location ->> 'countryCode',
-            public_profile.location ->> 'country'
-          )) = 2
-          THEN upper(COALESCE(
-            public_profile.location ->> 'countryCode',
-            public_profile.location ->> 'country'
-          ))
-          ELSE NULL
-        END AS country_code,
-        NULLIF(public_profile.location ->> 'region', '') AS region,
-        NULLIF(public_profile.location ->> 'city', '') AS city,
-        NULLIF(public_profile.location ->> 'streetAddress', '') AS street_address,
-        NULLIF(public_profile.location ->> 'postalCode', '') AS postal_code,
-        COALESCE(
-          NULLIF(public_profile.location ->> 'rawMarketplaceLocation', ''),
-          NULLIF(public_profile.location ->> 'display', ''),
-          CASE
-            WHEN length(NULLIF(public_profile.location ->> 'country', '')) > 2
-              THEN NULLIF(public_profile.location ->> 'country', '')
-            ELSE NULL
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'mediaObjectId', media_object.id::text,
+          'mediaType', CASE media_object.purpose
+            WHEN 'property.hero_image' THEN 'hero_image'
+            WHEN 'property.logo' THEN 'logo'
+            ELSE 'gallery_image'
           END,
-          marketplace_prefill.raw_location_text
-        ) AS raw_marketplace_location,
-        NULLIF(public_profile.location ->> 'timezone', '') AS timezone,
-        CASE
-          WHEN COALESCE(public_profile.location ->> 'latitude', public_profile.location #>> '{geo,latitude}')
-            ~ '^-?[0-9]+(\\.[0-9]+)?$'
-          THEN COALESCE(public_profile.location ->> 'latitude', public_profile.location #>> '{geo,latitude}')::numeric
-          ELSE NULL
-        END AS latitude,
-        CASE
-          WHEN COALESCE(public_profile.location ->> 'longitude', public_profile.location #>> '{geo,longitude}')
-            ~ '^-?[0-9]+(\\.[0-9]+)?$'
-          THEN COALESCE(public_profile.location ->> 'longitude', public_profile.location #>> '{geo,longitude}')::numeric
-          ELSE NULL
-        END AS longitude,
-        CASE
-          WHEN public_profile.location ->> 'mapDisplayMode' IN ('hidden', 'approximate', 'exact')
-            THEN public_profile.location ->> 'mapDisplayMode'
-          WHEN public_profile.location ? 'geo' THEN 'approximate'
-          ELSE 'hidden'
-        END AS map_display_mode,
-        (
-          NULLIF(public_profile.location ->> 'city', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'countryCode', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'country', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'rawMarketplaceLocation', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'display', '') IS NOT NULL
-          OR marketplace_prefill.raw_location_text IS NOT NULL
-        ) AS has_location
-      WHERE catalog_location.source_confidence IS DISTINCT FROM 'verified'
-    ) legacy_location ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        COALESCE(
-          NULLIF(public_profile.descriptions ->> 'shortDescription', ''),
-          NULLIF(public_profile.descriptions ->> 'short_description', ''),
-          NULLIF(public_profile.descriptions ->> 'short', ''),
-          NULLIF(public_profile.descriptions ->> 'summary', ''),
-          NULLIF(public_profile.descriptions -> property.default_locale ->> 'short', ''),
-          NULLIF(public_profile.descriptions -> property.default_locale ->> 'summary', ''),
-          marketplace_prefill.offer_summary,
-          marketplace_prefill.host_summary
-        ) AS short_description,
-        COALESCE(
-          NULLIF(public_profile.descriptions ->> 'longDescription', ''),
-          NULLIF(public_profile.descriptions ->> 'long_description', ''),
-          NULLIF(public_profile.descriptions ->> 'long', ''),
-          NULLIF(public_profile.descriptions -> property.default_locale ->> 'long', '')
-        ) AS long_description
-    ) legacy_description_values ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        legacy_description_values.short_description,
-        legacy_description_values.long_description,
-        (
-          legacy_description_values.short_description IS NOT NULL
-          OR legacy_description_values.long_description IS NOT NULL
-        ) AS has_description
-    ) legacy_description ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        max(value) FILTER (WHERE channel_type = 'website') AS website,
-        max(value) FILTER (WHERE channel_type = 'email') AS email,
-        COALESCE(
-          max(value) FILTER (WHERE channel_type = 'phone'),
-          max(value) FILTER (WHERE channel_type = 'whatsapp')
-        ) AS phone
-      FROM hotel_catalog.property_contact_channels
-      WHERE property_id = property.id
-        AND is_public = TRUE
-        AND source_system = 'platform'
-        AND channel_type IN ('website', 'email', 'phone', 'whatsapp')
-    ) contact ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        max(contact.value) FILTER (WHERE contact.channel_type = 'website') AS website,
-        max(contact.value) FILTER (WHERE contact.channel_type = 'email') AS email,
-        COALESCE(
-          max(contact.value) FILTER (WHERE contact.channel_type = 'phone'),
-          max(contact.value) FILTER (WHERE contact.channel_type = 'whatsapp')
-        ) AS phone
-      FROM jsonb_array_elements(
-        CASE
-          WHEN jsonb_typeof(public_profile.public_contacts) = 'array'
-          THEN public_profile.public_contacts
-          ELSE '[]'::jsonb
-        END
-      ) AS item(value)
-      CROSS JOIN LATERAL (
-        SELECT
-          lower(COALESCE(
-            item.value ->> 'type',
-            item.value ->> 'kind',
-            item.value ->> 'channelType',
-            item.value ->> 'channel_type'
-          )) AS channel_type,
-          NULLIF(item.value ->> 'value', '') AS value
-      ) contact
-      WHERE contact.value IS NOT NULL
-        AND contact.channel_type IN ('website', 'email', 'phone', 'whatsapp')
-    ) legacy_contact ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_agg(
-          jsonb_build_object(
-            'mediaType', media.media_type,
-            'url', media.url,
-            'altText', media.alt_text,
-            'sortOrder', media.sort_order
-          )
-          ORDER BY media.sort_order, media.created_at, media.id
-        ) AS items
+          'url', variant.public_cdn_url,
+          'altText', media.alt_text,
+          'sortOrder', media.sort_order
+        )
+        ORDER BY media.sort_order, media.created_at, media.id
+      ) AS items
       FROM hotel_catalog.property_media media
+      JOIN platform.media_objects media_object
+        ON media_object.id = media.platform_media_object_id
+       AND media_object.property_id = property.id
+       AND media_object.visibility = 'public'
+       AND media_object.public_approved = TRUE
+       AND media_object.lifecycle_status = 'active'
+       AND media_object.purpose IN (
+         'property.hero_image',
+         'property.gallery_image',
+         'property.logo'
+       )
+      JOIN platform.media_variants variant
+        ON variant.media_object_id = media_object.id
+       AND variant.variant_name = 'original_safe'
+       AND variant.visibility = 'public'
+       AND NULLIF(variant.public_cdn_url, '') IS NOT NULL
       WHERE media.property_id = property.id
         AND media.public_approved = TRUE
         AND media.source_system = 'platform'
-    ) media ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_agg(
-          jsonb_build_object(
-            'mediaType',
-            CASE
-              WHEN item.value ->> 'mediaType' IN ('hero_image', 'gallery_image', 'logo')
-                THEN item.value ->> 'mediaType'
-              WHEN item.value ->> 'media_type' IN ('hero_image', 'gallery_image', 'logo')
-                THEN item.value ->> 'media_type'
-              WHEN item.value ->> 'type' IN ('hero_image', 'gallery_image', 'logo')
-                THEN item.value ->> 'type'
-              WHEN item.value ->> 'type' = 'hero' THEN 'hero_image'
-              ELSE 'gallery_image'
-            END,
-            'url', item.value ->> 'url',
-            'altText', COALESCE(item.value ->> 'altText', item.value ->> 'alt_text', item.value ->> 'alt'),
-            'sortOrder', CASE
-              WHEN item.value ->> 'sortOrder' ~ '^[0-9]+$' THEN (item.value ->> 'sortOrder')::int
-              WHEN item.value ->> 'sort_order' ~ '^[0-9]+$' THEN (item.value ->> 'sort_order')::int
-              ELSE item.ordinality::int - 1
-            END
-          )
-          ORDER BY item.ordinality
-        ) AS items
-      FROM jsonb_array_elements(
-        CASE
-          WHEN jsonb_typeof(public_profile.media) = 'array' THEN public_profile.media
-          ELSE '[]'::jsonb
-        END
-      ) WITH ORDINALITY AS item(value, ordinality)
-      WHERE NULLIF(item.value ->> 'url', '') IS NOT NULL
-    ) public_profile_media ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_agg(
-          jsonb_build_object(
-            'mediaType', CASE WHEN image.ordinality = 1 THEN 'hero_image' ELSE 'gallery_image' END,
-            'url', image.url,
-            'altText', marketplace_prefill.display_name,
-            'sortOrder', image.ordinality::int - 1
-          )
-          ORDER BY image.ordinality
-        ) AS items
-      FROM unnest(COALESCE(marketplace_prefill.image_urls, ARRAY[]::text[]))
-        WITH ORDINALITY AS image(url, ordinality)
-      WHERE NULLIF(image.url, '') IS NOT NULL
-    ) marketplace_media ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        (
-          COALESCE(public_profile_media.items, '[]'::jsonb)
-          || COALESCE(marketplace_media.items, '[]'::jsonb)
-        ) AS items,
-        (
-          COALESCE(jsonb_array_length(public_profile_media.items), 0)
-          + COALESCE(jsonb_array_length(marketplace_media.items), 0)
-        ) > 0 AS has_media
-    ) legacy_media ON TRUE
+    ) public_media ON TRUE
     WHERE property.id = $2::uuid
     LIMIT 1
   `;
@@ -1007,22 +1245,16 @@ function createPropertyProfileSql(): string {
         display_name text,
         property_type text,
         country_code text,
-        region text,
         city text,
         street_address text,
         postal_code text,
-        raw_marketplace_location text,
         timezone text,
         latitude numeric,
         longitude numeric,
         address_public boolean,
+        geo_public boolean,
         map_display_mode text,
-        short_description text,
-        long_description text,
-        website text,
-        contact_email text,
-        phone text,
-        media jsonb
+        contacts jsonb
       )
     ),
     generated_property AS (
@@ -1033,24 +1265,16 @@ function createPropertyProfileSql(): string {
         id,
         public_id,
         display_name,
-        property_type,
-        profile_status,
-        completeness_reasons
+        property_type
       )
       SELECT
         generated_property.property_id,
         'prop_' || replace(generated_property.property_id::text, '-', ''),
         profile_input.display_name,
-        profile_input.property_type,
-        $3::text,
-        $4::text[]
+        profile_input.property_type
       FROM generated_property, profile_input
       RETURNING
-        id AS property_id,
-        public_id,
-        default_locale,
-        supported_locales,
-        profile_status
+        id AS property_id
     ),
     linked_property AS (
       INSERT INTO identity.organization_resource_links (
@@ -1073,6 +1297,86 @@ function createPropertyProfileSql(): string {
       DO UPDATE SET status = 'active', updated_at = now()
       RETURNING product, resource_id
     ),
+    setup_product_keys(product, entitlement_key) AS (
+      VALUES
+        ('booking'::text, 'booking-engine'::text),
+        ('pms'::text, 'property-management'::text),
+        ('marketplace'::text, 'marketplace-hotel-profile'::text)
+    ),
+    effective_products AS (
+      SELECT candidate.product
+      FROM setup_product_keys candidate
+      WHERE EXISTS (
+        SELECT 1
+        FROM identity.product_entitlements entitlement
+        WHERE entitlement.organization_id = $1::uuid
+          AND entitlement.product = candidate.product
+          AND entitlement.entitlement_key = candidate.entitlement_key
+          AND entitlement.resource_product IS NULL
+          AND entitlement.resource_type IS NULL
+          AND entitlement.resource_id IS NULL
+          AND entitlement.status = 'active'
+          AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+          AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+      )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM identity.product_entitlements suspension
+          WHERE suspension.organization_id = $1::uuid
+            AND suspension.product = candidate.product
+            AND suspension.entitlement_key = candidate.entitlement_key
+            AND suspension.resource_product IS NULL
+            AND suspension.resource_type IS NULL
+            AND suspension.resource_id IS NULL
+            AND suspension.status = 'suspended'
+            AND (suspension.expires_at IS NULL OR suspension.expires_at > now())
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM finance.billing_entitlements billing
+          WHERE billing.organization_id = $1::uuid
+            AND billing.product = candidate.product
+            AND billing.entitlement_key = candidate.entitlement_key
+            AND (billing.starts_at IS NULL OR billing.starts_at <= now())
+            AND (billing.expires_at IS NULL OR billing.expires_at > now())
+            AND billing.billing_status IN ('past_due', 'suspended')
+        )
+        AND (
+          NOT EXISTS (
+            SELECT 1
+            FROM finance.billing_entitlements billing
+            WHERE billing.organization_id = $1::uuid
+              AND billing.product = candidate.product
+              AND billing.entitlement_key = candidate.entitlement_key
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM finance.billing_entitlements billing
+            WHERE billing.organization_id = $1::uuid
+              AND billing.product = candidate.product
+              AND billing.entitlement_key = candidate.entitlement_key
+              AND (billing.starts_at IS NULL OR billing.starts_at <= now())
+              AND (billing.expires_at IS NULL OR billing.expires_at > now())
+              AND billing.billing_status IN ('trialing', 'active')
+          )
+        )
+    ),
+    enabled_products AS (
+      SELECT effective.product
+      FROM effective_products effective
+      JOIN hotel_catalog.organization_setup_track_intents intent
+        ON intent.organization_id = $1::uuid
+      WHERE (
+        effective.product = 'marketplace'
+        AND 'creator_marketplace' = ANY(intent.selected_tracks)
+      )
+      OR (
+        effective.product IN ('booking', 'pms')
+        AND 'hotel_operations' = ANY(intent.selected_tracks)
+        AND EXISTS (SELECT 1 FROM effective_products WHERE product = 'booking')
+        AND EXISTS (SELECT 1 FROM effective_products WHERE product = 'pms')
+      )
+    ),
     linked_product_properties AS (
       INSERT INTO identity.organization_resource_links (
         organization_id,
@@ -1094,26 +1398,7 @@ function createPropertyProfileSql(): string {
         'owner',
         'active'
       FROM created_property
-      JOIN (
-        SELECT product
-        FROM identity.product_entitlements
-        WHERE organization_id = $1::uuid
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-          AND (
-            (product = 'booking' AND entitlement_key IN ('booking-engine', 'account_access'))
-            OR (
-              product = 'pms'
-              AND entitlement_key IN ('property-management', 'pms-core', 'account_access')
-            )
-            OR (
-              product = 'marketplace'
-              AND entitlement_key IN ('marketplace-hotel-profile', 'account_access')
-            )
-          )
-        GROUP BY product
-        HAVING bool_or(status = 'active') AND NOT bool_or(status = 'suspended')
-      ) entitlement ON TRUE
+      JOIN enabled_products entitlement ON TRUE
       ON CONFLICT (organization_id, product, resource_type, resource_id, relationship)
       DO UPDATE SET status = 'active', updated_at = now()
       RETURNING product, resource_id
@@ -1156,22 +1441,16 @@ function updatePropertyProfileSql(): string {
         display_name text,
         property_type text,
         country_code text,
-        region text,
         city text,
         street_address text,
         postal_code text,
-        raw_marketplace_location text,
         timezone text,
         latitude numeric,
         longitude numeric,
         address_public boolean,
+        geo_public boolean,
         map_display_mode text,
-        short_description text,
-        long_description text,
-        website text,
-        contact_email text,
-        phone text,
-        media jsonb
+        contacts jsonb
       )
     ),
     target_property AS (
@@ -1190,23 +1469,14 @@ function updatePropertyProfileSql(): string {
     updated_property AS (
       UPDATE hotel_catalog.properties property
       SET display_name = profile_input.display_name,
-          property_type = COALESCE(profile_input.property_type, property.property_type),
-          profile_status = CASE
-            WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status
-            ELSE $4::text
-          END,
-          completeness_reasons = $5::text[],
+          property_type = profile_input.property_type,
+          profile_revision = property.profile_revision + 1,
           updated_at = now()
       FROM target_property, profile_input
       WHERE property.id = target_property.property_id
-        AND NULLIF(BTRIM(property.property_type), '') IS NOT DISTINCT FROM $6::text
-        AND ($7::timestamptz IS NULL OR property.updated_at = $7::timestamptz)
+        AND property.profile_revision = $4::bigint
       RETURNING
-        property.id AS property_id,
-        property.public_id,
-        property.default_locale,
-        property.supported_locales,
-        property.profile_status
+        property.id AS property_id
     ),
     written_property AS (
       SELECT * FROM updated_property
@@ -1223,11 +1493,9 @@ function propertyProfileMutationCtes(): string {
       INSERT INTO hotel_catalog.property_locations (
         property_id,
         country_code,
-        region,
         city,
         street_address,
         postal_code,
-        raw_marketplace_location,
         latitude,
         longitude,
         timezone,
@@ -1240,27 +1508,23 @@ function propertyProfileMutationCtes(): string {
       SELECT
         written_property.property_id,
         NULLIF(profile_input.country_code, '')::char(2),
-        profile_input.region,
         profile_input.city,
         profile_input.street_address,
         profile_input.postal_code,
-        profile_input.raw_marketplace_location,
         profile_input.latitude,
         profile_input.longitude,
         profile_input.timezone,
-        COALESCE(profile_input.address_public, TRUE),
-        profile_input.latitude IS NOT NULL AND profile_input.longitude IS NOT NULL,
+        profile_input.address_public,
+        profile_input.geo_public,
         COALESCE(profile_input.map_display_mode, 'hidden'),
         'verified',
         now()
       FROM written_property, profile_input
       ON CONFLICT (property_id) DO UPDATE
       SET country_code = EXCLUDED.country_code,
-          region = EXCLUDED.region,
           city = EXCLUDED.city,
           street_address = EXCLUDED.street_address,
           postal_code = EXCLUDED.postal_code,
-          raw_marketplace_location = EXCLUDED.raw_marketplace_location,
           latitude = EXCLUDED.latitude,
           longitude = EXCLUDED.longitude,
           timezone = EXCLUDED.timezone,
@@ -1271,45 +1535,21 @@ function propertyProfileMutationCtes(): string {
           updated_at = now()
       RETURNING property_id
     ),
-    upserted_profile AS (
-      INSERT INTO hotel_catalog.property_profiles (
-        property_id,
-        locale,
-        short_description,
-        long_description,
-        source_confidence,
-        updated_at
-      )
+    contact_input AS (
       SELECT
         written_property.property_id,
-        written_property.default_locale,
-        profile_input.short_description,
-        profile_input.long_description,
-        'verified',
-        now()
+        contact.channel_type,
+        contact.value,
+        contact.purpose,
+        contact.is_public
       FROM written_property, profile_input
-      ON CONFLICT (property_id, locale) DO UPDATE
-      SET short_description = EXCLUDED.short_description,
-          long_description = EXCLUDED.long_description,
-          source_confidence = EXCLUDED.source_confidence,
-          updated_at = now()
-      RETURNING property_id
-    ),
-    contact_input AS (
-      SELECT written_property.property_id, 'website'::text AS channel_type, profile_input.website AS value
-      FROM written_property, profile_input
-      UNION ALL
-      SELECT written_property.property_id, 'email'::text AS channel_type, profile_input.contact_email AS value
-      FROM written_property, profile_input
-      UNION ALL
-      SELECT written_property.property_id, 'phone'::text AS channel_type, profile_input.phone AS value
-      FROM written_property, profile_input
+      JOIN LATERAL jsonb_to_recordset(COALESCE(profile_input.contacts, '[]'::jsonb))
+        AS contact(channel_type text, value text, purpose text, is_public boolean) ON TRUE
     ),
     deleted_contacts AS (
       DELETE FROM hotel_catalog.property_contact_channels contact
       USING written_property
       WHERE contact.property_id = written_property.property_id
-        AND contact.channel_type IN ('website', 'email', 'phone')
         AND contact.source_system = 'platform'
         AND NOT EXISTS (
           SELECT 1
@@ -1325,6 +1565,7 @@ function propertyProfileMutationCtes(): string {
         property_id,
         channel_type,
         value,
+        purpose,
         is_public,
         source_system,
         updated_at
@@ -1333,673 +1574,427 @@ function propertyProfileMutationCtes(): string {
         contact_input.property_id,
         contact_input.channel_type,
         contact_input.value,
-        TRUE,
+        contact_input.purpose,
+        contact_input.is_public,
         'platform',
         now()
       FROM contact_input
-      WHERE contact_input.value IS NOT NULL
       ON CONFLICT (property_id, channel_type, value) DO UPDATE
-      SET is_public = TRUE,
+      SET purpose = EXCLUDED.purpose,
+          is_public = EXCLUDED.is_public,
           source_system = EXCLUDED.source_system,
           updated_at = now()
-      RETURNING property_id
-    ),
-    deleted_media AS (
-      DELETE FROM hotel_catalog.property_media media
-      USING written_property
-      WHERE media.property_id = written_property.property_id
-        AND media.source_system = 'platform'
-      RETURNING media.property_id
-    ),
-    media_input AS (
-      SELECT
-        written_property.property_id,
-        media.media_type,
-        media.url,
-        media.alt_text,
-        media.sort_order
-      FROM written_property, profile_input
-      JOIN LATERAL jsonb_to_recordset(COALESCE(profile_input.media, '[]'::jsonb))
-        AS media(media_type text, url text, alt_text text, sort_order int) ON TRUE
-    ),
-    inserted_media AS (
-      INSERT INTO hotel_catalog.property_media (
-        property_id,
-        media_type,
-        url,
-        alt_text,
-        sort_order,
-        source_system,
-        public_approved,
-        updated_at
-      )
-      SELECT
-        media_input.property_id,
-        media_input.media_type,
-        media_input.url,
-        media_input.alt_text,
-        media_input.sort_order,
-        'platform',
-        TRUE,
-        now()
-      FROM media_input
       RETURNING property_id
     )
   `;
 }
 
-function sharedHotelSetupStatusSql(): string {
+function adaptiveHotelSetupFactsSql(): string {
   return `
-    WITH effective_product_entitlements AS (
-      SELECT
-        product,
-        bool_or(
-          status = 'active'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS active,
-        bool_or(
-          status = 'suspended'
-          AND (starts_at IS NULL OR starts_at <= now())
-          AND (expires_at IS NULL OR expires_at > now())
-        ) AS suspended,
-        max(updated_at) AS updated_at
-      FROM identity.product_entitlements
-      WHERE organization_id = $1::uuid
-        AND (
-          (product = 'booking' AND entitlement_key IN ('booking-engine', 'account_access'))
-          OR (
-            product = 'pms'
-            AND entitlement_key IN ('property-management', 'pms-core', 'account_access')
-          )
-          OR (
-            product = 'marketplace'
-            AND entitlement_key IN ('marketplace-hotel-profile', 'account_access')
-          )
-        )
-      GROUP BY product
-    )
     SELECT
       property.id::text AS "propertyId",
       property.public_id AS "publicId",
+      NULLIF(property.display_name, '') AS "displayName",
+      NULLIF(property.property_type, '') AS "propertyType",
+      NULLIF(location.city, '') AS city,
+      NULLIF(location.country_code::text, '') AS "countryCode",
+      NULLIF(location.street_address, '') IS NOT NULL AS "hasStreetAddress",
+      NULLIF(location.postal_code, '') IS NOT NULL AS "hasPostalCode",
+      NULLIF(location.city, '') IS NOT NULL AS "hasCity",
+      NULLIF(location.country_code::text, '') IS NOT NULL AS "hasCountryCode",
+      NULLIF(location.timezone, '') IS NOT NULL AS "hasTimezone",
+      COALESCE(contacts.has_email, FALSE) AS "hasEmail",
+      COALESCE(contacts.has_phone, FALSE) AS "hasPhone",
+      property.updated_at AS "propertyUpdatedAt",
+      location.updated_at AS "locationUpdatedAt",
+      contacts.updated_at AS "contactUpdatedAt",
+      COALESCE(public_profile.has_description, FALSE) AS "hasDescription",
+      COALESCE(public_media.has_approved_media, FALSE) AS "hasApprovedMedia",
+      COALESCE(location.address_public, FALSE) AS "localityPublic",
+      public_profile.updated_at AS "profileUpdatedAt",
+      public_media.updated_at AS "mediaUpdatedAt",
+      marketplace_profile.marketplace_profile_status AS "marketplaceProfileStatus",
+      COALESCE(marketplace_profile.profile_complete, FALSE) AS "marketplaceProfileComplete",
+      marketplace_profile.updated_at AS "marketplaceProfileUpdatedAt",
+      marketplace_offer.offer_status AS "marketplaceOfferStatus",
+      COALESCE(marketplace_offer.has_title, FALSE) AS "marketplaceOfferHasTitle",
+      COALESCE(marketplace_offer.has_deliverable, FALSE) AS "marketplaceOfferHasDeliverable",
+      COALESCE(marketplace_offer.has_compensation, FALSE) AS "marketplaceOfferHasCompensation",
+      COALESCE(marketplace_offer.has_requirement, FALSE) AS "marketplaceOfferHasRequirement",
+      COALESCE(marketplace_offer.is_public, FALSE) AS "marketplaceOfferPublic",
+      marketplace_offer.updated_at AS "marketplaceOfferUpdatedAt",
+      marketplace_offer.children_updated_at AS "marketplaceOfferChildrenUpdatedAt",
+      marketplace_offer.projected_at AS "marketplaceOfferProjectedAt",
       COALESCE(
-        NULLIF(property.display_name, ''),
-        NULLIF(public_profile.display_name, ''),
-        marketplace_prefill.display_name
-      ) AS "displayName",
-      property.profile_status AS "profileStatus",
-      CASE
-        WHEN (
-            NULLIF(property.display_name, '') IS NULL
-            AND COALESCE(NULLIF(public_profile.display_name, ''), marketplace_prefill.display_name) IS NOT NULL
+        marketplace_offer.projection_fresh,
+        FALSE
+      ) AS "marketplaceOfferProjectionFresh",
+      COALESCE(room_types.exists, FALSE) AS "hasActiveRoomType",
+      COALESCE(rooms.exists, FALSE) AS "hasNonRetiredRoom",
+      COALESCE(rate_plans.exists, FALSE) AS "hasActiveRatePlan",
+      COALESCE(inventory.exists, FALSE) AS "hasFutureInventory",
+      room_types.updated_at AS "roomTypeUpdatedAt",
+      rooms.updated_at AS "roomUpdatedAt",
+      rate_plans.updated_at AS "ratePlanUpdatedAt",
+      inventory.updated_at AS "inventoryUpdatedAt",
+      policy.check_in_time IS NOT NULL AS "hasCheckInPolicy",
+      policy.check_out_time IS NOT NULL AS "hasCheckOutPolicy",
+      (
+        NULLIF(policy.cancellation_summary, '') IS NOT NULL
+        OR NULLIF(policy.cancellation_terms_url, '') IS NOT NULL
+      ) AS "hasCancellationPolicy",
+      policy.updated_at AS "policyUpdatedAt",
+      payment.payments_enabled AS "paymentsEnabled",
+      COALESCE(cardinality(payment.accepted_methods) > 0, FALSE)
+        AS "hasAcceptedPaymentMethod",
+      COALESCE(
+        payment.payments_enabled
+        AND (
+          payment.accepted_methods && ARRAY[
+            'pay_at_property',
+            'cash',
+            'bank_transfer',
+            'manual_card',
+            'other'
+          ]::text[]
+          OR (
+            payment.accepted_methods && ARRAY['card', 'wallet']::text[]
+            AND payment_provider.status = 'active'
+            AND payment_provider.onboarding_status = 'completed'
+            AND payment_provider.charges_enabled = TRUE
           )
           OR (
-            COALESCE(legacy_location.location, '{}'::jsonb)
-            - ARRAY(SELECT jsonb_object_keys(COALESCE(catalog_location.location, '{}'::jsonb)))
-          ) <> '{}'::jsonb
-          OR (
-            COALESCE(legacy_description.descriptions, '{}'::jsonb)
-            - ARRAY(SELECT jsonb_object_keys(COALESCE(catalog_profile.descriptions, '{}'::jsonb)))
-          ) <> '{}'::jsonb
-          OR legacy_contacts.has_contacts
-          OR (COALESCE(jsonb_array_length(catalog_media.media), 0) = 0 AND legacy_media.has_media)
-          THEN 'legacy_prefill'
-        ELSE 'canonical'
-      END AS "profileSource",
-      (
-        COALESCE(legacy_location.location, '{}'::jsonb)
-        || COALESCE(catalog_location.location, '{}'::jsonb)
-      ) AS "location",
-      (
-        COALESCE(legacy_description.descriptions, '{}'::jsonb)
-        || COALESCE(catalog_profile.descriptions, '{}'::jsonb)
-      ) AS "descriptions",
-      CASE
-        WHEN COALESCE(jsonb_array_length(catalog_media.media), 0) > 0 THEN catalog_media.media
-        ELSE COALESCE(legacy_media.items, '[]'::jsonb)
-      END AS "media",
-      CASE
-        WHEN COALESCE(jsonb_array_length(catalog_contacts.public_contacts), 0) > 0
-          THEN catalog_contacts.public_contacts || COALESCE(legacy_contacts.public_contacts, '[]'::jsonb)
-        ELSE COALESCE(legacy_contacts.public_contacts, '[]'::jsonb)
-      END AS "publicContacts",
-      (
-        COALESCE(booking_entitlement.active, FALSE)
-        OR COALESCE(booking_entitlement.suspended, FALSE)
-      ) AS "bookingSelected",
-      booking_entitlement.updated_at AS "bookingSelectionUpdatedAt",
-      booking_settings.property_id IS NOT NULL AS "hasBookingSettings",
-      booking_settings.updated_at AS "bookingSettingsUpdatedAt",
-      COALESCE(booking_entitlement.active, FALSE) AS "bookingEntitlementActive",
-      COALESCE(booking_entitlement.suspended, FALSE) AS "bookingEntitlementSuspended",
-      booking_entitlement.updated_at AS "bookingEntitlementUpdatedAt",
+            payment.accepted_methods && ARRAY['xendit']::text[]
+            AND payment_provider.provider = 'xendit'
+            AND payment_provider.status = 'active'
+            AND payment_provider.onboarding_status = 'completed'
+            AND payment_provider.charges_enabled = TRUE
+          )
+        ),
+        FALSE
+      ) AS "hasEffectivePaymentMethod",
+      COALESCE(payment.requires_manual_review, FALSE) AS "paymentRequiresManualReview",
+      payment.updated_at AS "paymentSettingsUpdatedAt",
       bookability.profile_status AS "bookabilityStatus",
-      bookability.freshness_status AS "bookabilityFreshnessStatus",
-      bookability.updated_at AS "bookabilityUpdatedAt",
-      payment_settings.payments_enabled AS "paymentsEnabled",
-      payment_settings.updated_at AS "paymentSettingsUpdatedAt",
+      bookability.freshness_status AS "bookabilityFreshness",
+      COALESCE(
+        bookability.public_setup_completeness ->> 'status' = 'ready',
+        FALSE
+      ) AS "bookabilitySetupReady",
+      COALESCE(
+        CASE
+          WHEN jsonb_typeof(bookability.public_setup_completeness -> 'missing') = 'array'
+            THEN jsonb_array_length(bookability.public_setup_completeness -> 'missing') = 0
+          ELSE FALSE
+        END,
+        FALSE
+      ) AS "bookabilityMissingEmpty",
       (
-        COALESCE(pms_entitlement.active, FALSE)
-        OR COALESCE(pms_entitlement.suspended, FALSE)
-      ) AS "pmsSelected",
-      pms_entitlement.updated_at AS "pmsSelectionUpdatedAt",
-      COALESCE(pms_entitlement.active, FALSE) AS "pmsEntitlementActive",
-      COALESCE(pms_entitlement.suspended, FALSE) AS "pmsEntitlementSuspended",
-      pms_entitlement.updated_at AS "pmsEntitlementUpdatedAt",
-      COALESCE(pms_room_types.count, 0) AS "pmsRoomTypeCount",
-      pms_room_types.updated_at AS "pmsRoomUpdatedAt",
-      COALESCE(pms_rooms.count, 0) AS "pmsRoomCount",
-      COALESCE(pms_rate_plans.count, 0) AS "pmsRatePlanCount",
-      pms_rate_plans.updated_at AS "pmsRateUpdatedAt",
-      (
-        COALESCE(marketplace_entitlement.active, FALSE)
-        OR COALESCE(marketplace_entitlement.suspended, FALSE)
-      ) AS "marketplaceSelected",
-      marketplace_entitlement.updated_at AS "marketplaceSelectionUpdatedAt",
-      COALESCE(marketplace_entitlement.active, FALSE) AS "marketplaceEntitlementActive",
-      COALESCE(marketplace_entitlement.suspended, FALSE) AS "marketplaceEntitlementSuspended",
-      marketplace_entitlement.updated_at AS "marketplaceEntitlementUpdatedAt",
-      marketplace_profile.marketplace_profile_status AS "marketplaceProfileStatus",
-      marketplace_profile.profile_complete AS "marketplaceProfileComplete",
-      marketplace_profile.updated_at AS "marketplaceProfileUpdatedAt",
-      COALESCE(marketplace_offers_state.count, 0) AS "marketplaceOfferCount",
-      COALESCE(marketplace_offers_state.verified_count, 0) AS "marketplaceVerifiedOfferCount",
-      COALESCE(marketplace_offers_state.public_count, 0) AS "marketplacePublicOfferCount",
-      marketplace_offers_state.updated_at AS "marketplaceOfferUpdatedAt",
-      COALESCE(marketplace_deliverables.count, 0) AS "marketplaceDeliverableCount",
-      marketplace_deliverables.updated_at AS "marketplaceDeliverableUpdatedAt",
-      COALESCE(marketplace_compensation.count, 0) AS "marketplaceCompensationCount",
-      marketplace_compensation.updated_at AS "marketplaceCompensationUpdatedAt",
-      COALESCE(marketplace_requirements.count, 0) AS "marketplaceRequirementCount",
-      marketplace_requirements.updated_at AS "marketplaceRequirementUpdatedAt"
+        bookability.expires_at IS NOT NULL
+        AND bookability.expires_at <= now()
+      ) AS "bookabilityExpired",
+      bookability.updated_at AS "bookabilityUpdatedAt"
     FROM unnest($2::uuid[]) AS scoped(property_id)
     JOIN hotel_catalog.properties property
       ON property.id = scoped.property_id
-    LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
-      ON public_profile.property_id = property.id
+    LEFT JOIN hotel_catalog.property_locations location
+      ON location.property_id = property.id
+    LEFT JOIN hotel_catalog.property_public_profile_read_model catalog_public_profile
+      ON catalog_public_profile.property_id = property.id
     LEFT JOIN LATERAL (
       SELECT
-        NULLIF(listing.title, '') AS display_name,
-        NULLIF(listing.raw_location_text, '') AS raw_location_text,
-        NULLIF(listing.offer_summary, '') AS offer_summary,
-        NULLIF(profile.host_summary, '') AS host_summary,
-        listing.image_urls,
-        latest.value AS updated_at
-      FROM marketplace.marketplace_hotel_profiles profile
-      LEFT JOIN LATERAL (
-        SELECT title, raw_location_text, offer_summary, image_urls, updated_at
-        FROM marketplace.marketplace_offers
-        WHERE property_id = property.id
-          AND organization_id = $1::uuid
-          AND offer_status <> 'archived'
-        ORDER BY
-          CASE offer_status WHEN 'verified' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-          updated_at DESC,
-          id
-        LIMIT 1
-      ) listing ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT max(value) AS value
-        FROM (VALUES (profile.updated_at), (listing.updated_at)) AS timestamps(value)
-      ) latest ON TRUE
-      WHERE profile.property_id = property.id
-        AND profile.organization_id = $1::uuid
-      LIMIT 1
-    ) marketplace_prefill ON TRUE
+        bool_or(
+          contact.channel_type = 'email'
+          AND NULLIF(contact.value, '') IS NOT NULL
+        ) AS has_email,
+        bool_or(
+          contact.channel_type = 'phone'
+          AND NULLIF(contact.value, '') IS NOT NULL
+        ) AS has_phone,
+        max(contact.updated_at) AS updated_at
+      FROM hotel_catalog.property_contact_channels contact
+      WHERE contact.property_id = property.id
+        AND contact.channel_type IN ('email', 'phone')
+    ) contacts ON TRUE
     LEFT JOIN LATERAL (
-      SELECT jsonb_strip_nulls(jsonb_build_object(
-        'countryCode', NULLIF(location.country_code::text, ''),
-        'region', NULLIF(location.region, ''),
-        'city', NULLIF(location.city, ''),
-        'streetAddress', NULLIF(location.street_address, ''),
-        'postalCode', NULLIF(location.postal_code, ''),
-        'rawMarketplaceLocation', NULLIF(location.raw_marketplace_location, ''),
-        'timezone', NULLIF(location.timezone, ''),
-        'latitude', location.latitude,
-        'longitude', location.longitude,
-        'addressPublic', location.address_public,
-        'mapDisplayMode', location.map_display_mode
-      )) AS location,
-      location.source_confidence,
-      (
-        NULLIF(location.country_code::text, '') IS NOT NULL
-        OR NULLIF(location.city, '') IS NOT NULL
-        OR NULLIF(location.raw_marketplace_location, '') IS NOT NULL
-      ) AS has_location
-      FROM hotel_catalog.property_locations location
-      WHERE location.property_id = property.id
-    ) catalog_location ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT jsonb_strip_nulls(jsonb_build_object(
-        'shortDescription', NULLIF(profile.short_description, ''),
-        'longDescription', NULLIF(profile.long_description, '')
-      )) AS descriptions,
-      (
-        NULLIF(profile.short_description, '') IS NOT NULL
-        OR NULLIF(profile.long_description, '') IS NOT NULL
-      ) AS has_description
+      SELECT
+        (
+          NULLIF(profile.short_description, '') IS NOT NULL
+          OR NULLIF(profile.long_description, '') IS NOT NULL
+        ) AS has_description,
+        profile.updated_at
       FROM hotel_catalog.property_profiles profile
       WHERE profile.property_id = property.id
         AND profile.locale = property.default_locale
       LIMIT 1
-    ) catalog_profile ON TRUE
+    ) public_profile ON TRUE
     LEFT JOIN LATERAL (
       SELECT
-        jsonb_strip_nulls(jsonb_build_object(
-          'countryCode', CASE
-            WHEN length(COALESCE(
-              public_profile.location ->> 'countryCode',
-              public_profile.location ->> 'country'
-            )) = 2
-            THEN upper(COALESCE(
-              public_profile.location ->> 'countryCode',
-              public_profile.location ->> 'country'
-            ))
-            ELSE NULL
-          END,
-          'region', NULLIF(public_profile.location ->> 'region', ''),
-          'city', NULLIF(public_profile.location ->> 'city', ''),
-          'streetAddress', NULLIF(public_profile.location ->> 'streetAddress', ''),
-          'postalCode', NULLIF(public_profile.location ->> 'postalCode', ''),
-          'rawMarketplaceLocation', COALESCE(
-            NULLIF(public_profile.location ->> 'rawMarketplaceLocation', ''),
-            NULLIF(public_profile.location ->> 'display', ''),
-            CASE
-              WHEN length(NULLIF(public_profile.location ->> 'country', '')) > 2
-                THEN NULLIF(public_profile.location ->> 'country', '')
-              ELSE NULL
-            END,
-            marketplace_prefill.raw_location_text
-          ),
-          'timezone', NULLIF(public_profile.location ->> 'timezone', ''),
-          'latitude', CASE
-            WHEN COALESCE(public_profile.location ->> 'latitude', public_profile.location #>> '{geo,latitude}')
-              ~ '^-?[0-9]+(\\.[0-9]+)?$'
-            THEN COALESCE(public_profile.location ->> 'latitude', public_profile.location #>> '{geo,latitude}')::numeric
-            ELSE NULL
-          END,
-          'longitude', CASE
-            WHEN COALESCE(public_profile.location ->> 'longitude', public_profile.location #>> '{geo,longitude}')
-              ~ '^-?[0-9]+(\\.[0-9]+)?$'
-            THEN COALESCE(public_profile.location ->> 'longitude', public_profile.location #>> '{geo,longitude}')::numeric
-            ELSE NULL
-          END,
-          'addressPublic', TRUE,
-          'mapDisplayMode', CASE
-            WHEN public_profile.location ->> 'mapDisplayMode' IN ('hidden', 'approximate', 'exact')
-              THEN public_profile.location ->> 'mapDisplayMode'
-            WHEN public_profile.location ? 'geo' THEN 'approximate'
-            ELSE 'hidden'
-          END
-        )) AS location,
-        (
-          NULLIF(public_profile.location ->> 'city', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'countryCode', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'country', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'rawMarketplaceLocation', '') IS NOT NULL
-          OR NULLIF(public_profile.location ->> 'display', '') IS NOT NULL
-          OR marketplace_prefill.raw_location_text IS NOT NULL
-        ) AS has_location
-      WHERE catalog_location.source_confidence IS DISTINCT FROM 'verified'
-    ) legacy_location ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_strip_nulls(jsonb_build_object(
-          'shortDescription', COALESCE(
-            NULLIF(public_profile.descriptions ->> 'shortDescription', ''),
-            NULLIF(public_profile.descriptions ->> 'short_description', ''),
-            NULLIF(public_profile.descriptions ->> 'short', ''),
-            NULLIF(public_profile.descriptions ->> 'summary', ''),
-            NULLIF(public_profile.descriptions -> property.default_locale ->> 'short', ''),
-            NULLIF(public_profile.descriptions -> property.default_locale ->> 'summary', ''),
-            marketplace_prefill.offer_summary,
-            marketplace_prefill.host_summary
-          ),
-          'longDescription', COALESCE(
-            NULLIF(public_profile.descriptions ->> 'longDescription', ''),
-            NULLIF(public_profile.descriptions ->> 'long_description', ''),
-            NULLIF(public_profile.descriptions ->> 'long', ''),
-            NULLIF(public_profile.descriptions -> property.default_locale ->> 'long', '')
-          )
-        )) AS descriptions
-    ) legacy_description_values ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        legacy_description_values.descriptions,
-        (
-          NULLIF(legacy_description_values.descriptions ->> 'shortDescription', '') IS NOT NULL
-          OR NULLIF(legacy_description_values.descriptions ->> 'longDescription', '') IS NOT NULL
-        ) AS has_description
-    ) legacy_description ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT jsonb_agg(
-        jsonb_strip_nulls(jsonb_build_object(
-          'type', media.media_type,
-          'url', media.url,
-          'altText', media.alt_text,
-          'sortOrder', media.sort_order
-        ))
-        ORDER BY media.sort_order, media.created_at, media.id
-      ) AS media
+        count(*) > 0 AS has_approved_media,
+        max(media.updated_at) AS updated_at
       FROM hotel_catalog.property_media media
+      JOIN platform.media_objects media_object
+        ON media_object.id = media.platform_media_object_id
+       AND media_object.property_id = property.id
+       AND media_object.visibility = 'public'
+       AND media_object.public_approved = TRUE
+       AND media_object.lifecycle_status = 'active'
+       AND media_object.purpose IN (
+         'property.hero_image',
+         'property.gallery_image',
+         'property.logo'
+       )
+      JOIN platform.media_variants media_variant
+        ON media_variant.media_object_id = media_object.id
+       AND media_variant.variant_name = 'original_safe'
+       AND media_variant.visibility = 'public'
+       AND NULLIF(media_variant.public_cdn_url, '') IS NOT NULL
       WHERE media.property_id = property.id
         AND media.public_approved = TRUE
         AND media.source_system = 'platform'
-    ) catalog_media ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_agg(
-          jsonb_build_object('type', contact.channel_type, 'value', contact.value)
-          ORDER BY contact.channel_type, contact.value
-        ) AS public_contacts,
-        count(*) FILTER (
-          WHERE contact.channel_type = 'website'
-            AND NULLIF(contact.value, '') IS NOT NULL
-        ) > 0 AS has_website,
-        count(*) FILTER (
-          WHERE contact.channel_type IN ('phone', 'whatsapp')
-            AND NULLIF(contact.value, '') IS NOT NULL
-        ) > 0 AS has_phone
-      FROM hotel_catalog.property_contact_channels contact
-      WHERE contact.property_id = property.id
-        AND contact.is_public = TRUE
-        AND contact.source_system = 'platform'
-        AND contact.channel_type IN ('website', 'phone', 'whatsapp')
-        AND NULLIF(contact.value, '') IS NOT NULL
-    ) catalog_contacts ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_agg(
-          jsonb_build_object('type', contact.channel_type, 'value', contact.value)
-          ORDER BY contact.channel_type, contact.value
-        ) AS public_contacts,
-        count(*) > 0 AS has_contacts
-      FROM jsonb_array_elements(
-        CASE
-          WHEN jsonb_typeof(public_profile.public_contacts) = 'array'
-          THEN public_profile.public_contacts
-          ELSE '[]'::jsonb
-        END
-      ) AS item(value)
-      CROSS JOIN LATERAL (
-        SELECT
-          lower(COALESCE(
-            item.value ->> 'type',
-            item.value ->> 'kind',
-            item.value ->> 'channelType',
-            item.value ->> 'channel_type'
-          )) AS channel_type,
-          NULLIF(item.value ->> 'value', '') AS value
-      ) contact
-      WHERE contact.value IS NOT NULL
-        AND contact.channel_type IN ('website', 'phone', 'whatsapp')
-        AND (
-          (contact.channel_type = 'website' AND COALESCE(catalog_contacts.has_website, FALSE) = FALSE)
-          OR (
-            contact.channel_type IN ('phone', 'whatsapp')
-            AND COALESCE(catalog_contacts.has_phone, FALSE) = FALSE
-          )
-        )
-    ) legacy_contacts ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_agg(
-          jsonb_build_object(
-            'type',
-            CASE
-              WHEN item.value ->> 'mediaType' IN ('hero_image', 'gallery_image', 'logo')
-                THEN item.value ->> 'mediaType'
-              WHEN item.value ->> 'media_type' IN ('hero_image', 'gallery_image', 'logo')
-                THEN item.value ->> 'media_type'
-              WHEN item.value ->> 'type' IN ('hero_image', 'gallery_image', 'logo')
-                THEN item.value ->> 'type'
-              WHEN item.value ->> 'type' = 'hero' THEN 'hero_image'
-              ELSE 'gallery_image'
-            END,
-            'url', item.value ->> 'url',
-            'altText', COALESCE(item.value ->> 'altText', item.value ->> 'alt_text', item.value ->> 'alt'),
-            'sortOrder', CASE
-              WHEN item.value ->> 'sortOrder' ~ '^[0-9]+$' THEN (item.value ->> 'sortOrder')::int
-              WHEN item.value ->> 'sort_order' ~ '^[0-9]+$' THEN (item.value ->> 'sort_order')::int
-              ELSE item.ordinality::int - 1
-            END
-          )
-          ORDER BY item.ordinality
-        ) AS items
-      FROM jsonb_array_elements(
-        CASE
-          WHEN jsonb_typeof(public_profile.media) = 'array' THEN public_profile.media
-          ELSE '[]'::jsonb
-        END
-      ) WITH ORDINALITY AS item(value, ordinality)
-      WHERE NULLIF(item.value ->> 'url', '') IS NOT NULL
-    ) public_profile_media ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        jsonb_agg(
-          jsonb_build_object(
-            'type', CASE WHEN image.ordinality = 1 THEN 'hero_image' ELSE 'gallery_image' END,
-            'url', image.url,
-            'altText', marketplace_prefill.display_name,
-            'sortOrder', image.ordinality::int - 1
-          )
-          ORDER BY image.ordinality
-        ) AS items
-      FROM unnest(COALESCE(marketplace_prefill.image_urls, ARRAY[]::text[]))
-        WITH ORDINALITY AS image(url, ordinality)
-      WHERE NULLIF(image.url, '') IS NOT NULL
-    ) marketplace_media ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT
-        (
-          COALESCE(public_profile_media.items, '[]'::jsonb)
-          || COALESCE(marketplace_media.items, '[]'::jsonb)
-        ) AS items,
-        (
-          COALESCE(jsonb_array_length(public_profile_media.items), 0)
-          + COALESCE(jsonb_array_length(marketplace_media.items), 0)
-        ) > 0 AS has_media
-    ) legacy_media ON TRUE
-    LEFT JOIN booking.booking_settings booking_settings
-      ON booking_settings.property_id = property.id
-    LEFT JOIN distribution.public_hotel_bookability_profiles bookability
-      ON bookability.property_id = property.id
-    LEFT JOIN finance.payment_settings payment_settings
-      ON payment_settings.property_id = property.id
-    LEFT JOIN effective_product_entitlements booking_entitlement
-      ON booking_entitlement.product = 'booking'
-    LEFT JOIN effective_product_entitlements pms_entitlement
-      ON pms_entitlement.product = 'pms'
-    LEFT JOIN effective_product_entitlements marketplace_entitlement
-      ON marketplace_entitlement.product = 'marketplace'
+    ) public_media ON TRUE
     LEFT JOIN marketplace.marketplace_hotel_profiles marketplace_profile
       ON marketplace_profile.property_id = property.id
      AND marketplace_profile.organization_id = $1::uuid
     LEFT JOIN LATERAL (
-      SELECT count(*)::int AS count, max(updated_at) AS updated_at
-      FROM pms.room_types
-      WHERE property_id = property.id
-        AND active = TRUE
-    ) pms_room_types ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT count(*)::int AS count, max(updated_at) AS updated_at
-      FROM pms.rooms
-      WHERE property_id = property.id
-        AND status <> 'retired'
-    ) pms_rooms ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT count(*)::int AS count, max(updated_at) AS updated_at
-      FROM pms.rate_plans
-      WHERE property_id = property.id
-        AND active = TRUE
-    ) pms_rate_plans ON TRUE
-    LEFT JOIN LATERAL (
       SELECT
-        count(*) FILTER (WHERE offer.offer_status IN ('pending', 'verified'))::int AS count,
-        count(*) FILTER (WHERE offer.offer_status = 'verified')::int AS verified_count,
-        count(*) FILTER (
-          WHERE offer.offer_status = 'verified'
-            AND projection.visibility_status = 'public'
-        )::int AS public_count,
-        max(offer.updated_at) FILTER (
-          WHERE offer.offer_status IN ('pending', 'verified')
-        ) AS updated_at
-      FROM marketplace.marketplace_offers offer
-      LEFT JOIN marketplace.marketplace_offer_read_model projection
-        ON projection.offer_id = offer.id
-       AND projection.property_id = offer.property_id
-      WHERE offer.property_id = property.id
-        AND offer.organization_id = $1::uuid
-    ) marketplace_offers_state ON TRUE
+        candidate.offer_status,
+        candidate.has_title,
+        candidate.has_deliverable,
+        candidate.has_compensation,
+        candidate.has_requirement,
+        candidate.is_public,
+        candidate.updated_at,
+        candidate.children_updated_at,
+        candidate.projected_at,
+        candidate.projection_fresh
+      FROM (
+        SELECT
+          facts.*,
+          COALESCE(
+            catalog_public_profile.projected_at IS NOT NULL
+            AND facts.projected_at >= GREATEST(
+                facts.updated_at,
+                facts.children_updated_at,
+                catalog_public_profile.projected_at
+              ),
+            FALSE
+          ) AS projection_fresh
+        FROM (
+          SELECT
+            offer.id AS offer_id,
+            offer.offer_status,
+            NULLIF(offer.title, '') IS NOT NULL AS has_title,
+            EXISTS (
+              SELECT 1
+              FROM marketplace.offer_deliverables deliverable
+              WHERE deliverable.offer_id = offer.id
+                AND deliverable.property_id = offer.property_id
+                AND deliverable.organization_id = offer.organization_id
+            ) AS has_deliverable,
+            EXISTS (
+              SELECT 1
+              FROM marketplace.offer_compensation_options compensation
+              WHERE compensation.offer_id = offer.id
+                AND compensation.property_id = offer.property_id
+                AND compensation.organization_id = offer.organization_id
+            ) AS has_compensation,
+            EXISTS (
+              SELECT 1
+              FROM marketplace.offer_creator_requirements requirement
+              WHERE requirement.offer_id = offer.id
+                AND requirement.property_id = offer.property_id
+                AND requirement.organization_id = offer.organization_id
+            ) AS has_requirement,
+            projection.visibility_status = 'public' AS is_public,
+            offer.updated_at,
+            GREATEST(
+              (
+                SELECT max(deliverable.updated_at)
+                FROM marketplace.offer_deliverables deliverable
+                WHERE deliverable.offer_id = offer.id
+                  AND deliverable.property_id = offer.property_id
+                  AND deliverable.organization_id = offer.organization_id
+              ),
+              (
+                SELECT max(compensation.updated_at)
+                FROM marketplace.offer_compensation_options compensation
+                WHERE compensation.offer_id = offer.id
+                  AND compensation.property_id = offer.property_id
+                  AND compensation.organization_id = offer.organization_id
+              ),
+              (
+                SELECT max(requirement.updated_at)
+                FROM marketplace.offer_creator_requirements requirement
+                WHERE requirement.offer_id = offer.id
+                  AND requirement.property_id = offer.property_id
+                  AND requirement.organization_id = offer.organization_id
+              )
+            ) AS children_updated_at,
+            projection.projected_at
+          FROM marketplace.marketplace_offers offer
+          LEFT JOIN marketplace.marketplace_offer_read_model projection
+            ON projection.offer_id = offer.id
+           AND projection.property_id = offer.property_id
+          WHERE offer.property_id = property.id
+            AND offer.organization_id = $1::uuid
+            AND offer.offer_status <> 'archived'
+        ) facts
+      ) candidate
+      ORDER BY
+        CASE
+          WHEN candidate.offer_status = 'verified'
+            AND candidate.has_title
+            AND candidate.has_deliverable
+            AND candidate.has_compensation
+            AND candidate.has_requirement
+            AND candidate.is_public
+            AND candidate.projection_fresh
+            THEN 0
+          WHEN candidate.offer_status = 'verified'
+            AND candidate.has_title
+            AND candidate.has_deliverable
+            AND candidate.has_compensation
+            AND candidate.has_requirement
+            AND candidate.is_public
+            AND NOT candidate.projection_fresh
+            THEN 1
+          WHEN candidate.offer_status = 'pending'
+            AND candidate.has_title
+            AND candidate.has_deliverable
+            AND candidate.has_compensation
+            AND candidate.has_requirement
+            THEN 2
+          WHEN candidate.offer_status = 'verified'
+            AND candidate.has_title
+            AND candidate.has_deliverable
+            AND candidate.has_compensation
+            AND candidate.has_requirement
+            THEN 3
+          WHEN candidate.offer_status IN ('draft', 'pending', 'verified')
+            THEN 4
+          WHEN candidate.offer_status = 'rejected'
+            THEN 5
+          ELSE 6
+        END,
+        candidate.updated_at DESC,
+        candidate.offer_id DESC
+      LIMIT 1
+    ) marketplace_offer ON TRUE
     LEFT JOIN LATERAL (
-      SELECT count(*)::int AS count, max(deliverable.updated_at) AS updated_at
-      FROM marketplace.offer_deliverables deliverable
-      JOIN marketplace.marketplace_offers offer
-        ON offer.id = deliverable.offer_id
-       AND offer.property_id = deliverable.property_id
-       AND offer.organization_id = deliverable.organization_id
-      WHERE deliverable.property_id = property.id
-        AND deliverable.organization_id = $1::uuid
-        AND offer.offer_status IN ('pending', 'verified')
-    ) marketplace_deliverables ON TRUE
+      SELECT count(*) > 0 AS exists, max(room_type.updated_at) AS updated_at
+      FROM pms.room_types room_type
+      WHERE room_type.property_id = property.id
+        AND room_type.active = TRUE
+    ) room_types ON TRUE
     LEFT JOIN LATERAL (
-      SELECT count(*)::int AS count, max(offering.updated_at) AS updated_at
-      FROM marketplace.offer_compensation_options offering
-      JOIN marketplace.marketplace_offers listing
-        ON listing.id = offering.offer_id
-       AND listing.property_id = offering.property_id
-       AND listing.organization_id = offering.organization_id
-      WHERE offering.property_id = property.id
-        AND offering.organization_id = $1::uuid
-        AND listing.offer_status IN ('pending', 'verified')
-    ) marketplace_compensation ON TRUE
+      SELECT count(*) > 0 AS exists, max(room.updated_at) AS updated_at
+      FROM pms.rooms room
+      JOIN pms.room_types room_type
+        ON room_type.id = room.room_type_id
+       AND room_type.property_id = room.property_id
+       AND room_type.active = TRUE
+      WHERE room.property_id = property.id
+        AND room.status <> 'retired'
+    ) rooms ON TRUE
     LEFT JOIN LATERAL (
-      SELECT count(*)::int AS count, max(requirement.updated_at) AS updated_at
-      FROM marketplace.offer_creator_requirements requirement
-      JOIN marketplace.marketplace_offers listing
-        ON listing.id = requirement.offer_id
-       AND listing.property_id = requirement.property_id
-       AND listing.organization_id = requirement.organization_id
-      WHERE requirement.property_id = property.id
-        AND requirement.organization_id = $1::uuid
-        AND listing.offer_status IN ('pending', 'verified')
-    ) marketplace_requirements ON TRUE
+      SELECT count(*) > 0 AS exists, max(rate_plan.updated_at) AS updated_at
+      FROM pms.rate_plans rate_plan
+      JOIN pms.room_types room_type
+        ON room_type.id = rate_plan.room_type_id
+       AND room_type.property_id = rate_plan.property_id
+       AND room_type.active = TRUE
+      WHERE rate_plan.property_id = property.id
+        AND rate_plan.active = TRUE
+    ) rate_plans ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT count(*) > 0 AS exists, max(day.updated_at) AS updated_at
+      FROM pms.inventory_days day
+      JOIN pms.room_types room_type
+        ON room_type.id = day.room_type_id
+       AND room_type.property_id = day.property_id
+       AND room_type.active = TRUE
+      WHERE day.property_id = property.id
+        AND day.stay_date >= CURRENT_DATE
+    ) inventory ON TRUE
+    LEFT JOIN hotel_catalog.property_policy_summaries policy
+      ON policy.property_id = property.id
+    LEFT JOIN finance.payment_settings payment
+      ON payment.property_id = property.id
+    LEFT JOIN finance.payment_provider_accounts payment_provider
+      ON payment_provider.id = payment.provider_account_id
+     AND payment_provider.property_id = property.id
+    LEFT JOIN distribution.public_hotel_bookability_profiles bookability
+      ON bookability.property_id = property.id
     ORDER BY array_position($2::uuid[], property.id)
   `;
 }
 
-function organizationProductSelectionsSql(): string {
-  return `
-    WITH effective_product_entitlements AS (
-      SELECT
-        product,
-        bool_or(status = 'active') AS active,
-        bool_or(status = 'suspended') AS suspended,
-        max(updated_at) AS updated_at
-      FROM identity.product_entitlements
-      WHERE organization_id = $1::uuid
-        AND product = ANY($2::text[])
-        AND (starts_at IS NULL OR starts_at <= now())
-        AND (expires_at IS NULL OR expires_at > now())
-        AND (
-          (product = 'booking' AND entitlement_key IN ('booking-engine', 'account_access'))
-          OR (
-            product = 'pms'
-            AND entitlement_key IN ('property-management', 'pms-core', 'account_access')
-          )
-          OR (
-            product = 'marketplace'
-            AND entitlement_key IN ('marketplace-hotel-profile', 'account_access')
-          )
-        )
-      GROUP BY product
-    )
-    SELECT product, updated_at
-    FROM effective_product_entitlements
-    WHERE active AND NOT suspended
-    ORDER BY CASE product
-      WHEN 'booking' THEN 1
-      WHEN 'pms' THEN 2
-      WHEN 'marketplace' THEN 3
-      ELSE 4
-    END
-  `;
-}
-
-function hasLocation(value: unknown): boolean {
-  const location = objectValue(value);
-  return ["rawMarketplaceLocation", "city", "countryCode", "country"].some((key) =>
-    nonEmpty(location[key]),
-  );
-}
-
-function locationSummary(value: unknown): string | null {
-  const location = objectValue(value);
-  const parts = [
-    location["city"],
-    location["region"],
-    location["countryCode"] ?? location["country"],
-  ]
-    .map((item) => nonEmpty(item))
-    .filter((item): item is string => item !== null);
-  return parts.length > 0 ? parts.join(", ") : nonEmpty(location["rawMarketplaceLocation"]);
-}
-
-function hasDescription(value: unknown): boolean {
-  const descriptions = objectValue(value);
-  return [
-    "shortDescription",
-    "longDescription",
-    "short_description",
-    "long_description",
-    "short",
-    "long",
-    "summary",
-  ].some((key) => nonEmpty(descriptions[key]));
-}
-
-function hasMedia(value: unknown): boolean {
-  return Array.isArray(value) && value.length > 0;
-}
-
-function mediaItems(value: unknown): SharedPropertyProfileMedia[] {
+function publicPropertyMediaItems(value: unknown): PublicPropertyProfileMedia[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item, index): SharedPropertyProfileMedia | null => {
+    .map((item): PublicPropertyProfileMedia | null => {
       const media = objectValue(item);
+      const mediaObjectId = nonEmpty(media["mediaObjectId"] ?? media["media_object_id"]);
+      const mediaType = nonEmpty(media["mediaType"] ?? media["media_type"]);
       const url = nonEmpty(media["url"]);
-      if (!url) return null;
-      const mediaTypeValue = nonEmpty(media["mediaType"] ?? media["media_type"] ?? media["type"]);
-      const sortOrderValue = media["sortOrder"] ?? media["sort_order"];
-      const parsedSortOrder =
-        typeof sortOrderValue === "number"
-          ? sortOrderValue
-          : Number.parseInt(String(sortOrderValue), 10);
+      const parsedSortOrder = Number(media["sortOrder"] ?? media["sort_order"]);
+      if (
+        !mediaObjectId ||
+        !url ||
+        (mediaType !== "hero_image" && mediaType !== "gallery_image" && mediaType !== "logo") ||
+        !Number.isSafeInteger(parsedSortOrder) ||
+        parsedSortOrder < 0
+      ) {
+        return null;
+      }
       return {
-        mediaType:
-          mediaTypeValue === "hero" || mediaTypeValue === "hero_image"
-            ? "hero_image"
-            : mediaTypeValue === "logo"
-              ? mediaTypeValue
-              : "gallery_image",
+        mediaObjectId,
+        mediaType,
         url,
-        altText: nonEmpty(media["altText"] ?? media["alt_text"] ?? media["alt"]),
-        sortOrder: Number.isFinite(parsedSortOrder) ? parsedSortOrder : index,
+        altText: nonEmpty(media["altText"] ?? media["alt_text"]),
+        sortOrder: parsedSortOrder,
       };
     })
-    .filter((item): item is SharedPropertyProfileMedia => item !== null);
+    .filter((item): item is PublicPropertyProfileMedia => item !== null);
 }
 
-function hasContact(value: unknown, types: string[]): boolean {
-  if (!Array.isArray(value)) return false;
-  return value.some((entry) => {
-    const contact = objectValue(entry);
-    const type = nonEmpty(
-      contact["type"] ?? contact["kind"] ?? contact["channelType"] ?? contact["channel_type"],
-    );
-    const contactValue = nonEmpty(contact["value"]);
-    return Boolean(type && contactValue && types.includes(type));
-  });
+function contactItems(value: unknown): PropertyProfileContact[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): PropertyProfileContact | null => {
+      const contact = objectValue(item);
+      const channelType = nonEmpty(contact["channelType"] ?? contact["channel_type"]);
+      const contactValue = nonEmpty(contact["value"]);
+      const purpose = nonEmpty(contact["purpose"]);
+      if (
+        !contactValue ||
+        !(
+          channelType === "email" ||
+          channelType === "phone" ||
+          channelType === "website" ||
+          channelType === "whatsapp" ||
+          channelType === "instagram" ||
+          channelType === "facebook" ||
+          channelType === "x"
+        ) ||
+        !(
+          purpose === "general" ||
+          purpose === "operations" ||
+          purpose === "guest" ||
+          purpose === "creator"
+        )
+      ) {
+        return null;
+      }
+      return {
+        channelType,
+        value: contactValue,
+        purpose,
+        isPublic: contact["isPublic"] === true || contact["is_public"] === true,
+      };
+    })
+    .filter((item): item is PropertyProfileContact => item !== null);
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -2012,10 +2007,6 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function toCount(value: number | string): number {
-  return typeof value === "number" ? value : Number.parseInt(value, 10) || 0;
-}
-
 function numberOrNull(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -2025,7 +2016,12 @@ function numberOrNull(value: unknown): number | null {
   return null;
 }
 
-function mapDisplayMode(value: string | null): SharedPropertyProfileLocation["mapDisplayMode"] {
+function positiveInteger(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function mapDisplayMode(value: string | null): PropertyProfileMapDisplayMode {
   if (value === "approximate" || value === "exact") return value;
   return "hidden";
 }

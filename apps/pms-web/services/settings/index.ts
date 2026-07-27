@@ -6,12 +6,6 @@ import {
 } from "../api/pmsPropertyClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 
-export interface PmsSetupStatus {
-  registered: boolean;
-  setupComplete: boolean;
-  roomCount: number;
-}
-
 export interface HotelSummary {
   id: string;
   name: string;
@@ -159,15 +153,6 @@ async function updateOperationsTemplate(
 }
 
 export const pmsSettingsService = {
-  getSetupStatus: async () => {
-    const properties = await listPmsProperties();
-    return {
-      registered: properties.length > 0,
-      setupComplete: properties.length > 0,
-      roomCount: 0,
-    };
-  },
-
   listHotels: () => listPmsProperties(),
 
   getHotelDetails: () => getPmsPropertyProfile(),

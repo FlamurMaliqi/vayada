@@ -83,7 +83,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
           const selected = saved || list[0];
           setSelectedHotel(selected);
           storeSelectedSharedPropertyId(selected.propertyId);
-          if (selected.productReady !== false) storeSelectedHotelId(selected.id);
+          storeSelectedHotelId(selected.id);
         }
       })
       .catch(() => {});
@@ -205,14 +205,6 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                       onClick={() => {
                         if (!isSelected) {
                           storeSelectedSharedPropertyId(hotel.propertyId);
-                          if (hotel.productReady === false) {
-                            localStorage.removeItem("selectedHotelId");
-                            setDropdownOpen(false);
-                            router.push(
-                              `/setup?entryProduct=booking&propertyId=${encodeURIComponent(hotel.propertyId ?? hotel.id)}`,
-                            );
-                            return;
-                          }
                           storeSelectedHotelId(hotel.id);
                           window.location.reload();
                         }
@@ -236,9 +228,8 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                   );
                 })}
               </div>
-              {/* Add Property — ?mode=add tells the setup page to
-                  skip its "setup_complete → redirect to /dashboard"
-                  guard, which otherwise bounces users right back. */}
+              {/* Add Property opens the adaptive setup hub directly in
+                  canonical-property creation mode. */}
               <div className="border-t border-gray-100 mt-1 pt-1 px-1.5">
                 <button
                   onClick={() => {

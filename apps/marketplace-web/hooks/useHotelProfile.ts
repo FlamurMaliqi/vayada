@@ -1,12 +1,77 @@
 import { useState, useEffect, useRef } from "react";
-import { hotelService } from "@/services/api/hotels";
+import {
+  advanceHotelProfileRevisionsAfterCoverUpload,
+  HotelAddressSetupRequiredError,
+  hotelService,
+  type PlatformImageUploadResponse,
+  type UpdateHotelProfileRequest,
+} from "@/services/api/hotels";
 import { ApiErrorResponse } from "@/services/api/client";
 import { checkProfileStatus } from "@/lib/utils";
-import { STORAGE_KEYS } from "@/lib/constants";
 import { transformHotelProfile } from "@/components/profile/transforms";
 import { formatErrorForModal } from "./useErrorModal";
 import type { HotelProfileStatus } from "@/lib/types";
 import type { ProfileHotelProfile } from "@/components/profile/types";
+
+type HotelProfileDetailsForm = {
+  name: string;
+  picture: string;
+  location: string;
+  localityPublic: boolean;
+  website: string;
+  about: string;
+};
+
+type HotelProfileDetailsUpdateRequest = Omit<UpdateHotelProfileRequest, "email">;
+
+export function buildHotelProfileDetailsUpdate(
+  hotelProfile: Pick<
+    ProfileHotelProfile,
+    "name" | "picture" | "location" | "localityPublic" | "website" | "about" | "phone"
+  >,
+  form: HotelProfileDetailsForm,
+  phone: string,
+  uploadedPicture?: Pick<PlatformImageUploadResponse, "url" | "mediaObjectId">,
+): HotelProfileDetailsUpdateRequest {
+  const payload: HotelProfileDetailsUpdateRequest = {};
+
+  if (form.name.trim() !== hotelProfile.name) {
+    payload.name = form.name.trim();
+  }
+  if (form.location.trim() !== hotelProfile.location) {
+    payload.location = form.location.trim();
+  }
+  if (form.localityPublic !== hotelProfile.localityPublic) {
+    payload.localityPublic = form.localityPublic;
+  }
+  if ((form.website || "") !== (hotelProfile.website || "")) {
+    payload.website = form.website.trim() || undefined;
+  }
+  if ((form.about || "") !== (hotelProfile.about || "")) {
+    payload.about = form.about.trim() || undefined;
+  }
+  if ((phone || "") !== (hotelProfile.phone || "")) {
+    payload.phone = phone || undefined;
+  }
+
+  if (uploadedPicture) {
+    payload.picture = uploadedPicture.url;
+    payload.pictureMediaObjectId = uploadedPicture.mediaObjectId;
+    payload.picture_media_object_id = uploadedPicture.mediaObjectId;
+  } else {
+    const currentPicture = hotelProfile.picture || "";
+    const newPicture = form.picture || "";
+    if (newPicture !== currentPicture) {
+      if (newPicture.trim() === "") {
+        payload.picture = null;
+      } else if (!newPicture.startsWith("data:")) {
+        payload.picture = newPicture.trim();
+      }
+    }
+  }
+
+  return payload;
+}
 
 export function useHotelProfile(
   showError: (title: string, message: string | string[], details?: string) => void,
@@ -29,6 +94,7 @@ export function useHotelProfile(
     name: "",
     picture: "",
     location: "",
+    localityPublic: false,
     website: "",
     about: "",
     collaborationTypes: [] as ("Free Stay" | "Paid" | "Discount" | "Affiliate")[],
@@ -88,6 +154,7 @@ export function useHotelProfile(
         name: hotelProfile.name,
         picture: hotelProfile.picture || "",
         location: hotelProfile.location,
+        localityPublic: hotelProfile.localityPublic,
         website: hotelProfile.website || "",
         about: hotelProfile.about || "",
         collaborationTypes: [],
@@ -158,109 +225,47 @@ export function useHotelProfile(
 
     setIsSavingHotelProfile(true);
     try {
-      const payload: {
-        name?: string;
-        location?: string;
-        picture?: string | null;
-        pictureMediaObjectId?: string | null;
-        picture_media_object_id?: string | null;
-        website?: string;
-        about?: string;
-        email?: string;
-        phone?: string;
-      } = {};
-
-      if (hotelEditFormData.name.trim() !== hotelProfile.name) {
-        payload.name = hotelEditFormData.name.trim();
-      }
-      if (hotelEditFormData.location.trim() !== hotelProfile.location) {
-        payload.location = hotelEditFormData.location.trim();
-      }
-      if ((hotelEditFormData.website || "") !== (hotelProfile.website || "")) {
-        payload.website = hotelEditFormData.website.trim() || undefined;
-      }
-      if ((hotelEditFormData.about || "") !== (hotelProfile.about || "")) {
-        payload.about = hotelEditFormData.about.trim() || undefined;
-      }
-      if ((phone || "") !== (hotelProfile.phone || "")) {
-        payload.phone = phone || undefined;
-      }
-
+      let uploadedPicture: PlatformImageUploadResponse | undefined;
+      let revisions = {
+        canonicalProfileRevision: hotelProfile.canonicalProfileRevision,
+        publicProfileRevision: hotelProfile.publicProfileRevision,
+      };
       if (hotelProfilePictureFile) {
-        const uploadResponse = await hotelService.uploadProfileImage(
+        uploadedPicture = await hotelService.uploadProfileImage(
           hotelProfilePictureFile,
           hotelProfile.id,
+          revisions.canonicalProfileRevision,
         );
+        revisions = advanceHotelProfileRevisionsAfterCoverUpload(revisions);
+      }
 
-        payload.picture = uploadResponse.url;
-        payload.pictureMediaObjectId = uploadResponse.mediaObjectId;
-        payload.picture_media_object_id = uploadResponse.mediaObjectId;
+      const payload = buildHotelProfileDetailsUpdate(
+        hotelProfile,
+        hotelEditFormData,
+        phone,
+        uploadedPicture,
+      );
+      if (Object.keys(payload).length === 0) {
+        setIsEditingHotelProfile(false);
+        setIsSavingHotelProfile(false);
+        return;
+      }
 
-        const userEmail =
-          typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEYS.USER_EMAIL) : null;
-        if (userEmail && userEmail !== hotelProfile.email) {
-          payload.email = userEmail;
-        }
+      const updatedProfile = await hotelService.updateMyProfile(payload, undefined, revisions);
 
-        const updatedProfile = await hotelService.updateMyProfile(payload);
-
-        if (updatedProfile && updatedProfile.picture) {
-          setHotelEditFormData((prev) => ({
-            ...prev,
-            picture: updatedProfile.picture || "",
-          }));
-          if (hotelProfile) {
-            setHotelProfile((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    picture: updatedProfile.picture || undefined,
-                  }
-                : null,
-            );
-          }
-        }
-      } else {
-        const currentPicture = hotelProfile.picture || "";
-        const newPicture = hotelEditFormData.picture || "";
-        if (newPicture !== currentPicture) {
-          if (newPicture.trim() === "") {
-            payload.picture = null;
-          } else if (!newPicture.startsWith("data:")) {
-            payload.picture = newPicture.trim();
-          }
-        }
-
-        const userEmail =
-          typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEYS.USER_EMAIL) : null;
-        if (userEmail && userEmail !== hotelProfile.email) {
-          payload.email = userEmail;
-        }
-
-        if (Object.keys(payload).length === 0) {
-          setIsEditingHotelProfile(false);
-          setIsSavingHotelProfile(false);
-          return;
-        }
-
-        const updatedProfile = await hotelService.updateMyProfile(payload);
-
-        if (updatedProfile && updatedProfile.picture) {
-          setHotelEditFormData((prev) => ({
-            ...prev,
-            picture: updatedProfile.picture || "",
-          }));
-          if (hotelProfile) {
-            setHotelProfile((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    picture: updatedProfile.picture || undefined,
-                  }
-                : null,
-            );
-          }
-        }
+      if (updatedProfile && updatedProfile.picture) {
+        setHotelEditFormData((prev) => ({
+          ...prev,
+          picture: updatedProfile.picture || "",
+        }));
+        setHotelProfile((prev) =>
+          prev
+            ? {
+                ...prev,
+                picture: updatedProfile.picture || undefined,
+              }
+            : null,
+        );
       }
 
       await loadProfile();
@@ -276,11 +281,15 @@ export function useHotelProfile(
     } catch (error: unknown) {
       const detail = error instanceof ApiErrorResponse ? error.data.detail : null;
       const message =
-        typeof detail === "string"
-          ? detail
-          : Array.isArray(detail) && detail[0]?.msg
-            ? detail[0].msg
-            : "Failed to save profile";
+        error instanceof ApiErrorResponse && error.data.code === "profile_revision_conflict"
+          ? "This hotel profile changed in another tab. Refresh the page before choosing the cover photo again."
+          : error instanceof HotelAddressSetupRequiredError
+            ? error.message
+            : typeof detail === "string"
+              ? detail
+              : Array.isArray(detail) && detail[0]?.msg
+                ? detail[0].msg
+                : "Failed to save profile";
       showError("Failed to Save Profile", formatErrorForModal(detail || message));
     } finally {
       setIsSavingHotelProfile(false);
@@ -293,6 +302,7 @@ export function useHotelProfile(
         name: hotelProfile.name,
         picture: hotelProfile.picture || "",
         location: hotelProfile.location,
+        localityPublic: hotelProfile.localityPublic,
         website: hotelProfile.website || "",
         about: hotelProfile.about || "",
         collaborationTypes: [],
@@ -348,7 +358,10 @@ export function useHotelProfile(
         return;
       }
 
-      await hotelService.updateMyProfile(payload);
+      await hotelService.updateMyProfile(payload, undefined, {
+        canonicalProfileRevision: hotelProfile.canonicalProfileRevision,
+        publicProfileRevision: hotelProfile.publicProfileRevision,
+      });
       await loadProfile();
       setIsEditingContact(false);
     } catch (error: unknown) {

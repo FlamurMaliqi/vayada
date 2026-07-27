@@ -1,11 +1,28 @@
-import type {
-  SharedHotelSetupAccountProductSelection,
-  SharedHotelSetupEntryProduct,
-  SharedHotelSetupProduct,
-  SharedHotelSetupStatus,
-  SharedPropertyProfile,
-  SharedPropertyProfileInput,
-} from "./sharedFirstRunSetupFlow";
+import {
+  parseCreateHotelSetupHandoffRequest,
+  parseCreateHotelSetupHandoffResponse,
+  parseAdaptiveHotelSetupStatus,
+  parseExchangeHotelSetupHandoffRequest,
+  parseExchangeHotelSetupHandoffResponse,
+  parsePropertyProfileResponse,
+  parsePublicPropertyProfileResponse,
+  parseUpdatePublicPropertyProfileRequest,
+  parseUpdatePropertyProfileRequest,
+  type AdaptiveHotelSetupStatus,
+  type CreateHotelSetupHandoffRequest,
+  type CreateHotelSetupHandoffResponse,
+  type CreatePropertyProfileRequest,
+  type ExchangeHotelSetupHandoffRequest,
+  type ExchangeHotelSetupHandoffResponse,
+  type PropertyProfileResponse,
+  type PublicPropertyProfileResponse,
+  type UpdatePropertyProfileRequest,
+  type UpdatePublicPropertyProfileRequest,
+  type UpdateTracksRequest,
+  type UpdateTracksResponse,
+} from "@vayada/domain-hotels";
+
+import type { SharedHotelSetupEntryProduct } from "./sharedFirstRunSetupFlow";
 
 export type SharedHotelSetupHttpClient = {
   get<T>(endpoint: string, options?: RequestInit): Promise<T>;
@@ -13,9 +30,8 @@ export type SharedHotelSetupHttpClient = {
   put<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T>;
 };
 
-export type SharedHotelSetupStatusParams = {
+export type AdaptiveHotelSetupStatusParams = {
   entryProduct?: SharedHotelSetupEntryProduct | null;
-  returnTo?: string | null;
   propertyId?: string | null;
 };
 
@@ -25,57 +41,152 @@ export type SharedPropertyTypeOption = {
 };
 
 export type SharedPropertyTypeCatalog = {
-  contractVersion: "shared-hotel-setup-property-types.v1";
+  contractVersion: "adaptive-hotel-property-types.v1";
   propertyTypes: SharedPropertyTypeOption[];
 };
 
 export type SharedHotelSetupApi = {
   getStatus(
-    params?: SharedHotelSetupStatusParams,
+    params?: AdaptiveHotelSetupStatusParams,
     options?: RequestInit,
-  ): Promise<SharedHotelSetupStatus>;
+  ): Promise<AdaptiveHotelSetupStatus>;
   getPropertyTypes(): Promise<SharedPropertyTypeCatalog>;
-  getPropertyProfile(propertyId: string, options?: RequestInit): Promise<SharedPropertyProfile>;
-  createPropertyProfile(profile: SharedPropertyProfileInput): Promise<SharedPropertyProfile>;
+  getPropertyProfile(propertyId: string, options?: RequestInit): Promise<PropertyProfileResponse>;
+  createPropertyProfile(
+    profile: CreatePropertyProfileRequest,
+    idempotencyKey: string,
+  ): Promise<PropertyProfileResponse>;
   updatePropertyProfile(
     propertyId: string,
-    profile: SharedPropertyProfileInput,
-  ): Promise<SharedPropertyProfile>;
-  saveAccountProductSelection(
-    selectedProducts: SharedHotelSetupProduct[],
-  ): Promise<SharedHotelSetupAccountProductSelection>;
+    request: UpdatePropertyProfileRequest,
+  ): Promise<PropertyProfileResponse>;
+  getPublicPropertyProfile(
+    propertyId: string,
+    options?: RequestInit,
+  ): Promise<PublicPropertyProfileResponse>;
+  updatePublicPropertyProfile(
+    propertyId: string,
+    request: UpdatePublicPropertyProfileRequest,
+  ): Promise<PublicPropertyProfileResponse>;
+  updateTracks(request: UpdateTracksRequest, idempotencyKey: string): Promise<UpdateTracksResponse>;
+  createHandoff(request: CreateHotelSetupHandoffRequest): Promise<CreateHotelSetupHandoffResponse>;
+  exchangeHandoff(
+    request: ExchangeHotelSetupHandoffRequest,
+  ): Promise<ExchangeHotelSetupHandoffResponse>;
 };
 
 export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): SharedHotelSetupApi {
   return {
-    getStatus: (params, options) =>
-      client.get<SharedHotelSetupStatus>(statusEndpoint(params), options),
+    getStatus: async (params, options) => {
+      const value = await client.get<unknown>(statusEndpoint(params), options);
+      const status = parseAdaptiveHotelSetupStatus(value);
+      if (
+        !status ||
+        (params?.entryProduct && status.entryDecision?.requestedProduct !== params.entryProduct)
+      ) {
+        throw new Error("Hotel setup data is invalid. Refresh the page and try again.");
+      }
+      return status;
+    },
     getPropertyTypes: () =>
       client.get<SharedPropertyTypeCatalog>("/api/hotel-setup/property-types"),
-    getPropertyProfile: (propertyId, options) =>
-      client.get<SharedPropertyProfile>(
-        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/profile`,
-        options,
+    getPropertyProfile: async (propertyId, options) =>
+      propertyProfileResponse(
+        await client.get<unknown>(
+          `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/profile`,
+          options,
+        ),
       ),
-    createPropertyProfile: (profile) =>
-      client.post<SharedPropertyProfile>("/api/hotel-setup/properties", profile),
-    updatePropertyProfile: (propertyId, profile) =>
-      client.put<SharedPropertyProfile>(
-        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/profile`,
-        profile,
+    createPropertyProfile: async (profile, idempotencyKey) =>
+      propertyProfileResponse(
+        await client.post<unknown>(
+          "/api/hotel-setup/properties",
+          profile,
+          idempotencyOptions(idempotencyKey),
+        ),
       ),
-    saveAccountProductSelection: (selectedProducts) =>
-      client.put<SharedHotelSetupAccountProductSelection>("/api/hotel-setup/products", {
-        selectedProducts,
-      }),
+    updatePropertyProfile: async (propertyId, request) => {
+      const update = parseUpdatePropertyProfileRequest(request);
+      if (!update) throw new Error("Hotel profile update is invalid.");
+      return propertyProfileResponse(
+        await client.put<unknown>(
+          `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/profile`,
+          update,
+        ),
+      );
+    },
+    getPublicPropertyProfile: async (propertyId, options) =>
+      publicPropertyProfileResponse(
+        await client.get<unknown>(
+          `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/public-profile`,
+          options,
+        ),
+      ),
+    updatePublicPropertyProfile: async (propertyId, request) => {
+      const update = parseUpdatePublicPropertyProfileRequest(request);
+      if (!update) throw new Error("Public hotel profile update is invalid.");
+      return publicPropertyProfileResponse(
+        await client.put<unknown>(
+          `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/public-profile`,
+          update,
+        ),
+      );
+    },
+    updateTracks: (request, idempotencyKey) =>
+      client.put<UpdateTracksResponse>(
+        "/api/hotel-setup/tracks",
+        request,
+        idempotencyOptions(idempotencyKey),
+      ),
+    createHandoff: async (request) => {
+      const input = parseCreateHotelSetupHandoffRequest(request);
+      if (!input) throw new Error("Hotel setup handoff request is invalid.");
+      const response = parseCreateHotelSetupHandoffResponse(
+        await client.post<unknown>("/api/hotel-setup/handoffs", input),
+      );
+      if (!response) {
+        throw new Error("Hotel setup handoff data is invalid. Refresh the plan and try again.");
+      }
+      return response;
+    },
+    exchangeHandoff: async (request) => {
+      const input = parseExchangeHotelSetupHandoffRequest(request);
+      if (!input) throw new Error("Hotel setup handoff code is invalid.");
+      const response = parseExchangeHotelSetupHandoffResponse(
+        await client.post<unknown>("/api/hotel-setup/handoffs/exchange", input),
+      );
+      if (!response) {
+        throw new Error("Hotel setup handoff data is invalid. Return to the setup plan.");
+      }
+      return response;
+    },
   };
 }
 
-function statusEndpoint(params: SharedHotelSetupStatusParams = {}): string {
+function statusEndpoint(params: AdaptiveHotelSetupStatusParams = {}): string {
   const query = new URLSearchParams();
   if (params.entryProduct) query.set("entryProduct", params.entryProduct);
-  if (params.returnTo) query.set("returnTo", params.returnTo);
   if (params.propertyId) query.set("propertyId", params.propertyId);
   const suffix = query.toString();
   return suffix ? `/api/hotel-setup/status?${suffix}` : "/api/hotel-setup/status";
+}
+
+function idempotencyOptions(idempotencyKey: string): RequestInit {
+  return { headers: { "Idempotency-Key": idempotencyKey } };
+}
+
+function propertyProfileResponse(value: unknown): PropertyProfileResponse {
+  const profile = parsePropertyProfileResponse(value);
+  if (!profile) {
+    throw new Error("Hotel profile data is invalid. Refresh the page and try again.");
+  }
+  return profile;
+}
+
+function publicPropertyProfileResponse(value: unknown): PublicPropertyProfileResponse {
+  const profile = parsePublicPropertyProfileResponse(value);
+  if (!profile) {
+    throw new Error("Public hotel profile data is invalid. Refresh the page and try again.");
+  }
+  return profile;
 }

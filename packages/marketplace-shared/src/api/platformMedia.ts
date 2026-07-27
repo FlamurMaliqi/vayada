@@ -68,6 +68,7 @@ export async function uploadPlatformMedia(input: {
   resource: PlatformMediaResourceScope;
   files: File[];
   visibility?: "public" | "private";
+  expectedProfileRevision?: number;
 }): Promise<PlatformMediaUploadResult[]> {
   if (input.files.length === 0) return [];
 
@@ -76,6 +77,7 @@ export async function uploadPlatformMedia(input: {
     {
       purpose: input.purpose,
       visibility: input.visibility ?? "public",
+      expectedProfileRevision: input.expectedProfileRevision,
       resource: input.resource,
       files: input.files.map((file, index) => ({
         clientFileId: `file_${index + 1}`,

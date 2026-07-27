@@ -37,10 +37,6 @@ export default function VerifyEmailPage() {
 
   async function redirectAfterVerifiedSession() {
     const decision = await resolvePmsSetupGuard("/dashboard");
-    localStorage.setItem(
-      "pmsSetupComplete",
-      decision.action === "enter_product" ? "true" : "false",
-    );
     clearPendingEmailVerification();
     setVerified(true);
     setTimeout(

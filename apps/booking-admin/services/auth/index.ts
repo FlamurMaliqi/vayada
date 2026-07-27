@@ -212,7 +212,6 @@ export const authService = {
 
     clearAuthData();
     if (typeof window !== "undefined") {
-      localStorage.removeItem("setupComplete");
       window.location.href = logoutUrl;
     }
   },

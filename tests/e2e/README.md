@@ -126,8 +126,10 @@ npm --workspace vayada-api run test -- src/authSession.test.ts
 The focused first-run setup smoke lives in `tests/e2e/pms-web/setup.spec.ts`.
 It enters through PMS at `/setup?entryProduct=pms&returnTo=/dashboard`, mocks an
 empty shared hotel setup status, creates the first property under the resolved
-hotel-group organization, and verifies the flow reaches product selection with
-PMS preselected.
+hotel-group organization, and verifies the flow selects a setup track before
+creating the property. The Hotel Operations track enables PMS and Booking
+Engine together; after track selection, the smoke verifies the adaptive,
+property-scoped setup plan only shows tasks for the selected track.
 
 Run just that coverage from the repo root:
 

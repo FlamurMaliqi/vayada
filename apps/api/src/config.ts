@@ -91,6 +91,15 @@ export type CreatorPlatformConnectionsConfig = {
   };
 };
 
+export type HotelSetupHandoffConfig = {
+  hotelSetupBaseUrl: string;
+  destinationOrigins: {
+    marketplace: string;
+    bookingAdmin: string;
+    pms: string;
+  };
+};
+
 export type ApiConfig = {
   host: string;
   port: number;
@@ -123,6 +132,7 @@ export type ApiConfig = {
   pmsInventoryPublicOfferRetryEnabled: boolean;
   pmsInventoryPublicOfferRetryIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
+  hotelSetupHandoffs: HotelSetupHandoffConfig;
   providerWebhooks: ProviderWebhookConfig;
   xenditSecretKey?: string;
 };
@@ -450,6 +460,73 @@ function assertOAuthUrl(value: string, key: string, env: NodeJS.ProcessEnv): voi
   }
 }
 
+function loadHotelSetupHandoffConfig(env: NodeJS.ProcessEnv): HotelSetupHandoffConfig {
+  const keys = [
+    "HOTEL_SETUP_BASE_URL",
+    "HOTEL_SETUP_MARKETPLACE_ORIGIN",
+    "HOTEL_SETUP_BOOKING_ADMIN_ORIGIN",
+    "HOTEL_SETUP_PMS_ORIGIN",
+  ] as const;
+  const configured = keys.filter((key) => readOptionalEnv(env, key));
+  if (configured.length > 0 && configured.length !== keys.length) {
+    const missing = keys.filter((key) => !readOptionalEnv(env, key));
+    throw new Error(`Incomplete hotel setup handoff config; missing ${missing.join(", ")}`);
+  }
+  if (configured.length === 0 && env.NODE_ENV === "production") {
+    throw new Error(`Incomplete hotel setup handoff config; missing ${keys.join(", ")}`);
+  }
+
+  const hotelSetupBaseUrl =
+    readOptionalEnv(env, "HOTEL_SETUP_BASE_URL") ?? "https://marketplace.localhost/setup";
+  const marketplace =
+    readOptionalEnv(env, "HOTEL_SETUP_MARKETPLACE_ORIGIN") ?? "https://marketplace.localhost";
+  const bookingAdmin =
+    readOptionalEnv(env, "HOTEL_SETUP_BOOKING_ADMIN_ORIGIN") ?? "https://admin.booking.localhost";
+  const pms = readOptionalEnv(env, "HOTEL_SETUP_PMS_ORIGIN") ?? "https://pms.localhost";
+
+  return {
+    hotelSetupBaseUrl: setupBaseUrl(hotelSetupBaseUrl, env),
+    destinationOrigins: {
+      marketplace: webOrigin(marketplace, "HOTEL_SETUP_MARKETPLACE_ORIGIN", env),
+      bookingAdmin: webOrigin(bookingAdmin, "HOTEL_SETUP_BOOKING_ADMIN_ORIGIN", env),
+      pms: webOrigin(pms, "HOTEL_SETUP_PMS_ORIGIN", env),
+    },
+  };
+}
+
+function setupBaseUrl(value: string, env: NodeJS.ProcessEnv): string {
+  const url = webUrl(value, "HOTEL_SETUP_BASE_URL", env);
+  if (url.pathname !== "/setup" || url.search || url.hash || url.username || url.password) {
+    throw new Error("HOTEL_SETUP_BASE_URL must be an absolute app URL ending in /setup");
+  }
+  return url.toString();
+}
+
+function webOrigin(value: string, key: string, env: NodeJS.ProcessEnv): string {
+  const url = webUrl(value, key, env);
+  if (url.pathname !== "/" || url.search || url.hash || url.username || url.password) {
+    throw new Error(`${key} must be an absolute app origin without a path`);
+  }
+  return url.origin;
+}
+
+function webUrl(value: string, key: string, env: NodeJS.ProcessEnv): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${key} must be an absolute URL`);
+  }
+  const localHttp =
+    url.protocol === "http:" &&
+    env.NODE_ENV !== "production" &&
+    (url.hostname === "localhost" || url.hostname.endsWith(".localhost"));
+  if (url.protocol !== "https:" && !localHttp) {
+    throw new Error(`${key} must use HTTPS`);
+  }
+  return url;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   assertRemovedLegacyPythonIntegrationEnv(env);
 
@@ -643,6 +720,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       30_000,
     ),
     creatorPlatformConnections,
+    hotelSetupHandoffs: loadHotelSetupHandoffConfig(env),
     providerWebhooks: loadProviderWebhookConfig(env),
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };

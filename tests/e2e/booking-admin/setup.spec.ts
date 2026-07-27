@@ -1,52 +1,51 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
+  BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH,
   BOOKING_ADMIN_HOTEL_ID,
   BOOKING_ADMIN_PROPERTY_ID,
   defaultBookingAdminDesignSettings,
-  defaultBookingAdminPropertySettings,
   mockBookingAdminAuthenticatedSession,
-  mockBookingAdminDesignSettings,
   mockBookingAdminShellRoutes,
 } from "../support/bookingAdminMocks";
-import {
-  createSharedHotelSetupStatusMock,
-  sharedHotelSetupProduct,
-} from "../support/sharedHotelSetupMocks";
-import { watchNoLegacyCalls } from "../support/noLegacyCalls";
-import { watchPageHealth } from "../support/pageHealth";
+import { createAdaptiveHotelSetupStatusMock } from "../support/sharedHotelSetupMocks";
 
-const PROD = process.env.E2E_BOOKING_ADMIN_PROD === "1";
-const SECOND_HOTEL_ID = "booking_hotel_bergwald";
-const SECOND_PROPERTY_ID = "f6853000-0000-0000-0000-000000000002";
-const SHARED_HOTEL_SETTING_FIELDS = new Set([
-  "property_name",
-  "reservation_email",
-  "phone_number",
-  "address",
-  "city",
-  "country",
-]);
+const TASK_DESTINATIONS = [
+  {
+    code: "L".repeat(43),
+    taskId: "guest_settings_policies",
+    destinationRouteKey: "booking.guest_settings_policies",
+    pathname: "/settings",
+    activeSection: "Booking",
+  },
+  {
+    code: "M".repeat(43),
+    taskId: "payment",
+    destinationRouteKey: "finance.payment",
+    pathname: "/settings",
+    activeSection: "Payments",
+  },
+  {
+    code: "N".repeat(43),
+    taskId: "direct_booking_publication",
+    destinationRouteKey: "distribution.direct_booking_publication",
+    pathname: "/design-studio",
+    activeSection: null,
+  },
+] as const;
 
-test.describe("booking-admin shared setup", () => {
+const PMS_TASK_CODE = "K".repeat(43);
+const USED_CODE = "O".repeat(43);
+
+test.describe("booking-admin adaptive setup", () => {
   test("uses the shared hotel personal-account step when the saved photo is missing", async ({
     page,
   }) => {
     await page.route("**/auth/session?surface=booking-admin", (route) =>
       route.fulfill({
-        json: {
-          accessToken: "e2e-booking-authkit-token",
-          csrfToken: "e2e-booking-csrf-token",
-          organizationId: "org_hotel_group",
-          user: {
-            id: "user_booking_owner",
-            email: "owner@example.com",
-            name: "Booking Owner",
-            phone: "+49 89 123456",
-            profilePictureUrl: null,
-            profilePictureMediaObjectId: null,
-            status: "active",
-          },
-        },
+        json: bookingAuthSession({
+          profilePictureUrl: null,
+          profilePictureMediaObjectId: null,
+        }),
       }),
     );
 
@@ -61,196 +60,137 @@ test.describe("booking-admin shared setup", () => {
     await expect(page.getByLabel("Email address")).toHaveValue("owner@example.com");
     await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
     await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
-    await expect(page.getByRole("button", { name: "Continue to hotel setup" })).toBeVisible();
   });
 
-  test("hands PMS and Marketplace tasks off with the selected hotel group", async ({
+  test("creates an opaque single-use handoff for the recommended task", async ({
     page,
     baseURL,
   }) => {
-    const workosOrganizationId = "org_workos_hotel_group";
-    let target: "pms" | "marketplace" = "pms";
+    test.skip(!baseURL, "Playwright base URL is required.");
     await page.route("**/auth/session?surface=booking-admin", (route) =>
-      route.fulfill({
-        json: {
-          accessToken: "e2e-booking-authkit-token",
-          csrfToken: "e2e-booking-csrf-token",
-          organizationId: "org_hotel_group",
-          workosOrganizationId,
-          resources: { "booking:booking_hotel": [BOOKING_ADMIN_HOTEL_ID] },
-          user: {
-            id: "user_booking_owner",
-            email: "owner@example.com",
-            name: "Booking Owner",
-            phone: "+49 89 123456",
-            profilePictureUrl: "https://media.example/booking-owner.webp",
-            profilePictureMediaObjectId: "media-booking-owner",
-            status: "active",
-          },
-        },
-      }),
+      route.fulfill({ json: bookingAuthSession() }),
     );
     await mockBookingAdminShellRoutes(page);
-    await page.route("**/api/hotel-setup/status**", (route) => {
-      const product = sharedHotelSetupProduct(target, "selected_incomplete");
-      product.missingSteps = target === "pms" ? ["roomTypes"] : ["creatorPitch"];
-      return route.fulfill({
-        json: createSharedHotelSetupStatusMock({
-          entryProduct: target,
-          returnTo: "/dashboard",
-          organizationId: "org_hotel_group",
-          organizationDisplayName: "Alpenrose Hotel Group",
-          propertyId: BOOKING_ADMIN_PROPERTY_ID,
-          publicId: "prop_alpenrose",
-          propertyDisplayName: "Alpenrose",
-          locationSummary: "Munich, DE",
-          products: {
-            booking: sharedHotelSetupProduct("booking", "active"),
-            pms: target === "pms" ? product : sharedHotelSetupProduct("pms", "selected_incomplete"),
-            marketplace:
-              target === "marketplace"
-                ? product
-                : sharedHotelSetupProduct("marketplace", "selected_incomplete"),
-          },
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: BOOKING_ADMIN_PROPERTY_ID,
-            product: target,
-            returnTo: "/dashboard",
-            reasonCodes: ["entry_product_activation_incomplete"],
-          },
-        }),
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({
+        json: actionableStatus("pms", "rooms_rates_availability"),
+      }),
+    );
+
+    const requests: Array<Record<string, unknown>> = [];
+    await page.route("**/api/hotel-setup/handoffs", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: corsHeaders() });
+        return;
+      }
+      requests.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({
+        headers: corsHeaders(),
+        json: {
+          launchUrl: new URL(`/handoff?code=${PMS_TASK_CODE}`, baseURL).toString(),
+          expiresAt: "2026-07-26T20:00:00.000Z",
+        },
       });
     });
-    await page.route(/\/handoff(?:\?.*)?$/, (route) =>
+    await page.route(`**/handoff?code=${PMS_TASK_CODE}`, (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Handoff</title>" }),
     );
 
-    for (target of ["pms", "marketplace"] as const) {
-      await page.goto(
-        new URL(
-          `/setup?entryProduct=${target}&propertyId=${BOOKING_ADMIN_PROPERTY_ID}`,
-          baseURL,
-        ).toString(),
-      );
-      await expect.poll(() => new URL(page.url()).pathname).toBe("/handoff");
+    await page.goto(`/setup?entryProduct=pms&propertyId=${BOOKING_ADMIN_PROPERTY_ID}`);
+    await page.getByRole("button", { name: "Continue recommended step" }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("code")).toBe(PMS_TASK_CODE);
 
-      const handoffUrl = new URL(page.url());
-      expect(handoffUrl.hostname).toContain(target === "pms" ? "pms" : "marketplace");
-      expect(handoffUrl.pathname).toBe("/handoff");
-      expect(handoffUrl.searchParams.get("redirect")).toBe(
-        target === "marketplace"
-          ? `/profile/complete?activation=marketplace&propertyId=${BOOKING_ADMIN_PROPERTY_ID}`
-          : null,
-      );
-      const fragment = new URLSearchParams(handoffUrl.hash.slice(1));
-      expect(fragment.get("property_id")).toBe(BOOKING_ADMIN_PROPERTY_ID);
-      expect(fragment.get("organization_id")).toBe("org_hotel_group");
-      expect(fragment.get("workos_organization_id")).toBe(workosOrganizationId);
-    }
+    expect(requests).toEqual([
+      {
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        taskId: "rooms_rates_availability",
+        planRevision: "e2e-plan-1",
+      },
+    ]);
+    const launchUrl = new URL(page.url());
+    expect([...launchUrl.searchParams.keys()]).toEqual(["code"]);
+    expect(launchUrl.hash).toBe("");
   });
 
-  test("honors a setup-intent handoff and opens the Booking Admin wizard", async ({ page }) => {
-    await page.setViewportSize({ width: 1536, height: 789 });
-    await mockBookingAdminAuthenticatedSession(page);
-    await mockBookingAdminShellRoutes(page);
-    const booking = sharedHotelSetupProduct("booking", "selected_incomplete");
-    booking.missingSteps = ["bookingSettings", "publicBookability", "paymentReadiness"];
-    booking.statusReasons = ["booking_activation_incomplete"];
-    await page.route("**/api/hotel-setup/status**", async (route) => {
-      if (route.request().method() === "OPTIONS") {
-        await route.fallback();
-        return;
-      }
-      await route.fulfill({
-        json: createSharedHotelSetupStatusMock({
-          entryProduct: "booking",
-          returnTo: "/dashboard",
-          organizationId: "org_hotel_group",
-          organizationDisplayName: "Alpenrose Hotel Group",
-          propertyId: BOOKING_ADMIN_PROPERTY_ID,
-          publicId: "prop_alpenrose",
-          propertyDisplayName: "Alpenrose",
-          locationSummary: "Munich, DE",
-          products: {
-            booking,
-            pms: sharedHotelSetupProduct("pms", "not_selected"),
-            marketplace: sharedHotelSetupProduct("marketplace", "not_selected"),
-          },
-          nextAction: {
-            action: "complete_product_activation",
+  for (const destination of TASK_DESTINATIONS) {
+    test(`exchanges an opaque code and opens ${destination.taskId}`, async ({ page }) => {
+      await mockBookingAdminAuthenticatedSession(page);
+      await page.route("**/auth/session?surface=booking-admin", (route) =>
+        route.fulfill({ json: bookingAuthSession() }),
+      );
+      await mockBookingAdminShellRoutes(page);
+      await mockFinancePaymentSettings(page);
+
+      const exchangeRequests: Array<Record<string, unknown>> = [];
+      await page.route("**/api/hotel-setup/handoffs/exchange", async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await route.fulfill({ status: 204, headers: corsHeaders() });
+          return;
+        }
+        exchangeRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+        await route.fulfill({
+          headers: corsHeaders(),
+          json: {
             propertyId: BOOKING_ADMIN_PROPERTY_ID,
-            product: "booking",
-            returnTo: "/dashboard",
-            reasonCodes: ["entry_product_activation_incomplete"],
+            taskId: destination.taskId,
+            issuedPlanRevision: "e2e-plan-1",
+            destinationRouteKey: destination.destinationRouteKey,
+            returnUrl: marketplaceSetupReturnUrl(),
           },
-        }),
+        });
       });
+
+      await page.goto(`/handoff?code=${destination.code}`);
+
+      await expect.poll(() => new URL(page.url()).pathname).toBe(destination.pathname);
+      const taskUrl = new URL(page.url());
+      expect(taskUrl.searchParams.get("taskId")).toBe(destination.taskId);
+      expect(taskUrl.searchParams.get("destinationRouteKey")).toBe(destination.destinationRouteKey);
+      expect(taskUrl.searchParams.get("planRevision")).toBe("e2e-plan-1");
+      expect(taskUrl.searchParams.get("returnUrl")).toBe(marketplaceSetupReturnUrl());
+      expect(taskUrl.searchParams.has("propertyId")).toBe(false);
+      expect(exchangeRequests).toEqual([{ code: destination.code }]);
+      expect(await page.evaluate(() => localStorage.getItem("selectedSharedPropertyId"))).toBe(
+        BOOKING_ADMIN_PROPERTY_ID,
+      );
+      expect(await page.evaluate(() => localStorage.getItem("selectedHotelId"))).toBe(
+        BOOKING_ADMIN_HOTEL_ID,
+      );
+
+      if (destination.activeSection) {
+        await expect(
+          page.getByRole("button", { name: destination.activeSection, exact: true }).first(),
+        ).toHaveAttribute("aria-current", "page");
+      } else {
+        await expect(page.getByRole("heading", { name: "Design Studio" })).toBeVisible();
+      }
     });
+  }
 
-    const setupPath = `/setup?entryProduct=booking&propertyId=${BOOKING_ADMIN_PROPERTY_ID}`;
-    const handoffQuery = new URLSearchParams({ redirect: setupPath }).toString();
-    await page.goto("/login");
-    const legacyAuth = await page.evaluate(() => ({
-      token: localStorage.getItem("access_token"),
-      expiresAt: localStorage.getItem("token_expires_at"),
-    }));
-    expect(legacyAuth.token).toBeTruthy();
-    expect(legacyAuth.expiresAt).toBeTruthy();
-    const handoffHash = new URLSearchParams({
-      token: legacyAuth.token ?? "",
-      expires_at: legacyAuth.expiresAt ?? "",
-      property_id: BOOKING_ADMIN_PROPERTY_ID,
-    }).toString();
-    await page.goto(`/handoff?${handoffQuery}#${handoffHash}`);
-
-    await expect(page).toHaveURL(
-      new RegExp(`/setup\\?legacy=booking&propertyId=${BOOKING_ADMIN_PROPERTY_ID}$`),
+  test("rejects a reused or expired handoff without exposing task context", async ({ page }) => {
+    await mockBookingAdminAuthenticatedSession(page);
+    await page.route("**/auth/session?surface=booking-admin", (route) =>
+      route.fulfill({ json: bookingAuthSession() }),
     );
-    await expect(page.getByRole("img", { name: "vayada" })).toBeVisible();
-    await expect(page.getByText("Step 1 of 7 · Contact details", { exact: true })).toBeVisible();
-    await expect(page.getByRole("list", { name: "Booking Engine setup progress" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
-    await expect(page.getByText("Property Name", { exact: false })).toHaveCount(0);
-    await expect(page.getByText("City", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("Country", { exact: false })).toHaveCount(0);
-    await expect(page.getByText("Full Address", { exact: false })).toHaveCount(0);
-    await expect(page.getByText("Hotel contact email", { exact: false })).toHaveCount(0);
-    await expect(page.getByText("Hotel phone", { exact: false })).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Contact & social links" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Social Media" })).toHaveCount(0);
-    await expect(page.getByText("WhatsApp", { exact: false })).toBeVisible();
-    await expect(page.getByText("Default Currency", { exact: false })).toHaveCount(0);
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(
-      page.getByText("Step 2 of 7 · Currency & Languages", { exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Currency & Languages" })).toBeVisible();
-    await expect(page.getByText("Default Currency", { exact: false })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Continue" })).toBeInViewport();
-
-    await page.setViewportSize({ width: 390, height: 844 });
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-      ),
-    ).toBe(true);
-  });
-
-  test("blocks activation when existing Booking settings cannot be loaded", async ({ page }) => {
-    await mockMultiHotelActivation(page);
-    await page.route("**/api/booking/hotels/*/settings/property*", (route) =>
-      route.fulfill({ status: 500, json: { message: "Unavailable" } }),
+    await page.route("**/api/hotel-setup/handoffs/exchange", (route) =>
+      route.request().method() === "OPTIONS"
+        ? route.fulfill({ status: 204, headers: corsHeaders() })
+        : route.fulfill({
+            status: 410,
+            headers: corsHeaders(),
+            json: {
+              code: "invalid_handoff",
+            },
+          }),
     );
 
-    await page.goto(`/setup?legacy=booking&propertyId=${BOOKING_ADMIN_PROPERTY_ID}`);
+    await page.goto(`/handoff?code=${USED_CODE}`);
 
-    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
     await expect(
-      page.getByText("We couldn't load your Booking setup. Refresh the page to try again."),
+      page.getByText("This setup link is invalid, expired, or has already been used."),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(new URL(page.url()).searchParams.toString()).toBe(`code=${USED_CODE}`);
   });
 
   test("keeps Design Studio read-only until saved branding loads", async ({ page }) => {
@@ -278,345 +218,116 @@ test.describe("booking-admin shared setup", () => {
     );
     await expect(page.getByRole("button", { name: "Save Changes" })).toBeEnabled();
   });
-
-  test("targets the native Booking hotel for the requested property in a multi-hotel account", async ({
-    page,
-  }) => {
-    const patchedHotelIds = await mockMultiHotelActivation(page);
-
-    await page.goto(`/setup?entryProduct=booking&propertyId=${SECOND_PROPERTY_ID}`);
-
-    await expect(page).toHaveURL(
-      new RegExp(`/setup\\?legacy=booking&propertyId=${SECOND_PROPERTY_ID}$`),
-    );
-    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
-    await expect
-      .poll(() => page.evaluate(() => localStorage.getItem("selectedHotelId")))
-      .toBe(SECOND_HOTEL_ID);
-    expect(patchedHotelIds).toEqual([]);
-  });
-
-  test("replaces a stale native hotel before entering an active Booking product", async ({
-    page,
-  }) => {
-    await mockMultiHotelActivation(page, "active");
-
-    await page.goto(`/setup?entryProduct=booking&propertyId=${SECOND_PROPERTY_ID}`);
-
-    await expect(page).toHaveURL(/\/dashboard$/);
-    await expect
-      .poll(() => page.evaluate(() => localStorage.getItem("selectedHotelId")))
-      .toBe(SECOND_HOTEL_ID);
-    expect(await page.evaluate(() => localStorage.getItem("selectedSharedPropertyId"))).toBe(
-      SECOND_PROPERTY_ID,
-    );
-  });
-
-  test("saves Booking branding for the captured activation hotel and reuses it in Design Studio", async ({
-    page,
-  }) => {
-    const patchedPayloads: Record<string, unknown>[] = [];
-    const patchedHotelIds = await mockMultiHotelActivation(page, "selected_incomplete", (payload) =>
-      patchedPayloads.push(payload),
-    );
-    const design = await mockBookingAdminDesignSettings(page);
-    await page.goto(`/setup?legacy=booking&propertyId=${SECOND_PROPERTY_ID}`);
-    await expect(page.getByRole("heading", { name: "Contact details" })).toBeVisible();
-
-    await page.evaluate(
-      (hotelId) => localStorage.setItem("selectedHotelId", hotelId),
-      BOOKING_ADMIN_HOTEL_ID,
-    );
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByRole("heading", { name: "Currency & Languages" })).toBeVisible();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByRole("heading", { name: "Brand & Media" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Hero heading" })).toHaveValue(
-      defaultBookingAdminDesignSettings.heroHeading,
-    );
-    await expect(page.getByRole("textbox", { name: "Hero subtext" })).toHaveValue(
-      defaultBookingAdminDesignSettings.heroSubtext,
-    );
-    await expect(page.getByRole("textbox", { name: "Hero subtext" })).toHaveAttribute(
-      "aria-required",
-      "true",
-    );
-    await expect(page.locator('input[aria-label="Hero image"]')).toHaveAttribute(
-      "aria-required",
-      "true",
-    );
-    await expect(
-      page.getByRole("textbox", { name: "Primary brand color", exact: true }),
-    ).toHaveValue(defaultBookingAdminDesignSettings.primaryColor);
-    await expect(page.getByRole("button", { name: /Modern Minimalist/ })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-
-    const savedBranding = {
-      ...defaultBookingAdminDesignSettings,
-      heroHeading: "Bergwald, your alpine hideaway",
-      heroSubtext: "A quiet mountain stay designed for booking direct.",
-      primaryColor: "#0F766E",
-      fontPairing: "grand-classic",
-    };
-    await page.getByRole("textbox", { name: "Hero heading" }).fill(savedBranding.heroHeading);
-    const heroSubtext = page.getByRole("textbox", { name: "Hero subtext" });
-    await heroSubtext.fill("");
-    await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
-    await heroSubtext.fill(savedBranding.heroSubtext);
-    await page
-      .getByRole("textbox", { name: "Primary brand color", exact: true })
-      .fill(savedBranding.primaryColor);
-    await page.getByRole("button", { name: /Grand Classic/ }).click();
-
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: /Skip for Now/ }).click();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: /Launch Property/ }).click();
-
-    await expect.poll(() => patchedHotelIds).toEqual([SECOND_HOTEL_ID]);
-    expect(patchedPayloads).toHaveLength(1);
-    expect(
-      Object.keys(patchedPayloads[0] ?? {}).filter((key) => SHARED_HOTEL_SETTING_FIELDS.has(key)),
-    ).toEqual([]);
-
-    await expect(page).toHaveURL(/\/dashboard$/);
-    expect(design.requests.filter((request) => request.method === "PATCH")).toEqual([
-      {
-        method: "PATCH",
-        hotelId: SECOND_HOTEL_ID,
-        body: savedBranding,
-      },
-    ]);
-
-    await expect(page.getByRole("link", { name: "Design Studio" })).toBeVisible();
-    await page.getByRole("link", { name: "Design Studio" }).click();
-    await expect(page.getByRole("heading", { name: "Design Studio" })).toBeVisible();
-    await expect(page.getByRole("main").getByText("Bergwald", { exact: true })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Hero heading" })).toHaveValue(
-      savedBranding.heroHeading,
-    );
-    await expect(page.getByRole("textbox", { name: "Hero subtext" })).toHaveValue(
-      savedBranding.heroSubtext,
-    );
-    await expect(page.getByRole("img", { name: "Hero" })).toHaveAttribute(
-      "src",
-      savedBranding.heroImage,
-    );
-    await page.getByRole("button", { name: "Colors" }).click();
-    await expect(
-      page.getByRole("textbox", { name: "Primary brand color", exact: true }),
-    ).toHaveValue(savedBranding.primaryColor);
-    await page.getByRole("button", { name: "Fonts" }).click();
-    await expect(page.getByRole("button", { name: /Grand Classic/ })).toHaveClass(/ring-1/);
-    const designReads = design.requests.filter((request) => request.method === "GET");
-    expect(designReads.length).toBeGreaterThanOrEqual(2);
-    expect(designReads.every((request) => request.hotelId === SECOND_HOTEL_ID)).toBe(true);
-
-    await page.evaluate(
-      (hotelId) => localStorage.setItem("selectedHotelId", hotelId),
-      BOOKING_ADMIN_HOTEL_ID,
-    );
-    await page.getByRole("button", { name: "Save Changes" }).click();
-    await expect(page.getByText("Design settings saved successfully")).toBeVisible();
-    expect(design.requests.filter((request) => request.method === "PATCH")).toEqual([
-      { method: "PATCH", hotelId: SECOND_HOTEL_ID, body: savedBranding },
-      { method: "PATCH", hotelId: SECOND_HOTEL_ID, body: savedBranding },
-    ]);
-  });
-
-  test("keeps the activation draft when public readiness is incomplete", async ({ page }) => {
-    await mockMultiHotelActivation(page, "selected_incomplete", undefined, {
-      profileStatus: "incomplete",
-      freshnessStatus: "unavailable",
-      missingReadiness: ["availability", "payments"],
-    });
-
-    await page.goto(`/setup?legacy=booking&propertyId=${SECOND_PROPERTY_ID}`);
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: /Skip for Now/ }).click();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: /Launch Property/ }).click();
-
-    await expect(page).toHaveURL(
-      new RegExp(`/setup\\?legacy=booking&propertyId=${SECOND_PROPERTY_ID}$`),
-    );
-    await expect(
-      page.getByRole("heading", { name: "Your Booking settings are saved" }),
-    ).toBeVisible();
-    await expect(page.getByText("Finish setting up a payment method")).toBeVisible();
-    expect(await page.evaluate(() => localStorage.getItem("setupComplete"))).toBeNull();
-    await expect
-      .poll(() =>
-        page.evaluate(
-          (propertyId) =>
-            localStorage.getItem(
-              `booking-setup:draft:v2:${["user_1", "org_hotel_group", propertyId]
-                .map((part) => encodeURIComponent(part))
-                .join(":")}`,
-            ),
-          SECOND_PROPERTY_ID,
-        ),
-      )
-      .not.toBeNull();
-  });
 });
 
-test.describe("booking-admin setup no-legacy guard", () => {
-  test("hydrates manual setup without migrated helper calls", async ({ page }, testInfo) => {
-    test.skip(
-      !PROD,
-      "Requires a production booking-admin build so the authenticated shell hydrates.",
-    );
-
-    const assertHealthy = watchPageHealth(page, testInfo);
-    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "booking-admin-setup");
-
-    await mockBookingAdminAuthenticatedSession(page);
-    await mockBookingAdminShellRoutes(page);
-
-    await page.goto("/setup?mode=add");
-    await page.getByRole("button", { name: "Set up manually" }).click();
-
-    await expect(page.getByRole("heading", { name: "Your Property" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Basic Information" })).toBeVisible();
-    await expect(page.getByText("Hotel contact email", { exact: false })).toBeVisible();
-
-    await assertNoLegacyCalls();
-    await assertHealthy();
-  });
-});
-
-async function mockMultiHotelActivation(
-  page: Page,
-  activationStatus: "active" | "selected_incomplete" = "selected_incomplete",
-  onPatch?: (payload: Record<string, unknown>) => void,
-  publication: {
-    profileStatus: "public" | "incomplete" | "unpublished" | "stale" | "unavailable";
-    freshnessStatus: "fresh" | "stale" | "unavailable" | "unknown";
-    missingReadiness: string[];
-  } = { profileStatus: "public", freshnessStatus: "fresh", missingReadiness: [] },
-): Promise<string[]> {
-  await mockBookingAdminAuthenticatedSession(page, [BOOKING_ADMIN_HOTEL_ID, SECOND_HOTEL_ID]);
-  await mockBookingAdminShellRoutes(page);
-
-  const booking = sharedHotelSetupProduct("booking", activationStatus);
-  if (activationStatus === "selected_incomplete") {
-    booking.missingSteps = ["bookingSettings", "publicBookability", "paymentReadiness"];
-    booking.statusReasons = ["booking_activation_incomplete"];
-  }
-  const status = createSharedHotelSetupStatusMock({
-    entryProduct: "booking",
-    returnTo: "/dashboard",
+function actionableStatus(
+  entryProduct: "booking" | "marketplace" | "pms",
+  taskId:
+    | "rooms_rates_availability"
+    | "guest_settings_policies"
+    | "payment"
+    | "direct_booking_publication",
+) {
+  return createAdaptiveHotelSetupStatusMock({
+    entryProduct,
     organizationId: "org_hotel_group",
     organizationDisplayName: "Alpenrose Hotel Group",
-    propertyId: SECOND_PROPERTY_ID,
-    publicId: "prop_bergwald",
-    propertyDisplayName: "Bergwald",
-    locationSummary: "Garmisch-Partenkirchen, DE",
-    products: {
-      booking,
-      pms: sharedHotelSetupProduct("pms", "not_selected"),
-      marketplace: sharedHotelSetupProduct("marketplace", "not_selected"),
-    },
-    nextAction:
-      activationStatus === "active"
-        ? {
-            action: "enter_product",
-            propertyId: SECOND_PROPERTY_ID,
-            product: "booking",
-            returnTo: "/dashboard",
-            reasonCodes: ["ready"],
-          }
-        : {
-            action: "complete_product_activation",
-            propertyId: SECOND_PROPERTY_ID,
-            product: "booking",
-            returnTo: "/dashboard",
-            reasonCodes: ["entry_product_activation_incomplete"],
-          },
-  });
-  status.properties.unshift({
-    ...status.properties[0]!,
+    selectedTracks: ["hotel_operations"],
     propertyId: BOOKING_ADMIN_PROPERTY_ID,
     publicId: "prop_alpenrose",
-    displayName: "Alpenrose",
+    propertyDisplayName: "Alpenrose",
     locationSummary: "Munich, DE",
-  });
-  await page.route("**/api/hotel-setup/status**", (route) => route.fulfill({ json: status }));
-  await page.route("**/api/booking/hotels/*/property-link", (route) => {
-    const hotelId = bookingHotelIdFromPath(route.request().url());
-    return route.fulfill({
-      json: {
-        hotelId,
-        propertyId: hotelId === SECOND_HOTEL_ID ? SECOND_PROPERTY_ID : BOOKING_ADMIN_PROPERTY_ID,
-        resourceLinks: {
-          bookingHotel: true,
-          pmsProperty: true,
-          financeProperty: true,
-        },
+    taskOverrides: {
+      [taskId]: {
+        ownerProgress: "not_started",
+        readiness: "actionable",
+        actionableBy: "owner",
+        reasonCodes: [`${taskId}_required`],
       },
-    });
+    },
+    recommendedTaskId: taskId,
+    entryDecision: {
+      propertyId: BOOKING_ADMIN_PROPERTY_ID,
+      decision: "enter",
+      destinationRouteKey: `${entryProduct}.workspace`,
+      reasonCode: null,
+    },
   });
-  await page.route("**/api/booking/hotels/*/public-bookability", (route) => {
-    const hotelId = bookingHotelIdFromPath(route.request().url());
-    const propertyId = hotelId === SECOND_HOTEL_ID ? SECOND_PROPERTY_ID : BOOKING_ADMIN_PROPERTY_ID;
-    const canonicalSlug = hotelId === SECOND_HOTEL_ID ? "bergwald" : "hotel-alpenrose";
-    const bookingBaseUrl = `https://${canonicalSlug}.booking.localhost`;
-    return route.fulfill({
-      json: {
-        propertyId,
-        canonicalSlug,
-        canonicalUrl: `${bookingBaseUrl}/en`,
-        bookingBaseUrl,
-        ...publication,
-      },
-    });
-  });
-
-  const patchedHotelIds: string[] = [];
-  await page.route("**/api/booking/hotels/*/settings/property*", (route) => {
-    const hotelId = bookingHotelIdFromPath(route.request().url());
-    if (route.request().method() === "PATCH") {
-      patchedHotelIds.push(hotelId);
-      onPatch?.(route.request().postDataJSON() as Record<string, unknown>);
-      booking.status = "active";
-      booking.missingSteps = [];
-      booking.statusReasons = [];
-      status.nextAction = {
-        action: "enter_product",
-        propertyId: SECOND_PROPERTY_ID,
-        product: "booking",
-        returnTo: "/dashboard",
-        reasonCodes: ["ready"],
-      };
-    }
-    return route.fulfill({
-      json: {
-        ...defaultBookingAdminPropertySettings,
-        id: hotelId,
-        property_name: hotelId === SECOND_HOTEL_ID ? "Bergwald" : "Alpenrose",
-        reservation_email: "reservations@example.com",
-        phone_number: "+49 89 123456",
-        whatsapp_number: "",
-        address: "Bergweg 1",
-        city: "Garmisch-Partenkirchen",
-        country: "DE",
-      },
-    });
-  });
-  await page.route(`**/api/finance/properties/${SECOND_PROPERTY_ID}/payment-settings`, (route) =>
-    route.fulfill({ json: { propertyId: SECOND_PROPERTY_ID } }),
-  );
-
-  return patchedHotelIds;
 }
 
-function bookingHotelIdFromPath(url: string): string {
-  return decodeURIComponent(new URL(url).pathname.match(/\/hotels\/([^/]+)\//)?.[1] ?? "");
+function bookingAuthSession(
+  overrides: {
+    profilePictureUrl?: string | null;
+    profilePictureMediaObjectId?: string | null;
+  } = {},
+) {
+  return {
+    accessToken: "e2e-booking-authkit-token",
+    csrfToken: "e2e-booking-csrf-token",
+    organizationId: "org_hotel_group",
+    workosOrganizationId: "org_workos_hotel_group",
+    resources: { "booking:booking_hotel": [BOOKING_ADMIN_HOTEL_ID] },
+    user: {
+      id: "user_booking_owner",
+      email: "owner@example.com",
+      name: "Booking Owner",
+      phone: "+49 89 123456",
+      profilePictureUrl:
+        overrides.profilePictureUrl === undefined
+          ? "https://media.example/booking-owner.webp"
+          : overrides.profilePictureUrl,
+      profilePictureMediaObjectId:
+        overrides.profilePictureMediaObjectId === undefined
+          ? "media-booking-owner"
+          : overrides.profilePictureMediaObjectId,
+      status: "active",
+    },
+  };
+}
+
+async function mockFinancePaymentSettings(page: Page) {
+  await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "finance-route-contracts.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        paymentSettings: {
+          paymentsEnabled: false,
+          paymentProvider: "vayada",
+          acceptedMethods: [],
+          defaultCurrency: "EUR",
+          supportedCurrencies: ["EUR"],
+          requiresManualReview: false,
+          providerAccount: {
+            providerAccountId: null,
+            provider: null,
+            status: "not_configured",
+            onboardingStatus: "not_started",
+            chargesEnabled: false,
+            payoutsEnabled: false,
+            capabilities: [],
+          },
+        },
+      },
+    }),
+  );
+}
+
+function corsHeaders(): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
+  };
+}
+
+function marketplaceSetupReturnUrl(): string {
+  const origin =
+    process.env.E2E_MARKETPLACE_BASE_URL ||
+    (process.env.E2E_START_SERVERS === "1"
+      ? "http://marketplace.localhost:3000"
+      : "https://marketplace.localhost");
+  const url = new URL("/setup", origin);
+  url.searchParams.set("propertyId", BOOKING_ADMIN_PROPERTY_ID);
+  return url.toString();
 }

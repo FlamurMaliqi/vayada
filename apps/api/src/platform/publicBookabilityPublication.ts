@@ -10,7 +10,12 @@ type PublicationPool = {
   end(): Promise<void>;
 };
 
-type PublicationTransaction = Pick<PoolClient, "query">;
+type PublicationTransaction = {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: readonly unknown[],
+  ): Promise<Pick<QueryResult<T>, "rows">>;
+};
 
 /** Catalog-owned adapter invoked by Distribution before consuming the public profile read model. */
 export type CatalogPublicProfileProjectionPort = {
@@ -124,26 +129,48 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
           'type', media.media_type,
           'url', media.url,
           'altText', media.alt_text,
-          'sortOrder', media.sort_order
+          'sortOrder', media.sort_order,
+          'platformMediaObjectId', media.platform_media_object_id::text
         ))
         ORDER BY media.sort_order, media.id
       ) AS media
     FROM (
-      SELECT DISTINCT ON (candidate.property_id, candidate.url)
+      SELECT DISTINCT ON (candidate.property_id, media_variant.public_cdn_url)
         candidate.id,
         candidate.property_id,
-        candidate.media_type,
-        candidate.url,
+        CASE media_object.purpose
+          WHEN 'property.hero_image' THEN 'hero_image'
+          WHEN 'property.logo' THEN 'logo'
+          ELSE 'gallery_image'
+        END AS media_type,
+        media_variant.public_cdn_url AS url,
         candidate.alt_text,
-        candidate.sort_order
+        candidate.sort_order,
+        candidate.platform_media_object_id
       FROM hotel_catalog.property_media candidate
+      JOIN platform.media_objects media_object
+        ON media_object.id = candidate.platform_media_object_id
+       AND media_object.property_id = candidate.property_id
+       AND media_object.visibility = 'public'
+       AND media_object.public_approved = TRUE
+       AND media_object.lifecycle_status = 'active'
+       AND media_object.purpose IN (
+         'property.hero_image',
+         'property.gallery_image',
+         'property.logo'
+       )
+      JOIN platform.media_variants media_variant
+        ON media_variant.media_object_id = media_object.id
+       AND media_variant.variant_name = 'original_safe'
+       AND media_variant.visibility = 'public'
+       AND NULLIF(media_variant.public_cdn_url, '') IS NOT NULL
       WHERE candidate.property_id = $1::uuid
         AND candidate.public_approved = TRUE
+        AND candidate.source_system = 'platform'
       ORDER BY
         candidate.property_id,
-        candidate.url,
-        CASE candidate.media_type WHEN 'hero_image' THEN 0 ELSE 1 END,
-        CASE candidate.source_system WHEN 'platform' THEN 0 ELSE 1 END,
+        media_variant.public_cdn_url,
+        CASE media_object.purpose WHEN 'property.hero_image' THEN 0 ELSE 1 END,
         candidate.sort_order,
         candidate.id
     ) media
@@ -183,11 +210,11 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
       location.country_code,
       location.region,
       location.city,
-      location.raw_marketplace_location,
-      location.timezone,
       location.latitude,
       location.longitude,
+      location.address_public AS locality_public,
       location.geo_public,
+      location.map_display_mode,
       descriptions.descriptions,
       approved_media.media AS catalog_media,
       amenities.amenities,
@@ -238,29 +265,42 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
     input.supported_locales,
     input.profile_status,
     input.completeness_reasons,
-    CASE
-      WHEN input.country_code IS NOT NULL
-        OR input.city IS NOT NULL
-        OR input.timezone IS NOT NULL
-        OR (input.geo_public AND input.latitude IS NOT NULL)
-        THEN jsonb_strip_nulls(jsonb_build_object(
-          'countryCode', input.country_code,
-          'region', input.region,
-          'city', input.city,
-          'timezone', input.timezone,
-          'geo', CASE
-            WHEN input.geo_public AND input.latitude IS NOT NULL AND input.longitude IS NOT NULL
-              THEN jsonb_build_object(
-                'latitude', input.latitude::double precision,
-                'longitude', input.longitude::double precision
-              )
-            ELSE NULL
-          END
-        ))
-      WHEN NULLIF(input.raw_marketplace_location, '') IS NOT NULL
-        THEN jsonb_build_object('rawMarketplaceLocation', input.raw_marketplace_location)
-      ELSE '{}'::jsonb
-    END,
+    jsonb_strip_nulls(jsonb_build_object(
+      'countryCode', CASE
+        WHEN COALESCE(input.locality_public, FALSE) THEN input.country_code
+      END,
+      'region', CASE
+        WHEN COALESCE(input.locality_public, FALSE) THEN input.region
+      END,
+      'city', CASE
+        WHEN COALESCE(input.locality_public, FALSE) THEN input.city
+      END,
+      'geo', CASE
+        WHEN COALESCE(input.geo_public, FALSE)
+          AND input.map_display_mode IN ('approximate', 'exact')
+          AND input.latitude IS NOT NULL
+          AND input.longitude IS NOT NULL
+          THEN jsonb_build_object(
+            'latitude', CASE
+              WHEN input.map_display_mode = 'approximate'
+                THEN round(input.latitude::numeric, 2)::double precision
+              ELSE input.latitude::double precision
+            END,
+            'longitude', CASE
+              WHEN input.map_display_mode = 'approximate'
+                THEN round(input.longitude::numeric, 2)::double precision
+              ELSE input.longitude::double precision
+            END
+          )
+      END,
+      'mapDisplayMode', CASE
+        WHEN COALESCE(input.geo_public, FALSE)
+          AND input.map_display_mode IN ('approximate', 'exact')
+          AND input.latitude IS NOT NULL
+          AND input.longitude IS NOT NULL
+          THEN input.map_display_mode
+      END
+    )),
     COALESCE(input.descriptions, '{}'::jsonb),
     COALESCE(input.catalog_media, '[]'::jsonb),
     COALESCE(input.amenities, '[]'::jsonb),
@@ -320,7 +360,14 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       finance.default_currency AS finance_default_currency,
       finance.refund_policy AS finance_refund_policy,
       finance.updated_at AS finance_updated_at,
+      payment_provider.provider AS payment_provider,
+      payment_provider.status AS payment_provider_status,
+      payment_provider.onboarding_status AS payment_provider_onboarding_status,
+      payment_provider.charges_enabled AS payment_provider_charges_enabled,
       location.timezone AS catalog_timezone,
+      location.address_public AS catalog_locality_public,
+      location.geo_public AS catalog_geo_public,
+      location.map_display_mode AS catalog_map_display_mode,
       verified_domain.hostname AS verified_hostname,
       availability.has_coverage,
       availability.has_sellable_offers,
@@ -340,6 +387,9 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
     FROM hotel_catalog.property_public_profile_read_model profile
     LEFT JOIN booking.booking_settings settings ON settings.property_id = profile.property_id
     LEFT JOIN finance.payment_settings finance ON finance.property_id = profile.property_id
+    LEFT JOIN finance.payment_provider_accounts payment_provider
+      ON payment_provider.id = finance.provider_account_id
+     AND payment_provider.property_id = profile.property_id
     LEFT JOIN hotel_catalog.property_locations location ON location.property_id = profile.property_id
     LEFT JOIN LATERAL (
       SELECT domain.hostname
@@ -403,10 +453,27 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         ) AS timezone_is_valid,
       COALESCE(NULLIF(input.booking_default_language, ''), input.default_locale, 'en') AS locale,
       NULLIF(upper(trim(input.finance_default_currency)), '') AS currency,
-      FALSE AS online_payment_ready,
+      COALESCE(input.payments_enabled, FALSE)
+        AND input.payment_provider_status = 'active'
+        AND input.payment_provider_onboarding_status = 'completed'
+        AND input.payment_provider_charges_enabled = TRUE
+        AND (
+          COALESCE(input.accepted_methods, ARRAY[]::text[])
+            && ARRAY['card', 'wallet']::text[]
+          OR (
+            input.payment_provider = 'xendit'
+            AND 'xendit' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
+          )
+        ) AS online_payment_ready,
       COALESCE(input.payments_enabled, FALSE)
         AND COALESCE(input.accepted_methods, ARRAY[]::text[])
-          && ARRAY['pay_at_property', 'cash']::text[] AS pay_at_property_ready,
+          && ARRAY[
+            'pay_at_property',
+            'cash',
+            'bank_transfer',
+            'manual_card',
+            'other'
+          ]::text[] AS pay_at_property_ready,
       CASE
         WHEN NOT COALESCE(input.has_coverage, FALSE) THEN 'unavailable'
         WHEN input.has_unavailable_source THEN 'unavailable'
@@ -516,11 +583,28 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         )
       )),
       jsonb_strip_nulls(jsonb_build_object(
-        'country', input.location ->> 'countryCode',
-        'city', input.location ->> 'city',
-        'region', input.location ->> 'region',
-        'latitude', input.location #> '{geo,latitude}',
-        'longitude', input.location #> '{geo,longitude}'
+        'country', CASE
+          WHEN COALESCE(input.catalog_locality_public, FALSE)
+            THEN input.location ->> 'countryCode'
+        END,
+        'city', CASE
+          WHEN COALESCE(input.catalog_locality_public, FALSE)
+            THEN input.location ->> 'city'
+        END,
+        'region', CASE
+          WHEN COALESCE(input.catalog_locality_public, FALSE)
+            THEN input.location ->> 'region'
+        END,
+        'latitude', CASE
+          WHEN COALESCE(input.catalog_geo_public, FALSE)
+            AND input.catalog_map_display_mode IN ('approximate', 'exact')
+            THEN input.location #> '{geo,latitude}'
+        END,
+        'longitude', CASE
+          WHEN COALESCE(input.catalog_geo_public, FALSE)
+            AND input.catalog_map_display_mode IN ('approximate', 'exact')
+            THEN input.location #> '{geo,longitude}'
+        END
       )),
       COALESCE((
         SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
@@ -728,7 +812,7 @@ export function createTargetPublicBookabilityPublicationCommandPort(
 }
 
 async function reserveCanonicalSlug(
-  client: Pick<PoolClient, "query">,
+  client: PublicationTransaction,
   property: PropertySlugRow,
 ): Promise<string> {
   const base = slugify(property.displayName) || slugify(property.publicId) || "hotel";
@@ -745,6 +829,16 @@ async function reserveCanonicalSlug(
   }
 
   throw new Error(`Unable to reserve a canonical slug for property ${property.propertyId}.`);
+}
+
+export async function ensureCanonicalPropertySlug(
+  client: PublicationTransaction,
+  propertyId: string,
+): Promise<string | null> {
+  const result = await client.query<PropertySlugRow>(PROPERTY_FOR_PUBLICATION_SELECT, [propertyId]);
+  const property = result.rows[0];
+  if (!property) return null;
+  return property.canonicalSlug ?? reserveCanonicalSlug(client, property);
 }
 
 export function slugify(value: string): string {

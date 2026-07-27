@@ -6,6 +6,7 @@ import type {
 import pg from "pg";
 import type { QueryResult, QueryResultRow } from "pg";
 
+import { syncPropertyOfferReadModels } from "./marketplaceAdmin.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const BOOKING_ADDON_SETTINGS_CONTRACT = {
@@ -396,6 +397,7 @@ export type BookingSettingsWriteRepository = {
   updatePropertySettingsByHotelId?(
     hotelId: string,
     settings: UpdateBookingPropertySettingsBody,
+    organizationId: string,
   ): Promise<BookingPropertySettingsReadModel | null>;
   updateAddonSettingsByHotelId(
     hotelId: string,
@@ -436,7 +438,16 @@ export type BookingSettingsPool = {
     text: string,
     values?: readonly unknown[],
   ): Promise<Pick<QueryResult<T>, "rows">>;
+  connect?(): Promise<BookingSettingsQueryClient>;
   end(): Promise<void>;
+};
+
+type BookingSettingsQueryClient = {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: readonly unknown[],
+  ): Promise<Pick<QueryResult<T>, "rows">>;
+  release(): void;
 };
 
 export type BookingSettingsWriteErrorCategory =
@@ -452,11 +463,12 @@ export type BookingSettingsWriteErrorCode =
   | "inactive_entitlement"
   | "missing_resource_access"
   | "invalid_payload"
+  | "private_contact_conflict"
   | "not_found"
   | "write_model_unavailable";
 
 export type BookingSettingsWriteError = {
-  statusCode: 401 | 403 | 404 | 422 | 500;
+  statusCode: 401 | 403 | 404 | 409 | 422 | 500;
   code: BookingSettingsWriteErrorCode;
   category: BookingSettingsWriteErrorCategory;
   message: string;
@@ -892,7 +904,23 @@ type TargetBookingPropertyLinkQueryRow = {
 type TargetBookingPropertySettingsUpdateRow = {
   source_link_count: number | string;
   id: string | null;
+  propertyId: string | null;
+  privateContactConflict: boolean;
 };
+
+type TargetBookingPropertyWriteTargetRow = {
+  source_link_count: number | string;
+  propertyId: string | null;
+};
+
+export class BookingContactPublicationConflictError extends Error {
+  constructor() {
+    super(
+      "That contact is stored as private hotel information. Publish it from Hotel setup or use a different Booking contact.",
+    );
+    this.name = "BookingContactPublicationConflictError";
+  }
+}
 
 const TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE = `
   WITH scoped_property_candidates AS (
@@ -1020,11 +1048,26 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     ON location.property_id = property.id
   LEFT JOIN LATERAL (
     SELECT
-      max(value) FILTER (WHERE channel_type = 'email') AS reservation_email,
-      max(value) FILTER (WHERE channel_type = 'phone') AS phone_number,
-      max(value) FILTER (WHERE channel_type = 'whatsapp') AS whatsapp_number,
-      max(value) FILTER (WHERE channel_type = 'instagram') AS instagram,
-      max(value) FILTER (WHERE channel_type = 'facebook') AS facebook
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'email' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'email')
+      ) AS reservation_email,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'phone' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'phone')
+      ) AS phone_number,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'whatsapp' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'whatsapp')
+      ) AS whatsapp_number,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'instagram' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'instagram')
+      ) AS instagram,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'facebook' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'facebook')
+      ) AS facebook
     FROM hotel_catalog.property_contact_channels
     WHERE property_id = property.id
       AND is_public = TRUE
@@ -1073,9 +1116,8 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
   WHERE source_link_status.source_link_count > 0
 `;
 
-// Saving Booking design settings is the hotel owner's explicit approval boundary
-// for the public copy and hero image. Keep the Booking write and Catalog
-// projection in one statement so retries cannot publish a partial profile.
+// Booking design is guest-facing presentation owned by Booking. Canonical
+// Catalog descriptions and media are edited through the revisioned profile API.
 const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
   ${TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE},
   updated_settings AS (
@@ -1132,188 +1174,6 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
       settings.font_pairing,
       settings.last_minute_discount,
       settings.updated_at
-  ),
-  upserted_booking_description AS (
-    INSERT INTO hotel_catalog.property_profiles (
-      property_id,
-      locale,
-      short_description,
-      source_confidence,
-      updated_at
-    )
-    SELECT
-      property.id,
-      property.default_locale,
-      updated_settings.hero_subtext,
-      'high',
-      now()
-    FROM updated_settings
-    JOIN hotel_catalog.properties property
-      ON property.id = updated_settings.settings_property_id::uuid
-    WHERE $2::jsonb ? 'heroSubtext'
-    ON CONFLICT (property_id, locale) DO UPDATE
-    SET short_description = EXCLUDED.short_description,
-        source_confidence = EXCLUDED.source_confidence,
-        updated_at = now()
-    RETURNING property_id
-  ),
-  retired_booking_hero_media AS (
-    UPDATE hotel_catalog.property_media media
-    SET public_approved = FALSE,
-        updated_at = now()
-    FROM updated_settings
-    WHERE media.property_id = updated_settings.settings_property_id::uuid
-      AND media.media_type = 'hero_image'
-      AND $2::jsonb ? 'heroImage'
-      AND media.url IS DISTINCT FROM updated_settings.hero_image_url
-      AND media.public_approved = TRUE
-    RETURNING media.property_id
-  ),
-  approved_existing_booking_hero_media AS (
-    UPDATE hotel_catalog.property_media media
-    SET public_approved = TRUE,
-        alt_text = COALESCE(
-          NULLIF(BTRIM(updated_settings.hero_heading), ''),
-          property.display_name
-        ),
-        rights_metadata = COALESCE(media.rights_metadata, '{}'::jsonb)
-          || '{"source":"booking_design","ownerApproved":true}'::jsonb,
-        updated_at = now()
-    FROM updated_settings
-    JOIN hotel_catalog.properties property
-      ON property.id = updated_settings.settings_property_id::uuid
-    WHERE media.property_id = property.id
-      AND media.media_type = 'hero_image'
-      AND $2::jsonb ? 'heroImage'
-      AND media.url = updated_settings.hero_image_url
-      AND NOT (
-        media.source_system = 'booking'
-        AND EXISTS (
-          SELECT 1
-          FROM hotel_catalog.property_media platform_media
-          WHERE platform_media.property_id = media.property_id
-            AND platform_media.source_system = 'platform'
-            AND platform_media.media_type = 'hero_image'
-            AND platform_media.url = media.url
-        )
-      )
-    RETURNING media.property_id
-  ),
-  retired_duplicate_booking_hero_media AS (
-    UPDATE hotel_catalog.property_media media
-    SET public_approved = FALSE,
-        updated_at = now()
-    FROM updated_settings
-    WHERE media.property_id = updated_settings.settings_property_id::uuid
-      AND media.source_system = 'booking'
-      AND media.media_type = 'hero_image'
-      AND media.url = updated_settings.hero_image_url
-      AND EXISTS (
-        SELECT 1
-        FROM hotel_catalog.property_media platform_media
-        WHERE platform_media.property_id = media.property_id
-          AND platform_media.source_system = 'platform'
-          AND platform_media.media_type = 'hero_image'
-          AND platform_media.url = media.url
-      )
-    RETURNING media.property_id
-  ),
-  inserted_booking_hero_media AS (
-    INSERT INTO hotel_catalog.property_media (
-      property_id,
-      media_type,
-      url,
-      alt_text,
-      sort_order,
-      source_system,
-      public_approved,
-      rights_metadata,
-      updated_at
-    )
-    SELECT
-      property.id,
-      'hero_image',
-      updated_settings.hero_image_url,
-      COALESCE(NULLIF(BTRIM(updated_settings.hero_heading), ''), property.display_name),
-      0,
-      'booking',
-      TRUE,
-      '{"source":"booking_design","ownerApproved":true}'::jsonb,
-      now()
-    FROM updated_settings
-    JOIN hotel_catalog.properties property
-      ON property.id = updated_settings.settings_property_id::uuid
-    WHERE $2::jsonb ? 'heroImage'
-      AND NULLIF(BTRIM(updated_settings.hero_image_url), '') IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM hotel_catalog.property_media existing
-        WHERE existing.property_id = property.id
-          AND existing.media_type = 'hero_image'
-          AND existing.url = updated_settings.hero_image_url
-      )
-    RETURNING property_id
-  ),
-  resolved_profile AS (
-    SELECT
-      property.id AS property_id,
-      ARRAY(
-        SELECT DISTINCT reason
-        FROM unnest(
-          COALESCE(property.completeness_reasons, '{}'::text[])
-          || CASE
-            WHEN $2::jsonb ? 'heroSubtext'
-              AND NULLIF(BTRIM(updated_settings.hero_subtext), '') IS NULL
-              AND NULLIF(BTRIM(catalog_profile.long_description), '') IS NULL
-              THEN ARRAY['description']::text[]
-            ELSE '{}'::text[]
-          END
-          || CASE
-            WHEN $2::jsonb ? 'heroImage'
-              AND NULLIF(BTRIM(updated_settings.hero_image_url), '') IS NULL
-              AND NOT EXISTS (
-                SELECT 1
-                FROM hotel_catalog.property_media remaining_media
-                WHERE remaining_media.property_id = property.id
-                  AND remaining_media.public_approved = TRUE
-              )
-              THEN ARRAY['media']::text[]
-            ELSE '{}'::text[]
-          END
-        ) AS reason
-        WHERE NOT (
-          (
-            reason = 'description'
-            AND $2::jsonb ? 'heroSubtext'
-            AND NULLIF(BTRIM(updated_settings.hero_subtext), '') IS NOT NULL
-          )
-          OR (
-            reason = 'media'
-            AND $2::jsonb ? 'heroImage'
-            AND NULLIF(BTRIM(updated_settings.hero_image_url), '') IS NOT NULL
-          )
-        )
-        ORDER BY reason
-      )::text[] AS completeness_reasons
-    FROM updated_settings
-    JOIN hotel_catalog.properties property
-      ON property.id = updated_settings.settings_property_id::uuid
-    LEFT JOIN hotel_catalog.property_profiles catalog_profile
-      ON catalog_profile.property_id = property.id
-     AND catalog_profile.locale = property.default_locale
-  ),
-  updated_property_profile_status AS (
-    UPDATE hotel_catalog.properties property
-    SET completeness_reasons = resolved_profile.completeness_reasons,
-        profile_status = CASE
-          WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status
-          WHEN cardinality(resolved_profile.completeness_reasons) = 0 THEN 'complete'
-          ELSE 'incomplete'
-        END,
-        updated_at = now()
-    FROM resolved_profile
-    WHERE property.id = resolved_profile.property_id
-    RETURNING property.id
   )
   SELECT
     source_link_status.source_link_count,
@@ -1354,120 +1214,59 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     WHERE source_link_status.source_link_count = 1
       AND source_link_status.property_id IS NOT NULL
   ),
+  contact_input AS (
+    SELECT target_property.property_id, contact.channel_type, contact.value
+    FROM target_property
+    JOIN jsonb_to_recordset($2::jsonb) AS contact(channel_type text, value text) ON TRUE
+  ),
+  private_contact_conflict AS (
+    SELECT EXISTS (
+      SELECT 1
+      FROM contact_input
+      JOIN hotel_catalog.property_contact_channels existing
+        ON existing.property_id = contact_input.property_id
+       AND existing.channel_type = contact_input.channel_type
+       AND existing.value = contact_input.value
+      WHERE existing.source_system <> 'booking'
+        AND existing.is_public = FALSE
+    ) AS found
+  ),
+  writable_target AS (
+    SELECT target_property.property_id
+    FROM target_property, private_contact_conflict
+    WHERE private_contact_conflict.found = FALSE
+  ),
   updated_property AS (
     UPDATE hotel_catalog.properties property
-    SET display_name = $2,
-        default_locale = $10,
-        supported_locales = $11::text[],
+    SET profile_revision = property.profile_revision + 1,
         updated_at = now()
-    FROM target_property
-    WHERE property.id = target_property.property_id
+    FROM writable_target
+    WHERE property.id = writable_target.property_id
     RETURNING property.id
-  ),
-  updated_public_profile AS (
-    UPDATE hotel_catalog.property_public_profile_read_model profile
-    SET display_name = $2,
-        default_locale = $10,
-        supported_locales = $11::text[],
-        location = (
-          COALESCE(profile.location, '{}'::jsonb) - 'rawMarketplaceLocation'
-        ) || jsonb_strip_nulls(jsonb_build_object(
-          'rawMarketplaceLocation', CASE
-            WHEN COALESCE(existing_location.address_public, FALSE) THEN $3::text
-            ELSE NULL
-          END,
-          'city', $4::text,
-          'countryCode', $5::text
-        )),
-        public_contacts = (
-          SELECT COALESCE(
-            jsonb_agg(
-              jsonb_build_object('type', contact.channel_type, 'value', contact.value)
-              ORDER BY contact.channel_type, contact.value
-            ),
-            '[]'::jsonb
-          )
-          FROM (
-            SELECT existing.channel_type, existing.value
-            FROM hotel_catalog.property_contact_channels existing
-            WHERE existing.property_id = target_property.property_id
-              AND existing.is_public = TRUE
-              AND existing.source_system <> 'booking'
-            UNION
-            SELECT input.channel_type, input.value
-            FROM jsonb_to_recordset($6::jsonb) AS input(channel_type text, value text)
-            WHERE NULLIF(input.value, '') IS NOT NULL
-              AND NOT EXISTS (
-                SELECT 1
-                FROM hotel_catalog.property_contact_channels private_contact
-                WHERE private_contact.property_id = target_property.property_id
-                  AND private_contact.channel_type = input.channel_type
-                  AND private_contact.value = input.value
-                  AND private_contact.source_system <> 'booking'
-                  AND private_contact.is_public = FALSE
-              )
-          ) contact
-        ),
-        public_policy = jsonb_strip_nulls(jsonb_build_object(
-          'checkInTime', $7::text,
-          'checkOutTime', $8::text,
-          'cancellationSummary', $9::text
-        )),
-        projected_at = now()
-    FROM target_property
-    LEFT JOIN hotel_catalog.property_locations existing_location
-      ON existing_location.property_id = target_property.property_id
-    WHERE profile.property_id = target_property.property_id
-    RETURNING profile.property_id
-  ),
-  upserted_location AS (
-    INSERT INTO hotel_catalog.property_locations (
-      property_id,
-      raw_marketplace_location,
-      city,
-      country_code,
-      address_public,
-      source_confidence,
-      updated_at
-    )
-    SELECT
-      target_property.property_id,
-      $3,
-      $4,
-      NULLIF($5::text, '')::char(2),
-      FALSE,
-      'high',
-      now()
-    FROM target_property
-    ON CONFLICT (property_id) DO UPDATE
-    SET raw_marketplace_location = EXCLUDED.raw_marketplace_location,
-        city = EXCLUDED.city,
-        country_code = EXCLUDED.country_code,
-        source_confidence = EXCLUDED.source_confidence,
-        updated_at = now()
-    RETURNING property_id
   ),
   deleted_contacts AS (
     DELETE FROM hotel_catalog.property_contact_channels contact
-    USING target_property
-    WHERE contact.property_id = target_property.property_id
+    USING writable_target
+    WHERE contact.property_id = writable_target.property_id
       AND contact.source_system = 'booking'
-      AND contact.channel_type = ANY(
-        ARRAY['email', 'phone', 'whatsapp', 'instagram', 'facebook']::text[]
+      AND EXISTS (
+        SELECT 1
+        FROM jsonb_to_recordset($2::jsonb) AS input(channel_type text, value text)
+        WHERE input.channel_type = contact.channel_type
       )
       AND NOT EXISTS (
         SELECT 1
-        FROM jsonb_to_recordset($6::jsonb) AS input(channel_type text, value text)
+        FROM jsonb_to_recordset($2::jsonb) AS input(channel_type text, value text)
         WHERE input.channel_type = contact.channel_type
           AND input.value = contact.value
           AND NULLIF(input.value, '') IS NOT NULL
       )
     RETURNING contact.property_id
   ),
-  contact_input AS (
-    SELECT target_property.property_id, contact.channel_type, contact.value
-    FROM target_property
-    JOIN jsonb_to_recordset($6::jsonb) AS contact(channel_type text, value text) ON TRUE
+  writable_contact_input AS (
+    SELECT contact_input.*
+    FROM contact_input
+    JOIN writable_target USING (property_id)
   ),
   upserted_contacts AS (
     INSERT INTO hotel_catalog.property_contact_channels (
@@ -1479,14 +1278,14 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       updated_at
     )
     SELECT
-      contact_input.property_id,
-      contact_input.channel_type,
-      contact_input.value,
+      writable_contact_input.property_id,
+      writable_contact_input.channel_type,
+      writable_contact_input.value,
       TRUE,
       'booking',
       now()
-    FROM contact_input
-    WHERE NULLIF(contact_input.value, '') IS NOT NULL
+    FROM writable_contact_input
+    WHERE NULLIF(writable_contact_input.value, '') IS NOT NULL
     ON CONFLICT (property_id, channel_type, value) DO UPDATE
     SET is_public = TRUE,
         updated_at = now()
@@ -1503,13 +1302,13 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       updated_at
     )
     SELECT
-      target_property.property_id,
-      NULLIF($7::text, '')::time,
-      NULLIF($8::text, '')::time,
-      $9,
+      writable_target.property_id,
+      NULLIF($3::text, '')::time,
+      NULLIF($4::text, '')::time,
+      $5,
       'booking',
       now()
-    FROM target_property
+    FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
     SET check_in_time = EXCLUDED.check_in_time,
         check_out_time = EXCLUDED.check_out_time,
@@ -1531,16 +1330,16 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       updated_at
     )
     SELECT
-      target_property.property_id,
-      $12,
+      writable_target.property_id,
+      $7,
+      $6,
+      $8::text[],
+      $9::text[],
       $10,
-      $13::text[],
-      $14::text[],
-      $15,
-      $16,
-      $17,
+      $11,
+      $12,
       now()
-    FROM target_property
+    FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
     SET default_currency = EXCLUDED.default_currency,
         default_language = EXCLUDED.default_language,
@@ -1553,9 +1352,12 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     RETURNING property_id
   )
   SELECT source_link_status.source_link_count,
+         target_property.property_id::text AS "propertyId",
+         private_contact_conflict.found AS "privateContactConflict",
          COALESCE(booking_source.source_id, target_property.property_id::text) AS id
   FROM source_link_status
   LEFT JOIN target_property ON TRUE
+  CROSS JOIN private_contact_conflict
   LEFT JOIN LATERAL (
     SELECT source_link.source_id
     FROM hotel_catalog.property_source_links source_link
@@ -1567,6 +1369,15 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     ORDER BY source_link.updated_at DESC, source_link.source_id
     LIMIT 1
   ) booking_source ON TRUE
+  WHERE source_link_status.source_link_count > 0
+`;
+
+const TARGET_BOOKING_PROPERTY_WRITE_TARGET = `
+  ${TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE}
+  SELECT
+    source_link_status.source_link_count,
+    source_link_status.property_id::text AS "propertyId"
+  FROM source_link_status
   WHERE source_link_status.source_link_count > 0
 `;
 
@@ -1676,28 +1487,14 @@ function targetPropertySettingsWriteValues(
     update.supportedLanguages ?? parseStringList(current.supportedLanguages, []),
     defaultLanguage,
   );
-  const propertySupportedLocales = withDefaultCode(defaultLanguage, supportedLanguages);
   const defaultCurrency = update.defaultCurrency ?? current.defaultCurrency ?? "EUR";
   const supportedCurrencies = withoutDefaultCode(
     update.supportedCurrencies ?? parseStringList(current.supportedCurrencies, []),
     defaultCurrency,
   );
-  const contacts = targetPropertyContactInputs({
-    reservationEmail:
-      update.reservationEmail !== undefined ? update.reservationEmail : current.reservationEmail,
-    phoneNumber: update.phoneNumber !== undefined ? update.phoneNumber : current.phoneNumber,
-    whatsappNumber:
-      update.whatsappNumber !== undefined ? update.whatsappNumber : current.whatsappNumber,
-    instagram: update.instagram !== undefined ? update.instagram : current.instagram,
-    facebook: update.facebook !== undefined ? update.facebook : current.facebook,
-  });
+  const contacts = targetPropertyContactInputs(update);
 
   return [
-    normalizedRequiredText(update.propertyName ?? current.propertyName, "Property"),
-    nullableText(update.address !== undefined ? update.address : current.address),
-    nullableText(update.city !== undefined ? update.city : current.city),
-    nullableText(update.country !== undefined ? update.country : current.country)?.toUpperCase() ??
-      null,
     JSON.stringify(contacts),
     nullableText(update.checkInTime !== undefined ? update.checkInTime : current.checkInTime),
     nullableText(update.checkOutTime !== undefined ? update.checkOutTime : current.checkOutTime),
@@ -1707,7 +1504,6 @@ function targetPropertySettingsWriteValues(
         : current.cancellationPolicyText,
     ),
     defaultLanguage,
-    propertySupportedLocales,
     defaultCurrency,
     supportedCurrencies,
     supportedLanguages,
@@ -1724,17 +1520,17 @@ function targetPropertyContactInputs(input: {
   instagram?: string | null;
   facebook?: string | null;
 }): { channel_type: string; value: string }[] {
-  const contacts: [string, string | null | undefined][] = [
-    ["email", input.reservationEmail],
-    ["phone", input.phoneNumber],
-    ["whatsapp", input.whatsappNumber],
-    ["instagram", input.instagram],
-    ["facebook", input.facebook],
+  const contacts: [keyof typeof input, string][] = [
+    ["reservationEmail", "email"],
+    ["phoneNumber", "phone"],
+    ["whatsappNumber", "whatsapp"],
+    ["instagram", "instagram"],
+    ["facebook", "facebook"],
   ];
 
-  return contacts.flatMap(([channelType, value]) => {
-    const text = nullableText(value);
-    return text ? [{ channel_type: channelType, value: text }] : [];
+  return contacts.flatMap(([field, channelType]) => {
+    if (input[field] === undefined) return [];
+    return [{ channel_type: channelType, value: nullableText(input[field]) ?? "" }];
   });
 }
 
@@ -1743,18 +1539,10 @@ function nullableText(value: string | null | undefined): string | null {
   return normalized ? normalized : null;
 }
 
-function normalizedRequiredText(value: string | null | undefined, fallback: string): string {
-  return nullableText(value) ?? fallback;
-}
-
 function withoutDefaultCode(codes: readonly string[], defaultCode: string): string[] {
   return [...new Set(codes.map((code) => code.trim()).filter(Boolean))].filter(
     (code) => code !== defaultCode,
   );
-}
-
-function withDefaultCode(defaultCode: string, extraCodes: readonly string[]): string[] {
-  return [defaultCode, ...withoutDefaultCode(extraCodes, defaultCode)];
 }
 
 export function createPgBookingSettingsReadRepository(config: {
@@ -1766,12 +1554,11 @@ export function createPgBookingSettingsReadRepository(config: {
     throw new Error("Booking settings repository connectionString must not be empty");
   }
 
-  const pool =
-    config.pool ??
+  const pool = (config.pool ??
     new pg.Pool({
       connectionString: config.connectionString,
       max: config.max,
-    });
+    })) as BookingSettingsPool;
 
   return {
     async findAddonSettingsByHotelId(hotelId) {
@@ -2006,12 +1793,11 @@ export function createPgTargetBookingSettingsRepository(config: {
     throw new Error("Target booking settings repository connectionString must not be empty");
   }
 
-  const pool =
-    config.pool ??
+  const pool = (config.pool ??
     new pg.Pool({
       connectionString: config.connectionString,
       max: config.max,
-    });
+    })) as BookingSettingsPool;
 
   function toSingleSettingsRow(
     result: Pick<QueryResult<TargetBookingSettingsQueryRow>, "rows">,
@@ -2060,8 +1846,9 @@ export function createPgTargetBookingSettingsRepository(config: {
 
   async function findPropertySettings(
     hotelId: string,
+    executor: Pick<BookingSettingsPool, "query"> = pool,
   ): Promise<BookingPropertySettingsReadModel | null> {
-    const result = await pool.query<TargetBookingPropertySettingsRow>(
+    const result = await executor.query<TargetBookingPropertySettingsRow>(
       TARGET_BOOKING_PROPERTY_SETTINGS_SELECT,
       [hotelId],
     );
@@ -2158,21 +1945,85 @@ export function createPgTargetBookingSettingsRepository(config: {
     async findPropertySettingsByHotelId(hotelId) {
       return findPropertySettings(hotelId);
     },
-    async updatePropertySettingsByHotelId(hotelId, settings) {
-      const current = await findPropertySettings(hotelId);
-      if (!current) return null;
-      const result = await pool.query<TargetBookingPropertySettingsUpdateRow>(
-        TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE,
-        [hotelId, ...targetPropertySettingsWriteValues(current, settings)],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-      if (Number(row.source_link_count) > 1) {
-        throw new Error(
-          `Duplicate active canonical booking hotel source links found for booking hotel ${hotelId}`,
-        );
+    async updatePropertySettingsByHotelId(hotelId, settings, organizationId) {
+      if (!pool.connect) {
+        throw new Error("Booking property settings writes require a transactional database pool.");
       }
-      if (!row.id) return null;
+      const transaction = await pool.connect();
+      try {
+        await transaction.query("BEGIN");
+        const targetResult = await transaction.query<TargetBookingPropertyWriteTargetRow>(
+          TARGET_BOOKING_PROPERTY_WRITE_TARGET,
+          [hotelId],
+        );
+        const target = targetResult.rows[0];
+        if (!target) {
+          await transaction.query("ROLLBACK");
+          return null;
+        }
+        if (Number(target.source_link_count) > 1) {
+          throw new Error(
+            `Duplicate active canonical booking hotel source links found for booking hotel ${hotelId}`,
+          );
+        }
+        if (!target.propertyId) {
+          await transaction.query("ROLLBACK");
+          return null;
+        }
+        await transaction.query(
+          `SELECT id
+           FROM hotel_catalog.properties
+           WHERE id = $1::uuid
+           FOR UPDATE`,
+          [target.propertyId],
+        );
+        await transaction.query(
+          `SELECT property_id
+           FROM booking.booking_settings
+           WHERE property_id = $1::uuid
+           FOR UPDATE`,
+          [target.propertyId],
+        );
+        const current = await findPropertySettings(hotelId, transaction);
+        if (!current) {
+          await transaction.query("ROLLBACK");
+          return null;
+        }
+
+        const result = await transaction.query<TargetBookingPropertySettingsUpdateRow>(
+          TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE,
+          [hotelId, ...targetPropertySettingsWriteValues(current, settings)],
+        );
+        const row = result.rows[0];
+        if (!row) {
+          await transaction.query("ROLLBACK");
+          return null;
+        }
+        if (Number(row.source_link_count) > 1) {
+          throw new Error(
+            `Duplicate active canonical booking hotel source links found for booking hotel ${hotelId}`,
+          );
+        }
+        if (row.privateContactConflict) {
+          throw new BookingContactPublicationConflictError();
+        }
+        if (!row.id || !row.propertyId) {
+          await transaction.query("ROLLBACK");
+          return null;
+        }
+
+        await syncPropertyOfferReadModels(transaction, {
+          organizationId,
+          propertyId: row.propertyId,
+        });
+        await transaction.query("COMMIT");
+      } catch (error) {
+        await transaction.query("ROLLBACK");
+        throw error;
+      } finally {
+        transaction.release();
+      }
+
       return findPropertySettings(hotelId);
     },
     async findAddonSettingsByHotelId(hotelId) {
@@ -2773,11 +2624,15 @@ export async function registerBookingSettingsRoutes(
         request,
         reply,
         parseBody: parsePropertySettingsWriteBody,
-        write: (hotelId, settings) => {
+        write: (hotelId, settings, context) => {
           if (!writeRepository.updatePropertySettingsByHotelId) {
             throw new Error("Booking property settings write model is unavailable.");
           }
-          return writeRepository.updatePropertySettingsByHotelId(hotelId, settings);
+          return writeRepository.updatePropertySettingsByHotelId(
+            hotelId,
+            settings,
+            context.selectedOrganization.organizationId,
+          );
         },
         toResponse: toPropertySettingsResponse,
       }),
@@ -2887,7 +2742,11 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
   request: FastifyRequest<{ Params: BookingHotelParams; Body: unknown }>;
   reply: FastifyReply;
   parseBody(body: unknown): ValidationResult<TBody>;
-  write(hotelId: string, settings: TBody): Promise<TStored | null>;
+  write(
+    hotelId: string,
+    settings: TBody,
+    context: ReturnType<typeof enforceRoutePolicy>,
+  ): Promise<TStored | null>;
   afterWrite?(
     hotelId: string,
     settings: TBody,
@@ -2898,8 +2757,9 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
 }): Promise<unknown> {
   const { hotelId } = input.request.params;
 
+  let context: ReturnType<typeof enforceBookingSettingsPolicy>;
   try {
-    enforceBookingSettingsPolicy(input.request, hotelId);
+    context = enforceBookingSettingsPolicy(input.request, hotelId);
   } catch (error) {
     const contractError = toBookingSettingsAccessError(error, input.request, hotelId);
     if (contractError) {
@@ -2921,8 +2781,16 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
 
   let stored: TStored | null;
   try {
-    stored = await input.write(hotelId, parsed.value);
+    stored = await input.write(hotelId, parsed.value, context);
   } catch (error) {
+    if (error instanceof BookingContactPublicationConflictError) {
+      return sendBookingSettingsWriteError(input.reply, {
+        statusCode: 409,
+        code: "private_contact_conflict",
+        category: "validation",
+        message: error.message,
+      });
+    }
     input.request.log.error({ err: error, hotelId }, "Booking settings write failed");
     return sendBookingSettingsWriteError(input.reply, {
       statusCode: 500,
@@ -4221,8 +4089,11 @@ type BookingSettingsAuthorizationErrorCode =
   | "inactive_entitlement"
   | "missing_resource_access";
 
-function enforceBookingSettingsPolicy(request: FastifyRequest, hotelId: string): void {
-  enforceRoutePolicy(request, {
+function enforceBookingSettingsPolicy(
+  request: FastifyRequest,
+  hotelId: string,
+): ReturnType<typeof enforceRoutePolicy> {
+  return enforceRoutePolicy(request, {
     permission: "booking.settings.manage",
     entitlement: {
       product: "booking",

@@ -7,6 +7,7 @@ import { FormNavigationButtons } from "../FormNavigationButtons";
 import { HotelBasicInfoStep } from "./HotelBasicInfoStep";
 import { HotelListingsStep } from "./HotelListingsStep";
 import type { ListingCardSection } from "./ListingCard";
+import type { HotelTaskSection } from "@/app/profile/complete/hotelTaskFlow";
 
 interface HotelProfileFormProps {
   // Form state
@@ -16,6 +17,7 @@ interface HotelProfileFormProps {
   // Step management
   currentStep: number;
   totalSteps: number;
+  activeSection: HotelTaskSection;
 
   // UI state
   error: string;
@@ -24,12 +26,21 @@ interface HotelProfileFormProps {
   collapsedCards: Set<number>;
   countryInputs: Record<number, string>;
   countries: string[];
+  showCoverPhotoPicker?: boolean;
+  coverPhotoPreview?: string | null;
+  coverPhotoRequired?: boolean;
+  hasSelectedCoverPhoto?: boolean;
+  showLocalityConsent?: boolean;
+  submitLabel?: string;
 
   // Refs
   imageInputRefs: MutableRefObject<(HTMLInputElement | null)[]>;
+  coverPhotoInputRef?: React.RefObject<HTMLInputElement>;
 
   // Form handlers
   onFormChange: (updates: Partial<HotelFormState>) => void;
+  onCoverPhotoChange?: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onClearCoverPhoto?: () => void;
 
   // Listing handlers
   onToggleCollapse: (index: number) => void;
@@ -53,14 +64,24 @@ export function HotelProfileForm({
   listings,
   currentStep,
   totalSteps,
+  activeSection,
   error,
   submitting,
   canProceed,
   collapsedCards,
   countryInputs,
   countries,
+  showCoverPhotoPicker,
+  coverPhotoPreview,
+  coverPhotoRequired,
+  hasSelectedCoverPhoto,
+  showLocalityConsent,
+  submitLabel,
   imageInputRefs,
+  coverPhotoInputRef,
   onFormChange,
+  onCoverPhotoChange,
+  onClearCoverPhoto,
   onToggleCollapse,
   onUpdateListing,
   onImageChange,
@@ -71,7 +92,13 @@ export function HotelProfileForm({
   onSubmit,
 }: HotelProfileFormProps) {
   const listingSection: ListingCardSection =
-    currentStep === 2 ? "details" : currentStep === 3 ? "offerings" : "requirements";
+    activeSection === "offer_details"
+      ? "details"
+      : activeSection === "offerings"
+        ? "offerings"
+        : "requirements";
+  const isProfileSection =
+    activeSection === "public_profile" || activeSection === "creator_profile";
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,16 +114,27 @@ export function HotelProfileForm({
       <form
         onSubmit={handleFormSubmit}
         className={`rounded-xl border border-gray-200 bg-white ${
-          currentStep > 1 ? "space-y-4 border-0 bg-transparent" : "space-y-6 p-5 sm:p-6"
+          !isProfileSection ? "space-y-4 border-0 bg-transparent" : "space-y-6 p-5 sm:p-6"
         }`}
       >
-        {/* Step 1: Basic Information */}
-        {currentStep === 1 && (
-          <HotelBasicInfoStep form={form} onFormChange={onFormChange} error={error} />
+        {isProfileSection && (
+          <HotelBasicInfoStep
+            form={form}
+            onFormChange={onFormChange}
+            error={error}
+            publicProfileMode={activeSection === "public_profile"}
+            showLocalityConsent={showLocalityConsent}
+            showCoverPhotoPicker={showCoverPhotoPicker}
+            coverPhotoPreview={coverPhotoPreview}
+            coverPhotoRequired={coverPhotoRequired}
+            hasSelectedCoverPhoto={hasSelectedCoverPhoto}
+            coverPhotoInputRef={coverPhotoInputRef}
+            onCoverPhotoChange={onCoverPhotoChange}
+            onClearCoverPhoto={onClearCoverPhoto}
+          />
         )}
 
-        {/* Steps 2–4: one focused collaboration-offer section at a time */}
-        {currentStep > 1 && (
+        {!isProfileSection && (
           <HotelListingsStep
             listings={listings}
             section={listingSection}
@@ -128,7 +166,7 @@ export function HotelProfileForm({
           submitting={submitting}
           canProceed={canProceed}
           onPrevious={onPrevStep}
-          submitLabel="Complete Marketplace setup"
+          submitLabel={submitLabel ?? "Complete setup task"}
           stackOnMobile
         />
       </form>

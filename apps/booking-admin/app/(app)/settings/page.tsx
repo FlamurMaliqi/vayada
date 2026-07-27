@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import {
   buildFinancePaymentSettingsBody,
@@ -43,6 +44,7 @@ import {
 import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
 import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
 import { useTranslation } from "@/lib/i18n";
+import { bookingSettingsSectionForSetupTask } from "@/lib/utils/bookingSetupTaskRoute";
 
 // Audit-driven section IDs (VAY-400):
 // - "account" replaces the old "security" tab — those are personal-account
@@ -203,7 +205,12 @@ function buildTargetSettingsUpdate(
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const [activeSection, setActiveSection] = useState<Section>("property");
+  const searchParams = useSearchParams();
+  const requestedSetupSection = bookingSettingsSectionForSetupTask(
+    searchParams.get("taskId"),
+    searchParams.get("destinationRouteKey"),
+  );
+  const [activeSection, setActiveSection] = useState<Section>(requestedSetupSection ?? "property");
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -234,6 +241,10 @@ export default function SettingsPage() {
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
   const billingPlanSwitchUnavailable = true;
   const billingPlanSwitchDisabled = saving || billingPlanSwitchUnavailable;
+
+  useEffect(() => {
+    if (requestedSetupSection) setActiveSection(requestedSetupSection);
+  }, [requestedSetupSection]);
 
   const fetchSettings = useCallback(async (): Promise<PropertySettings | null> => {
     try {
@@ -630,7 +641,7 @@ export default function SettingsPage() {
                   {t("settings.property.propertyInfo")}
                 </h2>
                 <p className="text-[13px] text-gray-500 mt-0.5 mb-3">
-                  {t("settings.property.propertyInfoDesc")}
+                  Hotel name and address are shared across Vayada and managed in Hotel setup.
                 </p>
                 <div className="space-y-3">
                   <div>
@@ -640,8 +651,8 @@ export default function SettingsPage() {
                     <input
                       type="text"
                       value={settings.property_name}
-                      onChange={(e) => updateSetting("property_name", e.target.value)}
-                      className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      disabled
+                      className="w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-[13px] text-gray-600"
                       placeholder={t("settings.property.namePlaceholder")}
                     />
                   </div>
@@ -654,8 +665,8 @@ export default function SettingsPage() {
                       <input
                         type="text"
                         value={settings.address}
-                        onChange={(e) => updateSetting("address", e.target.value)}
-                        className="w-full pl-8 pr-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        disabled
+                        className="w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 py-1.5 pl-8 pr-2.5 text-[13px] text-gray-600"
                         placeholder={t("settings.property.addressPlaceholder")}
                       />
                     </div>

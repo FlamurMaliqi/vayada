@@ -1,147 +1,72 @@
+import { createHash } from "node:crypto";
+
 import type { PermissionKey } from "@vayada/backend-auth";
+import { hasPermission } from "@vayada/backend-authorization";
 import {
+  ADAPTIVE_HOTEL_SETUP_CONTRACT_VERSION,
   parseUpdateTracksRequest,
+  PROPERTY_PROFILE_CHANNEL_TYPES,
+  PROPERTY_PROFILE_CONTACT_PURPOSES,
+  PROPERTY_PROFILE_MAP_DISPLAY_MODES,
+  SETUP_TASK_DESTINATION_ROUTE_KEYS,
   SHARED_PROPERTY_TYPE_OPTIONS,
+  type AdaptiveHotelSetupStatus,
+  type CreatePropertyProfileRequest,
+  type ProductEntryDecision,
+  type PropertyProfile,
+  type PropertyProfileContact,
+  type PropertyProfileLocation,
+  type PropertyProfilePatch,
+  type PropertyProfileResponse,
+  type PropertySetupPlan,
+  type PublicPropertyProfilePatch,
+  type PublicPropertyProfileMediaPatchItem,
+  type PublicPropertyProfileResponse,
+  type SetupTask,
+  type SetupTaskId,
   type SharedPropertyTypeOption,
+  type SetupTrack,
+  type TrackStatus,
+  type UpdatePublicPropertyProfileRequest,
 } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { HotelSetupTrackCommandRepository } from "../domains/hotelSetupTrackCommandRepository.js";
 import { enforceRoutePolicy } from "./policy.js";
 
-export type SharedHotelSetupEntryProduct = "booking" | "pms" | "marketplace";
+export type SharedHotelSetupEntryProduct = ProductEntryDecision["requestedProduct"];
 export type SharedPropertyTypeCatalog = {
-  contractVersion: "shared-hotel-setup-property-types.v1";
+  contractVersion: "adaptive-hotel-property-types.v1";
   propertyTypes: readonly SharedPropertyTypeOption[];
 };
-export type SharedPropertyProfileMissingField =
-  | "displayName"
-  | "location"
-  | "website"
-  | "phone"
-  | "description"
-  | "media";
-export type SharedPropertyProfileSource = "canonical" | "legacy_prefill";
+export type SharedPropertyProfileInput = CreatePropertyProfileRequest;
+export type SharedPropertyProfile = PropertyProfileResponse;
+export type SharedPublicPropertyProfile = PublicPropertyProfileResponse;
 
-export type SharedProductActivation<Product extends SharedHotelSetupEntryProduct> = {
-  product: Product;
-  status: "not_selected" | "selected_incomplete" | "active" | "suspended" | "unavailable";
-  missingSteps: string[];
-  statusReasons: string[];
-  updatedAt: string | null;
-};
+export type UpdatePublicPropertyProfileResult =
+  | { status: "updated"; profile: SharedPublicPropertyProfile }
+  | { status: "conflict"; currentRevision: number }
+  | { status: "invalid_media"; mediaObjectIds: string[] }
+  | { status: "not_found" };
 
-export type SharedSetupProperty = {
+export type AdaptiveSetupTaskFact = Pick<
+  SetupTask,
+  "taskId" | "ownerProgress" | "readiness" | "reasonCodes" | "sourceRevision" | "freshness"
+>;
+
+export type AdaptivePropertySetupFacts = {
   propertyId: string;
   publicId: string;
   displayName: string | null;
   locationSummary: string | null;
-  sharedProfile: {
-    status: "incomplete" | "complete" | "disabled" | "private";
-    source: SharedPropertyProfileSource;
-    completionPercent: number;
-    missingFields: SharedPropertyProfileMissingField[];
-  };
-  products: {
-    booking: SharedProductActivation<"booking">;
-    pms: SharedProductActivation<"pms">;
-    marketplace: SharedProductActivation<"marketplace">;
-  };
-};
-
-export type SharedHotelSetupNextAction =
-  | { action: "create_property"; reasonCodes: string[] }
-  | { action: "select_property"; reasonCodes: string[] }
-  | {
-      action: "complete_shared_profile";
-      propertyId: string;
-      missingFields: SharedPropertyProfileMissingField[];
-      reasonCodes: string[];
-    }
-  | { action: "select_products"; propertyId: string; reasonCodes: string[] }
-  | {
-      action: "complete_product_activation";
-      propertyId: string;
-      product: SharedHotelSetupEntryProduct;
-      missingSteps: string[];
-      reasonCodes: string[];
-    }
-  | {
-      action: "enter_product";
-      propertyId: string;
-      product: SharedHotelSetupEntryProduct;
-      returnTo: string | null;
-      reasonCodes: string[];
-    };
-
-export type SharedHotelSetupStatus = {
-  contractVersion: "shared-hotel-setup-status.v1";
-  entry: {
-    entryProduct: SharedHotelSetupEntryProduct | null;
-    returnTo: string | null;
-  };
-  hotelGroup: {
-    organizationId: string;
-    displayName: string;
-    websiteUrl: string | null;
-    selectedProducts: SharedHotelSetupEntryProduct[];
-  };
-  selection: {
-    state: "no_property" | "single_property" | "multiple_properties";
-    selectedPropertyId: string | null;
-  };
-  properties: SharedSetupProperty[];
-  nextAction: SharedHotelSetupNextAction;
-  updatedAt: string;
-};
-
-export type SharedPropertyProfileLocation = {
-  countryCode: string | null;
-  region: string | null;
-  city: string | null;
-  streetAddress: string | null;
-  postalCode: string | null;
-  rawMarketplaceLocation: string | null;
-  timezone: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  addressPublic: boolean;
-  mapDisplayMode: "hidden" | "approximate" | "exact";
-};
-
-export type SharedPropertyProfileMedia = {
-  mediaType: "hero_image" | "gallery_image" | "logo";
-  url: string;
-  altText: string | null;
-  sortOrder: number;
-};
-
-export type SharedPropertyProfileInput = {
-  displayName: string;
-  propertyType: string | null;
-  location: SharedPropertyProfileLocation;
-  website: string | null;
-  contactEmail: string | null;
-  phone: string | null;
-  shortDescription: string | null;
-  longDescription: string | null;
-  media: SharedPropertyProfileMedia[];
-  expectedUpdatedAt?: string;
-};
-
-export type SharedPropertyProfile = SharedPropertyProfileInput & {
-  propertyId: string;
-  publicId: string;
-  sharedProfile: SharedSetupProperty["sharedProfile"];
-  updatedAt: string;
+  taskFacts: Record<SetupTaskId, AdaptiveSetupTaskFact>;
 };
 
 export type SharedHotelSetupStatusRepository = {
   getHotelSetupStatus(input: { organizationId: string; propertyIds: string[] }): Promise<{
     hotelGroupDisplayName: string | null;
     hotelGroupWebsiteUrl: string | null;
-    hotelGroupSelectedProducts: SharedHotelSetupEntryProduct[];
-    properties: SharedSetupProperty[];
+    properties: AdaptivePropertySetupFacts[];
   }>;
   getPropertyProfile(input: {
     organizationId: string;
@@ -149,15 +74,26 @@ export type SharedHotelSetupStatusRepository = {
   }): Promise<SharedPropertyProfile | null>;
   createPropertyProfile(input: {
     organizationId: string;
+    idempotencyKey: string;
+    correlationId: string;
     profile: SharedPropertyProfileInput;
   }): Promise<SharedPropertyProfile>;
   updatePropertyProfile(input: {
     organizationId: string;
     propertyId: string;
-    expectedPropertyType: string | null;
-    expectedUpdatedAt: string | null;
+    expectedProfileRevision: number;
     profile: SharedPropertyProfileInput;
   }): Promise<SharedPropertyProfile | null>;
+  getPublicPropertyProfile(input: {
+    organizationId: string;
+    propertyId: string;
+  }): Promise<SharedPublicPropertyProfile | null>;
+  updatePublicPropertyProfile(input: {
+    organizationId: string;
+    propertyId: string;
+    expectedProfileRevision: number;
+    patch: PublicPropertyProfilePatch;
+  }): Promise<UpdatePublicPropertyProfileResult>;
   close?(): Promise<void>;
 };
 
@@ -169,7 +105,6 @@ type SharedHotelSetupStatusRoutesOptions = {
 
 type SharedHotelSetupQuery = {
   entryProduct?: string;
-  returnTo?: string;
   propertyId?: string;
 };
 
@@ -180,8 +115,6 @@ type SharedPropertyProfileParams = {
 type SharedPropertyProfileBody = Record<string, unknown> | undefined;
 
 const ENTRY_PRODUCTS: readonly SharedHotelSetupEntryProduct[] = ["booking", "pms", "marketplace"];
-const MEDIA_TYPES = ["hero_image", "gallery_image", "logo"] as const;
-const MAP_DISPLAY_MODES = ["hidden", "approximate", "exact"] as const;
 const SHARED_PROPERTY_TYPE_VALUES = new Set<string>(
   SHARED_PROPERTY_TYPE_OPTIONS.map(({ value }) => value),
 );
@@ -204,7 +137,7 @@ export async function registerSharedHotelSetupStatusRoutes(
     if (!resolveSharedSetupAccess(request, reply, null)) return reply;
 
     return {
-      contractVersion: "shared-hotel-setup-property-types.v1",
+      contractVersion: "adaptive-hotel-property-types.v1",
       propertyTypes: SHARED_PROPERTY_TYPE_OPTIONS,
     } satisfies SharedPropertyTypeCatalog;
   });
@@ -224,7 +157,6 @@ export async function registerSharedHotelSetupStatusRoutes(
       organizationId: access.organizationId,
       propertyIds: access.propertyIds,
     });
-    const returnTo = safeReturnTo(query.returnTo, request);
     const authorizedProperties = filterAuthorizedProperties(status.properties, access.propertyIds);
     const availablePropertyIds = authorizedProperties.map((property) => property.propertyId);
     const selectedPropertyId =
@@ -241,26 +173,59 @@ export async function registerSharedHotelSetupStatusRoutes(
       });
     }
 
+    const canManageTracks = hasPermission(access.context, "hotel_catalog.products.manage");
+    const rawTrackStatus = await trackCommandRepository.getTrackStatus({
+      organizationId: access.organizationId,
+    });
+    const tracks = canManageTracks
+      ? rawTrackStatus.tracks
+      : rawTrackStatus.tracks.map((track) => ({ ...track, allowedActions: [] }));
+    const selectedProperty =
+      authorizedProperties.find((property) => property.propertyId === selectedPropertyId) ?? null;
+    const evaluatedAt = now().toISOString();
+
     return {
-      contractVersion: "shared-hotel-setup-status.v1",
-      entry: {
-        entryProduct,
-        returnTo,
-      },
-      hotelGroup: {
+      contractVersion: ADAPTIVE_HOTEL_SETUP_CONTRACT_VERSION,
+      organization: {
         organizationId: access.organizationId,
         displayName: status.hotelGroupDisplayName ?? access.organizationId,
         websiteUrl: status.hotelGroupWebsiteUrl,
-        selectedProducts: status.hotelGroupSelectedProducts,
+        selectedTracks: rawTrackStatus.selectedTracks,
+        trackRevision: rawTrackStatus.trackRevision,
+        canManageTracks,
+        tracks,
       },
-      selection: {
+      propertySelection: {
         state: selectionState(availablePropertyIds),
         selectedPropertyId,
+        availableProperties: authorizedProperties.map(
+          ({ propertyId, publicId, displayName, locationSummary }) => ({
+            propertyId,
+            publicId,
+            displayName,
+            locationSummary,
+          }),
+        ),
       },
-      properties: authorizedProperties,
-      nextAction: nextAction(authorizedProperties, selectedPropertyId, entryProduct, returnTo),
-      updatedAt: now().toISOString(),
-    } satisfies SharedHotelSetupStatus;
+      entryDecision: entryDecision({
+        context: access.context,
+        entryProduct,
+        propertyId: selectedPropertyId,
+        selectedTracks: rawTrackStatus.selectedTracks,
+        tracks,
+      }),
+      setupPlan: selectedProperty
+        ? buildPropertySetupPlan({
+            context: access.context,
+            property: selectedProperty,
+            selectedTracks: rawTrackStatus.selectedTracks,
+            trackRevision: rawTrackStatus.trackRevision,
+            tracks,
+            evaluatedAt,
+          })
+        : null,
+      updatedAt: evaluatedAt,
+    } satisfies AdaptiveHotelSetupStatus;
   });
 
   app.get("/properties/:propertyId/profile", async (request, reply) => {
@@ -286,22 +251,40 @@ export async function registerSharedHotelSetupStatusRoutes(
   });
 
   app.post("/properties", async (request, reply) => {
-    const profileInput = parseSharedPropertyProfile(
+    const profileInput = parseCreatePropertyProfile(
       request.body as SharedPropertyProfileBody,
       reply,
     );
     if (profileInput === false) return reply;
-    if (!validateNewHotelBasics(profileInput, reply)) return reply;
 
     const access = resolveSharedSetupAccess(request, reply, null, "hotel_catalog.setup.manage");
     if (!access) return reply;
+    if (
+      hasPublishedPropertySurface(profileInput) &&
+      !ensureMarketplacePublicationPermission(access.context, reply)
+    ) {
+      return reply;
+    }
+    const idempotencyKey = parseIdempotencyKey(request, reply);
+    if (!idempotencyKey) return reply;
 
-    const profile = await repository.createPropertyProfile({
-      organizationId: access.organizationId,
-      profile: profileInput,
-    });
+    try {
+      const profile = await repository.createPropertyProfile({
+        organizationId: access.organizationId,
+        idempotencyKey,
+        correlationId: access.context.audit.correlationId ?? access.context.audit.requestId,
+        profile: profileInput,
+      });
 
-    return reply.status(201).send(profile);
+      return reply.status(201).send(profile);
+    } catch (error) {
+      const code =
+        isObjectRecord(error) && typeof error["code"] === "string" ? error["code"] : null;
+      if (code === "idempotency_key_conflict" || code === "command_in_progress") {
+        return reply.status(409).send({ code });
+      }
+      throw error;
+    }
   });
 
   app.put("/properties/:propertyId/profile", async (request, reply) => {
@@ -328,19 +311,24 @@ export async function registerSharedHotelSetupStatusRoutes(
       });
     }
 
-    const profileInput = parseSharedPropertyProfile(
+    const update = parsePropertyProfileUpdate(
       request.body as SharedPropertyProfileBody,
+      existingProfile.profile,
       reply,
-      existingProfile.propertyType,
     );
-    if (profileInput === false) return reply;
+    if (update === false) return reply;
+    if (
+      publishedPropertySurfaceChanged(existingProfile.profile, update.profile) &&
+      !ensureMarketplacePublicationPermission(access.context, reply)
+    ) {
+      return reply;
+    }
 
     const profile = await repository.updatePropertyProfile({
       organizationId: access.organizationId,
       propertyId,
-      expectedPropertyType: existingProfile.propertyType,
-      expectedUpdatedAt: profileInput.expectedUpdatedAt ?? null,
-      profile: profileInput,
+      expectedProfileRevision: update.expectedProfileRevision,
+      profile: update.profile,
     });
     if (!profile) {
       const currentProfile = await repository.getPropertyProfile({
@@ -349,8 +337,9 @@ export async function registerSharedHotelSetupStatusRoutes(
       });
       if (currentProfile) {
         return reply.status(409).send({
-          code: "property_profile_conflict",
+          code: "profile_revision_conflict",
           detail: "The property profile changed while it was being updated. Reload and try again.",
+          currentRevision: currentProfile.profileRevision,
         });
       }
       return reply.status(404).send({
@@ -360,6 +349,75 @@ export async function registerSharedHotelSetupStatusRoutes(
     }
 
     return profile;
+  });
+
+  app.get("/properties/:propertyId/public-profile", async (request, reply) => {
+    const params = request.params as SharedPropertyProfileParams;
+    const propertyId = parsePropertyId(params.propertyId, reply);
+    if (propertyId === false || propertyId === null) return reply;
+
+    const access = resolveSharedSetupAccess(request, reply, propertyId);
+    if (!access) return reply;
+
+    const profile = await repository.getPublicPropertyProfile({
+      organizationId: access.organizationId,
+      propertyId,
+    });
+    if (!profile) {
+      return reply.status(404).send({
+        code: "public_property_profile_not_found",
+        detail: "Public property profile was not found for the selected property.",
+      });
+    }
+    return profile;
+  });
+
+  app.put("/properties/:propertyId/public-profile", async (request, reply) => {
+    const params = request.params as SharedPropertyProfileParams;
+    const propertyId = parsePropertyId(params.propertyId, reply);
+    if (propertyId === false || propertyId === null) return reply;
+
+    const access = resolveSharedSetupAccess(
+      request,
+      reply,
+      propertyId,
+      "hotel_catalog.setup.manage",
+    );
+    if (!access) return reply;
+    if (!ensureMarketplacePublicationPermission(access.context, reply)) return reply;
+
+    const update = parsePublicPropertyProfileUpdate(
+      request.body as SharedPropertyProfileBody,
+      reply,
+    );
+    if (update === false) return reply;
+
+    const result = await repository.updatePublicPropertyProfile({
+      organizationId: access.organizationId,
+      propertyId,
+      ...update,
+    });
+    if (result.status === "updated") return result.profile;
+    if (result.status === "conflict") {
+      return reply.status(409).send({
+        code: "profile_revision_conflict",
+        detail: "The property profile changed while it was being updated. Reload and try again.",
+        currentRevision: result.currentRevision,
+      });
+    }
+    if (result.status === "invalid_media") {
+      return reply.status(422).send({
+        code: "invalid_setup_request",
+        detail: "Public profile media must be active, approved Platform Media for this property.",
+        fields: {
+          "patch.media": [`Invalid mediaObjectId values: ${result.mediaObjectIds.join(", ")}`],
+        },
+      });
+    }
+    return reply.status(404).send({
+      code: "public_property_profile_not_found",
+      detail: "Public property profile was not found for the selected property.",
+    });
   });
 
   app.put("/tracks", async (request, reply) => {
@@ -388,6 +446,68 @@ export async function registerSharedHotelSetupStatusRoutes(
     if (!result.ok) return reply.status(409).send(result.error);
     return result.response;
   });
+}
+
+function ensureMarketplacePublicationPermission(
+  context: ReturnType<typeof enforceRoutePolicy>,
+  reply: FastifyReply,
+): boolean {
+  if (hasPermission(context, "marketplace.profile.manage")) return true;
+  reply.status(403).send({
+    code: "missing_permission",
+    detail: "Marketplace publication settings require hotel-owner access.",
+  });
+  return false;
+}
+
+function hasPublishedPropertySurface(profile: SharedPropertyProfileInput): boolean {
+  const surface = propertyPublicationSurface(profile);
+  return surface.locality !== null || surface.geo !== null || surface.contacts.length > 0;
+}
+
+function publishedPropertySurfaceChanged(
+  current: SharedPropertyProfileInput,
+  next: SharedPropertyProfileInput,
+): boolean {
+  return (
+    JSON.stringify(propertyPublicationSurface(current)) !==
+    JSON.stringify(propertyPublicationSurface(next))
+  );
+}
+
+function propertyPublicationSurface(profile: SharedPropertyProfileInput): {
+  locality: {
+    countryCode: string;
+    city: string | null;
+  } | null;
+  geo: {
+    latitude: number | null;
+    longitude: number | null;
+    mapDisplayMode: PropertyProfileLocation["mapDisplayMode"];
+  } | null;
+  contacts: string[];
+} {
+  const { location } = profile;
+  return {
+    locality: location.localityPublic
+      ? {
+          countryCode: location.countryCode,
+          city: location.city ?? null,
+        }
+      : null,
+    geo:
+      location.geoPublic || location.mapDisplayMode !== "hidden"
+        ? {
+            latitude: location.latitude ?? null,
+            longitude: location.longitude ?? null,
+            mapDisplayMode: location.mapDisplayMode,
+          }
+        : null,
+    contacts: profile.contacts
+      .filter(({ isPublic }) => isPublic)
+      .map(({ channelType, purpose, value }) => `${channelType}\u0000${purpose}\u0000${value}`)
+      .sort(),
+  };
 }
 
 function resolveSharedSetupAccess(
@@ -504,140 +624,286 @@ function invalidSetupRequest(reply: FastifyReply, detail: string): FastifyReply 
   });
 }
 
-function parseSharedPropertyProfile(
+function parsePublicPropertyProfileUpdate(
   body: SharedPropertyProfileBody,
   reply: FastifyReply,
-  grandfatheredPropertyType: string | null = null,
+): UpdatePublicPropertyProfileRequest | false {
+  const errors: Record<string, string[]> = {};
+  if (!isObjectRecord(body)) {
+    addFieldError(errors, "request", "request must be an object.");
+    return sendInvalidProfile(reply, errors);
+  }
+  validateKnownKeys(body, ["expectedProfileRevision", "patch"], "request", errors);
+  const expectedProfileRevision = body["expectedProfileRevision"];
+  if (
+    !Number.isSafeInteger(expectedProfileRevision) ||
+    (expectedProfileRevision as number) < 1 ||
+    (expectedProfileRevision as number) > 2_147_483_647
+  ) {
+    addFieldError(
+      errors,
+      "expectedProfileRevision",
+      "expectedProfileRevision must be a positive integer.",
+    );
+  }
+  const rawPatch = body["patch"];
+  if (!isObjectRecord(rawPatch) || Object.keys(rawPatch).length === 0) {
+    addFieldError(errors, "patch", "patch must be a non-empty object.");
+    return sendInvalidProfile(reply, errors);
+  }
+  validateKnownKeys(rawPatch, ["shortDescription", "longDescription", "media"], "patch", errors);
+  const patch: PublicPropertyProfilePatch = {};
+  if (Object.hasOwn(rawPatch, "shortDescription")) {
+    patch.shortDescription = nullableDescription(
+      rawPatch["shortDescription"],
+      "patch.shortDescription",
+      500,
+      errors,
+    );
+  }
+  if (Object.hasOwn(rawPatch, "longDescription")) {
+    patch.longDescription = nullableDescription(
+      rawPatch["longDescription"],
+      "patch.longDescription",
+      5_000,
+      errors,
+    );
+  }
+  if (Object.hasOwn(rawPatch, "media")) {
+    const media = parsePublicProfileMediaPatch(rawPatch["media"], errors);
+    if (media !== false) patch.media = media;
+  }
+  if (Object.keys(errors).length > 0 || typeof expectedProfileRevision !== "number") {
+    return sendInvalidProfile(reply, errors);
+  }
+  return { expectedProfileRevision, patch };
+}
+
+function nullableDescription(
+  value: unknown,
+  field: string,
+  maxLength: number,
+  errors: Record<string, string[]>,
+): string | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") {
+    addFieldError(errors, field, `${field} must be a string or null.`);
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > maxLength) {
+    addFieldError(errors, field, `${field} is too long.`);
+    return null;
+  }
+  return trimmed;
+}
+
+function parsePublicProfileMediaPatch(
+  value: unknown,
+  errors: Record<string, string[]>,
+): PublicPropertyProfileMediaPatchItem[] | false {
+  if (!Array.isArray(value)) {
+    addFieldError(errors, "patch.media", "patch.media must be an array.");
+    return false;
+  }
+  if (value.length > 100) {
+    addFieldError(errors, "patch.media", "patch.media may contain at most 100 items.");
+  }
+  const media = value.map((item, index): PublicPropertyProfileMediaPatchItem => {
+    const field = `patch.media.${index}`;
+    const input = objectValue(item);
+    if (!isObjectRecord(item)) addFieldError(errors, field, `${field} must be an object.`);
+    validateKnownKeys(input, ["mediaObjectId", "altText", "sortOrder"], field, errors);
+    const mediaObjectId = requiredString(input["mediaObjectId"], `${field}.mediaObjectId`, errors, {
+      maxLength: 36,
+    });
+    if (mediaObjectId && !isUuid(mediaObjectId)) {
+      addFieldError(errors, `${field}.mediaObjectId`, "mediaObjectId must be a UUID.");
+    }
+    const altText = nullableDescription(input["altText"], `${field}.altText`, 240, errors);
+    const sortOrder = input["sortOrder"];
+    if (
+      !Number.isSafeInteger(sortOrder) ||
+      (sortOrder as number) < 0 ||
+      (sortOrder as number) > 2_147_483_647
+    ) {
+      addFieldError(errors, `${field}.sortOrder`, "sortOrder must be a non-negative integer.");
+    }
+    return {
+      mediaObjectId: mediaObjectId ?? "",
+      altText,
+      sortOrder: typeof sortOrder === "number" ? sortOrder : 0,
+    };
+  });
+  if (new Set(media.map(({ mediaObjectId }) => mediaObjectId)).size !== media.length) {
+    addFieldError(errors, "patch.media", "patch.media must not contain duplicate mediaObjectIds.");
+  }
+  if (new Set(media.map(({ sortOrder }) => sortOrder)).size !== media.length) {
+    addFieldError(
+      errors,
+      "patch.media",
+      "patch.media must not contain duplicate sortOrder values.",
+    );
+  }
+  return media;
+}
+
+function parseCreatePropertyProfile(
+  body: SharedPropertyProfileBody,
+  reply: FastifyReply,
 ): SharedPropertyProfileInput | false {
   const errors: Record<string, string[]> = {};
-  const input = objectValue(body);
-  const rawLocation = input["location"];
-  if (rawLocation !== undefined && rawLocation !== null && !isObjectRecord(rawLocation)) {
-    addFieldError(errors, "location", "location must be an object.");
+  if (!isObjectRecord(body)) {
+    addFieldError(errors, "request", "request must be an object.");
+    return sendInvalidProfile(reply, errors);
   }
-  const location = objectValue(rawLocation);
+  const input = objectValue(body);
+  validateKnownKeys(
+    input,
+    ["displayName", "propertyType", "location", "contacts"],
+    "request",
+    errors,
+  );
+  const location = objectValue(input["location"]);
+  validateKnownKeys(
+    location,
+    [
+      "streetAddress",
+      "postalCode",
+      "city",
+      "countryCode",
+      "timezone",
+      "latitude",
+      "longitude",
+      "localityPublic",
+      "geoPublic",
+      "mapDisplayMode",
+    ],
+    "location",
+    errors,
+  );
+  const profile = parseCanonicalPropertyProfile(input, errors);
+  if (profile && Object.keys(errors).length === 0) return profile;
+  return sendInvalidProfile(reply, errors);
+}
 
+function parsePropertyProfileUpdate(
+  body: SharedPropertyProfileBody,
+  existing: PropertyProfile,
+  reply: FastifyReply,
+): { expectedProfileRevision: number; profile: PropertyProfile } | false {
+  const errors: Record<string, string[]> = {};
+  if (!isObjectRecord(body)) {
+    addFieldError(errors, "request", "request must be an object.");
+    return sendInvalidProfile(reply, errors);
+  }
+  validateKnownKeys(body, ["expectedProfileRevision", "patch"], "request", errors);
+  const expectedProfileRevision = body["expectedProfileRevision"];
+  if (
+    !Number.isSafeInteger(expectedProfileRevision) ||
+    (expectedProfileRevision as number) < 1 ||
+    (expectedProfileRevision as number) > 2_147_483_647
+  ) {
+    addFieldError(
+      errors,
+      "expectedProfileRevision",
+      "expectedProfileRevision must be a positive integer.",
+    );
+  }
+  const rawPatch = body["patch"];
+  if (!isObjectRecord(rawPatch) || Object.keys(rawPatch).length === 0) {
+    addFieldError(errors, "patch", "patch must be a non-empty object.");
+    return sendInvalidProfile(reply, errors);
+  }
+  validateKnownKeys(
+    rawPatch,
+    ["displayName", "propertyType", "location", "contacts"],
+    "patch",
+    errors,
+  );
+  if (
+    rawPatch["location"] !== undefined &&
+    (!isObjectRecord(rawPatch["location"]) || Object.keys(rawPatch["location"]).length === 0)
+  ) {
+    addFieldError(errors, "patch.location", "patch.location must be a non-empty object.");
+  }
+  const locationPatch = objectValue(rawPatch["location"]);
+  validateKnownKeys(
+    locationPatch,
+    [
+      "streetAddress",
+      "postalCode",
+      "city",
+      "countryCode",
+      "timezone",
+      "latitude",
+      "longitude",
+      "localityPublic",
+      "geoPublic",
+      "mapDisplayMode",
+    ],
+    "patch.location",
+    errors,
+  );
+  const merged: Record<string, unknown> = {
+    ...existing,
+    ...rawPatch,
+    location: { ...existing.location, ...locationPatch },
+    contacts: rawPatch["contacts"] ?? existing.contacts,
+  };
+  const profile = parseCanonicalPropertyProfile(merged, errors);
+  if (profile && Object.keys(errors).length === 0 && typeof expectedProfileRevision === "number") {
+    return { expectedProfileRevision, profile };
+  }
+  return sendInvalidProfile(reply, errors);
+}
+
+function parseCanonicalPropertyProfile(
+  input: Record<string, unknown>,
+  errors: Record<string, string[]>,
+): PropertyProfile | null {
   const displayName = requiredString(input["displayName"], "displayName", errors, {
     maxLength: 200,
   });
-  const propertyType = optionalString(input["propertyType"], "propertyType", errors, {
+  const propertyType = requiredString(input["propertyType"], "propertyType", errors, {
     maxLength: 40,
   });
-  if (
-    propertyType &&
-    !SHARED_PROPERTY_TYPE_VALUES.has(propertyType) &&
-    propertyType !== grandfatheredPropertyType
-  ) {
+  if (propertyType && !SHARED_PROPERTY_TYPE_VALUES.has(propertyType)) {
     addFieldError(errors, "propertyType", "propertyType is invalid.");
   }
-  const website = optionalUrl(input["website"], "website", errors);
-  const contactEmail = optionalEmail(input["contactEmail"], "contactEmail", errors);
-  const phone = optionalString(input["phone"], "phone", errors, { maxLength: 64 });
-  if (phone && !isValidPhone(phone)) {
-    addFieldError(errors, "phone", "phone must be a valid phone number.");
+  if (!isObjectRecord(input["location"])) {
+    addFieldError(errors, "location", "location must be an object.");
   }
-  const shortDescription = optionalString(input["shortDescription"], "shortDescription", errors, {
-    maxLength: 500,
-  });
-  const longDescription = optionalString(input["longDescription"], "longDescription", errors, {
-    maxLength: 5000,
-  });
-  const expectedUpdatedAt = optionalString(
-    input["expectedUpdatedAt"],
-    "expectedUpdatedAt",
-    errors,
-    { maxLength: 64 },
-  );
-  if (expectedUpdatedAt && Number.isNaN(Date.parse(expectedUpdatedAt))) {
-    addFieldError(errors, "expectedUpdatedAt", "expectedUpdatedAt must be an ISO timestamp.");
-  }
-  const parsedLocation = parseLocation(location, errors);
-  const media = parseMedia(input["media"], errors);
-
-  if (Object.keys(errors).length > 0 || !displayName || media === false) {
-    reply.status(422).send({
-      code: "invalid_shared_property_profile",
-      detail: "Shared property profile contains invalid fields.",
-      fields: errors,
-    });
-    return false;
-  }
-
-  return {
-    displayName,
-    propertyType,
-    location: parsedLocation,
-    website,
-    contactEmail,
-    phone,
-    shortDescription,
-    longDescription,
-    media,
-    ...(expectedUpdatedAt ? { expectedUpdatedAt } : {}),
-  };
+  const location = parseProfileLocation(objectValue(input["location"]), errors);
+  const contacts = parseProfileContacts(input["contacts"], errors);
+  if (!displayName || !propertyType || contacts === false) return null;
+  return { displayName, propertyType, location, contacts };
 }
 
-function validateNewHotelBasics(profile: SharedPropertyProfileInput, reply: FastifyReply): boolean {
-  const errors: Record<string, string[]> = {};
-  if (!profile.propertyType) {
-    addFieldError(errors, "propertyType", "propertyType is required.");
-  } else if (!SHARED_PROPERTY_TYPE_VALUES.has(profile.propertyType)) {
-    addFieldError(errors, "propertyType", "propertyType is invalid.");
-  }
-  if (!profile.location.streetAddress) {
-    addFieldError(errors, "location.streetAddress", "streetAddress is required.");
-  }
-  if (!profile.location.postalCode) {
-    addFieldError(errors, "location.postalCode", "postalCode is required.");
-  }
-  if (!profile.location.city) {
-    addFieldError(errors, "location.city", "city is required.");
-  }
-  if (!profile.location.countryCode) {
-    addFieldError(errors, "location.countryCode", "countryCode is required.");
-  }
-  if (!profile.location.timezone) {
-    addFieldError(errors, "location.timezone", "timezone is required.");
-  }
-  if (!profile.contactEmail) {
-    addFieldError(errors, "contactEmail", "contactEmail is required.");
-  }
-  if (!profile.phone) {
-    addFieldError(errors, "phone", "phone is required.");
-  }
-  if (Object.keys(errors).length === 0) return true;
-
-  reply.status(422).send({
-    code: "invalid_shared_property_profile",
-    detail: "Required hotel basics are missing.",
-    fields: errors,
-  });
-  return false;
-}
-
-function parseLocation(
-  location: Record<string, unknown>,
+function parseProfileLocation(
+  input: Record<string, unknown>,
   errors: Record<string, string[]>,
-): SharedPropertyProfileLocation {
-  const countryCode = optionalString(location["countryCode"], "location.countryCode", errors, {
+): PropertyProfileLocation {
+  const countryCode = requiredString(input["countryCode"], "location.countryCode", errors, {
     maxLength: 2,
   });
   if (countryCode && !/^[A-Za-z]{2}$/.test(countryCode)) {
     addFieldError(errors, "location.countryCode", "countryCode must be a two-letter code.");
   }
 
-  const timezone = optionalString(location["timezone"], "location.timezone", errors, {
+  const timezone = requiredString(input["timezone"], "location.timezone", errors, {
     maxLength: 80,
   });
   if (timezone && (!TIMEZONE_PATTERN.test(timezone) || !isValidTimezone(timezone))) {
     addFieldError(errors, "location.timezone", "timezone must be an IANA timezone.");
   }
 
-  const latitude = optionalNumber(location["latitude"], "location.latitude", errors, {
+  const latitude = optionalNumber(input["latitude"], "location.latitude", errors, {
     min: -90,
     max: 90,
   });
-  const longitude = optionalNumber(location["longitude"], "location.longitude", errors, {
+  const longitude = optionalNumber(input["longitude"], "location.longitude", errors, {
     min: -180,
     max: 180,
   });
@@ -651,79 +917,124 @@ function parseLocation(
   }
 
   const mapDisplayMode = optionalEnum(
-    location["mapDisplayMode"],
+    input["mapDisplayMode"],
     "location.mapDisplayMode",
-    MAP_DISPLAY_MODES,
+    PROPERTY_PROFILE_MAP_DISPLAY_MODES,
     errors,
     "hidden",
   );
-  const addressPublicValue = location["addressPublic"];
-  let addressPublic = true;
-  if (addressPublicValue !== undefined && addressPublicValue !== null) {
-    if (typeof addressPublicValue === "boolean") {
-      addressPublic = addressPublicValue;
-    } else {
-      addFieldError(errors, "location.addressPublic", "location.addressPublic must be a boolean.");
-    }
+  const localityPublic = optionalBoolean(
+    input["localityPublic"],
+    "location.localityPublic",
+    errors,
+    false,
+  );
+  const geoPublic = optionalBoolean(input["geoPublic"], "location.geoPublic", errors, false);
+  if (geoPublic && (latitude === null || longitude === null || mapDisplayMode === "hidden")) {
+    addFieldError(
+      errors,
+      "location.geoPublic",
+      "geoPublic requires coordinates and an approximate or exact map display mode.",
+    );
+  }
+  if (!geoPublic && mapDisplayMode !== "hidden") {
+    addFieldError(
+      errors,
+      "location.mapDisplayMode",
+      "mapDisplayMode must be hidden while geoPublic is false.",
+    );
   }
 
   return {
-    countryCode: countryCode?.toUpperCase() ?? null,
-    region: optionalString(location["region"], "location.region", errors, { maxLength: 120 }),
-    city: optionalString(location["city"], "location.city", errors, { maxLength: 120 }),
-    streetAddress: optionalString(location["streetAddress"], "location.streetAddress", errors, {
-      maxLength: 240,
-    }),
-    postalCode: optionalString(location["postalCode"], "location.postalCode", errors, {
-      maxLength: 32,
-    }),
-    rawMarketplaceLocation: optionalString(
-      location["rawMarketplaceLocation"],
-      "location.rawMarketplaceLocation",
-      errors,
-      { maxLength: 240 },
-    ),
-    timezone,
+    countryCode: countryCode?.toUpperCase() ?? "",
+    city: requiredString(input["city"], "location.city", errors, { maxLength: 120 }) ?? "",
+    streetAddress:
+      requiredString(input["streetAddress"], "location.streetAddress", errors, {
+        maxLength: 240,
+      }) ?? "",
+    postalCode:
+      requiredString(input["postalCode"], "location.postalCode", errors, {
+        maxLength: 32,
+      }) ?? "",
+    timezone: timezone ?? "",
     latitude,
     longitude,
-    addressPublic,
+    localityPublic,
+    geoPublic,
     mapDisplayMode,
   };
 }
 
-function parseMedia(
+function parseProfileContacts(
   value: unknown,
   errors: Record<string, string[]>,
-): SharedPropertyProfileMedia[] | false {
-  if (value === undefined || value === null) return [];
+): PropertyProfileContact[] | false {
   if (!Array.isArray(value)) {
-    addFieldError(errors, "media", "media must be an array.");
+    addFieldError(errors, "contacts", "contacts must be an array.");
     return false;
   }
-
-  return value.map((item, index) => {
-    const media = objectValue(item);
-    const field = `media.${index}`;
-    const url = optionalUrl(media["url"], `${field}.url`, errors);
-    if (!url) {
-      addFieldError(errors, `${field}.url`, "url is required.");
+  if (value.length > 50) {
+    addFieldError(errors, "contacts", "contacts may contain at most 50 items.");
+  }
+  const contacts = value.map((item, index): PropertyProfileContact => {
+    const contact = objectValue(item);
+    const field = `contacts.${index}`;
+    if (!isObjectRecord(item)) addFieldError(errors, field, `${field} must be an object.`);
+    validateKnownKeys(contact, ["channelType", "value", "purpose", "isPublic"], field, errors);
+    const channelType = optionalEnum(
+      contact["channelType"],
+      `${field}.channelType`,
+      PROPERTY_PROFILE_CHANNEL_TYPES,
+      errors,
+      "email",
+      true,
+    );
+    let contactValue =
+      requiredString(contact["value"], `${field}.value`, errors, {
+        maxLength: channelType === "website" ? 2048 : 320,
+      }) ?? "";
+    if (channelType === "email" && contactValue) {
+      if (EMAIL_PATTERN.test(contactValue)) contactValue = contactValue.toLowerCase();
+      else addFieldError(errors, `${field}.value`, "email contact must be a valid email address.");
     }
-
-    return {
-      mediaType: optionalEnum(
-        media["mediaType"],
-        `${field}.mediaType`,
-        MEDIA_TYPES,
+    if ((channelType === "phone" || channelType === "whatsapp") && !isValidPhone(contactValue)) {
+      addFieldError(
         errors,
-        "gallery_image",
-      ),
-      url: url ?? "",
-      altText: optionalString(media["altText"], `${field}.altText`, errors, {
-        maxLength: 240,
-      }),
-      sortOrder: index,
-    };
+        `${field}.value`,
+        `${channelType} contact must be a valid phone number.`,
+      );
+    }
+    if (channelType === "website" && contactValue) {
+      contactValue = validHttpUrl(contactValue) ?? "";
+      if (!contactValue) {
+        addFieldError(errors, `${field}.value`, "website contact must be an http or https URL.");
+      }
+    }
+    const purpose = optionalEnum(
+      contact["purpose"],
+      `${field}.purpose`,
+      PROPERTY_PROFILE_CONTACT_PURPOSES,
+      errors,
+      "general",
+      true,
+    );
+    const isPublic = requiredBoolean(contact["isPublic"], `${field}.isPublic`, errors);
+    return { channelType, value: contactValue, purpose, isPublic };
   });
+
+  if (!contacts.some(({ channelType }) => channelType === "email")) {
+    addFieldError(errors, "contacts", "contacts must include an email.");
+  }
+  if (!contacts.some(({ channelType }) => channelType === "phone")) {
+    addFieldError(errors, "contacts", "contacts must include a phone.");
+  }
+  const uniqueContacts = new Set(
+    contacts.map(({ channelType, value }) => `${channelType}\u0000${value.toLowerCase()}`),
+  );
+  if (uniqueContacts.size !== contacts.length) {
+    addFieldError(errors, "contacts", "contacts must not contain duplicates.");
+  }
+  return contacts;
 }
 
 function requiredString(
@@ -759,37 +1070,13 @@ function optionalString(
   return trimmed;
 }
 
-function optionalUrl(
-  value: unknown,
-  field: string,
-  errors: Record<string, string[]>,
-): string | null {
-  const parsed = optionalString(value, field, errors, { maxLength: 2048 });
-  if (!parsed) return null;
-
+function validHttpUrl(value: string): string | null {
   try {
-    const url = new URL(parsed);
-    if (url.protocol === "https:" || url.protocol === "http:") {
-      return url.toString();
-    }
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
   } catch {
-    // Add a field error below.
+    return null;
   }
-
-  addFieldError(errors, field, `${field} must be an http or https URL.`);
-  return null;
-}
-
-function optionalEmail(
-  value: unknown,
-  field: string,
-  errors: Record<string, string[]>,
-): string | null {
-  const parsed = optionalString(value, field, errors, { maxLength: 320 });
-  if (!parsed) return null;
-  if (EMAIL_PATTERN.test(parsed)) return parsed.toLowerCase();
-  addFieldError(errors, field, `${field} must be a valid email address.`);
-  return null;
 }
 
 function isValidTimezone(value: string): boolean {
@@ -825,19 +1112,63 @@ function optionalNumber(
   return value;
 }
 
+function optionalBoolean(
+  value: unknown,
+  field: string,
+  errors: Record<string, string[]>,
+  fallback: boolean,
+): boolean {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  addFieldError(errors, field, `${field} must be a boolean.`);
+  return fallback;
+}
+
+function requiredBoolean(value: unknown, field: string, errors: Record<string, string[]>): boolean {
+  if (typeof value === "boolean") return value;
+  addFieldError(errors, field, `${field} must be a boolean.`);
+  return false;
+}
+
 function optionalEnum<T extends readonly string[]>(
   value: unknown,
   field: string,
   allowed: T,
   errors: Record<string, string[]>,
   fallback: T[number],
+  required = false,
 ): T[number] {
-  if (value === undefined || value === null || value === "") return fallback;
+  if (value === undefined || value === null || value === "") {
+    if (required) addFieldError(errors, field, `${field} is required.`);
+    return fallback;
+  }
   if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
     return value as T[number];
   }
   addFieldError(errors, field, `${field} is invalid.`);
   return fallback;
+}
+
+function validateKnownKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  field: string,
+  errors: Record<string, string[]>,
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      addFieldError(errors, `${field}.${key}`, `${field}.${key} is not supported.`);
+    }
+  }
+}
+
+function sendInvalidProfile(reply: FastifyReply, errors: Record<string, string[]>): false {
+  reply.status(422).send({
+    code: "invalid_setup_request",
+    detail: "Property profile contains invalid fields.",
+    fields: errors,
+  });
+  return false;
 }
 
 function addFieldError(errors: Record<string, string[]>, field: string, message: string): void {
@@ -853,9 +1184,9 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function filterAuthorizedProperties(
-  properties: SharedSetupProperty[],
+  properties: AdaptivePropertySetupFacts[],
   propertyIds: string[],
-): SharedSetupProperty[] {
+): AdaptivePropertySetupFacts[] {
   const authorized = new Set(propertyIds);
   const order = new Map(propertyIds.map((propertyId, index) => [propertyId, index]));
   return properties
@@ -863,136 +1194,513 @@ function filterAuthorizedProperties(
     .sort((left, right) => (order.get(left.propertyId) ?? 0) - (order.get(right.propertyId) ?? 0));
 }
 
-function selectionState(propertyIds: string[]): SharedHotelSetupStatus["selection"]["state"] {
+function selectionState(
+  propertyIds: string[],
+): AdaptiveHotelSetupStatus["propertySelection"]["state"] {
   if (propertyIds.length === 0) return "no_property";
   return propertyIds.length === 1 ? "single_property" : "multiple_properties";
 }
 
-function nextAction(
-  properties: SharedSetupProperty[],
-  selectedPropertyId: string | null,
-  entryProduct: SharedHotelSetupEntryProduct | null,
-  returnTo: string | null,
-): SharedHotelSetupNextAction {
-  if (properties.length === 0) {
-    return { action: "create_property", reasonCodes: ["no_property"] };
-  }
-  if (!selectedPropertyId) {
-    return { action: "select_property", reasonCodes: ["multiple_properties"] };
-  }
+type SetupTaskDefinition = Pick<SetupTask, "taskId" | "track" | "requirementOwnerDomain"> & {
+  permissions: PermissionKey[];
+  actionableBy: Exclude<SetupTask["actionableBy"], null>;
+  dependencies: SetupTaskId[];
+};
 
-  const property = properties.find((item) => item.propertyId === selectedPropertyId)!;
-  const missingRoutingFields = property.sharedProfile.missingFields.filter(
-    (field) => field === "displayName" || field === "location",
-  );
+const SETUP_TASK_REGISTRY: readonly SetupTaskDefinition[] = [
+  {
+    taskId: "shared_identity",
+    track: "shared",
+    requirementOwnerDomain: "hotel_catalog",
+    permissions: ["hotel_catalog.setup.manage"],
+    actionableBy: "operator",
+    dependencies: [],
+  },
+  {
+    taskId: "public_profile",
+    track: "creator_marketplace",
+    requirementOwnerDomain: "hotel_catalog",
+    permissions: ["hotel_catalog.setup.manage", "marketplace.profile.manage"],
+    actionableBy: "owner",
+    dependencies: ["shared_identity"],
+  },
+  {
+    taskId: "creator_profile",
+    track: "creator_marketplace",
+    requirementOwnerDomain: "marketplace",
+    permissions: ["marketplace.profile.manage"],
+    actionableBy: "owner",
+    dependencies: ["shared_identity"],
+  },
+  {
+    taskId: "creator_offer",
+    track: "creator_marketplace",
+    requirementOwnerDomain: "marketplace",
+    permissions: ["marketplace.profile.manage"],
+    actionableBy: "owner",
+    dependencies: ["shared_identity", "creator_profile"],
+  },
+  {
+    taskId: "rooms_rates_availability",
+    track: "hotel_operations",
+    requirementOwnerDomain: "pms",
+    permissions: ["pms.operations.manage"],
+    actionableBy: "operator",
+    dependencies: ["shared_identity"],
+  },
+  {
+    taskId: "guest_settings_policies",
+    track: "hotel_operations",
+    requirementOwnerDomain: "booking",
+    permissions: ["booking.settings.manage"],
+    actionableBy: "owner",
+    dependencies: ["shared_identity", "rooms_rates_availability"],
+  },
+  {
+    taskId: "payment",
+    track: "hotel_operations",
+    requirementOwnerDomain: "finance",
+    permissions: ["booking.settings.manage"],
+    actionableBy: "owner",
+    dependencies: ["shared_identity"],
+  },
+  {
+    taskId: "direct_booking_publication",
+    track: "hotel_operations",
+    requirementOwnerDomain: "distribution",
+    permissions: ["booking.settings.manage"],
+    actionableBy: "owner",
+    dependencies: [
+      "shared_identity",
+      "rooms_rates_availability",
+      "guest_settings_policies",
+      "payment",
+    ],
+  },
+];
+
+const ENTRY_PRODUCT_WORKSPACE_PERMISSIONS: Record<SharedHotelSetupEntryProduct, PermissionKey> = {
+  booking: "booking.analytics.read",
+  pms: "pms.operations.read",
+  marketplace: "marketplace.collaboration.read",
+};
+
+function entryDecision(input: {
+  context: ReturnType<typeof enforceRoutePolicy>;
+  entryProduct: SharedHotelSetupEntryProduct | null;
+  propertyId: string | null;
+  selectedTracks: SetupTrack[];
+  tracks: TrackStatus[];
+}): ProductEntryDecision | null {
+  const { context, entryProduct, propertyId, selectedTracks, tracks } = input;
+  if (!entryProduct) return null;
+  const track = entryProduct === "marketplace" ? "creator_marketplace" : "hotel_operations";
+  if (!propertyId) {
+    return {
+      requestedProduct: entryProduct,
+      propertyId: null,
+      decision: "setup_required",
+      destinationRouteKey: "hotel_setup",
+      reasonCode: "property_selection_required",
+    };
+  }
+  if (!selectedTracks.includes(track)) {
+    return {
+      requestedProduct: entryProduct,
+      propertyId,
+      decision: "setup_required",
+      destinationRouteKey: "hotel_setup",
+      reasonCode: "track_not_selected",
+    };
+  }
+  const status = tracks.find((item) => item.track === track);
+  const component = status?.components.find((item) => item.product === entryProduct);
   if (
-    missingRoutingFields.length > 0 ||
-    property.sharedProfile.status === "disabled" ||
-    property.sharedProfile.status === "private"
+    component?.access === "active" &&
+    hasProductPropertyAccess(context, entryProduct, propertyId)
   ) {
-    return {
-      action: "complete_shared_profile",
-      propertyId: property.propertyId,
-      missingFields: missingRoutingFields,
-      reasonCodes: [`shared_profile_${property.sharedProfile.status}`],
-    };
-  }
-
-  if (entryProduct) {
-    const activation = property.products[entryProduct];
-    if (activation.status === "active") {
+    if (!hasPermission(context, ENTRY_PRODUCT_WORKSPACE_PERMISSIONS[entryProduct])) {
       return {
-        action: "enter_product",
-        propertyId: property.propertyId,
-        product: entryProduct,
-        returnTo,
-        reasonCodes: ["entry_product_active"],
-      };
-    }
-    if (activation.status === "not_selected") {
-      return {
-        action: "select_products",
-        propertyId: property.propertyId,
-        reasonCodes: ["entry_product_not_selected"],
+        requestedProduct: entryProduct,
+        propertyId,
+        decision: "unavailable",
+        destinationRouteKey: null,
+        reasonCode: "workspace_permission_missing",
       };
     }
     return {
-      action: "complete_product_activation",
-      propertyId: property.propertyId,
-      product: entryProduct,
-      missingSteps: activation.missingSteps,
-      reasonCodes: activationReasonCodes(activation, "entry_product_activation_incomplete"),
+      requestedProduct: entryProduct,
+      propertyId,
+      decision: "enter",
+      destinationRouteKey: `${entryProduct}.workspace`,
+      reasonCode: null,
     };
   }
-
-  const incompleteProduct = ENTRY_PRODUCTS.map((product) => property.products[product]).find(
-    (activation) =>
-      activation.status === "selected_incomplete" ||
-      activation.status === "suspended" ||
-      activation.status === "unavailable",
-  );
-  if (incompleteProduct) {
+  if (status?.provisioning === "blocked") {
     return {
-      action: "complete_product_activation",
-      propertyId: property.propertyId,
-      product: incompleteProduct.product,
-      missingSteps: incompleteProduct.missingSteps,
-      reasonCodes: activationReasonCodes(
-        incompleteProduct,
-        `${incompleteProduct.product}_activation_incomplete`,
-      ),
+      requestedProduct: entryProduct,
+      propertyId,
+      decision: "unavailable",
+      destinationRouteKey: null,
+      reasonCode: "service_management_required",
     };
   }
-
-  const activeProduct = ENTRY_PRODUCTS.map((product) => property.products[product]).find(
-    (activation) => activation.status === "active",
-  );
-  if (activeProduct) {
+  if (component?.access === "suspended" || component?.access === "unavailable") {
     return {
-      action: "enter_product",
-      propertyId: property.propertyId,
-      product: activeProduct.product,
-      returnTo,
-      reasonCodes: ["product_active"],
+      requestedProduct: entryProduct,
+      propertyId,
+      decision: "unavailable",
+      destinationRouteKey: null,
+      reasonCode:
+        component.access === "suspended" ? "component_suspended" : "component_unavailable",
     };
   }
-
   return {
-    action: "select_products",
-    propertyId: property.propertyId,
-    reasonCodes: ["no_products_selected"],
+    requestedProduct: entryProduct,
+    propertyId,
+    decision: "setup_required",
+    destinationRouteKey: "hotel_setup",
+    reasonCode: "product_access_pending",
   };
 }
 
-function activationReasonCodes<Product extends SharedHotelSetupEntryProduct>(
-  activation: SharedProductActivation<Product>,
-  fallback: string,
-): string[] {
-  if (activation.missingSteps.length === 0 && activation.statusReasons.length > 0) {
-    return activation.statusReasons;
-  }
-  return [fallback];
+export function buildPropertySetupPlan(input: {
+  context: ReturnType<typeof enforceRoutePolicy>;
+  property: AdaptivePropertySetupFacts;
+  selectedTracks: SetupTrack[];
+  trackRevision: number;
+  tracks: TrackStatus[];
+  evaluatedAt: string;
+}): PropertySetupPlan {
+  const { context, property, selectedTracks, trackRevision, tracks, evaluatedAt } = input;
+  const definitions = SETUP_TASK_REGISTRY.filter(({ track }) =>
+    track === "shared" ? selectedTracks.length > 0 : selectedTracks.includes(track),
+  );
+  const includedTaskIds = new Set(definitions.map(({ taskId }) => taskId));
+  const tasks = definitions.map((definition): SetupTask => {
+    const fact = property.taskFacts[definition.taskId];
+    const requiredProduct = setupTaskProduct(definition.taskId);
+    const productAccessBlocked =
+      requiredProduct !== null &&
+      (tracks
+        .flatMap(({ components }) => components)
+        .find(({ product }) => product === requiredProduct)?.access !== "active" ||
+        !hasProductPropertyAccess(context, requiredProduct, property.propertyId));
+    const blockedDependencies = definition.dependencies.filter(
+      (taskId) =>
+        includedTaskIds.has(taskId) &&
+        property.taskFacts[taskId].ownerProgress !== "owner_complete",
+    );
+    const factReadiness =
+      fact.freshness === "stale" && fact.readiness === "complete" ? "pending_sync" : fact.readiness;
+    const dependencyBlocked =
+      blockedDependencies.length > 0 &&
+      (factReadiness === "actionable" || factReadiness === "complete");
+    const readiness = productAccessBlocked
+      ? "blocked"
+      : dependencyBlocked
+        ? "blocked"
+        : factReadiness;
+    const callerCapability = productAccessBlocked
+      ? "forbidden"
+      : readiness === "pending_review" || readiness === "pending_sync"
+        ? "waiting"
+        : definition.permissions.every((permission) => hasPermission(context, permission))
+          ? "allowed"
+          : "ask_owner";
+    const actionableBy =
+      readiness === "complete"
+        ? null
+        : readiness === "pending_review"
+          ? "support"
+          : readiness === "pending_sync"
+            ? "system"
+            : readiness === "blocked"
+              ? null
+              : definition.actionableBy;
+
+    return {
+      taskId: definition.taskId,
+      propertyId: property.propertyId,
+      track: definition.track,
+      requirementOwnerDomain: definition.requirementOwnerDomain,
+      destinationRouteKey: SETUP_TASK_DESTINATION_ROUTE_KEYS[definition.taskId],
+      callerCapability,
+      ownerProgress: fact.ownerProgress,
+      readiness,
+      actionableBy,
+      reasonCodes: unique([
+        ...fact.reasonCodes,
+        ...(fact.freshness === "stale" && fact.readiness === "complete"
+          ? ["source_facts_stale"]
+          : []),
+        ...(factReadiness === "blocked" ? ["domain_readiness_blocked"] : []),
+        ...(productAccessBlocked ? ["task_product_access_blocked"] : []),
+        ...(dependencyBlocked ? ["task_dependencies_incomplete"] : []),
+        ...blockedDependencies.map((taskId) => `${taskId}_incomplete`),
+      ]),
+      sourceRevision: fact.sourceRevision,
+      freshness: fact.freshness,
+      evaluatedAt,
+    };
+  });
+  const recommendedTask =
+    tasks.find(
+      ({ readiness, callerCapability }) =>
+        readiness === "actionable" && callerCapability === "allowed",
+    ) ?? null;
+  const ownerComplete = tasks.filter(
+    ({ ownerProgress }) => ownerProgress === "owner_complete",
+  ).length;
+  const ownerProgress = { complete: ownerComplete, total: tasks.length };
+  const launchReadinessByUse = {
+    operationsUse: launchReadiness(tasks, selectedTracks, "hotel_operations", [
+      "shared_identity",
+      "rooms_rates_availability",
+    ]),
+    directBookingPublish: launchReadiness(tasks, selectedTracks, "hotel_operations", [
+      "shared_identity",
+      "rooms_rates_availability",
+      "guest_settings_policies",
+      "payment",
+      "direct_booking_publication",
+    ]),
+    marketplacePublish: launchReadiness(tasks, selectedTracks, "creator_marketplace", [
+      "shared_identity",
+      "public_profile",
+      "creator_profile",
+      "creator_offer",
+    ]),
+  };
+
+  return {
+    propertyId: property.propertyId,
+    planRevision: propertySetupPlanRevision({
+      context,
+      property,
+      selectedTracks,
+      trackRevision,
+      tracks,
+      definitions,
+      tasks,
+      recommendedTaskId: recommendedTask?.taskId ?? null,
+      ownerProgress,
+      launchReadiness: launchReadinessByUse,
+    }),
+    tasks,
+    recommendedTaskId: recommendedTask?.taskId ?? null,
+    ownerProgress,
+    launchReadiness: launchReadinessByUse,
+  };
 }
 
-function safeReturnTo(value: string | undefined, request: FastifyRequest): string | null {
-  if (!value) return null;
-  if (value.startsWith("/") && !value.startsWith("//") && !value.includes("\\")) {
-    return value;
+function propertySetupPlanRevision(input: {
+  context: ReturnType<typeof enforceRoutePolicy>;
+  property: AdaptivePropertySetupFacts;
+  selectedTracks: SetupTrack[];
+  trackRevision: number;
+  tracks: TrackStatus[];
+  definitions: readonly SetupTaskDefinition[];
+  tasks: SetupTask[];
+  recommendedTaskId: SetupTaskId | null;
+  ownerProgress: PropertySetupPlan["ownerProgress"];
+  launchReadiness: PropertySetupPlan["launchReadiness"];
+}): string {
+  const {
+    context,
+    property,
+    selectedTracks,
+    trackRevision,
+    tracks,
+    definitions,
+    tasks,
+    recommendedTaskId,
+    ownerProgress,
+    launchReadiness,
+  } = input;
+  const selectedTrackSet = new Set(selectedTracks);
+  const relevantProducts = new Set<string>();
+  if (selectedTrackSet.has("hotel_operations")) {
+    relevantProducts.add("pms");
+    relevantProducts.add("booking");
   }
+  if (selectedTrackSet.has("creator_marketplace")) relevantProducts.add("marketplace");
 
-  const origin = request.headers.origin;
-  if (!origin) return null;
+  const revisionState = {
+    revisionContract: "property-setup-plan-revision.v2",
+    property: {
+      propertyId: property.propertyId,
+      publicId: property.publicId,
+      displayName: property.displayName,
+      locationSummary: property.locationSummary,
+    },
+    trackSelection: {
+      trackRevision,
+      selectedTracks: [...selectedTracks].sort(),
+      statuses: tracks
+        .filter(({ track }) => selectedTrackSet.has(track))
+        .map(({ track, provisioning, components }) => ({
+          track,
+          provisioning,
+          components: components
+            .map(({ product, access }) => ({ product, access }))
+            .sort((left, right) => compareCanonicalText(left.product, right.product)),
+        }))
+        .sort((left, right) => compareCanonicalText(left.track, right.track)),
+    },
+    authorization: {
+      permissions: unique(definitions.flatMap(({ permissions }) => permissions))
+        .sort()
+        .map((permission) => ({
+          permission,
+          granted: hasPermission(context, permission),
+        })),
+      entitlements: context.entitlements
+        .filter(
+          ({ product, resource }) =>
+            relevantProducts.has(product) &&
+            (!resource || resource.resourceId === property.propertyId),
+        )
+        .map(({ product, key, status, resource }) => ({
+          product,
+          key,
+          status,
+          resource: resource
+            ? {
+                product: resource.product,
+                resourceType: resource.resourceType,
+                resourceId: resource.resourceId,
+              }
+            : null,
+        }))
+        .sort(compareCanonicalValues),
+      propertyLinks: context.linkedResources
+        .filter(
+          ({ product, resourceId }) =>
+            resourceId === property.propertyId &&
+            (product === "hotel_catalog" || relevantProducts.has(product)),
+        )
+        .map(({ product, resourceType, resourceId, relationship, status }) => ({
+          product,
+          resourceType,
+          resourceId,
+          relationship,
+          status,
+        }))
+        .sort(compareCanonicalValues),
+    },
+    taskDefinitions: definitions.map(
+      ({ taskId, track, requirementOwnerDomain, permissions, actionableBy, dependencies }) => ({
+        taskId,
+        track,
+        requirementOwnerDomain,
+        destinationRouteKey: SETUP_TASK_DESTINATION_ROUTE_KEYS[taskId],
+        permissions: [...permissions].sort(),
+        actionableBy,
+        dependencies: [...dependencies].sort(),
+      }),
+    ),
+    tasks: tasks.map(
+      ({
+        taskId,
+        propertyId,
+        track,
+        requirementOwnerDomain,
+        destinationRouteKey,
+        callerCapability,
+        ownerProgress: taskOwnerProgress,
+        readiness,
+        actionableBy,
+        reasonCodes,
+        sourceRevision,
+        freshness,
+      }) => ({
+        taskId,
+        propertyId,
+        track,
+        requirementOwnerDomain,
+        destinationRouteKey,
+        callerCapability,
+        ownerProgress: taskOwnerProgress,
+        readiness,
+        actionableBy,
+        reasonCodes: [...reasonCodes].sort(),
+        sourceRevision,
+        freshness,
+      }),
+    ),
+    recommendedTaskId,
+    ownerProgress,
+    launchReadiness,
+  };
+  const digest = createHash("sha256").update(JSON.stringify(revisionState)).digest("base64url");
+  return `plan.v2:${digest}`;
+}
 
-  try {
-    const url = new URL(value);
-    if ((url.protocol === "https:" || url.protocol === "http:") && url.origin === origin) {
-      return url.toString();
-    }
-  } catch {
-    return null;
+function compareCanonicalValues(left: unknown, right: unknown): number {
+  return compareCanonicalText(JSON.stringify(left), JSON.stringify(right));
+}
+
+function compareCanonicalText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function launchReadiness(
+  tasks: SetupTask[],
+  selectedTracks: SetupTrack[],
+  track: SetupTrack,
+  requiredTaskIds: SetupTaskId[],
+): PropertySetupPlan["launchReadiness"]["operationsUse"] {
+  if (!selectedTracks.includes(track)) return "not_applicable";
+  const required = requiredTaskIds.map((taskId) => tasks.find((task) => task.taskId === taskId)!);
+  if (
+    required.some(
+      (task) =>
+        task.readiness === "rejected" ||
+        task.reasonCodes.includes("domain_readiness_blocked") ||
+        task.reasonCodes.includes("task_product_access_blocked"),
+    )
+  ) {
+    return "blocked";
   }
+  return required.every(
+    ({ readiness, freshness }) => readiness === "complete" && freshness === "fresh",
+  )
+    ? "ready"
+    : "pending";
+}
 
+function setupTaskProduct(taskId: SetupTaskId): SharedHotelSetupEntryProduct | null {
+  if (taskId === "creator_profile" || taskId === "creator_offer") return "marketplace";
+  if (taskId === "rooms_rates_availability") return "pms";
+  if (
+    taskId === "guest_settings_policies" ||
+    taskId === "payment" ||
+    taskId === "direct_booking_publication"
+  ) {
+    return "booking";
+  }
   return null;
+}
+
+function hasProductPropertyAccess(
+  context: ReturnType<typeof enforceRoutePolicy>,
+  product: SharedHotelSetupEntryProduct,
+  propertyId: string,
+): boolean {
+  const resourceType = {
+    booking: "booking_hotel",
+    pms: "pms_property",
+    marketplace: "hotel_profile",
+  } as const;
+  return context.linkedResources.some(
+    (resource) =>
+      resource.product === product &&
+      resource.resourceType === resourceType[product] &&
+      resource.resourceId === propertyId &&
+      resource.status === "active" &&
+      (resource.relationship === "owner" || resource.relationship === "operator"),
+  );
 }
 
 function unique<T>(values: T[]): T[] {

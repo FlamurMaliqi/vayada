@@ -1,10 +1,8 @@
+import type { AdaptiveHotelSetupStatus, ProductEntryDecision } from "@vayada/domain-hotels";
+
 import {
   isSafeSharedHotelSetupReturnTo,
   type SharedHotelSetupEntryProduct,
-  type SharedHotelSetupNextAction,
-  type SharedHotelSetupProduct,
-  type SharedHotelSetupStatus,
-  type SharedProductActivation,
 } from "./sharedFirstRunSetupFlow";
 import type { SharedHotelSetupApi } from "./sharedHotelSetupApi";
 
@@ -12,53 +10,46 @@ export type SharedHotelSetupGuardDecision =
   | {
       action: "enter_product";
       propertyId: string;
+      destinationRouteKey: string;
       redirectPath: null;
     }
   | {
       action: "redirect_to_setup";
       propertyId: string | null;
       redirectPath: string;
-      setupAction: SharedHotelSetupNextAction["action"];
-      product: SharedHotelSetupProduct | null;
-      productStatus: SharedProductActivation<SharedHotelSetupProduct>["status"] | null;
-      missingSteps: string[];
+      entryDecision: ProductEntryDecision["decision"] | "not_evaluated";
+      reasonCode: string | null;
     };
 
 export function resolveSharedHotelSetupGuardDecision(
-  status: SharedHotelSetupStatus,
+  status: AdaptiveHotelSetupStatus,
   input: {
     entryProduct: SharedHotelSetupEntryProduct;
     returnTo: string;
   },
 ): SharedHotelSetupGuardDecision {
+  const entryDecision = status.entryDecision;
   if (
-    status.nextAction.action === "enter_product" &&
-    status.nextAction.product === input.entryProduct
+    entryDecision?.requestedProduct === input.entryProduct &&
+    entryDecision.decision === "enter" &&
+    entryDecision.propertyId &&
+    entryDecision.destinationRouteKey
   ) {
     return {
       action: "enter_product",
-      propertyId: status.nextAction.propertyId,
+      propertyId: entryDecision.propertyId,
+      destinationRouteKey: entryDecision.destinationRouteKey,
       redirectPath: null,
     };
   }
 
-  const propertyId = "propertyId" in status.nextAction ? status.nextAction.propertyId : null;
-  const product = "product" in status.nextAction ? status.nextAction.product : null;
-  const selectedProperty = propertyId
-    ? status.properties.find((property) => property.propertyId === propertyId)
-    : null;
-  const activation = product && selectedProperty ? selectedProperty.products[product] : null;
-
+  const propertyId = entryDecision?.propertyId ?? status.propertySelection.selectedPropertyId;
   return {
     action: "redirect_to_setup",
     propertyId,
     redirectPath: buildSharedHotelSetupRedirectPath({ ...input, propertyId }),
-    setupAction: status.nextAction.action,
-    product,
-    productStatus: activation?.status ?? null,
-    missingSteps:
-      activation?.missingSteps ??
-      ("missingSteps" in status.nextAction ? status.nextAction.missingSteps : []),
+    entryDecision: entryDecision?.decision ?? "not_evaluated",
+    reasonCode: entryDecision?.reasonCode ?? null,
   };
 }
 
@@ -71,11 +62,10 @@ export async function resolveSharedHotelSetupGuard(
     onInvalidPropertyId?: () => void;
   },
 ): Promise<SharedHotelSetupGuardDecision> {
-  let status: SharedHotelSetupStatus;
+  let status: AdaptiveHotelSetupStatus;
   try {
     status = await api.getStatus({
       entryProduct: input.entryProduct,
-      returnTo: input.returnTo,
       propertyId: input.propertyId,
     });
   } catch (error) {
@@ -83,7 +73,6 @@ export async function resolveSharedHotelSetupGuard(
     input.onInvalidPropertyId?.();
     status = await api.getStatus({
       entryProduct: input.entryProduct,
-      returnTo: input.returnTo,
       propertyId: null,
     });
   }
@@ -107,11 +96,7 @@ export function buildSharedHotelSetupRedirectPath(input: {
   propertyId?: string | null;
 }): string {
   const query = new URLSearchParams({ entryProduct: input.entryProduct });
-  if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {
-    query.set("returnTo", input.returnTo);
-  }
-  if (input.propertyId?.trim()) {
-    query.set("propertyId", input.propertyId.trim());
-  }
+  if (isSafeSharedHotelSetupReturnTo(input.returnTo)) query.set("returnTo", input.returnTo);
+  if (input.propertyId?.trim()) query.set("propertyId", input.propertyId.trim());
   return `/setup?${query.toString()}`;
 }

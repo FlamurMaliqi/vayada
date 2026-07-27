@@ -171,10 +171,13 @@ export interface ProfileHotelListing {
 // Hotel profile for display
 export interface ProfileHotelProfile {
   id: string;
+  canonicalProfileRevision: number;
+  publicProfileRevision: number;
   name: string;
   propertyType?: string;
   picture?: string;
   location: string;
+  localityPublic: boolean;
   status: "verified" | "pending" | "rejected";
   website?: string;
   about?: string;
@@ -198,6 +201,7 @@ export interface HotelEditFormData {
   name: string;
   picture: string;
   location: string;
+  localityPublic: boolean;
   website: string;
   about: string;
 }

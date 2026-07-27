@@ -23,10 +23,6 @@ export default function SignupPage() {
     try {
       await authService.signup(data);
       const decision = await resolvePmsSetupGuard("/dashboard");
-      localStorage.setItem(
-        "pmsSetupComplete",
-        decision.action === "enter_product" ? "true" : "false",
-      );
       router.push(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
     } catch (error) {
       if (

@@ -44,6 +44,83 @@ afterEach(async () => {
 });
 
 describe("marketplace hotel self-service routes", () => {
+  it("updates profile completeness and offer projections in one transaction", async () => {
+    const statements: string[] = [];
+    const client = {
+      async query(text: string) {
+        statements.push(text);
+        if (text.includes("UPDATE marketplace.marketplace_hotel_profiles")) {
+          return { rows: [{ propertyId: propertyTwo }] };
+        }
+        if (
+          text.includes('property.display_name AS "displayName"') &&
+          text.includes("FOR UPDATE OF property")
+        ) {
+          return {
+            rows: [
+              {
+                propertyId: propertyTwo,
+                publicId: "hotel-alpenrose",
+                displayName: "Hotel Alpenrose",
+                defaultLocale: "en",
+                canonicalSlug: "hotel-alpenrose",
+              },
+            ],
+          };
+        }
+        if (
+          text.includes('offer.id::text AS "offerId"') &&
+          text.includes("offer.offer_status <> 'archived'")
+        ) {
+          return { rows: [] };
+        }
+        if (text.includes('profile_complete AS "profileComplete"')) {
+          return {
+            rows: [
+              {
+                propertyId: propertyTwo,
+                profileStatus: "pending",
+                profileComplete: true,
+                hostSummary: "An independent alpine hotel.",
+                collaborationGuidelines: null,
+                createdAt: "2026-07-11T00:00:00.000Z",
+                updatedAt: "2026-07-27T00:00:00.000Z",
+              },
+            ],
+          };
+        }
+        return { rows: [] };
+      },
+      release: vi.fn(),
+    };
+    const repository = createPgMarketplaceHotelSelfServiceRepository({
+      connectionString: "postgresql://target-db",
+      pool: {
+        connect: vi.fn(async () => client),
+        end: vi.fn(async () => undefined),
+      } as never,
+    });
+
+    await expect(
+      repository.updateProfile({
+        organizationId: "org_hotel_group",
+        propertyId: propertyTwo,
+        hostSummary: "An independent alpine hotel.",
+      }),
+    ).resolves.toMatchObject({ propertyId: propertyTwo, profileComplete: true });
+
+    expect(statements[0]).toBe("BEGIN");
+    expect(statements).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("UPDATE marketplace.marketplace_hotel_profiles"),
+        expect.stringContaining("INSERT INTO hotel_catalog.property_public_profile_read_model"),
+        expect.stringContaining("FROM marketplace.marketplace_offers offer"),
+      ]),
+    );
+    expect(statements.at(-1)).toBe("COMMIT");
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
   it("resolves CRUD identifiers through the canonical offer ID", async () => {
     const query = vi.fn(async (_sql: string) => ({ rows: [] }));
     const repository = createPgMarketplaceHotelSelfServiceRepository({
@@ -543,6 +620,36 @@ describe("marketplace hotel self-service routes", () => {
     );
   });
 
+  it("accepts an empty offer update so projections can be refreshed", async () => {
+    const updateOffer = vi.fn(async (input) => offer(input.propertyId));
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+      repository: repository({
+        async resolveOfferResourceId() {
+          return offerResourceId;
+        },
+        updateOffer,
+      }),
+    });
+
+    const response = await injectJson<MarketplaceHotelSelfServiceOffer>(app, {
+      method: "PUT",
+      url: `/api/marketplace/properties/${propertyTwo}/offers/${offerResourceId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(updateOffer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org_hotel_group",
+        propertyId: propertyTwo,
+        offerResourceId,
+        request: {},
+      }),
+    );
+  });
+
   it("rejects offer updates when only the hotel profile is linked", async () => {
     const updateOffer = vi.fn();
     app = buildMarketplaceHotelApp({
@@ -915,6 +1022,20 @@ function createOfferRepositoryHarness() {
         offerInserts += 1;
         offerOrganizationId = String(values[1]);
         return queryResult([{ id: offerResourceId }]);
+      }
+      if (text.includes('property.display_name AS "displayName"')) {
+        return queryResult([
+          {
+            propertyId: propertyTwo,
+            publicId: "prop_property_two",
+            displayName: "Hotel Two",
+            defaultLocale: "en",
+            canonicalSlug: "hotel-two",
+          },
+        ]);
+      }
+      if (text.includes("INSERT INTO hotel_catalog.property_public_profile_read_model")) {
+        return queryResult();
       }
       if (text.includes("FROM marketplace.marketplace_hotel_profiles profile")) {
         return queryResult(

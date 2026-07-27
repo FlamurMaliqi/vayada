@@ -30,6 +30,7 @@ import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInve
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
+import { createPgHotelSetupHandoffRepository } from "./domains/hotelSetupHandoffRepository.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { createTargetPublicHotelProfileRepository } from "./routes/aiHotels.js";
@@ -264,6 +265,9 @@ const sharedHotelSetupStatusRepository = createPgSharedHotelSetupStatusRepositor
   connectionString: targetDatabaseUrl,
 });
 const hotelSetupTrackCommandRepository = createPgHotelSetupTrackCommandRepository({
+  connectionString: targetDatabaseUrl,
+});
+const hotelSetupHandoffRepository = createPgHotelSetupHandoffRepository({
   connectionString: targetDatabaseUrl,
 });
 
@@ -518,6 +522,11 @@ const app = buildApp({
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
   hotelSetupTrackCommandRepository,
+  hotelSetupHandoffs: {
+    repository: hotelSetupHandoffRepository,
+    hotelSetupBaseUrl: config.hotelSetupHandoffs.hotelSetupBaseUrl,
+    destinationOrigins: config.hotelSetupHandoffs.destinationOrigins,
+  },
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
     ? createPgIdentityPrivacyRepository({

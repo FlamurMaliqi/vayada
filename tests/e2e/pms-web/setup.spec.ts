@@ -1,19 +1,19 @@
-import { expect, test } from "@playwright/test";
-import type {
-  SharedHotelSetupProduct,
-  SharedHotelSetupProductStatus,
-  SharedHotelSetupStatus,
-  SharedPropertyProfile,
-} from "@vayada/product-onboarding";
+import { expect, test, type Page } from "@playwright/test";
+import type { SetupTaskId, SetupTrack } from "@vayada/domain-hotels";
 import {
   PMS_WEB_PROPERTY_ID,
   mockPmsWebAuthenticatedSession,
   mockPmsWebTargetRoutes,
 } from "../support/pmsWebMocks";
+import { createAdaptiveHotelSetupStatusMock } from "../support/sharedHotelSetupMocks";
 import { watchPageHealth } from "../support/pageHealth";
 
 const propertyId = "f6853000-0000-0000-0000-000000000970";
-const stalePropertyId = "f6853000-0000-0000-0000-000000000969";
+const PMS_ROOMS_HANDOFF_CODE = "P".repeat(43);
+const TASK_HANDOFF_CODES: Partial<Record<SetupTaskId, string>> = {
+  guest_settings_policies: "Q".repeat(43),
+  creator_profile: "R".repeat(43),
+};
 
 test.describe("pms-web shared setup", () => {
   test("uses the shared hotel personal-account step when the saved photo is missing", async ({
@@ -53,38 +53,270 @@ test.describe("pms-web shared setup", () => {
     await expect(page.getByRole("button", { name: "Continue to hotel setup" })).toBeVisible();
   });
 
+  for (const scenario of [
+    {
+      name: "Hotel Operations",
+      selectedTracks: ["hotel_operations"] as SetupTrack[],
+      visibleTasks: [
+        "Add your hotel basics",
+        "Set up rooms, rates, and availability",
+        "Review guest settings and policies",
+        "Configure payment",
+        "Publish direct booking",
+      ],
+      hiddenTasks: [
+        "Create your public hotel profile",
+        "Introduce your hotel to creators",
+        "Prepare your collaboration offer",
+      ],
+    },
+    {
+      name: "Creator Marketplace",
+      selectedTracks: ["creator_marketplace"] as SetupTrack[],
+      visibleTasks: [
+        "Add your hotel basics",
+        "Create your public hotel profile",
+        "Introduce your hotel to creators",
+        "Prepare your collaboration offer",
+      ],
+      hiddenTasks: [
+        "Set up rooms, rates, and availability",
+        "Review guest settings and policies",
+        "Configure payment",
+        "Publish direct booking",
+      ],
+    },
+    {
+      name: "both tracks",
+      selectedTracks: ["hotel_operations", "creator_marketplace"] as SetupTrack[],
+      visibleTasks: [
+        "Add your hotel basics",
+        "Create your public hotel profile",
+        "Introduce your hotel to creators",
+        "Prepare your collaboration offer",
+        "Set up rooms, rates, and availability",
+        "Review guest settings and policies",
+        "Configure payment",
+        "Publish direct booking",
+      ],
+      hiddenTasks: [],
+    },
+  ]) {
+    test(`saves ${scenario.name} first and filters the property setup plan`, async ({ page }) => {
+      const trackRequests: Array<{
+        body: unknown;
+        idempotencyKey: string | null;
+      }> = [];
+      await mockPmsWebAuthenticatedSession(page);
+      await mockPmsWebTargetRoutes(page);
+      await mockTrackFirstSetupApi(page, {
+        initialPropertyId: propertyId,
+        onTracks: (request) => trackRequests.push(request),
+      });
+
+      await page.goto("/setup?entryProduct=pms");
+
+      await expect(
+        page.getByRole("heading", { level: 1, name: "Choose how you’ll use Vayada" }),
+      ).toBeVisible();
+      await expect(page.getByText("PMS + Booking Engine")).toBeVisible();
+      await expect(page.getByLabel("Hotel Operations")).not.toBeChecked();
+      await expect(page.getByLabel("Creator Marketplace")).not.toBeChecked();
+
+      for (const track of scenario.selectedTracks) {
+        await page
+          .getByLabel(track === "hotel_operations" ? "Hotel Operations" : "Creator Marketplace")
+          .locator("xpath=ancestor::label")
+          .click();
+      }
+      await page.getByRole("button", { name: "Continue" }).click();
+
+      await expect.poll(() => trackRequests.length).toBe(1);
+      expect(trackRequests[0]?.body).toEqual({
+        selectedTracks: scenario.selectedTracks,
+        expectedRevision: 0,
+      });
+      expect(trackRequests[0]?.idempotencyKey).toBeTruthy();
+      await expect(
+        page.getByRole("heading", { level: 1, name: "Set up your Vayada tools" }),
+      ).toBeVisible();
+      for (const title of scenario.visibleTasks) {
+        await expect(page.getByRole("heading", { level: 2, name: title })).toBeVisible();
+      }
+      for (const title of scenario.hiddenTasks) {
+        await expect(page.getByRole("heading", { level: 2, name: title })).toHaveCount(0);
+      }
+    });
+  }
+
+  test("creates a private canonical hotel profile after both tracks are selected", async ({
+    page,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const createRequests: Array<{
+      body: unknown;
+      idempotencyKey: string | null;
+    }> = [];
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await mockTrackFirstSetupApi(page, {
+      onCreate: (request) => createRequests.push(request),
+    });
+
+    await page.goto("/setup?entryProduct=pms&returnTo=/dashboard");
+    await page.getByLabel("Hotel Operations").locator("xpath=ancestor::label").click();
+    await page.getByLabel("Creator Marketplace").locator("xpath=ancestor::label").click();
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Let’s get to know your hotel" }),
+    ).toBeVisible();
+    await expect(page.getByText("Step 1 of 3 · About your hotel")).toBeVisible();
+    await page.getByLabel("Hotel name").fill("Alpenrose Munich");
+    await page.getByRole("radio", { name: "Hotel from API", exact: true }).check();
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    const manualAddress = page.getByRole("button", { name: "Enter address manually" });
+    if (await manualAddress.isVisible()) await manualAddress.click();
+    await page.getByLabel("Street address").fill("Marienplatz 1");
+    await page.getByLabel("Postal code").fill("80331");
+    await page.getByLabel("City").fill("Munich");
+    await page.getByLabel("Country").selectOption("DE");
+    await expect(page.getByRole("combobox", { name: "Time zone" })).toHaveValue("Europe/Berlin");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByLabel("Phone number").fill("+49 89 123456");
+    await page.getByLabel("Contact email").fill("hello@alpenrose.example");
+    await page.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect.poll(() => createRequests.length).toBe(1);
+    expect(createRequests[0]?.idempotencyKey).toBeTruthy();
+    expect(createRequests[0]?.body).toEqual({
+      displayName: "Alpenrose Munich",
+      propertyType: "hotel",
+      location: {
+        countryCode: "DE",
+        city: "Munich",
+        streetAddress: "Marienplatz 1",
+        postalCode: "80331",
+        timezone: "Europe/Berlin",
+        latitude: null,
+        longitude: null,
+        localityPublic: false,
+        geoPublic: false,
+        mapDisplayMode: "hidden",
+      },
+      contacts: [
+        {
+          channelType: "email",
+          value: "hello@alpenrose.example",
+          purpose: "general",
+          isPublic: false,
+        },
+        {
+          channelType: "phone",
+          value: "+49 89 123456",
+          purpose: "general",
+          isPublic: false,
+        },
+      ],
+    });
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Set up your Vayada tools" }),
+    ).toBeVisible();
+    await expect(page.getByText("8 of 8 setup tasks complete")).toBeVisible();
+    await assertHealthy();
+  });
+
+  test("launches an actionable PMS task with an opaque handoff", async ({ page, baseURL }) => {
+    test.skip(!baseURL, "Playwright base URL is required.");
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({
+        json: actionableStatus("pms", "rooms_rates_availability"),
+      }),
+    );
+    const handoffRequests: Array<Record<string, unknown>> = [];
+    await page.route("**/api/hotel-setup/handoffs", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: corsHeaders() });
+        return;
+      }
+      handoffRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({
+        headers: corsHeaders(),
+        json: {
+          launchUrl: new URL(`/handoff?code=${PMS_ROOMS_HANDOFF_CODE}`, baseURL).toString(),
+          expiresAt: "2026-07-26T20:00:00.000Z",
+        },
+      });
+    });
+    await page.route(new RegExp(`/handoff\\?code=${PMS_ROOMS_HANDOFF_CODE}$`), (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>PMS task handoff</title>",
+      }),
+    );
+
+    await page.goto(`/setup?entryProduct=pms&propertyId=${PMS_WEB_PROPERTY_ID}`);
+    const taskCard = page.getByRole("article").filter({
+      has: page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
+    });
+    await taskCard.getByRole("button", { name: "Continue recommended step" }).click();
+
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("code"))
+      .toBe(PMS_ROOMS_HANDOFF_CODE);
+    expect(handoffRequests).toEqual([
+      {
+        propertyId: PMS_WEB_PROPERTY_ID,
+        taskId: "rooms_rates_availability",
+        planRevision: "e2e-plan-1",
+      },
+    ]);
+    const launchUrl = new URL(page.url());
+    expect([...launchUrl.searchParams.keys()]).toEqual(["code"]);
+    expect(launchUrl.hash).toBe("");
+  });
+
   test("hands Booking and Marketplace tasks off with the selected hotel group", async ({
     page,
     baseURL,
   }) => {
+    test.skip(!baseURL, "Playwright base URL is required.");
     let target: "booking" | "marketplace" = "booking";
-    await page.addInitScript(() => {
-      localStorage.setItem("access_token", "e2e-pms-compatibility-token");
-      localStorage.setItem("token_expires_at", String(Date.now() + 60 * 60 * 1000));
-      localStorage.setItem("isLoggedIn", "true");
-      localStorage.setItem("userName", "PMS Owner");
-      localStorage.setItem("userEmail", "owner@example.com");
-      localStorage.setItem("userType", "hotel");
-      localStorage.setItem("selectedWorkosOrganizationId", "org_workos_pms_owner");
-    });
+    await mockPmsWebAuthenticatedSession(page);
     await mockPmsWebTargetRoutes(page);
-    await page.route("**/api/hotel-setup/status**", (route) => {
-      const status = pmsActivationStatus("selected_incomplete", ["roomTypes"]);
-      status.entry.entryProduct = target;
-      status.hotelGroup.organizationId = "org_pms_owner";
-      const targetProduct = product(target, "selected_incomplete");
-      targetProduct.missingSteps = target === "booking" ? ["bookingSettings"] : ["creatorPitch"];
-      status.properties[0]!.products[target] = targetProduct;
-      status.nextAction = {
-        action: "complete_product_activation",
-        propertyId: PMS_WEB_PROPERTY_ID,
-        product: target,
-        missingSteps: targetProduct.missingSteps,
-        reasonCodes: ["entry_product_activation_incomplete"],
-      };
-      return route.fulfill({ json: status });
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({
+        json:
+          target === "booking"
+            ? actionableStatus("booking", "guest_settings_policies")
+            : actionableStatus("marketplace", "creator_profile"),
+      }),
+    );
+    const handoffRequests: Array<Record<string, unknown>> = [];
+    await page.route("**/api/hotel-setup/handoffs", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: corsHeaders() });
+        return;
+      }
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      handoffRequests.push(body);
+      const code = TASK_HANDOFF_CODES[body.taskId as SetupTaskId];
+      if (!code) throw new Error(`Missing handoff code for ${String(body.taskId)}`);
+      const launchUrl = new URL(`/handoff?code=${code}`, baseURL);
+      launchUrl.hostname =
+        target === "booking" ? "admin.booking.localhost" : "marketplace.localhost";
+      await route.fulfill({
+        headers: corsHeaders(),
+        json: {
+          launchUrl: launchUrl.toString(),
+          expiresAt: "2026-07-26T20:00:00.000Z",
+        },
+      });
     });
-    await page.route(/\/handoff(?:\?.*)?$/, (route) =>
+    await page.route(/\/handoff\?code=[A-Za-z0-9_-]{43}$/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Handoff</title>" }),
     );
 
@@ -95,265 +327,97 @@ test.describe("pms-web shared setup", () => {
           baseURL,
         ).toString(),
       );
+      await page.getByRole("button", { name: "Continue recommended step" }).click();
       await expect.poll(() => new URL(page.url()).pathname).toBe("/handoff");
 
       const handoffUrl = new URL(page.url());
       expect(handoffUrl.hostname).toContain(target === "booking" ? "admin.booking" : "marketplace");
-      expect(handoffUrl.pathname).toBe("/handoff");
-      expect(handoffUrl.searchParams.get("redirect")).toBe(
-        target === "booking"
-          ? `/setup?entryProduct=booking&propertyId=${PMS_WEB_PROPERTY_ID}`
-          : `/profile/complete?activation=marketplace&propertyId=${PMS_WEB_PROPERTY_ID}`,
-      );
-      const fragment = new URLSearchParams(handoffUrl.hash.slice(1));
-      expect(fragment.get("property_id")).toBe(PMS_WEB_PROPERTY_ID);
-      expect(fragment.get("organization_id")).toBe("org_pms_owner");
-      expect(fragment.get("workos_organization_id")).toBe("org_workos_pms_owner");
+      expect([...handoffUrl.searchParams.keys()]).toEqual(["code"]);
+      expect(handoffUrl.hash).toBe("");
     }
+    expect(handoffRequests).toEqual([
+      {
+        propertyId: PMS_WEB_PROPERTY_ID,
+        taskId: "guest_settings_policies",
+        planRevision: "e2e-plan-1",
+      },
+      {
+        propertyId: PMS_WEB_PROPERTY_ID,
+        taskId: "creator_profile",
+        planRevision: "e2e-plan-1",
+      },
+    ]);
   });
 
-  test("forwards actionable PMS setup to rooms without a second interstitial", async ({ page }) => {
-    await mockPmsWebAuthenticatedSession(page, stalePropertyId);
-    await mockPmsWebTargetRoutes(page);
-    await page.route("**/api/hotel-setup/status**", async (route) => {
-      if (route.request().method() === "OPTIONS" || new URL(page.url()).pathname !== "/setup") {
-        await route.fallback();
-        return;
-      }
-      await route.fulfill({ json: pmsActivationStatus("selected_incomplete") });
-    });
-
-    await page.goto(`/setup?entryProduct=pms&propertyId=${PMS_WEB_PROPERTY_ID}`);
-
-    await expect(page).toHaveURL(/\/rooms$/);
-    expect(
-      await page.evaluate(() => ({
-        selectedHotelId: localStorage.getItem("selectedHotelId"),
-        selectedSharedPropertyId: localStorage.getItem("selectedSharedPropertyId"),
-      })),
-    ).toEqual({
-      selectedHotelId: PMS_WEB_PROPERTY_ID,
-      selectedSharedPropertyId: PMS_WEB_PROPERTY_ID,
-    });
-  });
-
-  test("keeps an additive PMS requirement in the Rooms workspace", async ({ page }) => {
+  test("keeps an unavailable Operations service on the plan without an action", async ({
+    page,
+  }) => {
     await mockPmsWebAuthenticatedSession(page);
     await mockPmsWebTargetRoutes(page);
     await page.route("**/api/hotel-setup/status**", (route) =>
       route.fulfill({
-        json: pmsActivationStatus("selected_incomplete", ["futurePmsRequirement"]),
+        json: createAdaptiveHotelSetupStatusMock({
+          entryProduct: "pms",
+          organizationId: "org_pms_owner",
+          organizationDisplayName: "Alpenrose Hotel Group",
+          selectedTracks: ["hotel_operations"],
+          propertyId: PMS_WEB_PROPERTY_ID,
+          componentAccess: { pms: "suspended" },
+          taskOverrides: {
+            rooms_rates_availability: {
+              callerCapability: "forbidden",
+              ownerProgress: "not_started",
+              readiness: "blocked",
+              actionableBy: "support",
+              reasonCodes: ["pms_suspended"],
+            },
+          },
+          recommendedTaskId: null,
+          entryDecision: {
+            decision: "unavailable",
+            propertyId: PMS_WEB_PROPERTY_ID,
+            destinationRouteKey: null,
+            reasonCode: "pms_suspended",
+          },
+        }),
       }),
     );
 
     await page.goto(`/setup?entryProduct=pms&propertyId=${PMS_WEB_PROPERTY_ID}`);
 
-    await expect(page).toHaveURL(/\/rooms$/);
-    await expect(page.getByRole("heading", { name: "Rooms" })).toBeVisible();
-    await expect(page).toHaveURL(/\/rooms$/);
-  });
-
-  test("keeps a suspended PMS activation on setup with a disabled action", async ({ page }) => {
-    await mockPmsWebAuthenticatedSession(page);
-    await mockPmsWebTargetRoutes(page);
-    await page.route("**/api/hotel-setup/status**", (route) =>
-      route.fulfill({ json: pmsActivationStatus("suspended") }),
-    );
-
-    await page.goto(`/setup?entryProduct=pms&propertyId=${PMS_WEB_PROPERTY_ID}`);
-
-    await expect(page).toHaveURL(/\/setup\?/);
-    await expect(page.getByText("Suspended", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "PMS unavailable" })).toBeDisabled();
-  });
-
-  test("walks first-property setup into the selected-products roadmap", async ({
-    page,
-  }, testInfo) => {
-    const assertHealthy = watchPageHealth(page, testInfo);
-    let created = false;
-    let finishCreateRequest: (() => void) | undefined;
-    const createRequestBarrier = new Promise<void>((resolve) => {
-      finishCreateRequest = resolve;
+    await expect(
+      page.getByText("PMS is not available for this hotel right now.", { exact: false }),
+    ).toBeVisible();
+    const taskCard = page.getByRole("article").filter({
+      has: page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
     });
-    const statusRequests: URL[] = [];
-    const selectedProducts: SharedHotelSetupProduct[] = [];
-
-    await mockPmsWebAuthenticatedSession(page);
-    await mockPmsWebTargetRoutes(page);
-    await page.route("**/auth/compat/pms-web-token", (route) =>
-      route.fulfill({ json: { accessToken: "e2e-pms-compatibility-token", expiresIn: 900 } }),
-    );
-    await mockSharedSetupApi(
-      page,
-      () => created,
-      () => {
-        created = true;
-      },
-      () => createRequestBarrier,
-      statusRequests,
-      selectedProducts,
-    );
-
-    await page.goto("/setup?entryProduct=pms&returnTo=/dashboard");
-
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Let’s get to know your hotel" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { level: 3, name: "What should we call your hotel?" }),
-    ).toBeVisible();
-    await expect(page.getByText("Step 1 of 3")).toBeVisible();
-    await expect(page.getByRole("radio")).toHaveCount(2);
-    await expect(page.getByRole("radio", { name: "Hotel from API", exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("radio", { name: "Future type from API", exact: true }),
-    ).toBeVisible();
-    const continueButton = page.getByRole("button", { name: "Continue" });
-    await expect(continueButton).toBeInViewport();
-    await continueButton.click();
-    await expect(page.getByText("Hotel name is required.")).toBeVisible();
-    await expect(page.getByText("Property type is required.")).toBeVisible();
-    const propertyNameField = page.getByLabel("Hotel name");
-    await expect(propertyNameField).toHaveAttribute("aria-invalid", "true");
-    const describedBy = await propertyNameField.getAttribute("aria-describedby");
-    expect(describedBy).toBeTruthy();
-    const propertyNameError = page.getByText("Hotel name is required.");
-    const propertyNameErrorId = await propertyNameError.getAttribute("id");
-    expect(propertyNameErrorId).toBeTruthy();
-    expect(describedBy!.split(/\s+/)).toContain(propertyNameErrorId!);
-    await expect(propertyNameError).toHaveAttribute("role", "alert");
-
-    await page.getByLabel("Hotel name").fill("Alpenrose Munich");
-    const hotelPropertyType = page.getByRole("radio", { name: "Hotel from API", exact: true });
-    await hotelPropertyType.check();
-    await expect(hotelPropertyType).toBeChecked();
-    await page.getByRole("button", { name: "Continue" }).click();
-
-    const locationHeading = page.getByRole("heading", {
-      level: 1,
-      name: "Where is your property?",
-    });
-    await expect(locationHeading).toBeVisible();
-    await expect(locationHeading).toBeFocused();
-    await expect(
-      page.getByRole("heading", { level: 3, name: "Where is your property?" }),
-    ).toHaveCount(0);
-    await expect(page.getByText("Step 2 of 3")).toBeVisible();
-    await expect(continueButton).toBeEnabled();
-    await continueButton.click();
-    await expect(page.getByText("Street address is required.")).toBeVisible();
-    await expect(page.getByText("Postal code is required.")).toBeVisible();
-
-    await page.getByLabel("Street address").fill("Marienplatz 1");
-    await page.getByLabel("Postal code").fill("80331");
-    await page.getByLabel("City").fill("Munich");
-    await page.getByLabel("Country").selectOption("DE");
-    await page.getByLabel("Time zone").fill("Europe/Not_A_Real_Place");
-    await continueButton.click();
-    await expect(page.getByText("Enter a valid IANA time zone.")).toBeVisible();
-    await page.getByLabel("Time zone").fill("Europe/Berlin");
-    await expect(continueButton).toBeEnabled();
-    await continueButton.click();
-
-    await expect(
-      page.getByRole("heading", { level: 3, name: "How can guests reach you?" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Let’s get to know your hotel" }),
-    ).toBeVisible();
-    await expect(page.getByText("Step 3 of 3")).toBeVisible();
-    await page.getByRole("button", { name: "Back" }).click();
-    await expect(locationHeading).toBeVisible();
-    await expect(locationHeading).toBeFocused();
-    await expect(page.getByLabel("Street address")).toHaveValue("Marienplatz 1");
-    await page.getByRole("button", { name: "Back" }).click();
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Let’s get to know your hotel" }),
-    ).toBeVisible();
-    await expect(page.getByLabel("Hotel name")).toHaveValue("Alpenrose Munich");
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByLabel("Phone number").fill("+49 89 123456");
-    await page.getByRole("button", { name: "Save and continue" }).click();
-    await expect(page.getByRole("button", { name: "Back" })).toBeDisabled();
-    await expect(page.getByRole("status")).toHaveText("Saving hotel details.");
-    await expect(
-      page.getByLabel("Phone number").locator("xpath=ancestor::section"),
-    ).toHaveAttribute("inert", "");
-    finishCreateRequest?.();
-
-    await expect(
-      page.getByRole("heading", { level: 1, name: "How would you like to use Vayada?" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { level: 2, name: "Choose account systems" }),
-    ).toBeVisible();
-    await expect(page.getByText("Alpenrose Munich")).toBeVisible();
-    await expect(page.getByLabel("PMS")).toBeChecked();
-    const bookingSystem = page.getByLabel("Booking Engine", { exact: true });
-    const marketplaceSystem = page.getByLabel("Creator Marketplace", { exact: true });
-    await bookingSystem.locator("xpath=ancestor::label").click();
-    await marketplaceSystem.locator("xpath=ancestor::label").click();
-    await expect(bookingSystem).toBeChecked();
-    await expect(marketplaceSystem).toBeChecked();
-    const continueSetup = page.getByRole("button", { name: "Continue setup" });
-    await expect(continueSetup).toBeEnabled();
-    await continueSetup.click();
-
-    expect(selectedProducts).toEqual(["pms", "booking", "marketplace"]);
-    await expect(page).toHaveURL(/\/setup\?/);
-    const roadmapUrl = new URL(page.url());
-    expect(roadmapUrl.searchParams.get("entryProduct")).toBe("pms");
-    expect(roadmapUrl.searchParams.get("returnTo")).toBe("/dashboard");
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Finish setting up Alpenrose Munich" }),
-    ).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "Booking Engine" })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "PMS" })).toBeVisible();
-    await expect(
-      page.getByRole("heading", { level: 2, name: "Creator Marketplace" }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Continue in Booking Admin" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Continue in PMS" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Continue Marketplace setup" })).toBeVisible();
-    expect(statusRequests.length).toBeGreaterThan(0);
-    expect(
-      statusRequests.every(
-        (url) =>
-          url.searchParams.get("entryProduct") === "pms" &&
-          url.searchParams.get("returnTo") === "/dashboard",
-      ),
-    ).toBe(true);
-    expect(statusRequests.some((url) => !url.searchParams.has("propertyId"))).toBe(true);
-    expect(statusRequests.some((url) => url.searchParams.get("propertyId") === propertyId)).toBe(
-      true,
-    );
-
-    await assertHealthy();
+    await expect(taskCard.getByRole("button")).toHaveCount(0);
   });
 });
 
-async function mockSharedSetupApi(
-  page: Parameters<typeof mockPmsWebAuthenticatedSession>[0],
-  isCreated: () => boolean,
-  markCreated: () => void,
-  waitForCreate: () => Promise<void>,
-  statusRequests: URL[],
-  selectedProducts: SharedHotelSetupProduct[],
+async function mockTrackFirstSetupApi(
+  page: Page,
+  options: {
+    initialPropertyId?: string;
+    onTracks?: (request: { body: unknown; idempotencyKey: string | null }) => void;
+    onCreate?: (request: { body: unknown; idempotencyKey: string | null }) => void;
+  },
 ) {
+  let selectedTracks: SetupTrack[] = [];
+  let selectedPropertyId = options.initialPropertyId ?? null;
+
   await page.route("**/api/hotel-setup/**", async (route) => {
     const request = route.request();
     if (request.method() === "OPTIONS") {
       return route.fulfill({ status: 204, headers: corsHeaders() });
     }
-
     const url = new URL(request.url());
+
     if (url.pathname === "/api/hotel-setup/property-types") {
       return route.fulfill({
         headers: corsHeaders(),
         json: {
-          contractVersion: "shared-hotel-setup-property-types.v1",
+          contractVersion: "adaptive-hotel-property-types.v1",
           propertyTypes: [
             { value: "hotel", label: "Hotel from API" },
             { value: "constructor", label: "Future type from API" },
@@ -361,219 +425,117 @@ async function mockSharedSetupApi(
         },
       });
     }
-
     if (url.pathname === "/api/hotel-setup/status") {
-      statusRequests.push(url);
       return route.fulfill({
         headers: corsHeaders(),
-        json: isCreated()
-          ? selectedProducts.length > 0
-            ? selectedProductsRoadmapStatus(selectedProducts)
-            : completeStatus()
-          : emptyStatus(),
+        json: createAdaptiveHotelSetupStatusMock({
+          entryProduct: "pms",
+          organizationId: "org_pms_owner",
+          organizationDisplayName: "Alpenrose Hotel Group",
+          selectedTracks,
+          trackRevision: selectedTracks.length === 0 ? 0 : 1,
+          propertyId: selectedPropertyId,
+          publicId: "prop_alpenrose",
+          propertyDisplayName: "Alpenrose Munich",
+          locationSummary: "Munich, DE",
+          entryDecision: {
+            propertyId: selectedPropertyId,
+            decision:
+              selectedPropertyId && selectedTracks.includes("hotel_operations")
+                ? "enter"
+                : "setup_required",
+            destinationRouteKey:
+              selectedPropertyId && selectedTracks.includes("hotel_operations")
+                ? "pms.workspace"
+                : "hotel_setup",
+            reasonCode:
+              selectedPropertyId && selectedTracks.includes("hotel_operations")
+                ? null
+                : selectedPropertyId
+                  ? "requested_track_not_selected"
+                  : "property_selection_required",
+          },
+          recommendedTaskId: null,
+        }),
       });
     }
-
-    if (url.pathname === "/api/hotel-setup/products" && request.method() === "PUT") {
-      const payload = request.postDataJSON() as {
-        selectedProducts: SharedHotelSetupProduct[];
-      };
-      selectedProducts.splice(0, selectedProducts.length, ...payload.selectedProducts);
+    if (url.pathname === "/api/hotel-setup/tracks" && request.method() === "PUT") {
+      const body = request.postDataJSON() as { selectedTracks: SetupTrack[] };
+      options.onTracks?.({
+        body,
+        idempotencyKey: request.headers()["idempotency-key"] ?? null,
+      });
+      selectedTracks = body.selectedTracks;
+      const status = createAdaptiveHotelSetupStatusMock({
+        entryProduct: "pms",
+        organizationId: "org_pms_owner",
+        organizationDisplayName: "Alpenrose Hotel Group",
+        selectedTracks,
+        trackRevision: 1,
+        propertyId: selectedPropertyId,
+      });
       return route.fulfill({
         headers: corsHeaders(),
         json: {
-          organizationId: "org_alpenrose",
-          selectedProducts,
-          updatedAt: "2026-06-30T00:00:00.000Z",
+          trackRevision: status.organization.trackRevision,
+          selectedTracks,
+          tracks: status.organization.tracks,
         },
       });
     }
-
     if (url.pathname === "/api/hotel-setup/properties" && request.method() === "POST") {
-      await waitForCreate();
-      markCreated();
+      const body = request.postDataJSON();
+      options.onCreate?.({
+        body,
+        idempotencyKey: request.headers()["idempotency-key"] ?? null,
+      });
+      selectedPropertyId = propertyId;
       return route.fulfill({
         status: 201,
         headers: corsHeaders(),
-        json: propertyProfile(),
+        json: {
+          propertyId,
+          profileRevision: 1,
+          profile: body,
+        },
       });
     }
-
     return route.fulfill({ status: 404, headers: corsHeaders(), json: { detail: "Not found" } });
   });
 }
 
-function emptyStatus(): SharedHotelSetupStatus {
-  return {
-    contractVersion: "shared-hotel-setup-status.v1",
-    entry: { entryProduct: "pms", returnTo: "/dashboard" },
-    hotelGroup: {
-      organizationId: "org_alpenrose",
-      displayName: "Alpenrose Hotel Group",
-      websiteUrl: null,
-      selectedProducts: [],
+function actionableStatus(entryProduct: "pms" | "booking" | "marketplace", taskId: SetupTaskId) {
+  const selectedTracks: SetupTrack[] =
+    entryProduct === "marketplace" ? ["creator_marketplace"] : ["hotel_operations"];
+  return createAdaptiveHotelSetupStatusMock({
+    entryProduct,
+    organizationId: "org_pms_owner",
+    organizationDisplayName: "Alpenrose Hotel Group",
+    selectedTracks,
+    propertyId: PMS_WEB_PROPERTY_ID,
+    propertyDisplayName: "Alpenrose Munich",
+    taskOverrides: {
+      [taskId]: {
+        ownerProgress: "not_started",
+        readiness: "actionable",
+        actionableBy: "owner",
+        reasonCodes: [`${taskId}_required`],
+      },
     },
-    selection: { state: "no_property", selectedPropertyId: null },
-    properties: [],
-    nextAction: { action: "create_property", reasonCodes: ["no_property"] },
-    updatedAt: "2026-06-30T00:00:00.000Z",
-  };
-}
-
-function completeStatus(): SharedHotelSetupStatus {
-  return {
-    ...emptyStatus(),
-    selection: { state: "single_property", selectedPropertyId: propertyId },
-    properties: [
-      {
-        propertyId,
-        publicId: "prop_alpenrose",
-        displayName: "Alpenrose Munich",
-        locationSummary: "Munich, DE",
-        sharedProfile: {
-          status: "complete",
-          source: "canonical",
-          completionPercent: 100,
-          missingFields: [],
-        },
-        products: {
-          booking: product("booking", "not_selected"),
-          pms: product("pms", "not_selected"),
-          marketplace: product("marketplace", "not_selected"),
-        },
-      },
-    ],
-    nextAction: { action: "select_products", propertyId, reasonCodes: ["no_products_selected"] },
-  };
-}
-
-function selectedProductsRoadmapStatus(
-  selectedProducts: SharedHotelSetupProduct[],
-): SharedHotelSetupStatus {
-  const base = completeStatus();
-  const booking = product("booking", "selected_incomplete");
-  booking.missingSteps = ["bookingSettings", "publicBookability", "paymentReadiness"];
-  const pms = product("pms", "selected_incomplete");
-  pms.missingSteps = ["roomTypes", "rooms", "ratePlans"];
-  const marketplace = product("marketplace", "selected_incomplete");
-  marketplace.missingSteps = ["creatorPitch", "marketplaceOffer"];
-
-  return {
-    ...base,
-    hotelGroup: { ...base.hotelGroup, selectedProducts },
-    properties: [
-      {
-        ...base.properties[0]!,
-        products: { booking, pms, marketplace },
-      },
-    ],
-    nextAction: {
-      action: "complete_product_activation",
-      propertyId,
-      product: "pms",
-      missingSteps: pms.missingSteps,
-      reasonCodes: ["entry_product_activation_incomplete"],
-    },
-  };
-}
-
-function pmsActivationStatus(
-  status: "selected_incomplete" | "suspended",
-  requestedMissingSteps?: string[],
-): SharedHotelSetupStatus {
-  const base = completeStatus();
-  const missingSteps =
-    status === "selected_incomplete"
-      ? (requestedMissingSteps ?? ["roomTypes", "rooms", "ratePlans"])
-      : [];
-  return {
-    ...base,
-    selection: { state: "single_property", selectedPropertyId: PMS_WEB_PROPERTY_ID },
-    hotelGroup: { ...base.hotelGroup, selectedProducts: ["pms"] },
-    properties: [
-      {
-        ...base.properties[0]!,
-        propertyId: PMS_WEB_PROPERTY_ID,
-        products: {
-          ...base.properties[0]!.products,
-          pms: {
-            product: "pms",
-            status,
-            missingSteps,
-            statusReasons: [status === "suspended" ? "pms_suspended" : "pms_activation_incomplete"],
-            updatedAt: "2026-06-30T00:00:00.000Z",
-          },
-        },
-      },
-    ],
-    nextAction: {
-      action: "complete_product_activation",
+    recommendedTaskId: taskId,
+    entryDecision: {
       propertyId: PMS_WEB_PROPERTY_ID,
-      product: "pms",
-      missingSteps,
-      reasonCodes: [
-        status === "suspended" ? "pms_suspended" : "entry_product_activation_incomplete",
-      ],
+      decision: "enter",
+      destinationRouteKey: `${entryProduct}.workspace`,
+      reasonCode: null,
     },
-  };
+  });
 }
 
-function propertyProfile(): SharedPropertyProfile {
+function corsHeaders(): Record<string, string> {
   return {
-    propertyId,
-    publicId: "prop_alpenrose",
-    displayName: "Alpenrose Munich",
-    propertyType: "hotel",
-    location: {
-      countryCode: "DE",
-      region: null,
-      city: "Munich",
-      streetAddress: null,
-      postalCode: null,
-      rawMarketplaceLocation: null,
-      timezone: null,
-      latitude: null,
-      longitude: null,
-      addressPublic: true,
-      mapDisplayMode: "hidden",
-    },
-    website: "https://alpenrose.example/",
-    contactEmail: "hello@alpenrose.example",
-    phone: "+49 89 123456",
-    shortDescription: "A city hotel close to the old town.",
-    longDescription: null,
-    media: [
-      {
-        mediaType: "gallery_image",
-        url: "https://images.example/alpenrose.jpg",
-        altText: null,
-        sortOrder: 0,
-      },
-    ],
-    sharedProfile: {
-      status: "complete",
-      source: "canonical",
-      completionPercent: 100,
-      missingFields: [],
-    },
-    updatedAt: "2026-06-30T00:00:00.000Z",
-  };
-}
-
-function product(productName: SharedHotelSetupProduct, status: SharedHotelSetupProductStatus) {
-  return {
-    product: productName,
-    status,
-    missingSteps: [],
-    statusReasons: [],
-    updatedAt: null,
-  };
-}
-
-function corsHeaders() {
-  return {
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "authorization,content-type",
-    "access-control-allow-methods": "GET,POST,PUT,OPTIONS",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
   };
 }

@@ -9,7 +9,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
-import { createPgMarketplaceAdminRepository, mapOfferRow } from "./routes/marketplaceAdmin.js";
+import {
+  createPgMarketplaceAdminRepository,
+  mapOfferRow,
+  syncPropertyOfferReadModels,
+} from "./routes/marketplaceAdmin.js";
 import type {
   MarketplaceAdminCollaborationsResponse,
   MarketplaceAdminCreateOfferRequest,
@@ -486,11 +490,9 @@ describe("marketplace admin routes", () => {
       4,
     );
     expect(statements).toContain("ON CONFLICT (offer_id) DO UPDATE");
-    expect(statements).toContain(
-      "WHEN $2 = 'preserve' AND current_projection.visibility_status IS NOT NULL",
-    );
+    expect(statements).not.toContain("current_projection.visibility_status");
     expect(statements).toContain("WHEN $2 = 'disable' THEN 'disabled'");
-    expect(projectionModes).toEqual(["initialize", "initialize", "preserve", "disable"]);
+    expect(projectionModes).toEqual(["initialize", "initialize", "initialize", "disable"]);
     expect(mediaPromotions).toEqual([
       {
         organizationId: "f8012000-0000-0000-0000-000000000001",
@@ -499,14 +501,77 @@ describe("marketplace admin routes", () => {
     ]);
     expect(statements).toContain("SET offer_status = 'verified', updated_at = now()");
     expect(statements).toContain("SET marketplace_profile_status = 'verified', updated_at = now()");
+    expect(statements).toContain("AND profile_complete = TRUE");
     expect(statements).toContain("marketplace_profile.marketplace_profile_status = 'verified'");
+    expect(statements).toContain("marketplace_profile.profile_complete = TRUE");
     expect(statements).toContain("COALESCE(cardinality(offer_media.urls), 0) > 0");
-    expect(statements).toContain("LEFT JOIN hotel_catalog.property_locations property_location");
+    const offerProjection = sql.find((statement) =>
+      statement.includes("INSERT INTO marketplace.marketplace_offer_read_model"),
+    );
+    expect(offerProjection).toContain("'countryCode', public_profile.location ->> 'countryCode'");
+    expect(offerProjection).toContain("'region', public_profile.location ->> 'region'");
+    expect(offerProjection).toContain("'city', public_profile.location ->> 'city'");
+    expect(offerProjection).not.toContain("rawMarketplaceLocation");
+    expect(offerProjection).not.toContain("streetAddress");
+    expect(offerProjection).not.toContain("postalCode");
+    expect(offerProjection).not.toContain(
+      "LEFT JOIN hotel_catalog.property_locations property_location",
+    );
+    expect(offerProjection).not.toContain("property_location.raw_marketplace_location");
+    expect(offerProjection).not.toContain("property_location.city");
+    expect(offerProjection).not.toContain("property_location.country_code");
     expect(statements).toContain("THEN 'public'");
-    expect(statements).not.toContain(
+    expect(statements).toContain(
       "COALESCE(public_profile.profile_status, property.profile_status) = 'complete'",
     );
     expect(statements).toContain("SET status = 'archived'");
+  });
+
+  it("refreshes every nonarchived offer projection for a canonical profile write", async () => {
+    const propertyId = "f8013000-0000-0000-0000-000000000001";
+    const offerIds = [
+      "f8015000-0000-0000-0000-000000000001",
+      "f8015000-0000-0000-0000-000000000002",
+    ];
+    const projectedOfferIds: string[] = [];
+    const statements: string[] = [];
+    const client = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: readonly unknown[],
+      ): Promise<{ rows: T[] }> {
+        statements.push(text);
+        let rows: unknown[] = [];
+        if (text.includes('offer.id::text AS "offerId"')) {
+          rows = offerIds.map((offerId) => ({ offerId }));
+        } else if (text.includes('offer.property_id::text AS "propertyId"')) {
+          rows = [{ propertyId }];
+        } else if (text.includes('property.display_name AS "displayName"')) {
+          rows = [
+            {
+              propertyId,
+              publicId: "prop_alpenrose",
+              displayName: "Hotel Alpenrose",
+              defaultLocale: "en",
+              canonicalSlug: "hotel-alpenrose",
+            },
+          ];
+        } else if (text.includes("INSERT INTO marketplace.marketplace_offer_read_model")) {
+          projectedOfferIds.push(String(values?.[0]));
+        }
+        return { rows: rows as T[] };
+      },
+    };
+
+    await syncPropertyOfferReadModels(client, {
+      organizationId: "f8012000-0000-0000-0000-000000000001",
+      propertyId,
+    });
+
+    expect(projectedOfferIds).toEqual(offerIds);
+    expect(
+      statements.find((statement) => statement.includes('offer.id::text AS "offerId"')),
+    ).toContain("offer.offer_status <> 'archived'");
   });
 
   it("loads pending offers for a hotel review without reading them through identity", async () => {
@@ -530,8 +595,15 @@ describe("marketplace admin routes", () => {
       },
       offers: [{ offerId: "f8015000-0000-0000-0000-000000000001" }],
     });
-    expect(sql.join("\n")).toContain('profile.host_summary AS "hostSummary"');
-    expect(sql.join("\n")).toContain("offer.offer_status <> 'archived'");
+    const statements = sql.join("\n");
+    expect(statements).toContain('profile.host_summary AS "hostSummary"');
+    expect(statements).toContain("offer.offer_status <> 'archived'");
+    expect(statements).toContain("public_profile.location->>'city'");
+    expect(statements).toContain("public_profile.location->>'region'");
+    expect(statements).toContain("public_profile.location->>'countryCode'");
+    expect(statements).not.toContain("rawMarketplaceLocation");
+    expect(statements).not.toContain("raw_marketplace_location");
+    expect(statements).not.toContain("JOIN hotel_catalog.property_locations location");
   });
 
   it("rejects offer verification when the offer has no pending or approved media", async () => {
@@ -551,6 +623,45 @@ describe("marketplace admin routes", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 422 });
     expect(promoteOfferMedia).not.toHaveBeenCalled();
+  });
+
+  it("rejects offer verification while the Marketplace hotel profile is incomplete", async () => {
+    const promoteOfferMedia = vi.fn(async () => 1);
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      offerMediaPromotion: { promoteOfferMedia },
+      pool: createAdminPgPool(sql, { profileComplete: false }) as never,
+    });
+
+    await expect(
+      repository.verifyOfferForUser({
+        hotelUserId: "user_hotel",
+        offerId: "f8015000-0000-0000-0000-000000000001",
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(promoteOfferMedia).not.toHaveBeenCalled();
+    expect(sql.join("\n")).not.toContain("SET offer_status = 'verified'");
+  });
+
+  it("rejects verified admin offer creation while the Marketplace hotel profile is incomplete", async () => {
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql, { profileComplete: false }) as never,
+    });
+
+    await expect(
+      repository.createOfferForUser({
+        hotelUserId: "user_hotel",
+        request: offerPayload(),
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(sql.join("\n")).not.toContain("INSERT INTO marketplace.marketplace_offers");
   });
 
   it("retains pending offer media metadata for the owner without publishing a URL", () => {
@@ -613,6 +724,7 @@ function createAdminPgPool(
     acceptedAffiliateCollaboration?: boolean;
     projectionModes?: string[];
     hasEligibleMedia?: boolean;
+    profileComplete?: boolean;
   } = {},
 ) {
   const offerId = "f8015000-0000-0000-0000-000000000001";
@@ -648,6 +760,7 @@ function createAdminPgPool(
           propertyId,
           organizationId,
           profileStatus: "pending",
+          profileComplete: options.profileComplete ?? true,
           displayName: "Hotel Alpenrose",
           location: "Innsbruck, AT",
           hostSummary: "Independent alpine hotel.",
@@ -662,6 +775,21 @@ function createAdminPgPool(
       rows = [{ exists: options.hasEligibleMedia ?? true }];
     } else if (text.includes("INSERT INTO marketplace.marketplace_offers")) {
       rows = [{ id: offerId }];
+    } else if (
+      text.includes('offer.property_id::text AS "propertyId"') &&
+      !text.includes('offer.id::text AS "offerId"')
+    ) {
+      rows = [{ propertyId }];
+    } else if (text.includes('property.display_name AS "displayName"')) {
+      rows = [
+        {
+          propertyId,
+          publicId: "prop_alpenrose",
+          displayName: "Hotel Alpenrose",
+          defaultLocale: "en",
+          canonicalSlug: "hotel-alpenrose",
+        },
+      ];
     } else if (text.includes("SET marketplace_profile_status = 'verified'")) {
       rows = [{ propertyId }];
     } else if (text.includes("SET offer_status = 'verified'")) {

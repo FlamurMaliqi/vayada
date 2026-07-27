@@ -2,33 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon, CheckIcon } from "@heroicons/react/24/outline";
-import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
+type Product = "booking" | "pms" | "marketplace";
+
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
   process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
-
-// Builds the cross-app handoff URL consumed by the PMS / Booking Engine
-// `/handoff` page. Mirrors the PMS / booking-admin sidebars so a marketplace
-// user can switch back without re-login. Auth lives in the URL hash so it
-// never reaches server logs.
-function buildHandoffUrl(baseUrl: string): string {
-  if (typeof window === "undefined") return baseUrl;
-  const token = localStorage.getItem("access_token");
-  const expiresAt = localStorage.getItem("token_expires_at");
-  const user = localStorage.getItem(STORAGE_KEYS.USER);
-  const propertyId = localStorage.getItem("selectedSharedPropertyId");
-  const params = new URLSearchParams({
-    ...(token && expiresAt ? { token, expires_at: expiresAt } : {}),
-    ...(token && expiresAt && user ? { user: encodeURIComponent(user) } : {}),
-    ...(propertyId ? { property_id: propertyId } : {}),
-  });
-  if (params.size === 0) return baseUrl;
-  return `${baseUrl}/handoff#${params.toString()}`;
-}
 
 export function AppSwitcher({
   isCollapsed,
@@ -39,8 +21,8 @@ export function AppSwitcher({
 }) {
   const [open, setOpen] = useState(false);
   const [userType, setUserType] = useState<UserType | null>(null);
-  const [enabledProducts, setEnabledProducts] = useState<Set<SharedHotelSetupProduct>>(
-    () => new Set<SharedHotelSetupProduct>(["marketplace"]),
+  const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
+    () => new Set<Product>(["marketplace"]),
   );
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -56,9 +38,13 @@ export function AppSwitcher({
       .then((status) => {
         if (!cancelled) {
           setEnabledProducts(
-            new Set<SharedHotelSetupProduct>([
+            new Set<Product>([
               "marketplace",
-              ...status.hotelGroup.selectedProducts,
+              ...status.organization.tracks.flatMap((track) =>
+                track.components
+                  .filter((component) => component.access === "active")
+                  .map((component) => component.product),
+              ),
             ]),
           );
         }
@@ -87,7 +73,7 @@ export function AppSwitcher({
   if (!canSwitchToHotelApps) return null;
 
   const goTo = (baseUrl: string) => {
-    window.location.href = buildHandoffUrl(baseUrl);
+    window.location.href = baseUrl;
   };
 
   return (

@@ -20,7 +20,7 @@ import {
   uploadPlatformMedia,
   type PlatformMediaUploadResult,
 } from "@vayada/marketplace-shared/api/platformMedia";
-import type { SharedPropertyProfile, SharedPropertyProfileInput } from "@vayada/product-onboarding";
+import { countries } from "countries-list";
 import { STORAGE_KEYS } from "@/lib/constants";
 import {
   readSelectedSharedPropertyId,
@@ -29,6 +29,16 @@ import {
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { targetApiClient } from "./targetClient";
+
+type PropertyProfileResponse = Awaited<ReturnType<typeof sharedHotelSetupApi.getPropertyProfile>>;
+type PropertyProfileUpdateRequest = Parameters<typeof sharedHotelSetupApi.updatePropertyProfile>[1];
+type PropertyProfileContact = PropertyProfileResponse["profile"]["contacts"][number];
+type PublicPropertyProfileResponse = Awaited<
+  ReturnType<typeof sharedHotelSetupApi.getPublicPropertyProfile>
+>;
+type PublicPropertyProfileUpdateRequest = Parameters<
+  typeof sharedHotelSetupApi.updatePublicPropertyProfile
+>[1];
 
 // Backend API response type for marketplace endpoint (snake_case)
 interface ListingMarketplaceResponse {
@@ -83,9 +93,25 @@ export interface UpdateHotelProfileRequest {
   about?: string;
   website?: string;
   phone?: string;
+  localityPublic?: boolean;
   picture?: string | null; // allow clearing or replacing
   pictureMediaObjectId?: string | null;
   picture_media_object_id?: string | null;
+}
+
+export type HotelProfileRevisionSnapshot = {
+  canonicalProfileRevision: number;
+  publicProfileRevision: number;
+};
+
+export function advanceHotelProfileRevisionsAfterCoverUpload(
+  revisions: HotelProfileRevisionSnapshot,
+): HotelProfileRevisionSnapshot {
+  const nextRevision = revisions.canonicalProfileRevision + 1;
+  return {
+    canonicalProfileRevision: nextRevision,
+    publicProfileRevision: nextRevision,
+  };
 }
 
 export interface CreateListingRequest {
@@ -131,6 +157,15 @@ export class CanonicalHotelPhotoReuseError extends Error {
   constructor(readonly sourceUrl: string) {
     super("The shared hotel photo could not be copied");
     this.name = "CanonicalHotelPhotoReuseError";
+  }
+}
+
+export class HotelAddressSetupRequiredError extends Error {
+  constructor() {
+    super(
+      "Hotel addresses must be updated in Hotel setup so the full address, timezone, and map details stay consistent.",
+    );
+    this.name = "HotelAddressSetupRequiredError";
   }
 }
 
@@ -257,15 +292,16 @@ export const hotelService = {
     options?: RequestInit,
   ): Promise<HotelProfile> => {
     const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
-    const [property, marketplaceProfile, offers] = await Promise.all([
+    const [property, publicProfile, marketplaceProfile, offers] = await Promise.all([
       sharedHotelSetupApi.getPropertyProfile(propertyId, options),
+      sharedHotelSetupApi.getPublicPropertyProfile(propertyId, options),
       targetApiClient.get<TargetMarketplaceProfile>(marketplaceProfilePath(propertyId), options),
       targetApiClient.get<{ offers: TargetMarketplaceOffer[] }>(
         marketplaceOffersPath(propertyId),
         options,
       ),
     ]);
-    return toLegacyHotelProfile(property, marketplaceProfile, offers.offers);
+    return toLegacyHotelProfile(property, publicProfile, marketplaceProfile, offers.offers);
   },
 
   /**
@@ -274,23 +310,29 @@ export const hotelService = {
   updateMyProfile: async (
     data: UpdateHotelProfileRequest | FormData,
     propertyIdOverride?: string,
+    revisions?: HotelProfileRevisionSnapshot,
   ): Promise<HotelProfile> => {
-    if (data instanceof FormData) {
-      throw new Error("Hotel profile updates must use JSON and platform media uploads");
-    }
+    return updateHotelProfile(data, propertyIdOverride, revisions, {
+      publicProfile: true,
+      marketplaceProfile: true,
+    });
+  },
 
-    const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
-    const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
-    const canonicalUpdate = applyCanonicalProfileUpdate(property, data);
-    if (canonicalUpdate) {
-      await sharedHotelSetupApi.updatePropertyProfile(propertyId, canonicalUpdate);
-    }
-    if (data.about !== undefined) {
-      await targetApiClient.put<TargetMarketplaceProfile>(marketplaceProfilePath(propertyId), {
-        hostSummary: normalizedOptionalText(data.about),
-      });
-    }
-    return hotelService.getMyProfile(propertyId);
+  updatePublicSetupProfile: async (
+    data: Pick<UpdateHotelProfileRequest, "about" | "localityPublic">,
+    propertyId: string,
+    revisions: HotelProfileRevisionSnapshot,
+  ): Promise<HotelProfile> => {
+    return updateHotelProfile(data, propertyId, revisions, {
+      publicProfile: true,
+      marketplaceProfile: false,
+    });
+  },
+
+  updateMarketplaceHostSummary: async (about: string, propertyId: string): Promise<void> => {
+    await targetApiClient.put<TargetMarketplaceProfile>(marketplaceProfilePath(propertyId), {
+      hostSummary: normalizedOptionalText(about),
+    });
   },
 
   /**
@@ -300,9 +342,11 @@ export const hotelService = {
   uploadProfileImage: async (
     file: File,
     profileId: string,
+    expectedProfileRevision: number,
   ): Promise<PlatformImageUploadResponse> => {
     const [uploaded] = await uploadPlatformMedia({
       purpose: "property.hero_image",
+      expectedProfileRevision,
       resource: {
         product: "marketplace",
         resourceType: "hotel_profile",
@@ -313,6 +357,20 @@ export const hotelService = {
     });
     if (!uploaded) throw new Error("Platform media did not return an uploaded image");
     return { ...uploaded, mediaObjectId: uploaded.mediaId };
+  },
+
+  /**
+   * Promote an already selected remote offer photo to the canonical hotel
+   * cover. The same guarded download path used for offer-photo reuse keeps
+   * third-party URLs out of the profile command.
+   */
+  uploadProfileImageFromSource: async (
+    sourceImageUrl: string,
+    profileId: string,
+    expectedProfileRevision: number,
+  ): Promise<PlatformImageUploadResponse> => {
+    const file = await remoteImageFile(sourceImageUrl, 0);
+    return hotelService.uploadProfileImage(file, profileId, expectedProfileRevision);
   },
 
   /**
@@ -422,7 +480,9 @@ async function resolveSelectedPropertyId(propertyIdOverride?: string): Promise<s
 
   const status = await sharedHotelSetupApi.getStatus({ entryProduct: "marketplace" });
   const propertyId =
-    status.selection.selectedPropertyId ?? status.properties[0]?.propertyId ?? null;
+    status.propertySelection.selectedPropertyId ??
+    status.propertySelection.availableProperties[0]?.propertyId ??
+    null;
   if (!propertyId) throw new Error("Create a hotel before opening Marketplace");
   storage?.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, propertyId);
   return propertyId;
@@ -436,82 +496,226 @@ function marketplaceOffersPath(propertyId: string): string {
   return `/api/marketplace/properties/${encodeURIComponent(propertyId)}/offers`;
 }
 
+async function updateHotelProfile(
+  data: UpdateHotelProfileRequest | FormData,
+  propertyIdOverride: string | undefined,
+  revisions: HotelProfileRevisionSnapshot | undefined,
+  targets: { publicProfile: boolean; marketplaceProfile: boolean },
+): Promise<HotelProfile> {
+  if (data instanceof FormData) {
+    throw new Error("Hotel profile updates must use JSON and platform media uploads");
+  }
+  if (!revisions) {
+    throw new Error("Hotel profile updates require the editor-loaded profile revisions");
+  }
+
+  const propertyId = await resolveSelectedPropertyId(propertyIdOverride);
+  const property = await sharedHotelSetupApi.getPropertyProfile(propertyId);
+  assertLocationIsUnchanged(property, data);
+  const canonicalUpdate = applyCanonicalProfileUpdate(
+    property,
+    data,
+    revisions.canonicalProfileRevision,
+  );
+  let expectedPublicProfileRevision = revisions.publicProfileRevision;
+  if (canonicalUpdate) {
+    const updated = await sharedHotelSetupApi.updatePropertyProfile(propertyId, canonicalUpdate);
+    expectedPublicProfileRevision = updated.profileRevision;
+  }
+
+  if (targets.publicProfile && changesPublicPropertyProfile(data)) {
+    const publicProfile = await sharedHotelSetupApi.getPublicPropertyProfile(propertyId);
+    const publicUpdate = applyPublicPropertyProfileUpdate(
+      publicProfile,
+      data,
+      expectedPublicProfileRevision,
+    );
+    if (publicUpdate) {
+      await sharedHotelSetupApi.updatePublicPropertyProfile(propertyId, publicUpdate);
+    }
+  }
+
+  if (targets.marketplaceProfile && Object.hasOwn(data, "about")) {
+    await targetApiClient.put<TargetMarketplaceProfile>(marketplaceProfilePath(propertyId), {
+      hostSummary: normalizedOptionalText(data.about),
+    });
+  }
+  return hotelService.getMyProfile(propertyId);
+}
+
 function applyCanonicalProfileUpdate(
-  profile: SharedPropertyProfile,
+  response: PropertyProfileResponse,
   update: UpdateHotelProfileRequest,
-): SharedPropertyProfileInput | null {
+  expectedProfileRevision: number,
+): PropertyProfileUpdateRequest | null {
   const changesCanonicalProfile =
     update.name !== undefined ||
-    update.location !== undefined ||
-    update.website !== undefined ||
-    update.phone !== undefined ||
-    update.picture !== undefined;
+    update.localityPublic !== undefined ||
+    Object.hasOwn(update, "website") ||
+    Object.hasOwn(update, "email") ||
+    Object.hasOwn(update, "phone");
   if (!changesCanonicalProfile) return null;
 
-  const displayName = update.name?.trim() || profile.displayName;
+  const patch: PropertyProfileUpdateRequest["patch"] = {};
+  if (update.name !== undefined) {
+    patch.displayName = update.name.trim() || response.profile.displayName;
+  }
+  if (update.localityPublic !== undefined) {
+    patch.location = { localityPublic: update.localityPublic };
+  }
+  if (
+    Object.hasOwn(update, "website") ||
+    Object.hasOwn(update, "email") ||
+    Object.hasOwn(update, "phone")
+  ) {
+    let contacts = response.profile.contacts;
+    if (Object.hasOwn(update, "website")) {
+      contacts = withGeneralContact(
+        contacts,
+        "website",
+        normalizedOptionalText(update.website),
+        true,
+      );
+    }
+    if (Object.hasOwn(update, "email")) {
+      contacts = withGeneralContact(contacts, "email", normalizedOptionalText(update.email), false);
+    }
+    if (Object.hasOwn(update, "phone")) {
+      contacts = withGeneralContact(contacts, "phone", normalizedOptionalText(update.phone), false);
+    }
+    patch.contacts = contacts;
+  }
+
   return {
-    displayName,
-    propertyType: profile.propertyType,
-    location:
-      update.location === undefined
-        ? profile.location
-        : {
-            ...profile.location,
-            rawMarketplaceLocation: normalizedOptionalText(update.location),
-          },
-    website:
-      update.website === undefined ? profile.website : normalizedOptionalText(update.website),
-    contactEmail: profile.contactEmail,
-    phone: update.phone === undefined ? profile.phone : normalizedOptionalText(update.phone),
-    shortDescription: profile.shortDescription,
-    longDescription: profile.longDescription,
-    media:
-      update.picture === undefined
-        ? profile.media
-        : [
-            ...(update.picture
-              ? [
-                  {
-                    mediaType: "hero_image" as const,
-                    url: update.picture,
-                    altText: displayName,
-                    sortOrder: 0,
-                  },
-                ]
-              : []),
-            ...profile.media.filter((media) => media.mediaType !== "hero_image"),
-          ],
+    expectedProfileRevision,
+    patch,
+  };
+}
+
+function applyPublicPropertyProfileUpdate(
+  response: PublicPropertyProfileResponse,
+  update: UpdateHotelProfileRequest,
+  expectedProfileRevision: number,
+): PublicPropertyProfileUpdateRequest | null {
+  const patch: PublicPropertyProfileUpdateRequest["patch"] = {};
+  if (Object.hasOwn(update, "about")) {
+    patch.shortDescription = normalizedOptionalText(update.about);
+  }
+  if (update.picture === null) {
+    patch.media = response.publicProfile.media
+      .filter(({ mediaType }) => mediaType !== "hero_image")
+      .sort((left, right) => left.sortOrder - right.sortOrder)
+      .map(({ mediaObjectId, altText }, index) => ({
+        mediaObjectId,
+        altText,
+        sortOrder: index,
+      }));
+  } else {
+    const pictureMediaObjectId =
+      update.pictureMediaObjectId ?? update.picture_media_object_id ?? null;
+    if (pictureMediaObjectId) {
+      const matchingMedia = response.publicProfile.media.find(
+        ({ mediaObjectId }) => mediaObjectId === pictureMediaObjectId,
+      );
+      const retainedMedia = response.publicProfile.media
+        .filter(
+          ({ mediaObjectId, mediaType }) =>
+            mediaType !== "hero_image" && mediaObjectId !== pictureMediaObjectId,
+        )
+        .sort((left, right) => left.sortOrder - right.sortOrder);
+      patch.media = [
+        {
+          mediaObjectId: pictureMediaObjectId,
+          altText: matchingMedia?.altText ?? null,
+          sortOrder: 0,
+        },
+        ...retainedMedia.map(({ mediaObjectId, altText }, index) => ({
+          mediaObjectId,
+          altText,
+          sortOrder: index + 1,
+        })),
+      ];
+    }
+  }
+  if (Object.keys(patch).length === 0) return null;
+
+  return {
+    expectedProfileRevision,
+    patch,
   };
 }
 
 function toLegacyHotelProfile(
-  property: SharedPropertyProfile,
+  property: PropertyProfileResponse,
+  publicProfile: PublicPropertyProfileResponse,
   marketplaceProfile: TargetMarketplaceProfile,
   offers: TargetMarketplaceOffer[],
 ): HotelProfile {
   const user = getAuthSessionUser();
   const email =
-    property.contactEmail ??
+    profileContactValue(property, "email") ??
     user?.email ??
     (typeof window === "undefined" ? "" : (localStorage.getItem(STORAGE_KEYS.USER_EMAIL) ?? ""));
   const location = formatPropertyLocation(property);
+  const picture = publicProfilePicture(publicProfile);
   return {
     id: property.propertyId,
     user_id: user?.id ?? property.propertyId,
-    name: property.displayName,
-    propertyType: property.propertyType,
+    canonicalProfileRevision: property.profileRevision,
+    publicProfileRevision: publicProfile.profileRevision,
+    name: property.profile.displayName,
+    propertyType: property.profile.propertyType,
     category: "Hotel",
     location,
-    picture: property.media.find((media) => media.mediaType === "hero_image")?.url ?? null,
-    website: property.website,
-    about: marketplaceProfile.hostSummary,
+    localityPublic: property.profile.location.localityPublic,
+    picture,
+    website: profileContactValue(property, "website"),
+    about:
+      normalizedOptionalText(marketplaceProfile.hostSummary) ??
+      normalizedOptionalText(publicProfile.publicProfile.shortDescription) ??
+      normalizedOptionalText(publicProfile.publicProfile.longDescription),
+    publicAbout:
+      normalizedOptionalText(publicProfile.publicProfile.shortDescription) ??
+      normalizedOptionalText(publicProfile.publicProfile.longDescription),
+    marketplaceAbout: normalizedOptionalText(marketplaceProfile.hostSummary),
     email,
-    phone: property.phone,
+    phone: profileContactValue(property, "phone"),
     status: toLegacyProfileStatus(marketplaceProfile.profileStatus),
     created_at: marketplaceProfile.createdAt,
     updated_at: marketplaceProfile.updatedAt,
     listings: offers.map((offer) => toLegacyHotelListing(offer, property)),
   };
+}
+
+function changesPublicPropertyProfile(update: UpdateHotelProfileRequest): boolean {
+  return (
+    Object.hasOwn(update, "about") ||
+    update.picture === null ||
+    Boolean(update.pictureMediaObjectId ?? update.picture_media_object_id)
+  );
+}
+
+function assertLocationIsUnchanged(
+  property: PropertyProfileResponse,
+  update: UpdateHotelProfileRequest,
+): void {
+  if (
+    Object.hasOwn(update, "location") &&
+    update.location?.trim() !== formatPropertyLocation(property)
+  ) {
+    throw new HotelAddressSetupRequiredError();
+  }
+}
+
+function publicProfilePicture(response: PublicPropertyProfileResponse): string | null {
+  const media = [...response.publicProfile.media].sort(
+    (left, right) => left.sortOrder - right.sortOrder,
+  );
+  return (
+    media.find(({ mediaType }) => mediaType === "hero_image")?.url ??
+    media.find(({ mediaType }) => mediaType === "gallery_image")?.url ??
+    null
+  );
 }
 
 function toTargetOfferCreate(data: CreateListingRequest): TargetMarketplaceOfferWrite {
@@ -595,7 +799,7 @@ function toTargetCreatorRequirements(
 
 function toLegacyHotelListing(
   offer: TargetMarketplaceOffer,
-  property: SharedPropertyProfile,
+  property: PropertyProfileResponse,
 ): HotelListing {
   return {
     id: offer.offerId,
@@ -604,7 +808,7 @@ function toLegacyHotelListing(
     name: offer.title,
     location: formatPropertyLocation(property),
     description: offer.offerSummary ?? "",
-    accommodation_type: property.propertyType,
+    accommodation_type: property.profile.propertyType,
     images: offer.media.flatMap((media) => (media.url ? [media.url] : [])),
     image_media_object_ids: offer.media.flatMap((media) =>
       media.mediaObjectId ? [media.mediaObjectId] : [],
@@ -708,13 +912,46 @@ function toLegacyOfferStatus(
   return "pending";
 }
 
-function formatPropertyLocation(profile: SharedPropertyProfile): string {
-  return (
-    profile.location.rawMarketplaceLocation?.trim() ||
-    [profile.location.city, profile.location.region, profile.location.countryCode]
-      .filter(Boolean)
-      .join(", ")
+function formatPropertyLocation(response: PropertyProfileResponse): string {
+  const location = response.profile.location;
+  const countryCode = location.countryCode.toUpperCase() as keyof typeof countries;
+  const countryName = countries[countryCode]?.name ?? location.countryCode;
+  return [location.city, countryName].filter(Boolean).join(", ");
+}
+
+function profileContactValue(
+  response: PropertyProfileResponse,
+  channelType: PropertyProfileContact["channelType"],
+): string | null {
+  const contacts = response.profile.contacts.filter(
+    (contact) => contact.channelType === channelType,
   );
+  return (
+    contacts.find((contact) => contact.purpose === "general")?.value ?? contacts[0]?.value ?? null
+  );
+}
+
+function withGeneralContact(
+  contacts: PropertyProfileContact[],
+  channelType: PropertyProfileContact["channelType"],
+  value: string | null,
+  isPublic: boolean,
+): PropertyProfileContact[] {
+  const existingIndex = contacts.findIndex(
+    (contact) => contact.channelType === channelType && contact.purpose === "general",
+  );
+  if (!value) {
+    return existingIndex === -1 ? contacts : contacts.filter((_, index) => index !== existingIndex);
+  }
+
+  const contact: PropertyProfileContact = {
+    channelType,
+    value,
+    purpose: "general",
+    isPublic: existingIndex === -1 ? isPublic : contacts[existingIndex]!.isPublic,
+  };
+  if (existingIndex === -1) return [...contacts, contact];
+  return contacts.map((current, index) => (index === existingIndex ? contact : current));
 }
 
 function normalizedOptionalText(value: string | null | undefined): string | null {

@@ -68,6 +68,7 @@ export type PlatformMediaUploadFileRequest = {
 export type PlatformMediaUploadSessionRequest = {
   purpose: PlatformMediaPurpose;
   visibility?: PlatformMediaVisibility;
+  expectedProfileRevision?: number;
   resource: PlatformMediaResourceScope;
   files: PlatformMediaUploadFileRequest[];
 };
@@ -122,6 +123,7 @@ export type PlatformMediaSessionRecord = {
   uploadTargets: PlatformMediaUploadTarget[];
   stagingPrefix: string;
   status: "signed" | "completed" | "failed";
+  expectedProfileRevision?: number;
   expiresAt: string;
   createdAt: string;
   completedAt?: string;
@@ -221,6 +223,15 @@ export type PlatformMediaCompleteUploadSessionResult = {
   uploadSession: PlatformMediaSessionRecord;
   mediaObjects: PlatformMediaObjectRecord[];
 };
+
+export class PlatformMediaProfileRevisionConflictError extends Error {
+  readonly code = "profile_revision_conflict";
+
+  constructor(readonly currentRevision: number) {
+    super("The property profile changed while its hero image was being finalized.");
+    this.name = "PlatformMediaProfileRevisionConflictError";
+  }
+}
 
 export type PlatformMediaRepository = {
   createUploadSession(input: {
@@ -379,6 +390,11 @@ export type PlatformMediaUploadFinalizer = {
   cleanupUploadedFile?(input: {
     session: PlatformMediaSessionRecord;
     file: PlatformMediaFinalizedFileRecord;
+  }): Promise<void>;
+  cleanupGeneratedVariants?(input: {
+    session: PlatformMediaSessionRecord;
+    file: PlatformMediaFinalizedFileRecord;
+    variants: PlatformMediaVariantRecord[];
   }): Promise<void>;
 };
 
@@ -879,30 +895,75 @@ export async function registerPlatformMediaRoutes(
         ),
       );
       const completedAt = now().toISOString();
-      const completed = await options.repository.completeUploadSession({
-        session: finalizationSession,
-        files: finalizedFiles.files,
-        variantSets,
-        bucketName,
-        now: completedAt,
-        auditEvent: {
-          action: "platform_media.upload_session.finalized",
-          auditKey: `media.finalize:${session.sessionId}`,
-          actorUserId: finalizationSession.actorUserId,
-          organizationId: finalizationSession.ownerOrganizationId,
-          targetType: "media_object",
-          targetId: finalizationSession.files[0]!.mediaId,
-          requestId: context.audit.requestId,
-          metadata: {
-            purpose: finalizationSession.purpose,
-            requestedVisibility: finalizationSession.requestedVisibility,
-            effectiveVisibility: finalizationSession.effectiveVisibility,
-            target: finalizationSession.target,
-            mediaIds: finalizationSession.files.map(({ mediaId }) => mediaId),
-            variantNames: variantSets[0]?.map(({ variantName }) => variantName) ?? [],
+      let completed: PlatformMediaCompleteUploadSessionResult;
+      try {
+        completed = await options.repository.completeUploadSession({
+          session: finalizationSession,
+          files: finalizedFiles.files,
+          variantSets,
+          bucketName,
+          now: completedAt,
+          auditEvent: {
+            action: "platform_media.upload_session.finalized",
+            auditKey: `media.finalize:${session.sessionId}`,
+            actorUserId: finalizationSession.actorUserId,
+            organizationId: finalizationSession.ownerOrganizationId,
+            targetType: "media_object",
+            targetId: finalizationSession.files[0]!.mediaId,
+            requestId: context.audit.requestId,
+            metadata: {
+              purpose: finalizationSession.purpose,
+              requestedVisibility: finalizationSession.requestedVisibility,
+              effectiveVisibility: finalizationSession.effectiveVisibility,
+              target: finalizationSession.target,
+              mediaIds: finalizationSession.files.map(({ mediaId }) => mediaId),
+              variantNames: variantSets[0]?.map(({ variantName }) => variantName) ?? [],
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (error instanceof PlatformMediaProfileRevisionConflictError) {
+          await cleanupGeneratedVariants({
+            finalizer: options.finalizer,
+            session: finalizationSession,
+            files: finalizedFiles.files,
+            variantSets,
+            timeoutMs: cleanupTimeoutMs,
+            onError(cleanupError, file) {
+              request.log.warn(
+                {
+                  err: cleanupError,
+                  sessionId: finalizationSession.sessionId,
+                  mediaId: file.sessionFile.mediaId,
+                },
+                "Platform media generated variant cleanup failed after revision conflict.",
+              );
+            },
+          });
+          await cleanupUploadedFiles({
+            finalizer: options.finalizer,
+            session: finalizationSession,
+            files: finalizedFiles.files,
+            timeoutMs: cleanupTimeoutMs,
+            onError(cleanupError, file) {
+              request.log.warn(
+                {
+                  err: cleanupError,
+                  sessionId: finalizationSession.sessionId,
+                  uploadTargetId: file.uploadTarget.uploadTargetId,
+                },
+                "Platform media staging cleanup failed after revision conflict.",
+              );
+            },
+          });
+          return reply.code(409).send({
+            code: error.code,
+            message: error.message,
+            currentRevision: error.currentRevision,
+          });
+        }
+        throw error;
+      }
       const completedSession = completed.uploadSession;
       const mediaObjects = completed.mediaObjects;
       const primaryMediaObject = mediaObjects[0]!;
@@ -1113,6 +1174,12 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
     auditEvents,
     async createUploadSession(input) {
       const requestedVisibility = input.request.visibility ?? "private";
+      if (
+        input.request.purpose === "property.hero_image" &&
+        input.request.expectedProfileRevision === undefined
+      ) {
+        throw new Error("Property hero images require expectedProfileRevision");
+      }
       const session: PlatformMediaSessionRecord = {
         sessionId: input.sessionId,
         uploadSessionKey: input.uploadSessionKey,
@@ -1135,6 +1202,7 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
         uploadTargets: input.uploadTargets,
         stagingPrefix: input.stagingPrefix,
         status: "signed",
+        expectedProfileRevision: input.request.expectedProfileRevision,
         expiresAt: input.expiresAt,
         createdAt: input.now,
       };
@@ -1303,6 +1371,32 @@ function validateUploadSessionRequest(
   }
   if (!body.resource || typeof body.resource !== "object") {
     return { ok: false, code: "invalid_resource_scope", message: "Resource scope is required." };
+  }
+  if (
+    body.expectedProfileRevision !== undefined &&
+    (!Number.isInteger(body.expectedProfileRevision) ||
+      body.expectedProfileRevision < 1 ||
+      body.expectedProfileRevision > 2_147_483_647)
+  ) {
+    return {
+      ok: false,
+      code: "invalid_profile_revision",
+      message: "expectedProfileRevision must be an integer between 1 and 2147483647.",
+    };
+  }
+  if (body.purpose !== "property.hero_image" && body.expectedProfileRevision !== undefined) {
+    return {
+      ok: false,
+      code: "invalid_profile_revision",
+      message: "expectedProfileRevision is only supported for property hero images.",
+    };
+  }
+  if (body.purpose === "property.hero_image" && body.expectedProfileRevision === undefined) {
+    return {
+      ok: false,
+      code: "invalid_profile_revision",
+      message: "Property hero images require expectedProfileRevision.",
+    };
   }
   if (!Array.isArray(body.files) || body.files.length === 0) {
     return { ok: false, code: "invalid_upload_files", message: "At least one file is required." };
@@ -1817,6 +1911,7 @@ function serializeSession(session: PlatformMediaSessionRecord): Record<string, u
     requestedVisibility: session.requestedVisibility,
     effectiveVisibility: session.effectiveVisibility,
     status: session.status,
+    expectedProfileRevision: session.expectedProfileRevision,
     expiresAt: session.expiresAt,
     resource: session.resource,
     target: session.target,
@@ -1879,6 +1974,36 @@ async function cleanupUploadedFiles(input: {
       try {
         await withTimeout(
           input.finalizer.cleanupUploadedFile!({ session: input.session, file }),
+          input.timeoutMs,
+        );
+      } catch (error) {
+        input.onError(error, file);
+      }
+    }),
+  );
+}
+
+async function cleanupGeneratedVariants(input: {
+  finalizer: PlatformMediaUploadFinalizer;
+  session: PlatformMediaSessionRecord;
+  files: PlatformMediaFinalizedFileRecord[];
+  variantSets: PlatformMediaVariantRecord[][];
+  timeoutMs: number;
+  onError(error: unknown, file: PlatformMediaFinalizedFileRecord): void;
+}): Promise<void> {
+  if (!input.finalizer.cleanupGeneratedVariants) return;
+
+  await Promise.all(
+    input.files.map(async (file, index) => {
+      const variants = input.variantSets[index] ?? [];
+      if (variants.length === 0) return;
+      try {
+        await withTimeout(
+          input.finalizer.cleanupGeneratedVariants!({
+            session: input.session,
+            file,
+            variants,
+          }),
           input.timeoutMs,
         );
       } catch (error) {

@@ -37,6 +37,15 @@ describe("getMarketplacePostLoginRedirect", () => {
     vi.mocked(creatorService.getMyProfile).mockResolvedValue(completeCreatorProfile());
   });
 
+  it("returns directly to an exact opaque handoff without running profile guards", async () => {
+    const returnTo = "/handoff?code=7_8FkqvJvK_vOS5Ke4iFAScHY6LmDsQUviRLKfS1dCk";
+    const storage = memoryStorage({ [STORAGE_KEYS.USER_TYPE]: "hotel" });
+
+    await expect(getMarketplacePostLoginRedirect(returnTo, storage)).resolves.toBe(returnTo);
+    expect(resolveMarketplaceSetupGuard).not.toHaveBeenCalled();
+    expect(checkProfileStatus).not.toHaveBeenCalled();
+  });
+
   it("uses the creator profile guard and persists completion state", async () => {
     vi.mocked(checkProfileStatus).mockResolvedValue({
       profile_complete: false,
@@ -119,10 +128,8 @@ describe("getMarketplacePostLoginRedirect", () => {
       action: "redirect_to_setup",
       propertyId: "property-1",
       redirectPath: "/setup?entryProduct=marketplace",
-      setupAction: "complete_product_activation",
-      product: "marketplace",
-      productStatus: "selected_incomplete",
-      missingSteps: [],
+      entryDecision: "setup_required",
+      reasonCode: "product_access_pending",
     });
     const storage = memoryStorage({ [STORAGE_KEYS.USER_TYPE]: "hotel" });
 

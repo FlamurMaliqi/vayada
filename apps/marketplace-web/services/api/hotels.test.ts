@@ -5,48 +5,77 @@ vi.mock("@vayada/marketplace-shared/api/discovery", () => ({
 }));
 
 import { clearAuthData, setAuthKitSession } from "@/services/auth/sessionStore";
-import { CanonicalHotelPhotoReuseError, hotelService } from "./hotels";
+import {
+  advanceHotelProfileRevisionsAfterCoverUpload,
+  CanonicalHotelPhotoReuseError,
+  HotelAddressSetupRequiredError,
+  hotelService,
+} from "./hotels";
 
 const propertyId = "property-two";
 
 const sharedProfile = {
   propertyId,
-  publicId: "hotel-alpenrose",
-  displayName: "Hotel Alpenrose",
-  propertyType: "hotel",
-  location: {
-    countryCode: "DE",
-    region: "Bavaria",
-    city: "Munich",
-    streetAddress: null,
-    postalCode: null,
-    rawMarketplaceLocation: "Munich, Germany",
-    timezone: "Europe/Berlin",
-    latitude: null,
-    longitude: null,
-    addressPublic: false,
-    mapDisplayMode: "approximate",
-  },
-  website: "https://alpenrose.example",
-  contactEmail: "hello@alpenrose.example",
-  phone: "+49 89 123456",
-  shortDescription: "Independent city hotel",
-  longDescription: null,
-  media: [
-    {
-      mediaType: "hero_image",
-      url: "https://images.example/alpenrose.jpg",
-      altText: "Hotel Alpenrose",
-      sortOrder: 0,
+  profileRevision: 3,
+  profile: {
+    displayName: "Hotel Alpenrose",
+    propertyType: "hotel",
+    location: {
+      countryCode: "DE",
+      city: "Munich",
+      streetAddress: "Alpenweg 1",
+      postalCode: "80331",
+      timezone: "Europe/Berlin",
+      latitude: null,
+      longitude: null,
+      localityPublic: false,
+      geoPublic: false,
+      mapDisplayMode: "approximate",
     },
-  ],
-  sharedProfile: {
-    complete: true,
-    missingFields: [],
-    source: "canonical",
-    lastUpdatedAt: "2026-07-11T00:00:00.000Z",
+    contacts: [
+      {
+        channelType: "website",
+        value: "https://alpenrose.example",
+        purpose: "general",
+        isPublic: true,
+      },
+      {
+        channelType: "email",
+        value: "hello@alpenrose.example",
+        purpose: "general",
+        isPublic: false,
+      },
+      {
+        channelType: "phone",
+        value: "+49 89 123456",
+        purpose: "general",
+        isPublic: false,
+      },
+    ],
   },
-  updatedAt: "2026-07-11T00:00:00.000Z",
+};
+
+const publicProfile = {
+  propertyId,
+  profileRevision: 7,
+  publicProfile: {
+    locale: "en",
+    shortDescription: "A welcoming independent hotel.",
+    longDescription: "A longer public description of Hotel Alpenrose.",
+    media: [
+      {
+        mediaObjectId: "00000000-0000-4000-8000-000000000001",
+        mediaType: "hero_image",
+        url: "https://images.example/hotel-hero.jpg",
+        altText: "Hotel Alpenrose",
+        sortOrder: 0,
+      },
+    ],
+  },
+};
+const profileRevisions = {
+  canonicalProfileRevision: sharedProfile.profileRevision,
+  publicProfileRevision: publicProfile.profileRevision,
 };
 
 const marketplaceProfile = {
@@ -131,6 +160,18 @@ afterEach(() => {
 });
 
 describe("hotel target self-service client", () => {
+  it("uses the successful canonical hero revision for both profile views", () => {
+    expect(
+      advanceHotelProfileRevisionsAfterCoverUpload({
+        canonicalProfileRevision: 7,
+        publicProfileRevision: 6,
+      }),
+    ).toEqual({
+      canonicalProfileRevision: 8,
+      publicProfileRevision: 8,
+    });
+  });
+
   it("loads profile status for the explicitly selected hotel", async () => {
     const profileStatus = {
       profile_complete: true,
@@ -160,6 +201,8 @@ describe("hotel target self-service client", () => {
         switch (String(url)) {
           case `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile`:
             return jsonResponse(sharedProfile);
+          case `https://api.localhost/api/hotel-setup/properties/${propertyId}/public-profile`:
+            return jsonResponse(publicProfile);
           case `https://api.localhost/api/marketplace/properties/${propertyId}/profile`:
             return jsonResponse(marketplaceProfile);
           case `https://api.localhost/api/marketplace/properties/${propertyId}/offers`:
@@ -190,7 +233,7 @@ describe("hotel target self-service client", () => {
       id: propertyId,
       name: "Hotel Alpenrose",
       location: "Munich, Germany",
-      picture: "https://images.example/alpenrose.jpg",
+      picture: "https://images.example/hotel-hero.jpg",
       about: "A friendly independent hotel.",
       email: "hello@alpenrose.example",
       listings: [
@@ -219,6 +262,31 @@ describe("hotel target self-service client", () => {
     });
   });
 
+  it("falls back to the public description when the creator-facing summary is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        switch (String(url)) {
+          case `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile`:
+            return jsonResponse(sharedProfile);
+          case `https://api.localhost/api/hotel-setup/properties/${propertyId}/public-profile`:
+            return jsonResponse(publicProfile);
+          case `https://api.localhost/api/marketplace/properties/${propertyId}/profile`:
+            return jsonResponse({ ...marketplaceProfile, hostSummary: null });
+          case `https://api.localhost/api/marketplace/properties/${propertyId}/offers`:
+            return jsonResponse({ offers: [] });
+          default:
+            throw new Error(`Unexpected fetch: ${url}`);
+        }
+      }),
+    );
+
+    await expect(hotelService.getMyProfile()).resolves.toMatchObject({
+      about: "A welcoming independent hotel.",
+      picture: "https://images.example/hotel-hero.jpg",
+    });
+  });
+
   it("keeps two offer galleries distinct after editing and reloading", async () => {
     const secondOffer = {
       ...targetOffer,
@@ -242,6 +310,9 @@ describe("hotel target self-service client", () => {
         if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
           if (method === "PUT") propertyWrites.push(JSON.parse(String(init?.body)));
           return jsonResponse(sharedProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          return jsonResponse(publicProfile);
         }
         if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
           return jsonResponse(marketplaceProfile);
@@ -273,7 +344,7 @@ describe("hotel target self-service client", () => {
     expect(propertyWrites).toEqual([]);
   });
 
-  it("writes canonical hotel fields and Marketplace copy to their owning routes", async () => {
+  it("writes shared, public, and Marketplace fields to their owning routes", async () => {
     const requests: Array<{ url: string; method: string; body: unknown }> = [];
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
@@ -289,10 +360,32 @@ describe("hotel target self-service client", () => {
           method === "PUT"
             ? {
                 ...sharedProfile,
-                displayName: "Alpenrose City Hotel",
-                phone: "+49 89 999999",
+                profileRevision: 4,
+                profile: {
+                  ...sharedProfile.profile,
+                  displayName: "Alpenrose City Hotel",
+                  contacts: sharedProfile.profile.contacts.map((contact) =>
+                    contact.channelType === "phone"
+                      ? { ...contact, value: "+49 89 999999" }
+                      : contact,
+                  ),
+                },
               }
             : sharedProfile,
+        );
+      }
+      if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+        return jsonResponse(
+          method === "PUT"
+            ? {
+                ...publicProfile,
+                profileRevision: 8,
+                publicProfile: {
+                  ...publicProfile.publicProfile,
+                  shortDescription: "A personal stay in central Munich.",
+                },
+              }
+            : publicProfile,
         );
       }
       if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
@@ -308,33 +401,64 @@ describe("hotel target self-service client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await hotelService.updateMyProfile({
-      name: "Alpenrose City Hotel",
-      phone: "+49 89 999999",
-      about: "A personal stay in central Munich.",
-    });
-
-    expect(requests).toContainEqual(
-      expect.objectContaining({
-        url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile`,
-        method: "PUT",
-        body: expect.objectContaining({
-          displayName: "Alpenrose City Hotel",
-          phone: "+49 89 999999",
-        }),
-      }),
+    await hotelService.updateMyProfile(
+      {
+        name: "Alpenrose City Hotel",
+        phone: "+49 89 999999",
+        about: "A personal stay in central Munich.",
+      },
+      undefined,
+      profileRevisions,
     );
+
+    expect(requests).toContainEqual({
+      url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile`,
+      method: "PUT",
+      body: {
+        expectedProfileRevision: 3,
+        patch: {
+          displayName: "Alpenrose City Hotel",
+          contacts: sharedProfile.profile.contacts.map((contact) =>
+            contact.channelType === "phone" ? { ...contact, value: "+49 89 999999" } : contact,
+          ),
+        },
+      },
+    });
+    expect(requests).toContainEqual({
+      url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/public-profile`,
+      method: "PUT",
+      body: {
+        expectedProfileRevision: 4,
+        patch: { shortDescription: "A personal stay in central Munich." },
+      },
+    });
     expect(requests).toContainEqual({
       url: `https://api.localhost/api/marketplace/properties/${propertyId}/profile`,
       method: "PUT",
       body: { hostSummary: "A personal stay in central Munich." },
     });
+    const sharedWriteIndex = requests.findIndex(
+      ({ url, method }) =>
+        url.endsWith(`/hotel-setup/properties/${propertyId}/profile`) && method === "PUT",
+    );
+    const latestPublicReadIndex = requests.findIndex(
+      ({ url, method }) =>
+        url.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`) && method === "GET",
+    );
+    const publicWriteIndex = requests.findIndex(
+      ({ url, method }) =>
+        url.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`) && method === "PUT",
+    );
+    expect(sharedWriteIndex).toBeGreaterThanOrEqual(0);
+    expect(latestPublicReadIndex).toBeGreaterThan(sharedWriteIndex);
+    expect(publicWriteIndex).toBeGreaterThan(latestPublicReadIndex);
 
     requests.length = 0;
     localStorage.setItem("selectedSharedPropertyId", "stale-property");
     await hotelService.updateMyProfile(
       { about: "A creator-focused stay in central Munich." },
       propertyId,
+      profileRevisions,
     );
 
     expect(requests).not.toContainEqual(
@@ -344,10 +468,302 @@ describe("hotel target self-service client", () => {
       }),
     );
     expect(requests).toContainEqual({
+      url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/public-profile`,
+      method: "PUT",
+      body: {
+        expectedProfileRevision: 7,
+        patch: { shortDescription: "A creator-focused stay in central Munich." },
+      },
+    });
+    expect(requests).toContainEqual({
       url: `https://api.localhost/api/marketplace/properties/${propertyId}/profile`,
       method: "PUT",
       body: { hostSummary: "A creator-focused stay in central Munich." },
     });
+  });
+
+  it("persists locality consent through the canonical CAS profile", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    let currentProfile = sharedProfile;
+    const offers = [
+      targetOffer,
+      {
+        ...targetOffer,
+        offerId: "offer-resource-two",
+        mediaResourceId: "offer-resource-two",
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        requests.push({ url: href, method, body });
+
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          if (method === "PUT") {
+            currentProfile = {
+              ...sharedProfile,
+              profileRevision: 4,
+              profile: {
+                ...sharedProfile.profile,
+                location: { ...sharedProfile.profile.location, localityPublic: true },
+              },
+            };
+          }
+          return jsonResponse(currentProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          return jsonResponse(publicProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
+          return jsonResponse(marketplaceProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/offers`)) {
+          return jsonResponse({ offers });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    await expect(
+      hotelService.updateMyProfile({ localityPublic: true }, propertyId, profileRevisions),
+    ).resolves.toMatchObject({ localityPublic: true });
+
+    expect(requests).toContainEqual({
+      url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile`,
+      method: "PUT",
+      body: {
+        expectedProfileRevision: 3,
+        patch: { location: { localityPublic: true } },
+      },
+    });
+    expect(requests.some(({ url, method }) => url.includes("/offers/") && method === "PUT")).toBe(
+      false,
+    );
+  });
+
+  it("sends the editor-loaded revision so a stale save reaches the backend conflict check", async () => {
+    const requests: Array<{ method: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        requests.push({
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          if (method === "PUT") {
+            return jsonResponse(
+              {
+                detail: {
+                  code: "profile_revision_conflict",
+                  currentProfileRevision: 12,
+                },
+              },
+              409,
+            );
+          }
+          return jsonResponse({ ...sharedProfile, profileRevision: 12 });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    await expect(
+      hotelService.updateMyProfile({ localityPublic: true }, propertyId, profileRevisions),
+    ).rejects.toBeTruthy();
+    expect(requests.find(({ method }) => method === "PUT")?.body).toEqual({
+      expectedProfileRevision: 3,
+      patch: { location: { localityPublic: true } },
+    });
+  });
+
+  it("removes only hero media when the hotel picture is deleted", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const galleryMedia = {
+      mediaObjectId: "00000000-0000-4000-8000-000000000002",
+      mediaType: "gallery_image" as const,
+      url: "https://images.example/hotel-gallery.jpg",
+      altText: "Hotel courtyard",
+      sortOrder: 1,
+    };
+    let currentPublicProfile = {
+      ...publicProfile,
+      publicProfile: {
+        ...publicProfile.publicProfile,
+        media: [...publicProfile.publicProfile.media, galleryMedia],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        requests.push({
+          url: href,
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          return jsonResponse(sharedProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          if (method === "PUT") {
+            currentPublicProfile = {
+              ...currentPublicProfile,
+              profileRevision: 8,
+              publicProfile: {
+                ...currentPublicProfile.publicProfile,
+                media: [galleryMedia],
+              },
+            };
+          }
+          return jsonResponse(currentPublicProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
+          return jsonResponse(marketplaceProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/offers`)) {
+          return jsonResponse({ offers: [targetOffer] });
+        }
+        throw new Error(`Unexpected fetch: ${href}`);
+      }),
+    );
+
+    await expect(
+      hotelService.updateMyProfile({ picture: null }, undefined, profileRevisions),
+    ).resolves.toMatchObject({ picture: galleryMedia.url });
+    expect(requests).toContainEqual({
+      url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/public-profile`,
+      method: "PUT",
+      body: {
+        expectedProfileRevision: 7,
+        patch: {
+          media: [
+            {
+              mediaObjectId: galleryMedia.mediaObjectId,
+              altText: galleryMedia.altText,
+              sortOrder: 0,
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("resyncs the public profile after a canonical cover upload", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const newMediaObjectId = "00000000-0000-4000-8000-000000000099";
+    const galleryMedia = {
+      mediaObjectId: "00000000-0000-4000-8000-000000000002",
+      mediaType: "gallery_image" as const,
+      url: "https://images.example/hotel-gallery.jpg",
+      altText: "Hotel courtyard",
+      sortOrder: 1,
+    };
+    let currentPublicProfile = {
+      ...publicProfile,
+      publicProfile: {
+        ...publicProfile.publicProfile,
+        media: [...publicProfile.publicProfile.media, galleryMedia],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        requests.push({ url: href, method, body });
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          return jsonResponse(sharedProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          if (method === "PUT") {
+            currentPublicProfile = {
+              ...currentPublicProfile,
+              profileRevision: 8,
+              publicProfile: {
+                ...currentPublicProfile.publicProfile,
+                media: [
+                  {
+                    mediaObjectId: newMediaObjectId,
+                    mediaType: "hero_image",
+                    url: "https://images.example/new-hotel-hero.jpg",
+                    altText: "",
+                    sortOrder: 0,
+                  },
+                  galleryMedia,
+                ],
+              },
+            };
+          }
+          return jsonResponse(currentPublicProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
+          return jsonResponse(marketplaceProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/offers`)) {
+          return jsonResponse({ offers: [targetOffer] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    await expect(
+      hotelService.updateMyProfile(
+        {
+          picture: "https://images.example/new-hotel-hero.jpg",
+          pictureMediaObjectId: newMediaObjectId,
+          picture_media_object_id: newMediaObjectId,
+        },
+        propertyId,
+        advanceHotelProfileRevisionsAfterCoverUpload(profileRevisions),
+      ),
+    ).resolves.toMatchObject({
+      picture: "https://images.example/new-hotel-hero.jpg",
+    });
+
+    expect(requests).toContainEqual({
+      url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/public-profile`,
+      method: "PUT",
+      body: {
+        expectedProfileRevision: 4,
+        patch: {
+          media: [
+            {
+              mediaObjectId: newMediaObjectId,
+              altText: null,
+              sortOrder: 0,
+            },
+            {
+              mediaObjectId: galleryMedia.mediaObjectId,
+              altText: galleryMedia.altText,
+              sortOrder: 1,
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("rejects freeform location edits and directs the owner back to hotel setup", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+        return jsonResponse(sharedProfile);
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      hotelService.updateMyProfile({ location: "Berlin, Germany" }, undefined, profileRevisions),
+    ).rejects.toEqual(new HotelAddressSetupRequiredError());
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("scopes offer create, update, and delete to the selected hotel", async () => {
@@ -601,6 +1017,68 @@ describe("hotel target self-service client", () => {
           mediaObjectId: "copied-media-id",
         },
       ],
+    });
+  });
+
+  it("promotes a restored remote offer photo to the canonical hotel cover", async () => {
+    const sourceUrl = "https://images.example/restored-offer.webp";
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === sourceUrl) {
+        expect(init).toEqual({ credentials: "omit" });
+        return new Response(new Blob(["hotel-cover"], { type: "image/webp" }), { status: 200 });
+      }
+      if (String(url).endsWith("/api/media/upload-sessions")) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          purpose: "property.hero_image",
+          expectedProfileRevision: 17,
+          resource: {
+            product: "marketplace",
+            resourceType: "hotel_profile",
+            resourceId: propertyId,
+            targetResourceId: propertyId,
+          },
+        });
+        return jsonResponse({
+          uploadSession: { sessionId: "cover-session" },
+          uploadTargets: [
+            {
+              uploadTargetId: "cover-target",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/cover-target",
+              headers: {},
+            },
+          ],
+        });
+      }
+      if (String(url).endsWith("/api/media/upload-sessions/cover-session/finalize")) {
+        return jsonResponse({
+          mediaObjects: [
+            {
+              mediaId: "00000000-0000-4000-8000-000000000009",
+              storageKey: "public/hotels/cover.webp",
+              contentType: "image/webp",
+              sizeBytes: 11,
+              originalFilename: "shared-hotel-photo-1.webp",
+              variants: [
+                {
+                  publicCdnUrl: "https://cdn.example/hotels/cover.webp",
+                  storageKey: "public/hotels/cover.webp",
+                },
+              ],
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      hotelService.uploadProfileImageFromSource(sourceUrl, propertyId, 17),
+    ).resolves.toMatchObject({
+      mediaObjectId: "00000000-0000-4000-8000-000000000009",
+      url: "https://cdn.example/hotels/cover.webp",
     });
   });
 

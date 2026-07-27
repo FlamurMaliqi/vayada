@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
-import type {
-  ApprovedPublicProfileImageRepository,
-  PlatformMediaAuditEvent,
-  PlatformMediaObjectRecord,
-  PlatformMediaRepository,
-  PlatformMediaSessionRecord,
-  PlatformMediaTargetResolver,
-  PlatformMediaVariantRecord,
+import {
+  PlatformMediaProfileRevisionConflictError,
+  type ApprovedPublicProfileImageRepository,
+  type PlatformMediaAuditEvent,
+  type PlatformMediaObjectRecord,
+  type PlatformMediaRepository,
+  type PlatformMediaSessionRecord,
+  type PlatformMediaTargetResolver,
+  type PlatformMediaVariantRecord,
 } from "../routes/platformMedia.js";
 
 type Queryable = {
@@ -40,6 +41,7 @@ type SessionRow = {
 type MediaObjectRow = { record: PlatformMediaObjectRecord };
 type PropertyTargetRow = { propertyId: string };
 type CollaborationTargetRow = { collaborationId: string; propertyId: string };
+type PropertyRevisionRow = { profileRevision: string | number };
 
 const supportedPurposes = new Set([
   "identity.user.profile_image",
@@ -78,6 +80,12 @@ export function createPgPlatformMediaRepository(
       if (!supportedPurposes.has(input.request.purpose)) {
         throw new Error("Persistent platform media does not support this upload purpose");
       }
+      if (
+        input.request.purpose === "property.hero_image" &&
+        input.request.expectedProfileRevision === undefined
+      ) {
+        throw new Error("Property hero images require expectedProfileRevision");
+      }
       const isAutoApproved = autoApprovedPublicPurposes.has(input.request.purpose);
       if (
         (isAutoApproved &&
@@ -113,6 +121,7 @@ export function createPgPlatformMediaRepository(
         uploadTargets: input.uploadTargets,
         stagingPrefix: input.stagingPrefix,
         status: "signed",
+        expectedProfileRevision: input.request.expectedProfileRevision,
         expiresAt: input.expiresAt,
         createdAt: input.now,
       };
@@ -326,6 +335,7 @@ async function completeUploadSession(
     const mediaObjects = input.files.map((file, index) =>
       mediaObjectFor(session, file, input.variantSets[index] ?? [], input.bucketName, input.now),
     );
+    await lockPropertyProfileRevision(client, session);
     for (const mediaObject of mediaObjects) {
       await insertMediaObject(client, mediaObject);
       for (const variant of mediaObject.variants) {
@@ -365,6 +375,39 @@ async function completeUploadSession(
     throw error;
   } finally {
     client.release();
+  }
+}
+
+async function lockPropertyProfileRevision(
+  client: Queryable,
+  session: PlatformMediaSessionRecord,
+): Promise<void> {
+  if (session.purpose !== "property.hero_image" && session.purpose !== "property.gallery_image") {
+    return;
+  }
+  const propertyId = session.target.propertyId;
+  if (!propertyId) {
+    throw new Error("Property media requires a canonical property target");
+  }
+
+  const result = await client.query<PropertyRevisionRow>(
+    `SELECT property.profile_revision AS "profileRevision"
+     FROM hotel_catalog.properties property
+     WHERE property.id = $1::uuid
+     FOR UPDATE`,
+    [propertyId],
+  );
+  const profileRevision = Number(result.rows[0]?.profileRevision);
+  if (!Number.isSafeInteger(profileRevision) || profileRevision < 1) {
+    throw new Error("Property media target was not found");
+  }
+  if (session.purpose === "property.hero_image") {
+    if (session.expectedProfileRevision === undefined) {
+      throw new Error("Property hero images require expectedProfileRevision");
+    }
+    if (profileRevision !== session.expectedProfileRevision) {
+      throw new PlatformMediaProfileRevisionConflictError(profileRevision);
+    }
   }
 }
 
@@ -571,14 +614,30 @@ async function upsertPropertyMediaProjection(
        END AS sort_order
        FROM hotel_catalog.property_media
        WHERE property_id = $2::uuid
+     ),
+     inserted AS (
+       INSERT INTO hotel_catalog.property_media
+         (property_id, media_type, url, alt_text, sort_order, source_system,
+          public_approved, rights_metadata, platform_media_object_id, created_at, updated_at)
+       SELECT $2::uuid, $3, $4, NULL, next_sort.sort_order, 'platform',
+              TRUE, $5::jsonb, $1::uuid, $6::timestamptz, $6::timestamptz
+       FROM next_sort
+       WHERE NOT EXISTS (SELECT 1 FROM updated)
+       RETURNING id
+     ),
+     advanced_property AS (
+       UPDATE hotel_catalog.properties property
+       SET profile_revision = property.profile_revision + 1,
+           updated_at = $6::timestamptz
+       WHERE property.id = $2::uuid
+         AND (
+           EXISTS (SELECT 1 FROM superseded_hero)
+           OR EXISTS (SELECT 1 FROM updated)
+           OR EXISTS (SELECT 1 FROM inserted)
+         )
+       RETURNING property.id
      )
-     INSERT INTO hotel_catalog.property_media
-       (property_id, media_type, url, alt_text, sort_order, source_system,
-        public_approved, rights_metadata, platform_media_object_id, created_at, updated_at)
-     SELECT $2::uuid, $3, $4, NULL, next_sort.sort_order, 'platform',
-            TRUE, $5::jsonb, $1::uuid, $6::timestamptz, $6::timestamptz
-     FROM next_sort
-     WHERE NOT EXISTS (SELECT 1 FROM updated)`,
+     SELECT id FROM advanced_property`,
     [mediaObject.mediaId, propertyId, mediaType, publicUrl, rightsMetadata, now],
   );
 }

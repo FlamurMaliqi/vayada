@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import Header from "@/components/layout/Header";
 import Sidebar from "@/components/layout/Sidebar";
 import { authService } from "@/services/auth";
-import { isPmsRoomSetupDecision, resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
+import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -49,12 +49,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
       if (cancelled) return;
       setSetupGuardError(false);
-      localStorage.setItem(
-        "pmsSetupComplete",
-        decision.action === "enter_product" ? "true" : "false",
-      );
-      const allowRoomSetup = pathname.startsWith("/rooms") && isPmsRoomSetupDecision(decision);
-      if (decision.action === "redirect_to_setup" && !allowRoomSetup) {
+      if (decision.action === "redirect_to_setup") {
         router.replace(decision.redirectPath);
         return;
       }
