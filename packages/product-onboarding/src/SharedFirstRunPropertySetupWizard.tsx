@@ -1746,9 +1746,6 @@ function SetupPlan({
 
   const entryDecision = status.entryDecision;
   const requestedProduct = entryDecision?.requestedProduct;
-  const selectedProperty = status.propertySelection.availableProperties.find(
-    ({ propertyId }) => propertyId === plan.propertyId,
-  );
   const recommendedTask = plan.recommendedTaskId
     ? (plan.tasks.find(
         (task) =>
@@ -1810,94 +1807,59 @@ function SetupPlan({
     plan.ownerProgress.complete === plan.ownerProgress.total &&
     recommendedTask === null &&
     selectedTask?.readiness === "complete";
+  const showReviewAddTrackHelp =
+    !onAddTrack &&
+    status.organization.selectedTracks.length < 2 &&
+    !status.organization.canManageTracks;
 
   return (
     <section className="mx-auto max-w-5xl">
       <div className="mb-3 flex justify-center">
         <img src="/vayada-logo.png" alt="vayada" width={120} height={40} className="h-7 w-auto" />
       </div>
-      <div className="mx-auto mb-10 w-full max-w-xl" data-testid="hotel-setup-progress">
-        <p className="text-center text-xs font-semibold text-gray-500">
-          Step {currentStepNumber} of {totalSteps}
-        </p>
-        <div
-          className="mt-3 flex w-full gap-2"
-          role="progressbar"
-          aria-label="Hotel setup progress"
-          aria-valuemin={1}
-          aria-valuemax={totalSteps}
-          aria-valuenow={currentStepNumber}
-          aria-valuetext={`Step ${currentStepNumber} of ${totalSteps}: ${currentStepTitle}`}
-        >
-          {Array.from({ length: totalSteps }, (_, index) => {
-            const reached = index < currentStepNumber;
-            return (
-              <span
-                key={index}
-                className={`h-2 flex-1 rounded-full transition-colors duration-300 motion-reduce:transition-none ${
-                  reached ? "bg-primary-600" : "bg-primary-100"
-                }`}
-                data-state={reached ? "reached" : "upcoming"}
-                aria-hidden="true"
-              />
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-sm font-medium text-gray-500">Setting up</p>
-          <p className="mt-1 text-xl font-semibold text-gray-950">
-            {selectedProperty?.displayName ?? "Your hotel"}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {status.organization.selectedTracks.map((track) => (
-              <span
-                key={track}
-                className="rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700"
+      <div className="relative mx-auto mb-10 w-full" data-testid="hotel-setup-progress">
+        <div className="mx-auto w-full max-w-xl">
+          <div
+            className={`flex items-center ${
+              onExit ? "justify-between sm:justify-center" : "justify-center"
+            }`}
+          >
+            <p className="text-xs font-semibold text-gray-500">
+              Step {currentStepNumber} of {totalSteps}
+            </p>
+            {onExit && (
+              <button
+                type="button"
+                onClick={() => navigateFromTask(onExit)}
+                className="text-xs font-semibold text-gray-500 transition hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 sm:absolute sm:right-0 sm:top-0 sm:text-sm"
               >
-                {TRACK_CONTENT[track].title}
-              </span>
-            ))}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {onExit && (
-            <button
-              type="button"
-              onClick={() => navigateFromTask(onExit)}
-              className="text-sm font-semibold text-gray-600 hover:text-gray-950"
-            >
-              Exit setup
-            </button>
-          )}
-          {onAddTrack && (
-            <button
-              type="button"
-              onClick={() => navigateFromTask(onAddTrack)}
-              className="text-sm font-semibold text-primary-700 hover:text-primary-800"
-            >
-              Add another service
-            </button>
-          )}
-          {reviewActive && onEnterProduct && requestedProduct && (
-            <button
-              type="button"
-              onClick={onEnterProduct}
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-gray-950 px-5 py-2.5 text-sm font-semibold text-white hover:bg-gray-800"
-            >
-              Open {labels[requestedProduct]}
-              <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
-            </button>
-          )}
-          {!onAddTrack &&
-            status.organization.selectedTracks.length < 2 &&
-            !status.organization.canManageTracks && (
-              <p className="max-w-xs text-xs text-gray-500">
-                Ask a hotel group owner if you want to add another service.
-              </p>
+                Exit setup
+              </button>
             )}
+          </div>
+          <div
+            className="mt-3 flex w-full gap-2"
+            role="progressbar"
+            aria-label="Hotel setup progress"
+            aria-valuemin={1}
+            aria-valuemax={totalSteps}
+            aria-valuenow={currentStepNumber}
+            aria-valuetext={`Step ${currentStepNumber} of ${totalSteps}: ${currentStepTitle}`}
+          >
+            {Array.from({ length: totalSteps }, (_, index) => {
+              const reached = index < currentStepNumber;
+              return (
+                <span
+                  key={index}
+                  className={`h-2 flex-1 rounded-full transition-colors duration-300 motion-reduce:transition-none ${
+                    reached ? "bg-primary-600" : "bg-primary-100"
+                  }`}
+                  data-state={reached ? "reached" : "upcoming"}
+                  aria-hidden="true"
+                />
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -1940,10 +1902,40 @@ function SetupPlan({
               onBack={previousTaskId ? () => selectTask(previousTaskId) : null}
             />
           ) : (
-            <SetupReview
-              launchReadiness={plan.launchReadiness}
-              onBack={reviewBackTaskId ? () => selectTask(reviewBackTaskId) : null}
-            />
+            <>
+              <SetupReview
+                launchReadiness={plan.launchReadiness}
+                onBack={reviewBackTaskId ? () => selectTask(reviewBackTaskId) : null}
+              />
+              {(onEnterProduct || onAddTrack || showReviewAddTrackHelp) && (
+                <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-3">
+                  {onEnterProduct && requestedProduct && (
+                    <button
+                      type="button"
+                      onClick={onEnterProduct}
+                      className="inline-flex items-center justify-center gap-2 rounded-full bg-gray-950 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 focus-visible:ring-offset-2"
+                    >
+                      Open {labels[requestedProduct]}
+                      <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  )}
+                  {onAddTrack && (
+                    <button
+                      type="button"
+                      onClick={onAddTrack}
+                      className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                    >
+                      Add another service
+                    </button>
+                  )}
+                  {showReviewAddTrackHelp && (
+                    <p className="max-w-xs text-xs text-gray-500">
+                      Ask a hotel group owner if you want to add another service.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

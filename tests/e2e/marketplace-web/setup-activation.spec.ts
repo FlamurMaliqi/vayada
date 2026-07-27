@@ -355,8 +355,10 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(
       page.getByRole("heading", { level: 1, name: "Describe your hotel" }),
     ).toBeVisible();
-    await expect(page.getByText("Hotel Operations", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("Creator Marketplace", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Setting up", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Alpenrose Munich", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Hotel Operations", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Creator Marketplace", { exact: true })).toHaveCount(0);
     const setupProgress = page.getByRole("progressbar", { name: "Hotel setup progress" });
     await expect(setupProgress).toHaveAttribute("aria-valuemax", "8");
     await expect(setupProgress).toHaveAttribute("aria-valuenow", "2");
@@ -662,6 +664,12 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
+    const setupProgress = page.getByTestId("hotel-setup-progress");
+    await expect(setupProgress.getByRole("button", { name: "Exit setup" })).toBeVisible();
+    await expect(page.getByText("Setting up", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Alpenrose Munich", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Add another service" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open Creator Marketplace" })).toHaveCount(0);
     await expect(
       page.getByRole("heading", { level: 1, name: "Describe your hotel" }),
     ).toBeVisible();
@@ -1129,6 +1137,16 @@ test.describe("marketplace-web shared setup activation", () => {
     ).toContainText("Pending");
     await expect(page.getByRole("button", { name: "Continue setup" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Open Creator Marketplace" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Add another service" })).toBeVisible();
+    const setupProgress = page.getByTestId("hotel-setup-progress");
+    await expect(setupProgress.getByRole("button", { name: "Exit setup" })).toBeVisible();
+    await expect(setupProgress.getByRole("button", { name: "Add another service" })).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
   });
 });
 
