@@ -83,6 +83,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await mockGooglePlaces(page);
     await primeBrowserState(page, true);
     await mockAuthSession(page);
+    await mockMarketplaceProfileApis(page, [], [canonicalHeroMedia()]);
     await routeJson(page, /\/api\/hotel-setup\/property-types/, {
       contractVersion: "adaptive-hotel-property-types.v1",
       propertyTypes: [{ value: "hotel", label: "Hotel" }],
@@ -299,12 +300,19 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("button", { name: "Save and continue" }).click();
 
     await expect(page.getByRole("heading", { name: "Set up your hotel", level: 1 })).toBeVisible();
-    const marketplaceSteps = page.getByRole("list", { name: "Hotel setup steps" });
-    await expect(marketplaceSteps.getByRole("listitem")).toHaveCount(5);
-    await expect(marketplaceSteps).toContainText("Create your public hotel profile");
-    await expect(marketplaceSteps).toContainText("Introduce your hotel to creators");
-    await expect(marketplaceSteps).toContainText("Prepare your collaboration offer");
-    await expect(marketplaceSteps).not.toContainText("Set up rooms, rates, and availability");
+    const marketplaceProgress = page.getByRole("progressbar", {
+      name: "Hotel setup progress",
+    });
+    await expect(marketplaceProgress).toHaveAttribute("aria-valuemin", "1");
+    await expect(marketplaceProgress).toHaveAttribute("aria-valuemax", "5");
+    await expect(marketplaceProgress).toHaveAttribute("aria-valuenow", "5");
+    await expect(marketplaceProgress).toHaveAttribute(
+      "aria-valuetext",
+      "Step 5 of 5: Review and next steps",
+    );
+    await expect(marketplaceProgress.locator('[data-state="reached"]')).toHaveCount(5);
+    await expect(marketplaceProgress.locator('[data-state="upcoming"]')).toHaveCount(0);
+    await expect(page.getByText("Step 5 of 5", { exact: true })).toBeVisible();
     const review = page.locator('section[aria-labelledby="setup-review-title"]');
     await expect(review).toBeVisible();
     await expect(
@@ -316,6 +324,12 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(
       review.locator("dt", { hasText: /^Direct booking$/ }).locator("xpath=../.."),
     ).toContainText("Not selected");
+    await review.getByRole("button", { name: "Back" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Prepare your collaboration offer" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Return to review" }).click();
+    await expect(review).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
@@ -335,17 +349,19 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.goto(setupUrl(baseURL));
 
     await expect(page.getByRole("heading", { level: 1, name: "Set up your hotel" })).toBeVisible();
-    await expect(page.getByText("1 of 8 tasks done")).toBeVisible();
     await expect(page.getByText("Hotel Operations", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Creator Marketplace", { exact: true }).first()).toBeVisible();
-    const setupSteps = page.getByRole("list", { name: "Hotel setup steps" });
-    const orderedSteps = setupSteps.getByRole("listitem");
-    await expect(orderedSteps).toHaveCount(9);
-    await expect(orderedSteps.nth(1)).toContainText("Create your public hotel profile");
-    await expect(orderedSteps.nth(2)).toContainText("Introduce your hotel to creators");
-    await expect(orderedSteps.nth(3)).toContainText("Prepare your collaboration offer");
-    await expect(orderedSteps.nth(4)).toContainText("Set up rooms, rates, and availability");
-    await expect(orderedSteps.nth(5)).toContainText("Review guest settings and policies");
+    const setupProgress = page.getByRole("progressbar", { name: "Hotel setup progress" });
+    await expect(setupProgress).toHaveAttribute("aria-valuemax", "9");
+    await expect(setupProgress).toHaveAttribute("aria-valuenow", "2");
+    await expect(setupProgress).toHaveAttribute(
+      "aria-valuetext",
+      "Step 2 of 9: Create your public hotel profile",
+    );
+    await expect(setupProgress.locator('[data-state="reached"]')).toHaveCount(2);
+    await expect(setupProgress.locator('[data-state="upcoming"]')).toHaveCount(7);
+    await expect(page.getByText("Step 2 of 9", { exact: true })).toBeVisible();
+    await expect(page.locator("aside")).toHaveCount(0);
     const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
     await expect(
       currentStep.getByRole("textbox", { name: "Public hotel description" }),
@@ -362,8 +378,8 @@ test.describe("marketplace-web shared setup activation", () => {
     const currentStepBox = await page
       .locator('section[aria-labelledby="current-setup-step-title"]')
       .boundingBox();
-    const roadmapBox = await setupSteps.boundingBox();
-    expect(currentStepBox?.y).toBeLessThan(roadmapBox?.y ?? Number.POSITIVE_INFINITY);
+    const progressBox = await setupProgress.boundingBox();
+    expect(progressBox?.y).toBeLessThan(currentStepBox?.y ?? Number.POSITIVE_INFINITY);
   });
 
   test("keeps future Operations forms in the guided sequence", async ({ page, baseURL }) => {
@@ -396,12 +412,14 @@ test.describe("marketplace-web shared setup activation", () => {
     ).toBeVisible();
     const inlineSetupUrl = page.url();
 
-    const setupSteps = page.getByRole("list", { name: "Hotel setup steps" });
-    const roomsStep = setupSteps.getByRole("button", {
-      name: /Set up rooms, rates, and availability/,
+    const setupProgress = page.getByRole("progressbar", {
+      name: "Hotel setup progress",
     });
-    await expect(roomsStep).toBeDisabled();
-    await expect(roomsStep).toContainText("Later in setup");
+    await expect(setupProgress).toHaveAttribute("aria-valuemax", "9");
+    await expect(setupProgress).toHaveAttribute("aria-valuenow", "2");
+    await expect(
+      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
+    ).toHaveCount(0);
     expect(page.url()).toBe(inlineSetupUrl);
     expect(handoffRequests).toBe(0);
   });
@@ -529,13 +547,22 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    const setupSteps = page.getByRole("list", { name: "Hotel setup steps" });
-    await expect(setupSteps.getByRole("listitem")).toHaveCount(6);
-    await expect(setupSteps).toContainText("Set up rooms, rates, and availability");
-    await expect(setupSteps).toContainText("Review guest settings and policies");
-    await expect(setupSteps).not.toContainText("Create your public hotel profile");
-    await expect(setupSteps).not.toContainText("Introduce your hotel to creators");
-    await expect(setupSteps).not.toContainText("Prepare your collaboration offer");
+    const setupProgress = page.getByRole("progressbar", { name: "Hotel setup progress" });
+    await expect(setupProgress).toHaveAttribute("aria-valuemax", "6");
+    await expect(setupProgress.locator('[data-state="reached"]')).toHaveCount(2);
+    await expect(setupProgress.locator('[data-state="upcoming"]')).toHaveCount(4);
+    await expect(
+      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Create your public hotel profile" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Introduce your hotel to creators" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Prepare your collaboration offer" }),
+    ).toHaveCount(0);
   });
 
   for (const returnCase of [

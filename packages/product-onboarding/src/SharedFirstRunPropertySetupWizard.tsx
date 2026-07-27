@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import {
+  ArrowLeftIcon,
   ArrowRightIcon,
   BuildingOffice2Icon,
   BuildingOfficeIcon,
@@ -1747,7 +1748,6 @@ function SetupPlan({
 
   const entryDecision = status.entryDecision;
   const requestedProduct = entryDecision?.requestedProduct;
-  const completed = plan.ownerProgress.complete;
   const selectedProperty = status.propertySelection.availableProperties.find(
     ({ propertyId }) => propertyId === plan.propertyId,
   );
@@ -1782,7 +1782,9 @@ function SetupPlan({
   const previousTaskId = activeTask
     ? previousEditableSetupTaskId(plan.tasks, activeTask.taskId)
     : null;
-  const reviewSelectable = plan.ownerProgress.complete === plan.ownerProgress.total;
+  const reviewBackTaskId = reviewActive
+    ? ([...plan.tasks].reverse().find((task) => isInlineSetupTaskEditable(task))?.taskId ?? null)
+    : null;
   const navigateFromTask = (navigate: () => void) => {
     if (
       !canLeaveInlineSetupTask(hasUnsavedChanges, () =>
@@ -1803,13 +1805,16 @@ function SetupPlan({
       onSelectTask(taskId);
     });
   };
-  const progressPercentage =
-    plan.ownerProgress.total === 0
-      ? 100
-      : Math.round((plan.ownerProgress.complete / plan.ownerProgress.total) * 100);
+  const currentStepTitle = activeTask
+    ? TASK_CONTENT[activeTask.taskId].title
+    : "Review and next steps";
+  const canReturnToReview =
+    plan.ownerProgress.complete === plan.ownerProgress.total &&
+    recommendedTask === null &&
+    selectedTask?.readiness === "complete";
 
   return (
-    <section className="mx-auto max-w-6xl">
+    <section className="mx-auto max-w-5xl">
       <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-sm font-medium text-gray-500">Setting up</p>
@@ -1876,194 +1881,88 @@ function SetupPlan({
         </div>
       )}
 
-      <div className="flex flex-col overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-sm lg:grid lg:grid-cols-[minmax(17rem,0.78fr)_minmax(0,1.5fr)]">
-        <aside className="order-2 border-t border-gray-200 bg-gray-50/80 p-5 sm:p-6 lg:order-1 lg:border-t-0 lg:border-r">
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold text-gray-950">Your work</p>
-              <p className="mt-1 text-xs text-gray-500">
-                {completed} of {plan.ownerProgress.total} tasks done
-              </p>
-            </div>
-            <p className="text-xs font-semibold text-gray-600">{progressPercentage}%</p>
-          </div>
-          <div
-            className="mt-4 h-1.5 overflow-hidden rounded-full bg-gray-200"
-            role="progressbar"
-            aria-label="Hotel setup progress"
-            aria-valuemin={0}
-            aria-valuemax={plan.ownerProgress.total}
-            aria-valuenow={completed}
-          >
+      <div className="overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-sm">
+        <div
+          className="border-b border-gray-100 px-5 py-5 sm:px-8 sm:py-6"
+          data-testid="hotel-setup-progress"
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
+            <p className="min-w-0 text-base font-semibold text-gray-500 sm:max-w-[55%] sm:text-lg">
+              <span className="text-gray-600">
+                Step {currentStepNumber} of {totalSteps}
+              </span>{" "}
+              · {currentStepTitle}
+            </p>
             <div
-              className="h-full rounded-full bg-primary-600 transition-[width] duration-300"
-              style={{ width: `${progressPercentage}%` }}
-            />
-          </div>
-
-          <ol className="mt-6 space-y-1" aria-label="Hotel setup steps">
-            {plan.tasks.map((task, index) => (
-              <SetupStepRow
-                key={task.taskId}
-                task={task}
-                position={index + 1}
-                current={task.taskId === activeTask?.taskId}
-                selectable={isInlineSetupTaskSelectable(task, plan.recommendedTaskId)}
-                deferred={
-                  isSetupTaskActionable(task) &&
-                  task.taskId !== plan.recommendedTaskId &&
-                  task.readiness !== "complete"
-                }
-                onSelect={() => selectTask(task.taskId)}
-              />
-            ))}
-            <li
-              className={`rounded-2xl ${
-                reviewActive ? "bg-white shadow-sm ring-1 ring-gray-200" : ""
-              }`}
-              aria-current={reviewActive ? "step" : undefined}
+              className="flex w-full gap-2 sm:max-w-sm"
+              role="progressbar"
+              aria-label="Hotel setup progress"
+              aria-valuemin={1}
+              aria-valuemax={totalSteps}
+              aria-valuenow={currentStepNumber}
+              aria-valuetext={`Step ${currentStepNumber} of ${totalSteps}: ${currentStepTitle}`}
             >
-              <button
-                type="button"
-                disabled={!reviewSelectable || reviewActive}
-                onClick={() => navigateFromTask(() => onSelectTask(null))}
-                className="flex w-full gap-3 rounded-2xl px-3 py-3 text-left outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-primary-300 disabled:cursor-default disabled:hover:bg-transparent"
-              >
-                <span
-                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                    reviewActive
-                      ? "bg-primary-600 text-white"
-                      : "border border-gray-300 bg-white text-gray-500"
-                  }`}
-                  aria-hidden="true"
-                >
-                  {totalSteps}
-                </span>
-                <span className="min-w-0 pt-0.5">
-                  <span className="block text-sm font-semibold text-gray-950">
-                    Review and next steps
-                  </span>
-                  <span className="mt-0.5 block text-xs text-gray-500">
-                    See what is ready to use or publish
-                  </span>
-                </span>
-              </button>
-            </li>
-          </ol>
-        </aside>
+              {Array.from({ length: totalSteps }, (_, index) => {
+                const reached = index < currentStepNumber;
+                return (
+                  <span
+                    key={index}
+                    className={`h-2.5 flex-1 rounded-full transition-colors duration-300 motion-reduce:transition-none ${
+                      reached ? "bg-primary-600" : "bg-primary-100"
+                    }`}
+                    data-state={reached ? "reached" : "upcoming"}
+                    aria-hidden="true"
+                  />
+                );
+              })}
+            </div>
+          </div>
+        </div>
 
         <div
-          className="order-1 min-w-0 p-6 sm:p-8 lg:order-2 lg:p-10"
+          className="min-w-0 px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-10"
           onChangeCapture={() => setHasUnsavedChanges(true)}
         >
-          {currentTask ? (
-            <InlineSetupTaskStep
-              key={currentTask.taskId}
-              task={currentTask}
-              stepNumber={currentStepNumber}
-              totalSteps={totalSteps}
-              form={renderTaskForm({
-                task: currentTask,
-                propertyId: plan.propertyId,
-                onBeforeSave: () => onBeforeSaveTask(currentTask, plan.planRevision),
-                onComplete: () => {
-                  setHasUnsavedChanges(false);
-                  return onCompleteTask(currentTask);
-                },
-                onBack: previousTaskId ? () => selectTask(previousTaskId) : null,
-                onDirty: () => setHasUnsavedChanges(true),
-              })}
-            />
-          ) : attentionTask ? (
-            <SetupAttentionStep
-              key={attentionTask.taskId}
-              task={attentionTask}
-              stepNumber={currentStepNumber}
-              totalSteps={totalSteps}
-            />
-          ) : (
-            <SetupReview launchReadiness={plan.launchReadiness} />
-          )}
+          <div className="mx-auto max-w-3xl">
+            {currentTask ? (
+              <InlineSetupTaskStep
+                key={currentTask.taskId}
+                task={currentTask}
+                onReturnToReview={
+                  canReturnToReview ? () => navigateFromTask(() => onSelectTask(null)) : null
+                }
+                form={renderTaskForm({
+                  task: currentTask,
+                  propertyId: plan.propertyId,
+                  onBeforeSave: () => onBeforeSaveTask(currentTask, plan.planRevision),
+                  onComplete: () => {
+                    setHasUnsavedChanges(false);
+                    return onCompleteTask(currentTask);
+                  },
+                  onBack: previousTaskId ? () => selectTask(previousTaskId) : null,
+                  onDirty: () => setHasUnsavedChanges(true),
+                })}
+              />
+            ) : attentionTask ? (
+              <SetupAttentionStep
+                key={attentionTask.taskId}
+                task={attentionTask}
+                onBack={previousTaskId ? () => selectTask(previousTaskId) : null}
+              />
+            ) : (
+              <SetupReview
+                launchReadiness={plan.launchReadiness}
+                onBack={reviewBackTaskId ? () => selectTask(reviewBackTaskId) : null}
+              />
+            )}
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-function SetupStepRow({
-  task,
-  position,
-  current,
-  selectable,
-  deferred,
-  onSelect,
-}: {
-  task: SetupTask;
-  position: number;
-  current: boolean;
-  selectable: boolean;
-  deferred: boolean;
-  onSelect: () => void;
-}) {
-  const content = TASK_CONTENT[task.taskId];
-  const state = setupTaskStateCopy(task);
-  const indicatorClass = deferred
-    ? "border-gray-300 bg-white text-gray-500"
-    : {
-        neutral: "border-gray-300 bg-white text-gray-500",
-        success: "border-emerald-200 bg-emerald-50 text-emerald-700",
-        warning: "border-amber-200 bg-amber-50 text-amber-800",
-        danger: "border-red-200 bg-red-50 text-red-700",
-      }[state.tone];
-  const trackLabel =
-    task.track === "creator_marketplace"
-      ? "Creator Marketplace"
-      : task.track === "hotel_operations"
-        ? "Hotel Operations"
-        : "Hotel details";
-  const isComplete = task.readiness === "complete";
-
-  return (
-    <li
-      className={`rounded-2xl ${current ? "bg-white shadow-sm ring-1 ring-gray-200" : ""}`}
-      aria-current={current ? "step" : undefined}
-    >
-      <button
-        type="button"
-        disabled={!selectable || current}
-        onClick={onSelect}
-        className="flex w-full gap-3 rounded-2xl px-3 py-3 text-left outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-primary-300 disabled:cursor-default disabled:hover:bg-transparent"
-      >
-        <span
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
-            current ? "border-primary-600 bg-primary-600 text-white" : indicatorClass
-          }`}
-          aria-hidden="true"
-        >
-          {isComplete ? <CheckIcon className="h-4 w-4" /> : position}
-        </span>
-        <span className="min-w-0 pt-0.5">
-          <span className="block text-sm font-semibold leading-5 text-gray-950">
-            {content.title}
-          </span>
-          <span className="mt-0.5 block text-xs leading-5 text-gray-500">
-            {trackLabel} · {deferred ? "Later in setup" : state.label}
-          </span>
-        </span>
-      </button>
-    </li>
-  );
-}
-
-function SetupAttentionStep({
-  task,
-  stepNumber,
-  totalSteps,
-}: {
-  task: SetupTask;
-  stepNumber: number;
-  totalSteps: number;
-}) {
+function SetupAttentionStep({ task, onBack }: { task: SetupTask; onBack: (() => void) | null }) {
   const headingRef = useSetupStepHeadingFocus();
   const content = TASK_CONTENT[task.taskId];
   const state = setupTaskStateCopy(task);
@@ -2076,18 +1975,16 @@ function SetupAttentionStep({
 
   return (
     <section aria-labelledby="current-setup-step-title">
-      <p className="text-sm font-semibold text-primary-700">
-        Step {stepNumber} of {totalSteps}
-      </p>
       <h2
         ref={headingRef}
         id="current-setup-step-title"
         tabIndex={-1}
-        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+        className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         {content.title}
       </h2>
       <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
+      {onBack && <SetupBackButton onClick={onBack} />}
       <div className={`mt-7 rounded-2xl border px-4 py-3 text-sm ${toneClass}`} role="status">
         <p className="font-semibold">{state.label}</p>
         <p className="mt-1 leading-6">{state.description}</p>
@@ -2101,32 +1998,37 @@ function SetupAttentionStep({
 
 function InlineSetupTaskStep({
   task,
-  stepNumber,
-  totalSteps,
   form,
+  onReturnToReview,
 }: {
   task: SetupTask;
-  stepNumber: number;
-  totalSteps: number;
   form: ReactNode;
+  onReturnToReview: (() => void) | null;
 }) {
   const headingRef = useSetupStepHeadingFocus();
   const content = TASK_CONTENT[task.taskId];
 
   return (
     <section aria-labelledby="current-setup-step-title">
-      <p className="text-sm font-semibold text-primary-700">
-        Step {stepNumber} of {totalSteps}
-      </p>
       <h2
         ref={headingRef}
         id="current-setup-step-title"
         tabIndex={-1}
-        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+        className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         {content.title}
       </h2>
       <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
+      {onReturnToReview && (
+        <button
+          type="button"
+          onClick={onReturnToReview}
+          className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+        >
+          Return to review
+          <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
       <div className="mt-8">{form}</div>
     </section>
   );
@@ -2134,8 +2036,10 @@ function InlineSetupTaskStep({
 
 function SetupReview({
   launchReadiness,
+  onBack,
 }: {
   launchReadiness: NonNullable<AdaptiveHotelSetupStatus["setupPlan"]>["launchReadiness"];
+  onBack: (() => void) | null;
 }) {
   const headingRef = useSetupStepHeadingFocus();
   const readinessItems = [
@@ -2158,12 +2062,11 @@ function SetupReview({
 
   return (
     <section aria-labelledby="setup-review-title">
-      <p className="text-sm font-semibold text-primary-700">Final review</p>
       <h2
         ref={headingRef}
         id="setup-review-title"
         tabIndex={-1}
-        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+        className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         Review and next steps
       </h2>
@@ -2171,6 +2074,7 @@ function SetupReview({
         Each Vayada service has its own readiness status. You can use ready services while another
         one is still being reviewed.
       </p>
+      {onBack && <SetupBackButton onClick={onBack} />}
 
       <dl className="mt-8 divide-y divide-gray-200 border-y border-gray-200">
         {readinessItems.map((item) => {
@@ -2195,6 +2099,19 @@ function SetupReview({
         ready.
       </p>
     </section>
+  );
+}
+
+function SetupBackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-gray-600 transition hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+    >
+      <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" />
+      Back
+    </button>
   );
 }
 
