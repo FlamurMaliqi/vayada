@@ -2,6 +2,7 @@
 
 import {
   type ComponentType,
+  type ReactNode,
   type RefObject,
   type SVGProps,
   useEffect,
@@ -60,19 +61,12 @@ import type { SharedHotelSetupApi, SharedPropertyTypeOption } from "./sharedHote
 type ProductLabels = Record<SetupComponentProduct, string>;
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 
-export type SharedFirstRunContinueInput =
-  | {
-      action: "enter_product";
-      product: SetupComponentProduct;
-      propertyId: string;
-      returnTo: string | null;
-    }
-  | {
-      action: "continue_setup";
-      taskId: SetupTaskId;
-      planRevision: string;
-      propertyId: string;
-    };
+export type SharedFirstRunContinueInput = {
+  action: "enter_product";
+  product: SetupComponentProduct;
+  propertyId: string;
+  returnTo: string | null;
+};
 
 export type SharedFirstRunPropertySetupWizardProps = {
   api: SharedHotelSetupApi;
@@ -83,7 +77,18 @@ export type SharedFirstRunPropertySetupWizardProps = {
   embedded?: boolean;
   productLabels?: Partial<ProductLabels>;
   onContinue: (input: SharedFirstRunContinueInput) => void | Promise<void>;
+  renderTaskForm: (context: SharedSetupTaskFormContext) => ReactNode;
+  onPropertySelected?: (propertyId: string) => void | Promise<void>;
   onExit?: () => void;
+};
+
+export type SharedSetupTaskFormContext = {
+  task: SetupTask;
+  propertyId: string;
+  onBeforeSave: () => Promise<void>;
+  onComplete: () => Promise<void>;
+  onBack: (() => void) | null;
+  onDirty: () => void;
 };
 
 type ProfileDraft = {
@@ -225,6 +230,25 @@ type TaskStateCopy = {
   tone: "neutral" | "success" | "warning" | "danger";
 };
 
+export const INLINE_SETUP_STALE_SAVE_MESSAGE =
+  "Your setup changed in another session. We refreshed the latest step—review it before saving again.";
+export const INLINE_SETUP_UNSAVED_CHANGES_MESSAGE =
+  "You have unsaved changes. Leave this step and discard them?";
+
+export function canLeaveInlineSetupTask(
+  hasUnsavedChanges: boolean,
+  confirmDiscard: () => boolean,
+): boolean {
+  return !hasUnsavedChanges || confirmDiscard();
+}
+
+export function blockInlineSetupUnload(
+  event: Pick<BeforeUnloadEvent, "preventDefault" | "returnValue">,
+) {
+  event.preventDefault();
+  event.returnValue = "";
+}
+
 const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
   ["displayName", "propertyType"],
   [
@@ -263,6 +287,8 @@ export default function SharedFirstRunPropertySetupWizard({
   embedded = false,
   productLabels,
   onContinue,
+  renderTaskForm,
+  onPropertySelected,
   onExit,
 }: SharedFirstRunPropertySetupWizardProps) {
   const labels = { ...DEFAULT_PRODUCT_LABELS, ...productLabels };
@@ -270,6 +296,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const [loading, setLoading] = useState(true);
   const [forceCreateProperty, setForceCreateProperty] = useState(initialAddProperty);
   const [forceTrackSelection, setForceTrackSelection] = useState(false);
+  const [editPropertyProfile, setEditPropertyProfile] = useState(false);
   const [profileLoadFailed, setProfileLoadFailed] = useState(false);
   const [profileReloadToken, setProfileReloadToken] = useState(0);
   const [loadedProfile, setLoadedProfile] = useState<PropertyProfileResponse | null>(null);
@@ -279,7 +306,6 @@ export default function SharedFirstRunPropertySetupWizard({
   const [draft, setDraft] = useState<ProfileDraft>(() => newPropertyDraft());
   const [selectedTracks, setSelectedTracks] = useState<SetupTrack[]>([]);
   const [saving, setSaving] = useState(false);
-  const [continuingTaskId, setContinuingTaskId] = useState<SetupTaskId | null>(null);
   const [selectedPlanTaskId, setSelectedPlanTaskId] = useState<SetupTaskId | null>(null);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
@@ -293,8 +319,9 @@ export default function SharedFirstRunPropertySetupWizard({
       resolveSharedFirstRunSetupView(status, {
         forceCreateProperty,
         forceTrackSelection,
+        editPropertyProfile,
       }),
-    [forceCreateProperty, forceTrackSelection, status],
+    [editPropertyProfile, forceCreateProperty, forceTrackSelection, status],
   );
   const entryContinueInput = useMemo(
     () => buildEntryContinueInput(status, returnTo),
@@ -303,6 +330,7 @@ export default function SharedFirstRunPropertySetupWizard({
 
   useEffect(() => {
     setForceCreateProperty(initialAddProperty);
+    setEditPropertyProfile(false);
   }, [initialAddProperty]);
 
   useEffect(() => {
@@ -381,9 +409,11 @@ export default function SharedFirstRunPropertySetupWizard({
   const handleSelectProperty = async (propertyId: string) => {
     setError("");
     setForceCreateProperty(false);
+    setEditPropertyProfile(false);
     setLoading(true);
     try {
       await reloadStatus(propertyId);
+      await onPropertySelected?.(propertyId);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -411,6 +441,7 @@ export default function SharedFirstRunPropertySetupWizard({
         const update = profileUpdateFromDraft(draft, loadedProfile);
         if (!update) {
           setForceCreateProperty(false);
+          setEditPropertyProfile(false);
           await reloadStatus(view.selectedPropertyId);
           return;
         }
@@ -425,7 +456,11 @@ export default function SharedFirstRunPropertySetupWizard({
       }
       setLoadedProfile(saved);
       setForceCreateProperty(false);
+      setEditPropertyProfile(false);
       await reloadStatus(saved.propertyId);
+      if (view.profileMode === "create") {
+        await onPropertySelected?.(saved.propertyId);
+      }
       createPropertyCommandKey.current = null;
     } catch (err) {
       if (
@@ -500,30 +535,39 @@ export default function SharedFirstRunPropertySetupWizard({
     }
   };
 
-  const handleContinueTask = async (task: SetupTask) => {
-    if (!status?.setupPlan || !isSetupTaskActionable(task) || continuingTaskId) return;
+  const handleCompleteTask = async (task: SetupTask) => {
     setError("");
-    setContinuingTaskId(task.taskId);
     try {
-      await onContinue({
-        action: "continue_setup",
-        taskId: task.taskId,
-        planRevision: status.setupPlan.planRevision,
-        propertyId: task.propertyId,
-      });
+      const nextStatus = await reloadStatus(task.propertyId);
+      setSelectedPlanTaskId(recommendedInlineSetupTaskId(nextStatus));
     } catch (err) {
-      if (setupErrorCode(err) === "refresh_plan") {
-        try {
-          await reloadStatus(task.propertyId);
-          setError("The setup plan changed. We refreshed it—choose the next step again.");
-        } catch (refreshError) {
-          setError(errorMessage(refreshError));
-        }
-      } else {
+      setError(errorMessage(err));
+      throw err;
+    }
+  };
+
+  const handleBeforeSaveTask = async (task: SetupTask, planRevision: string) => {
+    setError("");
+    try {
+      const nextStatus = await reloadStatus(task.propertyId);
+      if (
+        isInlineSetupTaskSaveCurrent(nextStatus, {
+          propertyId: task.propertyId,
+          taskId: task.taskId,
+          planRevision,
+        })
+      ) {
+        return;
+      }
+
+      setSelectedPlanTaskId(recommendedInlineSetupTaskId(nextStatus));
+      setError(INLINE_SETUP_STALE_SAVE_MESSAGE);
+      throw new Error(INLINE_SETUP_STALE_SAVE_MESSAGE);
+    } catch (err) {
+      if (errorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
         setError(errorMessage(err));
       }
-    } finally {
-      setContinuingTaskId(null);
+      throw err;
     }
   };
 
@@ -598,10 +642,14 @@ export default function SharedFirstRunPropertySetupWizard({
           onFieldErrors={setFieldErrors}
           onStepChange={setProfileStep}
           onCancel={
-            status.propertySelection.availableProperties.length > 0 && view.profileMode === "create"
-              ? () => setForceCreateProperty(false)
-              : undefined
+            editPropertyProfile
+              ? () => setEditPropertyProfile(false)
+              : status.propertySelection.availableProperties.length > 0 &&
+                  view.profileMode === "create"
+                ? () => setForceCreateProperty(false)
+                : undefined
           }
+          cancelLabel={editPropertyProfile ? "Back to setup" : undefined}
           onSave={handleSaveProfile}
         />
       )}
@@ -634,10 +682,12 @@ export default function SharedFirstRunPropertySetupWizard({
         <SetupPlan
           status={status}
           labels={labels}
-          onContinueTask={handleContinueTask}
-          continuingTaskId={continuingTaskId}
+          renderTaskForm={renderTaskForm}
+          onCompleteTask={handleCompleteTask}
+          onBeforeSaveTask={handleBeforeSaveTask}
           selectedTaskId={selectedPlanTaskId}
           onSelectTask={setSelectedPlanTaskId}
+          onEditHotelBasics={() => setEditPropertyProfile(true)}
           onExit={onExit}
           onEnterProduct={entryContinueInput ? () => onContinue(entryContinueInput) : undefined}
           onAddTrack={
@@ -907,6 +957,7 @@ function ProfileForm({
   onFieldErrors,
   onStepChange,
   onCancel,
+  cancelLabel = "Back to properties",
   onSave,
 }: {
   draft: ProfileDraft;
@@ -922,6 +973,7 @@ function ProfileForm({
   onFieldErrors: (errors: Record<string, string[]>) => void;
   onStepChange: (step: number) => void;
   onCancel?: () => void;
+  cancelLabel?: string;
   onSave: () => void;
 }) {
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
@@ -1082,7 +1134,7 @@ function ProfileForm({
             step === 1 ? "sm:min-w-32" : ""
           }`}
         >
-          {step > 0 ? "Back" : "Back to properties"}
+          {step > 0 ? "Back" : cancelLabel}
         </button>
       )}
       <button
@@ -1575,27 +1627,115 @@ function TrackSelection({
   );
 }
 
+type InlineSetupTaskCandidate = Pick<
+  SetupTask,
+  "taskId" | "track" | "readiness" | "callerCapability"
+>;
+
+export function isInlineSetupTaskEditable(
+  task: Pick<SetupTask, "taskId" | "track" | "readiness" | "callerCapability">,
+): boolean {
+  if (task.taskId === "shared_identity") {
+    return (
+      task.callerCapability === "allowed" &&
+      (task.readiness === "actionable" || task.readiness === "complete")
+    );
+  }
+  return (
+    isSetupTaskActionable(task) ||
+    (task.readiness === "complete" && task.callerCapability === "allowed")
+  );
+}
+
+export function isInlineSetupTaskSelectable(
+  task: InlineSetupTaskCandidate,
+  recommendedTaskId: SetupTaskId | null,
+): boolean {
+  if (!isInlineSetupTaskEditable(task)) return false;
+  return task.taskId === recommendedTaskId || task.readiness === "complete";
+}
+
+export function previousEditableSetupTaskId(
+  tasks: readonly InlineSetupTaskCandidate[],
+  currentTaskId: SetupTaskId,
+): SetupTaskId | null {
+  const currentIndex = tasks.findIndex(({ taskId }) => taskId === currentTaskId);
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const task = tasks[index];
+    if (task && isInlineSetupTaskEditable(task)) return task.taskId;
+  }
+  return null;
+}
+
+export function recommendedInlineSetupTaskId(status: AdaptiveHotelSetupStatus): SetupTaskId | null {
+  const plan = status.setupPlan;
+  if (!plan?.recommendedTaskId) return null;
+  const recommendedTask = plan.tasks.find(({ taskId }) => taskId === plan.recommendedTaskId);
+  return recommendedTask &&
+    recommendedTask.taskId !== "shared_identity" &&
+    isInlineSetupTaskEditable(recommendedTask)
+    ? recommendedTask.taskId
+    : null;
+}
+
+export function isInlineSetupTaskSaveCurrent(
+  status: AdaptiveHotelSetupStatus,
+  expected: {
+    propertyId: string;
+    taskId: SetupTaskId;
+    planRevision: string;
+  },
+): boolean {
+  const plan = status.setupPlan;
+  if (
+    !plan ||
+    plan.propertyId !== expected.propertyId ||
+    plan.planRevision !== expected.planRevision
+  ) {
+    return false;
+  }
+  const task = plan.tasks.find(({ taskId }) => taskId === expected.taskId);
+  return Boolean(
+    task &&
+    task.taskId !== "shared_identity" &&
+    isInlineSetupTaskSelectable(task, plan.recommendedTaskId),
+  );
+}
+
 function SetupPlan({
   status,
   labels,
-  onContinueTask,
-  continuingTaskId,
+  renderTaskForm,
+  onCompleteTask,
+  onBeforeSaveTask,
   selectedTaskId,
   onSelectTask,
+  onEditHotelBasics,
   onExit,
   onEnterProduct,
   onAddTrack,
 }: {
   status: AdaptiveHotelSetupStatus;
   labels: ProductLabels;
-  onContinueTask: (task: SetupTask) => void;
-  continuingTaskId: SetupTaskId | null;
+  renderTaskForm: (context: SharedSetupTaskFormContext) => ReactNode;
+  onCompleteTask: (task: SetupTask) => Promise<void>;
+  onBeforeSaveTask: (task: SetupTask, planRevision: string) => Promise<void>;
   selectedTaskId: SetupTaskId | null;
-  onSelectTask: (taskId: SetupTaskId) => void;
+  onSelectTask: (taskId: SetupTaskId | null) => void;
+  onEditHotelBasics: () => void;
   onExit?: () => void;
   onEnterProduct?: () => void;
   onAddTrack?: () => void;
 }) {
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => blockInlineSetupUnload(event);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
   const plan = status.setupPlan;
   if (!plan) {
     return (
@@ -1613,12 +1753,19 @@ function SetupPlan({
   );
   const recommendedTask = plan.recommendedTaskId
     ? (plan.tasks.find(
-        (task) => task.taskId === plan.recommendedTaskId && isSetupTaskActionable(task),
+        (task) =>
+          task.taskId === plan.recommendedTaskId &&
+          task.taskId !== "shared_identity" &&
+          isInlineSetupTaskEditable(task),
       ) ?? null)
     : null;
   const selectedTask = selectedTaskId
-    ? (plan.tasks.find((task) => task.taskId === selectedTaskId && isSetupTaskActionable(task)) ??
-      null)
+    ? (plan.tasks.find(
+        (task) =>
+          task.taskId === selectedTaskId &&
+          task.taskId !== "shared_identity" &&
+          isInlineSetupTaskSelectable(task, plan.recommendedTaskId),
+      ) ?? null)
     : null;
   const currentTask = selectedTask ?? recommendedTask;
   const attentionTask =
@@ -1632,6 +1779,30 @@ function SetupPlan({
   const reviewActive = activeTask === null;
   const totalSteps = plan.tasks.length + 1;
   const currentStepNumber = reviewActive ? totalSteps : currentTaskIndex + 1;
+  const previousTaskId = activeTask
+    ? previousEditableSetupTaskId(plan.tasks, activeTask.taskId)
+    : null;
+  const reviewSelectable = plan.ownerProgress.complete === plan.ownerProgress.total;
+  const navigateFromTask = (navigate: () => void) => {
+    if (
+      !canLeaveInlineSetupTask(hasUnsavedChanges, () =>
+        window.confirm(INLINE_SETUP_UNSAVED_CHANGES_MESSAGE),
+      )
+    ) {
+      return;
+    }
+    setHasUnsavedChanges(false);
+    navigate();
+  };
+  const selectTask = (taskId: SetupTaskId) => {
+    navigateFromTask(() => {
+      if (taskId === "shared_identity") {
+        onEditHotelBasics();
+        return;
+      }
+      onSelectTask(taskId);
+    });
+  };
   const progressPercentage =
     plan.ownerProgress.total === 0
       ? 100
@@ -1660,7 +1831,7 @@ function SetupPlan({
           {onExit && (
             <button
               type="button"
-              onClick={onExit}
+              onClick={() => navigateFromTask(onExit)}
               className="text-sm font-semibold text-gray-600 hover:text-gray-950"
             >
               Exit setup
@@ -1669,13 +1840,13 @@ function SetupPlan({
           {onAddTrack && (
             <button
               type="button"
-              onClick={onAddTrack}
+              onClick={() => navigateFromTask(onAddTrack)}
               className="text-sm font-semibold text-primary-700 hover:text-primary-800"
             >
               Add another service
             </button>
           )}
-          {onEnterProduct && requestedProduct && (
+          {reviewActive && onEnterProduct && requestedProduct && (
             <button
               type="button"
               onClick={onEnterProduct}
@@ -1737,50 +1908,75 @@ function SetupPlan({
                 task={task}
                 position={index + 1}
                 current={task.taskId === activeTask?.taskId}
-                selectable={isSetupTaskActionable(task)}
-                onSelect={() => onSelectTask(task.taskId)}
+                selectable={isInlineSetupTaskSelectable(task, plan.recommendedTaskId)}
+                deferred={
+                  isSetupTaskActionable(task) &&
+                  task.taskId !== plan.recommendedTaskId &&
+                  task.readiness !== "complete"
+                }
+                onSelect={() => selectTask(task.taskId)}
               />
             ))}
             <li
-              className={`flex gap-3 rounded-2xl px-3 py-3 ${
+              className={`rounded-2xl ${
                 reviewActive ? "bg-white shadow-sm ring-1 ring-gray-200" : ""
               }`}
               aria-current={reviewActive ? "step" : undefined}
             >
-              <span
-                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                  reviewActive
-                    ? "bg-primary-600 text-white"
-                    : "border border-gray-300 bg-white text-gray-500"
-                }`}
-                aria-hidden="true"
+              <button
+                type="button"
+                disabled={!reviewSelectable || reviewActive}
+                onClick={() => navigateFromTask(() => onSelectTask(null))}
+                className="flex w-full gap-3 rounded-2xl px-3 py-3 text-left outline-none transition hover:bg-white focus-visible:ring-2 focus-visible:ring-primary-300 disabled:cursor-default disabled:hover:bg-transparent"
               >
-                {totalSteps}
-              </span>
-              <span className="min-w-0 pt-0.5">
-                <span className="block text-sm font-semibold text-gray-950">
-                  Review and next steps
+                <span
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                    reviewActive
+                      ? "bg-primary-600 text-white"
+                      : "border border-gray-300 bg-white text-gray-500"
+                  }`}
+                  aria-hidden="true"
+                >
+                  {totalSteps}
                 </span>
-                <span className="mt-0.5 block text-xs text-gray-500">
-                  See what is ready to use or publish
+                <span className="min-w-0 pt-0.5">
+                  <span className="block text-sm font-semibold text-gray-950">
+                    Review and next steps
+                  </span>
+                  <span className="mt-0.5 block text-xs text-gray-500">
+                    See what is ready to use or publish
+                  </span>
                 </span>
-              </span>
+              </button>
             </li>
           </ol>
         </aside>
 
-        <div className="order-1 min-w-0 p-6 sm:p-8 lg:order-2 lg:p-10">
+        <div
+          className="order-1 min-w-0 p-6 sm:p-8 lg:order-2 lg:p-10"
+          onChangeCapture={() => setHasUnsavedChanges(true)}
+        >
           {currentTask ? (
-            <CurrentSetupStep
+            <InlineSetupTaskStep
+              key={currentTask.taskId}
               task={currentTask}
               stepNumber={currentStepNumber}
               totalSteps={totalSteps}
-              loading={currentTask.taskId === continuingTaskId}
-              disabled={continuingTaskId !== null}
-              onContinue={() => onContinueTask(currentTask)}
+              form={renderTaskForm({
+                task: currentTask,
+                propertyId: plan.propertyId,
+                onBeforeSave: () => onBeforeSaveTask(currentTask, plan.planRevision),
+                onComplete: () => {
+                  setHasUnsavedChanges(false);
+                  return onCompleteTask(currentTask);
+                },
+                onBack: previousTaskId ? () => selectTask(previousTaskId) : null,
+                onDirty: () => setHasUnsavedChanges(true),
+              })}
             />
           ) : attentionTask ? (
             <SetupAttentionStep
+              key={attentionTask.taskId}
               task={attentionTask}
               stepNumber={currentStepNumber}
               totalSteps={totalSteps}
@@ -1799,22 +1995,26 @@ function SetupStepRow({
   position,
   current,
   selectable,
+  deferred,
   onSelect,
 }: {
   task: SetupTask;
   position: number;
   current: boolean;
   selectable: boolean;
+  deferred: boolean;
   onSelect: () => void;
 }) {
   const content = TASK_CONTENT[task.taskId];
   const state = setupTaskStateCopy(task);
-  const indicatorClass = {
-    neutral: "border-gray-300 bg-white text-gray-500",
-    success: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    warning: "border-amber-200 bg-amber-50 text-amber-800",
-    danger: "border-red-200 bg-red-50 text-red-700",
-  }[state.tone];
+  const indicatorClass = deferred
+    ? "border-gray-300 bg-white text-gray-500"
+    : {
+        neutral: "border-gray-300 bg-white text-gray-500",
+        success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+        warning: "border-amber-200 bg-amber-50 text-amber-800",
+        danger: "border-red-200 bg-red-50 text-red-700",
+      }[state.tone];
   const trackLabel =
     task.track === "creator_marketplace"
       ? "Creator Marketplace"
@@ -1847,7 +2047,7 @@ function SetupStepRow({
             {content.title}
           </span>
           <span className="mt-0.5 block text-xs leading-5 text-gray-500">
-            {trackLabel} · {state.label}
+            {trackLabel} · {deferred ? "Later in setup" : state.label}
           </span>
         </span>
       </button>
@@ -1864,6 +2064,7 @@ function SetupAttentionStep({
   stepNumber: number;
   totalSteps: number;
 }) {
+  const headingRef = useSetupStepHeadingFocus();
   const content = TASK_CONTENT[task.taskId];
   const state = setupTaskStateCopy(task);
   const toneClass = {
@@ -1879,8 +2080,10 @@ function SetupAttentionStep({
         Step {stepNumber} of {totalSteps}
       </p>
       <h2
+        ref={headingRef}
         id="current-setup-step-title"
-        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950"
+        tabIndex={-1}
+        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         {content.title}
       </h2>
@@ -1896,29 +2099,19 @@ function SetupAttentionStep({
   );
 }
 
-function CurrentSetupStep({
+function InlineSetupTaskStep({
   task,
   stepNumber,
   totalSteps,
-  loading,
-  disabled,
-  onContinue,
+  form,
 }: {
   task: SetupTask;
   stepNumber: number;
   totalSteps: number;
-  loading: boolean;
-  disabled: boolean;
-  onContinue: () => void;
+  form: ReactNode;
 }) {
+  const headingRef = useSetupStepHeadingFocus();
   const content = TASK_CONTENT[task.taskId];
-  const state = setupTaskStateCopy(task);
-  const toneClass = {
-    neutral: "border-gray-200 bg-gray-50 text-gray-700",
-    success: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    warning: "border-amber-200 bg-amber-50 text-amber-900",
-    danger: "border-red-200 bg-red-50 text-red-800",
-  }[state.tone];
 
   return (
     <section aria-labelledby="current-setup-step-title">
@@ -1926,36 +2119,15 @@ function CurrentSetupStep({
         Step {stepNumber} of {totalSteps}
       </p>
       <h2
+        ref={headingRef}
         id="current-setup-step-title"
-        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950"
+        tabIndex={-1}
+        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         {content.title}
       </h2>
       <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
-
-      <div className={`mt-7 rounded-2xl border px-4 py-3 text-sm ${toneClass}`} role="status">
-        <p className="font-semibold">{state.label}</p>
-        <p className="mt-1 leading-6">{state.description}</p>
-      </div>
-
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onContinue}
-        className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-      >
-        {loading && (
-          <span
-            className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
-            aria-hidden="true"
-          />
-        )}
-        {loading ? "Opening step..." : "Continue setup"}
-        {!loading && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
-      </button>
-      <p className="mt-4 max-w-xl text-xs leading-5 text-gray-500">
-        After you save this step, you will return here and continue with the next relevant task.
-      </p>
+      <div className="mt-8">{form}</div>
     </section>
   );
 }
@@ -1965,6 +2137,7 @@ function SetupReview({
 }: {
   launchReadiness: NonNullable<AdaptiveHotelSetupStatus["setupPlan"]>["launchReadiness"];
 }) {
+  const headingRef = useSetupStepHeadingFocus();
   const readinessItems = [
     {
       label: "Creator Marketplace",
@@ -1987,8 +2160,10 @@ function SetupReview({
     <section aria-labelledby="setup-review-title">
       <p className="text-sm font-semibold text-primary-700">Final review</p>
       <h2
+        ref={headingRef}
         id="setup-review-title"
-        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950"
+        tabIndex={-1}
+        className="mt-3 text-2xl font-semibold tracking-tight text-gray-950 outline-none"
       >
         Review and next steps
       </h2>
@@ -2021,6 +2196,17 @@ function SetupReview({
       </p>
     </section>
   );
+}
+
+function useSetupStepHeadingFocus(): RefObject<HTMLHeadingElement> {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => headingRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  return headingRef;
 }
 
 function launchReadinessCopy(
@@ -2113,7 +2299,7 @@ function recommendedActionDescription(task: SetupTask): string {
 function buildEntryContinueInput(
   status: AdaptiveHotelSetupStatus | null,
   returnTo: string | null,
-): Extract<SharedFirstRunContinueInput, { action: "enter_product" }> | null {
+): SharedFirstRunContinueInput | null {
   if (!status) return null;
   const decision = status.entryDecision;
   if (decision?.decision !== "enter" || !decision.propertyId) {

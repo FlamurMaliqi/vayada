@@ -287,6 +287,7 @@ export type PmsRoomTypeCreateCommand = {
   propertyId: string;
   commandId: string;
   idempotencyKey: string;
+  initialSetupOnly?: boolean;
   name: string;
   description: string;
   category: string | null;
@@ -2353,6 +2354,7 @@ function toRoomTypeCreateCommand(
       propertyId,
       commandId,
       idempotencyKey,
+      initialSetupOnly: raw.initialSetupOnly === true,
       name,
       description: optionalStringField(raw.description) ?? "",
       category: nullableStringField(raw.category) ?? null,

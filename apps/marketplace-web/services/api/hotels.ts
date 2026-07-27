@@ -326,6 +326,7 @@ export const hotelService = {
     return updateHotelProfile(data, propertyId, revisions, {
       publicProfile: true,
       marketplaceProfile: false,
+      resumeAppliedCanonicalUpdate: true,
     });
   },
 
@@ -345,6 +346,7 @@ export const hotelService = {
     expectedProfileRevision: number,
   ): Promise<PlatformImageUploadResponse> => {
     const [uploaded] = await uploadPlatformMedia({
+      idempotencyKey: `marketplace.property-hero:${profileId}:revision:${expectedProfileRevision}`,
       purpose: "property.hero_image",
       expectedProfileRevision,
       resource: {
@@ -427,8 +429,10 @@ export const hotelService = {
   uploadListingImages: async (
     files: File[],
     listingId: string,
+    options?: { idempotencyKey?: string },
   ): Promise<{ images: Array<{ url: string; mediaObjectId: string }> }> => {
     const uploaded = await uploadPlatformMedia({
+      idempotencyKey: options?.idempotencyKey,
       purpose: "marketplace.offer.media",
       resource: {
         product: "marketplace",
@@ -454,9 +458,10 @@ export const hotelService = {
     sourceImageUrls: string[],
     files: File[],
     listingId: string,
+    options?: { idempotencyKey?: string },
   ): Promise<{ images: Array<{ url: string; mediaObjectId: string }> }> => {
     const copiedFiles = await Promise.all(sourceImageUrls.map(remoteImageFile));
-    return hotelService.uploadListingImages([...copiedFiles, ...files], listingId);
+    return hotelService.uploadListingImages([...copiedFiles, ...files], listingId, options);
   },
 
   /**
@@ -500,7 +505,11 @@ async function updateHotelProfile(
   data: UpdateHotelProfileRequest | FormData,
   propertyIdOverride: string | undefined,
   revisions: HotelProfileRevisionSnapshot | undefined,
-  targets: { publicProfile: boolean; marketplaceProfile: boolean },
+  targets: {
+    publicProfile: boolean;
+    marketplaceProfile: boolean;
+    resumeAppliedCanonicalUpdate?: boolean;
+  },
 ): Promise<HotelProfile> {
   if (data instanceof FormData) {
     throw new Error("Hotel profile updates must use JSON and platform media uploads");
@@ -519,8 +528,14 @@ async function updateHotelProfile(
   );
   let expectedPublicProfileRevision = revisions.publicProfileRevision;
   if (canonicalUpdate) {
-    const updated = await sharedHotelSetupApi.updatePropertyProfile(propertyId, canonicalUpdate);
-    expectedPublicProfileRevision = updated.profileRevision;
+    if (targets.resumeAppliedCanonicalUpdate && canonicalProfileUpdateMatches(property, data)) {
+      if (property.profileRevision !== revisions.canonicalProfileRevision) {
+        expectedPublicProfileRevision = property.profileRevision;
+      }
+    } else {
+      const updated = await sharedHotelSetupApi.updatePropertyProfile(propertyId, canonicalUpdate);
+      expectedPublicProfileRevision = updated.profileRevision;
+    }
   }
 
   if (targets.publicProfile && changesPublicPropertyProfile(data)) {
@@ -592,6 +607,16 @@ function applyCanonicalProfileUpdate(
   };
 }
 
+function canonicalProfileUpdateMatches(
+  response: PropertyProfileResponse,
+  update: UpdateHotelProfileRequest,
+): boolean {
+  return (
+    update.localityPublic !== undefined &&
+    response.profile.location.localityPublic === update.localityPublic
+  );
+}
+
 function applyPublicPropertyProfileUpdate(
   response: PublicPropertyProfileResponse,
   update: UpdateHotelProfileRequest,
@@ -599,7 +624,10 @@ function applyPublicPropertyProfileUpdate(
 ): PublicPropertyProfileUpdateRequest | null {
   const patch: PublicPropertyProfileUpdateRequest["patch"] = {};
   if (Object.hasOwn(update, "about")) {
-    patch.shortDescription = normalizedOptionalText(update.about);
+    const shortDescription = normalizedOptionalText(update.about);
+    if (normalizedOptionalText(response.publicProfile.shortDescription) !== shortDescription) {
+      patch.shortDescription = shortDescription;
+    }
   }
   if (update.picture === null) {
     patch.media = response.publicProfile.media

@@ -544,6 +544,102 @@ describe("hotel target self-service client", () => {
     );
   });
 
+  it("resumes the public description after locality saved but the public write failed", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    let currentProfile = sharedProfile;
+    let currentPublicProfile = publicProfile;
+    let publicWriteAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        requests.push({ url: href, method, body });
+
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          if (method === "PUT") {
+            currentProfile = {
+              ...sharedProfile,
+              profileRevision: 4,
+              profile: {
+                ...sharedProfile.profile,
+                location: { ...sharedProfile.profile.location, localityPublic: true },
+              },
+            };
+            currentPublicProfile = { ...publicProfile, profileRevision: 4 };
+          }
+          return jsonResponse(currentProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          if (method === "PUT") {
+            publicWriteAttempts += 1;
+            if (publicWriteAttempts === 1) {
+              return jsonResponse({ detail: "Temporary public profile failure" }, 503);
+            }
+            currentPublicProfile = {
+              ...currentPublicProfile,
+              profileRevision: 5,
+              publicProfile: {
+                ...currentPublicProfile.publicProfile,
+                shortDescription: "A public description saved after retry.",
+              },
+            };
+          }
+          return jsonResponse(currentPublicProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
+          return jsonResponse(marketplaceProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/offers`)) {
+          return jsonResponse({ offers: [targetOffer] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    const save = () =>
+      hotelService.updatePublicSetupProfile(
+        {
+          about: "A public description saved after retry.",
+          localityPublic: true,
+        },
+        propertyId,
+        profileRevisions,
+      );
+
+    await expect(save()).rejects.toBeTruthy();
+    await expect(save()).resolves.toMatchObject({
+      localityPublic: true,
+      publicAbout: "A public description saved after retry.",
+    });
+
+    expect(
+      requests.filter(
+        ({ url, method }) =>
+          url.endsWith(`/hotel-setup/properties/${propertyId}/profile`) && method === "PUT",
+      ),
+    ).toHaveLength(1);
+    expect(
+      requests
+        .filter(
+          ({ url, method }) =>
+            url.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`) &&
+            method === "PUT",
+        )
+        .map(({ body }) => body),
+    ).toEqual([
+      {
+        expectedProfileRevision: 4,
+        patch: { shortDescription: "A public description saved after retry." },
+      },
+      {
+        expectedProfileRevision: 4,
+        patch: { shortDescription: "A public description saved after retry." },
+      },
+    ]);
+  });
+
   it("sends the editor-loaded revision so a stale save reaches the backend conflict check", async () => {
     const requests: Array<{ method: string; body: unknown }> = [];
     vi.stubGlobal(
@@ -957,6 +1053,50 @@ describe("hotel target self-service client", () => {
     });
   });
 
+  it("returns completed upload-session media without uploading or finalizing again", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (!String(url).endsWith("/api/media/upload-sessions")) {
+        throw new Error(`Unexpected replay request: ${url}`);
+      }
+      return jsonResponse({
+        uploadSession: { sessionId: "completed-session", status: "completed" },
+        uploadTargets: [],
+        mediaObjects: [
+          {
+            mediaId: "replayed-media-id",
+            storageKey: "private/marketplace/offers/replayed-media-id/original-safe.webp",
+            contentType: "image/jpeg",
+            sizeBytes: 3,
+            originalFilename: "image.jpg",
+            variants: [
+              {
+                publicCdnUrl: null,
+                storageKey: "private/marketplace/offers/replayed-media-id/original-safe.webp",
+              },
+            ],
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      hotelService.uploadListingImages(
+        [new File(["img"], "image.jpg", { type: "image/jpeg" })],
+        "offer-resource-id",
+        { idempotencyKey: "marketplace.offer-media:retry" },
+      ),
+    ).resolves.toEqual({
+      images: [
+        {
+          url: "private/marketplace/offers/replayed-media-id/original-safe.webp",
+          mediaObjectId: "replayed-media-id",
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("copies a canonical hotel photo into offer-owned media", async () => {
     const sourceUrl = "https://images.example/alpenrose.webp";
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -966,6 +1106,9 @@ describe("hotel target self-service client", () => {
       }
       if (String(url).endsWith("/api/media/upload-sessions")) {
         const body = JSON.parse(String(init?.body));
+        expect(body.idempotencyKey).toMatch(
+          /^marketplace\.offer-media:test-command:files:sha256:[0-9a-f]{64}$/,
+        );
         expect(body.files).toEqual([
           expect.objectContaining({
             filename: "shared-hotel-photo-1.webp",
@@ -1009,7 +1152,9 @@ describe("hotel target self-service client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      hotelService.uploadListingImagesFromSources([sourceUrl], [], "offer-resource-id"),
+      hotelService.uploadListingImagesFromSources([sourceUrl], [], "offer-resource-id", {
+        idempotencyKey: "marketplace.offer-media:test-command",
+      }),
     ).resolves.toEqual({
       images: [
         {
@@ -1029,6 +1174,9 @@ describe("hotel target self-service client", () => {
       }
       if (String(url).endsWith("/api/media/upload-sessions")) {
         expect(JSON.parse(String(init?.body))).toMatchObject({
+          idempotencyKey: expect.stringMatching(
+            /^marketplace\.property-hero:property-two:revision:17:files:sha256:[0-9a-f]{64}$/,
+          ),
           purpose: "property.hero_image",
           expectedProfileRevision: 17,
           resource: {

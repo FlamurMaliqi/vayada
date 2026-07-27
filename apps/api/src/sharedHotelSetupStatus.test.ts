@@ -2039,6 +2039,46 @@ describe("shared hotel setup status route", () => {
     expect(query.mock.calls[1]![1]).toEqual([organizationId, [propertyId]]);
   });
 
+  it("requires fragmented room artifacts to converge on the same active room type", async () => {
+    const query = vi.fn(async (text: string, _values?: readonly unknown[]) => {
+      if (text.includes("FROM identity.organizations")) {
+        return { rows: [{ displayName: "Alpenrose Hotel Group", websiteUrl: null }] };
+      }
+      return { rows: [adaptiveStatusRow()] };
+    });
+    const repository = createPgSharedHotelSetupStatusRepository({
+      connectionString: "postgresql://target-db",
+      pool: {
+        query: async <T extends QueryResultRow = QueryResultRow>(
+          text: string,
+          values?: readonly unknown[],
+        ) => {
+          const result = await query(text, values);
+          return { rows: result.rows as unknown as T[] };
+        },
+        end: vi.fn(async () => undefined),
+      },
+    });
+
+    await repository.getHotelSetupStatus({ organizationId, propertyIds: [propertyId] });
+
+    const sql = query.mock.calls[1]![0];
+    expect(sql).toContain(") room_readiness ON TRUE");
+    expect(sql).toMatch(
+      /bool_or\(\s*candidate\.has_non_retired_room\s+AND candidate\.has_active_rate_plan\s*\)/,
+    );
+    expect(sql).toMatch(
+      /bool_or\(\s*candidate\.has_non_retired_room\s+AND candidate\.has_active_rate_plan\s+AND candidate\.has_future_inventory\s*\)/,
+    );
+    expect(sql).toContain("room.room_type_id = room_type.id");
+    expect(sql).toContain("rate_plan.room_type_id = room_type.id");
+    expect(sql).toContain("day.room_type_id = room_type.id");
+    expect(sql).toContain("room_type.active = TRUE");
+    expect(sql).not.toContain(") rooms ON TRUE");
+    expect(sql).not.toContain(") rate_plans ON TRUE");
+    expect(sql).not.toContain(") inventory ON TRUE");
+  });
+
   it("requires explicit locality consent before public-profile readiness completes", async () => {
     let localityPublic = false;
     const repository = createPgSharedHotelSetupStatusRepository({

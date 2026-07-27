@@ -78,6 +78,20 @@ describe("resolveSharedFirstRunSetupView", () => {
     expect(view.screen).toBe("setup_plan");
     expect(view.setupPlan?.tasks.map(({ taskId }) => taskId)).toEqual(tasks);
   });
+
+  it("reopens the selected property's existing profile inside setup when hotel basics are edited", () => {
+    const status = statusFor(
+      ["creator_marketplace"],
+      ["shared_identity", "public_profile", "creator_profile", "creator_offer"],
+    );
+
+    expect(resolveSharedFirstRunSetupView(status, { editPropertyProfile: true })).toMatchObject({
+      screen: "property_profile",
+      profileMode: "update",
+      selectedPropertyId: "property-1",
+      title: "Hotel Alpenrose",
+    });
+  });
 });
 
 describe("toggleSetupTrackSelection", () => {

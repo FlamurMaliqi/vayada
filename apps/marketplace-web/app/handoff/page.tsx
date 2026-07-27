@@ -133,14 +133,5 @@ function marketplaceSetupTaskDestination(
     handoff.propertyId,
     marketplaceOrigin,
   );
-  if (!returnUrl) return null;
-  if (handoff.taskId === "shared_identity") return returnUrl;
-
-  return `/profile/complete?${new URLSearchParams({
-    activation: "marketplace",
-    taskId: handoff.taskId,
-    destinationRouteKey: handoff.destinationRouteKey,
-    planRevision: handoff.issuedPlanRevision,
-    returnUrl,
-  }).toString()}`;
+  return returnUrl;
 }

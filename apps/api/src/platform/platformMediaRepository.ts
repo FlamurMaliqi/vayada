@@ -129,7 +129,7 @@ export function createPgPlatformMediaRepository(
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        await client.query(
+        const inserted = await client.query<{ id: string }>(
           `INSERT INTO platform.media_upload_sessions
              (id, upload_session_key, requested_purpose, requested_visibility,
               actor_user_id, owner_organization_id, property_id, resource_product,
@@ -139,7 +139,9 @@ export function createPgPlatformMediaRepository(
            VALUES
              ($1::uuid, $2, $3, $4, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10,
               $11, $12, $13, $14, $15::timestamptz, 'signed', $16::jsonb,
-              $17::timestamptz, $17::timestamptz)`,
+              $17::timestamptz, $17::timestamptz)
+           ON CONFLICT DO NOTHING
+           RETURNING id::text AS id`,
           [
             session.sessionId,
             session.uploadSessionKey,
@@ -160,6 +162,14 @@ export function createPgPlatformMediaRepository(
             session.createdAt,
           ],
         );
+        if (inserted.rows.length === 0) {
+          const existing = await readSession(client, session.sessionId);
+          if (!existing) {
+            throw new Error("Platform media upload session idempotency conflict");
+          }
+          await client.query("COMMIT");
+          return existing;
+        }
         await recordAudit(client, input.auditEvent);
         await client.query("COMMIT");
       } catch (error) {
@@ -172,6 +182,47 @@ export function createPgPlatformMediaRepository(
     },
     async findUploadSession(sessionId) {
       return readSession(pool, sessionId);
+    },
+    async renewSignedUploadSession(input) {
+      const renewed = {
+        ...input.session,
+        expiresAt: input.expiresAt,
+        uploadTargets: input.session.uploadTargets.map((target) => ({
+          ...target,
+          expiresAt: input.expiresAt,
+        })),
+      };
+      const result = await pool.query<SessionRow>(
+        `UPDATE platform.media_upload_sessions
+         SET expires_at = $4::timestamptz,
+             completion_metadata = jsonb_set(
+               completion_metadata,
+               '{session}',
+               $3::jsonb,
+               true
+             ),
+             updated_at = $5::timestamptz
+         WHERE id = $1::uuid
+           AND session_status = 'signed'
+           AND expires_at = $2::timestamptz
+         RETURNING
+           completion_metadata -> 'session' AS session,
+           completed_media_object_id::text AS "completedMediaObjectId",
+           completion_metadata -> 'mediaObjectIds' AS "mediaObjectIds"
+         /* platform_media_upload_session_renewal */`,
+        [
+          input.session.sessionId,
+          input.session.expiresAt,
+          JSON.stringify(persistedSession(renewed)),
+          input.expiresAt,
+          input.now,
+        ],
+      );
+      if (result.rows[0]?.session) return result.rows[0].session;
+
+      const current = await readSession(pool, input.session.sessionId);
+      if (!current) throw new Error("Platform media upload session was not found");
+      return current;
     },
     async findMediaObject(mediaId) {
       return readMediaObject(pool, mediaId);
@@ -625,15 +676,67 @@ async function upsertPropertyMediaProjection(
        WHERE NOT EXISTS (SELECT 1 FROM updated)
        RETURNING id
      ),
+     projected_media AS (
+       SELECT id FROM updated
+       UNION ALL
+       SELECT id FROM inserted
+     ),
+     completeness AS (
+       SELECT
+         property.id AS property_id,
+         ARRAY_REMOVE(
+           ARRAY[
+             CASE WHEN NOT EXISTS (
+               SELECT 1
+               FROM hotel_catalog.property_profiles profile
+               WHERE profile.property_id = property.id
+                 AND profile.locale = property.default_locale
+                 AND COALESCE(
+                   NULLIF(BTRIM(profile.short_description), ''),
+                   NULLIF(BTRIM(profile.long_description), '')
+                 ) IS NOT NULL
+             ) THEN 'description' END,
+             CASE WHEN NOT EXISTS (
+               SELECT 1
+               FROM hotel_catalog.property_media media
+               JOIN platform.media_objects media_object
+                 ON media_object.id = media.platform_media_object_id
+                AND media_object.property_id = media.property_id
+                AND media_object.visibility = 'public'
+                AND media_object.public_approved = TRUE
+                AND media_object.lifecycle_status = 'active'
+               JOIN platform.media_variants variant
+                 ON variant.media_object_id = media_object.id
+                AND variant.variant_name = 'original_safe'
+                AND variant.visibility = 'public'
+                AND NULLIF(variant.public_cdn_url, '') IS NOT NULL
+               WHERE media.property_id = property.id
+                 AND media.public_approved = TRUE
+                 AND media.source_system = 'platform'
+             )
+             AND NOT EXISTS (SELECT 1 FROM projected_media)
+             THEN 'media' END
+           ]::text[],
+           NULL
+         ) AS reasons
+       FROM hotel_catalog.properties property
+       WHERE property.id = $2::uuid
+     ),
      advanced_property AS (
        UPDATE hotel_catalog.properties property
-       SET profile_revision = property.profile_revision + 1,
+       SET completeness_reasons = completeness.reasons,
+           profile_status = CASE
+             WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status
+             WHEN cardinality(completeness.reasons) = 0 THEN 'complete'
+             ELSE 'incomplete'
+           END,
+           profile_revision = property.profile_revision + 1,
            updated_at = $6::timestamptz
-       WHERE property.id = $2::uuid
+       FROM completeness
+       WHERE property.id = completeness.property_id
          AND (
            EXISTS (SELECT 1 FROM superseded_hero)
-           OR EXISTS (SELECT 1 FROM updated)
-           OR EXISTS (SELECT 1 FROM inserted)
+           OR EXISTS (SELECT 1 FROM projected_media)
          )
        RETURNING property.id
      )

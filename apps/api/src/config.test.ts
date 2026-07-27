@@ -536,6 +536,7 @@ describe("api config", () => {
     expect(config.pmsOperationsAllowedOrigins).toEqual([
       "https://pms.localhost",
       "https://admin.booking.localhost",
+      "https://marketplace.localhost",
     ]);
   });
 

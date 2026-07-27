@@ -15,6 +15,12 @@ const mediaObjectId = "77777777-7777-4777-8777-777777777966";
 const invalidMediaObjectId = "77777777-7777-4777-8777-777777777967";
 const actorUserId = "77777777-7777-4777-8777-777777777968";
 const uploadSessionId = "77777777-7777-4777-8777-777777777969";
+const roomTypeWithRoomId = "77777777-7777-4777-8777-777777777970";
+const roomTypeWithRateId = "77777777-7777-4777-8777-777777777971";
+const roomTypeWithInventoryId = "77777777-7777-4777-8777-777777777972";
+const physicalRoomId = "77777777-7777-4777-8777-777777777973";
+const fragmentedRatePlanId = "77777777-7777-4777-8777-777777777974";
+const coherentRatePlanId = "77777777-7777-4777-8777-777777777975";
 
 const profile: SharedPropertyProfileInput = {
   displayName: "Profile Revision Test Hotel",
@@ -440,6 +446,10 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
         ],
       },
     });
+    await expect(readProfileCompleteness(created.propertyId)).resolves.toEqual({
+      profileStatus: "complete",
+      completenessReasons: [],
+    });
     await expect(
       repository.updatePublicPropertyProfile({
         organizationId,
@@ -561,6 +571,106 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
     });
   });
 
+  it("does not combine room, rate, and inventory artifacts from different room types", async () => {
+    const created = await repository.createPropertyProfile({
+      organizationId,
+      idempotencyKey: "fragmented-room-readiness-create",
+      correlationId: "fragmented-room-readiness-create",
+      profile: { ...profile, displayName: "Fragmented Room Readiness Hotel" },
+    });
+
+    await client.query(
+      `INSERT INTO pms.room_types (id, property_id, name, currency, active)
+       VALUES
+         ($2::uuid, $1::uuid, 'Room only', 'EUR', TRUE),
+         ($3::uuid, $1::uuid, 'Rate only', 'EUR', TRUE),
+         ($4::uuid, $1::uuid, 'Inventory only', 'EUR', TRUE)`,
+      [created.propertyId, roomTypeWithRoomId, roomTypeWithRateId, roomTypeWithInventoryId],
+    );
+    await client.query(
+      `INSERT INTO pms.rooms (id, property_id, room_type_id, room_number, status)
+       VALUES ($2::uuid, $1::uuid, $3::uuid, 'ROOM-ONLY-1', 'available')`,
+      [created.propertyId, physicalRoomId, roomTypeWithRoomId],
+    );
+    await client.query(
+      `INSERT INTO pms.rate_plans (
+         id,
+         property_id,
+         room_type_id,
+         code,
+         name,
+         base_rate_amount,
+         currency,
+         active
+       )
+       VALUES ($2::uuid, $1::uuid, $3::uuid, 'FRAGMENTED', 'Fragmented', 100, 'EUR', TRUE)`,
+      [created.propertyId, fragmentedRatePlanId, roomTypeWithRateId],
+    );
+    await client.query(
+      `INSERT INTO pms.inventory_days (
+         property_id,
+         room_type_id,
+         stay_date,
+         total_count,
+         available_count,
+         status
+       )
+       VALUES ($1::uuid, $2::uuid, CURRENT_DATE + 1, 1, 1, 'open')`,
+      [created.propertyId, roomTypeWithInventoryId],
+    );
+
+    const fragmented = (
+      await repository.getHotelSetupStatus({
+        organizationId,
+        propertyIds: [created.propertyId],
+      })
+    ).properties[0]!.taskFacts.rooms_rates_availability;
+    expect(fragmented).toMatchObject({
+      ownerProgress: "in_progress",
+      readiness: "actionable",
+      reasonCodes: ["missing_active_rate_plan", "missing_future_inventory"],
+    });
+
+    await client.query(
+      `INSERT INTO pms.rate_plans (
+         id,
+         property_id,
+         room_type_id,
+         code,
+         name,
+         base_rate_amount,
+         currency,
+         active
+       )
+       VALUES ($2::uuid, $1::uuid, $3::uuid, 'COHERENT', 'Coherent', 100, 'EUR', TRUE)`,
+      [created.propertyId, coherentRatePlanId, roomTypeWithRoomId],
+    );
+    await client.query(
+      `INSERT INTO pms.inventory_days (
+         property_id,
+         room_type_id,
+         stay_date,
+         total_count,
+         available_count,
+         status
+       )
+       VALUES ($1::uuid, $2::uuid, CURRENT_DATE + 1, 1, 1, 'open')`,
+      [created.propertyId, roomTypeWithRoomId],
+    );
+
+    const coherent = (
+      await repository.getHotelSetupStatus({
+        organizationId,
+        propertyIds: [created.propertyId],
+      })
+    ).properties[0]!.taskFacts.rooms_rates_availability;
+    expect(coherent).toMatchObject({
+      ownerProgress: "owner_complete",
+      readiness: "complete",
+      reasonCodes: [],
+    });
+  });
+
   async function cleanup(): Promise<void> {
     await client.query("BEGIN");
     try {
@@ -581,6 +691,12 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
         [organizationId],
       );
       for (const { propertyId } of properties.rows) {
+        await client.query("DELETE FROM pms.inventory_days WHERE property_id = $1::uuid", [
+          propertyId,
+        ]);
+        await client.query("DELETE FROM pms.rate_plans WHERE property_id = $1::uuid", [propertyId]);
+        await client.query("DELETE FROM pms.rooms WHERE property_id = $1::uuid", [propertyId]);
+        await client.query("DELETE FROM pms.room_types WHERE property_id = $1::uuid", [propertyId]);
         await client.query(
           "DELETE FROM hotel_catalog.property_media WHERE property_id = $1::uuid",
           [propertyId],

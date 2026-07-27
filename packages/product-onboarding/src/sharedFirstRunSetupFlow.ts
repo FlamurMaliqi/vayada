@@ -53,7 +53,11 @@ export type SharedFirstRunSetupViewModel = {
 
 export function resolveSharedFirstRunSetupView(
   status: AdaptiveHotelSetupStatus | null,
-  options: { forceCreateProperty?: boolean; forceTrackSelection?: boolean } = {},
+  options: {
+    forceCreateProperty?: boolean;
+    forceTrackSelection?: boolean;
+    editPropertyProfile?: boolean;
+  } = {},
 ): SharedFirstRunSetupViewModel {
   if (!status) return emptyView("loading", "Loading setup");
 
@@ -89,9 +93,10 @@ export function resolveSharedFirstRunSetupView(
   const sharedIdentity = status.setupPlan?.tasks.find(({ taskId }) => taskId === "shared_identity");
   if (
     selectedPropertyId &&
-    sharedIdentity?.ownerProgress !== "owner_complete" &&
-    sharedIdentity?.readiness === "actionable" &&
-    sharedIdentity.callerCapability === "allowed"
+    (options.editPropertyProfile ||
+      (sharedIdentity?.ownerProgress !== "owner_complete" &&
+        sharedIdentity?.readiness === "actionable" &&
+        sharedIdentity.callerCapability === "allowed"))
   ) {
     return {
       screen: "property_profile",

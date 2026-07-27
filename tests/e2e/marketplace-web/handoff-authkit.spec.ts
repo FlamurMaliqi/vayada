@@ -11,7 +11,7 @@ const USED_CODE = "F".repeat(43);
 const SHARED_IDENTITY_CODE = "J".repeat(43);
 
 test.describe("marketplace-web opaque setup handoff", () => {
-  test("selects the only hotel group, exchanges the code, and opens the exact task", async ({
+  test("selects the only hotel group, exchanges the code, and opens the canonical setup flow", async ({
     page,
   }) => {
     const refreshRequests: unknown[] = [];
@@ -38,8 +38,8 @@ test.describe("marketplace-web opaque setup handoff", () => {
         json: exchangedHandoff(),
       });
     });
-    await page.route(/\/profile\/complete\?activation=marketplace/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Activation</title>" }),
+    await page.route(/\/setup\?propertyId=/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Setup</title>" }),
     );
     await page.route(/\/before-handoff$/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Before</title>" }),
@@ -48,13 +48,9 @@ test.describe("marketplace-web opaque setup handoff", () => {
     await page.goto("/before-handoff");
     await page.goto(`/handoff?code=${HANDOFF_CODE}`);
 
-    await expect(page).toHaveURL(/\/profile\/complete\?activation=marketplace/);
+    await expect(page).toHaveURL(marketplaceSetupReturnUrl());
     const destination = new URL(page.url());
-    expect(destination.searchParams.get("taskId")).toBe("creator_profile");
-    expect(destination.searchParams.get("destinationRouteKey")).toBe("marketplace.creator_profile");
-    expect(destination.searchParams.get("planRevision")).toBe("e2e-plan-1");
-    expect(destination.searchParams.get("returnUrl")).toBe(marketplaceSetupReturnUrl());
-    expect(destination.searchParams.has("propertyId")).toBe(false);
+    expect([...destination.searchParams.keys()]).toEqual(["propertyId"]);
     expect(destination.hash).toBe("");
     expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
     expect(refreshRequests).toEqual([
@@ -101,8 +97,8 @@ test.describe("marketplace-web opaque setup handoff", () => {
       exchangeRequests.push(route.request().postDataJSON());
       return route.fulfill({ headers: corsHeaders(route), json: exchangedHandoff() });
     });
-    await page.route(/\/profile\/complete\?activation=marketplace/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Activation</title>" }),
+    await page.route(/\/setup\?propertyId=/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Setup</title>" }),
     );
     await page.route(/\/before-handoff$/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Before</title>" }),
@@ -118,7 +114,7 @@ test.describe("marketplace-web opaque setup handoff", () => {
     expect(loginUrl.searchParams.get("returnTo")).not.toContain("property");
 
     resumeAuthentication();
-    await expect(page).toHaveURL(/\/profile\/complete\?activation=marketplace/);
+    await expect(page).toHaveURL(marketplaceSetupReturnUrl());
     expect(exchangeRequests).toEqual([{ code: LOGIN_RESUME_CODE }]);
     await page.goBack();
     await expect(page).toHaveURL(/\/before-handoff$/);

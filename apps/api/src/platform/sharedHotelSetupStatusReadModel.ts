@@ -1629,14 +1629,14 @@ function adaptiveHotelSetupFactsSql(): string {
         marketplace_offer.projection_fresh,
         FALSE
       ) AS "marketplaceOfferProjectionFresh",
-      COALESCE(room_types.exists, FALSE) AS "hasActiveRoomType",
-      COALESCE(rooms.exists, FALSE) AS "hasNonRetiredRoom",
-      COALESCE(rate_plans.exists, FALSE) AS "hasActiveRatePlan",
-      COALESCE(inventory.exists, FALSE) AS "hasFutureInventory",
-      room_types.updated_at AS "roomTypeUpdatedAt",
-      rooms.updated_at AS "roomUpdatedAt",
-      rate_plans.updated_at AS "ratePlanUpdatedAt",
-      inventory.updated_at AS "inventoryUpdatedAt",
+      COALESCE(room_readiness.has_active_room_type, FALSE) AS "hasActiveRoomType",
+      COALESCE(room_readiness.has_non_retired_room, FALSE) AS "hasNonRetiredRoom",
+      COALESCE(room_readiness.has_active_rate_plan, FALSE) AS "hasActiveRatePlan",
+      COALESCE(room_readiness.has_future_inventory, FALSE) AS "hasFutureInventory",
+      room_readiness.room_type_updated_at AS "roomTypeUpdatedAt",
+      room_readiness.room_updated_at AS "roomUpdatedAt",
+      room_readiness.rate_plan_updated_at AS "ratePlanUpdatedAt",
+      room_readiness.inventory_updated_at AS "inventoryUpdatedAt",
       policy.check_in_time IS NOT NULL AS "hasCheckInPolicy",
       policy.check_out_time IS NOT NULL AS "hasCheckOutPolicy",
       (
@@ -1882,41 +1882,64 @@ function adaptiveHotelSetupFactsSql(): string {
       LIMIT 1
     ) marketplace_offer ON TRUE
     LEFT JOIN LATERAL (
-      SELECT count(*) > 0 AS exists, max(room_type.updated_at) AS updated_at
-      FROM pms.room_types room_type
-      WHERE room_type.property_id = property.id
-        AND room_type.active = TRUE
-    ) room_types ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT count(*) > 0 AS exists, max(room.updated_at) AS updated_at
-      FROM pms.rooms room
-      JOIN pms.room_types room_type
-        ON room_type.id = room.room_type_id
-       AND room_type.property_id = room.property_id
-       AND room_type.active = TRUE
-      WHERE room.property_id = property.id
-        AND room.status <> 'retired'
-    ) rooms ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT count(*) > 0 AS exists, max(rate_plan.updated_at) AS updated_at
-      FROM pms.rate_plans rate_plan
-      JOIN pms.room_types room_type
-        ON room_type.id = rate_plan.room_type_id
-       AND room_type.property_id = rate_plan.property_id
-       AND room_type.active = TRUE
-      WHERE rate_plan.property_id = property.id
-        AND rate_plan.active = TRUE
-    ) rate_plans ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT count(*) > 0 AS exists, max(day.updated_at) AS updated_at
-      FROM pms.inventory_days day
-      JOIN pms.room_types room_type
-        ON room_type.id = day.room_type_id
-       AND room_type.property_id = day.property_id
-       AND room_type.active = TRUE
-      WHERE day.property_id = property.id
-        AND day.stay_date >= CURRENT_DATE
-    ) inventory ON TRUE
+      SELECT
+        count(*) > 0 AS has_active_room_type,
+        COALESCE(bool_or(candidate.has_non_retired_room), FALSE)
+          AS has_non_retired_room,
+        COALESCE(
+          bool_or(
+            candidate.has_non_retired_room
+            AND candidate.has_active_rate_plan
+          ),
+          FALSE
+        ) AS has_active_rate_plan,
+        COALESCE(
+          bool_or(
+            candidate.has_non_retired_room
+            AND candidate.has_active_rate_plan
+            AND candidate.has_future_inventory
+          ),
+          FALSE
+        ) AS has_future_inventory,
+        max(candidate.room_type_updated_at) AS room_type_updated_at,
+        max(candidate.room_updated_at) AS room_updated_at,
+        max(candidate.rate_plan_updated_at) AS rate_plan_updated_at,
+        max(candidate.inventory_updated_at) AS inventory_updated_at
+      FROM (
+        SELECT
+          room_type.updated_at AS room_type_updated_at,
+          COALESCE(room_facts.exists, FALSE) AS has_non_retired_room,
+          room_facts.updated_at AS room_updated_at,
+          COALESCE(rate_plan_facts.exists, FALSE) AS has_active_rate_plan,
+          rate_plan_facts.updated_at AS rate_plan_updated_at,
+          COALESCE(inventory_facts.exists, FALSE) AS has_future_inventory,
+          inventory_facts.updated_at AS inventory_updated_at
+        FROM pms.room_types room_type
+        LEFT JOIN LATERAL (
+          SELECT count(*) > 0 AS exists, max(room.updated_at) AS updated_at
+          FROM pms.rooms room
+          WHERE room.property_id = room_type.property_id
+            AND room.room_type_id = room_type.id
+            AND room.status <> 'retired'
+        ) room_facts ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT count(*) > 0 AS exists, max(rate_plan.updated_at) AS updated_at
+          FROM pms.rate_plans rate_plan
+          WHERE rate_plan.property_id = room_type.property_id
+            AND rate_plan.room_type_id = room_type.id
+            AND rate_plan.active = TRUE
+        ) rate_plan_facts ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT count(*) > 0 AS exists, max(day.updated_at) AS updated_at
+          FROM pms.inventory_days day
+          WHERE day.property_id = room_type.property_id
+            AND day.room_type_id = room_type.id
+            AND day.stay_date >= CURRENT_DATE
+        ) inventory_facts ON TRUE
+        WHERE room_type.property_id = property.id
+          AND room_type.active = TRUE
+      ) candidate
+    ) room_readiness ON TRUE
     LEFT JOIN hotel_catalog.property_policy_summaries policy
       ON policy.property_id = property.id
     LEFT JOIN finance.payment_settings payment

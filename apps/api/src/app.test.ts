@@ -9898,6 +9898,7 @@ describe("vayada-api", () => {
       payload: {
         commandId: "cmd-room-type-create-001",
         idempotencyKey: "room-type-create-001",
+        initialSetupOnly: true,
         name: "Loft Suite",
         category: "suite",
         description: "Top-floor suite.",
@@ -9952,6 +9953,7 @@ describe("vayada-api", () => {
     expect(commandRepository.roomTypeCreates).toHaveLength(1);
     expect(commandRepository.roomTypeCreates[0]).toMatchObject({
       propertyId: pmsPropertyId,
+      initialSetupOnly: true,
       name: "Loft Suite",
       baseRate: { amountDecimal: "240.00", currency: "EUR" },
       nonRefundableRate: { amountDecimal: "216.00", currency: "EUR" },

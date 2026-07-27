@@ -33,6 +33,56 @@ describe("PostgreSQL platform media repository", () => {
     expect(JSON.stringify(database.session)).not.toContain("https://s3.example.com");
   });
 
+  it("atomically renews an unfinished signed upload session", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const created = await createSession(repository);
+
+    const renewed = await repository.renewSignedUploadSession({
+      session: created,
+      expiresAt: "2026-07-16T13:15:00.000Z",
+      now: "2026-07-16T13:00:00.000Z",
+    });
+
+    expect(renewed).toMatchObject({
+      sessionId: created.sessionId,
+      status: "signed",
+      expiresAt: "2026-07-16T13:15:00.000Z",
+      files: [{ mediaId: created.files[0]!.mediaId }],
+    });
+    expect(database.session?.expiresAt).toBe("2026-07-16T13:15:00.000Z");
+    expect(database.session?.uploadTargets[0]?.expiresAt).toBe("2026-07-16T13:15:00.000Z");
+    expect(
+      database.poolQueries.some(({ text }) =>
+        text.includes("platform_media_upload_session_renewal"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns the existing upload session when the idempotency identity races", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const created = await createSession(repository);
+    const replayed = await createSession(repository);
+
+    expect(replayed).toMatchObject({
+      sessionId: created.sessionId,
+      uploadSessionKey: created.uploadSessionKey,
+      files: [{ mediaId: created.files[0]!.mediaId }],
+      uploadTargets: [{ uploadTargetId: created.uploadTargets[0]!.uploadTargetId, uploadUrl: "" }],
+    });
+    expect(
+      database.clientQueries.filter(({ text }) =>
+        text.includes("INSERT INTO platform.media_upload_sessions"),
+      ),
+    ).toHaveLength(2);
+    expect(
+      database.clientQueries.filter(({ text }) =>
+        text.includes("INSERT INTO platform.product_audit_events"),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("completes once, replays idempotently, and reads media from a fresh repository", async () => {
     const database = createFakeDatabase();
     const first = repositoryFor(database.pool);
@@ -286,6 +336,18 @@ describe("PostgreSQL platform media repository", () => {
       expect(projection?.text).toContain("COALESCE(MAX(sort_order) + 1, 1)");
       expect(projection?.text).not.toContain("FOR UPDATE");
       expect(projection?.text).toContain("advanced_property AS");
+      expect(projection?.text).toContain("projected_media AS");
+      expect(projection?.text).toContain("completeness AS");
+      expect(projection?.text).toContain("BTRIM(profile.short_description)");
+      expect(projection?.text).toContain("THEN 'description' END");
+      expect(projection?.text).toContain("THEN 'media' END");
+      expect(projection?.text).toContain("SET completeness_reasons = completeness.reasons");
+      expect(projection?.text).toContain(
+        "WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status",
+      );
+      expect(projection?.text).toContain(
+        "WHEN cardinality(completeness.reasons) = 0 THEN 'complete'",
+      );
       expect(projection?.text).toContain("profile_revision = property.profile_revision + 1");
       expect(
         database.clientQueries.findIndex(({ text }) =>
@@ -711,11 +773,31 @@ function executeFakeQuery(
     const propertyId = state.propertyLinks.get(String(values?.[2]));
     return { rows: propertyId ? [{ propertyId }] : [] };
   } else if (text.includes("INSERT INTO platform.media_upload_sessions")) {
+    if (state.session) return { rows: [] };
     state.session = metadata(values?.[15]).session;
+    return { rows: [{ id: state.session.sessionId }] };
   } else if (text.includes('SELECT property.profile_revision AS "profileRevision"')) {
     return String(values?.[0]) === PROPERTY_ID
       ? { rows: [{ profileRevision: state.propertyRevision }] }
       : { rows: [] };
+  } else if (text.includes("platform_media_upload_session_renewal")) {
+    if (
+      state.session?.sessionId === String(values?.[0]) &&
+      state.session.status === "signed" &&
+      state.session.expiresAt === String(values?.[1])
+    ) {
+      state.session = jsonValue<PlatformMediaSessionRecord>(values?.[2]);
+      return {
+        rows: [
+          {
+            session: state.session,
+            completedMediaObjectId: null,
+            mediaObjectIds: null,
+          },
+        ],
+      };
+    }
+    return { rows: [] };
   } else if (text.includes("completion_metadata -> 'session'")) {
     return {
       rows: state.session

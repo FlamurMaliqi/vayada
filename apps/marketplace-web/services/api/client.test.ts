@@ -8,6 +8,24 @@ afterEach(() => {
 });
 
 describe("ApiClient request logging", () => {
+  it("sends JSON PATCH requests through the shared authenticated client", async () => {
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      void args;
+      return jsonResponse({ updated: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new ApiClient("https://api.example.test").patch("/settings", { enabled: true }),
+    ).resolves.toEqual({ updated: true });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const options = fetchMock.mock.calls[0]?.[1];
+    expect(options?.method).toBe("PATCH");
+    expect(options?.body).toBe(JSON.stringify({ enabled: true }));
+    expect(new Headers(options?.headers).get("Content-Type")).toBe("application/json");
+  });
+
   it("does not declare JSON for a bodyless delete", async () => {
     const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
       void args;

@@ -12,20 +12,17 @@ import {
   safeSharedHotelSetupReturnTo,
   type SharedFirstRunContinueInput,
   type SharedHotelSetupEntryProduct,
+  type SharedSetupTaskFormContext,
 } from "@vayada/product-onboarding";
 
 import { ROUTES } from "@/lib/constants";
-import {
-  clearSetupReturnContext,
-  readSetupReturnContext,
-  saveSetupReturnContext,
-} from "@/lib/utils/setupReturnContext";
 import { authService } from "@/services/auth";
 import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
@@ -98,53 +95,16 @@ export function SharedHotelSetupPage({
   );
   const initialAddProperty = searchParams.get("mode") === "add";
   const initialPropertyId = searchParams.get("propertyId");
-  const setupQuery = searchParams.toString();
-  const hasExplicitReturnContext =
-    parseSharedHotelSetupEntryProduct(searchParams.get("entryProduct")) !== null &&
-    parseSharedHotelSetupEntryProduct(searchParams.get("returnProduct")) !== null &&
-    isSafeSharedHotelSetupReturnTo(searchParams.get("returnTo"));
-  const [restoringReturnContext, setRestoringReturnContext] = useState(() =>
-    Boolean(initialPropertyId && !hasExplicitReturnContext),
-  );
 
-  useEffect(() => {
-    if (!initialPropertyId || hasExplicitReturnContext) {
-      setRestoringReturnContext(false);
-      return;
-    }
-
-    const storedContext = readSetupReturnContext(initialPropertyId);
-    if (!storedContext) {
-      setRestoringReturnContext(false);
-      return;
-    }
-
-    setRestoringReturnContext(true);
-    const restored = new URLSearchParams(setupQuery);
-    restored.set("entryProduct", storedContext.entryProduct);
-    restored.set("returnProduct", storedContext.returnProduct);
-    restored.set("returnTo", storedContext.returnTo);
-    router.replace(`/setup?${restored.toString()}`);
-  }, [hasExplicitReturnContext, initialPropertyId, router, setupQuery]);
+  const handlePropertySelected = (propertyId: string) => {
+    localStorage.setItem("selectedSharedPropertyId", propertyId);
+    router.replace(setupPathForSelectedProperty(searchParams.toString(), propertyId), {
+      scroll: false,
+    });
+  };
 
   const handleContinue = async (input: SharedFirstRunContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
-    if (input.action === "continue_setup") {
-      saveSetupReturnContext({
-        propertyId: input.propertyId,
-        entryProduct,
-        returnProduct,
-        returnTo,
-      });
-      const handoff = await sharedHotelSetupApi.createHandoff({
-        propertyId: input.propertyId,
-        taskId: input.taskId,
-        planRevision: input.planRevision,
-      });
-      window.location.href = handoff.launchUrl;
-      return;
-    }
-    clearSetupReturnContext();
     const requestedReturnTo = input.product === returnProduct ? input.returnTo : null;
     if (input.product === "booking") {
       window.location.replace(productReturnUrl("booking", requestedReturnTo));
@@ -161,7 +121,7 @@ export function SharedHotelSetupPage({
     );
   };
 
-  if (checkingAuth || !authorized || restoringReturnContext) {
+  if (checkingAuth || !authorized) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
@@ -215,8 +175,9 @@ export function SharedHotelSetupPage({
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
       onContinue={handleContinue}
+      onPropertySelected={handlePropertySelected}
+      renderTaskForm={(context: SharedSetupTaskFormContext) => <SetupTaskFormRouter {...context} />}
       onExit={() => {
-        clearSetupReturnContext();
         if (returnProduct === "marketplace") {
           router.replace(returnTo);
           return;
@@ -236,4 +197,11 @@ function productReturnUrl(
     safeReturnTo,
     product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL,
   ).toString();
+}
+
+export function setupPathForSelectedProperty(query: string, propertyId: string): string {
+  const searchParams = new URLSearchParams(query);
+  searchParams.set("propertyId", propertyId);
+  searchParams.delete("mode");
+  return `${ROUTES.SETUP}?${searchParams.toString()}`;
 }

@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { countries } from "countries-list";
 import type { HotelFormState, ListingFormData } from "@/lib/types";
+import { removeListingImageAt } from "@/lib/utils/listingImageState";
 
 const COUNTRIES = Object.values(countries)
   .map((country) => country.name)
@@ -143,11 +144,9 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
   const removeListingImage = useCallback((listingIndex: number, imageIndex: number) => {
     setListings((prev) => {
       const updated = [...prev];
-      updated[listingIndex] = {
-        ...updated[listingIndex],
-        images: updated[listingIndex].images.filter((_, i) => i !== imageIndex),
-        imageFiles: updated[listingIndex].imageFiles.filter((_, i) => i !== imageIndex),
-      };
+      const listing = updated[listingIndex];
+      if (!listing) return prev;
+      updated[listingIndex] = removeListingImageAt(listing, imageIndex);
       return updated;
     });
   }, []);

@@ -36,7 +36,6 @@ import { useHotelProfileForm } from "@/hooks/useHotelProfileForm";
 import { formatErrorDetail } from "@/hooks/useErrorModal";
 import {
   marketplaceSetupRedirectPath,
-  resolveMarketplaceActivationGuard,
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/sharedSetupGuard";
 import {
@@ -46,6 +45,8 @@ import {
 } from "@/lib/utils/creatorAccountRequirements";
 import { mergeCreatorPlatformDraft } from "@/lib/utils/mergeCreatorPlatformDraft";
 import {
+  buildHotelMarketplaceCreatorRequirements,
+  buildHotelMarketplaceOfferings,
   clearHotelMarketplaceDraft,
   createHotelMarketplaceDraft,
   ensureHotelMarketplaceOfferIdempotency,
@@ -69,8 +70,6 @@ import {
 } from "@/components/profile-complete";
 import {
   hotelTaskFlow,
-  hotelTaskResumeStep,
-  parseMarketplaceHotelTaskHandoff,
   type MarketplaceHotelTaskHandoff,
   type MarketplaceHotelSetupTaskId,
 } from "./hotelTaskFlow";
@@ -212,109 +211,13 @@ export default function ProfileCompletePage() {
 
       if (storedUserType === "hotel") {
         localStorage.setItem(STORAGE_KEYS.PROFILE_COMPLETE, "false");
-        const activationParams = new URLSearchParams(window.location.search);
-        const taskHandoff = parseMarketplaceHotelTaskHandoff(
-          activationParams,
-          localStorage,
-          window.location.origin,
+        router.replace(
+          marketplaceSetupRedirectPath(
+            ROUTES.MARKETPLACE,
+            localStorage.getItem(SELECTED_SHARED_PROPERTY_ID_KEY),
+          ),
         );
-        if (!taskHandoff) {
-          router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE));
-          return;
-        }
-        const requestedPropertyId = taskHandoff.propertyId;
-        setHotelTaskHandoff(taskHandoff);
-
-        const hydrationController = new AbortController();
-        const hydrationTimeout = window.setTimeout(() => hydrationController.abort(), 5_000);
-        let cancelled = false;
-        let navigatingAway = false;
-        setLoading(true);
-        void (async () => {
-          try {
-            const savedDraft =
-              taskHandoff.taskId === "creator_offer"
-                ? readHotelMarketplaceDraft(localStorage, requestedPropertyId)
-                : null;
-            const decision = await resolveMarketplaceActivationGuard(
-              ROUTES.MARKETPLACE,
-              requestedPropertyId,
-              { signal: hydrationController.signal },
-            );
-            if (cancelled) return;
-
-            if (decision.propertyId !== requestedPropertyId) {
-              navigatingAway = true;
-              router.replace(marketplaceSetupRedirectPath(ROUTES.MARKETPLACE));
-              return;
-            }
-            if (decision.action !== "enter_product") {
-              navigatingAway = true;
-              router.replace(decision.redirectPath);
-              return;
-            }
-
-            marketplacePropertyIdRef.current = requestedPropertyId;
-            localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, requestedPropertyId);
-            const profile = await hotelService.getMyProfile(requestedPropertyId, {
-              signal: hydrationController.signal,
-            });
-            if (cancelled) return;
-
-            hotelProfileRevisionsRef.current = {
-              canonicalProfileRevision: profile.canonicalProfileRevision,
-              publicProfileRevision: profile.publicProfileRevision,
-            };
-            const hasExistingOffer = hydrateHotelMarketplaceProfile(profile, taskHandoff.taskId);
-            if (savedDraft) {
-              const resumedDraft = resolveHotelMarketplaceDraftResume(savedDraft, hasExistingOffer);
-              const pendingListings = resumedDraft.listings;
-              hotelForm.setForm(
-                restoreHotelMarketplaceDraftForm(savedDraft.form, profile.localityPublic),
-              );
-              if (pendingListings.length > 0) {
-                setHasExistingMarketplaceOffer(resumedDraft.hasExistingMarketplaceOffer);
-                hotelForm.setListings(pendingListings);
-                const needsPhotos =
-                  savedDraft.omittedLocalPhotos &&
-                  pendingListings.some((listing) => listing.images.length === 0);
-                setCurrentStep(
-                  hotelTaskResumeStep({
-                    taskId: taskHandoff.taskId,
-                    savedStep: savedDraft.currentStep,
-                    authoritativeLocalityPublic: profile.localityPublic,
-                    needsPhotos,
-                  }),
-                );
-                if (needsPhotos) {
-                  setError(
-                    "Your Marketplace setup details were restored. Please select your offer photos again to continue.",
-                  );
-                }
-              } else if (hasExistingOffer) {
-                clearHotelMarketplaceDraft(localStorage, requestedPropertyId);
-              }
-            }
-            setHotelDraftPropertyId(requestedPropertyId);
-            setHotelDraftReady(true);
-          } catch {
-            if (cancelled) return;
-            setProfileStatusLoadFailed(true);
-            setError(
-              hydrationController.signal.aborted
-                ? "Loading Marketplace setup took too long. Please refresh and try again."
-                : "Failed to load Marketplace setup. Please refresh and try again.",
-            );
-          }
-        })().finally(() => {
-          window.clearTimeout(hydrationTimeout);
-          if (!cancelled && !navigatingAway) setLoading(false);
-        });
-        return () => {
-          cancelled = true;
-          window.clearTimeout(hydrationTimeout);
-          hydrationController.abort();
-        };
+        return;
       }
 
       if (storedUserType === "admin") {
@@ -1023,7 +926,7 @@ export default function ProfileCompletePage() {
           ) {
             continue;
           }
-          const offerings = buildListingOfferings(listing);
+          const offerings = buildHotelMarketplaceOfferings(listing);
           let imageUrls = listing.images.filter((img) => !img.startsWith("data:"));
           let imageMediaObjectIds = listing.imageMediaObjectIds ?? [];
 
@@ -1047,7 +950,7 @@ export default function ProfileCompletePage() {
               timing_guidance: null,
             })),
             collaboration_offerings: offerings,
-            creator_requirements: buildCreatorRequirements(listing),
+            creator_requirements: buildHotelMarketplaceCreatorRequirements(listing),
           };
           let createdOfferId = onboarding.createdOfferId;
           let mediaResourceId = onboarding.createdOfferMediaResourceId;
@@ -1092,6 +995,7 @@ export default function ProfileCompletePage() {
                 copiedImageUrls,
                 listing.imageFiles ?? [],
                 mediaResourceId,
+                { idempotencyKey: `${onboarding.idempotencyKey}:media:v1` },
               );
               imageUrls = [
                 ...imageUrls.slice(0, imageMediaObjectIds.length),
@@ -1248,100 +1152,6 @@ export default function ProfileCompletePage() {
       errorMessage += "Please review all sections and ensure all required fields are completed.";
     }
     setError(errorMessage);
-  };
-
-  const buildListingOfferings = (listing: (typeof hotelForm.listings)[0]) => {
-    const offerings: Array<{
-      collaboration_type: "Free Stay" | "Paid" | "Discount" | "Affiliate";
-      availability_months: string[];
-      platforms: string[];
-      free_stay_min_nights?: number;
-      free_stay_max_nights?: number;
-      paid_max_amount?: number;
-      currency?: string;
-      discount_percentage?: number;
-      commission_percentage?: number;
-    }> = [];
-
-    if (listing.collaborationTypes.includes("Free Stay")) {
-      offerings.push({
-        collaboration_type: "Free Stay",
-        availability_months: listing.availability,
-        platforms: listing.platforms,
-        free_stay_min_nights: listing.freeStayMinNights,
-        free_stay_max_nights: listing.freeStayMaxNights,
-      });
-    }
-    if (listing.collaborationTypes.includes("Paid")) {
-      offerings.push({
-        collaboration_type: "Paid",
-        availability_months: listing.availability,
-        platforms: listing.platforms,
-        paid_max_amount: listing.paidMaxAmount,
-        currency: listing.currency || "USD",
-      });
-    }
-    if (listing.collaborationTypes.includes("Discount")) {
-      offerings.push({
-        collaboration_type: "Discount",
-        availability_months: listing.availability,
-        platforms: listing.platforms,
-        discount_percentage: listing.discountPercentage,
-      });
-    }
-    if (listing.collaborationTypes.includes("Affiliate")) {
-      offerings.push({
-        collaboration_type: "Affiliate",
-        availability_months: listing.availability,
-        platforms: listing.platforms,
-        commission_percentage: listing.commissionPercentage,
-      });
-    }
-    return offerings;
-  };
-
-  const buildCreatorRequirements = (listing: (typeof hotelForm.listings)[0]) => {
-    const ageGroups = listing.targetGroupAgeGroups || [];
-    let targetAgeMin: number | undefined;
-    let targetAgeMax: number | undefined;
-
-    if (ageGroups.length > 0) {
-      let min = Infinity,
-        max = -Infinity,
-        has55Plus = false;
-      ageGroups.forEach((g) => {
-        if (g === "18-24") {
-          min = Math.min(min, 18);
-          max = Math.max(max, 24);
-        } else if (g === "25-34") {
-          min = Math.min(min, 25);
-          max = Math.max(max, 34);
-        } else if (g === "35-44") {
-          min = Math.min(min, 35);
-          max = Math.max(max, 44);
-        } else if (g === "45-54") {
-          min = Math.min(min, 45);
-          max = Math.max(max, 54);
-        } else if (g === "55+") {
-          min = Math.min(min, 55);
-          has55Plus = true;
-        }
-      });
-      targetAgeMin = min === Infinity ? undefined : min;
-      targetAgeMax = has55Plus ? undefined : max === -Infinity ? undefined : max;
-    } else {
-      targetAgeMin = listing.targetGroupAgeMin;
-      targetAgeMax = listing.targetGroupAgeMax;
-    }
-
-    return {
-      platforms: listing.lookingForPlatforms,
-      target_countries: listing.targetGroupCountries,
-      target_age_min: targetAgeMin,
-      target_age_max: targetAgeMax,
-      target_age_groups: ageGroups,
-      creator_types: listing.lookingForCreatorTypes ?? [],
-    };
   };
 
   if (loading) return <LoadingScreen />;

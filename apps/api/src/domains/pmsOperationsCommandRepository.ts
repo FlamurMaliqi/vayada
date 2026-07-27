@@ -234,6 +234,17 @@ export function createTargetPmsOperationsCommandRepository(
           );
         }
 
+        if (
+          command.initialSetupOnly &&
+          (await initialRoomSetupAlreadyExists(client, command.propertyId))
+        ) {
+          await client.query("ROLLBACK");
+          return roomTypeConflict(
+            "room_type_conflict",
+            "Initial room setup was already completed for this property.",
+          );
+        }
+
         const roomTypeId = await insertRoomType(client, command, acceptedAt);
         const ratePlans = await insertRoomTypeRatePlans(client, command, roomTypeId, acceptedAt);
         const insertedRoomCount = await insertInitialRooms(client, command, roomTypeId, acceptedAt);
@@ -1368,6 +1379,27 @@ async function insertRoomType(
     ],
   );
   return result.rows[0]!.roomTypeId;
+}
+
+async function initialRoomSetupAlreadyExists(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+): Promise<boolean> {
+  await client.query(
+    `SELECT pg_advisory_xact_lock(
+       hashtextextended(concat('pms-initial-room-setup:', $1::text), 0)
+     )`,
+    [propertyId],
+  );
+  const result = await client.query<{ roomSetupExists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM pms.room_types room_type
+       WHERE room_type.property_id = $1::uuid
+     ) AS "roomSetupExists"`,
+    [propertyId],
+  );
+  return result.rows[0]?.roomSetupExists === true;
 }
 
 async function updateRoomTypeLocation(

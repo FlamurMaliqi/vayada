@@ -30,8 +30,13 @@ export { default as PoliciesStep } from "./PoliciesStep";
 export {
   default as SharedFirstRunPropertySetupWizard,
   idempotencyKeyForRetry,
+  isInlineSetupTaskEditable,
+  isInlineSetupTaskSelectable,
+  previousEditableSetupTaskId,
+  recommendedInlineSetupTaskId,
   type SharedFirstRunContinueInput,
   type SharedFirstRunPropertySetupWizardProps,
+  type SharedSetupTaskFormContext,
 } from "./SharedFirstRunPropertySetupWizard";
 export {
   default as SharedHotelLoginForm,

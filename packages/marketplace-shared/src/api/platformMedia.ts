@@ -46,21 +46,24 @@ type UploadTarget = {
 };
 
 type UploadSessionResponse = {
-  uploadSession: { sessionId: string };
+  uploadSession: { sessionId: string; status: "signed" | "completed" | "failed" };
   uploadTargets: UploadTarget[];
+  mediaObjects?: SerializedMediaObject[];
+};
+
+type SerializedMediaObject = {
+  mediaId: string;
+  storageKey: string;
+  contentType: string;
+  sizeBytes: number;
+  widthPx?: number;
+  heightPx?: number;
+  originalFilename: string;
+  variants: Array<{ publicCdnUrl: string | null; storageKey: string }>;
 };
 
 type FinalizeResponse = {
-  mediaObjects: Array<{
-    mediaId: string;
-    storageKey: string;
-    contentType: string;
-    sizeBytes: number;
-    widthPx?: number;
-    heightPx?: number;
-    originalFilename: string;
-    variants: Array<{ publicCdnUrl: string | null; storageKey: string }>;
-  }>;
+  mediaObjects: SerializedMediaObject[];
 };
 
 export async function uploadPlatformMedia(input: {
@@ -69,12 +72,17 @@ export async function uploadPlatformMedia(input: {
   files: File[];
   visibility?: "public" | "private";
   expectedProfileRevision?: number;
+  idempotencyKey?: string;
 }): Promise<PlatformMediaUploadResult[]> {
   if (input.files.length === 0) return [];
 
+  const idempotencyKey = input.idempotencyKey?.trim()
+    ? `${input.idempotencyKey.trim()}:files:sha256:${await selectedFilesDigest(input.files)}`
+    : undefined;
   const create = await platformMediaApiClient.post<UploadSessionResponse>(
     "/api/media/upload-sessions",
     {
+      idempotencyKey,
       purpose: input.purpose,
       visibility: input.visibility ?? "public",
       expectedProfileRevision: input.expectedProfileRevision,
@@ -87,6 +95,15 @@ export async function uploadPlatformMedia(input: {
       })),
     },
   );
+
+  if (create.uploadSession.status === "completed") {
+    if (!create.mediaObjects?.length) {
+      throw new ApiErrorResponse(409, {
+        detail: "Completed platform media session did not return its media objects",
+      });
+    }
+    return create.mediaObjects.map(toUploadResult);
+  }
 
   await Promise.all(
     create.uploadTargets.map(async (target, index) => {
@@ -124,7 +141,11 @@ export async function uploadPlatformMedia(input: {
     },
   );
 
-  return finalized.mediaObjects.map((mediaObject) => ({
+  return finalized.mediaObjects.map(toUploadResult);
+}
+
+function toUploadResult(mediaObject: SerializedMediaObject): PlatformMediaUploadResult {
+  return {
     mediaId: mediaObject.mediaId,
     url:
       mediaObject.variants.find((variant) => variant.publicCdnUrl)?.publicCdnUrl ??
@@ -135,7 +156,24 @@ export async function uploadPlatformMedia(input: {
     widthPx: mediaObject.widthPx,
     heightPx: mediaObject.heightPx,
     originalFilename: mediaObject.originalFilename,
-  }));
+  };
+}
+
+async function selectedFilesDigest(files: File[]): Promise<string> {
+  const fileSignatures = await Promise.all(
+    files.map(async (file) => ({
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      contentSha256: await sha256Hex(await file.arrayBuffer()),
+    })),
+  );
+  return sha256Hex(new TextEncoder().encode(JSON.stringify(fileSignatures)));
+}
+
+async function sha256Hex(data: BufferSource): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function uploadContentType(file: File): string {
