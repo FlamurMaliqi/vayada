@@ -66,6 +66,10 @@ describe("shared account details", () => {
     expect(
       sharedAccountProfileImageError(new File(["profile"], "profile.gif", { type: "image/gif" })),
     ).toBe("Choose a JPG, PNG, or WebP image.");
+    expect(sharedAccountProfileImageError(new File(["profile"], "camera.HEIC", { type: "" }))).toBe(
+      "HEIC and HEIF photos aren’t supported yet. Convert the photo to JPG, PNG, or WebP and try again.",
+    );
+    expect(sharedAccountProfileImageError(new File(["profile"], "camera.JPG"))).toBeNull();
     expect(sharedAccountProfileImageError(new File([], "empty.png", { type: "image/png" }))).toBe(
       "Choose an image that isn’t empty.",
     );
@@ -123,6 +127,47 @@ describe("shared account details", () => {
           resourceId: "user-owner",
         },
       },
+    });
+  });
+
+  it("uses inferred mobile MIME consistently for account photo create and finalize", async () => {
+    const requests: Array<{ endpoint: string; data: unknown }> = [];
+    const responses = [
+      {
+        uploadSession: { sessionId: "mobile-session" },
+        uploadTargets: [
+          {
+            uploadTargetId: "mobile-target",
+            method: "PUT" as const,
+            uploadUrl: "https://uploads.vayada.localhost/deterministic",
+            headers: {},
+          },
+        ],
+      },
+      {
+        mediaObjects: [
+          {
+            mediaId: "mobile-media",
+            storageKey: "profiles/mobile.png",
+            variants: [{ publicCdnUrl: "https://cdn.example.test/mobile.png" }],
+          },
+        ],
+      },
+    ];
+    const uploader = createSharedAccountProfileImageUploader({
+      post: async <T>(endpoint: string, data?: unknown) => {
+        requests.push({ endpoint, data });
+        return responses.shift() as T;
+      },
+    });
+
+    await uploader("user_mobile", new File(["profile"], "camera.png"));
+
+    expect(requests[0]?.data).toMatchObject({
+      files: [{ contentType: "image/png" }],
+    });
+    expect(requests[1]?.data).toMatchObject({
+      files: [{ contentType: "image/png" }],
     });
   });
 

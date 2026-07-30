@@ -238,7 +238,7 @@ export function CreatorOverviewTab({
               setFailedProfilePic(null);
               onImageChange(event);
             }}
-            accept="image/jpeg,image/png,image/webp"
+            accept="image/*"
             className="hidden"
           />
         </div>

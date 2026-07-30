@@ -415,6 +415,8 @@ export type PlatformMediaPurposePolicy = {
 
 const imageContentTypes = ["image/jpeg", "image/png", "image/webp"] as const;
 const imageExtensions = [".jpg", ".jpeg", ".png", ".webp"] as const;
+const heicConversionMessage =
+  "HEIC and HEIF profile photos are not supported yet. Convert the photo to JPG, PNG, or WebP and try again.";
 const publicImageVariants = ["original_safe", "large", "thumbnail", "blur_preview"] as const;
 const providerOriginalVariant = ["provider_original"] as const;
 const defaultMaxImagePixels = 60_000_000;
@@ -718,7 +720,7 @@ export async function registerPlatformMediaRoutes(
       const files = request.body.files.map((file, index) => ({
         ...file,
         filename: normalizeFilename(file.filename),
-        contentType: normalizeContentType(file.contentType),
+        contentType: normalizeUploadContentType(file.filename, file.contentType),
         clientFileId: file.clientFileId?.trim() || `file_${index + 1}`,
         uploadTargetId: randomUUID(),
       }));
@@ -1494,7 +1496,16 @@ function validateFiles(
     if (typeof file.filename !== "string" || !file.filename.trim()) {
       return { code: "invalid_media_filename", message: "filename is required." };
     }
-    if (typeof file.contentType !== "string" || !file.contentType.trim()) {
+    if (
+      typeof file.contentType !== "string" ||
+      !normalizeUploadContentType(file.filename, file.contentType)
+    ) {
+      if (isProfileImagePurpose(policy.purpose) && isHeicOrHeif(file.filename, "")) {
+        return {
+          code: "unsupported_media_type",
+          message: heicConversionMessage,
+        };
+      }
       return { code: "unsupported_media_type", message: "contentType is required." };
     }
     if (!Number.isInteger(file.sizeBytes) || file.sizeBytes <= 0) {
@@ -1506,12 +1517,30 @@ function validateFiles(
         message: `${policy.purpose} files must be ${policy.maxFileSizeBytes} bytes or smaller.`,
       };
     }
-    const normalizedContentType = normalizeContentType(file.contentType);
+    const normalizedContentType = normalizeUploadContentType(file.filename, file.contentType);
     if (!policy.allowedContentTypes.includes(normalizedContentType)) {
+      if (
+        isProfileImagePurpose(policy.purpose) &&
+        isHeicOrHeif(file.filename, normalizedContentType)
+      ) {
+        return {
+          code: "unsupported_media_type",
+          message: heicConversionMessage,
+        };
+      }
       return { code: "unsupported_media_type", message: `${file.contentType} is not allowed.` };
     }
     const extension = filenameExtension(file.filename);
     if (!extension || !policy.allowedExtensions.includes(extension)) {
+      if (
+        isProfileImagePurpose(policy.purpose) &&
+        isHeicOrHeif(file.filename, normalizedContentType)
+      ) {
+        return {
+          code: "unsupported_media_extension",
+          message: heicConversionMessage,
+        };
+      }
       return { code: "unsupported_media_extension", message: `${file.filename} is not allowed.` };
     }
     if (!contentTypeAllowsExtension(normalizedContentType, extension)) {
@@ -1522,6 +1551,30 @@ function validateFiles(
     }
   }
   return null;
+}
+
+function isHeicOrHeif(filename: string, contentType: string): boolean {
+  return (
+    contentType === "image/heic" ||
+    contentType === "image/heif" ||
+    [".heic", ".heif"].includes(filenameExtension(filename) ?? "")
+  );
+}
+
+function isProfileImagePurpose(purpose: PlatformMediaPurpose): boolean {
+  return (
+    purpose === "identity.user.profile_image" || purpose === "marketplace.creator.profile_image"
+  );
+}
+
+function normalizeUploadContentType(filename: string, contentType: string): string {
+  const normalized = normalizeContentType(contentType);
+  if (normalized) return normalized;
+  const extension = filenameExtension(filename);
+  if (extension === ".png") return "image/png";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  return "";
 }
 
 function validateFinalizeRequest(
