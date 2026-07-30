@@ -87,6 +87,10 @@ import {
 } from "./routes/sharedHotelSetupStatus.js";
 import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
 import {
+  registerPropertySetupRouteRoutes,
+  type PropertySetupRouteStateReadPort,
+} from "./routes/propertySetupRoute.js";
+import {
   registerIdentityAdminUserRoutes,
   type IdentityAdminUsersReadRepository,
   type IdentityAdminUserRoutesOptions,
@@ -190,6 +194,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
+  propertySetupRouteStateReadPort?: PropertySetupRouteStateReadPort;
   bookingPublication?: {
     repository: BookingPublicationCommandPort;
     readinessProvider: BookingPublicationRoutesOptions["readinessProvider"];
@@ -381,6 +386,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerSharedHotelSetupStatusRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
+      trackCommandRepository: options.hotelSetupTrackCommandRepository,
+    });
+  }
+  if (options.propertySetupRouteStateReadPort) {
+    if (!options.hotelSetupTrackCommandRepository) {
+      throw new Error(
+        "hotelSetupTrackCommandRepository is required with propertySetupRouteStateReadPort",
+      );
+    }
+    app.register(registerPropertySetupRouteRoutes, {
+      prefix: "/api/hotel-setup",
+      routeStateReadPort: options.propertySetupRouteStateReadPort,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
     });
   }
