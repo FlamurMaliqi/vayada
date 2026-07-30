@@ -687,6 +687,34 @@ describe("api config", () => {
     );
   });
 
+  it("configures and can disable property setup draft retention", () => {
+    expect(loadConfig({})).toMatchObject({
+      propertySetupDraftRetentionEnabled: true,
+      propertySetupDraftRetentionIntervalMs: 60 * 60 * 1000,
+      propertySetupDraftRetentionBatchSize: 100,
+    });
+    expect(
+      loadConfig({
+        PROPERTY_SETUP_DRAFT_RETENTION_ENABLED: "false",
+        PROPERTY_SETUP_DRAFT_RETENTION_INTERVAL_MS: "60000",
+        PROPERTY_SETUP_DRAFT_RETENTION_BATCH_SIZE: "25",
+      }),
+    ).toMatchObject({
+      propertySetupDraftRetentionEnabled: false,
+      propertySetupDraftRetentionIntervalMs: 60_000,
+      propertySetupDraftRetentionBatchSize: 25,
+    });
+    expect(() => loadConfig({ PROPERTY_SETUP_DRAFT_RETENTION_BATCH_SIZE: "0" })).toThrow(
+      "PROPERTY_SETUP_DRAFT_RETENTION_BATCH_SIZE must be a positive integer",
+    );
+    expect(() => loadConfig({ PROPERTY_SETUP_DRAFT_RETENTION_INTERVAL_MS: "0" })).toThrow(
+      "PROPERTY_SETUP_DRAFT_RETENTION_INTERVAL_MS must be a positive integer",
+    );
+    expect(() => loadConfig({ PROPERTY_SETUP_DRAFT_RETENTION_INTERVAL_MS: "2147483648" })).toThrow(
+      "PROPERTY_SETUP_DRAFT_RETENTION_INTERVAL_MS must not exceed 2147483647",
+    );
+  });
+
   it("configures and can disable the PMS public-offer retry interval", () => {
     expect(loadConfig({})).toMatchObject({
       pmsInventoryPublicOfferRetryEnabled: true,

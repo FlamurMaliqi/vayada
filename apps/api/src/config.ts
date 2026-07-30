@@ -120,6 +120,9 @@ export type ApiConfig = {
   platformMediaServing?: PlatformMediaServingConfig;
   platformMediaCleanupEnabled: boolean;
   platformMediaCleanupIntervalMs: number;
+  propertySetupDraftRetentionEnabled: boolean;
+  propertySetupDraftRetentionIntervalMs: number;
+  propertySetupDraftRetentionBatchSize: number;
   pmsInventoryPublicOfferRetryEnabled: boolean;
   pmsInventoryPublicOfferRetryIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
@@ -233,6 +236,14 @@ function readPositiveIntegerEnv(env: NodeJS.ProcessEnv, key: string, defaultValu
     throw new Error(`${key} must be a positive integer`);
   }
   return parsed;
+}
+
+function readTimerIntervalEnv(env: NodeJS.ProcessEnv, key: string, defaultValue: number): number {
+  const value = readPositiveIntegerEnv(env, key, defaultValue);
+  if (value > 2_147_483_647) {
+    throw new Error(`${key} must not exceed 2147483647`);
+  }
+  return value;
 }
 
 function readSourceEnv<T extends string>(
@@ -632,6 +643,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       env,
       "PLATFORM_MEDIA_CLEANUP_INTERVAL_MS",
       15 * 60 * 1000,
+    ),
+    propertySetupDraftRetentionEnabled: readBooleanEnv(
+      env,
+      "PROPERTY_SETUP_DRAFT_RETENTION_ENABLED",
+      true,
+    ),
+    propertySetupDraftRetentionIntervalMs: readTimerIntervalEnv(
+      env,
+      "PROPERTY_SETUP_DRAFT_RETENTION_INTERVAL_MS",
+      60 * 60 * 1000,
+    ),
+    propertySetupDraftRetentionBatchSize: readPositiveIntegerEnv(
+      env,
+      "PROPERTY_SETUP_DRAFT_RETENTION_BATCH_SIZE",
+      100,
     ),
     pmsInventoryPublicOfferRetryEnabled: readBooleanEnv(
       env,
