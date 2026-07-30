@@ -410,27 +410,45 @@ function xenditPayoutStatusFromEvent(event: string | undefined): string | undefi
   }
 }
 
-function classifyChannexPayload(payload: Record<string, unknown>): {
+type ChannexEventFamily = "message" | "booking" | "review" | "updated_review" | "unsupported";
+
+type ChannexEventEnvelope = {
   eventType: string;
+  family: ChannexEventFamily;
+  payload: Record<string, unknown>;
+};
+
+type ChannexClassification = {
+  eventType: string;
+  family: ChannexEventFamily;
   receiptKey: string;
   propertyId: string;
   sourceMessageId?: string;
   channelBookingId?: string;
   revision?: string;
-} {
+  reviewId?: string;
+  reviewRevision?: string;
+};
+
+function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassification {
   const nestedPayload = optionalRecord(payload, "payload") ?? {};
   const eventType =
     optionalString(payload, "event") ??
     optionalString(payload, "event_type") ??
     optionalString(payload, "type") ??
     "unknown";
+  const envelope: ChannexEventEnvelope = {
+    eventType,
+    family: channexEventFamily(eventType),
+    payload: nestedPayload,
+  };
   const propertyId =
     optionalString(payload, "property_id") ??
-    optionalString(nestedPayload, "property_id") ??
-    optionalNestedString(nestedPayload, ["property", "id"]) ??
+    optionalString(envelope.payload, "property_id") ??
+    optionalNestedString(envelope.payload, ["property", "id"]) ??
     "unknown";
 
-  if (eventType === "message") {
+  if (envelope.family === "message") {
     const message =
       optionalRecord(nestedPayload, "message") ?? optionalRecord(payload, "message") ?? {};
     const messageId =
@@ -442,6 +460,7 @@ function classifyChannexPayload(payload: Record<string, unknown>): {
     if (messageId) {
       return {
         eventType,
+        family: envelope.family,
         propertyId,
         sourceMessageId: messageId,
         receiptKey: `webhook:channex:message:${propertyId}:${messageId}`,
@@ -449,46 +468,80 @@ function classifyChannexPayload(payload: Record<string, unknown>): {
     }
   }
 
-  const booking =
-    optionalRecord(nestedPayload, "booking") ??
-    optionalRecord(nestedPayload, "revision") ??
-    optionalRecord(payload, "booking") ??
-    {};
-  const revisionId =
-    optionalString(nestedPayload, "booking_revision_id") ??
-    optionalString(nestedPayload, "revision_id") ??
-    optionalString(booking, "booking_revision_id") ??
-    optionalString(booking, "revision_id");
-  const channelBookingId =
-    optionalString(nestedPayload, "channel_booking_id") ??
-    optionalString(nestedPayload, "booking_id") ??
-    optionalString(booking, "channel_booking_id") ??
-    optionalString(booking, "id");
-  const revision =
-    optionalString(nestedPayload, "revision") ??
-    optionalString(nestedPayload, "revision_number") ??
-    optionalString(booking, "revision") ??
-    optionalString(booking, "revision_number") ??
-    revisionId ??
-    "unknown";
+  if (envelope.family === "booking") {
+    const booking =
+      optionalRecord(nestedPayload, "booking") ??
+      optionalRecord(nestedPayload, "revision") ??
+      optionalRecord(payload, "booking") ??
+      {};
+    const revisionId =
+      optionalString(nestedPayload, "booking_revision_id") ??
+      optionalString(nestedPayload, "revision_id") ??
+      optionalString(booking, "booking_revision_id") ??
+      optionalString(booking, "revision_id");
+    const channelBookingId =
+      optionalString(nestedPayload, "channel_booking_id") ??
+      optionalString(nestedPayload, "booking_id") ??
+      optionalString(booking, "channel_booking_id") ??
+      optionalString(booking, "id");
+    const revision =
+      optionalString(nestedPayload, "revision") ??
+      optionalString(nestedPayload, "revision_number") ??
+      optionalString(booking, "revision") ??
+      optionalString(booking, "revision_number") ??
+      revisionId ??
+      "unknown";
 
-  if (revisionId || channelBookingId) {
-    return {
-      eventType,
-      propertyId,
-      channelBookingId: channelBookingId ?? revisionId,
-      revision,
-      receiptKey: `webhook:channex:booking:${propertyId}:${revisionId ?? channelBookingId}:${revision}`,
-    };
+    if (revisionId || channelBookingId) {
+      return {
+        eventType,
+        family: envelope.family,
+        propertyId,
+        channelBookingId: channelBookingId ?? revisionId,
+        revision,
+        receiptKey: `webhook:channex:booking:${propertyId}:${revisionId ?? channelBookingId}:${revision}`,
+      };
+    }
+  }
+
+  if (envelope.family === "review" || envelope.family === "updated_review") {
+    const review = optionalRecord(nestedPayload, "review") ?? {};
+    const reviewId =
+      optionalString(nestedPayload, "review_id") ??
+      optionalString(nestedPayload, "id") ??
+      optionalString(review, "id");
+    const reviewRevision =
+      optionalString(nestedPayload, "updated_at") ?? optionalString(review, "updated_at");
+    if (reviewId) {
+      const revisionMarker =
+        envelope.family === "updated_review" ? `:${reviewRevision ?? "unknown"}` : "";
+      return {
+        eventType,
+        family: envelope.family,
+        propertyId,
+        reviewId,
+        reviewRevision,
+        receiptKey: `webhook:channex:${envelope.family}:${propertyId}:${reviewId}${revisionMarker}`,
+      };
+    }
   }
 
   return {
     eventType,
+    family: envelope.family,
     propertyId,
     receiptKey: `webhook:channex:${eventType}:${propertyId}:${sha256(
       stableStringify(canonicalPayload(payload)),
     )}`,
   };
+}
+
+function channexEventFamily(eventType: string): ChannexEventFamily {
+  if (eventType === "message") return "message";
+  if (eventType === "booking" || eventType.startsWith("booking.")) return "booking";
+  if (eventType === "review") return "review";
+  if (eventType === "updated_review") return "updated_review";
+  return "unsupported";
 }
 
 function previewStripeEvent(
@@ -610,9 +663,9 @@ function previewXenditEvent(
 
 function previewChannexEvent(
   payload: Record<string, unknown>,
-  classification: ReturnType<typeof classifyChannexPayload>,
+  classification: ChannexClassification,
 ): ProviderWebhookNormalizedPreview {
-  if (classification.sourceMessageId) {
+  if (classification.family === "message" && classification.sourceMessageId) {
     const threadId =
       optionalString(optionalRecord(payload, "payload"), "thread_id") ??
       optionalString(optionalRecord(payload, "payload"), "message_thread_id") ??
@@ -636,7 +689,7 @@ function previewChannexEvent(
       },
     };
   }
-  if (classification.channelBookingId) {
+  if (classification.family === "booking" && classification.channelBookingId) {
     const revision = classification.revision ?? "unknown";
     return {
       domainEventKey: `channex.booking.ingest:${classification.propertyId}:${classification.channelBookingId}:${revision}:v1`,
@@ -652,6 +705,32 @@ function previewChannexEvent(
         propertyId: classification.propertyId,
         channelBookingId: classification.channelBookingId,
         revision,
+        rawPayload: payload,
+      },
+    };
+  }
+  if (
+    (classification.family === "review" || classification.family === "updated_review") &&
+    classification.reviewId
+  ) {
+    const family = classification.family;
+    const revisionMarker =
+      family === "updated_review" ? `:${classification.reviewRevision ?? "unknown"}` : "";
+    return {
+      domainEventKey: `channex.${family}.received:${classification.propertyId}:${classification.reviewId}${revisionMarker}:v1`,
+      domainEventType: `channex.${family}.received`,
+      resourceProduct: "pms",
+      resourceType: "channel_review",
+      resourceId: classification.reviewId,
+      jobKey: `channex.review-received:channel_review:${classification.propertyId}:${classification.reviewId}:${family}${revisionMarker}:v1`,
+      queueName: "pms.channex.webhooks",
+      jobType: "channex.review-received",
+      payload: {
+        provider: "channex",
+        eventFamily: family,
+        propertyId: classification.propertyId,
+        reviewId: classification.reviewId,
+        reviewRevision: classification.reviewRevision,
         rawPayload: payload,
       },
     };
