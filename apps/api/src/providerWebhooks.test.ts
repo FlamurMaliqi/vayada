@@ -492,6 +492,103 @@ describe("target provider webhook routes", () => {
     await app.close();
   });
 
+  it.each(["inquiry", "reservation_request"] as const)(
+    "does not classify Channex %s payloads with booking identifiers as booking ingestion",
+    async (event) => {
+      const store = createMemoryProviderWebhookStore();
+      const app = buildApp({
+        providerWebhooks: {
+          secrets: { channex: "channex-secret" },
+          modes: { channex: "mutating" },
+          store,
+          now: () => fixedNow,
+        },
+      });
+      const payload = channexNonBookingPayload(event);
+
+      const first = await postChannexPayload(app, payload);
+      const replay = await postChannexPayload(app, payload);
+
+      expect(first.json()).toMatchObject({ status: "promoted" });
+      expect(replay.json()).toMatchObject({ status: "duplicate" });
+      expect(store.receipts[0]?.eventType).toBe(event);
+      expect(store.receipts[0]?.normalizedPreview).toMatchObject({
+        domainEventType: "channex.webhook.received",
+        resourceProduct: "platform",
+        jobType: "provider.webhook-review",
+        payload: { provider: "channex", eventType: event },
+      });
+      expect(store.jobs[0]?.jobKey).not.toContain("channex.ingest-booking");
+      await app.close();
+    },
+  );
+
+  it.each(["review", "updated_review"] as const)(
+    "normalizes Channex %s with a stable provider review identity",
+    async (event) => {
+      const store = createMemoryProviderWebhookStore();
+      const app = buildApp({
+        providerWebhooks: {
+          secrets: { channex: "channex-secret" },
+          modes: { channex: "mutating" },
+          store,
+          now: () => fixedNow,
+        },
+      });
+      const payload = channexReviewPayload(event);
+
+      await postChannexPayload(app, payload);
+      await postChannexPayload(app, payload);
+
+      expect(store.receipts).toHaveLength(1);
+      expect(store.receipts[0]?.receiptKey).toBe(
+        `webhook:channex:${event}:prop_alpenrose:review_123`,
+      );
+      expect(store.receipts[0]?.normalizedPreview).toMatchObject({
+        domainEventKey: `channex.${event}.received:prop_alpenrose:review_123:v1`,
+        domainEventType: `channex.${event}.received`,
+        resourceProduct: "pms",
+        resourceType: "channel_review",
+        resourceId: "review_123",
+        jobType: "channex.review-received",
+        payload: {
+          provider: "channex",
+          eventFamily: event,
+          propertyId: "prop_alpenrose",
+          reviewId: "review_123",
+        },
+      });
+      expect(store.domainEvents).toHaveLength(1);
+      expect(store.jobs).toHaveLength(1);
+      await app.close();
+    },
+  );
+
+  it("keeps unknown Channex events in the generic provider-review fallback", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+
+    await postChannexPayload(app, {
+      event: "future_event",
+      payload: { property_id: "prop_alpenrose", id: "future_123" },
+    });
+
+    expect(store.receipts[0]?.normalizedPreview).toMatchObject({
+      domainEventType: "channex.webhook.received",
+      resourceProduct: "platform",
+      jobType: "provider.webhook-review",
+      payload: { eventType: "future_event" },
+    });
+    await app.close();
+  });
+
   it("rejects duplicate receipt keys when the semantic payload changes", async () => {
     const store = createMemoryProviderWebhookStore();
     const app = buildApp({
@@ -808,6 +905,35 @@ function channexBookingRevisionPayload(input: {
       booking: {
         id: input.channelBookingId,
         revision_id: input.bookingRevisionId,
+      },
+    },
+  };
+}
+
+function channexNonBookingPayload(
+  event: "inquiry" | "reservation_request",
+): Record<string, unknown> {
+  return {
+    event,
+    payload: {
+      property_id: "prop_alpenrose",
+      id: `${event}_123`,
+      booking_id: "must_not_be_ingested",
+      booking_revision_id: "must_not_be_a_revision",
+      revision: "7",
+    },
+  };
+}
+
+function channexReviewPayload(event: "review" | "updated_review"): Record<string, unknown> {
+  return {
+    event,
+    payload: {
+      property_id: "prop_alpenrose",
+      review: {
+        id: "review_123",
+        rating: 5,
+        content: "Sanitized review fixture",
       },
     },
   };
