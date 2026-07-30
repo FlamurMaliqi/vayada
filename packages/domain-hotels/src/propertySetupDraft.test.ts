@@ -5,7 +5,6 @@ import {
   PROPERTY_SETUP_COMPLETED_RETENTION_DAYS,
   PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
   PROPERTY_SETUP_STEP_DEFINITIONS,
-  buildPropertySetupDraftProgress,
   getActivePropertySetupStepIds,
   type PropertySetupBaseRevisions,
   type PropertySetupDraftPayload,
@@ -108,49 +107,5 @@ describe("property setup draft contract", () => {
     ],
   ] as const)("returns contiguous active steps for tracks %j", (tracks, expected) => {
     expect(getActivePropertySetupStepIds(tracks)).toEqual(expected);
-  });
-
-  it("excludes hidden-track completion from active progress", () => {
-    const completedStepIds = ["present_hotel", "booking_design"] as const;
-
-    expect(
-      buildPropertySetupDraftProgress(["creator_marketplace"], completedStepIds, [
-        "marketplace_preferences",
-        "booking_design",
-      ]),
-    ).toEqual({
-      complete: 1,
-      total: 3,
-      steps: [
-        { stepId: "present_hotel", position: 1, state: "complete" },
-        { stepId: "marketplace_preferences", position: 2, state: "in_progress" },
-        { stepId: "review", position: 3, state: "not_started" },
-      ],
-    });
-  });
-
-  it("restores retained draft progress when a hidden track is reselected", () => {
-    const draftStepIds = ["marketplace_preferences", "booking_design"] as const;
-    const combined = buildPropertySetupDraftProgress(
-      ["creator_marketplace", "hotel_operations"],
-      [],
-      draftStepIds,
-    );
-    const marketplaceOnly = buildPropertySetupDraftProgress(
-      ["creator_marketplace"],
-      [],
-      draftStepIds,
-    );
-    const combinedAgain = buildPropertySetupDraftProgress(
-      ["creator_marketplace", "hotel_operations"],
-      [],
-      draftStepIds,
-    );
-
-    expect(marketplaceOnly.steps.map(({ stepId }) => stepId)).not.toContain("booking_design");
-    expect(combined.steps.find(({ stepId }) => stepId === "booking_design")?.state).toBe(
-      "in_progress",
-    );
-    expect(combinedAgain).toEqual(combined);
   });
 });

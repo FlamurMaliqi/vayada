@@ -237,16 +237,6 @@ export type PropertySetupSession = {
   retentionExpiresAt: string;
 };
 
-export type PropertySetupDraftProgress = {
-  complete: number;
-  total: number;
-  steps: Array<{
-    stepId: PropertySetupStepId;
-    position: number;
-    state: "not_started" | "in_progress" | "complete";
-  }>;
-};
-
 export type JsonValue =
   | null
   | boolean
@@ -262,28 +252,4 @@ export function getActivePropertySetupStepIds(
   return PROPERTY_SETUP_STEP_DEFINITIONS.filter(({ track }) =>
     track === "shared" ? selected.size > 0 : selected.has(track),
   ).map(({ stepId }) => stepId);
-}
-
-export function buildPropertySetupDraftProgress(
-  selectedTracks: readonly SetupTrack[],
-  completedStepIds: readonly PropertySetupStepId[],
-  draftStepIds: readonly PropertySetupStepId[],
-): PropertySetupDraftProgress {
-  const activeStepIds = getActivePropertySetupStepIds(selectedTracks);
-  const completed = new Set(completedStepIds);
-  const drafted = new Set(draftStepIds);
-  const steps = activeStepIds.map((stepId, index) => ({
-    stepId,
-    position: index + 1,
-    state: completed.has(stepId)
-      ? ("complete" as const)
-      : drafted.has(stepId)
-        ? ("in_progress" as const)
-        : ("not_started" as const),
-  }));
-  return {
-    complete: steps.filter(({ state }) => state === "complete").length,
-    total: steps.length,
-    steps,
-  };
 }
