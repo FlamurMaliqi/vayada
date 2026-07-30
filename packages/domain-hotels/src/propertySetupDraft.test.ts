@@ -7,8 +7,12 @@ import {
   PROPERTY_SETUP_STEP_DEFINITIONS,
   buildPropertySetupDraftProgress,
   getActivePropertySetupStepIds,
+  type PropertySetupBaseRevisionKey,
   type PropertySetupBaseRevisions,
   type PropertySetupDraftPayload,
+  type SavePropertySetupDraftError,
+  type SavePropertySetupDraftReceipt,
+  type SavePropertySetupDraftResult,
 } from "./propertySetupDraft.js";
 
 describe("property setup draft contract", () => {
@@ -67,6 +71,23 @@ describe("property setup draft contract", () => {
     expectTypeOf<PropertySetupBaseRevisions<"review">>().toEqualTypeOf<
       Readonly<Record<string, never>>
     >();
+    expectTypeOf<SavePropertySetupDraftReceipt>().not.toHaveProperty("payload");
+    expectTypeOf<SavePropertySetupDraftReceipt>().not.toHaveProperty("baseRevisions");
+    expectTypeOf<SavePropertySetupDraftResult>().toMatchTypeOf<
+      { ok: true; receipt: SavePropertySetupDraftReceipt } | { ok: false; error: { code: string } }
+    >();
+    expectTypeOf<
+      Extract<
+        SavePropertySetupDraftError,
+        { code: "base_revision_conflict" }
+      >["conflictingBaseRevisionKeys"]
+    >().toEqualTypeOf<PropertySetupBaseRevisionKey[]>();
+    expectTypeOf<
+      Extract<
+        SavePropertySetupDraftError,
+        { code: "base_revision_unavailable" }
+      >["unavailableBaseRevisionKeys"]
+    >().toEqualTypeOf<PropertySetupBaseRevisionKey[]>();
   });
 
   it.each([

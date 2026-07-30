@@ -151,6 +151,7 @@ type FieldFor<TStepId extends PropertySetupStepId> = DefinitionFor<TStepId>["fie
 type BaseRevisionKeyFor<TStepId extends PropertySetupStepId> =
   DefinitionFor<TStepId>["baseRevisionKeys"][number];
 export type PropertySetupFieldId = PropertySetupStepDefinition["fields"][number];
+export type PropertySetupBaseRevisionKey = PropertySetupStepDefinition["baseRevisionKeys"][number];
 export type PropertySetupDraftPayload<TStepId extends PropertySetupStepId> = [
   FieldFor<TStepId>,
 ] extends [never]
@@ -173,6 +174,46 @@ export type SavePropertySetupDraftRequest = {
     expectedDraftRevision: number;
   };
 }[PropertySetupStepId];
+
+/**
+ * Secret-safe save acknowledgement. Draft payload values deliberately never
+ * enter idempotency or audit metadata.
+ */
+export type SavePropertySetupDraftReceipt = {
+  contractVersion: typeof PROPERTY_SETUP_DRAFT_CONTRACT_VERSION;
+  sessionId: string;
+  stepId: PropertySetupStepId;
+  selectedTracks: SetupTrack[];
+  trackRevision: number;
+  sessionRevision: number;
+  draftRevision: number;
+  retentionExpiresAt: string;
+  updatedAt: string;
+  replayed: boolean;
+};
+
+export type SavePropertySetupDraftError =
+  | { code: "setup_scope_unavailable" }
+  | { code: "inactive_setup_step"; currentTrackRevision: number }
+  | { code: "track_revision_conflict"; currentTrackRevision: number }
+  | { code: "session_revision_conflict"; currentSessionRevision: number }
+  | { code: "draft_revision_conflict"; currentDraftRevision: number }
+  | {
+      code: "base_revision_conflict";
+      conflictingBaseRevisionKeys: PropertySetupBaseRevisionKey[];
+    }
+  | {
+      code: "base_revision_unavailable";
+      unavailableBaseRevisionKeys: PropertySetupBaseRevisionKey[];
+    }
+  | { code: "setup_session_expired"; currentSessionRevision: number }
+  | { code: "setup_draft_expired"; currentDraftRevision: number }
+  | { code: "idempotency_key_conflict" }
+  | { code: "command_in_progress" };
+
+export type SavePropertySetupDraftResult =
+  | { ok: true; receipt: SavePropertySetupDraftReceipt }
+  | { ok: false; error: SavePropertySetupDraftError };
 
 export type PropertySetupStepDraft = {
   [TStepId in PropertySetupStepId]: {
