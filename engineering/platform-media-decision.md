@@ -188,12 +188,12 @@ authorized for download.
 Public approval is separate from upload success. A completed upload may remain
 private until the owning domain marks it public-safe.
 
-For `property.hero_image` and `property.gallery_image`, an upload by an
-authorized hotel owner or operator is the owning-domain approval and finalizes
-directly to public variants. Other purposes keep their explicit approval rules.
-The same finalization transaction projects these images into
-`hotel_catalog.property_media` using `platform_media_object_id`; a new hero
-supersedes the previous platform hero, while gallery images append in order.
+Hotel-media finalization leaves the object and safe variants private. A later
+Hotel Catalog or PMS assignment command performs the owning-domain approval,
+promotes the selected variants, and atomically updates the revisioned
+assignment set. Upload purpose records why the object entered the library; it
+does not restrict whether the same property-owned object can later be assigned
+as logo, cover, gallery, or room media.
 
 ### Serving Environment Contract
 

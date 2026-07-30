@@ -82,6 +82,7 @@ export type PropertyMediaCommandResponse = {
 
 export type PropertyMediaCommandError =
   | { code: "profile_revision_conflict"; currentRevision: number }
+  | { code: "idempotency_key_conflict" | "command_in_progress" }
   | {
       code: "media_not_found" | "media_not_authorized" | "media_not_ready";
       mediaObjectIds: string[];

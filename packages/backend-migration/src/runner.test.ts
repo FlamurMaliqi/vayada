@@ -576,6 +576,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "rate_plans",
         "rate_rules",
         "room_blocks",
+        "room_type_media",
         "room_types",
         "rooms",
       ]);
@@ -592,6 +593,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
              'fk_pms_operational_assignments_room_type_property',
              'fk_pms_rate_rules_rate_plan_property',
              'fk_pms_room_blocks_room_property',
+             'fk_pms_room_type_media_object_property',
+             'fk_pms_room_type_media_room_property',
              'fk_pms_checkin_records_assignment_property',
              'fk_pms_checkout_charges_assignment_property',
              'fk_pms_checkout_records_assignment_property',
@@ -600,6 +603,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
              'uq_pms_operational_assignments_booking_position',
              'uq_pms_operational_assignments_id_property_booking',
              'uq_pms_rate_plans_id_property_room_type',
+             'uq_pms_room_type_media_order',
              'uq_pms_rooms_id_property_room_type',
              'fk_pms_booking_notes_booking_property',
              'fk_pms_messages_thread_property',
@@ -632,11 +636,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "fk_pms_operational_assignments_room_type_property",
         "fk_pms_rate_rules_rate_plan_property",
         "fk_pms_room_blocks_room_property",
+        "fk_pms_room_type_media_object_property",
+        "fk_pms_room_type_media_room_property",
         "uq_pms_channel_booking_mappings_external_slot",
         "uq_pms_channel_rate_mappings_external",
         "uq_pms_operational_assignments_booking_position",
         "uq_pms_operational_assignments_id_property_booking",
         "uq_pms_rate_plans_id_property_room_type",
+        "uq_pms_room_type_media_order",
         "uq_pms_rooms_id_property_room_type",
       ]);
 
@@ -702,7 +709,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
              'fk_pms_operational_assignments_room_property',
              'fk_pms_channel_rate_mappings_rate_plan_property',
              'fk_pms_rate_rules_rate_plan_property',
-             'fk_pms_room_blocks_room_property'
+             'fk_pms_room_blocks_room_property',
+             'fk_pms_room_type_media_object_property',
+             'fk_pms_room_type_media_room_property'
            )
          ORDER BY con.conname`,
       );
@@ -780,7 +789,78 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           referenced_table: "rooms",
           table_name: "room_blocks",
         },
+        {
+          columns: "platform_media_object_id,property_id",
+          constraint_name: "fk_pms_room_type_media_object_property",
+          referenced_columns: "id,property_id",
+          referenced_schema: "platform",
+          referenced_table: "media_objects",
+          table_name: "room_type_media",
+        },
+        {
+          columns: "room_type_id,property_id",
+          constraint_name: "fk_pms_room_type_media_room_property",
+          referenced_columns: "id,property_id",
+          referenced_schema: "pms",
+          referenced_table: "room_types",
+          table_name: "room_type_media",
+        },
       ]);
+
+      const { rows: mediaAssignmentConstraints } = await verifyClient.query<{
+        constraint_name: string;
+        definition: string;
+        is_validated: boolean;
+        is_deferrable: boolean;
+        is_initially_deferred: boolean;
+      }>(
+        `SELECT
+           conname AS constraint_name,
+           pg_get_constraintdef(oid) AS definition,
+           convalidated AS is_validated,
+           condeferrable AS is_deferrable,
+           condeferred AS is_initially_deferred
+         FROM pg_constraint
+         WHERE conname IN (
+           'chk_pms_room_types_room_media_revision',
+           'chk_pms_room_type_media_alt_text',
+           'chk_pms_room_type_media_sort_order',
+           'fk_property_media_platform_object_property',
+           'fk_platform_media_variants_object_visibility'
+         )
+         ORDER BY conname`,
+      );
+      const mediaConstraint = new Map(
+        mediaAssignmentConstraints.map((constraint) => [constraint.constraint_name, constraint]),
+      );
+
+      expect(mediaConstraint.get("chk_pms_room_types_room_media_revision")?.definition).toContain(
+        "room_media_revision",
+      );
+      expect(mediaConstraint.get("chk_pms_room_type_media_sort_order")?.definition).toContain(
+        "sort_order <= 19",
+      );
+      expect(mediaConstraint.get("chk_pms_room_type_media_alt_text")?.definition).toContain(
+        "char_length(alt_text) <= 500",
+      );
+      expect(mediaConstraint.get("fk_property_media_platform_object_property")).toMatchObject({
+        is_validated: false,
+      });
+      expect(mediaConstraint.get("fk_platform_media_variants_object_visibility")).toMatchObject({
+        is_deferrable: true,
+        is_initially_deferred: true,
+      });
+      const { rows: roomMediaRevisionColumns } = await verifyClient.query<{
+        column_default: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_default, is_nullable
+         FROM information_schema.columns
+         WHERE table_schema = 'pms'
+           AND table_name = 'room_types'
+           AND column_name = 'room_media_revision'`,
+      );
+      expect(roomMediaRevisionColumns).toEqual([{ column_default: "1", is_nullable: "NO" }]);
 
       const { rows: pmsForeignKeySchemas } = await verifyClient.query<{
         constraint_name: string;

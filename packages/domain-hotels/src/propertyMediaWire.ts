@@ -50,6 +50,13 @@ export function parsePropertyMediaCommandError(value: unknown): PropertyMediaCom
         })
       : null;
   }
+  if (["idempotency_key_conflict", "command_in_progress"].includes(value["code"])) {
+    return isExactDataRecord(value, ["code"])
+      ? Object.freeze({
+          code: value["code"] as "idempotency_key_conflict" | "command_in_progress",
+        })
+      : null;
+  }
   if (
     !["media_not_found", "media_not_authorized", "media_not_ready"].includes(value["code"]) ||
     !isExactDataRecord(value, ["code", "mediaObjectIds"]) ||

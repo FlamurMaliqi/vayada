@@ -38,6 +38,7 @@ describe("property media wire contract", () => {
         mediaObjectIds: [mediaObjectId],
       }),
     ).not.toBeNull();
+    expect(parsePropertyMediaCommandError({ code: "command_in_progress" })).not.toBeNull();
     expect(
       parsePropertyMediaCommandError({
         code: "media_not_ready",

@@ -61,15 +61,19 @@ async function propertyBatch(
   return (result as { ok: true; batch: ResolvedPropertyMediaBatch }).batch;
 }
 
-async function roomBatch(): Promise<ResolvedRoomMediaBatch> {
+async function roomBatch(
+  mediaObjectIds: readonly string[] = [mediaObjectId],
+): Promise<ResolvedRoomMediaBatch> {
   const result = await resolutionPort({
     ok: true,
     resolvedTarget: { kind: "room_type", propertyId, roomTypeId },
-    media: [mediaSnapshot({ purpose: "pms.room_type.media" })],
+    media: mediaObjectIds.map((id) =>
+      mediaSnapshot({ mediaObjectId: id, purpose: "pms.room_type.media" }),
+    ),
   }).resolvePublicMedia({
     ownerOrganizationId: organizationId,
     target: { kind: "room_type", propertyId, roomTypeId },
-    mediaObjectIds: [mediaObjectId],
+    mediaObjectIds,
   });
   expect(result.ok).toBe(true);
   return (result as { ok: true; batch: ResolvedRoomMediaBatch }).batch;
@@ -106,7 +110,7 @@ describe("resolved hotel media projection contract", () => {
     const resolvedMedia = await roomBatch();
     const roomProjection = createRoomMediaProjectionInput({
       resolvedMedia,
-      roomRevision: 2,
+      roomMediaRevision: 2,
       assignments: [{ mediaObjectId, altText: "Suite", sortOrder: 0 }],
     });
 
@@ -116,7 +120,7 @@ describe("resolved hotel media projection contract", () => {
     expect(
       createRoomMediaProjectionInput({
         resolvedMedia,
-        roomRevision: 2,
+        roomMediaRevision: 2,
         assignments: [
           {
             mediaObjectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
@@ -227,5 +231,24 @@ describe("resolved hotel media projection contract", () => {
       mediaObjectIds: [mediaObjectId],
     });
     expect(rejected.ok).toBe(false);
+  });
+
+  it("rejects room projections larger than the PMS assignment limit", async () => {
+    const mediaObjectIds = Array.from(
+      { length: 21 },
+      (_, index) => `${String(index).padStart(8, "0")}-0000-4000-8000-000000000000`,
+    );
+    const resolvedMedia = await roomBatch(mediaObjectIds);
+    expect(
+      createRoomMediaProjectionInput({
+        resolvedMedia,
+        roomMediaRevision: 2,
+        assignments: mediaObjectIds.map((mediaObjectId, sortOrder) => ({
+          mediaObjectId,
+          altText: null,
+          sortOrder,
+        })),
+      }),
+    ).toBeNull();
   });
 });

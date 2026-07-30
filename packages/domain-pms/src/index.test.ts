@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   PMS_RESERVATION_CONTRACT_VERSION,
   PMS_RESERVATION_ERROR_CODES,
+  ROOM_MEDIA_MAX_ITEMS,
   type CreatePmsReservationCommand,
   type GetPmsOperationalReservationQuery,
   type PmsReservationError,
@@ -16,6 +17,10 @@ describe("@vayada/domain-pms", () => {
     expect(PMS_RESERVATION_CONTRACT_VERSION).toBe("pms-reservation.v1");
     expect(PMS_RESERVATION_ERROR_CODES).toContain("PMS_DISCONNECTED");
     expect(PMS_RESERVATION_ERROR_CODES).toContain("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("exports the room-media command contract", () => {
+    expect(ROOM_MEDIA_MAX_ITEMS).toBe(20);
   });
 
   it("allows downstream packages to implement the PMS reservation sink", async () => {

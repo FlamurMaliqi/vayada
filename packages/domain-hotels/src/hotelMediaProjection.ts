@@ -14,6 +14,7 @@ declare const resolvedHotelMediaBatchBrand: unique symbol;
 const propertyMediaProjectionBrand: unique symbol = Symbol("propertyMediaProjection");
 const roomMediaProjectionBrand: unique symbol = Symbol("roomMediaProjection");
 const trustedResolutionBatches = new WeakSet<object>();
+const ROOM_MEDIA_PROJECTION_MAX_ITEMS = 20;
 
 export type ResolvedPublicHotelMedia = {
   readonly [resolvedPublicHotelMediaBrand]: true;
@@ -156,7 +157,7 @@ export type BookingHotelMediaProjectionInput = PropertyMediaProjectionInput;
 
 export type RoomMediaProjectionDraft = {
   readonly resolvedMedia: ResolvedRoomMediaBatch;
-  readonly roomRevision: number;
+  readonly roomMediaRevision: number;
   readonly assignments: readonly {
     readonly mediaObjectId: string;
     readonly altText: string | null;
@@ -169,7 +170,7 @@ export type RoomMediaProjectionInput = {
   readonly ownerOrganizationId: string;
   readonly propertyId: string;
   readonly roomTypeId: string;
-  readonly roomRevision: number;
+  readonly roomMediaRevision: number;
   readonly assignments: readonly {
     readonly media: ResolvedPublicHotelMedia;
     readonly altText: string | null;
@@ -220,13 +221,14 @@ export function createRoomMediaProjectionInput(
   draft: RoomMediaProjectionDraft,
 ): RoomMediaProjectionInput | null {
   const batch = draft.resolvedMedia;
-  const roomRevision = draft.roomRevision;
+  const roomMediaRevision = draft.roomMediaRevision;
   const assignmentDrafts = draft.assignments;
   if (
     !isTrustedBatch(batch) ||
     batch.target.kind !== "room_type" ||
-    !isPositiveRevision(roomRevision) ||
-    !Array.isArray(assignmentDrafts)
+    !isPositiveRevision(roomMediaRevision) ||
+    !Array.isArray(assignmentDrafts) ||
+    assignmentDrafts.length > ROOM_MEDIA_PROJECTION_MAX_ITEMS
   ) {
     return null;
   }
@@ -258,7 +260,7 @@ export function createRoomMediaProjectionInput(
     ownerOrganizationId: batch.ownerOrganizationId,
     propertyId: batch.target.propertyId,
     roomTypeId: batch.target.roomTypeId,
-    roomRevision,
+    roomMediaRevision,
     assignments: Object.freeze(assignments as RoomMediaProjectionInput["assignments"]),
     [roomMediaProjectionBrand]: true,
   }) as RoomMediaProjectionInput;
