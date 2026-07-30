@@ -3,8 +3,6 @@
 _Current V1 product-decision, adaptive-flow, and implementation-plan record.
 All active screen blueprints and dependency slices are drafted; contract
 implementation and product UI remain pending._
-The approved Marketplace persistence and API contract is
-[`marketplace-hotel-collaboration-preferences.md`](marketplace-hotel-collaboration-preferences.md).
 
 ## Purpose
 
