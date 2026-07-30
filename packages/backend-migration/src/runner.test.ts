@@ -479,6 +479,231 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     }
   });
 
+  it("creates bounded property setup sessions and per-step drafts", async () => {
+    assertSafeTestDatabase(TEST_DATABASE_URL!);
+
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await client.connect();
+    try {
+      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+        await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      }
+
+      await client.query(`
+        CREATE SCHEMA identity;
+        CREATE SCHEMA hotel_catalog;
+        CREATE TABLE identity.organizations (id UUID PRIMARY KEY);
+        CREATE TABLE hotel_catalog.properties (id UUID PRIMARY KEY);
+
+        INSERT INTO identity.organizations (id)
+        VALUES ('00000000-0000-4000-8000-000000000001');
+        INSERT INTO hotel_catalog.properties (id)
+        SELECT (
+          '10000000-0000-4000-8000-' || lpad(value::TEXT, 12, '0')
+        )::UUID
+        FROM generate_series(1, 4) AS value;
+      `);
+
+      const migrationSql = await readFile(
+        join(REAL_MIGRATIONS_DIR, "0045_property_setup_drafts.sql"),
+        "utf8",
+      );
+      await client.query(migrationSql);
+
+      const {
+        rows: [session],
+      } = await client.query<{ id: string }>(
+        `INSERT INTO hotel_catalog.property_setup_sessions (
+           organization_id,
+           property_id,
+           selected_tracks,
+           track_revision,
+           resume_step_id,
+           retention_expires_at
+         )
+         VALUES (
+           '00000000-0000-4000-8000-000000000001',
+           '10000000-0000-4000-8000-000000000001',
+           ARRAY['hotel_operations', 'creator_marketplace'],
+           1,
+           'present_hotel',
+           now() + INTERVAL '90 days'
+         )
+         RETURNING id::TEXT AS id`,
+      );
+
+      const {
+        rows: [draft],
+      } = await client.query<{
+        payload: Record<string, unknown>;
+        dirty_fields: string[];
+        base_revisions: Record<string, unknown>;
+        revision: number;
+      }>(
+        `INSERT INTO hotel_catalog.property_setup_step_drafts (
+           session_id,
+           step_id,
+           payload,
+           dirty_fields,
+           base_revisions,
+           retention_expires_at
+         )
+         VALUES (
+           $1::UUID,
+           'present_hotel',
+           '{"profile.short_description": null}'::JSONB,
+           ARRAY['profile.short_description'],
+           '{
+             "hotel_catalog.profile": "profile:1",
+             "hotel_catalog.media": "media:1",
+             "hotel_catalog.amenities": "amenities:1"
+           }'::JSONB,
+           now() + INTERVAL '90 days'
+         )
+         RETURNING payload, dirty_fields, base_revisions, revision`,
+        [session!.id],
+      );
+      expect(draft).toEqual({
+        payload: { "profile.short_description": null },
+        dirty_fields: ["profile.short_description"],
+        base_revisions: {
+          "hotel_catalog.profile": "profile:1",
+          "hotel_catalog.media": "media:1",
+          "hotel_catalog.amenities": "amenities:1",
+        },
+        revision: 1,
+      });
+
+      await expect(
+        client.query(
+          `INSERT INTO hotel_catalog.property_setup_sessions (
+             organization_id,
+             property_id,
+             selected_tracks,
+             track_revision,
+             retention_expires_at
+           )
+           VALUES (
+             '00000000-0000-4000-8000-000000000001',
+             '10000000-0000-4000-8000-000000000001',
+             ARRAY['hotel_operations'],
+             1,
+             now() + INTERVAL '30 days'
+           )`,
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+      await expect(
+        client.query(
+          `UPDATE hotel_catalog.property_setup_sessions
+           SET completed_step_ids = ARRAY['present_hotel', 'present_hotel']
+           WHERE id = $1::UUID`,
+          [session!.id],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      await client.query(
+        `UPDATE hotel_catalog.property_setup_sessions
+         SET
+           status = 'completed',
+           completed_at = now(),
+           retention_expires_at = now() + INTERVAL '30 days',
+           updated_at = now()
+         WHERE id = $1::UUID`,
+        [session!.id],
+      );
+      await client.query(
+        `INSERT INTO hotel_catalog.property_setup_sessions (
+           organization_id,
+           property_id,
+           selected_tracks,
+           track_revision,
+           retention_expires_at
+         )
+         VALUES (
+           '00000000-0000-4000-8000-000000000001',
+           '10000000-0000-4000-8000-000000000001',
+           ARRAY['hotel_operations'],
+           2,
+           now() + INTERVAL '90 days'
+         )`,
+      );
+
+      const invalidSessions = [
+        {
+          tracks: ["creator_marketplace", "hotel_operations"],
+          resumeStep: "present_hotel",
+          retentionDays: 30,
+        },
+        { tracks: ["hotel_operations"], resumeStep: "unknown", retentionDays: 30 },
+        { tracks: ["hotel_operations"], resumeStep: "present_hotel", retentionDays: 91 },
+      ];
+      for (const [index, invalid] of invalidSessions.entries()) {
+        await expect(
+          client.query(
+            `INSERT INTO hotel_catalog.property_setup_sessions (
+               organization_id,
+               property_id,
+               selected_tracks,
+               track_revision,
+               resume_step_id,
+               retention_expires_at
+             )
+             VALUES (
+               '00000000-0000-4000-8000-000000000001',
+               $4::UUID,
+               $1::TEXT[],
+               1,
+               $2,
+               now() + make_interval(days => $3)
+             )`,
+            [
+              invalid.tracks,
+              invalid.resumeStep,
+              invalid.retentionDays,
+              `10000000-0000-4000-8000-${String(index + 2).padStart(12, "0")}`,
+            ],
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+      }
+
+      await expect(
+        client.query(
+          `INSERT INTO hotel_catalog.property_setup_step_drafts (
+             session_id,
+             step_id,
+             payload,
+             retention_expires_at
+           )
+           VALUES ($1::UUID, 'unknown', '{}'::JSONB, now() + INTERVAL '30 days')`,
+          [session!.id],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        client.query(
+          `INSERT INTO hotel_catalog.property_setup_step_drafts (
+             session_id,
+             step_id,
+             payload,
+             retention_expires_at
+           )
+           VALUES ($1::UUID, 'review', '[]'::JSONB, now() + INTERVAL '30 days')`,
+          [session!.id],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      await client.query(
+        `DELETE FROM hotel_catalog.properties
+         WHERE id = '10000000-0000-4000-8000-000000000001'`,
+      );
+      const { rows: remaining } = await client.query(
+        `SELECT id FROM hotel_catalog.property_setup_sessions`,
+      );
+      expect(remaining).toHaveLength(0);
+    } finally {
+      await client.end();
+    }
+  });
+
   it("applies booking, PMS, finance, marketplace, distribution, platform, and intelligence DDL with private data boundaries", async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
 
@@ -513,6 +738,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     expect(result.applied).toContain("0036");
     expect(result.applied).toContain("0037");
     expect(result.applied).toContain("0038");
+    expect(result.applied).toContain("0043");
 
     const verifyClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await verifyClient.connect();
