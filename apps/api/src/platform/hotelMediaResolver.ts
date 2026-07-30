@@ -240,7 +240,7 @@ function toResolvedPublicMedia(
   row: MediaRow,
   scope: ConfiguredPublicScope,
 ): ResolvedPublicHotelMedia | null {
-  const variants = parseReadyVariants(row.variants, scope);
+  const variants = parseReadyVariants(row.variants, row.mediaObjectId, scope);
   if (
     row.resolution !== "scoped" ||
     !row.mediaObjectId ||
@@ -253,7 +253,7 @@ function toResolvedPublicMedia(
     row.publicApproved !== true ||
     row.lifecycleStatus !== "active" ||
     !isImageContentType(row.contentType) ||
-    !isPublicStorageKey(row.storageKey, scope.publicPathPrefix) ||
+    !isPublicObjectStorageKey(row.storageKey, row.mediaObjectId, scope.publicPathPrefix) ||
     !variants
   ) {
     return null;
@@ -270,9 +270,10 @@ function toResolvedPublicMedia(
 
 function parseReadyVariants(
   value: unknown,
+  mediaObjectId: string | null,
   scope: ConfiguredPublicScope,
 ): ResolvedPublicHotelMedia["publicVariants"] | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
+  if (!mediaObjectId || !Array.isArray(value) || value.length === 0) return null;
   const names = new Set<string>();
   const variants: Readonly<PropertyMediaPublicVariant>[] = [];
   for (const candidate of value) {
@@ -283,8 +284,13 @@ function parseReadyVariants(
       ) ||
       candidate.visibility !== "public" ||
       !isImageContentType(candidate.contentType) ||
-      !isPublicStorageKey(candidate.storageKey, scope.publicPathPrefix) ||
-      !isPublicCdnUrl(candidate.publicUrl, scope)
+      !isPublicVariantStorageKey(
+        candidate.storageKey,
+        mediaObjectId,
+        candidate.variantName,
+        scope.publicPathPrefix,
+      ) ||
+      !isPublicCdnUrl(candidate.publicUrl, candidate.storageKey, scope)
     ) {
       return null;
     }
@@ -367,8 +373,25 @@ function isImageContentType(value: unknown): value is string {
   return typeof value === "string" && /^image\/[a-z0-9.+-]+$/i.test(value.trim());
 }
 
-function isPublicStorageKey(value: unknown, publicPathPrefix: string): value is string {
-  if (typeof value !== "string" || !value.startsWith(`public/${publicPathPrefix}/`)) return false;
+function isPublicObjectStorageKey(
+  value: unknown,
+  mediaObjectId: string,
+  publicPathPrefix: string,
+): value is string {
+  return isSafeStorageKey(value, `public/${publicPathPrefix}/${mediaObjectId}/original_safe/`);
+}
+
+function isPublicVariantStorageKey(
+  value: unknown,
+  mediaObjectId: string,
+  variantName: string,
+  publicPathPrefix: string,
+): value is string {
+  return isSafeStorageKey(value, `public/${publicPathPrefix}/${mediaObjectId}/${variantName}/`);
+}
+
+function isSafeStorageKey(value: unknown, expectedPrefix: string): value is string {
+  if (typeof value !== "string" || !value.startsWith(expectedPrefix)) return false;
   return !value.split("/").some((segment) => segment === "." || segment === "..");
 }
 
@@ -410,10 +433,15 @@ function configuredPublicScope(
   };
 }
 
-function isPublicCdnUrl(value: string | null, scope: ConfiguredPublicScope): value is string {
+function isPublicCdnUrl(
+  value: string | null,
+  storageKey: string,
+  scope: ConfiguredPublicScope,
+): value is string {
   if (!value) return false;
   try {
     const url = new URL(value);
+    const expected = new URL(storageKey.slice("public/".length), `${scope.cdnOrigin}/`).toString();
     return (
       url.protocol === "https:" &&
       !url.username &&
@@ -421,7 +449,8 @@ function isPublicCdnUrl(value: string | null, scope: ConfiguredPublicScope): val
       !url.search &&
       !url.hash &&
       url.origin === scope.cdnOrigin &&
-      url.pathname.startsWith(scope.publicPathnamePrefix)
+      url.pathname.startsWith(scope.publicPathnamePrefix) &&
+      url.toString() === expected
     );
   } catch {
     return false;

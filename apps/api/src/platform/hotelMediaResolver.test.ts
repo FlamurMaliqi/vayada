@@ -283,6 +283,12 @@ describe("persistent hotel media resolver", () => {
     ["external storage", { storageKind: "external_reference", bucket: null, storageKey: null }],
     ["non-image object", { contentType: "application/pdf" }],
     ["staging object key", { storageKey: `staging/session/${firstMediaId}.webp` }],
+    [
+      "another media object's key",
+      {
+        storageKey: `public/media/${secondMediaId}/original_safe/v1.webp`,
+      },
+    ],
     ["wrong bucket", { bucket: "other-media-bucket" }],
   ] satisfies [string, Partial<StoredMedia>][])(
     "rejects a %s media object as not ready",
@@ -326,6 +332,35 @@ describe("persistent hotel media resolver", () => {
         {
           ...validMedia().variants[0]!,
           storageKey: `staging/session/${firstMediaId}.webp`,
+        },
+      ],
+    ],
+    [
+      "another media object's variant",
+      [
+        {
+          ...validMedia().variants[0]!,
+          storageKey: `public/media/${secondMediaId}/original_safe/v1.webp`,
+          publicUrl: `https://cdn.example.test/media/${secondMediaId}/original_safe/v1.webp`,
+        },
+      ],
+    ],
+    [
+      "mismatched variant path",
+      [
+        {
+          ...validMedia().variants[0]!,
+          storageKey: `public/media/${firstMediaId}/thumbnail/v1.webp`,
+          publicUrl: `https://cdn.example.test/media/${firstMediaId}/thumbnail/v1.webp`,
+        },
+      ],
+    ],
+    [
+      "URL and storage-key mismatch",
+      [
+        {
+          ...validMedia().variants[0]!,
+          publicUrl: `https://cdn.example.test/media/${firstMediaId}/original_safe/v2.webp`,
         },
       ],
     ],
