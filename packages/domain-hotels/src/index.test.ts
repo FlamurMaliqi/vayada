@@ -8,6 +8,7 @@ import {
   createPropertyMediaProjectionInput,
   hotelCatalogCommandTypes,
   hotelCatalogIdempotencyKey,
+  parsePropertyMediaCommandResponse,
   type HotelCatalogCommand,
   type HotelCatalogCommandBus,
   type HotelCatalogCommandResult,
@@ -46,6 +47,7 @@ describe("@vayada/domain-hotels", () => {
     expect(PROPERTY_MEDIA_AUTHORIZATION.product).toBe("hotel_catalog");
     expect(PROPERTY_MEDIA_AUTHORIZATION.resourceType).toBe("property");
     expect(createPropertyMediaProjectionInput).toBeTypeOf("function");
+    expect(parsePropertyMediaCommandResponse).toBeTypeOf("function");
   });
 
   it("builds a stable idempotency key", () => {
