@@ -77,7 +77,7 @@ function validMedia(
 
 function harness(
   media: StoredMedia[],
-  options: { targetAuthorized?: boolean } = {},
+  options: { targetAuthorized?: boolean; afterTargetQuery?: () => void } = {},
 ): {
   resolver: ReturnType<typeof createPgHotelMediaResolutionPort>;
   queries: { text: string; values: readonly unknown[] }[];
@@ -93,6 +93,7 @@ function harness(
     ) {
       queries.push({ text, values });
       if (text.includes("hotel_media_target_resolution")) {
+        options.afterTargetQuery?.();
         return {
           rows: [{ authorized: options.targetAuthorized ?? true }] as unknown as T[],
         };
@@ -107,8 +108,7 @@ function harness(
             stored?.ownerOrganizationId === ownerScope && stored?.propertyId === propertyScope;
           return {
             requestOrdinal: index + 1,
-            requestedMediaObjectId,
-            resolution: !stored ? "not_found" : scoped ? "scoped" : "not_authorized",
+            resolution: !stored || !scoped ? "not_found" : "scoped",
             mediaObjectId: scoped ? stored!.mediaObjectId : null,
             bucket: scoped ? stored!.bucket : null,
             storageKey: scoped ? stored!.storageKey : null,
@@ -181,6 +181,7 @@ describe("persistent hotel media resolver", () => {
     expect(queries[1]!.text).toContain(
       "JOIN authorized_target target ON target.property_id = media.property_id",
     );
+    expect(queries[1]!.text).not.toContain("platform.media_objects candidate");
 
     await resolver.close?.();
     expect(end).not.toHaveBeenCalled();
@@ -203,8 +204,37 @@ describe("persistent hotel media resolver", () => {
     expect(queries[0]!.values).toEqual([organizationId, propertyId, roomTypeId]);
     expect(queries[0]!.text).toContain("room_type.id = $3::uuid");
     expect(queries[0]!.text).toContain("room_type.property_id = property.id");
+    expect(queries[0]!.text).toContain("AND EXISTS (");
+    expect(queries[0]!.text).not.toContain("JOIN identity.organization_resource_links");
     expect(queries[0]!.text).toContain("link.product = 'hotel_catalog'");
     expect(queries[0]!.text).toContain("link.relationship IN ('owner', 'operator')");
+  });
+
+  it("uses one immutable target snapshot across asynchronous resolution", async () => {
+    const target: {
+      kind: "property" | "not_room_type";
+      propertyId: string;
+      roomTypeId?: string;
+    } = { kind: "property", propertyId };
+    const { resolver, queries } = harness([validMedia()], {
+      afterTargetQuery() {
+        target.kind = "not_room_type";
+        target.propertyId = otherPropertyId;
+        target.roomTypeId = roomTypeId;
+      },
+    });
+
+    const result = await resolver.resolvePublicMedia({
+      ownerOrganizationId: organizationId,
+      target: target as never,
+      mediaObjectIds: [firstMediaId],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.resolvedTarget.target).toEqual({ kind: "property", propertyId });
+    expect(queries[0]!.values).toEqual([organizationId, propertyId, null]);
+    expect(queries[1]!.values.slice(0, 3)).toEqual([organizationId, propertyId, null]);
   });
 
   it("fails target and media cross-scope checks without exposing media rows", async () => {
@@ -245,7 +275,7 @@ describe("persistent hotel media resolver", () => {
         }),
       ).resolves.toEqual({
         ok: false,
-        error: { code: "media_not_authorized", mediaObjectIds: [firstMediaId] },
+        error: { code: "media_not_found", mediaObjectIds: [firstMediaId] },
       });
     }
   });
@@ -274,6 +304,62 @@ describe("persistent hotel media resolver", () => {
       ok: false,
       error: { code: "media_not_authorized", mediaObjectIds: [firstMediaId] },
     });
+  });
+
+  it("returns typed failures for malformed identifiers without sending invalid UUID casts", async () => {
+    for (const input of [
+      {
+        ownerOrganizationId: "not-an-organization",
+        target: { kind: "property" as const, propertyId },
+      },
+      {
+        ownerOrganizationId: organizationId,
+        target: { kind: "property" as const, propertyId: "not-a-property" },
+      },
+      {
+        ownerOrganizationId: organizationId,
+        target: { kind: "room_type" as const, propertyId, roomTypeId: "not-a-room" },
+      },
+    ]) {
+      const { resolver, queries } = harness([validMedia()]);
+      await expect(
+        resolver.resolvePublicMedia({ ...input, mediaObjectIds: [firstMediaId] }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { code: "media_not_authorized", mediaObjectIds: [firstMediaId] },
+      });
+      expect(queries).toHaveLength(0);
+    }
+
+    const { resolver, queries } = harness([validMedia()]);
+    await expect(
+      resolver.resolvePublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: ["not-media", "not-media"],
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "media_not_found", mediaObjectIds: ["not-media"] },
+    });
+    expect(queries).toHaveLength(1);
+
+    const unknownTarget = harness([validMedia()]);
+    await expect(
+      unknownTarget.resolver.resolvePublicMedia({
+        ownerOrganizationId: organizationId,
+        target: {
+          kind: "not_room_type",
+          propertyId: otherPropertyId,
+          roomTypeId,
+        } as never,
+        mediaObjectIds: [firstMediaId],
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "media_not_authorized", mediaObjectIds: [firstMediaId] },
+    });
+    expect(unknownTarget.queries).toHaveLength(0);
   });
 
   it.each([
@@ -345,6 +431,26 @@ describe("persistent hotel media resolver", () => {
         },
       ],
     ],
+    ...[
+      ["%2e encoded traversal", "%2e/%2e"],
+      ["%2e%2e encoded traversal", "%2e%2e/%2e%2e"],
+      ["mixed-case encoded traversal", "%2E%2e/%2e%2E"],
+      ["backslash traversal", String.raw`..\..`],
+    ].map(
+      ([label, traversal]) =>
+        [
+          label,
+          [
+            {
+              ...validMedia().variants[0]!,
+              storageKey:
+                `public/media/${firstMediaId}/original_safe/${traversal}/` +
+                `${secondMediaId}/original_safe/v1.webp`,
+              publicUrl: `https://cdn.example.test/media/${secondMediaId}/original_safe/v1.webp`,
+            },
+          ],
+        ] as [string, StoredVariant[]],
+    ),
     [
       "mismatched variant path",
       [

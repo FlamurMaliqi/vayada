@@ -24,7 +24,6 @@ type HotelMediaResolverPool = {
 type TargetRow = QueryResultRow & { authorized: boolean };
 type MediaRow = QueryResultRow & {
   requestOrdinal: number | string;
-  requestedMediaObjectId: string;
   resolution: "scoped" | "not_found" | "not_authorized";
   mediaObjectId: string | null;
   bucket: string | null;
@@ -50,6 +49,10 @@ type VariantRow = {
 
 type MediaResolutionErrorCode = "media_not_found" | "media_not_authorized" | "media_not_ready";
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SAFE_PUBLIC_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+$/;
+
 export type PgHotelMediaResolverConfig = {
   connectionString: string;
   serving: Pick<PlatformMediaServingConfig, "bucketName" | "cdnBaseUrl" | "publicPathPrefix">;
@@ -64,14 +67,17 @@ export type PersistentHotelMediaResolutionPort = HotelMediaResolutionPort & {
 const AUTHORIZED_TARGET_SQL = `
   SELECT property.id AS property_id
   FROM hotel_catalog.properties property
-  JOIN identity.organization_resource_links link
-    ON link.organization_id = $1::uuid
-   AND link.product = 'hotel_catalog'
-   AND link.resource_type = 'property'
-   AND link.resource_id = property.id::text
-   AND link.relationship IN ('owner', 'operator')
-   AND link.status = 'active'
   WHERE property.id = $2::uuid
+    AND EXISTS (
+      SELECT 1
+      FROM identity.organization_resource_links link
+      WHERE link.organization_id = $1::uuid
+        AND link.product = 'hotel_catalog'
+        AND link.resource_type = 'property'
+        AND link.resource_id = property.id::text
+        AND link.relationship IN ('owner', 'operator')
+        AND link.status = 'active'
+    )
     AND (
       $3::uuid IS NULL
       OR EXISTS (
@@ -104,15 +110,9 @@ const RESOLVE_MEDIA_SQL = `
   )
   SELECT
     requested.request_ordinal AS "requestOrdinal",
-    requested.media_object_id::text AS "requestedMediaObjectId",
     CASE
       WHEN NOT EXISTS (SELECT 1 FROM authorized_target) THEN 'not_authorized'
       WHEN media.id IS NOT NULL THEN 'scoped'
-      WHEN EXISTS (
-        SELECT 1
-        FROM platform.media_objects candidate
-        WHERE candidate.id = requested.media_object_id
-      ) THEN 'not_authorized'
       ELSE 'not_found'
     END AS resolution,
     media.id::text AS "mediaObjectId",
@@ -164,46 +164,58 @@ export function createPgHotelMediaResolutionPort(
   return {
     async resolvePublicMedia(input) {
       const requestedIds = [...input.mediaObjectIds];
+      const ownerOrganizationId = input.ownerOrganizationId;
+      const targetSnapshot = snapshotTarget(input.target);
+      if (!targetSnapshot || !isValidTarget(ownerOrganizationId, targetSnapshot)) {
+        return failure("media_not_authorized", requestedIds);
+      }
       const target = await pool.query<TargetRow>(RESOLVE_TARGET_SQL, [
-        input.ownerOrganizationId,
-        input.target.propertyId,
-        input.target.kind === "room_type" ? input.target.roomTypeId : null,
+        ownerOrganizationId,
+        targetSnapshot.propertyId,
+        targetSnapshot.kind === "room_type" ? targetSnapshot.roomTypeId : null,
       ]);
       if (target.rows[0]?.authorized !== true) {
         return failure("media_not_authorized", requestedIds);
       }
 
-      const resolvedTarget = freezeResolvedTarget(input.ownerOrganizationId, input.target);
+      const resolvedTarget = freezeResolvedTarget(ownerOrganizationId, targetSnapshot);
       if (requestedIds.length === 0) {
         return { ok: true, resolvedTarget, media: Object.freeze([]) };
       }
+      const malformedIds = requestedIds.filter(
+        (mediaObjectId) => !UUID_PATTERN.test(mediaObjectId),
+      );
+      if (malformedIds.length > 0) {
+        return failure("media_not_found", malformedIds);
+      }
 
       const result = await pool.query<MediaRow>(RESOLVE_MEDIA_SQL, [
-        input.ownerOrganizationId,
-        input.target.propertyId,
-        input.target.kind === "room_type" ? input.target.roomTypeId : null,
+        ownerOrganizationId,
+        targetSnapshot.propertyId,
+        targetSnapshot.kind === "room_type" ? targetSnapshot.roomTypeId : null,
         requestedIds,
       ]);
-      const rowsByOrdinal = rowsByRequestOrdinal(result.rows);
       const notFound: string[] = [];
       const notAuthorized: string[] = [];
       const notReady: string[] = [];
       const resolved: ResolvedPublicHotelMedia[] = [];
 
       requestedIds.forEach((requestedId, index) => {
-        const row = rowsByOrdinal.get(index + 1);
+        const row = result.rows[index];
         if (
           !row ||
-          !sameIdentifier(row.requestedMediaObjectId, requestedId) ||
-          row.resolution === "not_found"
+          Number(row.requestOrdinal) !== index + 1 ||
+          row.resolution === "not_found" ||
+          (row.resolution !== "not_authorized" &&
+            !sameIdentifier(row.mediaObjectId, requestedId))
         ) {
           notFound.push(requestedId);
           return;
         }
         if (
           row.resolution === "not_authorized" ||
-          !sameIdentifier(row.ownerOrganizationId, input.ownerOrganizationId) ||
-          !sameIdentifier(row.propertyId, input.target.propertyId) ||
+          !sameIdentifier(row.ownerOrganizationId, ownerOrganizationId) ||
+          !sameIdentifier(row.propertyId, targetSnapshot.propertyId) ||
           !isSupportedPurpose(row.purpose)
         ) {
           notAuthorized.push(requestedId);
@@ -234,8 +246,6 @@ export function createPgHotelMediaResolutionPort(
   };
 }
 
-export const createPgHotelMediaResolver = createPgHotelMediaResolutionPort;
-
 function toResolvedPublicMedia(
   row: MediaRow,
   scope: ConfiguredPublicScope,
@@ -253,7 +263,12 @@ function toResolvedPublicMedia(
     row.publicApproved !== true ||
     row.lifecycleStatus !== "active" ||
     !isImageContentType(row.contentType) ||
-    !isPublicObjectStorageKey(row.storageKey, row.mediaObjectId, scope.publicPathPrefix) ||
+    !isPublicStorageKey(
+      row.storageKey,
+      row.mediaObjectId,
+      "original_safe",
+      scope.publicPathPrefix,
+    ) ||
     !variants
   ) {
     return null;
@@ -284,7 +299,7 @@ function parseReadyVariants(
       ) ||
       candidate.visibility !== "public" ||
       !isImageContentType(candidate.contentType) ||
-      !isPublicVariantStorageKey(
+      !isPublicStorageKey(
         candidate.storageKey,
         mediaObjectId,
         candidate.variantName,
@@ -329,24 +344,29 @@ function failure(code: MediaResolutionErrorCode, mediaObjectIds: readonly string
     ok: false as const,
     error: {
       code,
-      mediaObjectIds: orderedUnique(mediaObjectIds),
+      mediaObjectIds: [...new Set(mediaObjectIds)],
     },
   };
 }
 
-function rowsByRequestOrdinal(rows: readonly MediaRow[]): Map<number, MediaRow> {
-  const mapped = new Map<number, MediaRow>();
-  for (const row of rows) {
-    const ordinal = Number(row.requestOrdinal);
-    if (Number.isSafeInteger(ordinal) && ordinal > 0 && !mapped.has(ordinal)) {
-      mapped.set(ordinal, row);
-    }
+function snapshotTarget(target: HotelMediaResolutionTarget): HotelMediaResolutionTarget | null {
+  const kind = target.kind;
+  const propertyId = target.propertyId;
+  if (kind === "property") return Object.freeze({ kind, propertyId });
+  if (kind === "room_type") {
+    const roomTypeId = target.roomTypeId;
+    return Object.freeze({ kind, propertyId, roomTypeId });
   }
-  return mapped;
+  return null;
 }
 
-function orderedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)];
+function isValidTarget(ownerOrganizationId: string, target: HotelMediaResolutionTarget): boolean {
+  if (!UUID_PATTERN.test(ownerOrganizationId) || !UUID_PATTERN.test(target.propertyId)) {
+    return false;
+  }
+  if (target.kind === "property") return true;
+  if (target.kind === "room_type") return UUID_PATTERN.test(target.roomTypeId);
+  return false;
 }
 
 function sameIdentifier(left: string | null, right: string): boolean {
@@ -373,33 +393,21 @@ function isImageContentType(value: unknown): value is string {
   return typeof value === "string" && /^image\/[a-z0-9.+-]+$/i.test(value.trim());
 }
 
-function isPublicObjectStorageKey(
-  value: unknown,
-  mediaObjectId: string,
-  publicPathPrefix: string,
-): value is string {
-  return isSafeStorageKey(value, `public/${publicPathPrefix}/${mediaObjectId}/original_safe/`);
-}
-
-function isPublicVariantStorageKey(
+function isPublicStorageKey(
   value: unknown,
   mediaObjectId: string,
   variantName: string,
   publicPathPrefix: string,
 ): value is string {
-  return isSafeStorageKey(value, `public/${publicPathPrefix}/${mediaObjectId}/${variantName}/`);
-}
-
-function isSafeStorageKey(value: unknown, expectedPrefix: string): value is string {
+  const expectedPrefix = `public/${publicPathPrefix}/${mediaObjectId}/${variantName}/`;
   if (typeof value !== "string" || !value.startsWith(expectedPrefix)) return false;
-  return !value.split("/").some((segment) => segment === "." || segment === "..");
+  return SAFE_PUBLIC_FILENAME.test(value.slice(expectedPrefix.length));
 }
 
 type ConfiguredPublicScope = {
   bucketName: string;
   cdnOrigin: string;
   publicPathPrefix: string;
-  publicPathnamePrefix: string;
 };
 
 function configuredPublicScope(
@@ -421,7 +429,7 @@ function configuredPublicScope(
   }
   if (
     !publicPathPrefix ||
-    publicPathPrefix.split("/").some((segment) => !segment || segment === "." || segment === "..")
+    publicPathPrefix.split("/").some((segment) => !SAFE_PATH_SEGMENT.test(segment))
   ) {
     throw new Error("Hotel media resolver publicPathPrefix must be a safe non-empty path");
   }
@@ -429,7 +437,6 @@ function configuredPublicScope(
     bucketName,
     cdnOrigin: cdn.origin,
     publicPathPrefix,
-    publicPathnamePrefix: `/${publicPathPrefix}/`,
   };
 }
 
@@ -443,14 +450,7 @@ function isPublicCdnUrl(
     const url = new URL(value);
     const expected = new URL(storageKey.slice("public/".length), `${scope.cdnOrigin}/`).toString();
     return (
-      url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      !url.search &&
-      !url.hash &&
-      url.origin === scope.cdnOrigin &&
-      url.pathname.startsWith(scope.publicPathnamePrefix) &&
-      url.toString() === expected
+      !url.username && !url.password && !url.search && !url.hash && url.toString() === expected
     );
   } catch {
     return false;
