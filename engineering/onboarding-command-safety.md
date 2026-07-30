@@ -20,6 +20,13 @@ Authorization is checked on every attempt, including an exact retry. A stored
 result is only replayed after the current request is authorized for the same
 tenant and operation.
 
+`hotel_setup.tracks.update` is an organization-scoped bootstrap command. It
+requires an active hotel-group context and
+`hotel_catalog.products.manage`, but it does not require a product entitlement
+or linked property: track selection precedes property creation and provisions
+the selected product entitlements and resource links. Later property-scoped
+setup commands apply their relevant entitlement and linked-resource checks.
+
 ## Idempotency identity
 
 Each command requires a caller-generated idempotency key. The stored key is

@@ -39,5 +39,95 @@
       "change": "audit_insert_failure",
       "expected": "transaction_rollback"
     }
+  ],
+  "authorizationCases": [
+    {
+      "id": "missing_auth",
+      "given": {
+        "authentication": "missing",
+        "permissions": ["hotel_catalog.products.manage"],
+        "organizationKind": "hotel_group"
+      },
+      "expected": {
+        "status": 401,
+        "errorCode": "unauthenticated",
+        "category": "authentication",
+        "message": "A valid access token is required.",
+        "attemptRepositoryCalls": 0
+      }
+    },
+    {
+      "id": "invalid_bearer",
+      "given": {
+        "authentication": "invalid",
+        "permissions": ["hotel_catalog.products.manage"],
+        "organizationKind": "hotel_group"
+      },
+      "expected": {
+        "status": 401,
+        "errorCode": "unauthenticated",
+        "category": "authentication",
+        "message": "A valid access token is required.",
+        "attemptRepositoryCalls": 0
+      }
+    },
+    {
+      "id": "missing_permission",
+      "given": {
+        "authentication": "valid",
+        "permissions": [],
+        "organizationKind": "hotel_group"
+      },
+      "expected": {
+        "status": 403,
+        "errorCode": "missing_permission",
+        "category": "authorization",
+        "message": "Missing required hotel product management permission.",
+        "attemptRepositoryCalls": 0
+      }
+    },
+    {
+      "id": "wrong_organization_scope",
+      "given": {
+        "authentication": "valid",
+        "permissions": ["hotel_catalog.products.manage"],
+        "organizationKind": "creator_workspace"
+      },
+      "expected": {
+        "status": 403,
+        "errorCode": "invalid_organization_scope",
+        "category": "authorization",
+        "message": "Hotel setup track changes require a hotel-group organization.",
+        "attemptRepositoryCalls": 0
+      }
+    },
+    {
+      "id": "permission_revoked_before_exact_retry",
+      "given": {
+        "authentication": "valid",
+        "permissions": ["hotel_catalog.products.manage"],
+        "organizationKind": "hotel_group",
+        "revokePermissionBeforeExactRetry": true
+      },
+      "expected": {
+        "status": 403,
+        "errorCode": "missing_permission",
+        "category": "authorization",
+        "message": "Missing required hotel product management permission.",
+        "attemptRepositoryCalls": 0
+      }
+    },
+    {
+      "id": "allowed",
+      "given": {
+        "authentication": "valid",
+        "permissions": ["hotel_catalog.products.manage"],
+        "organizationKind": "hotel_group"
+      },
+      "expected": {
+        "status": 200,
+        "attemptRepositoryCalls": 1
+      }
+    }
   ]
 }

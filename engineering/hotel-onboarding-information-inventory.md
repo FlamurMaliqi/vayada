@@ -915,9 +915,13 @@ Canonical domain tables remain the source of truth. Draft state may reference
 unsaved input while a step is in progress, but it must not become a parallel
 hotel profile, room, pricing, or payment model.
 
-Every protected setup read and command must authorize the current organization
-membership, product entitlement, permission, role where applicable, and linked
-property resource. A property ID stored in a draft never grants access.
+Every protected setup read and property-scoped command must authorize the
+current organization membership, applicable product entitlement, permission,
+role, and linked property resource. A property ID stored in a draft never
+grants access. The organization-scoped track-selection command is the bootstrap
+exception: it authorizes the active hotel-group membership and owner-level
+permission before creating product entitlements and resource links, so it must
+not require those outputs as inputs.
 
 Every idempotent setup command in this document uses a key scoped by
 organization, property, product, and operation. The server fingerprints the
@@ -3906,10 +3910,14 @@ schema a partial production source of truth.
 
 ### Required acceptance gates for every protected slice
 
-- **Authorization:** route adapters use `enforceRoutePolicy`. Tests cover
-  missing or invalid authentication, missing permission, missing entitlement,
-  inactive entitlement, missing linked property, disallowed relationship or
-  role, suspended resource, and allowed access.
+- **Authorization:** route adapters use `enforceRoutePolicy`. Property-scoped
+  routes test missing or invalid authentication, missing permission, missing
+  entitlement, inactive entitlement, missing linked property, disallowed
+  relationship or role, suspended resource, and allowed access.
+  Organization-scoped track selection instead tests authentication, active
+  hotel-group membership, owner-level permission, revoked access before replay,
+  and allowed access; it cannot require the entitlements and links that it
+  provisions.
 - **Idempotency and conflict:** exact retry replays the original result; the
   same key with another payload or expected source manifest returns `409`;
   concurrent or stale revision changes cannot overwrite newer work.
