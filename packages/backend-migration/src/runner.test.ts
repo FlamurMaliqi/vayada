@@ -1697,6 +1697,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       );
 
       expect(marketplaceTableRows.map((row) => row.table_name)).toEqual([
+        "active_hotel_submission_revisions",
         "collaboration_deliverables",
         "collaborations",
         "creator_platform_authorizations",
@@ -1707,6 +1708,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "creator_profiles",
         "creator_ratings",
         "external_collaborations",
+        "hotel_submission_moderation",
+        "hotel_submission_revisions",
         "invite_codes",
         "marketplace_chat_messages",
         "marketplace_hotel_profiles",
@@ -2528,9 +2531,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       );
 
       expect(distributionTableRows.map((row) => row.table_name)).toEqual([
+        "active_public_booking_revision",
         "booking_deep_link_contexts",
         "external_api_clients",
         "external_api_usage_events",
+        "live_ari_watermarks",
+        "public_booking_content_revisions",
         "public_hotel_bookability_profiles",
         "public_quote_read_models",
         "public_room_offer_snapshots",

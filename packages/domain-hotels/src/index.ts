@@ -14,6 +14,7 @@
 
 export * from "./adaptiveHotelSetup.js";
 export * from "./hotelMediaProjection.js";
+export * from "./onboardingLifecycle.js";
 export * from "./onboardingReadiness.js";
 export * from "./propertyMedia.js";
 export * from "./propertyMediaWire.js";
