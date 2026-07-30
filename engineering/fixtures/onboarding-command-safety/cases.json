@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "operation": "hotel_setup.tracks.update",
+  "baseRequest": {
+    "organizationId": "11111111-1111-4111-8111-111111111111",
+    "selectedTracks": ["hotel_operations"],
+    "expectedRevision": 0
+  },
+  "cases": [
+    {
+      "id": "exact_retry",
+      "idempotencyKey": "setup-exact-retry",
+      "change": "request_audit_metadata",
+      "expected": "exact_stored_result"
+    },
+    {
+      "id": "changed_payload",
+      "idempotencyKey": "setup-changed-payload",
+      "change": "selected_tracks",
+      "selectedTracks": ["hotel_operations", "creator_marketplace"],
+      "expected": "idempotency_key_conflict"
+    },
+    {
+      "id": "changed_revision",
+      "idempotencyKey": "setup-changed-revision",
+      "change": "expected_revision",
+      "expectedRevision": 1,
+      "expected": "idempotency_key_conflict"
+    },
+    {
+      "id": "concurrent_stale_write",
+      "idempotencyKey": "setup-concurrent-stale",
+      "change": "concurrent_command",
+      "expected": "track_revision_conflict"
+    },
+    {
+      "id": "injected_audit_rollback",
+      "idempotencyKey": "setup-audit-rollback",
+      "change": "audit_insert_failure",
+      "expected": "transaction_rollback"
+    }
+  ]
+}

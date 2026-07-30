@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -13,6 +14,14 @@ import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotel
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const occurredAt = "2026-07-26T16:00:00.000Z";
+const safetyCases = JSON.parse(
+  readFileSync(
+    new URL("../../../engineering/fixtures/onboarding-command-safety/cases.json", import.meta.url),
+    "utf8",
+  ),
+) as {
+  cases: Array<{ id: string; idempotencyKey: string }>;
+};
 
 describe("stored hotel setup track command results", () => {
   it("accepts complete success and conflict results", () => {
@@ -139,10 +148,11 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
 
   it("creates, replays, extends, reconciles, and protects a setup intent", async () => {
     const fixture = await createFixture();
+    const exactRetry = safetyCase("exact_retry");
     const operations = command(fixture, {
       selectedTracks: ["hotel_operations"],
       expectedRevision: 0,
-      idempotencyKey: "setup-operations",
+      idempotencyKey: exactRetry.idempotencyKey,
     });
 
     expect(
@@ -214,8 +224,27 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
       await statusRepository.close?.();
     }
 
-    const replay = await repository.updateTracks(operations);
+    const replay = await repository.updateTracks({
+      ...operations,
+      audit: {
+        requestId: "request-exact-retry",
+        correlationId: "correlation-exact-retry",
+        source: "admin",
+        sourceIp: "192.0.2.20",
+        userAgent: "command-safety-fixture",
+        receivedAt: "2026-07-26T16:05:00.000Z",
+      },
+    });
     expect(replay).toEqual(created);
+    const stored = await client.query<{ result: unknown }>(
+      `SELECT idempotency_metadata -> 'result' AS result
+       FROM platform.idempotency_keys
+       WHERE operation_scope = 'hotel_catalog'
+         AND operation = 'hotel_setup.tracks.update'
+         AND organization_id = $1::uuid`,
+      [fixture.organizationId],
+    );
+    expect(stored.rows[0]?.result).toEqual(created);
     expect(
       await count("platform.product_audit_events", "organization_id", fixture.organizationId),
     ).toBe(1);
@@ -783,19 +812,20 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
 
   it("serializes first writes and rolls the whole command back on audit failure", async () => {
     const concurrent = await createFixture();
+    const concurrentStale = safetyCase("concurrent_stale_write");
     const [left, right] = await Promise.all([
       repository.updateTracks(
         command(concurrent, {
           selectedTracks: ["hotel_operations"],
           expectedRevision: 0,
-          idempotencyKey: "setup-concurrent-operations",
+          idempotencyKey: `${concurrentStale.idempotencyKey}-operations`,
         }),
       ),
       repository.updateTracks(
         command(concurrent, {
           selectedTracks: ["creator_marketplace"],
           expectedRevision: 0,
-          idempotencyKey: "setup-concurrent-marketplace",
+          idempotencyKey: `${concurrentStale.idempotencyKey}-marketplace`,
         }),
       ),
     ]);
@@ -908,12 +938,13 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     }
 
     const rollback = await createFixture();
+    const auditRollback = safetyCase("injected_audit_rollback");
     await expect(
       repository.updateTracks({
         ...command(rollback, {
           selectedTracks: ["hotel_operations"],
           expectedRevision: 0,
-          idempotencyKey: "setup-rollback",
+          idempotencyKey: auditRollback.idempotencyKey,
         }),
         actorUserId: randomUUID(),
       }),
@@ -1020,6 +1051,12 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         receivedAt: occurredAt,
       },
     };
+  }
+
+  function safetyCase(id: string): { id: string; idempotencyKey: string } {
+    const fixture = safetyCases.cases.find((candidate) => candidate.id === id);
+    if (!fixture) throw new Error(`Missing onboarding command-safety fixture "${id}"`);
+    return fixture;
   }
 
   async function activeEntitlementProducts(organizationId: string): Promise<string[]> {
