@@ -427,6 +427,7 @@ type ChannexClassification = {
   channelBookingId?: string;
   revision?: string;
   reviewId?: string;
+  reviewRevision?: string;
 };
 
 function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassification {
@@ -509,13 +510,18 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
       optionalString(nestedPayload, "review_id") ??
       optionalString(nestedPayload, "id") ??
       optionalString(review, "id");
+    const reviewRevision =
+      optionalString(nestedPayload, "updated_at") ?? optionalString(review, "updated_at");
     if (reviewId) {
+      const revisionMarker =
+        envelope.family === "updated_review" ? `:${reviewRevision ?? "unknown"}` : "";
       return {
         eventType,
         family: envelope.family,
         propertyId,
         reviewId,
-        receiptKey: `webhook:channex:${envelope.family}:${propertyId}:${reviewId}`,
+        reviewRevision,
+        receiptKey: `webhook:channex:${envelope.family}:${propertyId}:${reviewId}${revisionMarker}`,
       };
     }
   }
@@ -708,13 +714,15 @@ function previewChannexEvent(
     classification.reviewId
   ) {
     const family = classification.family;
+    const revisionMarker =
+      family === "updated_review" ? `:${classification.reviewRevision ?? "unknown"}` : "";
     return {
-      domainEventKey: `channex.${family}.received:${classification.propertyId}:${classification.reviewId}:v1`,
+      domainEventKey: `channex.${family}.received:${classification.propertyId}:${classification.reviewId}${revisionMarker}:v1`,
       domainEventType: `channex.${family}.received`,
       resourceProduct: "pms",
       resourceType: "channel_review",
       resourceId: classification.reviewId,
-      jobKey: `channex.review-received:channel_review:${classification.propertyId}:${classification.reviewId}:${family}:v1`,
+      jobKey: `channex.review-received:channel_review:${classification.propertyId}:${classification.reviewId}:${family}${revisionMarker}:v1`,
       queueName: "pms.channex.webhooks",
       jobType: "channex.review-received",
       payload: {
@@ -722,6 +730,7 @@ function previewChannexEvent(
         eventFamily: family,
         propertyId: classification.propertyId,
         reviewId: classification.reviewId,
+        reviewRevision: classification.reviewRevision,
         rawPayload: payload,
       },
     };

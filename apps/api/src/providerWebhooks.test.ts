@@ -542,10 +542,14 @@ describe("target provider webhook routes", () => {
 
       expect(store.receipts).toHaveLength(1);
       expect(store.receipts[0]?.receiptKey).toBe(
-        `webhook:channex:${event}:prop_alpenrose:review_123`,
+        `webhook:channex:${event}:prop_alpenrose:review_123${
+          event === "updated_review" ? ":2026-07-30T20:00:00.000Z" : ""
+        }`,
       );
       expect(store.receipts[0]?.normalizedPreview).toMatchObject({
-        domainEventKey: `channex.${event}.received:prop_alpenrose:review_123:v1`,
+        domainEventKey: `channex.${event}.received:prop_alpenrose:review_123${
+          event === "updated_review" ? ":2026-07-30T20:00:00.000Z" : ""
+        }:v1`,
         domainEventType: `channex.${event}.received`,
         resourceProduct: "pms",
         resourceType: "channel_review",
@@ -563,6 +567,36 @@ describe("target provider webhook routes", () => {
       await app.close();
     },
   );
+
+  it("promotes distinct updated_review revisions and dedupes an exact replay", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const firstVersion = channexReviewPayload("updated_review", "2026-07-30T20:00:00.000Z");
+    const secondVersion = channexReviewPayload("updated_review", "2026-07-30T21:00:00.000Z");
+
+    const first = await postChannexPayload(app, firstVersion);
+    const second = await postChannexPayload(app, secondVersion);
+    const replay = await postChannexPayload(app, secondVersion);
+
+    expect(first.json()).toMatchObject({ status: "promoted" });
+    expect(second.json()).toMatchObject({ status: "promoted" });
+    expect(replay.json()).toMatchObject({
+      status: "duplicate",
+      receiptKey:
+        "webhook:channex:updated_review:prop_alpenrose:review_123:2026-07-30T21:00:00.000Z",
+    });
+    expect(store.receipts).toHaveLength(2);
+    expect(store.domainEvents).toHaveLength(2);
+    expect(store.jobs).toHaveLength(2);
+    await app.close();
+  });
 
   it("keeps unknown Channex events in the generic provider-review fallback", async () => {
     const store = createMemoryProviderWebhookStore();
@@ -925,7 +959,10 @@ function channexNonBookingPayload(
   };
 }
 
-function channexReviewPayload(event: "review" | "updated_review"): Record<string, unknown> {
+function channexReviewPayload(
+  event: "review" | "updated_review",
+  updatedAt = "2026-07-30T20:00:00.000Z",
+): Record<string, unknown> {
   return {
     event,
     payload: {
@@ -934,6 +971,7 @@ function channexReviewPayload(event: "review" | "updated_review"): Record<string
         id: "review_123",
         rating: 5,
         content: "Sanitized review fixture",
+        updated_at: updatedAt,
       },
     },
   };
