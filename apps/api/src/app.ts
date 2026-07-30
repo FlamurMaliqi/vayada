@@ -13,6 +13,7 @@ import {
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
+import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
 import type { AskAuditRepository, AskRoutesOptions } from "./routes/ask.js";
@@ -135,6 +136,7 @@ import {
   type PmsModuleActivationRepository,
 } from "./routes/pmsModuleActivations.js";
 import { registerPmsReviewRoutes, type PmsReviewRepository } from "./routes/pmsReviews.js";
+import { registerPropertySetupDraftRoutes } from "./routes/propertySetupDrafts.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
@@ -181,6 +183,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
+  propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
   identityAdminUsersReadRepository?: IdentityAdminUsersReadRepository;
@@ -369,6 +372,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
+    });
+  }
+  if (options.propertySetupDraftCommandRepository) {
+    app.register(registerPropertySetupDraftRoutes, {
+      prefix: "/api/hotel-setup",
+      repository: options.propertySetupDraftCommandRepository,
     });
   }
   if (options.identityPrivacyRepository) {
