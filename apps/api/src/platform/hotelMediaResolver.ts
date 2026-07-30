@@ -52,6 +52,7 @@ type MediaResolutionErrorCode = "media_not_found" | "media_not_authorized" | "me
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_PUBLIC_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+$/;
+const SAFE_HOTEL_IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export type PgHotelMediaResolverConfig = {
   connectionString: string;
@@ -206,8 +207,7 @@ export function createPgHotelMediaResolutionPort(
           !row ||
           Number(row.requestOrdinal) !== index + 1 ||
           row.resolution === "not_found" ||
-          (row.resolution !== "not_authorized" &&
-            !sameIdentifier(row.mediaObjectId, requestedId))
+          (row.resolution !== "not_authorized" && !sameIdentifier(row.mediaObjectId, requestedId))
         ) {
           notFound.push(requestedId);
           return;
@@ -390,7 +390,9 @@ function isVariantRow(value: unknown): value is VariantRow {
 }
 
 function isImageContentType(value: unknown): value is string {
-  return typeof value === "string" && /^image\/[a-z0-9.+-]+$/i.test(value.trim());
+  return (
+    typeof value === "string" && SAFE_HOTEL_IMAGE_CONTENT_TYPES.has(value.trim().toLowerCase())
+  );
 }
 
 function isPublicStorageKey(

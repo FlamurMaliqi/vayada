@@ -368,6 +368,7 @@ describe("persistent hotel media resolver", () => {
     ["staged lifecycle", { lifecycleStatus: "staged" }],
     ["external storage", { storageKind: "external_reference", bucket: null, storageKey: null }],
     ["non-image object", { contentType: "application/pdf" }],
+    ["active SVG object", { contentType: "image/svg+xml" }],
     ["staging object key", { storageKey: `staging/session/${firstMediaId}.webp` }],
     [
       "another media object's key",
@@ -476,6 +477,15 @@ describe("persistent hotel media resolver", () => {
         {
           ...validMedia().variants[0]!,
           contentType: "application/pdf",
+        },
+      ],
+    ],
+    [
+      "active SVG variant",
+      [
+        {
+          ...validMedia().variants[0]!,
+          contentType: "image/svg+xml",
         },
       ],
     ],
