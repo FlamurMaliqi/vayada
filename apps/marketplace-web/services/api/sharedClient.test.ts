@@ -121,6 +121,40 @@ describe("marketplace shared API token routing", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("infers PNG content type when a mobile browser omits it", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (String(url).endsWith("/api/media/upload-sessions")) {
+        expect(body.files[0].contentType).toBe("image/png");
+        return jsonResponse({
+          uploadSession: { sessionId: "mobile-session" },
+          uploadTargets: [
+            {
+              uploadTargetId: "mobile-target",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/deterministic",
+              headers: {},
+            },
+          ],
+        });
+      }
+      expect(body.files[0].contentType).toBe("image/png");
+      return jsonResponse({ mediaObjects: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await uploadPlatformMedia({
+      purpose: "marketplace.creator.profile_image",
+      resource: {
+        product: "marketplace",
+        resourceType: "creator_profile",
+        resourceId: "creator_mobile",
+      },
+      files: [new File(["qa"], "camera.png", { type: "" })],
+    });
+  });
+
   it("refreshes the WorkOS token before retrying an identity privacy request", async () => {
     let accessToken = "stale-workos-token";
     setVayadaApiBearerTokenProvider((_signal, forceRefresh) => {

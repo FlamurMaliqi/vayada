@@ -200,7 +200,7 @@ export default function SharedAccountDetailsStep({
             <input
               ref={profileImageInputRef}
               type="file"
-              accept="image/jpeg,image/png,image/webp"
+              accept="image/*"
               required={!hasInitialProfileImage}
               className="hidden"
               aria-label="Profile photo file"

@@ -80,7 +80,7 @@ export async function uploadPlatformMedia(input: {
       files: input.files.map((file, index) => ({
         clientFileId: `file_${index + 1}`,
         filename: file.name || `image-${index + 1}.jpg`,
-        contentType: file.type || "image/jpeg",
+        contentType: uploadContentType(file),
         sizeBytes: file.size,
       })),
     },
@@ -115,7 +115,7 @@ export async function uploadPlatformMedia(input: {
         const file = input.files[index]!;
         return {
           uploadTargetId: target.uploadTargetId,
-          contentType: file.type || "image/jpeg",
+          contentType: uploadContentType(file),
           sizeBytes: file.size,
         };
       }),
@@ -134,6 +134,13 @@ export async function uploadPlatformMedia(input: {
     heightPx: mediaObject.heightPx,
     originalFilename: mediaObject.originalFilename,
   }));
+}
+
+function uploadContentType(file: File): string {
+  if (file.type) return file.type;
+  if (/\.png$/i.test(file.name)) return "image/png";
+  if (/\.webp$/i.test(file.name)) return "image/webp";
+  return "image/jpeg";
 }
 
 function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {

@@ -39,7 +39,16 @@ type FinalizeResponse = {
 };
 
 export function sharedAccountProfileImageError(file: File): string | null {
-  if (!SHARED_ACCOUNT_PROFILE_IMAGE_TYPES.has(file.type)) {
+  if (
+    ["image/heic", "image/heif"].includes(file.type.toLowerCase()) ||
+    /\.(heic|heif)$/i.test(file.name)
+  ) {
+    return "HEIC and HEIF photos aren’t supported yet. Convert the photo to JPG, PNG, or WebP and try again.";
+  }
+  if (
+    !SHARED_ACCOUNT_PROFILE_IMAGE_TYPES.has(file.type) &&
+    !(file.type === "" && /\.(jpe?g|png|webp)$/i.test(file.name))
+  ) {
     return "Choose a JPG, PNG, or WebP image.";
   }
   if (file.size === 0) return "Choose an image that isn’t empty.";
@@ -49,12 +58,20 @@ export function sharedAccountProfileImageError(file: File): string | null {
   return null;
 }
 
+function sharedAccountProfileImageContentType(file: File): string {
+  if (file.type) return file.type;
+  if (/\.png$/i.test(file.name)) return "image/png";
+  if (/\.webp$/i.test(file.name)) return "image/webp";
+  return "image/jpeg";
+}
+
 export function createSharedAccountProfileImageUploader(
   client: SharedAccountProfileImageHttpClient,
 ): SharedAccountProfileImageUploader {
   return async (userId, file) => {
     const validationError = sharedAccountProfileImageError(file);
     if (validationError) throw new Error(validationError);
+    const contentType = sharedAccountProfileImageContentType(file);
 
     const created = await client.post<UploadSessionResponse>("/api/media/upload-sessions", {
       purpose: "identity.user.profile_image",
@@ -68,7 +85,7 @@ export function createSharedAccountProfileImageUploader(
         {
           clientFileId: "profile_image",
           filename: file.name || "profile-image.jpg",
-          contentType: file.type,
+          contentType,
           sizeBytes: file.size,
         },
       ],
@@ -92,7 +109,7 @@ export function createSharedAccountProfileImageUploader(
         files: [
           {
             uploadTargetId: target.uploadTargetId,
-            contentType: file.type,
+            contentType,
             sizeBytes: file.size,
           },
         ],

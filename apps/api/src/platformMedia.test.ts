@@ -987,6 +987,83 @@ describe("platform media upload routes", () => {
     expect((response.body as ErrorResponse).code).toBe(propertyHeroPdfCase.expected.errorCode);
   });
 
+  it.each([
+    ["camera.heic", "image/heic"],
+    ["camera.heif", ""],
+  ])("gives mobile creators conversion guidance for %s", async (filename, contentType) => {
+    const app = buildMediaApp({
+      permissions: ["marketplace.profile.manage"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_lina",
+          relationship: "owner",
+        },
+      ],
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "marketplace.creator.profile_image",
+        visibility: "public",
+        resource: {
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: "creator_profile_lina",
+        },
+        files: [{ filename, contentType, sizeBytes: 1024 }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "unsupported_media_type",
+      message:
+        "HEIC and HEIF profile photos are not supported yet. Convert the photo to JPG, PNG, or WebP and try again.",
+    });
+  });
+
+  it.each([
+    ["identity.user.profile_image", "platform", "user_profile", "user_media"],
+    ["marketplace.creator.profile_image", "marketplace", "creator_profile", "creator_profile_lina"],
+  ])(
+    "accepts a supported mobile %s photo when the browser omits its MIME type",
+    async (purpose, product, resourceType, resourceId) => {
+      const app = buildMediaApp({
+        permissions: ["marketplace.profile.manage"],
+        resources: [
+          {
+            product: "marketplace",
+            resourceType: "creator_profile",
+            resourceId: "creator_profile_lina",
+            relationship: "owner",
+          },
+        ],
+      });
+
+      const response = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          purpose,
+          visibility: "public",
+          resource: { product, resourceType, resourceId },
+          files: [{ filename: "camera.png", contentType: "", sizeBytes: 1024 }],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect((response.body as MediaCreateResponse).uploadTargets[0]?.headers).toMatchObject({
+        "content-type": "image/png",
+      });
+    },
+  );
+
   it("creates and finalizes PMS room type media through platform media", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     const app = buildMediaApp({
