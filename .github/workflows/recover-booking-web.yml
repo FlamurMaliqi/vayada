@@ -56,8 +56,8 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
-            NEXT_PUBLIC_BOOKING_WEB_API_URL=https://target-api.vayada.com
-            NEXT_PUBLIC_API_URL=https://target-api.vayada.com
+            NEXT_PUBLIC_BOOKING_WEB_API_URL=https://booking-api.vayada.com
+            NEXT_PUBLIC_API_URL=https://booking-api.vayada.com
             NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_51T4q9THtaQeEOmq25xCQRtxOCZ7WKDN8Bpmo2jMuQCKGLPxjoU7cApWRR0fysdKgxjLsEs7zoL00qaAB6boaNMC600tH1jDPWD
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ inputs.image_tag }}
