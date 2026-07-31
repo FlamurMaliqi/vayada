@@ -1,11 +1,11 @@
-export const SETUP_TRACKS = ["hotel_operations", "creator_marketplace"] as const;
+export const SETUP_TRACKS = Object.freeze(["hotel_operations", "creator_marketplace"] as const);
 
 export type SetupTrack = (typeof SETUP_TRACKS)[number];
 
-export const SETUP_TRACK_COMPONENT_PRODUCTS = {
-  hotel_operations: ["pms", "booking"],
-  creator_marketplace: ["marketplace"],
-} as const satisfies Record<SetupTrack, readonly string[]>;
+export const SETUP_TRACK_COMPONENT_PRODUCTS = Object.freeze({
+  hotel_operations: Object.freeze(["pms", "booking"] as const),
+  creator_marketplace: Object.freeze(["marketplace"] as const),
+}) satisfies Record<SetupTrack, readonly string[]>;
 
 export type UpdateTracksRequest = {
   selectedTracks: SetupTrack[];

@@ -29,6 +29,20 @@ describe("adaptive hotel setup contracts", () => {
     });
   });
 
+  it("keeps canonical tracks and component mappings immutable at runtime", () => {
+    expect(Object.isFrozen(SETUP_TRACKS)).toBe(true);
+    expect(Object.isFrozen(SETUP_TRACK_COMPONENT_PRODUCTS)).toBe(true);
+    expect(Object.isFrozen(SETUP_TRACK_COMPONENT_PRODUCTS.hotel_operations)).toBe(true);
+    expect(Object.isFrozen(SETUP_TRACK_COMPONENT_PRODUCTS.creator_marketplace)).toBe(true);
+
+    expect(() => (SETUP_TRACKS as unknown as string[]).push("booking")).toThrow(TypeError);
+    expect(() =>
+      (SETUP_TRACK_COMPONENT_PRODUCTS.hotel_operations as unknown as string[]).push("marketplace"),
+    ).toThrow(TypeError);
+
+    expect(isSetupTrack("booking")).toBe(false);
+  });
+
   it("parses and canonicalizes an update request", () => {
     const request = parseUpdateTracksRequest({
       selectedTracks: ["creator_marketplace", "hotel_operations"],
