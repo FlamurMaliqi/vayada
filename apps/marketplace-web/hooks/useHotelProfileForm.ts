@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { countries } from "countries-list";
 import type { HotelFormState, ListingFormData } from "@/lib/types";
+import { removeListingImageAt } from "@/lib/utils/listingImageState";
 
 const COUNTRIES = Object.values(countries)
   .map((country) => country.name)
@@ -18,6 +19,7 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
   // Form state
   const [form, setForm] = useState<HotelFormState>({
     about: "",
+    localityPublic: false,
   });
 
   // Listings state
@@ -142,11 +144,9 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
   const removeListingImage = useCallback((listingIndex: number, imageIndex: number) => {
     setListings((prev) => {
       const updated = [...prev];
-      updated[listingIndex] = {
-        ...updated[listingIndex],
-        images: updated[listingIndex].images.filter((_, i) => i !== imageIndex),
-        imageFiles: updated[listingIndex].imageFiles.filter((_, i) => i !== imageIndex),
-      };
+      const listing = updated[listingIndex];
+      if (!listing) return prev;
+      updated[listingIndex] = removeListingImageAt(listing, imageIndex);
       return updated;
     });
   }, []);
@@ -158,24 +158,35 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
 
   // Validation
   const validateForm = useCallback(
-    (hasExistingOffer = false): boolean => {
-      if (!form.about.trim()) {
-        onError?.("Creator-facing introduction is required.");
+    (options: {
+      validateProfile: boolean;
+      requireLocalityConsent: boolean;
+      validateOffers: boolean;
+      profileFieldName?: string;
+    }): boolean => {
+      const profileFieldName = options.profileFieldName ?? "Creator-facing introduction";
+      if (options.validateProfile && !form.about.trim()) {
+        onError?.(`${profileFieldName} is required.`);
         return false;
       }
 
-      if (form.about.trim().length < 50) {
-        onError?.("Creator-facing introduction must be at least 50 characters.");
+      if (options.validateProfile && form.about.trim().length < 50) {
+        onError?.(`${profileFieldName} must be at least 50 characters.`);
         return false;
       }
 
-      if (!hasExistingOffer && listings.length === 0) {
+      if (options.requireLocalityConsent && !form.localityPublic) {
+        onError?.("Consent to show your city and country on public Vayada surfaces is required.");
+        return false;
+      }
+
+      if (options.validateOffers && listings.length === 0) {
         onError?.("At least one collaboration offer is required. Please add an offer.");
         return false;
       }
 
       // Validate each listing
-      for (let i = 0; i < listings.length; i++) {
+      for (let i = 0; options.validateOffers && i < listings.length; i++) {
         const listing = listings[i];
         if (!listing.name.trim()) {
           onError?.(`Offer ${i + 1}: Offer title is required`);
@@ -253,9 +264,12 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
   );
 
   // Can proceed to next step
-  const canProceedStep1 = useCallback((): boolean => {
-    return form.about.trim().length >= 50;
-  }, [form.about]);
+  const canProceedStep1 = useCallback(
+    (requireLocalityConsent = true): boolean => {
+      return form.about.trim().length >= 50 && (!requireLocalityConsent || form.localityPublic);
+    },
+    [form.about, form.localityPublic],
+  );
 
   const canProceedListingStep = useCallback(
     (step: "details" | "offerings" | "requirements"): boolean => {

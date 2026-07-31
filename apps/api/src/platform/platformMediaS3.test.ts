@@ -386,6 +386,60 @@ describe("S3 platform profile media adapter", () => {
     }
   });
 
+  it("deletes every generated variant by exact key and refuses another media namespace", async () => {
+    const source = await validJpeg();
+    const { client, send } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const { session, file } = await inspectValidUpload(adapter, source);
+    const variants = await adapter.generateVariants({ session, file, fileIndex: 0, policy });
+    send.mockClear();
+
+    await adapter.cleanupGeneratedVariants!({ session, file, variants });
+
+    expect(
+      send.mock.calls.map(([command]) => {
+        expect(command).toBeInstanceOf(DeleteObjectCommand);
+        return (command as DeleteObjectCommand).input;
+      }),
+    ).toEqual(
+      variants.map((variant) => ({
+        Bucket: bucketName,
+        Key: variant.storageKey,
+      })),
+    );
+
+    const cleanupError = new Error("one delete failed");
+    send.mockImplementation(async (command) => {
+      if (command instanceof DeleteObjectCommand && command.input.Key === variants[0]!.storageKey) {
+        throw cleanupError;
+      }
+      return {};
+    });
+    await expect(adapter.cleanupGeneratedVariants!({ session, file, variants })).rejects.toThrow(
+      "One or more generated variants could not be deleted",
+    );
+    expect(send).toHaveBeenCalledTimes(variants.length * 2);
+
+    send.mockClear();
+    await expect(
+      adapter.cleanupGeneratedVariants!({
+        session,
+        file,
+        variants: [
+          {
+            ...variants[0]!,
+            storageKey: variants[0]!.storageKey.replace(`/${mediaId}/`, "/another-media/"),
+          },
+        ],
+      }),
+    ).rejects.toThrow("restricted to the exact media namespace");
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it.each(["property.hero_image", "property.gallery_image"] as const)(
     "publishes approved Booking %s variants through the configured CDN",
     async (purpose) => {

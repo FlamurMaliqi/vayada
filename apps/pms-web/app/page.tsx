@@ -21,11 +21,11 @@ export default function Home() {
       const decision = await resolvePmsSetupGuard("/dashboard");
       if (cancelled) return;
 
-      localStorage.setItem(
-        "pmsSetupComplete",
-        decision.action === "enter_product" ? "true" : "false",
-      );
-      router.replace(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
+      if (decision.action === "redirect_to_setup") {
+        window.location.replace(decision.redirectPath);
+        return;
+      }
+      router.replace("/dashboard");
     }
     redirect();
     return () => {

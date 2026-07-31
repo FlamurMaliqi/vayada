@@ -1,7 +1,7 @@
 import type { HotelFormState, ListingFormData } from "@/lib/types";
 
 const DRAFT_KEY_PREFIX = "vayada_hotel_marketplace_draft";
-const DRAFT_VERSION = 2;
+const DRAFT_VERSION = 3;
 const MAX_DRAFT_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 type PersistedListing = Omit<ListingFormData, "imageFiles">;
@@ -40,6 +40,147 @@ export function ensureHotelMarketplaceOfferIdempotency(listing: ListingFormData)
 export function initialHotelMarketplaceOfferImages(picture?: string | null): string[] {
   const image = picture?.trim();
   return image ? [image] : [];
+}
+
+export function buildHotelMarketplaceOfferings(listing: ListingFormData) {
+  const offerings: Array<{
+    collaboration_type: "Free Stay" | "Paid" | "Discount" | "Affiliate";
+    availability_months: string[];
+    platforms: string[];
+    free_stay_min_nights?: number;
+    free_stay_max_nights?: number;
+    paid_max_amount?: number;
+    currency?: string;
+    discount_percentage?: number;
+    commission_percentage?: number;
+  }> = [];
+
+  if (listing.collaborationTypes.includes("Free Stay")) {
+    offerings.push({
+      collaboration_type: "Free Stay",
+      availability_months: listing.availability,
+      platforms: listing.platforms,
+      free_stay_min_nights: listing.freeStayMinNights,
+      free_stay_max_nights: listing.freeStayMaxNights,
+    });
+  }
+  if (listing.collaborationTypes.includes("Paid")) {
+    offerings.push({
+      collaboration_type: "Paid",
+      availability_months: listing.availability,
+      platforms: listing.platforms,
+      paid_max_amount: listing.paidMaxAmount,
+      currency: listing.currency || "USD",
+    });
+  }
+  if (listing.collaborationTypes.includes("Discount")) {
+    offerings.push({
+      collaboration_type: "Discount",
+      availability_months: listing.availability,
+      platforms: listing.platforms,
+      discount_percentage: listing.discountPercentage,
+    });
+  }
+  if (listing.collaborationTypes.includes("Affiliate")) {
+    offerings.push({
+      collaboration_type: "Affiliate",
+      availability_months: listing.availability,
+      platforms: listing.platforms,
+      commission_percentage: listing.commissionPercentage,
+    });
+  }
+
+  return offerings;
+}
+
+export function buildHotelMarketplaceCreatorRequirements(listing: ListingFormData) {
+  const ageGroups = listing.targetGroupAgeGroups || [];
+  let targetAgeMin: number | undefined;
+  let targetAgeMax: number | undefined;
+
+  if (ageGroups.length > 0) {
+    let min = Infinity;
+    let max = -Infinity;
+    let has55Plus = false;
+
+    for (const group of ageGroups) {
+      if (group === "18-24") {
+        min = Math.min(min, 18);
+        max = Math.max(max, 24);
+      } else if (group === "25-34") {
+        min = Math.min(min, 25);
+        max = Math.max(max, 34);
+      } else if (group === "35-44") {
+        min = Math.min(min, 35);
+        max = Math.max(max, 44);
+      } else if (group === "45-54") {
+        min = Math.min(min, 45);
+        max = Math.max(max, 54);
+      } else if (group === "55+") {
+        min = Math.min(min, 55);
+        has55Plus = true;
+      }
+    }
+
+    targetAgeMin = min === Infinity ? undefined : min;
+    targetAgeMax = has55Plus ? undefined : max === -Infinity ? undefined : max;
+  } else {
+    targetAgeMin = listing.targetGroupAgeMin;
+    targetAgeMax = listing.targetGroupAgeMax;
+  }
+
+  return {
+    platforms: listing.lookingForPlatforms,
+    target_countries: listing.targetGroupCountries,
+    target_age_min: targetAgeMin,
+    target_age_max: targetAgeMax,
+    target_age_groups: ageGroups,
+    creator_types: listing.lookingForCreatorTypes ?? [],
+  };
+}
+
+export type HotelMarketplaceCoverSource =
+  | { kind: "file"; file: File }
+  | { kind: "remote_url"; url: string };
+
+export function firstHotelMarketplaceOfferCoverSource(
+  listing: ListingFormData,
+): HotelMarketplaceCoverSource | null {
+  const firstImage = listing.images[0]?.trim();
+  if (firstImage && isPersistableImage(firstImage)) {
+    return { kind: "remote_url", url: firstImage };
+  }
+  const firstFile = listing.imageFiles[0];
+  return firstFile ? { kind: "file", file: firstFile } : null;
+}
+
+export function resolveHotelMarketplaceCoverSource({
+  listing,
+  selectedFile,
+  existingOfferCoverUrl,
+}: {
+  listing?: ListingFormData;
+  selectedFile?: File | null;
+  existingOfferCoverUrl?: string | null;
+}): HotelMarketplaceCoverSource | null {
+  if (selectedFile) return { kind: "file", file: selectedFile };
+  const listingSource = listing ? firstHotelMarketplaceOfferCoverSource(listing) : null;
+  if (listingSource) return listingSource;
+  const existingCover = existingOfferCoverUrl?.trim();
+  return existingCover ? { kind: "remote_url", url: existingCover } : null;
+}
+
+export function replaceFirstOfferPhotoWithCanonicalCover(
+  listing: ListingFormData,
+  coverUrl: string,
+): ListingFormData {
+  const firstImage = listing.images[0];
+  const firstImageWasLocal = !firstImage || !isPersistableImage(firstImage);
+  return {
+    ...listing,
+    images: [coverUrl, ...listing.images.slice(firstImage ? 1 : 0)],
+    imageFiles: firstImageWasLocal ? listing.imageFiles.slice(1) : listing.imageFiles,
+  };
 }
 
 export function recoverHotelMarketplaceOfferFromSourceMediaFailure(
@@ -102,6 +243,16 @@ export function createHotelMarketplaceDraft(
   };
 }
 
+export function restoreHotelMarketplaceDraftForm(
+  draftForm: HotelFormState,
+  currentLocalityPublic: boolean,
+): HotelFormState {
+  return {
+    about: draftForm.about,
+    localityPublic: currentLocalityPublic,
+  };
+}
+
 export function recoverHotelMarketplaceDraftFromSourceMediaFailure(
   draft: Omit<HotelMarketplaceDraft, "listings"> & { listings: ListingFormData[] },
   idempotencyKey: string,
@@ -154,11 +305,12 @@ export function readHotelMarketplaceDraft(
       version?: number;
     };
     if (
-      (parsed.version !== 1 && parsed.version !== DRAFT_VERSION) ||
+      parsed.version !== DRAFT_VERSION ||
       typeof parsed.savedAt !== "number" ||
       now - parsed.savedAt > MAX_DRAFT_AGE_MS ||
       typeof parsed.currentStep !== "number" ||
       typeof parsed.form?.about !== "string" ||
+      typeof parsed.form.localityPublic !== "boolean" ||
       !Array.isArray(parsed.listings)
     ) {
       storage.removeItem(draftKey(propertyId));

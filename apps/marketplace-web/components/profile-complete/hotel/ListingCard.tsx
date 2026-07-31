@@ -233,6 +233,11 @@ export function ListingCard({
                       <span className="mt-0.5 text-xs text-gray-400">
                         JPG, PNG, WEBP · max 10 MB each
                       </span>
+                      {index === 0 && (
+                        <span className="mt-1 text-xs text-gray-500">
+                          Your first photo also becomes your public hotel cover.
+                        </span>
+                      )}
                     </span>
                   </button>
                 )}
@@ -246,6 +251,11 @@ export function ListingCard({
                   multiple
                   aria-required="true"
                 />
+                {listing.images.length > 0 && index === 0 && (
+                  <p className="mt-2 text-xs text-gray-500">
+                    Your first photo also becomes your public hotel cover.
+                  </p>
+                )}
               </div>
             </div>
           )}

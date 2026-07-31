@@ -32,7 +32,6 @@ export function HotelProfile() {
 
   const {
     hotelProfile,
-    setHotelProfile,
     loading,
     activeHotelTab,
     setActiveHotelTab,
@@ -164,12 +163,12 @@ export function HotelProfile() {
       <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm md:p-5">
         {activeHotelTab === "overview" && (
           <HotelOverviewTab
-            profile={hotelProfile}
             isEditing={isEditingHotelProfile}
             editFormData={{
               name: hotelEditFormData.name,
               picture: hotelEditFormData.picture,
               location: hotelEditFormData.location,
+              localityPublic: hotelEditFormData.localityPublic,
               website: hotelEditFormData.website,
               about: hotelEditFormData.about,
             }}
@@ -364,9 +363,9 @@ export function HotelProfile() {
           setIsEditingHotelProfile(true);
         }}
         onDeletePicture={() => {
-          setHotelProfile({ ...hotelProfile, picture: undefined });
           setHotelEditFormData({ ...hotelEditFormData, picture: "" });
           setHotelPicturePreview(null);
+          setIsEditingHotelProfile(true);
         }}
         showDeleteButton={!!hotelProfile.picture}
       />

@@ -1,5 +1,4 @@
 import {
-  isActionableSharedProductActivation,
   resolveSharedHotelSetupGuard,
   type SharedHotelSetupApi,
   type SharedHotelSetupGuardDecision,
@@ -9,24 +8,20 @@ import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { SELECTED_SHARED_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
 
 type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-
-export function isPmsRoomSetupDecision(decision: SharedHotelSetupGuardDecision): boolean {
-  return (
-    decision.action === "redirect_to_setup" &&
-    decision.setupAction === "complete_product_activation" &&
-    decision.product === "pms" &&
-    isActionableSharedProductActivation(decision)
-  );
-}
+const MARKETPLACE_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
 
 export async function resolvePmsSetupGuard(
   returnTo: string,
   api: Pick<SharedHotelSetupApi, "getStatus"> = sharedHotelSetupApi,
   storage: HotelSelectionStorage | null = browserStorage(),
+  setupBaseUrl = MARKETPLACE_FRONTEND_URL,
 ): Promise<SharedHotelSetupGuardDecision> {
   const decision = await resolveSharedHotelSetupGuard(api, {
     entryProduct: "pms",
+    returnProduct: "pms",
     returnTo,
+    setupBaseUrl,
     propertyId: readSelectedSharedPropertyId(storage),
     onInvalidPropertyId: () => storage?.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY),
   });

@@ -179,6 +179,7 @@
         "body": {
           "purpose": "property.hero_image",
           "visibility": "public",
+          "expectedProfileRevision": 1,
           "resource": {
             "product": "booking",
             "resourceType": "booking_hotel",

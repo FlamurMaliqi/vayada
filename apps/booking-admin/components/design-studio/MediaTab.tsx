@@ -14,6 +14,13 @@ interface MediaTabProps {
   handleImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   removeHeroImage: () => void;
   resetContent: () => void;
+  publicationSetup?: {
+    localityPublic: boolean;
+    hasCanonicalPublicMedia: boolean;
+    publicDescription: string;
+    onLocalityPublicChange: (value: boolean) => void;
+    onPublicDescriptionChange: (value: string) => void;
+  } | null;
 }
 
 export default function MediaTab({
@@ -26,9 +33,37 @@ export default function MediaTab({
   handleImageUpload,
   removeHeroImage,
   resetContent,
+  publicationSetup = null,
 }: MediaTabProps) {
+  const subtextMaxLength = publicationSetup ? 500 : 1000;
+  const displayedSubtext = publicationSetup?.publicDescription ?? heroSubtext;
+
   return (
     <>
+      {publicationSetup && (
+        <div className="rounded-lg border border-primary-200 bg-primary-50 p-4">
+          <h2 className="text-[13px] font-semibold text-gray-900">Public booking profile</h2>
+          <p className="mt-1 text-[12px] leading-5 text-gray-600">
+            Add the description, approved hero image, and locality guests need before your booking
+            page can go live.
+          </p>
+          <label className="mt-3 flex items-start gap-2 text-[12px] leading-5 text-gray-700">
+            <input
+              type="checkbox"
+              checked={publicationSetup.localityPublic}
+              onChange={(event) => publicationSetup.onLocalityPublicChange(event.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+            Show the hotel&apos;s city and country on the public booking page
+          </label>
+          {!publicationSetup.hasCanonicalPublicMedia && (
+            <p className="mt-2 text-[12px] font-medium leading-5 text-amber-800">
+              Upload a hero image here so Vayada can approve it for the public booking profile.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Hero Image */}
       <div className="bg-white rounded-lg border border-gray-200 p-4">
         <h2 className="text-[13px] font-semibold text-gray-900">
@@ -100,17 +135,25 @@ export default function MediaTab({
             />
           </div>
           <div>
-            <label className="block text-[12px] font-medium text-gray-700 mb-0.5">Subtext</label>
+            <label className="block text-[12px] font-medium text-gray-700 mb-0.5">
+              {publicationSetup ? "Public description" : "Subtext"}
+            </label>
             <textarea
-              aria-label="Hero subtext"
-              value={heroSubtext}
-              onChange={(e) => setHeroSubtext(e.target.value)}
-              maxLength={1000}
+              aria-label={publicationSetup ? "Public description" : "Hero subtext"}
+              value={displayedSubtext}
+              onChange={(event) =>
+                publicationSetup
+                  ? publicationSetup.onPublicDescriptionChange(event.target.value)
+                  : setHeroSubtext(event.target.value)
+              }
+              maxLength={subtextMaxLength}
               rows={3}
               className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
               placeholder="Enter hero subtext"
             />
-            <p className="text-[11px] text-gray-400 mt-0.5">{heroSubtext.length}/1000 characters</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">
+              {displayedSubtext.length}/{subtextMaxLength} characters
+            </p>
           </div>
           <button
             onClick={resetContent}

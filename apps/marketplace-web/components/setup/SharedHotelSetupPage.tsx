@@ -5,24 +5,24 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   SharedAccountDetailsStep,
   SharedFirstRunPropertySetupWizard,
-  buildProductHandoffUrl,
   isSharedAccountDetailsComplete,
   isSafeSharedHotelSetupReturnTo,
   normalizeSharedAccountName,
   parseSharedHotelSetupEntryProduct,
   safeSharedHotelSetupReturnTo,
-  type SharedFirstRunProductContinueInput,
+  type SharedFirstRunContinueInput,
   type SharedHotelSetupEntryProduct,
+  type SharedSetupTaskFormContext,
 } from "@vayada/product-onboarding";
 
 import { ROUTES } from "@/lib/constants";
-import { marketplaceActivationPath } from "@/lib/utils/sharedSetupGuard";
 import { authService } from "@/services/auth";
 import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
-import { getAuthSessionUser, getAuthWorkosOrganizationId } from "@/services/auth/sessionStore";
+import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
@@ -81,48 +81,44 @@ export function SharedHotelSetupPage({
       parseSharedHotelSetupEntryProduct(searchParams.get("entryProduct")) ?? defaultEntryProduct,
     [defaultEntryProduct, searchParams],
   );
+  const returnProduct = useMemo(
+    () => parseSharedHotelSetupEntryProduct(searchParams.get("returnProduct")) ?? "marketplace",
+    [searchParams],
+  );
   const returnTo = useMemo(
-    () => safeSharedHotelSetupReturnTo(searchParams.get("returnTo"), defaultReturnTo),
-    [defaultReturnTo, searchParams],
+    () =>
+      safeSharedHotelSetupReturnTo(
+        searchParams.get("returnTo"),
+        returnProduct === "marketplace" ? defaultReturnTo : "/dashboard",
+      ),
+    [defaultReturnTo, returnProduct, searchParams],
   );
   const initialAddProperty = searchParams.get("mode") === "add";
   const initialPropertyId = searchParams.get("propertyId");
 
-  const handleProductContinue = (input: SharedFirstRunProductContinueInput) => {
+  const handlePropertySelected = (propertyId: string) => {
+    localStorage.setItem("selectedSharedPropertyId", propertyId);
+    router.replace(setupPathForSelectedProperty(searchParams.toString(), propertyId), {
+      scroll: false,
+    });
+  };
+
+  const handleContinue = async (input: SharedFirstRunContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
-    const workosOrganizationId = getAuthWorkosOrganizationId();
+    const requestedReturnTo = input.product === returnProduct ? input.returnTo : null;
     if (input.product === "booking") {
-      const setupPath = `/setup?${new URLSearchParams({
-        entryProduct: "booking",
-        propertyId: input.propertyId,
-      }).toString()}`;
-      window.location.href = buildProductHandoffUrl(
-        BOOKING_ADMIN_URL,
-        input.propertyId,
-        input.organizationId,
-        workosOrganizationId,
-        setupPath,
-      );
+      window.location.replace(productReturnUrl("booking", requestedReturnTo));
       return;
     }
     if (input.product === "pms") {
-      window.location.href = buildProductHandoffUrl(
-        PMS_FRONTEND_URL,
-        input.propertyId,
-        input.organizationId,
-        workosOrganizationId,
-      );
+      window.location.replace(productReturnUrl("pms", requestedReturnTo));
       return;
     }
-    if (input.action === "complete_product_activation") {
-      router.push(marketplaceActivationPath(input.propertyId));
-      return;
-    }
-    if (isSafeSharedHotelSetupReturnTo(input.returnTo)) {
-      router.push(input.returnTo);
-      return;
-    }
-    router.push(input.product === "marketplace" ? ROUTES.MARKETPLACE : returnTo);
+    router.replace(
+      returnProduct === "marketplace" && isSafeSharedHotelSetupReturnTo(input.returnTo)
+        ? input.returnTo
+        : ROUTES.MARKETPLACE,
+    );
   };
 
   if (checkingAuth || !authorized) {
@@ -178,9 +174,34 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
-      accountContactEmail={accountContactEmail}
-      accountContactPhone={accountContactPhone}
-      onProductContinue={handleProductContinue}
+      onContinue={handleContinue}
+      onPropertySelected={handlePropertySelected}
+      renderTaskForm={(context: SharedSetupTaskFormContext) => <SetupTaskFormRouter {...context} />}
+      onExit={() => {
+        if (returnProduct === "marketplace") {
+          router.replace(returnTo);
+          return;
+        }
+        window.location.replace(productReturnUrl(returnProduct, returnTo));
+      }}
     />
   );
+}
+
+function productReturnUrl(
+  product: Exclude<SharedHotelSetupEntryProduct, "marketplace">,
+  returnTo: string | null,
+): string {
+  const safeReturnTo = safeSharedHotelSetupReturnTo(returnTo, "/dashboard");
+  return new URL(
+    safeReturnTo,
+    product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL,
+  ).toString();
+}
+
+export function setupPathForSelectedProperty(query: string, propertyId: string): string {
+  const searchParams = new URLSearchParams(query);
+  searchParams.set("propertyId", propertyId);
+  searchParams.delete("mode");
+  return `${ROUTES.SETUP}?${searchParams.toString()}`;
 }

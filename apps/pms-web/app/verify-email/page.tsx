@@ -37,16 +37,15 @@ export default function VerifyEmailPage() {
 
   async function redirectAfterVerifiedSession() {
     const decision = await resolvePmsSetupGuard("/dashboard");
-    localStorage.setItem(
-      "pmsSetupComplete",
-      decision.action === "enter_product" ? "true" : "false",
-    );
     clearPendingEmailVerification();
     setVerified(true);
-    setTimeout(
-      () => router.push(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath),
-      1200,
-    );
+    setTimeout(() => {
+      if (decision.action === "redirect_to_setup") {
+        window.location.replace(decision.redirectPath);
+        return;
+      }
+      router.push("/dashboard");
+    }, 1200);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {

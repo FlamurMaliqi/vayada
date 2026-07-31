@@ -376,6 +376,33 @@ export function createS3PlatformMediaAdapter(
         }),
       );
     },
+
+    async cleanupGeneratedVariants(input) {
+      for (const variant of input.variants) {
+        assertGeneratedVariantKey(
+          variant,
+          input.session.effectiveVisibility,
+          input.file.sessionFile.mediaId,
+          publicPathPrefix,
+        );
+      }
+      const cleanupResults = await Promise.allSettled(
+        input.variants.map(async (variant) =>
+          s3.send(
+            new DeleteObjectCommand({
+              Bucket: bucketName,
+              Key: variant.storageKey,
+            }),
+          ),
+        ),
+      );
+      const failures = cleanupResults.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (failures.length > 0) {
+        throw new AggregateError(failures, "One or more generated variants could not be deleted");
+      }
+    },
   };
 }
 
@@ -507,6 +534,28 @@ function assertSegment(value: string, name: string): void {
 function assertStagingKey(stagingKey: string, sessionId: string): void {
   if (!stagingKey.startsWith(`staging/${sessionId}/`) || stagingKey.includes("..")) {
     throw new Error("Image uploads require the session staging namespace");
+  }
+}
+
+function assertGeneratedVariantKey(
+  variant: PlatformMediaVariantRecord,
+  visibility: "private" | "public",
+  mediaId: string,
+  publicPathPrefix: string,
+): void {
+  assertSegment(mediaId, "mediaId");
+  const expectedPrefix = `${visibility}/${publicPathPrefix}/${mediaId}/`;
+  const relativeKey = variant.storageKey.slice(expectedPrefix.length);
+  const [variantName, filename, ...extraSegments] = relativeKey.split("/");
+  if (
+    variant.visibility !== visibility ||
+    !variant.storageKey.startsWith(expectedPrefix) ||
+    variant.storageKey.includes("..") ||
+    extraSegments.length > 0 ||
+    variantName !== variant.variantName ||
+    !/^sha256-[a-f0-9]{64}\.(?:webp|jpg|jpeg|png|gif)$/.test(filename ?? "")
+  ) {
+    throw new Error("Generated variant cleanup is restricted to the exact media namespace");
   }
 }
 

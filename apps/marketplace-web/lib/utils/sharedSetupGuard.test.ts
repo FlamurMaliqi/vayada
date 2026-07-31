@@ -1,72 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  resolveSharedFirstRunSetupView,
-  type SharedHotelSetupStatus,
-} from "@vayada/product-onboarding";
+import type { AdaptiveHotelSetupStatus } from "@vayada/product-onboarding";
 
 import {
-  isMarketplaceActivationDecision,
   marketplaceGuardRedirectPath,
   resolveMarketplaceActivationGuard,
   resolveMarketplaceSetupGuard,
 } from "./sharedSetupGuard";
 
-describe("resolveMarketplaceSetupGuard", () => {
-  it("validates Marketplace activation against the property from the activation URL", async () => {
+describe("Marketplace setup guards", () => {
+  it("validates a task route against the property from the URL", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
-          properties: [marketplaceActivationProperty("property-from-url")],
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-from-url",
-            product: "marketplace",
-            missingSteps: ["creatorPitch", "marketplaceOffer"],
-            reasonCodes: ["product_activation_incomplete"],
-          },
+          propertyId: "property-from-url",
+          decision: "enter",
+          destinationRouteKey: "marketplace.workspace",
+          withIncompleteTask: true,
         }),
       ),
     };
 
-    const decision = await resolveMarketplaceActivationGuard(
-      "/marketplace",
-      " property-from-url ",
-      { api },
-    );
-
+    await expect(
+      resolveMarketplaceActivationGuard("/marketplace", " property-from-url ", { api }),
+    ).resolves.toEqual({
+      action: "enter_product",
+      propertyId: "property-from-url",
+      destinationRouteKey: "marketplace.workspace",
+      redirectPath: null,
+    });
     expect(api.getStatus).toHaveBeenCalledWith(
       {
         entryProduct: "marketplace",
-        returnTo: "/marketplace",
         propertyId: "property-from-url",
       },
       { signal: undefined },
     );
-    expect(decision).toMatchObject({
-      action: "redirect_to_setup",
-      propertyId: "property-from-url",
-      product: "marketplace",
-    });
   });
 
-  it("redirects incomplete setup to the shared wizard with the marketplace entry product", async () => {
+  it("routes setup_required decisions to the shared hub", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
-          properties: [marketplaceActivationProperty("property-1")],
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-1",
-            product: "marketplace",
-            missingSteps: [
-              "creatorPitch",
-              "marketplaceOffer",
-              "offerDeliverables",
-              "compensationOptions",
-              "creatorRequirements",
-            ],
-            reasonCodes: ["product_activation_incomplete"],
-          },
+          decision: "setup_required",
+          reasonCode: "product_access_pending",
         }),
       ),
     };
@@ -74,41 +50,25 @@ describe("resolveMarketplaceSetupGuard", () => {
 
     const decision = await resolveMarketplaceSetupGuard("/marketplace?tab=creators", api, storage);
 
-    expect(api.getStatus).toHaveBeenCalledWith({
-      entryProduct: "marketplace",
-      returnTo: "/marketplace?tab=creators",
-      propertyId: "property-1",
-    });
     expect(decision).toEqual({
       action: "redirect_to_setup",
       propertyId: "property-1",
       redirectPath:
-        "/setup?entryProduct=marketplace&returnTo=%2Fmarketplace%3Ftab%3Dcreators&propertyId=property-1",
-      setupAction: "complete_product_activation",
-      product: "marketplace",
-      productStatus: "selected_incomplete",
-      missingSteps: [
-        "creatorPitch",
-        "marketplaceOffer",
-        "offerDeliverables",
-        "compensationOptions",
-        "creatorRequirements",
-      ],
+        "/setup?entryProduct=marketplace&returnProduct=marketplace&returnTo=%2Fmarketplace%3Ftab%3Dcreators&propertyId=property-1",
+      entryDecision: "setup_required",
+      reasonCode: "product_access_pending",
     });
-    expect(isMarketplaceActivationDecision(decision)).toBe(true);
+    expect(marketplaceGuardRedirectPath(decision)).toBe(decision.redirectPath);
   });
 
-  it("persists the property id when marketplace can enter the product", async () => {
+  it("enters Marketplace solely from the server entry decision despite incomplete tasks", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
-          nextAction: {
-            action: "enter_product",
-            propertyId: "property-2",
-            product: "marketplace",
-            returnTo: "/marketplace",
-            reasonCodes: ["ready"],
-          },
+          propertyId: "property-2",
+          decision: "enter",
+          destinationRouteKey: "marketplace.workspace",
+          withIncompleteTask: true,
         }),
       ),
     };
@@ -119,39 +79,14 @@ describe("resolveMarketplaceSetupGuard", () => {
     expect(decision).toEqual({
       action: "enter_product",
       propertyId: "property-2",
+      destinationRouteKey: "marketplace.workspace",
       redirectPath: null,
     });
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
+    expect(marketplaceGuardRedirectPath(decision)).toBeNull();
   });
 
-  it("allows hotel operators into Marketplace while their completed profile is under review", async () => {
-    const api = {
-      getStatus: vi.fn(async () =>
-        status({
-          properties: [marketplaceActivationProperty("property-1", "selected_incomplete", [])],
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-1",
-            product: "marketplace",
-            missingSteps: [],
-            reasonCodes: ["marketplace_verification_pending"],
-          },
-        }),
-      ),
-    };
-    const storage = memoryStorage({ selectedSharedPropertyId: "property-1" });
-
-    const decision = await resolveMarketplaceSetupGuard("/marketplace", api, storage);
-
-    expect(decision).toEqual({
-      action: "enter_product",
-      propertyId: "property-1",
-      redirectPath: null,
-    });
-    expect(storage.getItem("selectedSharedPropertyId")).toBe("property-1");
-  });
-
-  it("clears a stale property selection and retries with the authorized hotel list", async () => {
+  it("clears a stale property selection before retrying the server decision", async () => {
     const api = {
       getStatus: vi
         .fn()
@@ -161,208 +96,141 @@ describe("resolveMarketplaceSetupGuard", () => {
         })
         .mockResolvedValueOnce(
           status({
-            nextAction: {
-              action: "enter_product",
-              propertyId: "property-2",
-              product: "marketplace",
-              returnTo: "/marketplace",
-              reasonCodes: ["ready"],
-            },
+            propertyId: "property-2",
+            decision: "enter",
+            destinationRouteKey: "marketplace.workspace",
           }),
         ),
     };
     const storage = memoryStorage({ selectedSharedPropertyId: "stale-property" });
 
-    const decision = await resolveMarketplaceSetupGuard("/marketplace", api, storage);
-
+    await expect(resolveMarketplaceSetupGuard("/marketplace", api, storage)).resolves.toMatchObject(
+      {
+        action: "enter_product",
+        propertyId: "property-2",
+      },
+    );
     expect(api.getStatus).toHaveBeenNthCalledWith(1, {
       entryProduct: "marketplace",
-      returnTo: "/marketplace",
       propertyId: "stale-property",
     });
     expect(api.getStatus).toHaveBeenNthCalledWith(2, {
       entryProduct: "marketplace",
-      returnTo: "/marketplace",
       propertyId: null,
     });
-    expect(decision).toMatchObject({ action: "enter_product", propertyId: "property-2" });
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
   });
 
-  it("does not treat suspended Marketplace activation as profile-editable", async () => {
+  it("does not enter Marketplace when the server marks it unavailable", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
-          properties: [marketplaceActivationProperty("property-1", "suspended", [])],
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-1",
-            product: "marketplace",
-            missingSteps: [],
-            reasonCodes: ["marketplace_suspended"],
-          },
+          decision: "unavailable",
+          reasonCode: "track_unavailable",
         }),
       ),
     };
 
-    const decision = await resolveMarketplaceSetupGuard("/profile", api, memoryStorage());
-
-    expect(decision).toMatchObject({
+    await expect(
+      resolveMarketplaceSetupGuard("/marketplace", api, memoryStorage()),
+    ).resolves.toMatchObject({
       action: "redirect_to_setup",
-      product: "marketplace",
-      productStatus: "suspended",
-      missingSteps: [],
-    });
-    expect(isMarketplaceActivationDecision(decision)).toBe(false);
-  });
-
-  it("does not treat entitlement-only Marketplace activation as profile-editable", async () => {
-    const api = {
-      getStatus: vi.fn(async () =>
-        status({
-          properties: [
-            marketplaceActivationProperty("property-1", "selected_incomplete", [
-              "productEntitlement",
-            ]),
-          ],
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-1",
-            product: "marketplace",
-            missingSteps: ["productEntitlement"],
-            reasonCodes: ["entry_product_activation_incomplete"],
-          },
-        }),
-      ),
-    };
-
-    const decision = await resolveMarketplaceSetupGuard("/profile", api, memoryStorage());
-
-    expect(decision).toMatchObject({
-      action: "redirect_to_setup",
-      product: "marketplace",
-      productStatus: "selected_incomplete",
-      missingSteps: ["productEntitlement"],
-    });
-    expect(isMarketplaceActivationDecision(decision)).toBe(false);
-  });
-
-  it("keeps additive Marketplace requirements profile-editable", () => {
-    const decision = {
-      action: "redirect_to_setup" as const,
-      propertyId: "property-1",
-      redirectPath: "/setup?entryProduct=marketplace&propertyId=property-1",
-      setupAction: "complete_product_activation" as const,
-      product: "marketplace" as const,
-      productStatus: "selected_incomplete" as const,
-      missingSteps: ["marketplaceListing"],
-    };
-
-    expect(isMarketplaceActivationDecision(decision)).toBe(true);
-    expect(marketplaceGuardRedirectPath(decision)).toBe(
-      "/profile/complete?activation=marketplace&propertyId=property-1",
-    );
-  });
-
-  it("labels incomplete Marketplace activation for the selected shared property", () => {
-    const setupStatus = status({
-      properties: [marketplaceActivationProperty("property-1")],
-      nextAction: {
-        action: "complete_product_activation",
-        propertyId: "property-1",
-        product: "marketplace",
-        missingSteps: [
-          "creatorPitch",
-          "marketplaceOffer",
-          "offerDeliverables",
-          "compensationOptions",
-          "creatorRequirements",
-        ],
-        reasonCodes: ["entry_product_activation_incomplete"],
-      },
-    });
-
-    const view = resolveSharedFirstRunSetupView(setupStatus);
-
-    expect(view).toMatchObject({
-      screen: "product_activation",
-      selectedPropertyId: "property-1",
-      product: "marketplace",
-      title: "Set up Marketplace for Alpenrose Munich",
-    });
-    expect(view.selectedProperty?.sharedProfile).toMatchObject({
-      status: "complete",
-      missingFields: [],
+      entryDecision: "unavailable",
+      reasonCode: "track_unavailable",
     });
   });
 });
 
 function status(input: {
-  nextAction: SharedHotelSetupStatus["nextAction"];
-  properties?: SharedHotelSetupStatus["properties"];
-}): SharedHotelSetupStatus {
+  propertyId?: string;
+  decision: "enter" | "setup_required" | "unavailable";
+  destinationRouteKey?: string;
+  reasonCode?: string;
+  withIncompleteTask?: boolean;
+}): AdaptiveHotelSetupStatus {
+  const propertyId = input.propertyId ?? "property-1";
   return {
-    contractVersion: "shared-hotel-setup-status.v1",
-    entry: { entryProduct: "marketplace", returnTo: "/marketplace" },
-    hotelGroup: {
+    contractVersion: "adaptive-hotel-setup.v1",
+    organization: {
       organizationId: "org-1",
       displayName: "Alpenrose Hotel Group",
       websiteUrl: null,
-      selectedProducts: ["marketplace"],
+      selectedTracks: ["creator_marketplace"],
+      trackRevision: 3,
+      canManageTracks: true,
+      tracks: [
+        {
+          track: "hotel_operations",
+          provisioning: "not_selected",
+          components: [
+            { product: "pms", access: "absent" },
+            { product: "booking", access: "absent" },
+          ],
+          allowedActions: ["add"],
+        },
+        {
+          track: "creator_marketplace",
+          provisioning: "active",
+          components: [
+            {
+              product: "marketplace",
+              access: input.decision === "unavailable" ? "unavailable" : "active",
+            },
+          ],
+          allowedActions: ["manage_service"],
+        },
+      ],
     },
-    selection: { state: "single_property", selectedPropertyId: "property-1" },
-    properties: input.properties ?? [],
-    nextAction: input.nextAction,
-    updatedAt: "2026-06-30T00:00:00.000Z",
-  };
-}
-
-function marketplaceActivationProperty(
-  propertyId: string,
-  status:
-    | "not_selected"
-    | "selected_incomplete"
-    | "active"
-    | "suspended"
-    | "unavailable" = "selected_incomplete",
-  missingSteps: string[] = [
-    "creatorPitch",
-    "marketplaceOffer",
-    "offerDeliverables",
-    "compensationOptions",
-    "creatorRequirements",
-  ],
-): SharedHotelSetupStatus["properties"][number] {
-  return {
-    propertyId,
-    publicId: "alpenrose-munich",
-    displayName: "Alpenrose Munich",
-    locationSummary: "Munich, DE",
-    sharedProfile: {
-      status: "complete",
-      source: "canonical",
-      completionPercent: 100,
-      missingFields: [],
+    propertySelection: {
+      state: "single_property",
+      selectedPropertyId: propertyId,
+      availableProperties: [
+        {
+          propertyId,
+          publicId: propertyId,
+          displayName: "Alpenrose",
+          locationSummary: "Munich, DE",
+        },
+      ],
     },
-    products: {
-      booking: activation("booking", "active"),
-      pms: activation("pms", "not_selected"),
-      marketplace: activation("marketplace", status, missingSteps),
+    entryDecision: {
+      requestedProduct: "marketplace",
+      propertyId,
+      decision: input.decision,
+      destinationRouteKey: input.destinationRouteKey ?? null,
+      reasonCode: input.reasonCode ?? null,
     },
-  };
-}
-
-function activation<Product extends "booking" | "pms" | "marketplace">(
-  product: Product,
-  status: "not_selected" | "selected_incomplete" | "active" | "suspended" | "unavailable",
-  missingSteps: string[] = [],
-) {
-  return {
-    product,
-    status,
-    missingSteps,
-    statusReasons: status === "selected_incomplete" ? [`${product}_activation_incomplete`] : [],
-    updatedAt: status === "not_selected" ? null : "2026-06-30T00:00:00.000Z",
+    setupPlan: {
+      propertyId,
+      planRevision: "plan-3",
+      tasks: input.withIncompleteTask
+        ? [
+            {
+              taskId: "creator_offer",
+              propertyId,
+              track: "creator_marketplace",
+              requirementOwnerDomain: "marketplace",
+              destinationRouteKey: "marketplace.creator_offer",
+              callerCapability: "allowed",
+              ownerProgress: "in_progress",
+              readiness: "actionable",
+              actionableBy: "owner",
+              reasonCodes: ["offer_missing"],
+              sourceRevision: "offer-1",
+              freshness: "fresh",
+              evaluatedAt: "2026-07-26T10:00:00.000Z",
+            },
+          ]
+        : [],
+      recommendedTaskId: input.withIncompleteTask ? "creator_offer" : null,
+      ownerProgress: { complete: 0, total: input.withIncompleteTask ? 1 : 0 },
+      launchReadiness: {
+        operationsUse: "not_applicable",
+        directBookingPublish: "not_applicable",
+        marketplacePublish: input.withIncompleteTask ? "blocked" : "ready",
+      },
+    },
+    updatedAt: "2026-07-26T10:00:00.000Z",
   };
 }
 

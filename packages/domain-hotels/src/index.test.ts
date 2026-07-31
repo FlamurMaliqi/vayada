@@ -3,17 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   HOTEL_ACTIVE_STATUSES,
   HOTEL_CATALOG_SETUP_FIELDS,
-  SHARED_HOTEL_SETUP_NEXT_ACTIONS,
-  SHARED_HOTEL_SETUP_PRODUCTS,
-  SHARED_HOTEL_SETUP_READ_PERMISSION,
-  SHARED_HOTEL_PRODUCTS_MANAGE_PERMISSION,
-  SHARED_HOTEL_SETUP_STATUS_CONTRACT_VERSION,
-  SHARED_PRODUCT_ACTIVATION_STATUSES,
-  SHARED_PROPERTY_ACCESS_RELATIONSHIPS,
-  SHARED_PROPERTY_ACCESS_RESOURCE,
-  SHARED_PROPERTY_PROFILE_MISSING_FIELDS,
-  SHARED_PROPERTY_PROFILE_STATUSES,
-  SHARED_PROPERTY_SELECTION_STATES,
+  SHARED_PROPERTY_TYPE_OPTIONS,
   hotelCatalogCommandTypes,
   hotelCatalogIdempotencyKey,
   type HotelCatalogCommand,
@@ -21,7 +11,6 @@ import {
   type HotelCatalogCommandResult,
   type HotelIdentityReadModel,
   type HotelIdentityReadPort,
-  type SharedHotelSetupStatus,
   type UpdateHotelNameCommand,
   type UpdateHotelSlugCommand,
 } from "./index.js";
@@ -46,119 +35,9 @@ describe("@vayada/domain-hotels", () => {
     expect(hotelCatalogCommandTypes).toContain("hotel.catalog.slug.update");
   });
 
-  it("exports the shared hotel setup status contract constants", () => {
-    expect(SHARED_HOTEL_SETUP_STATUS_CONTRACT_VERSION).toBe("shared-hotel-setup-status.v1");
-    expect(SHARED_HOTEL_SETUP_PRODUCTS).toEqual(["booking", "pms", "marketplace"]);
-    expect(SHARED_PROPERTY_SELECTION_STATES).toEqual([
-      "no_property",
-      "single_property",
-      "multiple_properties",
-    ]);
-    expect(SHARED_PROPERTY_PROFILE_STATUSES).toEqual([
-      "incomplete",
-      "complete",
-      "disabled",
-      "private",
-    ]);
-    expect(SHARED_PROPERTY_PROFILE_MISSING_FIELDS).toEqual([
-      "displayName",
-      "location",
-      "website",
-      "phone",
-      "description",
-      "media",
-    ]);
-    expect(SHARED_PRODUCT_ACTIVATION_STATUSES).toEqual([
-      "not_selected",
-      "selected_incomplete",
-      "active",
-      "suspended",
-      "unavailable",
-    ]);
-    expect(SHARED_HOTEL_SETUP_NEXT_ACTIONS).toEqual([
-      "create_property",
-      "select_property",
-      "complete_shared_profile",
-      "select_products",
-      "complete_product_activation",
-      "enter_product",
-    ]);
-  });
-
-  it("models direct canonical property access for shared setup", () => {
-    expect(SHARED_HOTEL_SETUP_READ_PERMISSION).toBe("hotel_catalog.setup.read");
-    expect(SHARED_HOTEL_PRODUCTS_MANAGE_PERMISSION).toBe("hotel_catalog.products.manage");
-    expect(SHARED_PROPERTY_ACCESS_RESOURCE).toEqual({
-      product: "hotel_catalog",
-      resourceType: "property",
-    });
-    expect(SHARED_PROPERTY_ACCESS_RELATIONSHIPS).toEqual(["owner", "operator"]);
-  });
-
-  it("keeps shared profile completion separate from product activation", () => {
-    const status: SharedHotelSetupStatus = {
-      contractVersion: SHARED_HOTEL_SETUP_STATUS_CONTRACT_VERSION,
-      entry: { entryProduct: "marketplace", returnTo: "/marketplace" },
-      hotelGroup: {
-        organizationId: "org_123",
-        displayName: "Bali Hospitality Group",
-        websiteUrl: null,
-        selectedProducts: ["marketplace"],
-      },
-      selection: {
-        state: "single_property",
-        selectedPropertyId: "property_123",
-      },
-      properties: [
-        {
-          propertyId: "property_123",
-          publicId: "alpenrose-resort",
-          displayName: "Alpenrose Resort",
-          locationSummary: "Bali, Indonesia",
-          sharedProfile: {
-            status: "complete",
-            source: "canonical",
-            completionPercent: 100,
-            missingFields: [],
-          },
-          products: {
-            booking: {
-              product: "booking",
-              status: "active",
-              missingSteps: [],
-              statusReasons: [],
-              updatedAt: "2026-06-30T08:00:00.000Z",
-            },
-            pms: {
-              product: "pms",
-              status: "not_selected",
-              missingSteps: [],
-              statusReasons: [],
-              updatedAt: null,
-            },
-            marketplace: {
-              product: "marketplace",
-              status: "selected_incomplete",
-              missingSteps: ["creatorPitch", "marketplaceListing"],
-              statusReasons: ["marketplace_activation_incomplete"],
-              updatedAt: "2026-06-30T08:00:00.000Z",
-            },
-          },
-        },
-      ],
-      nextAction: {
-        action: "complete_product_activation",
-        propertyId: "property_123",
-        product: "marketplace",
-        missingSteps: ["creatorPitch", "marketplaceListing"],
-        reasonCodes: ["entry_product_activation_incomplete"],
-      },
-      updatedAt: "2026-06-30T08:00:00.000Z",
-    };
-
-    expect(status.properties[0].sharedProfile.status).toBe("complete");
-    expect(status.properties[0].products.marketplace.status).toBe("selected_incomplete");
-    expect(status.nextAction.action).toBe("complete_product_activation");
+  it("exports the shared property type catalog", () => {
+    expect(SHARED_PROPERTY_TYPE_OPTIONS).toContainEqual({ value: "hotel", label: "Hotel" });
+    expect(SHARED_PROPERTY_TYPE_OPTIONS).toContainEqual({ value: "other", label: "Other" });
   });
 
   it("builds a stable idempotency key", () => {

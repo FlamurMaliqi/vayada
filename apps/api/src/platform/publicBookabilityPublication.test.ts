@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   createTargetPublicBookabilityPublicationCommandPort,
@@ -7,6 +8,9 @@ import {
   slugify,
   type TargetPublicBookabilityPublicationOptions,
 } from "./publicBookabilityPublication.js";
+
+const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
+const publicLocationPropertyId = "77777777-7777-4777-8777-777777777970";
 
 describe("target public bookability publication", () => {
   it("publishes with the canonical slug and only consumes the Distribution PMS projection", async () => {
@@ -112,12 +116,14 @@ describe("target public bookability publication", () => {
       "'refundWindowDays', input.finance_refund_policy -> 'refundWindowDays'",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("'USD'");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("FALSE AS online_payment_ready");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
-      "ARRAY['pay_at_property', 'cash']::text[]",
+      "payment_provider_onboarding_status = 'completed'",
     );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("payment_provider_charges_enabled = TRUE");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("ARRAY['card', 'wallet']::text[]");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'bank_transfer'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS pay_at_property_ready");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("finance.payment_provider_accounts");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("finance.payment_provider_accounts");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("pg_timezone_names");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("ELSE 'Etc/UTC'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'sellable_availability'");
@@ -128,19 +134,272 @@ describe("target public bookability publication", () => {
 
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain("candidate.public_approved = TRUE");
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
-      "DISTINCT ON (candidate.property_id, candidate.url)",
+      "DISTINCT ON (candidate.property_id, media_variant.public_cdn_url)",
     );
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
-      "CASE candidate.source_system WHEN 'platform' THEN 0 ELSE 1 END",
+      "candidate.source_system = 'platform'",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "JOIN platform.media_objects media_object",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "JOIN platform.media_variants media_variant",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "media_object.lifecycle_status = 'active'",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "media_variant.variant_name = 'original_safe'",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "'platformMediaObjectId', media.platform_media_object_id::text",
     );
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain("amenity.public_safe = TRUE");
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain("contact.is_public = TRUE");
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("booking.booking_settings");
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("hero_image_url");
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("hero_subtext");
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("'timezone', input.timezone");
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "WHEN COALESCE(input.locality_public, FALSE) THEN input.country_code",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "WHEN COALESCE(input.locality_public, FALSE) THEN input.city",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("'streetAddress'");
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("'postalCode'");
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("'rawMarketplaceLocation'");
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "WHEN COALESCE(input.geo_public, FALSE)",
+    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
+      "input.map_display_mode IN ('approximate', 'exact')",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "WHEN COALESCE(input.catalog_locality_public, FALSE)",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "WHEN COALESCE(input.catalog_geo_public, FALSE)",
+    );
   });
 
   it("creates DNS-safe slugs", () => {
     expect(slugify(" Hôtel zur schönen Aussicht! ")).toBe("hotel-zur-schonen-aussicht");
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () => {
+  const client = new pg.Client({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
+  });
+
+  beforeAll(async () => {
+    assertSafeTestDatabase(TEST_DATABASE_URL!);
+    await client.connect();
+    await cleanupPublicLocationFixture(client);
+    await client.query(
+      `INSERT INTO hotel_catalog.properties (
+         id,
+         public_id,
+         display_name,
+         property_type,
+         default_locale,
+         supported_locales,
+         profile_status
+       )
+       VALUES (
+         $1::uuid,
+         'prop_public_location_privacy_970',
+         'Public Location Privacy Hotel',
+         'hotel',
+         'en',
+         ARRAY['en']::text[],
+         'complete'
+       )`,
+      [publicLocationPropertyId],
+    );
+    await client.query(
+      `INSERT INTO hotel_catalog.property_slugs (
+         property_id,
+         slug,
+         purpose,
+         status
+       )
+       VALUES ($1::uuid, 'public-location-privacy-hotel-970', 'canonical', 'active')`,
+      [publicLocationPropertyId],
+    );
+    await client.query(
+      `INSERT INTO hotel_catalog.property_locations (
+         property_id,
+         country_code,
+         region,
+         city,
+         street_address,
+         postal_code,
+         raw_marketplace_location,
+         latitude,
+         longitude,
+         timezone,
+         address_public,
+         geo_public,
+         map_display_mode,
+         source_confidence
+       )
+       VALUES (
+         $1::uuid,
+         'DE',
+         'Berlin',
+         'Berlin',
+         'Private Strasse 1',
+         '10115',
+         'Private Strasse 1, Berlin',
+         52.520008,
+         13.404954,
+         'Europe/Berlin',
+         FALSE,
+         FALSE,
+         'hidden',
+         'verified'
+       )`,
+      [publicLocationPropertyId],
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupPublicLocationFixture(client);
+    await client.end();
+  });
+
+  it("keeps canonical address, geo, and timezone private until explicitly published", async () => {
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [publicLocationPropertyId]);
+
+    await expect(readProjectedLocation(client)).resolves.toEqual({});
+    await projectPublicBookabilityLocation(client);
+    await expect(readBookabilityLocation(client)).resolves.toEqual({});
+
+    await client.query(
+      `UPDATE hotel_catalog.property_locations
+       SET address_public = TRUE
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [publicLocationPropertyId]);
+
+    await expect(readProjectedLocation(client)).resolves.toEqual({
+      countryCode: "DE",
+      region: "Berlin",
+      city: "Berlin",
+    });
+    await projectPublicBookabilityLocation(client);
+    await expect(readBookabilityLocation(client)).resolves.toEqual({
+      country: "DE",
+      region: "Berlin",
+      city: "Berlin",
+    });
+
+    await client.query(
+      `UPDATE hotel_catalog.property_locations
+       SET geo_public = TRUE,
+           map_display_mode = 'exact'
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [publicLocationPropertyId]);
+
+    await expect(readProjectedLocation(client)).resolves.toEqual({
+      countryCode: "DE",
+      region: "Berlin",
+      city: "Berlin",
+      geo: {
+        latitude: 52.520008,
+        longitude: 13.404954,
+      },
+      mapDisplayMode: "exact",
+    });
+    await projectPublicBookabilityLocation(client);
+    await expect(readBookabilityLocation(client)).resolves.toEqual({
+      country: "DE",
+      region: "Berlin",
+      city: "Berlin",
+      latitude: 52.520008,
+      longitude: 13.404954,
+    });
+
+    await client.query(
+      `UPDATE hotel_catalog.property_locations
+       SET map_display_mode = 'approximate'
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [publicLocationPropertyId]);
+
+    await expect(readProjectedLocation(client)).resolves.toMatchObject({
+      geo: { latitude: 52.52, longitude: 13.4 },
+      mapDisplayMode: "approximate",
+    });
+    await projectPublicBookabilityLocation(client);
+    await expect(readBookabilityLocation(client)).resolves.toMatchObject({
+      latitude: 52.52,
+      longitude: 13.4,
+    });
+
+    await client.query(
+      `UPDATE hotel_catalog.property_locations
+       SET address_public = FALSE
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [publicLocationPropertyId]);
+
+    await expect(readProjectedLocation(client)).resolves.toEqual({
+      geo: { latitude: 52.52, longitude: 13.4 },
+      mapDisplayMode: "approximate",
+    });
+    await projectPublicBookabilityLocation(client);
+    await expect(readBookabilityLocation(client)).resolves.toEqual({
+      latitude: 52.52,
+      longitude: 13.4,
+    });
+  });
+});
+
+async function readProjectedLocation(client: pg.Client): Promise<Record<string, unknown>> {
+  const result = await client.query<{ location: Record<string, unknown> }>(
+    `SELECT location
+     FROM hotel_catalog.property_public_profile_read_model
+     WHERE property_id = $1::uuid`,
+    [publicLocationPropertyId],
+  );
+  return result.rows[0]?.location ?? {};
+}
+
+async function projectPublicBookabilityLocation(client: pg.Client): Promise<void> {
+  await client.query(PROJECT_PUBLIC_BOOKABILITY_PROFILE, [
+    publicLocationPropertyId,
+    "https://public-location-privacy-hotel-970.booking.example/en",
+    "https://public-location-privacy-hotel-970.booking.example",
+  ]);
+}
+
+async function readBookabilityLocation(client: pg.Client): Promise<Record<string, unknown>> {
+  const result = await client.query<{ location: Record<string, unknown> }>(
+    `SELECT location
+     FROM distribution.public_hotel_bookability_profiles
+     WHERE property_id = $1::uuid`,
+    [publicLocationPropertyId],
+  );
+  return result.rows[0]?.location ?? {};
+}
+
+async function cleanupPublicLocationFixture(client: pg.Client): Promise<void> {
+  await client.query(`DELETE FROM hotel_catalog.properties WHERE id = $1::uuid`, [
+    publicLocationPropertyId,
+  ]);
+}
+
+function assertSafeTestDatabase(connectionString: string): void {
+  const databaseName = new URL(connectionString).pathname.slice(1);
+  if (!databaseName.toLowerCase().includes("test")) {
+    throw new Error(`Refusing to use non-test database "${databaseName}"`);
+  }
+}

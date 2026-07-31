@@ -29,7 +29,6 @@ import { useCreatorProfileForm } from "@/hooks/useCreatorProfileForm";
 import { useHotelProfileForm } from "@/hooks/useHotelProfileForm";
 import { formatErrorDetail } from "@/hooks/useErrorModal";
 import {
-  isMarketplaceActivationDecision,
   marketplaceSetupRedirectPath,
   resolveMarketplaceActivationGuard,
   SELECTED_SHARED_PROPERTY_ID_KEY,
@@ -199,7 +198,7 @@ export default function ProfileCompletePage() {
               router.replace(ROUTES.MARKETPLACE);
               return;
             }
-            if (decision.action !== "enter_product" && !isMarketplaceActivationDecision(decision)) {
+            if (decision.action !== "enter_product") {
               navigatingAway = true;
               router.replace(decision.redirectPath);
               return;
@@ -212,11 +211,7 @@ export default function ProfileCompletePage() {
             });
             if (cancelled) return;
 
-            const hasExistingOffer = hydrateHotelMarketplaceProfile(
-              profile,
-              decision.action === "enter_product" ||
-                !decision.missingSteps.some((step) => MARKETPLACE_OFFER_SETUP_STEPS.has(step)),
-            );
+            const hasExistingOffer = hydrateHotelMarketplaceProfile(profile, true);
             if (savedDraft) {
               const resumedDraft = resolveHotelMarketplaceDraftResume(savedDraft, hasExistingOffer);
               const pendingListings = resumedDraft.listings;
@@ -430,6 +425,7 @@ export default function ProfileCompletePage() {
     );
     hotelForm.setForm({
       about: profile.about ?? "",
+      localityPublic: profile.localityPublic,
     });
     setHasExistingMarketplaceOffer(hasExistingOffer);
     hotelForm.setListings(hasExistingOffer ? [] : [newMarketplaceOffer(profile)]);
@@ -762,7 +758,14 @@ export default function ProfileCompletePage() {
   const handleHotelSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!hotelForm.validateForm(hasExistingMarketplaceOffer)) return;
+    if (
+      !hotelForm.validateForm({
+        validateProfile: true,
+        requireLocalityConsent: false,
+        validateOffers: !hasExistingMarketplaceOffer,
+      })
+    )
+      return;
     const propertyId = marketplacePropertyIdRef.current;
     if (!propertyId) {
       setError("Marketplace setup is missing its hotel. Return to setup and try again.");
@@ -1495,13 +1498,6 @@ function newMarketplaceOffer(profile: HotelProfile): ListingFormData {
     targetGroupAgeGroups: [],
   });
 }
-
-const MARKETPLACE_OFFER_SETUP_STEPS = new Set([
-  "marketplaceOffer",
-  "offerDeliverables",
-  "compensationOptions",
-  "creatorRequirements",
-]);
 
 function emptyProfileStatus(
   userType: "creator" | "hotel",

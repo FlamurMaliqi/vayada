@@ -2,19 +2,13 @@ import {
   SELECTED_PMS_PROPERTY_ID_KEY,
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/pmsPropertySelectionKeys";
-import type {
-  SharedHotelSetupProductStatus,
-  SharedHotelSetupStatus,
-  SharedPropertyProfile,
-  SharedPropertyProfileInput,
-} from "@vayada/product-onboarding";
+import type { AdaptiveHotelSetupStatus } from "@vayada/product-onboarding";
 
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { unsupportedPmsNextStackFeature } from "./unsupported";
 
 export interface PmsPropertySummary {
   id: string;
-  pmsStatus: SharedHotelSetupProductStatus;
   name: string;
   slug: string;
   location: string;
@@ -43,18 +37,13 @@ export interface PmsCalendarSettings {
 
 export async function listPmsProperties(): Promise<PmsPropertySummary[]> {
   const status = await sharedHotelSetupApi.getStatus({ entryProduct: "pms" });
-  return status.properties.map((property) => ({
+  return status.propertySelection.availableProperties.map((property) => ({
     id: property.propertyId,
-    pmsStatus: property.products.pms.status,
     name: property.displayName ?? "Unnamed hotel",
     slug: property.publicId,
     location: property.locationSummary ?? "",
     country: "",
   }));
-}
-
-export function isPmsPropertyReady(property: PmsPropertySummary): boolean {
-  return property.pmsStatus === "active";
 }
 
 export async function resolveSelectedPmsPropertyId(action = "loading PMS data"): Promise<string> {
@@ -94,30 +83,17 @@ export async function updatePmsPropertyProfile(
     sharedHotelSetupApi.getStatus({ entryProduct: "pms", propertyId }),
     sharedHotelSetupApi.getPropertyProfile(propertyId),
   ]);
-  const input: SharedPropertyProfileInput = {
-    displayName: current.displayName,
-    propertyType: current.propertyType,
-    location: current.location,
-    website: current.website,
-    contactEmail: current.contactEmail,
-    phone: current.phone,
-    shortDescription: current.shortDescription,
-    longDescription: current.longDescription,
-    media: current.media,
-    expectedUpdatedAt: current.updatedAt,
+  const locationPatch: {
+    countryCode?: string;
+    timezone?: string;
+  } = {
+    ...(data.country !== undefined ? { countryCode: data.country.trim().toUpperCase() } : {}),
+    ...(data.timezone !== undefined ? { timezone: data.timezone.trim() } : {}),
   };
 
   const updated = await sharedHotelSetupApi.updatePropertyProfile(propertyId, {
-    ...input,
-    location: {
-      ...current.location,
-      countryCode:
-        data.country === undefined
-          ? current.location.countryCode
-          : data.country.trim().toUpperCase(),
-      timezone:
-        data.timezone === undefined ? current.location.timezone : data.timezone.trim() || null,
-    },
+    expectedProfileRevision: current.profileRevision,
+    patch: { location: locationPatch },
   });
 
   return toPmsPropertyProfile(status, updated);
@@ -172,23 +148,23 @@ function browserStorage(): Storage | null {
 }
 
 function toPmsPropertyProfile(
-  status: SharedHotelSetupStatus,
-  profile: SharedPropertyProfile,
+  status: AdaptiveHotelSetupStatus,
+  response: Awaited<ReturnType<typeof sharedHotelSetupApi.getPropertyProfile>>,
 ): PmsPropertyProfile {
-  const property = status.properties.find((item) => item.propertyId === profile.propertyId);
+  const profile = response.profile;
+  const property = status.propertySelection.availableProperties.find(
+    (item) => item.propertyId === response.propertyId,
+  );
   if (!property) {
     throw new Error("The selected PMS property is no longer available.");
   }
 
   return {
-    id: profile.propertyId,
-    pmsStatus: property.products.pms.status,
+    id: response.propertyId,
     name: profile.displayName || "Unnamed hotel",
-    slug: profile.publicId,
-    location:
-      profile.location.rawMarketplaceLocation?.trim() ||
-      [profile.location.city, profile.location.countryCode].filter(Boolean).join(", "),
-    country: profile.location.countryCode ?? "",
-    timezone: profile.location.timezone ?? "",
+    slug: property.publicId,
+    location: [profile.location.city, profile.location.countryCode].filter(Boolean).join(", "),
+    country: profile.location.countryCode,
+    timezone: profile.location.timezone,
   };
 }

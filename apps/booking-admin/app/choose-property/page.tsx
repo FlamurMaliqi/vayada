@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authService } from "@/services/auth";
+import { resolveBookingSetupGuard } from "@/lib/utils/sharedSetupGuard";
 import { settingsService, type HotelSummary } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
 
@@ -16,7 +17,7 @@ import { useTranslation } from "@/lib/i18n";
  * drives target route resource selection on subsequent API calls.
  *
  * Edge cases handled inline:
- *   - 0 hotels → send to /setup (onboarding not yet started)
+ *   - 0 hotels → send through /setup to the canonical Marketplace wizard
  *   - 1 hotel  → auto-select and bounce to /dashboard (no modal spam)
  *   - 2+ hotels → render the picker
  *   - Not logged in → /login
@@ -47,14 +48,12 @@ export default function ChoosePropertyPage() {
         }
         if (list.length === 1) {
           const hotel = list[0];
-          if (hotel.propertyId) {
-            localStorage.setItem("selectedSharedPropertyId", hotel.propertyId);
-          }
-          if (hotel.productReady === false) {
+          localStorage.setItem("selectedSharedPropertyId", hotel.propertyId ?? hotel.id);
+          const decision = await resolveBookingSetupGuard("/dashboard");
+          if (cancelled) return;
+          if (decision.action === "redirect_to_setup") {
             localStorage.removeItem("selectedHotelId");
-            router.replace(
-              `/setup?entryProduct=booking&propertyId=${encodeURIComponent(hotel.propertyId ?? hotel.id)}`,
-            );
+            window.location.replace(decision.redirectPath);
           } else {
             localStorage.setItem("selectedHotelId", hotel.id);
             router.replace("/dashboard");
@@ -75,20 +74,20 @@ export default function ChoosePropertyPage() {
     };
   }, [router, t]);
 
-  const selectHotel = (hotel: HotelSummary) => {
-    if (hotel.propertyId) {
-      localStorage.setItem("selectedSharedPropertyId", hotel.propertyId);
+  const selectHotel = async (hotel: HotelSummary) => {
+    localStorage.setItem("selectedSharedPropertyId", hotel.propertyId ?? hotel.id);
+    try {
+      const decision = await resolveBookingSetupGuard("/dashboard");
+      if (decision.action === "redirect_to_setup") {
+        localStorage.removeItem("selectedHotelId");
+        window.location.replace(decision.redirectPath);
+        return;
+      }
+      localStorage.setItem("selectedHotelId", hotel.id);
+      router.replace("/dashboard");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("auth.chooseProperty.loadError"));
     }
-    if (hotel.productReady === false) {
-      localStorage.removeItem("selectedHotelId");
-      router.replace(
-        `/setup?entryProduct=booking&propertyId=${encodeURIComponent(hotel.propertyId ?? hotel.id)}`,
-      );
-      return;
-    }
-    localStorage.setItem("selectedHotelId", hotel.id);
-    localStorage.setItem("setupComplete", "true");
-    router.replace("/dashboard");
   };
 
   if (error) {
@@ -181,7 +180,7 @@ export default function ChoosePropertyPage() {
               try {
                 localStorage.removeItem("selectedHotelId");
               } catch {}
-              router.push("/setup?mode=add");
+              window.location.replace("/setup?mode=add");
             }}
             className="w-full flex items-center justify-center gap-2 text-[13px] text-primary-600 hover:text-primary-700 font-medium py-2"
           >

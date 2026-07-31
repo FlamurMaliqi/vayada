@@ -242,10 +242,13 @@ export function transformHotelProfile(apiProfile: ApiHotelProfile): ProfileHotel
 
   return {
     id: apiProfile.id,
+    canonicalProfileRevision: apiProfile.canonicalProfileRevision,
+    publicProfileRevision: apiProfile.publicProfileRevision,
     name: apiProfile.name,
     propertyType: apiProfile.propertyType ?? undefined,
     picture: apiProfile.picture || undefined,
     location: apiProfile.location,
+    localityPublic: apiProfile.localityPublic,
     status:
       apiProfile.status === "verified" ||
       apiProfile.status === "pending" ||

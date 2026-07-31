@@ -150,6 +150,28 @@ export function createPgHotelSetupTrackCommandRepository(config: {
         client.release();
       }
     },
+    async getTrackStatus(input: { organizationId: string }): Promise<UpdateTracksResponse> {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+        const intent = await loadIntent(client, input.organizationId, false);
+        const catalogLinks = await loadCatalogLinks(client, input.organizationId, false);
+        const state = await loadProvisioningState(
+          client,
+          input.organizationId,
+          catalogLinks,
+          now(),
+          false,
+        );
+        await client.query("COMMIT");
+        return trackStatusResponse(intent, state, catalogLinks);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async close() {
       await pool.end();
     },
@@ -194,13 +216,11 @@ async function executeCommand(
     trackIsActive(track, state, catalogLinks),
   );
   await initializeProductRecords(client, command.organizationId, activeTracks);
-  const response: UpdateTracksResponse = {
-    trackRevision,
-    selectedTracks: command.selectedTracks,
-    tracks: SETUP_TRACKS.map((track) =>
-      toTrackStatus(track, command.selectedTracks, state, catalogLinks),
-    ),
-  };
+  const response = trackStatusResponse(
+    { selectedTracks: command.selectedTracks, revision: trackRevision },
+    state,
+    catalogLinks,
+  );
   return { ok: true, response };
 }
 
@@ -217,12 +237,16 @@ async function lockOrganization(client: PoolClient, organizationId: string): Pro
   if (result.rowCount !== 1) throw new Error("Active hotel-group organization was not found");
 }
 
-async function loadIntent(client: PoolClient, organizationId: string): Promise<IntentRow | null> {
+async function loadIntent(
+  client: PoolClient,
+  organizationId: string,
+  forUpdate = true,
+): Promise<IntentRow | null> {
   const result = await client.query<IntentRow>(
     `SELECT selected_tracks AS "selectedTracks", revision
      FROM hotel_catalog.organization_setup_track_intents
      WHERE organization_id = $1::uuid
-     FOR UPDATE`,
+     ${forUpdate ? "FOR UPDATE" : ""}`,
     [organizationId],
   );
   return result.rows[0] ?? null;
@@ -261,6 +285,7 @@ async function persistIntent(
 async function loadCatalogLinks(
   client: PoolClient,
   organizationId: string,
+  forUpdate = true,
 ): Promise<CatalogLink[]> {
   const result = await client.query<CatalogLink>(
     `SELECT link.resource_id AS "propertyId", link.relationship
@@ -272,7 +297,7 @@ async function loadCatalogLinks(
        AND link.relationship IN ('owner', 'operator')
        AND link.status = 'active'
      ORDER BY link.resource_id, link.relationship
-     FOR UPDATE OF link, property`,
+     ${forUpdate ? "FOR UPDATE OF link, property" : ""}`,
     [organizationId],
   );
   return result.rows;
@@ -283,6 +308,7 @@ async function loadProvisioningState(
   organizationId: string,
   catalogLinks: CatalogLink[],
   now: Date,
+  forUpdate = true,
 ): Promise<ProvisioningState> {
   const entitlements = await client.query<EntitlementRow>(
     `SELECT
@@ -302,7 +328,7 @@ async function loadProvisioningState(
          WHEN 'booking' THEN 'booking-engine'
          WHEN 'marketplace' THEN 'marketplace-hotel-profile'
        END
-     FOR UPDATE`,
+     ${forUpdate ? "FOR UPDATE" : ""}`,
     [organizationId, COMPONENT_PRODUCTS],
   );
   const billing = await client.query<BillingRow>(
@@ -319,7 +345,7 @@ async function loadProvisioningState(
          WHEN 'booking' THEN 'booking-engine'
          WHEN 'marketplace' THEN 'marketplace-hotel-profile'
        END
-     FOR UPDATE`,
+     ${forUpdate ? "FOR UPDATE" : ""}`,
     [organizationId, COMPONENT_PRODUCTS],
   );
   const links = await client.query<ProductLink>(
@@ -336,7 +362,7 @@ async function loadProvisioningState(
          OR (product = 'booking' AND resource_type = 'booking_hotel')
          OR (product = 'marketplace' AND resource_type = 'hotel_profile')
        )
-     FOR UPDATE`,
+     ${forUpdate ? "FOR UPDATE" : ""}`,
     [organizationId, COMPONENT_PRODUCTS],
   );
   const marketplaceProfileConflicts = await client.query(
@@ -344,7 +370,7 @@ async function loadProvisioningState(
      FROM marketplace.marketplace_hotel_profiles profile
      WHERE profile.property_id = ANY($2::uuid[])
        AND profile.organization_id <> $1::uuid
-     FOR UPDATE`,
+     ${forUpdate ? "FOR UPDATE" : ""}`,
     [organizationId, catalogLinks.map((link) => link.propertyId)],
   );
 
@@ -639,6 +665,19 @@ async function initializeProductRecords(
       throw new Error("Marketplace profile ownership initialization failed");
     }
   }
+}
+
+function trackStatusResponse(
+  intent: IntentRow | null,
+  state: ProvisioningState,
+  catalogLinks: CatalogLink[],
+): UpdateTracksResponse {
+  const selectedTracks = intent?.selectedTracks ?? [];
+  return {
+    trackRevision: intent?.revision ?? 0,
+    selectedTracks,
+    tracks: SETUP_TRACKS.map((track) => toTrackStatus(track, selectedTracks, state, catalogLinks)),
+  };
 }
 
 function toTrackStatus(

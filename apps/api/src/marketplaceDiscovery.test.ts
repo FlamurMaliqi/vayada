@@ -811,7 +811,7 @@ describe("pg marketplace discovery repository", () => {
       hotelAccommodationType: "hotel",
       hotelCoverImageUrl: "https://cdn.example.com/cover.jpg",
       hotelLocation: {
-        displayText: "Innsbruck, Austria",
+        displayText: "Innsbruck, AT",
         countryCode: "AT",
         city: "Innsbruck",
       },
@@ -854,7 +854,10 @@ describe("pg marketplace discovery repository", () => {
     expect(pool.sql.join("\n")).toContain(
       "COALESCE(property_profile.canonical_slug, read_model.canonical_slug, property.public_id)",
     );
-    expect(pool.sql.join("\n")).toContain("NULLIF(property_profile.location, '{}'::jsonb)");
+    expect(pool.sql.join("\n")).toContain(
+      "COALESCE(property_profile.location, '{}'::jsonb) AS \"hotelLocation\"",
+    );
+    expect(pool.sql.join("\n")).not.toContain("read_model.location");
     expect(pool.sql.join("\n")).toContain("platformMediaObjectId");
     expect(pool.sql.join("\n")).toContain(
       "COALESCE(media.cover_image_url, read_model.image_urls[1])",
@@ -865,13 +868,21 @@ describe("pg marketplace discovery repository", () => {
     expect(pool.sql.join("\n")).not.toMatch(/\bauth\b|users/i);
   });
 
-  it("maps read-model location fallbacks when the optional public profile is absent or empty", () => {
-    expect(toMarketplaceLocation({ rawMarketplaceLocation: "Innsbruck, Austria" })).toEqual({
-      displayText: "Innsbruck, Austria",
-    });
-    expect(toMarketplaceLocation({ city: "Innsbruck", countryCode: "AT" })).toEqual({
-      displayText: "Innsbruck, AT",
+  it("maps only canonical public locality fields", () => {
+    expect(
+      toMarketplaceLocation({
+        rawMarketplaceLocation: "Private Strasse 1, Innsbruck",
+        displayText: "Private Strasse 1, Innsbruck",
+        display: "Private Strasse 1, Innsbruck",
+        country: "Austria",
+      }),
+    ).toEqual({ displayText: "" });
+    expect(
+      toMarketplaceLocation({ city: "Innsbruck", region: "Tyrol", countryCode: "AT" }),
+    ).toEqual({
+      displayText: "Innsbruck, Tyrol, AT",
       city: "Innsbruck",
+      region: "Tyrol",
       countryCode: "AT",
     });
   });

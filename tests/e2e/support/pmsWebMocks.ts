@@ -1,7 +1,7 @@
 import type { Page, Route } from "@playwright/test";
-import { createSharedHotelSetupStatusMock, sharedHotelSetupProduct } from "./sharedHotelSetupMocks";
+import { createAdaptiveHotelSetupStatusMock } from "./sharedHotelSetupMocks";
 
-export const PMS_WEB_PROPERTY_ID = "f6853000-0000-0000-0000-000000000001";
+export const PMS_WEB_PROPERTY_ID = "f6853000-0000-4000-8000-000000000001";
 export const PMS_WEB_ROOM_TYPE_ID = "room_type_alpine_suite";
 export const PMS_WEB_ROOM_ID = "room_101";
 export const PMS_WEB_RESERVATION_ID = "guest_booking_ada";
@@ -27,35 +27,43 @@ const propertyProfile = {
 
 const sharedPropertyProfile = {
   propertyId: PMS_WEB_PROPERTY_ID,
-  publicId: "prop_alpenrose",
-  displayName: "Alpenrose Munich",
-  propertyType: "hotel",
-  location: {
-    countryCode: "DE",
-    region: "Bavaria",
-    city: "Munich",
-    streetAddress: "Alpenstrasse 12",
-    postalCode: "80331",
-    rawMarketplaceLocation: "Munich, Germany",
-    timezone: "Europe/Berlin",
-    latitude: 48.1372,
-    longitude: 11.5756,
-    addressPublic: true,
-    mapDisplayMode: "exact",
+  profileRevision: 1,
+  profile: {
+    displayName: "Alpenrose Munich",
+    propertyType: "hotel",
+    location: {
+      countryCode: "DE",
+      city: "Munich",
+      streetAddress: "Alpenstrasse 12",
+      postalCode: "80331",
+      timezone: "Europe/Berlin",
+      latitude: 48.1372,
+      longitude: 11.5756,
+      localityPublic: true,
+      geoPublic: true,
+      mapDisplayMode: "exact",
+    },
+    contacts: [
+      {
+        channelType: "website",
+        value: "https://alpenrose.example",
+        purpose: "general",
+        isPublic: true,
+      },
+      {
+        channelType: "email",
+        value: "reservations@alpenrose.example",
+        purpose: "guest",
+        isPublic: false,
+      },
+      {
+        channelType: "phone",
+        value: "+4989123456",
+        purpose: "guest",
+        isPublic: false,
+      },
+    ],
   },
-  website: "https://alpenrose.example",
-  contactEmail: "reservations@alpenrose.example",
-  phone: "+4989123456",
-  shortDescription: "An alpine stay in Munich.",
-  longDescription: "An alpine stay in the center of Munich.",
-  media: [],
-  sharedProfile: {
-    status: "complete",
-    source: "canonical",
-    completionPercent: 100,
-    missingFields: [],
-  },
-  updatedAt: "2026-07-22T10:00:00.000Z",
 };
 
 const roomType = {
@@ -136,7 +144,6 @@ export async function mockPmsWebAuthenticatedSession(
     window.localStorage.setItem("userType", "hotel");
     window.localStorage.setItem("userStatus", "active");
     window.localStorage.setItem("selectedHotelId", propertyId);
-    window.localStorage.setItem("pmsSetupComplete", "true");
     window.localStorage.setItem(
       "user",
       JSON.stringify({ id: "user_pms_owner", email: "owner@example.com", type: "hotel" }),
@@ -176,41 +183,55 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
   );
   await page.route("**/api/hotel-setup/status**", (route) =>
     route.fulfill({
-      json: createSharedHotelSetupStatusMock({
+      json: createAdaptiveHotelSetupStatusMock({
         entryProduct: "pms",
-        returnTo: "/dashboard",
         organizationId: "org_pms_owner",
         organizationDisplayName: "Alpenrose Hotel Group",
+        selectedTracks: ["hotel_operations"],
         propertyId: PMS_WEB_PROPERTY_ID,
         publicId: "prop_alpenrose",
         propertyDisplayName: "Alpenrose Munich",
         locationSummary: "Munich, DE",
-        products: {
-          booking: sharedHotelSetupProduct("booking", "not_selected"),
-          pms: sharedHotelSetupProduct("pms", "active"),
-          marketplace: sharedHotelSetupProduct("marketplace", "not_selected"),
-        },
-        nextAction: {
-          action: "enter_product",
+        entryDecision: {
           propertyId: PMS_WEB_PROPERTY_ID,
-          product: "pms",
-          returnTo: "/dashboard",
-          reasonCodes: ["ready"],
+          decision: "enter",
+          destinationRouteKey: "pms.workspace",
+          reasonCode: null,
         },
       }),
     }),
   );
-  await page.route(`**/api/hotel-setup/properties/${PMS_WEB_PROPERTY_ID}/profile`, (route) =>
-    route.fulfill({
+  await page.route(`**/api/hotel-setup/properties/${PMS_WEB_PROPERTY_ID}/profile`, (route) => {
+    if (route.request().method() !== "PUT") {
+      return route.fulfill({ json: sharedPropertyProfile });
+    }
+    const request = readJson(route);
+    if (request["expectedProfileRevision"] !== sharedPropertyProfile.profileRevision) {
+      return route.fulfill({
+        status: 409,
+        json: {
+          code: "profile_revision_conflict",
+          currentRevision: sharedPropertyProfile.profileRevision,
+        },
+      });
+    }
+    const patch = isRecord(request["patch"]) ? request["patch"] : {};
+    const locationPatch = isRecord(patch["location"]) ? patch["location"] : {};
+    return route.fulfill({
       json: {
-        ...sharedPropertyProfile,
-        ...readJson(route),
         propertyId: PMS_WEB_PROPERTY_ID,
-        publicId: sharedPropertyProfile.publicId,
-        sharedProfile: sharedPropertyProfile.sharedProfile,
+        profileRevision: sharedPropertyProfile.profileRevision + 1,
+        profile: {
+          ...sharedPropertyProfile.profile,
+          ...patch,
+          location: {
+            ...sharedPropertyProfile.profile.location,
+            ...locationPatch,
+          },
+        },
       },
-    }),
-  );
+    });
+  });
   await page.route("**/admin/module-activations", (route) =>
     route.fulfill({ json: { activations: [] } }),
   );
@@ -336,4 +357,8 @@ function readJson(route: Route): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -24,6 +24,7 @@
     "./SharedSignupPage": "./src/SharedSignupPage.tsx"
   },
   "dependencies": {
+    "@vayada/domain-hotels": "*",
     "@vayada/locale-constants": "*",
     "countries-and-timezones": "^3.9.0",
     "tz-lookup": "^6.1.25"

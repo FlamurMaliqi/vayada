@@ -33,6 +33,56 @@ describe("PostgreSQL platform media repository", () => {
     expect(JSON.stringify(database.session)).not.toContain("https://s3.example.com");
   });
 
+  it("atomically renews an unfinished signed upload session", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const created = await createSession(repository);
+
+    const renewed = await repository.renewSignedUploadSession({
+      session: created,
+      expiresAt: "2026-07-16T13:15:00.000Z",
+      now: "2026-07-16T13:00:00.000Z",
+    });
+
+    expect(renewed).toMatchObject({
+      sessionId: created.sessionId,
+      status: "signed",
+      expiresAt: "2026-07-16T13:15:00.000Z",
+      files: [{ mediaId: created.files[0]!.mediaId }],
+    });
+    expect(database.session?.expiresAt).toBe("2026-07-16T13:15:00.000Z");
+    expect(database.session?.uploadTargets[0]?.expiresAt).toBe("2026-07-16T13:15:00.000Z");
+    expect(
+      database.poolQueries.some(({ text }) =>
+        text.includes("platform_media_upload_session_renewal"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns the existing upload session when the idempotency identity races", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const created = await createSession(repository);
+    const replayed = await createSession(repository);
+
+    expect(replayed).toMatchObject({
+      sessionId: created.sessionId,
+      uploadSessionKey: created.uploadSessionKey,
+      files: [{ mediaId: created.files[0]!.mediaId }],
+      uploadTargets: [{ uploadTargetId: created.uploadTargets[0]!.uploadTargetId, uploadUrl: "" }],
+    });
+    expect(
+      database.clientQueries.filter(({ text }) =>
+        text.includes("INSERT INTO platform.media_upload_sessions"),
+      ),
+    ).toHaveLength(2);
+    expect(
+      database.clientQueries.filter(({ text }) =>
+        text.includes("INSERT INTO platform.product_audit_events"),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("completes once, replays idempotently, and reads media from a fresh repository", async () => {
     const database = createFakeDatabase();
     const first = repositoryFor(database.pool);
@@ -201,6 +251,15 @@ describe("PostgreSQL platform media repository", () => {
     ]);
   });
 
+  it("rejects property hero sessions without an expected profile revision", async () => {
+    const database = createFakeDatabase();
+
+    await expect(
+      createSession(repositoryFor(database.pool), "property.hero_image"),
+    ).rejects.toThrow("Property hero images require expectedProfileRevision");
+    expect(database.queries).toEqual([]);
+  });
+
   it.each(["property.hero_image", "property.gallery_image"] as const)(
     "resolves and persists requested-public %s against the canonical property",
     async (purpose) => {
@@ -234,7 +293,14 @@ describe("PostgreSQL platform media repository", () => {
         },
       });
 
-      const session = await createSession(repository, purpose);
+      const session = await createSession(
+        repository,
+        purpose,
+        purpose === "property.hero_image" ? 1 : undefined,
+      );
+      if (purpose === "property.hero_image") {
+        expect(session.expectedProfileRevision).toBe(1);
+      }
       const completed = await repository.completeUploadSession(completionInput(session));
       expect(completed.mediaObjects[0]).toMatchObject({
         purpose,
@@ -268,6 +334,30 @@ describe("PostgreSQL platform media repository", () => {
       expect(projection?.text).toContain("source_system = 'platform'");
       expect(projection?.text).toContain("public_approved = TRUE");
       expect(projection?.text).toContain("COALESCE(MAX(sort_order) + 1, 1)");
+      expect(projection?.text).not.toContain("FOR UPDATE");
+      expect(projection?.text).toContain("advanced_property AS");
+      expect(projection?.text).toContain("projected_media AS");
+      expect(projection?.text).toContain("completeness AS");
+      expect(projection?.text).toContain("BTRIM(profile.short_description)");
+      expect(projection?.text).toContain("THEN 'description' END");
+      expect(projection?.text).toContain("THEN 'media' END");
+      expect(projection?.text).toContain("SET completeness_reasons = completeness.reasons");
+      expect(projection?.text).toContain(
+        "WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status",
+      );
+      expect(projection?.text).toContain(
+        "WHEN cardinality(completeness.reasons) = 0 THEN 'complete'",
+      );
+      expect(projection?.text).toContain("profile_revision = property.profile_revision + 1");
+      expect(
+        database.clientQueries.findIndex(({ text }) =>
+          text.includes('SELECT property.profile_revision AS "profileRevision"'),
+        ),
+      ).toBeLessThan(
+        database.clientQueries.findIndex(({ text }) =>
+          text.includes("INSERT INTO platform.media_objects"),
+        ),
+      );
       expect(
         database.clientQueries.findIndex(({ text }) =>
           text.includes("INSERT INTO hotel_catalog.property_media"),
@@ -279,6 +369,29 @@ describe("PostgreSQL platform media repository", () => {
       );
     },
   );
+
+  it("rolls back hero finalization before media writes when the profile revision is stale", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "property.hero_image", 2);
+
+    await expect(repository.completeUploadSession(completionInput(session))).rejects.toMatchObject({
+      code: "profile_revision_conflict",
+      currentRevision: 1,
+    });
+    expect(database.session).toMatchObject({
+      status: "signed",
+      expectedProfileRevision: 2,
+    });
+    expect(database.mediaRowCount).toBe(0);
+    expect(database.propertyRevision).toBe(1);
+    expect(database.queries.at(-1)?.text).toBe("ROLLBACK");
+    expect(
+      database.clientQueries.some(({ text }) =>
+        text.includes("INSERT INTO platform.media_objects"),
+      ),
+    ).toBe(false);
+  });
 
   it("records append-only platform audit events", async () => {
     const database = createFakeDatabase();
@@ -375,6 +488,7 @@ async function createSession(
     | "marketplace.collaboration_chat.attachment"
     | "property.hero_image"
     | "property.gallery_image" = "identity.user.profile_image",
+  expectedProfileRevision?: number,
 ) {
   const isProfile = purpose === "identity.user.profile_image";
   const isOffer = purpose === "marketplace.offer.media";
@@ -412,6 +526,7 @@ async function createSession(
     request: {
       purpose,
       visibility: isChat ? "private" : "public",
+      expectedProfileRevision,
       resource: {
         product,
         resourceType,
@@ -562,6 +677,7 @@ type FakeDatabaseState = {
   mediaRows: Map<string, FakeMediaRow>;
   variantRows: FakeVariantRow[];
   propertyLinks: Map<string, string>;
+  propertyRevision: number;
 };
 
 function createFakeDatabase(failAuditAction?: string) {
@@ -606,6 +722,12 @@ function createFakeDatabase(failAuditAction?: string) {
     get session() {
       return committed.session;
     },
+    get mediaRowCount() {
+      return committed.mediaRows.size;
+    },
+    get propertyRevision() {
+      return committed.propertyRevision;
+    },
     queries,
     poolQueries,
     clientQueries,
@@ -631,6 +753,7 @@ function emptyDatabaseState(): FakeDatabaseState {
     mediaRows: new Map(),
     variantRows: [],
     propertyLinks: new Map([[BOOKING_HOTEL_ID, PROPERTY_ID]]),
+    propertyRevision: 1,
   };
 }
 
@@ -650,7 +773,31 @@ function executeFakeQuery(
     const propertyId = state.propertyLinks.get(String(values?.[2]));
     return { rows: propertyId ? [{ propertyId }] : [] };
   } else if (text.includes("INSERT INTO platform.media_upload_sessions")) {
+    if (state.session) return { rows: [] };
     state.session = metadata(values?.[15]).session;
+    return { rows: [{ id: state.session.sessionId }] };
+  } else if (text.includes('SELECT property.profile_revision AS "profileRevision"')) {
+    return String(values?.[0]) === PROPERTY_ID
+      ? { rows: [{ profileRevision: state.propertyRevision }] }
+      : { rows: [] };
+  } else if (text.includes("platform_media_upload_session_renewal")) {
+    if (
+      state.session?.sessionId === String(values?.[0]) &&
+      state.session.status === "signed" &&
+      state.session.expiresAt === String(values?.[1])
+    ) {
+      state.session = jsonValue<PlatformMediaSessionRecord>(values?.[2]);
+      return {
+        rows: [
+          {
+            session: state.session,
+            completedMediaObjectId: null,
+            mediaObjectIds: null,
+          },
+        ],
+      };
+    }
+    return { rows: [] };
   } else if (text.includes("completion_metadata -> 'session'")) {
     return {
       rows: state.session
@@ -706,6 +853,9 @@ function executeFakeQuery(
       publicCdnUrl: optionalString(values?.[9]) ?? null,
       createdAt: String(values?.[10]),
     });
+  } else if (text.includes("INSERT INTO hotel_catalog.property_media")) {
+    state.propertyRevision += 1;
+    return { rows: [{ id: PROPERTY_ID }] };
   } else if (text.includes("FROM platform.media_objects media")) {
     const row = state.mediaRows.get(String(values?.[0]));
     return { rows: row ? [{ record: mediaRecord(row, state.variantRows) }] : [] };

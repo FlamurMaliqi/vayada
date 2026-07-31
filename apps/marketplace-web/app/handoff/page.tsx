@@ -104,16 +104,16 @@ export default function HandoffPage() {
       const storedPropertyId = localStorage.getItem("selectedSharedPropertyId")?.trim();
       const explicitPropertyId = propertyId?.trim() || handoffHotelId?.trim() || null;
       const requestedPropertyId = explicitPropertyId || storedPropertyId;
+      const properties = status.propertySelection.availableProperties;
       let selectedProperty = requestedPropertyId
-        ? (status.properties.find((property) => property.propertyId === requestedPropertyId) ??
-          null)
+        ? (properties.find((property) => property.propertyId === requestedPropertyId) ?? null)
         : null;
 
       if (requestedPropertyId && !selectedProperty) {
         localStorage.removeItem("selectedSharedPropertyId");
       }
-      if (!explicitPropertyId && !selectedProperty && status.properties.length === 1) {
-        selectedProperty = status.properties[0]!;
+      if (!explicitPropertyId && !selectedProperty && properties.length === 1) {
+        selectedProperty = properties[0]!;
       }
       if (selectedProperty) {
         localStorage.setItem("selectedSharedPropertyId", selectedProperty.propertyId);

@@ -31,6 +31,7 @@ describe("uploadImages", () => {
       if (url === "https://next-api.vayada.com/api/media/upload-sessions") {
         expect(JSON.parse(String(init?.body))).toMatchObject({
           purpose: "property.hero_image",
+          expectedProfileRevision: 7,
           resource: {
             product: "booking",
             resourceType: "booking_hotel",
@@ -67,6 +68,96 @@ describe("uploadImages", () => {
         new File(["image"], "room.jpg", { type: "image/jpeg" }),
         "property.hero_image",
         "booking_hotel_bergwald",
+        7,
+      ),
+    ).resolves.toEqual(["https://cdn.vayada.com/media/room.jpg"]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires an editor-loaded profile revision for hero image uploads", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const { setAuthKitSession } = await import("@/services/auth/sessionStore");
+    const { uploadSingleImage } = await import("./uploadImage");
+    setAuthKitSession({
+      accessToken: "authkit-token",
+      resources: { "booking:booking_hotel": ["booking_hotel_alpenrose"] },
+      user: { id: "user_1", email: "owner@example.com", status: "active" },
+    });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      uploadSingleImage(
+        new File(["image"], "hero.jpg", { type: "image/jpeg" }),
+        "property.hero_image",
+        "booking_hotel_alpenrose",
+      ),
+    ).rejects.toThrow("valid property profile revision is required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not send a profile revision for gallery image uploads", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const window = createWindowWithStorage();
+    vi.stubGlobal("window", window);
+    vi.stubGlobal("localStorage", window.localStorage);
+
+    const { setAuthKitSession } = await import("@/services/auth/sessionStore");
+    const { uploadImages } = await import("./uploadImage");
+    setAuthKitSession({
+      accessToken: "authkit-token",
+      resources: { "booking:booking_hotel": ["booking_hotel_alpenrose"] },
+      user: { id: "user_1", email: "owner@example.com", status: "active" },
+    });
+
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/api/media/upload-sessions")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          purpose: "property.gallery_image",
+          visibility: "public",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_alpenrose",
+          },
+          files: [
+            {
+              clientFileId: "file_1",
+              filename: "room.jpg",
+              contentType: "image/jpeg",
+              sizeBytes: 5,
+            },
+          ],
+        });
+        return jsonResponse({
+          uploadSession: { sessionId: "session_1" },
+          uploadTargets: [
+            {
+              uploadTargetId: "target_1",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/target_1",
+              headers: {},
+            },
+          ],
+        });
+      }
+      return jsonResponse({
+        mediaObjects: [
+          {
+            variants: [{ publicCdnUrl: "https://cdn.vayada.com/media/room.jpg" }],
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      uploadImages(
+        new File(["image"], "room.jpg", { type: "image/jpeg" }),
+        "property.gallery_image",
+        "booking_hotel_alpenrose",
+        99,
       ),
     ).resolves.toEqual(["https://cdn.vayada.com/media/room.jpg"]);
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -105,6 +196,8 @@ describe("uploadImages", () => {
       uploadSingleImage(
         new File(["image"], "hero.jpg", { type: "image/jpeg" }),
         "property.hero_image",
+        undefined,
+        3,
       ),
     ).rejects.toThrow("did not return a public HTTPS image URL");
   });
@@ -126,6 +219,7 @@ describe("uploadImages", () => {
         new File(["image"], "hero.jpg", { type: "image/jpeg" }),
         "property.hero_image",
         "booking_hotel_bergwald",
+        2,
       ),
     ).rejects.toThrow("outside the active organization scope");
     expect(fetch).not.toHaveBeenCalled();

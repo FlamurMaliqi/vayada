@@ -338,6 +338,54 @@ describe("PMS operations command repository", () => {
     expect(outboxCalls).toHaveLength(2);
   });
 
+  it("serializes first-run room setup and rejects a second initial room type", async () => {
+    const target = targetPrivateNotesPool();
+    const repository = createTargetPmsOperationsCommandRepository({
+      connectionString: "postgresql://pms-target",
+      pool: target.pool,
+      readRepository: unusedReadRepository,
+      now: target.now,
+    });
+
+    const created = await repository.createRoomType(
+      roomTypeCreateCommand({ initialSetupOnly: true }),
+    );
+    const competing = await repository.createRoomType(
+      roomTypeCreateCommand({
+        initialSetupOnly: true,
+        commandId: "cmd-room-type-create-competing",
+        idempotencyKey: "client-room-type-create-competing",
+        name: "Competing Suite",
+      }),
+    );
+
+    expect(created.ok).toBe(true);
+    expect(competing).toMatchObject({
+      ok: false,
+      statusCode: 409,
+      code: "room_type_conflict",
+    });
+    expect(
+      target.calls.filter((call) => call.text.includes("INSERT INTO pms.room_types")),
+    ).toHaveLength(1);
+    expect(
+      target.calls.some(
+        (call) =>
+          call.text.includes("pg_advisory_xact_lock") &&
+          call.text.includes("pms-initial-room-setup:"),
+      ),
+    ).toBe(true);
+    const lockCallIndex = target.calls.findIndex((call) =>
+      call.text.includes("pg_advisory_xact_lock"),
+    );
+    const existenceCallIndex = target.calls.findIndex(
+      (call) =>
+        call.text.includes("SELECT EXISTS") && call.text.includes("FROM pms.room_types room_type"),
+    );
+    expect(lockCallIndex).toBeGreaterThanOrEqual(0);
+    expect(existenceCallIndex).toBeGreaterThan(lockCallIndex);
+  });
+
   it("materializes only the bounded explicit operating and season horizon", () => {
     const horizon = buildRoomTypeInventoryHorizon(
       roomTypeCreateCommand({
@@ -597,6 +645,20 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
       )
         ? rows([{ exists: 1 } as unknown as T])
         : emptyRows<T>();
+    }
+
+    if (text.includes("pms-initial-room-setup:")) {
+      return emptyRows<T>();
+    }
+
+    if (text.includes("SELECT EXISTS") && text.includes("FROM pms.room_types room_type")) {
+      return rows([
+        {
+          roomSetupExists: [...roomTypes.values()].some(
+            ({ propertyId }) => propertyId === String(values?.[0]),
+          ),
+        } as unknown as T,
+      ]);
     }
 
     if (text.includes("INSERT INTO platform.idempotency_keys")) {

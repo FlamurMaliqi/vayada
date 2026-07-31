@@ -23,8 +23,11 @@ export default function SignupPage() {
     try {
       await authService.signup(data);
       const decision = await resolveBookingSetupGuard("/dashboard");
-      localStorage.setItem("setupComplete", decision.action === "enter_product" ? "true" : "false");
-      router.push(decision.action === "enter_product" ? "/dashboard" : decision.redirectPath);
+      if (decision.action === "redirect_to_setup") {
+        window.location.replace(decision.redirectPath);
+        return;
+      }
+      router.push("/dashboard");
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : t("auth.register.errorUnexpected"));
     } finally {

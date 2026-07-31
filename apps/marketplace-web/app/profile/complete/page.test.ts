@@ -77,7 +77,7 @@ describe("Marketplace hotel profile completion offer resume", () => {
       storage,
       "property-one",
       createHotelMarketplaceDraft(
-        { about: "About the hotel" },
+        { about: "About the hotel", localityPublic: false },
         [completedOffer, pendingMedia],
         4,
         100,

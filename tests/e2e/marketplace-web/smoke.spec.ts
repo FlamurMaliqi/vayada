@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { watchNoLegacyCalls } from "../support/noLegacyCalls";
 import { watchPageHealth } from "../support/pageHealth";
+import { createAdaptiveHotelSetupStatusMock } from "../support/sharedHotelSetupMocks";
 import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 
 test.describe("marketplace-web smoke", () => {
@@ -195,9 +196,9 @@ test.describe("marketplace-web smoke", () => {
     await expect(page).toHaveURL(/\/setup\?/);
     const url = new URL(page.url());
     expect(url.searchParams.get("entryProduct")).toBe("marketplace");
-    expect(url.searchParams.has("selectedProducts")).toBe(false);
-    await expect(page.getByRole("heading", { name: "Let’s get to know your hotel" })).toBeVisible();
-    await expect(page.getByLabel("Hotel name")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+    await expect(page.getByLabel("Creator Marketplace")).toBeVisible();
+    await expect(page.getByLabel("Hotel Operations")).toBeVisible();
     await expect(page.getByText("We'd like to get to know you better")).toHaveCount(0);
     await expect(page.getByText("Which systems do you want to use?")).toHaveCount(0);
   });
@@ -1883,21 +1884,22 @@ async function mockOnboardingAuth(
 
 async function mockSharedSetupStatus(page: Page) {
   await routeJson(page, /\/api\/hotel-setup\/property-types/, {
-    contractVersion: "shared-hotel-setup-property-types.v1",
+    contractVersion: "adaptive-hotel-property-types.v1",
     propertyTypes: [{ value: "hotel", label: "Hotel" }],
   });
-  await routeJson(page, /\/api\/hotel-setup\/status/, {
-    contractVersion: "shared-hotel-setup-status.v1",
-    entry: { entryProduct: "marketplace", returnTo: null },
-    hotelGroup: {
+  await routeJson(
+    page,
+    /\/api\/hotel-setup\/status/,
+    createAdaptiveHotelSetupStatusMock({
+      entryProduct: "marketplace",
       organizationId: "11111111-1111-4111-8111-111111111111",
-      displayName: "Test Hotel Group",
-    },
-    selection: { state: "no_property", selectedPropertyId: null },
-    properties: [],
-    nextAction: { action: "create_property", reasonCodes: ["no_property"] },
-    updatedAt: "2026-07-08T00:00:00.000Z",
-  });
+      organizationDisplayName: "Test Hotel Group",
+      selectedTracks: [],
+      trackRevision: 0,
+      propertyId: null,
+      updatedAt: "2026-07-08T00:00:00.000Z",
+    }),
+  );
 }
 
 async function mockCookieConsent(page: Page) {

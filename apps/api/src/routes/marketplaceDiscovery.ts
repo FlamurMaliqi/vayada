@@ -66,7 +66,12 @@ export type MarketplaceOfferReadModel = {
   hotelName: string;
   hotelSlug: string;
   hotelAccommodationType: string | null;
-  hotelLocation: { displayText: string; countryCode?: string; city?: string };
+  hotelLocation: {
+    displayText: string;
+    countryCode?: string;
+    region?: string;
+    city?: string;
+  };
   hotelCoverImageUrl: string | null;
   hotelImageUrls: string[];
   deliverables: MarketplaceOfferDeliverable[];
@@ -218,12 +223,7 @@ export function createPgMarketplaceDiscoveryReadRepository(config: {
              COALESCE(property_profile.canonical_slug, read_model.canonical_slug, property.public_id)
                AS "hotelSlug",
              property.property_type AS "hotelAccommodationType",
-             COALESCE(
-               NULLIF(property_profile.location, '{}'::jsonb),
-               read_model.location,
-               '{}'::jsonb
-             )
-               AS "hotelLocation",
+             COALESCE(property_profile.location, '{}'::jsonb) AS "hotelLocation",
              COALESCE(media.cover_image_url, read_model.image_urls[1]) AS "hotelCoverImageUrl",
              COALESCE(media.image_urls, read_model.image_urls, '{}') AS "hotelImageUrls",
              COALESCE(deliverables.items, '[]'::jsonb) AS deliverables,
@@ -447,18 +447,14 @@ export function toMarketplaceLocation(value: unknown): MarketplaceOfferReadModel
     return { displayText: "" };
   }
   const location = value as Record<string, unknown>;
-  const rawMarketplaceLocation = readString(location.rawMarketplaceLocation);
   const countryCode = readString(location.countryCode);
+  const region = readString(location.region);
   const city = readString(location.city);
-  const country = countryCode ?? readString(location.country);
-  const displayText =
-    readString(location.displayText) ??
-    readString(location.display) ??
-    rawMarketplaceLocation ??
-    [city, country].filter(Boolean).join(", ");
+  const displayText = [...new Set([city, region, countryCode].filter(Boolean))].join(", ");
   return {
     displayText,
     ...(countryCode ? { countryCode } : {}),
+    ...(region ? { region } : {}),
     ...(city ? { city } : {}),
   };
 }
@@ -797,6 +793,7 @@ export function serializeMarketplaceOffer(
     hotelLocation: {
       displayText: offer.hotelLocation.displayText,
       ...(offer.hotelLocation.countryCode ? { countryCode: offer.hotelLocation.countryCode } : {}),
+      ...(offer.hotelLocation.region ? { region: offer.hotelLocation.region } : {}),
       ...(offer.hotelLocation.city ? { city: offer.hotelLocation.city } : {}),
     },
     hotelCoverImageUrl: offer.hotelCoverImageUrl ?? null,

@@ -1095,7 +1095,7 @@ async function insertPgCollaborationMessage(
            RETURNING media.id
          )
          INSERT INTO marketplace.marketplace_chat_messages ${attachmentMessageColumns}
-         SELECT message_identity.id, $1, $2, $3, $4, $5, $6, $7::jsonb
+         SELECT message_identity.id, $1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7::jsonb
          FROM message_identity
          CROSS JOIN claimed_attachment
          ${returning}`,
@@ -2472,14 +2472,12 @@ function collaborationSelectSql(side: MarketplaceCollaborationAuthorizationSide)
           collaboration.creator_agreed_at AS "creatorAgreedAt",
           collaboration.hotel_agreed_at AS "hotelAgreedAt",
           offer.title AS "offerTitle",
-          COALESCE(
-            NULLIF(public_profile.location->>'rawMarketplaceLocation', ''),
-            NULLIF(concat_ws(
-              ', ',
-              NULLIF(public_profile.location->>'city', ''),
-              NULLIF(public_profile.location->>'countryCode', '')
-            ), '')
-          ) AS "hotelLocation",
+          NULLIF(concat_ws(
+            ', ',
+            NULLIF(public_profile.location->>'city', ''),
+            NULLIF(public_profile.location->>'region', ''),
+            NULLIF(public_profile.location->>'countryCode', '')
+          ), '') AS "hotelLocation",
           creator.id::text AS "creatorProfileId",
           creator.organization_id::text AS "creatorOrganizationId",
           creator.display_name AS "creatorDisplayName",

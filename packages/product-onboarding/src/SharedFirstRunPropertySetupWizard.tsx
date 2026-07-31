@@ -2,6 +2,7 @@
 
 import {
   type ComponentType,
+  type ReactNode,
   type RefObject,
   type SVGProps,
   useEffect,
@@ -11,6 +12,7 @@ import {
   useState,
 } from "react";
 import {
+  ArrowLeftIcon,
   ArrowRightIcon,
   BuildingOffice2Icon,
   BuildingOfficeIcon,
@@ -19,7 +21,6 @@ import {
   CheckIcon,
   EllipsisHorizontalIcon,
   ExclamationCircleIcon,
-  GlobeAltIcon,
   HomeModernIcon,
   KeyIcon,
   MapPinIcon,
@@ -28,6 +29,18 @@ import {
   SunIcon,
   UsersIcon,
 } from "@heroicons/react/24/outline";
+import type {
+  AdaptiveHotelSetupStatus,
+  CreatePropertyProfileRequest,
+  PropertyProfileContact,
+  PropertyProfilePatch,
+  PropertyProfileResponse,
+  SetupComponentProduct,
+  SetupTask,
+  SetupTaskId,
+  SetupTrack,
+  UpdatePropertyProfileRequest,
+} from "@vayada/domain-hotels";
 import { COUNTRY_OPTIONS } from "@vayada/locale-constants";
 
 import { HotelIcon } from "./HotelIcon";
@@ -37,56 +50,54 @@ import TimezoneField from "./TimezoneField";
 import { availableTimezones, defaultTimezoneForCountry, timezoneForCoordinates } from "./timezones";
 import { isValidSharedAccountPhone } from "./sharedAccountDetails";
 import {
-  SHARED_HOTEL_SETUP_PRODUCTS,
-  isActionableSharedProductActivation,
-  isSharedHotelSetupProductSelectable,
+  isSetupTaskActionable,
   resolveSharedFirstRunSetupView,
+  toggleSetupTrackSelection,
   type SharedFirstRunSetupViewModel,
   type SharedHotelSetupEntryProduct,
-  type SharedHotelSetupProduct,
-  type SharedHotelSetupStatus,
-  type SharedProductActivation,
-  type SharedPropertyProfile,
-  type SharedPropertyProfileInput,
   type SharedSetupProperty,
 } from "./sharedFirstRunSetupFlow";
 import type { SharedHotelSetupApi, SharedPropertyTypeOption } from "./sharedHotelSetupApi";
 
-type ProductLabels = Record<SharedHotelSetupProduct, string>;
+type ProductLabels = Record<SetupComponentProduct, string>;
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 
-export type SharedFirstRunProductContinueInput = {
-  product: SharedHotelSetupProduct;
-  productStatus: SharedProductActivation<SharedHotelSetupProduct>["status"] | null;
-  organizationId: string;
+export type SharedFirstRunContinueInput = {
+  action: "enter_product";
+  product: SetupComponentProduct;
   propertyId: string;
-  missingSteps: string[];
   returnTo: string | null;
-  action: "complete_product_activation" | "enter_product";
 };
 
 export type SharedFirstRunPropertySetupWizardProps = {
   api: SharedHotelSetupApi;
   entryProduct: SharedHotelSetupEntryProduct;
-  initialSelectedProducts?: SharedHotelSetupProduct[];
   initialPropertyId?: string | null;
   returnTo?: string | null;
   initialAddProperty?: boolean;
   embedded?: boolean;
-  autoContinueToProduct?: boolean;
   productLabels?: Partial<ProductLabels>;
-  accountContactEmail?: string | null;
-  accountContactPhone?: string | null;
-  onProductContinue: (input: SharedFirstRunProductContinueInput) => void;
+  onContinue: (input: SharedFirstRunContinueInput) => void | Promise<void>;
+  renderTaskForm: (context: SharedSetupTaskFormContext) => ReactNode;
+  onPropertySelected?: (propertyId: string) => void | Promise<void>;
+  onExit?: () => void;
+};
+
+export type SharedSetupTaskFormContext = {
+  task: SetupTask;
+  propertyId: string;
+  selectedTracks: readonly SetupTrack[];
+  onBeforeSave: () => Promise<void>;
+  onComplete: () => Promise<void>;
+  onBack: (() => void) | null;
+  onDirty: () => void;
 };
 
 type ProfileDraft = {
   displayName: string;
   propertyType: string;
   countryCode: string;
-  region: string;
   city: string;
-  rawMarketplaceLocation: string;
   streetAddress: string;
   postalCode: string;
   latitude: number | null;
@@ -95,15 +106,11 @@ type ProfileDraft = {
   website: string;
   contactEmail: string;
   phone: string;
-  shortDescription: string;
-  longDescription: string;
-  mediaUrl: string;
 };
 
 type ManualAddressReset = {
   latitude?: null;
   longitude?: null;
-  region?: "";
 };
 
 export function locationResetForManualAddressEdit(field: string): ManualAddressReset {
@@ -112,7 +119,6 @@ export function locationResetForManualAddressEdit(field: string): ManualAddressR
   return {
     latitude: null,
     longitude: null,
-    ...(field === "city" || field === "countryCode" ? { region: "" as const } : {}),
   };
 }
 
@@ -161,71 +167,85 @@ const DEFAULT_PRODUCT_LABELS: ProductLabels = {
   marketplace: "Creator Marketplace",
 };
 
-const PRODUCT_DESCRIPTIONS: Record<SharedHotelSetupProduct, string> = {
-  booking: "Direct booking pages, checkout, and guest-facing availability.",
-  pms: "Rooms, calendar, reservations, and daily property operations.",
-  marketplace: "Creator discovery and collaboration offer tools.",
+const TRACK_CONTENT: Record<
+  SetupTrack,
+  { title: string; subtitle: string | null; description: string; icon: IconComponent }
+> = {
+  hotel_operations: {
+    title: "Hotel Operations",
+    subtitle: "PMS + Booking Engine",
+    description: "Manage rooms, rates, reservations, and direct bookings.",
+    icon: HotelIcon,
+  },
+  creator_marketplace: {
+    title: "Creator Marketplace",
+    subtitle: null,
+    description: "Create your hotel profile and prepare a collaboration offer.",
+    icon: SparklesIcon,
+  },
 };
 
-const PRODUCT_UNLOCKS: Record<SharedHotelSetupProduct, string> = {
-  booking: "Launch direct bookings",
-  pms: "Run daily operations",
-  marketplace: "Invite creator demand",
-};
-
-type ProductSetupTaskDefinition = {
-  id: string;
-  title: string;
-  description: string;
-  missingSteps: readonly string[];
-};
-
-const PRODUCT_SETUP_TASKS: Record<SharedHotelSetupProduct, readonly ProductSetupTaskDefinition[]> =
+const TASK_CONTENT: Record<
+  SetupTaskId,
   {
-    booking: [
-      {
-        id: "booking-settings",
-        title: "Configure booking settings",
-        description: "Review booking preferences, policies, and guest-facing details.",
-        missingSteps: ["bookingSettings"],
-      },
-      {
-        id: "booking-readiness",
-        title: "Prepare to accept direct bookings",
-        description: "Publish live availability and finish guest payment setup.",
-        missingSteps: ["publicBookability", "bookabilityFreshness", "paymentReadiness"],
-      },
-    ],
-    pms: [
-      {
-        id: "rooms-and-rates",
-        title: "Set up rooms & rates",
-        description: "Create a room type, add physical rooms, and set its first rate plan.",
-        missingSteps: ["roomTypes", "rooms", "ratePlans"],
-      },
-    ],
-    marketplace: [
-      {
-        id: "creator-profile",
-        title: "Introduce your hotel to creators",
-        description: "Write the creator-facing pitch shown on your hotel profile.",
-        missingSteps: ["creatorPitch"],
-      },
-      {
-        id: "collaboration-offer",
-        title: "Prepare your collaboration offer",
-        description: "Add or review requested content, compensation, and creator requirements.",
-        missingSteps: [
-          "marketplaceOffer",
-          "offerDeliverables",
-          "compensationOptions",
-          "creatorRequirements",
-        ],
-      },
-    ],
-  };
+    title: string;
+    description: string;
+  }
+> = {
+  shared_identity: {
+    title: "Add your hotel basics",
+    description: "Confirm the hotel name, type, address, timezone, and contact details.",
+  },
+  public_profile: {
+    title: "Describe your hotel",
+    description: "Add one description and cover that guests and creators will see.",
+  },
+  creator_offer: {
+    title: "Prepare your collaboration offer",
+    description: "Choose deliverables, compensation, and creator requirements.",
+  },
+  rooms_rates_availability: {
+    title: "Set up rooms, rates, and availability",
+    description: "Add what guests can book and when it is available.",
+  },
+  guest_settings_policies: {
+    title: "Review guest settings and policies",
+    description: "Set check-in details, booking preferences, and cancellation terms.",
+  },
+  payment: {
+    title: "Configure payment",
+    description: "Choose how guests can pay for direct bookings.",
+  },
+  direct_booking_publication: {
+    title: "Publish direct booking",
+    description: "Review bookability and make your direct booking page available.",
+  },
+};
 
-const EMPTY_SELECTED_PRODUCTS: SharedHotelSetupProduct[] = [];
+type TaskStateCopy = {
+  label: string;
+  description: string;
+  tone: "neutral" | "success" | "warning" | "danger";
+};
+
+export const INLINE_SETUP_STALE_SAVE_MESSAGE =
+  "Your setup changed in another session. We refreshed the latest step—review it before saving again.";
+export const INLINE_SETUP_UNSAVED_CHANGES_MESSAGE =
+  "You have unsaved changes. Leave this step and discard them?";
+
+export function canLeaveInlineSetupTask(
+  hasUnsavedChanges: boolean,
+  confirmDiscard: () => boolean,
+): boolean {
+  return !hasUnsavedChanges || confirmDiscard();
+}
+
+export function blockInlineSetupUnload(
+  event: Pick<BeforeUnloadEvent, "preventDefault" | "returnValue">,
+) {
+  event.preventDefault();
+  event.returnValue = "";
+}
 
 const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
   ["displayName", "propertyType"],
@@ -259,75 +279,56 @@ const TIMEZONE_PICKER_OPTIONS = availableTimezones();
 export default function SharedFirstRunPropertySetupWizard({
   api,
   entryProduct,
-  initialSelectedProducts = EMPTY_SELECTED_PRODUCTS,
   initialPropertyId = null,
   returnTo = null,
   initialAddProperty = false,
   embedded = false,
-  autoContinueToProduct = false,
   productLabels,
-  accountContactEmail = null,
-  accountContactPhone = null,
-  onProductContinue,
+  onContinue,
+  renderTaskForm,
+  onPropertySelected,
+  onExit,
 }: SharedFirstRunPropertySetupWizardProps) {
   const labels = { ...DEFAULT_PRODUCT_LABELS, ...productLabels };
-  const [status, setStatus] = useState<SharedHotelSetupStatus | null>(null);
+  const [status, setStatus] = useState<AdaptiveHotelSetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [forceCreateProperty, setForceCreateProperty] = useState(initialAddProperty);
+  const [forceTrackSelection, setForceTrackSelection] = useState(false);
+  const [editPropertyProfile, setEditPropertyProfile] = useState(false);
   const [profileLoadFailed, setProfileLoadFailed] = useState(false);
   const [profileReloadToken, setProfileReloadToken] = useState(0);
-  const [loadedProfile, setLoadedProfile] = useState<SharedPropertyProfile | null>(null);
+  const [loadedProfile, setLoadedProfile] = useState<PropertyProfileResponse | null>(null);
   const [propertyTypeOptions, setPropertyTypeOptions] = useState<SharedPropertyTypeOption[] | null>(
     null,
   );
-  const [draft, setDraft] = useState<ProfileDraft>(() =>
-    newPropertyDraft(accountContactEmail, accountContactPhone),
-  );
-  const [selectedProducts, setSelectedProducts] = useState<SharedHotelSetupProduct[]>(() =>
-    uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]),
-  );
-  const [showProductSetupHubAfterSelection, setShowProductSetupHubAfterSelection] = useState(false);
+  const [draft, setDraft] = useState<ProfileDraft>(() => newPropertyDraft());
+  const [selectedTracks, setSelectedTracks] = useState<SetupTrack[]>([]);
   const [saving, setSaving] = useState(false);
+  const [selectedPlanTaskId, setSelectedPlanTaskId] = useState<SetupTaskId | null>(null);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [profileStep, setProfileStep] = useState(0);
   const profileHeading = useRef<HTMLHeadingElement>(null);
-  const seededInitialSelectionPropertyIds = useRef<Set<string>>(new Set());
-  const automaticContinueKey = useRef<string | null>(null);
+  const trackCommandKey = useRef<string | null>(null);
+  const createPropertyCommandKey = useRef<string | null>(null);
 
   const view = useMemo(
-    () => resolveSharedFirstRunSetupView(status, { forceCreateProperty }),
-    [forceCreateProperty, status],
-  );
-  const productContinueReturnTo = status?.entry.returnTo ?? returnTo;
-  const productContinueInput = useMemo(
     () =>
-      buildProductContinueInput(
-        view,
-        status?.hotelGroup.organizationId ?? null,
-        productContinueReturnTo,
-      ),
-    [productContinueReturnTo, status?.hotelGroup.organizationId, view],
+      resolveSharedFirstRunSetupView(status, {
+        forceCreateProperty,
+        forceTrackSelection,
+        editPropertyProfile,
+      }),
+    [editPropertyProfile, forceCreateProperty, forceTrackSelection, status],
   );
-  const productContinueBlocked = isProductContinueBlocked(view);
-  const isProductSetupScreen =
-    view.screen === "product_activation" || view.screen === "enter_product";
-  const shouldAutoContinueToProduct = autoContinueToProduct && !showProductSetupHubAfterSelection;
-  const productSetupHub = !shouldAutoContinueToProduct && isProductSetupScreen;
-  const productSetupProducts = productSetupHub
-    ? uniqueSelectedProducts([
-        ...(status?.hotelGroup.selectedProducts ?? []),
-        ...(view.product && view.selectedProperty?.products[view.product].status !== "not_selected"
-          ? [view.product]
-          : []),
-      ])
-    : view.product
-      ? [view.product]
-      : [];
-  const shellTitle = productSetupHub ? "Choose what to set up next" : view.title;
+  const entryContinueInput = useMemo(
+    () => buildEntryContinueInput(status, returnTo),
+    [returnTo, status],
+  );
 
   useEffect(() => {
     setForceCreateProperty(initialAddProperty);
+    setEditPropertyProfile(false);
   }, [initialAddProperty]);
 
   useEffect(() => {
@@ -335,10 +336,8 @@ export default function SharedFirstRunPropertySetupWizard({
   }, [view.profileMode, view.selectedPropertyId]);
 
   useEffect(() => {
-    setSelectedProducts(uniqueSelectedProducts([entryProduct, ...initialSelectedProducts]));
-    setShowProductSetupHubAfterSelection(false);
-    seededInitialSelectionPropertyIds.current.clear();
-  }, [entryProduct, initialPropertyId, initialSelectedProducts]);
+    setSelectedPlanTaskId(status?.setupPlan?.recommendedTaskId ?? null);
+  }, [status?.setupPlan?.planRevision, status?.setupPlan?.recommendedTaskId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -346,10 +345,11 @@ export default function SharedFirstRunPropertySetupWizard({
     setError("");
 
     api
-      .getStatus({ entryProduct, returnTo, propertyId: initialPropertyId })
+      .getStatus({ entryProduct, propertyId: initialPropertyId })
       .then((nextStatus) => {
         if (cancelled) return;
         setStatus(nextStatus);
+        setSelectedTracks(nextStatus.organization.selectedTracks);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -362,7 +362,7 @@ export default function SharedFirstRunPropertySetupWizard({
     return () => {
       cancelled = true;
     };
-  }, [api, entryProduct, initialPropertyId, returnTo]);
+  }, [api, entryProduct, initialPropertyId]);
 
   useEffect(() => {
     if (view.screen !== "property_profile") return;
@@ -377,17 +377,13 @@ export default function SharedFirstRunPropertySetupWizard({
       api.getPropertyTypes(),
       propertyId
         ? api.getPropertyProfile(propertyId)
-        : Promise.resolve<SharedPropertyProfile | null>(null),
+        : Promise.resolve<PropertyProfileResponse | null>(null),
     ])
       .then(([catalog, nextProfile]) => {
         if (cancelled) return;
         setPropertyTypeOptions(propertyTypeOptionsFromCatalog(catalog.propertyTypes));
         setLoadedProfile(nextProfile);
-        setDraft(
-          nextProfile
-            ? draftFromProfile(nextProfile)
-            : newPropertyDraft(accountContactEmail, accountContactPhone),
-        );
+        setDraft(nextProfile ? draftFromProfile(nextProfile) : newPropertyDraft());
       })
       .catch((err) => {
         if (cancelled) return;
@@ -399,75 +395,23 @@ export default function SharedFirstRunPropertySetupWizard({
     return () => {
       cancelled = true;
     };
-  }, [
-    accountContactEmail,
-    accountContactPhone,
-    api,
-    profileReloadToken,
-    view.profileMode,
-    view.screen,
-    view.selectedPropertyId,
-  ]);
-
-  useEffect(() => {
-    if (!status || view.screen !== "product_selection" || !view.selectedPropertyId) return;
-    if (seededInitialSelectionPropertyIds.current.has(view.selectedPropertyId)) return;
-
-    const nextSelectedProducts = [...status.hotelGroup.selectedProducts];
-    seededInitialSelectionPropertyIds.current.add(view.selectedPropertyId);
-    for (const product of [entryProduct, ...initialSelectedProducts]) {
-      if (
-        !nextSelectedProducts.includes(product) &&
-        isSharedHotelSetupProductSelectable(view.selectedProperty, product)
-      ) {
-        nextSelectedProducts.push(product);
-      }
-    }
-    setSelectedProducts(nextSelectedProducts);
-  }, [
-    entryProduct,
-    initialSelectedProducts,
-    status?.hotelGroup.selectedProducts,
-    view.screen,
-    view.selectedProperty,
-    view.selectedPropertyId,
-  ]);
-
-  useEffect(() => {
-    if (
-      loading ||
-      error ||
-      !shouldAutoContinueToProduct ||
-      !productContinueInput ||
-      productContinueBlocked
-    ) {
-      return;
-    }
-    const key = `${productContinueInput.action}:${productContinueInput.product}:${productContinueInput.propertyId}`;
-    if (automaticContinueKey.current === key) return;
-    automaticContinueKey.current = key;
-    onProductContinue(productContinueInput);
-  }, [
-    error,
-    loading,
-    onProductContinue,
-    productContinueBlocked,
-    productContinueInput,
-    shouldAutoContinueToProduct,
-  ]);
+  }, [api, profileReloadToken, view.profileMode, view.screen, view.selectedPropertyId]);
 
   const reloadStatus = async (propertyId?: string | null) => {
-    const nextStatus = await api.getStatus({ entryProduct, returnTo, propertyId });
+    const nextStatus = await api.getStatus({ entryProduct, propertyId });
     setStatus(nextStatus);
+    setSelectedTracks(nextStatus.organization.selectedTracks);
     return nextStatus;
   };
 
   const handleSelectProperty = async (propertyId: string) => {
     setError("");
     setForceCreateProperty(false);
+    setEditPropertyProfile(false);
     setLoading(true);
     try {
       await reloadStatus(propertyId);
+      await onPropertySelected?.(propertyId);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -478,7 +422,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const handleSaveProfile = async () => {
     setError("");
     setFieldErrors({});
-    const nextFieldErrors = validateProfileDraft(draft, view.profileMode ?? "create");
+    const nextFieldErrors = validateProfileDraft(draft);
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors);
       return;
@@ -490,45 +434,139 @@ export default function SharedFirstRunPropertySetupWizard({
         setError("The existing property profile could not be loaded.");
         return;
       }
-      const input = profileInputFromDraft(draft, loadedProfile);
-      const saved =
-        view.profileMode === "update" && view.selectedPropertyId
-          ? await api.updatePropertyProfile(view.selectedPropertyId, input)
-          : await api.createPropertyProfile(input);
+      let saved: PropertyProfileResponse;
+      if (view.profileMode === "update" && view.selectedPropertyId && loadedProfile) {
+        const update = profileUpdateFromDraft(draft, loadedProfile);
+        if (!update) {
+          setForceCreateProperty(false);
+          setEditPropertyProfile(false);
+          await reloadStatus(view.selectedPropertyId);
+          return;
+        }
+        saved = await api.updatePropertyProfile(view.selectedPropertyId, update);
+      } else {
+        saved = await api.createPropertyProfile(
+          createProfileFromDraft(draft),
+          (createPropertyCommandKey.current = idempotencyKeyForRetry(
+            createPropertyCommandKey.current,
+          )),
+        );
+      }
       setLoadedProfile(saved);
       setForceCreateProperty(false);
+      setEditPropertyProfile(false);
       await reloadStatus(saved.propertyId);
+      if (view.profileMode === "create") {
+        await onPropertySelected?.(saved.propertyId);
+      }
+      createPropertyCommandKey.current = null;
     } catch (err) {
-      setFieldErrors(fieldErrorsFromError(err));
-      setError(errorMessage(err));
+      if (
+        setupErrorCode(err) === "profile_revision_conflict" &&
+        view.profileMode === "update" &&
+        view.selectedPropertyId
+      ) {
+        try {
+          const latestProfile = await api.getPropertyProfile(view.selectedPropertyId);
+          setLoadedProfile(latestProfile);
+          setError(
+            "These hotel details changed in another session. We refreshed the latest version—review your entries and save again.",
+          );
+        } catch (refreshError) {
+          setError(errorMessage(refreshError));
+        }
+      } else {
+        setFieldErrors(fieldErrorsFromError(err));
+        setError(errorMessage(err));
+      }
     } finally {
       setSaving(false);
     }
   };
 
-  const handleSaveProducts = async () => {
-    if (!view.selectedPropertyId) return;
+  const handleSaveTracks = async () => {
+    if (!status || selectedTracks.length === 0 || !status.organization.canManageTracks) return;
     setError("");
     setSaving(true);
     try {
-      await api.saveAccountProductSelection(selectedProducts);
-      setShowProductSetupHubAfterSelection(true);
-      await reloadStatus(view.selectedPropertyId);
+      await api.updateTracks(
+        {
+          selectedTracks,
+          expectedRevision: status.organization.trackRevision,
+        },
+        (trackCommandKey.current = idempotencyKeyForRetry(trackCommandKey.current)),
+      );
+      setForceTrackSelection(false);
+      await reloadStatus(status.propertySelection.selectedPropertyId);
+      trackCommandKey.current = null;
     } catch (err) {
-      setError(errorMessage(err));
+      if (setupErrorCode(err) === "track_revision_conflict") {
+        try {
+          const latestStatus = await api.getStatus({
+            entryProduct,
+            propertyId: status.propertySelection.selectedPropertyId,
+          });
+          setStatus(latestStatus);
+          trackCommandKey.current = null;
+          if (sameTrackSelection(selectedTracks, latestStatus.organization.selectedTracks)) {
+            setSelectedTracks(latestStatus.organization.selectedTracks);
+            setForceTrackSelection(false);
+          } else {
+            setSelectedTracks(
+              mergeTrackSelectionAfterConflict(
+                selectedTracks,
+                latestStatus.organization.selectedTracks,
+              ),
+            );
+            setError(
+              "Your hotel group’s services changed in another session. We refreshed them—review your selection and continue.",
+            );
+          }
+        } catch (refreshError) {
+          setError(errorMessage(refreshError));
+        }
+      } else {
+        setError(errorMessage(err));
+      }
     } finally {
       setSaving(false);
     }
   };
 
-  const handleContinueProduct = (product: SharedHotelSetupProduct) => {
-    const input = buildProductContinueInput(
-      view,
-      status?.hotelGroup.organizationId ?? null,
-      productContinueReturnTo,
-      product,
-    );
-    if (input) onProductContinue(input);
+  const handleCompleteTask = async (task: SetupTask) => {
+    setError("");
+    try {
+      const nextStatus = await reloadStatus(task.propertyId);
+      setSelectedPlanTaskId(recommendedInlineSetupTaskId(nextStatus));
+    } catch (err) {
+      setError(errorMessage(err));
+      throw err;
+    }
+  };
+
+  const handleBeforeSaveTask = async (task: SetupTask, planRevision: string) => {
+    setError("");
+    try {
+      const nextStatus = await reloadStatus(task.propertyId);
+      if (
+        isInlineSetupTaskSaveCurrent(nextStatus, {
+          propertyId: task.propertyId,
+          taskId: task.taskId,
+          planRevision,
+        })
+      ) {
+        return;
+      }
+
+      setSelectedPlanTaskId(recommendedInlineSetupTaskId(nextStatus));
+      setError(INLINE_SETUP_STALE_SAVE_MESSAGE);
+      throw new Error(INLINE_SETUP_STALE_SAVE_MESSAGE);
+    } catch (err) {
+      if (errorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
+        setError(errorMessage(err));
+      }
+      throw err;
+    }
   };
 
   if (loading || !status) {
@@ -550,11 +588,10 @@ export default function SharedFirstRunPropertySetupWizard({
 
   return (
     <WizardShell
-      title={shellTitle}
+      title={view.title}
       view={view}
       embedded={embedded}
       mapFirst={view.screen === "property_profile" && profileStep === 1}
-      productSetupHub={productSetupHub}
       headingRef={view.screen === "property_profile" ? profileHeading : undefined}
     >
       {error && !(view.screen === "property_profile" && profileLoadFailed) && (
@@ -568,10 +605,10 @@ export default function SharedFirstRunPropertySetupWizard({
 
       {view.screen === "property_selection" && (
         <PropertySelection
-          properties={status.properties}
+          properties={status.propertySelection.availableProperties}
           onSelect={handleSelectProperty}
           onAdd={() => {
-            setDraft(newPropertyDraft(accountContactEmail, accountContactPhone));
+            setDraft(newPropertyDraft());
             setLoadedProfile(null);
             setForceCreateProperty(true);
           }}
@@ -590,55 +627,73 @@ export default function SharedFirstRunPropertySetupWizard({
           draft={draft}
           step={profileStep}
           mode={view.profileMode ?? "create"}
-          hasAccountSuggestions={Boolean(accountContactEmail || accountContactPhone)}
           embedded={embedded}
           loading={!propertyTypeOptions}
           saving={saving}
           fieldErrors={fieldErrors}
           propertyTypeOptions={propertyTypeOptions ?? []}
           pageHeadingRef={profileHeading}
-          onChange={setDraft}
+          onChange={(nextDraft) => {
+            if (view.profileMode === "create") createPropertyCommandKey.current = null;
+            setDraft(nextDraft);
+          }}
           onFieldErrors={setFieldErrors}
           onStepChange={setProfileStep}
           onCancel={
-            status.properties.length > 0 && view.profileMode === "create"
-              ? () => setForceCreateProperty(false)
-              : undefined
+            editPropertyProfile
+              ? () => setEditPropertyProfile(false)
+              : status.propertySelection.availableProperties.length > 0 &&
+                  view.profileMode === "create"
+                ? () => setForceCreateProperty(false)
+                : undefined
           }
+          cancelLabel={editPropertyProfile ? "Back to setup" : undefined}
           onSave={handleSaveProfile}
         />
       )}
 
-      {view.screen === "product_selection" && (
-        <ProductSelection
-          labels={labels}
-          selectedProducts={selectedProducts}
-          selectedProperty={view.selectedProperty}
+      {view.screen === "track_selection" && (
+        <TrackSelection
+          selectedTracks={selectedTracks}
+          lockedTracks={status.organization.selectedTracks}
+          canManageTracks={status.organization.canManageTracks}
           saving={saving}
-          onToggle={(product) => {
-            setSelectedProducts((current) =>
-              current.includes(product)
-                ? current.filter((item) => item !== product)
-                : [...current, product],
+          onToggle={(track) => {
+            trackCommandKey.current = null;
+            setSelectedTracks((current) =>
+              toggleSetupTrackSelection(current, status.organization.selectedTracks, track),
             );
           }}
-          onSave={handleSaveProducts}
+          onSave={handleSaveTracks}
+          onCancel={
+            status.organization.selectedTracks.length > 0
+              ? () => {
+                  setSelectedTracks(status.organization.selectedTracks);
+                  setForceTrackSelection(false);
+                }
+              : undefined
+          }
         />
       )}
 
-      {(view.screen === "product_activation" || view.screen === "enter_product") && (
-        <>
-          {shouldAutoContinueToProduct && productContinueInput && !productContinueBlocked ? (
-            <ProductRedirecting labels={labels} product={productContinueInput.product} />
-          ) : (
-            <ProductContinue
-              labels={labels}
-              view={view}
-              selectedProducts={productSetupProducts}
-              onContinue={handleContinueProduct}
-            />
-          )}
-        </>
+      {view.screen === "setup_plan" && (
+        <SetupPlan
+          status={status}
+          labels={labels}
+          renderTaskForm={renderTaskForm}
+          onCompleteTask={handleCompleteTask}
+          onBeforeSaveTask={handleBeforeSaveTask}
+          selectedTaskId={selectedPlanTaskId}
+          onSelectTask={setSelectedPlanTaskId}
+          onEditHotelBasics={() => setEditPropertyProfile(true)}
+          onExit={onExit}
+          onEnterProduct={entryContinueInput ? () => onContinue(entryContinueInput) : undefined}
+          onAddTrack={
+            status.organization.selectedTracks.length < 2 && status.organization.canManageTracks
+              ? () => setForceTrackSelection(true)
+              : undefined
+          }
+        />
       )}
     </WizardShell>
   );
@@ -652,7 +707,6 @@ function WizardShell({
   loading = false,
   embedded = false,
   mapFirst = false,
-  productSetupHub = false,
 }: {
   children?: React.ReactNode;
   title: string;
@@ -661,29 +715,24 @@ function WizardShell({
   loading?: boolean;
   embedded?: boolean;
   mapFirst?: boolean;
-  productSetupHub?: boolean;
 }) {
   const progress =
-    view.screen === "property_selection"
+    view.screen === "track_selection"
       ? 1
-      : view.screen === "product_selection"
-        ? 3
-        : view.screen === "product_activation" || view.screen === "enter_product"
-          ? 4
-          : 2;
+      : view.screen === "property_selection" || view.screen === "property_profile"
+        ? 2
+        : 3;
   const subtitle =
-    view.screen === "property_selection"
-      ? "Pick an existing property or add a new one to this hotel group."
-      : view.screen === "property_profile"
-        ? null
-        : view.screen === "product_selection"
+    view.screen === "track_selection"
+      ? "Choose one or both. Your selection applies to every hotel in this group."
+      : view.screen === "property_selection"
+        ? "Pick an existing property or add a new one to this hotel group."
+        : view.screen === "property_profile"
           ? null
-          : productSetupHub
-            ? "You can finish one product at a time."
-            : "Your hotel details are saved. Continue in this workspace to finish product setup.";
+          : "Complete one guided step at a time. We only include tasks for the services you selected.";
   const isProfileScreen = view.screen === "property_profile";
-  const isProductSelectionScreen = view.screen === "product_selection";
-  const useWideSetupLayout = isProductSelectionScreen || productSetupHub;
+  const isSetupPlan = view.screen === "setup_plan";
+  const useWideSetupLayout = view.screen === "track_selection" || view.screen === "setup_plan";
 
   if (embedded) {
     return (
@@ -701,9 +750,11 @@ function WizardShell({
                 </h2>
                 {subtitle && <p className="mt-1 max-w-2xl text-sm text-gray-500">{subtitle}</p>}
               </div>
-              <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
-                Step {progress} of 4
-              </span>
+              {view.screen !== "setup_plan" && (
+                <span className="w-fit rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
+                  Step {progress} of 3
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -722,8 +773,8 @@ function WizardShell({
 
   return (
     <main
-      className={`flex min-h-screen text-gray-900 ${
-        mapFirst ? "" : "items-center px-4 py-6 sm:px-6 lg:px-8"
+      className={`flex min-h-[100dvh] text-gray-900 ${
+        mapFirst ? "" : `${isSetupPlan ? "items-start" : "items-center"} px-4 py-6 sm:px-6 lg:px-8`
       } ${isProfileScreen || useWideSetupLayout ? "bg-gray-50" : "bg-white"}`}
     >
       <div
@@ -737,7 +788,7 @@ function WizardShell({
                 : "max-w-5xl"
         }`}
       >
-        {!mapFirst && (
+        {!mapFirst && !isSetupPlan && (
           <header
             className={`mx-auto text-center ${
               isProfileScreen
@@ -824,9 +875,7 @@ function PropertySelection({
                   <p className="mt-1 text-sm text-gray-500">{property.locationSummary}</p>
                 )}
               </div>
-              <span className="inline-flex w-fit items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
-                {property.sharedProfile.completionPercent}% profile complete
-              </span>
+              <ArrowRightIcon className="h-4 w-4 text-gray-400" aria-hidden="true" />
             </div>
           </button>
         ))}
@@ -897,7 +946,6 @@ function ProfileForm({
   draft,
   step,
   mode,
-  hasAccountSuggestions,
   embedded,
   loading,
   saving,
@@ -908,12 +956,12 @@ function ProfileForm({
   onFieldErrors,
   onStepChange,
   onCancel,
+  cancelLabel = "Back to properties",
   onSave,
 }: {
   draft: ProfileDraft;
   step: number;
   mode: "create" | "update";
-  hasAccountSuggestions: boolean;
   embedded: boolean;
   loading: boolean;
   saving: boolean;
@@ -924,6 +972,7 @@ function ProfileForm({
   onFieldErrors: (errors: Record<string, string[]>) => void;
   onStepChange: (step: number) => void;
   onCancel?: () => void;
+  cancelLabel?: string;
   onSave: () => void;
 }) {
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
@@ -1010,16 +1059,11 @@ function ProfileForm({
   const continueToNextStep = () => {
     const currentFields = new Set(PROFILE_STEP_FIELDS[step]);
     const currentErrors = Object.fromEntries(
-      Object.entries(validateProfileDraft(draft, mode)).filter(([field]) =>
-        currentFields.has(field),
-      ),
+      Object.entries(validateProfileDraft(draft)).filter(([field]) => currentFields.has(field)),
     );
     onFieldErrors(currentErrors);
     if (Object.keys(currentErrors).length === 0) changeStep(step + 1);
   };
-  const showRawLocation = Boolean(
-    draft.rawMarketplaceLocation && !draft.city.trim() && !draft.countryCode.trim(),
-  );
   const visiblePropertyTypeOptions =
     draft.propertyType && !propertyTypeOptions.some(({ value }) => value === draft.propertyType)
       ? [
@@ -1089,7 +1133,7 @@ function ProfileForm({
             step === 1 ? "sm:min-w-32" : ""
           }`}
         >
-          {step > 0 ? "Back" : "Back to properties"}
+          {step > 0 ? "Back" : cancelLabel}
         </button>
       )}
       <button
@@ -1133,7 +1177,7 @@ function ProfileForm({
       {step !== 1 && profileProgress}
 
       <section
-        inert={saving ? true : undefined}
+        aria-busy={saving}
         className={`${step === 0 ? "grid" : "hidden"} gap-6 xl:grid-cols-2`}
       >
         <div className="flex flex-col rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-6 xl:min-h-[32rem] xl:p-8">
@@ -1162,7 +1206,7 @@ function ProfileForm({
             />
             <PropertyTypeField
               value={draft.propertyType}
-              required={mode === "create"}
+              required
               error={fieldErrors.propertyType?.[0]}
               options={visiblePropertyTypeOptions}
               onChange={(value) => setField("propertyType", value)}
@@ -1174,7 +1218,7 @@ function ProfileForm({
         </aside>
       </section>
 
-      <section inert={saving ? true : undefined} className={step === 2 ? "block" : "hidden"}>
+      <section aria-busy={saving} className={step === 2 ? "block" : "hidden"}>
         <div className="mx-auto max-w-3xl rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-8">
           <div className="mb-4">
             <h3
@@ -1182,13 +1226,12 @@ function ProfileForm({
               tabIndex={-1}
               className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
-              How can guests reach you?
+              How can Vayada reach your hotel?
             </h3>
-            {mode === "create" && hasAccountSuggestions && (
-              <p className="mt-2 text-sm text-gray-500">
-                Pre-filled from your account. Edit if needed.
-              </p>
-            )}
+            <p className="mt-2 text-sm text-gray-500">
+              Existing published contacts keep their visibility. Any new details you add here stay
+              private.
+            </p>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <TextField
@@ -1196,7 +1239,7 @@ function ProfileForm({
               value={draft.contactEmail}
               placeholder="hello@hotel-alpenrose.com"
               type="email"
-              required={mode === "create"}
+              required
               error={fieldErrors.contactEmail?.[0]}
               onChange={(value) => setField("contactEmail", value)}
             />
@@ -1205,7 +1248,7 @@ function ProfileForm({
               value={draft.phone}
               placeholder="+49 89 123456"
               type="tel"
-              required={mode === "create"}
+              required
               error={fieldErrors.phone?.[0]}
               onChange={(value) => setField("phone", value)}
             />
@@ -1223,7 +1266,7 @@ function ProfileForm({
         </div>
       </section>
 
-      <section inert={saving ? true : undefined} className={step === 1 ? "block" : "hidden"}>
+      <section aria-busy={saving} className={step === 1 ? "block" : "hidden"}>
         <div className="relative isolate min-h-[100dvh] overflow-hidden bg-slate-100 text-left">
           {googleMapsApiKey && (
             <GoogleAddressMap
@@ -1346,7 +1389,7 @@ function ProfileForm({
                         label="Street address"
                         value={draft.streetAddress}
                         placeholder="Marienplatz 1"
-                        required={mode === "create"}
+                        required
                         error={fieldErrors["location.streetAddress"]?.[0]}
                         onChange={(value) => setField("streetAddress", value)}
                       />
@@ -1354,7 +1397,7 @@ function ProfileForm({
                         label="Postal code"
                         value={draft.postalCode}
                         placeholder="80331"
-                        required={mode === "create"}
+                        required
                         error={fieldErrors["location.postalCode"]?.[0]}
                         onChange={(value) => setField("postalCode", value)}
                       />
@@ -1393,15 +1436,6 @@ function ProfileForm({
                         options={TIMEZONE_PICKER_OPTIONS}
                         onChange={(value) => setField("timezone", value)}
                       />
-                      {showRawLocation && (
-                        <TextField
-                          label="Imported location"
-                          value={draft.rawMarketplaceLocation}
-                          readOnly
-                          helper="Read-only location imported from the existing marketplace profile."
-                          onChange={() => undefined}
-                        />
-                      )}
                     </div>
                   </div>
                 )}
@@ -1469,63 +1503,49 @@ function ProfileForm({
   );
 }
 
-function ProductSelection({
-  labels,
-  selectedProducts,
-  selectedProperty,
+function TrackSelection({
+  selectedTracks,
+  lockedTracks,
+  canManageTracks,
   saving,
   onToggle,
   onSave,
+  onCancel,
 }: {
-  labels: ProductLabels;
-  selectedProducts: SharedHotelSetupProduct[];
-  selectedProperty: SharedSetupProperty | null;
+  selectedTracks: SetupTrack[];
+  lockedTracks: SetupTrack[];
+  canManageTracks: boolean;
   saving: boolean;
-  onToggle: (product: SharedHotelSetupProduct) => void;
+  onToggle: (track: SetupTrack) => void;
   onSave: () => void;
+  onCancel?: () => void;
 }) {
-  const needsSelection = selectedProducts.length === 0;
-  const statusDescriptionId = useId();
+  const needsSelection = selectedTracks.length === 0;
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <div className="mb-6 flex flex-col items-center text-center">
-        {selectedProperty?.displayName && (
-          <span className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200">
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary-600 text-white">
-              <CheckIcon className="h-3 w-3" aria-hidden="true" />
-            </span>
-            {selectedProperty.displayName} details saved
-          </span>
-        )}
-        <h2 className="mt-4 text-2xl font-semibold tracking-tight text-gray-950">
-          Choose account systems
-        </h2>
-      </div>
-
-      <div className="grid gap-5 lg:grid-cols-3">
-        {SHARED_HOTEL_SETUP_PRODUCTS.map((product) => {
-          const checked = selectedProducts.includes(product);
-          const disabled = !isSharedHotelSetupProductSelectable(selectedProperty, product);
-          const Icon = productIcon(product);
-          const statusLabel = productStatusLabel(selectedProperty, product, checked);
-          const showStatus = statusLabel !== "Selected" && statusLabel !== "Not selected";
-          const productStatusDescriptionId = `${statusDescriptionId}-${product}`;
+    <section className="mx-auto max-w-5xl">
+      <div className="grid gap-5 md:grid-cols-2">
+        {(["hotel_operations", "creator_marketplace"] as const).map((track) => {
+          const content = TRACK_CONTENT[track];
+          const checked = selectedTracks.includes(track);
+          const locked = lockedTracks.includes(track);
+          const disabled = locked || !canManageTracks;
+          const Icon = content.icon;
           return (
             <label
-              key={product}
-              className={`group flex flex-col rounded-3xl bg-white p-5 text-left shadow-sm transition duration-200 focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-600 focus-within:ring-offset-2 focus-within:ring-offset-gray-50 ${
+              key={track}
+              className={`flex min-h-64 flex-col rounded-3xl bg-white p-6 text-left shadow-sm transition focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-600 focus-within:ring-offset-2 ${
                 disabled
-                  ? "cursor-not-allowed opacity-60 ring-1 ring-gray-200"
+                  ? "cursor-not-allowed ring-1 ring-gray-200"
                   : checked
-                    ? "cursor-pointer ring-2 ring-primary-500 shadow-md motion-safe:hover:-translate-y-1"
-                    : "cursor-pointer ring-1 ring-gray-200 motion-safe:hover:-translate-y-1 motion-safe:hover:shadow-md motion-safe:hover:ring-primary-200"
+                    ? "cursor-pointer ring-2 ring-primary-500"
+                    : "cursor-pointer ring-1 ring-gray-200 hover:ring-primary-200"
               }`}
             >
-              <span className="flex items-center justify-between">
+              <span className="flex items-start justify-between gap-4">
                 <span
-                  className={`flex h-12 w-12 items-center justify-center rounded-full transition-colors ${
-                    checked ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600"
+                  className={`flex h-12 w-12 items-center justify-center rounded-2xl ${
+                    checked ? "bg-primary-600 text-white" : "bg-primary-50 text-primary-700"
                   }`}
                 >
                   <Icon className="h-6 w-6" aria-hidden="true" />
@@ -1533,65 +1553,64 @@ function ProductSelection({
                 <input
                   type="checkbox"
                   className="sr-only"
-                  aria-label={labels[product]}
-                  aria-describedby={showStatus ? productStatusDescriptionId : undefined}
+                  aria-label={content.title}
                   checked={checked}
                   disabled={disabled}
-                  onChange={() => {
-                    if (!disabled) onToggle(product);
-                  }}
+                  onChange={() => onToggle(track)}
                 />
                 <span
-                  className={`flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors ${
+                  className={`flex h-6 w-6 items-center justify-center rounded-full border-2 ${
                     checked
                       ? "border-primary-600 bg-primary-600 text-white"
-                      : "border-gray-300 bg-white text-transparent"
+                      : "border-gray-300 text-transparent"
                   }`}
                   aria-hidden="true"
                 >
                   <CheckIcon className="h-3.5 w-3.5" />
                 </span>
               </span>
-              <span className="flex min-w-0 flex-1 flex-col pt-4">
-                <span className="block text-lg font-semibold text-gray-950">{labels[product]}</span>
-                <span className="mt-1.5 block text-sm leading-5 text-gray-600">
-                  {PRODUCT_DESCRIPTIONS[product]}
+              <span className="mt-5 text-xl font-semibold text-gray-950">{content.title}</span>
+              {content.subtitle && (
+                <span className="mt-1 text-sm font-semibold text-primary-700">
+                  {content.subtitle}
                 </span>
-                <span className="mt-auto flex items-center gap-2 pt-4 text-sm font-medium text-gray-800">
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-700">
-                    <CheckIcon className="h-3 w-3" aria-hidden="true" />
-                  </span>
-                  <span>
-                    <span className="sr-only">Unlocks: </span>
-                    {PRODUCT_UNLOCKS[product]}
-                  </span>
+              )}
+              <span className="mt-3 text-sm leading-6 text-gray-600">{content.description}</span>
+              {locked && (
+                <span className="mt-auto pt-5 text-xs font-medium text-gray-500">
+                  Already added. Remove or change this service from service management.
                 </span>
-                {showStatus && (
-                  <span
-                    id={productStatusDescriptionId}
-                    className="mt-3 w-fit rounded-full bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200"
-                  >
-                    {statusLabel}
-                  </span>
-                )}
-              </span>
+              )}
             </label>
           );
         })}
       </div>
 
-      {needsSelection && (
-        <p className="mt-5 text-center text-sm text-red-600" role="alert">
-          Select at least one available product to continue.
-        </p>
+      {!canManageTracks && (
+        <div
+          className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-center text-sm text-amber-900"
+          role="status"
+        >
+          Ask a hotel group owner to choose or add Vayada services.
+        </div>
       )}
 
-      <div className="mt-6 flex flex-col items-center gap-3">
+      <div className="mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            className="rounded-full px-6 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+        )}
         <button
           type="button"
-          disabled={saving || needsSelection}
+          disabled={saving || needsSelection || !canManageTracks}
           onClick={onSave}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:hover:bg-gray-200 sm:w-auto"
         >
           {saving && (
             <span
@@ -1599,296 +1618,626 @@ function ProductSelection({
               aria-hidden="true"
             />
           )}
-          <span>{saving ? "Saving..." : "Continue setup"}</span>
+          <span>{saving ? "Saving..." : "Continue"}</span>
           {!saving && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
         </button>
       </div>
-    </div>
+    </section>
   );
 }
 
-function productIcon(product: SharedHotelSetupProduct): IconComponent {
-  if (product === "booking") return GlobeAltIcon;
-  if (product === "pms") return HotelIcon;
-  return SparklesIcon;
-}
+type InlineSetupTaskCandidate = Pick<
+  SetupTask,
+  "taskId" | "track" | "readiness" | "callerCapability"
+>;
 
-function ProductContinue({
-  labels,
-  view,
-  selectedProducts: products,
-  onContinue,
-}: {
-  labels: ProductLabels;
-  view: SharedFirstRunSetupViewModel;
-  selectedProducts: SharedHotelSetupProduct[];
-  onContinue: (product: SharedHotelSetupProduct) => void;
-}) {
-  const property = view.selectedProperty;
-  if (!property) {
+export function isInlineSetupTaskEditable(
+  task: Pick<SetupTask, "taskId" | "track" | "readiness" | "callerCapability">,
+): boolean {
+  if (task.taskId === "shared_identity") {
     return (
-      <div
-        className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
-        role="alert"
-      >
-        The selected hotel could not be loaded. Refresh the page to try again.
-      </div>
+      task.callerCapability === "allowed" &&
+      (task.readiness === "actionable" || task.readiness === "complete")
     );
   }
   return (
-    <div>
-      <div
-        className={`grid gap-4 ${
-          products.length === 1 ? "mx-auto max-w-2xl" : "md:grid-cols-2 xl:grid-cols-3"
-        }`}
-      >
-        {products.map((product) => (
-          <ProductSetupCard
-            key={product}
-            product={product}
-            label={labels[product]}
-            activation={property.products[product]}
-            onContinue={() => onContinue(product)}
-          />
-        ))}
-      </div>
-
-      {products.length === 0 && (
-        <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          Select at least one product to continue setup.
-        </div>
-      )}
-    </div>
+    isSetupTaskActionable(task) ||
+    (task.readiness === "complete" && task.callerCapability === "allowed")
   );
 }
 
-type ProductSetupTask = Omit<ProductSetupTaskDefinition, "missingSteps"> & {
-  complete: boolean;
-};
-
-export function productSetupTasks(
-  product: SharedHotelSetupProduct,
-  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
-): ProductSetupTask[] {
-  const definitions = PRODUCT_SETUP_TASKS[product];
-  const missingSteps = new Set(activation.missingSteps);
-  const tasks = definitions.map(({ missingSteps: taskSteps, ...task }) => ({
-    ...task,
-    complete: activation.status === "active" || !taskSteps.some((step) => missingSteps.has(step)),
-  }));
-  const knownSteps = new Set(definitions.flatMap((task) => task.missingSteps));
-  const hasUnknownStep = activation.missingSteps.some(
-    (step) => step !== "productEntitlement" && !knownSteps.has(step),
-  );
-
-  if (activation.status !== "active" && hasUnknownStep) {
-    tasks.push({
-      id: "additional-setup",
-      title: "Complete product setup",
-      description: "Review the remaining requirements in this product workspace.",
-      complete: false,
-    });
-  }
-
-  return tasks;
-}
-
-function ProductSetupCard({
-  product,
-  label,
-  activation,
-  onContinue,
-}: {
-  product: SharedHotelSetupProduct;
-  label: string;
-  activation: SharedProductActivation<SharedHotelSetupProduct>;
-  onContinue: () => void;
-}) {
-  const Icon = productIcon(product);
-  const tasks = productSetupTasks(product, activation);
-  const remainingTasks = tasks.filter((task) => !task.complete);
-  const canContinue = canContinueProductSetup(activation);
-  const notice = productSetupNotice(product, activation, canContinue);
-  const blocked = activation.status === "suspended" || activation.status === "unavailable";
-
-  return (
-    <article className="flex min-w-0 flex-col rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="flex items-center gap-3">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary-50 text-primary-700">
-          <Icon className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <h2 className="min-w-0 flex-1 text-lg font-semibold text-gray-950">{label}</h2>
-        {activation.status === "active" && (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
-            <CheckIcon className="h-4 w-4" aria-hidden="true" />
-            Ready
-          </span>
-        )}
-      </div>
-
-      {!blocked && remainingTasks.length > 0 && (
-        <ul className="mt-5 flex-1 space-y-2 border-t border-gray-100 pt-4">
-          {remainingTasks.map((task) => (
-            <li key={task.id} className="flex items-center gap-2 text-sm text-gray-700">
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary-600"
-                aria-hidden="true"
-              />
-              <span>{task.title}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {notice && (
-        <p
-          className={`mt-4 rounded-xl px-3 py-2.5 text-xs leading-5 ${
-            blocked ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-900"
-          }`}
-          role={blocked ? "alert" : undefined}
-        >
-          {notice}
-        </p>
-      )}
-
-      <div className="mt-auto pt-5">
-        <button
-          type="button"
-          disabled={!canContinue}
-          onClick={onContinue}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
-        >
-          <span>{productSetupActionLabel(product, label, activation, canContinue)}</span>
-          {canContinue && <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />}
-        </button>
-      </div>
-    </article>
-  );
-}
-
-function ProductRedirecting({
-  labels,
-  product,
-}: {
-  labels: ProductLabels;
-  product: SharedHotelSetupProduct;
-}) {
-  return (
-    <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-center">
-      <LoadingSpinner label={`Opening ${labels[product]}`} />
-      <p className="text-sm text-gray-500">Opening {labels[product]}...</p>
-    </div>
-  );
-}
-
-function buildProductContinueInput(
-  view: SharedFirstRunSetupViewModel,
-  organizationId: string | null,
-  returnTo: string | null,
-  requestedProduct: SharedHotelSetupProduct | null = view.product,
-): SharedFirstRunProductContinueInput | null {
-  if (!view.selectedPropertyId || !organizationId || !requestedProduct) return null;
-  if (view.screen !== "product_activation" && view.screen !== "enter_product") return null;
-  const activation = view.selectedProperty?.products[requestedProduct] ?? null;
-  return {
-    product: requestedProduct,
-    productStatus: activation?.status ?? null,
-    organizationId,
-    propertyId: view.selectedPropertyId,
-    missingSteps: activation?.missingSteps ?? [],
-    returnTo,
-    action:
-      activation?.status === "active" ||
-      (activation?.status === "selected_incomplete" && activation.missingSteps.length === 0)
-        ? "enter_product"
-        : "complete_product_activation",
-  };
-}
-
-function isProductContinueBlocked(view: SharedFirstRunSetupViewModel): boolean {
-  const product = view.product;
-  if (!product) return true;
-  const activation = view.selectedProperty?.products[product] ?? null;
-  return !activation || !canContinueProductSetup(activation);
-}
-
-export function canContinueProductSetup(
-  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
+export function isInlineSetupTaskSelectable(
+  task: InlineSetupTaskCandidate,
+  recommendedTaskId: SetupTaskId | null,
 ): boolean {
-  if (activation.status === "active") return true;
-  if (activation.status === "selected_incomplete" && activation.missingSteps.length === 0) {
-    return true;
-  }
-  return isActionableSharedProductActivation({
-    productStatus: activation.status,
-    missingSteps: activation.missingSteps,
-  });
+  if (!isInlineSetupTaskEditable(task)) return false;
+  return task.taskId === recommendedTaskId || task.readiness === "complete";
 }
 
-function productSetupNotice(
-  product: SharedHotelSetupProduct,
-  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
-  canContinue: boolean,
-): string | null {
-  const productName = DEFAULT_PRODUCT_LABELS[product];
-  if (activation.status === "suspended") {
-    return `${productName} access is currently suspended for this account. Contact support before continuing setup.`;
-  }
-  if (activation.status === "unavailable") {
-    return `${productName} is not available for this hotel. Contact support if this looks wrong.`;
-  }
-  if (activation.missingSteps.includes("productEntitlement")) {
-    return `${DEFAULT_PRODUCT_LABELS[product]} access is still being enabled for this hotel.`;
-  }
-  if (activation.status === "selected_incomplete" && !canContinue) {
-    return isMarketplaceVerificationPending(product, activation)
-      ? "Marketplace verification is still in progress. No action is needed right now."
-      : "This setup needs attention before it can continue. Please try again later.";
-  }
-  if (isMarketplaceVerificationPending(product, activation)) {
-    return "Your Marketplace profile is under review. You can still open the workspace and manage it.";
+export function previousEditableSetupTaskId(
+  tasks: readonly InlineSetupTaskCandidate[],
+  currentTaskId: SetupTaskId,
+): SetupTaskId | null {
+  const currentIndex = tasks.findIndex(({ taskId }) => taskId === currentTaskId);
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const task = tasks[index];
+    if (task && isInlineSetupTaskEditable(task)) return task.taskId;
   }
   return null;
 }
 
-function productSetupActionLabel(
-  product: SharedHotelSetupProduct,
-  label: string,
-  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
-  canContinue: boolean,
-): string {
-  if (!canContinue) {
-    if (activation.status === "suspended" || activation.status === "unavailable") {
-      return `${label} unavailable`;
-    }
-    if (isMarketplaceVerificationPending(product, activation)) return "Verification pending";
-    return activation.missingSteps.includes("productEntitlement")
-      ? "Access pending"
-      : "Setup pending";
-  }
-  if (activation.status === "active") return `Open ${label}`;
-  if (isMarketplaceVerificationPending(product, activation)) return `Open ${label}`;
-  return "Continue setup";
+export function recommendedInlineSetupTaskId(status: AdaptiveHotelSetupStatus): SetupTaskId | null {
+  const plan = status.setupPlan;
+  if (!plan?.recommendedTaskId) return null;
+  const recommendedTask = plan.tasks.find(({ taskId }) => taskId === plan.recommendedTaskId);
+  return recommendedTask &&
+    recommendedTask.taskId !== "shared_identity" &&
+    isInlineSetupTaskEditable(recommendedTask)
+    ? recommendedTask.taskId
+    : null;
 }
 
-function isMarketplaceVerificationPending(
-  product: SharedHotelSetupProduct,
-  activation: Pick<SharedProductActivation<SharedHotelSetupProduct>, "status" | "missingSteps">,
+export function isInlineSetupTaskSaveCurrent(
+  status: AdaptiveHotelSetupStatus,
+  expected: {
+    propertyId: string;
+    taskId: SetupTaskId;
+    planRevision: string;
+  },
 ): boolean {
-  return (
-    product === "marketplace" &&
-    activation.status === "selected_incomplete" &&
-    activation.missingSteps.length === 0
+  const plan = status.setupPlan;
+  if (
+    !plan ||
+    plan.propertyId !== expected.propertyId ||
+    plan.planRevision !== expected.planRevision
+  ) {
+    return false;
+  }
+  const task = plan.tasks.find(({ taskId }) => taskId === expected.taskId);
+  return Boolean(
+    task &&
+    task.taskId !== "shared_identity" &&
+    isInlineSetupTaskSelectable(task, plan.recommendedTaskId),
   );
 }
 
-export function validateProfileDraft(
-  draft: ProfileDraft,
-  mode: "create" | "update",
-): Record<string, string[]> {
+function SetupPlan({
+  status,
+  labels,
+  renderTaskForm,
+  onCompleteTask,
+  onBeforeSaveTask,
+  selectedTaskId,
+  onSelectTask,
+  onEditHotelBasics,
+  onExit,
+  onEnterProduct,
+  onAddTrack,
+}: {
+  status: AdaptiveHotelSetupStatus;
+  labels: ProductLabels;
+  renderTaskForm: (context: SharedSetupTaskFormContext) => ReactNode;
+  onCompleteTask: (task: SetupTask) => Promise<void>;
+  onBeforeSaveTask: (task: SetupTask, planRevision: string) => Promise<void>;
+  selectedTaskId: SetupTaskId | null;
+  onSelectTask: (taskId: SetupTaskId | null) => void;
+  onEditHotelBasics: () => void;
+  onExit?: () => void;
+  onEnterProduct?: () => void;
+  onAddTrack?: () => void;
+}) {
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => blockInlineSetupUnload(event);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  const plan = status.setupPlan;
+  if (!plan) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+        Choose a hotel to see its setup plan.
+      </div>
+    );
+  }
+
+  const entryDecision = status.entryDecision;
+  const requestedProduct = entryDecision?.requestedProduct;
+  const recommendedTask = plan.recommendedTaskId
+    ? (plan.tasks.find(
+        (task) =>
+          task.taskId === plan.recommendedTaskId &&
+          task.taskId !== "shared_identity" &&
+          isInlineSetupTaskEditable(task),
+      ) ?? null)
+    : null;
+  const selectedTask = selectedTaskId
+    ? (plan.tasks.find(
+        (task) =>
+          task.taskId === selectedTaskId &&
+          task.taskId !== "shared_identity" &&
+          isInlineSetupTaskSelectable(task, plan.recommendedTaskId),
+      ) ?? null)
+    : null;
+  const currentTask = selectedTask ?? recommendedTask;
+  const attentionTask =
+    currentTask === null && plan.ownerProgress.complete < plan.ownerProgress.total
+      ? (plan.tasks.find(({ ownerProgress }) => ownerProgress !== "owner_complete") ?? null)
+      : null;
+  const activeTask = currentTask ?? attentionTask;
+  const currentTaskIndex = activeTask
+    ? plan.tasks.findIndex(({ taskId }) => taskId === activeTask.taskId)
+    : -1;
+  const reviewActive = activeTask === null;
+  const totalSteps = plan.tasks.length + 1;
+  const currentStepNumber = reviewActive ? totalSteps : currentTaskIndex + 1;
+  const previousTaskId = activeTask
+    ? previousEditableSetupTaskId(plan.tasks, activeTask.taskId)
+    : null;
+  const reviewBackTaskId = reviewActive
+    ? ([...plan.tasks].reverse().find((task) => isInlineSetupTaskEditable(task))?.taskId ?? null)
+    : null;
+  const navigateFromTask = (navigate: () => void) => {
+    if (
+      !canLeaveInlineSetupTask(hasUnsavedChanges, () =>
+        window.confirm(INLINE_SETUP_UNSAVED_CHANGES_MESSAGE),
+      )
+    ) {
+      return;
+    }
+    setHasUnsavedChanges(false);
+    navigate();
+  };
+  const selectTask = (taskId: SetupTaskId) => {
+    navigateFromTask(() => {
+      if (taskId === "shared_identity") {
+        onEditHotelBasics();
+        return;
+      }
+      onSelectTask(taskId);
+    });
+  };
+  const currentStepTitle = activeTask
+    ? TASK_CONTENT[activeTask.taskId].title
+    : "Review and next steps";
+  const canReturnToReview =
+    plan.ownerProgress.complete === plan.ownerProgress.total &&
+    recommendedTask === null &&
+    selectedTask?.readiness === "complete";
+  const showReviewAddTrackHelp =
+    !onAddTrack &&
+    status.organization.selectedTracks.length < 2 &&
+    !status.organization.canManageTracks;
+
+  return (
+    <section className="mx-auto max-w-5xl">
+      <div className="mb-3 flex justify-center">
+        <img src="/vayada-logo.png" alt="vayada" width={120} height={40} className="h-7 w-auto" />
+      </div>
+      <div className="relative mx-auto mb-10 w-full" data-testid="hotel-setup-progress">
+        <div className="mx-auto w-full max-w-xl">
+          <div
+            className={`flex items-center ${
+              onExit ? "justify-between sm:justify-center" : "justify-center"
+            }`}
+          >
+            <p className="text-xs font-semibold text-gray-500">
+              Step {currentStepNumber} of {totalSteps}
+            </p>
+            {onExit && (
+              <button
+                type="button"
+                onClick={() => navigateFromTask(onExit)}
+                className="text-xs font-semibold text-gray-500 transition hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 sm:absolute sm:right-0 sm:top-0 sm:text-sm"
+              >
+                Exit setup
+              </button>
+            )}
+          </div>
+          <div
+            className="mt-3 flex w-full gap-2"
+            role="progressbar"
+            aria-label="Hotel setup progress"
+            aria-valuemin={1}
+            aria-valuemax={totalSteps}
+            aria-valuenow={currentStepNumber}
+            aria-valuetext={`Step ${currentStepNumber} of ${totalSteps}: ${currentStepTitle}`}
+          >
+            {Array.from({ length: totalSteps }, (_, index) => {
+              const reached = index < currentStepNumber;
+              return (
+                <span
+                  key={index}
+                  className={`h-2 flex-1 rounded-full transition-colors duration-300 motion-reduce:transition-none ${
+                    reached ? "bg-primary-600" : "bg-primary-100"
+                  }`}
+                  data-state={reached ? "reached" : "upcoming"}
+                  aria-hidden="true"
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {entryDecision?.decision === "unavailable" && requestedProduct && (
+        <div
+          className="mb-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+          role="alert"
+        >
+          {labels[requestedProduct]} is not available for this hotel right now. You can continue any
+          setup task below or ask an owner or support for help.
+        </div>
+      )}
+
+      <div className="min-w-0" onChangeCapture={() => setHasUnsavedChanges(true)}>
+        <div className="mx-auto max-w-3xl">
+          {currentTask ? (
+            <InlineSetupTaskStep
+              key={currentTask.taskId}
+              task={currentTask}
+              onReturnToReview={
+                canReturnToReview ? () => navigateFromTask(() => onSelectTask(null)) : null
+              }
+              form={renderTaskForm({
+                task: currentTask,
+                propertyId: plan.propertyId,
+                selectedTracks: status.organization.selectedTracks,
+                onBeforeSave: () => onBeforeSaveTask(currentTask, plan.planRevision),
+                onComplete: () => {
+                  setHasUnsavedChanges(false);
+                  return onCompleteTask(currentTask);
+                },
+                onBack: previousTaskId ? () => selectTask(previousTaskId) : null,
+                onDirty: () => setHasUnsavedChanges(true),
+              })}
+            />
+          ) : attentionTask ? (
+            <SetupAttentionStep
+              key={attentionTask.taskId}
+              task={attentionTask}
+              onBack={previousTaskId ? () => selectTask(previousTaskId) : null}
+            />
+          ) : (
+            <>
+              <SetupReview
+                launchReadiness={plan.launchReadiness}
+                onBack={reviewBackTaskId ? () => selectTask(reviewBackTaskId) : null}
+              />
+              {(onEnterProduct || onAddTrack || showReviewAddTrackHelp) && (
+                <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-3">
+                  {onEnterProduct && requestedProduct && (
+                    <button
+                      type="button"
+                      onClick={onEnterProduct}
+                      className="inline-flex items-center justify-center gap-2 rounded-full bg-gray-950 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 focus-visible:ring-offset-2"
+                    >
+                      Open {labels[requestedProduct]}
+                      <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  )}
+                  {onAddTrack && (
+                    <button
+                      type="button"
+                      onClick={onAddTrack}
+                      className="text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+                    >
+                      Add another service
+                    </button>
+                  )}
+                  {showReviewAddTrackHelp && (
+                    <p className="max-w-xs text-xs text-gray-500">
+                      Ask a hotel group owner if you want to add another service.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SetupAttentionStep({ task, onBack }: { task: SetupTask; onBack: (() => void) | null }) {
+  const headingRef = useSetupStepHeadingFocus();
+  const content = TASK_CONTENT[task.taskId];
+  const state = setupTaskStateCopy(task);
+  const toneClass = {
+    neutral: "border-gray-200 bg-gray-50 text-gray-700",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    warning: "border-amber-200 bg-amber-50 text-amber-900",
+    danger: "border-red-200 bg-red-50 text-red-800",
+  }[state.tone];
+
+  return (
+    <section aria-labelledby="current-setup-step-title">
+      <h1
+        ref={headingRef}
+        id="current-setup-step-title"
+        tabIndex={-1}
+        className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+      >
+        {content.title}
+      </h1>
+      <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">{content.description}</p>
+      {onBack && <SetupBackButton onClick={onBack} />}
+      <div className={`mt-7 rounded-2xl border px-4 py-3 text-sm ${toneClass}`} role="status">
+        <p className="font-semibold">{state.label}</p>
+        <p className="mt-1 leading-6">{state.description}</p>
+      </div>
+      <p className="mt-5 max-w-xl text-sm leading-6 text-gray-600">
+        Your saved work is safe. Return later or ask the indicated person to resolve this step.
+      </p>
+    </section>
+  );
+}
+
+function InlineSetupTaskStep({
+  task,
+  form,
+  onReturnToReview,
+}: {
+  task: SetupTask;
+  form: ReactNode;
+  onReturnToReview: (() => void) | null;
+}) {
+  const headingRef = useSetupStepHeadingFocus();
+  const content = TASK_CONTENT[task.taskId];
+
+  return (
+    <section aria-labelledby="current-setup-step-title">
+      <div className="text-center">
+        <h1
+          ref={headingRef}
+          id="current-setup-step-title"
+          tabIndex={-1}
+          className="text-2xl font-semibold tracking-tight text-gray-950 outline-none sm:text-3xl"
+        >
+          {content.title}
+        </h1>
+        <p className="mx-auto mt-3 max-w-2xl text-base leading-7 text-gray-600">
+          {content.description}
+        </p>
+        {onReturnToReview && (
+          <button
+            type="button"
+            onClick={onReturnToReview}
+            className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-primary-700 transition hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+          >
+            Return to review
+            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      <div
+        className="mt-8 rounded-3xl border border-gray-200 bg-white p-5 shadow-sm sm:p-8"
+        data-testid="hotel-setup-form-card"
+      >
+        {form}
+      </div>
+    </section>
+  );
+}
+
+function SetupReview({
+  launchReadiness,
+  onBack,
+}: {
+  launchReadiness: NonNullable<AdaptiveHotelSetupStatus["setupPlan"]>["launchReadiness"];
+  onBack: (() => void) | null;
+}) {
+  const headingRef = useSetupStepHeadingFocus();
+  const readinessItems = [
+    {
+      label: "Creator Marketplace",
+      description: "Your public profile and creator collaboration offer.",
+      value: launchReadiness.marketplacePublish,
+    },
+    {
+      label: "Hotel operations",
+      description: "Your PMS rooms, rates, availability, and operating settings.",
+      value: launchReadiness.operationsUse,
+    },
+    {
+      label: "Direct booking",
+      description: "Your guest-facing booking page, policies, and payment setup.",
+      value: launchReadiness.directBookingPublish,
+    },
+  ] as const;
+
+  return (
+    <section aria-labelledby="setup-review-title">
+      <h1
+        ref={headingRef}
+        id="setup-review-title"
+        tabIndex={-1}
+        className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+      >
+        Review and next steps
+      </h1>
+      <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">
+        Each Vayada service has its own readiness status. You can use ready services while another
+        one is still being reviewed.
+      </p>
+      {onBack && <SetupBackButton onClick={onBack} />}
+
+      <dl className="mt-8 divide-y divide-gray-200 border-y border-gray-200">
+        {readinessItems.map((item) => {
+          const copy = launchReadinessCopy(item.value);
+          return (
+            <div
+              key={item.label}
+              className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <dt className="text-sm font-semibold text-gray-950">{item.label}</dt>
+                <dd className="mt-1 text-sm leading-6 text-gray-600">{item.description}</dd>
+              </div>
+              <dd className={`shrink-0 text-sm font-semibold ${copy.className}`}>{copy.label}</dd>
+            </div>
+          );
+        })}
+      </dl>
+
+      <p className="mt-6 text-sm leading-6 text-gray-600">
+        Your saved progress is safe. You can leave setup and return whenever a pending service is
+        ready.
+      </p>
+    </section>
+  );
+}
+
+function SetupBackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-gray-600 transition hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+    >
+      <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" />
+      Back
+    </button>
+  );
+}
+
+function useSetupStepHeadingFocus(): RefObject<HTMLHeadingElement> {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => headingRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  return headingRef;
+}
+
+function launchReadinessCopy(
+  readiness: NonNullable<
+    AdaptiveHotelSetupStatus["setupPlan"]
+  >["launchReadiness"][keyof NonNullable<AdaptiveHotelSetupStatus["setupPlan"]>["launchReadiness"]],
+): { label: string; className: string } {
+  if (readiness === "ready") return { label: "Ready", className: "text-emerald-700" };
+  if (readiness === "pending") {
+    return { label: "Pending", className: "text-amber-800" };
+  }
+  if (readiness === "blocked") {
+    return { label: "Needs attention", className: "text-red-700" };
+  }
+  return { label: "Not selected", className: "text-gray-500" };
+}
+
+function setupTaskStateCopy(task: SetupTask): TaskStateCopy {
+  if (task.readiness === "complete") {
+    return {
+      label: "Complete",
+      description: "Nothing else is needed for this step.",
+      tone: "success",
+    };
+  }
+  if (task.readiness === "pending_sync") {
+    return {
+      label: "Syncing",
+      description: "Vayada is checking the latest saved information. No action is needed yet.",
+      tone: "neutral",
+    };
+  }
+  if (task.readiness === "pending_review") {
+    return {
+      label: "Under review",
+      description: "This step is waiting for review. You can continue with another task.",
+      tone: "neutral",
+    };
+  }
+  if (task.readiness === "rejected") {
+    return {
+      label: "Needs changes",
+      description: "Review the feedback in this workspace before submitting again.",
+      tone: "danger",
+    };
+  }
+  if (task.callerCapability === "ask_owner") {
+    return {
+      label: "Ask an owner",
+      description: "A hotel group owner has permission to complete this step.",
+      tone: "warning",
+    };
+  }
+  if (task.callerCapability === "forbidden") {
+    return {
+      label: "Permission required",
+      description: "You do not have permission to complete this step.",
+      tone: "warning",
+    };
+  }
+  if (task.callerCapability === "waiting") {
+    return {
+      label: "Waiting",
+      description: "Another team or an automated process needs to finish this step.",
+      tone: "neutral",
+    };
+  }
+  if (task.readiness === "blocked") {
+    return {
+      label: "Blocked",
+      description:
+        "A prerequisite or service issue must be resolved before this step can continue.",
+      tone: "danger",
+    };
+  }
+  return {
+    label: "Ready",
+    description: recommendedActionDescription(task),
+    tone: "success",
+  };
+}
+
+function recommendedActionDescription(task: SetupTask): string {
+  if (task.actionableBy === "operator") return "You can complete this step now.";
+  if (task.actionableBy === "support") return "Vayada support can complete this step.";
+  if (task.actionableBy === "system") return "Vayada will complete this step automatically.";
+  return "A hotel group owner can complete this step now.";
+}
+
+function buildEntryContinueInput(
+  status: AdaptiveHotelSetupStatus | null,
+  returnTo: string | null,
+): SharedFirstRunContinueInput | null {
+  if (!status) return null;
+  const decision = status.entryDecision;
+  if (decision?.decision !== "enter" || !decision.propertyId) {
+    return null;
+  }
+  return {
+    product: decision.requestedProduct,
+    propertyId: decision.propertyId,
+    returnTo,
+    action: "enter_product",
+  };
+}
+
+export function idempotencyKeyForRetry(
+  current: string | null,
+  create: () => string = () => globalThis.crypto.randomUUID(),
+): string {
+  return current ?? create();
+}
+
+export function validateProfileDraft(draft: ProfileDraft): Record<string, string[]> {
   const errors: Record<string, string[]> = {};
 
   if (!draft.displayName.trim()) errors.displayName = ["Hotel name is required."];
+  if (!draft.propertyType) errors.propertyType = ["Property type is required."];
+  if (!draft.streetAddress.trim()) {
+    errors["location.streetAddress"] = ["Street address is required."];
+  }
+  if (!draft.postalCode.trim()) {
+    errors["location.postalCode"] = ["Postal code is required."];
+  }
   if (!draft.city.trim()) {
     errors["location.city"] = ["City is required."];
   }
@@ -1897,22 +2246,11 @@ export function validateProfileDraft(
   } else if (!COUNTRY_OPTIONS.some((country) => country.code === draft.countryCode)) {
     errors["location.countryCode"] = ["Select a valid country."];
   }
-  if (mode === "create") {
-    if (!draft.propertyType) errors.propertyType = ["Property type is required."];
-    if (!draft.streetAddress.trim()) {
-      errors["location.streetAddress"] = ["Street address is required."];
-    }
-    if (!draft.postalCode.trim()) {
-      errors["location.postalCode"] = ["Postal code is required."];
-    }
-    if (!draft.timezone.trim()) {
-      errors["location.timezone"] = ["Time zone is required."];
-    }
-    if (!draft.contactEmail.trim()) {
-      errors.contactEmail = ["Contact email is required."];
-    }
-    if (!draft.phone.trim()) errors.phone = ["Phone number is required."];
+  if (!draft.timezone.trim()) {
+    errors["location.timezone"] = ["Time zone is required."];
   }
+  if (!draft.contactEmail.trim()) errors.contactEmail = ["Contact email is required."];
+  if (!draft.phone.trim()) errors.phone = ["Phone number is required."];
   if (draft.timezone.trim() && !isValidIanaTimezone(draft.timezone.trim())) {
     errors["location.timezone"] = ["Enter a valid IANA time zone."];
   }
@@ -1934,11 +2272,6 @@ function focusFirstIncompleteAddressField(container: HTMLDivElement | null) {
     container?.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select") ?? [],
   );
   (fields.find((field) => !field.value.trim()) ?? fields[0])?.focus();
-}
-
-function uniqueSelectedProducts(products: SharedHotelSetupProduct[]): SharedHotelSetupProduct[] {
-  const selected = new Set(products);
-  return SHARED_HOTEL_SETUP_PRODUCTS.filter((product) => selected.has(product));
 }
 
 function TextField({
@@ -2160,97 +2493,95 @@ function SelectField({
   );
 }
 
-function productStatusLabel(
-  property: SharedSetupProperty | null,
-  product: SharedHotelSetupProduct,
-  checked: boolean,
-): string {
-  const status = property?.products[product].status ?? "not_selected";
-  if (checked && status === "not_selected") return "Selected";
-  if (!checked && (status === "active" || status === "selected_incomplete")) return "Not selected";
-  if (status === "active") return "Active";
-  if (status === "selected_incomplete") return "Setup needed";
-  if (status === "suspended") return "Suspended";
-  if (status === "unavailable") return "Unavailable";
-  return "Not selected";
-}
-
-function draftFromProfile(profile: SharedPropertyProfile): ProfileDraft {
-  const firstMedia = profile.media[0];
+function draftFromProfile(response: PropertyProfileResponse): ProfileDraft {
+  const profile = response.profile;
   return {
     displayName: profile.displayName,
-    propertyType: profile.propertyType ?? "",
-    countryCode: profile.location.countryCode ?? "",
-    region: profile.location.region ?? "",
-    city: profile.location.city ?? "",
-    rawMarketplaceLocation: profile.location.rawMarketplaceLocation ?? "",
-    streetAddress: profile.location.streetAddress ?? "",
-    postalCode: profile.location.postalCode ?? "",
+    propertyType: profile.propertyType,
+    countryCode: profile.location.countryCode,
+    city: profile.location.city,
+    streetAddress: profile.location.streetAddress,
+    postalCode: profile.location.postalCode,
     latitude: profile.location.latitude,
     longitude: profile.location.longitude,
-    timezone: profile.location.timezone ?? "",
-    website: profile.website ?? "",
-    contactEmail: profile.contactEmail ?? "",
-    phone: profile.phone ?? "",
-    shortDescription: profile.shortDescription ?? "",
-    longDescription: profile.longDescription ?? "",
-    mediaUrl: firstMedia?.url ?? "",
+    timezone: profile.location.timezone,
+    website: contactValue(profile.contacts, "website"),
+    contactEmail: contactValue(profile.contacts, "email"),
+    phone: contactValue(profile.contacts, "phone"),
   };
 }
 
-function profileInputFromDraft(
-  draft: ProfileDraft,
-  existingProfile: SharedPropertyProfile | null,
-): SharedPropertyProfileInput {
-  const existingLocation = existingProfile?.location;
+export function createProfileFromDraft(draft: ProfileDraft): CreatePropertyProfileRequest {
   return {
     displayName: draft.displayName.trim(),
-    propertyType: draft.propertyType || null,
+    propertyType: draft.propertyType,
     location: {
-      countryCode: nullIfBlank(draft.countryCode.toUpperCase()),
-      region: nullIfBlank(draft.region),
-      city: nullIfBlank(draft.city),
-      streetAddress: nullIfBlank(draft.streetAddress),
-      postalCode: nullIfBlank(draft.postalCode),
-      rawMarketplaceLocation: existingLocation?.rawMarketplaceLocation ?? null,
-      timezone: nullIfBlank(draft.timezone),
+      countryCode: draft.countryCode.trim().toUpperCase(),
+      city: draft.city.trim(),
+      streetAddress: draft.streetAddress.trim(),
+      postalCode: draft.postalCode.trim(),
+      timezone: draft.timezone.trim(),
       latitude: draft.latitude,
       longitude: draft.longitude,
-      addressPublic: existingLocation?.addressPublic ?? true,
-      mapDisplayMode: existingLocation?.mapDisplayMode ?? "hidden",
+      localityPublic: false,
+      geoPublic: false,
+      mapDisplayMode: "hidden",
     },
-    website: nullIfBlank(draft.website),
-    contactEmail: nullIfBlank(draft.contactEmail),
-    phone: nullIfBlank(draft.phone),
-    shortDescription: nullIfBlank(draft.shortDescription),
-    longDescription: nullIfBlank(draft.longDescription),
-    media: mediaFromDraft(draft, existingProfile),
+    contacts: contactsFromDraft(draft),
   };
 }
 
-function newPropertyDraft(
-  accountContactEmail: string | null,
-  accountContactPhone: string | null,
-  timezone = "",
-): ProfileDraft {
+export function profileUpdateFromDraft(
+  draft: ProfileDraft,
+  existing: PropertyProfileResponse,
+): UpdatePropertyProfileRequest | null {
+  const profile = existing.profile;
+  const patch: PropertyProfilePatch = {};
+  const displayName = draft.displayName.trim();
+  const propertyType = draft.propertyType;
+  if (displayName !== profile.displayName) patch.displayName = displayName;
+  if (propertyType !== profile.propertyType) patch.propertyType = propertyType;
+
+  const location = {
+    countryCode: draft.countryCode.trim().toUpperCase(),
+    city: draft.city.trim(),
+    streetAddress: draft.streetAddress.trim(),
+    postalCode: draft.postalCode.trim(),
+    timezone: draft.timezone.trim(),
+    latitude: draft.latitude,
+    longitude: draft.longitude,
+  };
+  const locationPatch = Object.fromEntries(
+    Object.entries(location).filter(
+      ([key, value]) => value !== profile.location[key as keyof typeof location],
+    ),
+  ) as NonNullable<PropertyProfilePatch["location"]>;
+  if (Object.keys(locationPatch).length > 0) patch.location = locationPatch;
+
+  const contacts = contactsFromDraft(draft, profile.contacts);
+  if (!sameContacts(contacts, profile.contacts)) patch.contacts = contacts;
+  if (Object.keys(patch).length === 0) return null;
+
+  return {
+    expectedProfileRevision: existing.profileRevision,
+    patch,
+  };
+}
+
+function newPropertyDraft(timezone = ""): ProfileDraft {
   return {
     displayName: "",
     propertyType: "",
     countryCode: "",
-    region: "",
     city: "",
-    rawMarketplaceLocation: "",
     streetAddress: "",
     postalCode: "",
     latitude: null,
     longitude: null,
     timezone,
     website: "",
-    contactEmail: accountContactEmail?.trim() ?? "",
-    phone: accountContactPhone?.trim() ?? "",
-    shortDescription: "",
-    longDescription: "",
-    mediaUrl: "",
+    contactEmail: "",
+    phone: "",
   };
 }
 
@@ -2263,34 +2594,99 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
-function mediaFromDraft(
+function contactsFromDraft(
   draft: ProfileDraft,
-  existingProfile: SharedPropertyProfile | null,
-): SharedPropertyProfileInput["media"] {
-  const mediaUrl = nullIfBlank(draft.mediaUrl);
-  const [firstMedia, ...remainingMedia] = existingProfile?.media ?? [];
+  existing: PropertyProfileContact[] = [],
+): PropertyProfileContact[] {
+  return (
+    [
+      ["email", draft.contactEmail],
+      ["phone", draft.phone],
+      ["website", draft.website],
+    ] as const
+  ).reduce<PropertyProfileContact[]>(
+    (contacts, [channelType, value]) => replaceContact(contacts, channelType, value),
+    existing,
+  );
+}
 
-  if (!mediaUrl) {
-    return remainingMedia;
+function replaceContact(
+  contacts: PropertyProfileContact[],
+  channelType: PropertyProfileContact["channelType"],
+  rawValue: string,
+): PropertyProfileContact[] {
+  const trimmed = rawValue.trim();
+  const exactIndex = contacts.findIndex(
+    (contact) => contact.channelType === channelType && contact.value === trimmed,
+  );
+  const index = contacts.findIndex(
+    (contact) =>
+      contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
+  );
+  if (!trimmed) {
+    return index < 0 ? contacts : contacts.filter((_, contactIndex) => contactIndex !== index);
   }
-
-  if (firstMedia) {
-    return [{ ...firstMedia, url: mediaUrl }, ...remainingMedia];
+  if (exactIndex >= 0) return contacts;
+  if (index >= 0) {
+    return contacts.map((contact, contactIndex) =>
+      contactIndex === index ? { ...contact, value: trimmed } : contact,
+    );
   }
-
   return [
+    ...contacts,
     {
-      mediaType: "gallery_image",
-      url: mediaUrl,
-      altText: null,
-      sortOrder: 0,
+      channelType,
+      value: trimmed,
+      purpose: "general",
+      isPublic: false,
     },
   ];
 }
 
-function nullIfBlank(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
+function contactValue(
+  contacts: PropertyProfileContact[],
+  channelType: PropertyProfileContact["channelType"],
+): string {
+  return (
+    contacts.find(
+      (contact) =>
+        contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
+    )?.value ??
+    contacts.find((contact) => contact.channelType === channelType && contact.purpose === "general")
+      ?.value ??
+    contacts.find((contact) => contact.channelType === channelType && !contact.isPublic)?.value ??
+    contacts.find((contact) => contact.channelType === channelType)?.value ??
+    ""
+  );
+}
+
+function sameContacts(
+  left: readonly PropertyProfileContact[],
+  right: readonly PropertyProfileContact[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (contact, index) =>
+        contact.channelType === right[index]?.channelType &&
+        contact.value === right[index]?.value &&
+        contact.purpose === right[index]?.purpose &&
+        contact.isPublic === right[index]?.isPublic,
+    )
+  );
+}
+
+export function mergeTrackSelectionAfterConflict(
+  intended: readonly SetupTrack[],
+  current: readonly SetupTrack[],
+): SetupTrack[] {
+  return (["hotel_operations", "creator_marketplace"] as const).filter(
+    (track) => intended.includes(track) || current.includes(track),
+  );
+}
+
+function sameTrackSelection(left: readonly SetupTrack[], right: readonly SetupTrack[]): boolean {
+  return left.length === right.length && left.every((track, index) => track === right[index]);
 }
 
 function propertyTypeOptionsFromCatalog(options: unknown): SharedPropertyTypeOption[] {
@@ -2315,6 +2711,12 @@ function propertyTypeOptionsFromCatalog(options: unknown): SharedPropertyTypeOpt
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return "Something went wrong. Please try again.";
+}
+
+function setupErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const data = (error as { data?: { code?: unknown } }).data;
+  return typeof data?.code === "string" ? data.code : null;
 }
 
 function fieldErrorsFromError(error: unknown): Record<string, string[]> {

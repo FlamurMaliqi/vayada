@@ -5,30 +5,13 @@ import { useRouter } from "next/navigation";
 import {
   clearStoredPmsPropertyId,
   getStoredPmsPropertyId,
-  isPmsPropertyReady,
   storeSelectedPmsPropertyId,
   type PmsPropertySummary,
 } from "@/services/api/pmsPropertyClient";
 import { authService } from "@/services/auth";
+import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
 import { pmsSettingsService } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
-
-const BOOKING_ADMIN_URL =
-  process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
-
-function buildHandoffUrl(baseUrl: string, path: string): string {
-  if (typeof window === "undefined") return `${baseUrl}${path}`;
-  const token = localStorage.getItem("access_token");
-  const expiresAt = localStorage.getItem("token_expires_at");
-  const user = localStorage.getItem("user");
-  if (!token || !expiresAt) return `${baseUrl}${path}`;
-  const params = new URLSearchParams({
-    token,
-    expires_at: expiresAt,
-    ...(user ? { user: encodeURIComponent(user) } : {}),
-  });
-  return `${baseUrl}/handoff?redirect=${encodeURIComponent(path)}#${params.toString()}`;
-}
 
 /**
  * Post-login hotel picker for the PMS.
@@ -38,9 +21,8 @@ function buildHandoffUrl(baseUrl: string, path: string): string {
  * selection is persisted to localStorage.selectedHotelId. Typed PMS
  * operations use this as the path-scoped pms_property id.
  *
- * The "Add a new property" action hands off cross-domain to the
- * booking-admin setup wizard (which is the canonical onboarding flow
- * for both systems).
+ * The "Add a new property" action passes through the local setup alias
+ * to the canonical Marketplace wizard while retaining PMS as the return product.
  */
 export default function PmsChoosePropertyPage() {
   const { t } = useTranslation();
@@ -68,9 +50,10 @@ export default function PmsChoosePropertyPage() {
         }
         if (list.length === 1) {
           storeSelectedPmsPropertyId(list[0].id);
-          if (!isPmsPropertyReady(list[0])) {
-            localStorage.setItem("pmsSetupComplete", "false");
-            router.replace(`/setup?entryProduct=pms&propertyId=${encodeURIComponent(list[0].id)}`);
+          const decision = await resolvePmsSetupGuard("/dashboard");
+          if (cancelled) return;
+          if (decision.action === "redirect_to_setup") {
+            window.location.replace(decision.redirectPath);
             return;
           }
           router.replace("/dashboard");
@@ -80,7 +63,6 @@ export default function PmsChoosePropertyPage() {
       } catch (e) {
         if (cancelled) return;
         if (getStoredPmsPropertyId()) {
-          localStorage.setItem("pmsSetupComplete", "true");
           router.replace("/dashboard");
           return;
         }
@@ -94,15 +76,18 @@ export default function PmsChoosePropertyPage() {
     };
   }, [router, t]);
 
-  const selectHotel = (hotel: PmsPropertySummary) => {
+  const selectHotel = async (hotel: PmsPropertySummary) => {
     storeSelectedPmsPropertyId(hotel.id);
-    if (!isPmsPropertyReady(hotel)) {
-      localStorage.setItem("pmsSetupComplete", "false");
-      router.replace(`/setup?entryProduct=pms&propertyId=${encodeURIComponent(hotel.id)}`);
-      return;
+    try {
+      const decision = await resolvePmsSetupGuard("/dashboard");
+      if (decision.action === "redirect_to_setup") {
+        window.location.replace(decision.redirectPath);
+        return;
+      }
+      router.replace("/dashboard");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("auth.chooseProperty.loadError"));
     }
-    localStorage.setItem("pmsSetupComplete", "true");
-    router.replace("/dashboard");
   };
 
   if (error) {
@@ -207,7 +192,7 @@ export default function PmsChoosePropertyPage() {
           <button
             onClick={() => {
               clearStoredPmsPropertyId();
-              window.location.href = buildHandoffUrl(BOOKING_ADMIN_URL, "/setup?mode=add");
+              window.location.replace("/setup?mode=add");
             }}
             className="w-full flex items-center justify-center gap-2 text-[13px] text-primary-600 hover:text-primary-700 font-medium py-2"
           >

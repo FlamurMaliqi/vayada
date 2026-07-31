@@ -1,5 +1,4 @@
 import {
-  isActionableSharedProductActivation,
   resolveSharedHotelSetupGuard,
   type SharedHotelSetupApi,
   type SharedHotelSetupGuardDecision,
@@ -10,40 +9,25 @@ import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 type HotelSelectionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export const SELECTED_SHARED_PROPERTY_ID_KEY = "selectedSharedPropertyId";
+const MARKETPLACE_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
 
 export async function resolveBookingSetupGuard(
   returnTo: string,
   api: Pick<SharedHotelSetupApi, "getStatus"> = sharedHotelSetupApi,
   storage: HotelSelectionStorage | null = browserStorage(),
+  setupBaseUrl = MARKETPLACE_FRONTEND_URL,
 ): Promise<SharedHotelSetupGuardDecision> {
   const decision = await resolveSharedHotelSetupGuard(api, {
     entryProduct: "booking",
+    returnProduct: "booking",
     returnTo,
+    setupBaseUrl,
     propertyId: readSelectedSharedPropertyId(storage),
     onInvalidPropertyId: () => storage?.removeItem(SELECTED_SHARED_PROPERTY_ID_KEY),
   });
-  const resolvedDecision = isBookingWorkspaceActivationDecision(decision)
-    ? {
-        action: "enter_product" as const,
-        propertyId: decision.propertyId!,
-        redirectPath: null,
-      }
-    : decision;
-  persistEnteredSharedProperty(resolvedDecision, storage);
-  return resolvedDecision;
-}
-
-export function isBookingWorkspaceActivationDecision(
-  decision: SharedHotelSetupGuardDecision,
-): boolean {
-  return (
-    decision.action === "redirect_to_setup" &&
-    decision.setupAction === "complete_product_activation" &&
-    decision.product === "booking" &&
-    decision.propertyId !== null &&
-    !decision.missingSteps.includes("bookingSettings") &&
-    isActionableSharedProductActivation(decision)
-  );
+  persistEnteredSharedProperty(decision, storage);
+  return decision;
 }
 
 export function persistEnteredSharedProperty(

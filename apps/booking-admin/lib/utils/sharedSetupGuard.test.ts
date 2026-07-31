@@ -1,202 +1,171 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SharedHotelSetupStatus } from "@vayada/product-onboarding";
+import type { AdaptiveHotelSetupStatus } from "@vayada/product-onboarding";
 
 import { resolveBookingSetupGuard } from "./sharedSetupGuard";
 
 describe("resolveBookingSetupGuard", () => {
-  it("redirects incomplete setup to the shared wizard with the booking entry product", async () => {
+  it("routes setup_required decisions to the canonical Marketplace wizard", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
-          nextAction: {
-            action: "complete_shared_profile",
-            propertyId: "property-1",
-            missingFields: ["media"],
-            reasonCodes: ["shared_profile_incomplete"],
-          },
+          decision: "setup_required",
+          reasonCode: "product_access_pending",
         }),
       ),
     };
     const storage = memoryStorage({ selectedSharedPropertyId: "property-1" });
 
-    const decision = await resolveBookingSetupGuard("/dashboard?tab=rooms", api, storage);
-
-    expect(api.getStatus).toHaveBeenCalledWith({
-      entryProduct: "booking",
-      returnTo: "/dashboard?tab=rooms",
-      propertyId: "property-1",
-    });
-    expect(decision).toEqual({
+    await expect(
+      resolveBookingSetupGuard(
+        "/dashboard?tab=rooms",
+        api,
+        storage,
+        "https://marketplace.localhost:1355",
+      ),
+    ).resolves.toEqual({
       action: "redirect_to_setup",
       propertyId: "property-1",
       redirectPath:
-        "/setup?entryProduct=booking&returnTo=%2Fdashboard%3Ftab%3Drooms&propertyId=property-1",
-      setupAction: "complete_shared_profile",
-      product: null,
-      productStatus: null,
-      missingSteps: [],
+        "https://marketplace.localhost:1355/setup?entryProduct=booking&returnProduct=booking&returnTo=%2Fdashboard%3Ftab%3Drooms&propertyId=property-1",
+      entryDecision: "setup_required",
+      reasonCode: "product_access_pending",
+    });
+    expect(api.getStatus).toHaveBeenCalledWith({
+      entryProduct: "booking",
+      propertyId: "property-1",
     });
   });
 
-  it("persists the property id when booking can enter the product", async () => {
+  it("enters Booking solely from the server entry decision, regardless of launch tasks", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
-          nextAction: {
-            action: "enter_product",
-            propertyId: "property-2",
-            product: "booking",
-            returnTo: "/dashboard",
-            reasonCodes: ["ready"],
-          },
+          propertyId: "property-2",
+          decision: "enter",
+          destinationRouteKey: "booking.workspace",
+          withIncompleteTask: true,
         }),
       ),
     };
     const storage = memoryStorage();
 
-    const decision = await resolveBookingSetupGuard("/dashboard", api, storage);
-
-    expect(decision).toEqual({
+    await expect(resolveBookingSetupGuard("/dashboard", api, storage)).resolves.toEqual({
       action: "enter_product",
       propertyId: "property-2",
+      destinationRouteKey: "booking.workspace",
       redirectPath: null,
     });
     expect(storage.getItem("selectedSharedPropertyId")).toBe("property-2");
   });
 
-  it("opens Booking Admin when only downstream publish readiness remains", async () => {
+  it("does not enter Booking when the server marks it unavailable", async () => {
     const api = {
       getStatus: vi.fn(async () =>
         status({
-          productStatus: "selected_incomplete",
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-3",
-            product: "booking",
-            missingSteps: ["publicBookability", "paymentReadiness"],
-            reasonCodes: ["booking_activation_incomplete"],
-          },
-        }),
-      ),
-    };
-    const storage = memoryStorage();
-
-    const decision = await resolveBookingSetupGuard("/dashboard", api, storage);
-
-    expect(decision).toEqual({
-      action: "enter_product",
-      propertyId: "property-3",
-      redirectPath: null,
-    });
-    expect(storage.getItem("selectedSharedPropertyId")).toBe("property-3");
-  });
-
-  it("opens Booking Admin for an additive requirement it does not own yet", async () => {
-    const api = {
-      getStatus: vi.fn(async () =>
-        status({
-          productStatus: "selected_incomplete",
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-3",
-            product: "booking",
-            missingSteps: ["futureBookingRequirement"],
-            reasonCodes: ["booking_activation_incomplete"],
-          },
+          decision: "unavailable",
+          reasonCode: "track_unavailable",
         }),
       ),
     };
 
-    await expect(resolveBookingSetupGuard("/dashboard", api, memoryStorage())).resolves.toEqual({
-      action: "enter_product",
-      propertyId: "property-3",
-      redirectPath: null,
-    });
-  });
-
-  it("does not bypass an unavailable Booking activation", async () => {
-    const api = {
-      getStatus: vi.fn(async () =>
-        status({
-          productStatus: "unavailable",
-          nextAction: {
-            action: "complete_product_activation",
-            propertyId: "property-3",
-            product: "booking",
-            missingSteps: ["publicBookability", "paymentReadiness"],
-            reasonCodes: ["booking_unavailable"],
-          },
-        }),
-      ),
-    };
-
-    const decision = await resolveBookingSetupGuard("/dashboard", api, memoryStorage());
-
-    expect(decision).toMatchObject({
+    await expect(
+      resolveBookingSetupGuard("/dashboard", api, memoryStorage()),
+    ).resolves.toMatchObject({
       action: "redirect_to_setup",
-      propertyId: "property-3",
-      productStatus: "unavailable",
+      entryDecision: "unavailable",
+      reasonCode: "track_unavailable",
     });
   });
 });
 
 function status(input: {
-  nextAction: SharedHotelSetupStatus["nextAction"];
-  productStatus?: "selected_incomplete" | "unavailable";
-}): SharedHotelSetupStatus {
-  const propertyId = "propertyId" in input.nextAction ? input.nextAction.propertyId : "property-1";
+  propertyId?: string;
+  decision: "enter" | "setup_required" | "unavailable";
+  destinationRouteKey?: string;
+  reasonCode?: string;
+  withIncompleteTask?: boolean;
+}): AdaptiveHotelSetupStatus {
+  const propertyId = input.propertyId ?? "property-1";
   return {
-    contractVersion: "shared-hotel-setup-status.v1",
-    entry: { entryProduct: "booking", returnTo: "/dashboard" },
-    hotelGroup: {
+    contractVersion: "adaptive-hotel-setup.v1",
+    organization: {
       organizationId: "org-1",
       displayName: "Alpenrose Hotel Group",
       websiteUrl: null,
-      selectedProducts: ["booking"],
+      selectedTracks: ["hotel_operations"],
+      trackRevision: 2,
+      canManageTracks: true,
+      tracks: [
+        {
+          track: "hotel_operations",
+          provisioning: "active",
+          components: [
+            { product: "pms", access: "active" },
+            {
+              product: "booking",
+              access: input.decision === "unavailable" ? "unavailable" : "active",
+            },
+          ],
+          allowedActions: ["manage_service"],
+        },
+        {
+          track: "creator_marketplace",
+          provisioning: "not_selected",
+          components: [{ product: "marketplace", access: "absent" }],
+          allowedActions: ["add"],
+        },
+      ],
     },
-    selection: { state: "single_property", selectedPropertyId: "property-1" },
-    properties: input.productStatus
-      ? [
-          {
-            propertyId,
-            publicId: propertyId,
-            displayName: "Alpenrose",
-            locationSummary: "Munich, DE",
-            sharedProfile: {
-              status: "complete",
-              source: "canonical",
-              completionPercent: 100,
-              missingFields: [],
+    propertySelection: {
+      state: "single_property",
+      selectedPropertyId: propertyId,
+      availableProperties: [
+        {
+          propertyId,
+          publicId: propertyId,
+          displayName: "Alpenrose",
+          locationSummary: "Munich, DE",
+        },
+      ],
+    },
+    entryDecision: {
+      requestedProduct: "booking",
+      propertyId,
+      decision: input.decision,
+      destinationRouteKey: input.destinationRouteKey ?? null,
+      reasonCode: input.reasonCode ?? null,
+    },
+    setupPlan: {
+      propertyId,
+      planRevision: "plan-2",
+      tasks: input.withIncompleteTask
+        ? [
+            {
+              taskId: "direct_booking_publication",
+              propertyId,
+              track: "hotel_operations",
+              requirementOwnerDomain: "distribution",
+              destinationRouteKey: "distribution.direct_booking_publication",
+              callerCapability: "waiting",
+              ownerProgress: "in_progress",
+              readiness: "pending_sync",
+              actionableBy: "system",
+              reasonCodes: ["publication_pending"],
+              sourceRevision: "publication-1",
+              freshness: "fresh",
+              evaluatedAt: "2026-07-26T10:00:00.000Z",
             },
-            products: {
-              booking: {
-                product: "booking",
-                status: input.productStatus,
-                missingSteps:
-                  "missingSteps" in input.nextAction ? input.nextAction.missingSteps : [],
-                statusReasons: [],
-                updatedAt: null,
-              },
-              pms: {
-                product: "pms",
-                status: "not_selected",
-                missingSteps: [],
-                statusReasons: [],
-                updatedAt: null,
-              },
-              marketplace: {
-                product: "marketplace",
-                status: "not_selected",
-                missingSteps: [],
-                statusReasons: [],
-                updatedAt: null,
-              },
-            },
-          },
-        ]
-      : [],
-    nextAction: input.nextAction,
-    updatedAt: "2026-06-30T00:00:00.000Z",
+          ]
+        : [],
+      recommendedTaskId: null,
+      ownerProgress: { complete: 0, total: input.withIncompleteTask ? 1 : 0 },
+      launchReadiness: {
+        operationsUse: "ready",
+        directBookingPublish: input.withIncompleteTask ? "pending" : "ready",
+        marketplacePublish: "not_applicable",
+      },
+    },
+    updatedAt: "2026-07-26T10:00:00.000Z",
   };
 }
 

@@ -164,11 +164,7 @@ export default function HandoffPage() {
       }
       if (selected) {
         localStorage.setItem("selectedSharedPropertyId", selected.propertyId ?? selected.id);
-        if (selected.productReady === false) {
-          localStorage.removeItem("selectedHotelId");
-        } else {
-          localStorage.setItem("selectedHotelId", selected.id);
-        }
+        localStorage.setItem("selectedHotelId", selected.id);
       }
 
       if (safeRedirect && !explicitSelectionMissing) {
@@ -195,14 +191,6 @@ export default function HandoffPage() {
       if (!selected && hotels.length > 1) {
         localStorage.setItem("setupComplete", "true");
         window.location.href = "/choose-property";
-        return;
-      }
-
-      if (selected?.productReady === false) {
-        localStorage.setItem("setupComplete", "false");
-        window.location.href = `/setup?entryProduct=booking&propertyId=${encodeURIComponent(
-          selected.propertyId ?? selected.id,
-        )}`;
         return;
       }
 

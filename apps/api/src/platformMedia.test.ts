@@ -18,6 +18,7 @@ import {
   createInMemoryPlatformMediaRepository,
   type PlatformMediaObjectRecord,
   type PlatformMediaPurpose,
+  PlatformMediaProfileRevisionConflictError,
   type PlatformMediaRepository,
   type PlatformMediaTargetResolver,
   type PlatformMediaUploadFinalizer,
@@ -88,8 +89,10 @@ type MediaCreateResponse = {
   contractVersion: string;
   uploadSession: {
     sessionId: string;
+    status: "signed" | "completed" | "failed";
     requestedVisibility: string;
     effectiveVisibility: string;
+    expiresAt: string;
   };
   uploadTargets: Array<{
     uploadTargetId: string;
@@ -97,7 +100,10 @@ type MediaCreateResponse = {
     clientFileId: string;
     uploadUrl: string;
     headers: Record<string, string>;
+    expiresAt: string;
   }>;
+  mediaObjects?: PlatformMediaObjectRecord[];
+  sideEffects?: string[];
 };
 
 type MediaFinalizeResponse = {
@@ -311,6 +317,169 @@ describe("platform media upload routes", () => {
     expect((authenticatedReplay.body as { sideEffects: string[] }).sideEffects).toEqual([
       "idempotency_replay",
     ]);
+  });
+
+  it("replays an idempotent signed session and rejects reuse for different files", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const app = buildMediaApp({ repository });
+    const payload = {
+      ...propertyGalleryCase.request.body,
+      idempotencyKey: "hotel-setup:property-alpenrose:gallery:v1",
+    };
+
+    const first = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const firstBody = first.body as MediaCreateResponse;
+    const replayBody = replay.body as MediaCreateResponse;
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(200);
+    expect(replayBody.uploadSession.sessionId).toBe(firstBody.uploadSession.sessionId);
+    expect(replayBody.uploadSession.status).toBe("signed");
+    expect(replayBody.uploadTargets[0]).toMatchObject({
+      uploadTargetId: firstBody.uploadTargets[0]!.uploadTargetId,
+      uploadUrl: expect.stringContaining("staging%2F"),
+    });
+    expect(replayBody.sideEffects).toEqual(["idempotency_replay"]);
+    expect(repository.sessions.size).toBe(1);
+    expect(repository.auditEvents).toHaveLength(1);
+
+    const conflict = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        ...payload,
+        files: [
+          {
+            clientFileId: "hero",
+            filename: "different-suite.jpg",
+            contentType: "image/jpeg",
+            sizeBytes: 2048,
+          },
+        ],
+      },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect((conflict.body as ErrorResponse).code).toBe("upload_session_idempotency_conflict");
+
+    const otherOrganizationApp = buildMediaApp({
+      repository,
+      organizationId: "org_media_second",
+      workosOrgId: "workos_media_org_second",
+    });
+    const otherOrganization = await injectJson(otherOrganizationApp, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    expect(otherOrganization.statusCode).toBe(201);
+    expect((otherOrganization.body as MediaCreateResponse).uploadSession.sessionId).not.toBe(
+      firstBody.uploadSession.sessionId,
+    );
+    expect(repository.sessions.size).toBe(2);
+    expect(repository.auditEvents.map(({ organizationId }) => organizationId).sort()).toEqual([
+      "org_media",
+      "org_media_second",
+    ]);
+  });
+
+  it("returns completed media on create replay even after the upload session expires", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    let currentTime = new Date("2026-06-12T12:00:00.000Z");
+    const app = buildMediaApp({ repository, now: () => currentTime });
+    const payload = {
+      ...propertyGalleryCase.request.body,
+      idempotencyKey: "hotel-setup:property-alpenrose:completed-gallery:v1",
+    };
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const createBody = create.body as MediaCreateResponse;
+    const finalize = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${createBody.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: createBody.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    });
+    expect(finalize.statusCode).toBe(200);
+
+    currentTime = new Date("2026-06-12T13:00:00.000Z");
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const replayBody = replay.body as MediaCreateResponse;
+
+    expect(replay.statusCode).toBe(200);
+    expect(replayBody.uploadSession).toMatchObject({
+      sessionId: createBody.uploadSession.sessionId,
+      status: "completed",
+    });
+    expect(replayBody.uploadTargets).toEqual([]);
+    expect(replayBody.mediaObjects).toEqual((finalize.body as MediaFinalizeResponse).mediaObjects);
+    expect(replayBody.sideEffects).toEqual(["idempotency_replay"]);
+    expect(repository.auditEvents).toHaveLength(2);
+  });
+
+  it("renews an expired unfinished session without changing its idempotency identity", async () => {
+    let currentTime = new Date("2026-06-12T12:00:00.000Z");
+    const app = buildMediaApp({ now: () => currentTime });
+    const payload = {
+      ...propertyGalleryCase.request.body,
+      idempotencyKey: "hotel-setup:property-alpenrose:abandoned-gallery:v1",
+    };
+    const created = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const createdBody = created.body as MediaCreateResponse;
+
+    currentTime = new Date("2026-06-12T13:00:00.000Z");
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const replayBody = replay.body as MediaCreateResponse;
+
+    expect(replay.statusCode).toBe(200);
+    expect(replayBody.uploadSession).toMatchObject({
+      sessionId: createdBody.uploadSession.sessionId,
+      status: "signed",
+      expiresAt: "2026-06-12T13:15:00.000Z",
+    });
+    expect(replayBody.uploadTargets).toEqual([
+      expect.objectContaining({
+        uploadTargetId: createdBody.uploadTargets[0]!.uploadTargetId,
+        expiresAt: "2026-06-12T13:15:00.000Z",
+      }),
+    ]);
+    expect(replayBody.sideEffects).toEqual(["idempotency_replay"]);
   });
 
   it("marks signed upload URL responses private and authorization-varying", async () => {
@@ -953,6 +1122,7 @@ describe("platform media upload routes", () => {
       payload: {
         purpose: "property.hero_image",
         visibility: "public",
+        expectedProfileRevision: 4,
         resource: {
           product: "marketplace",
           resourceType: "hotel_profile",
@@ -971,6 +1141,178 @@ describe("platform media upload routes", () => {
     });
 
     expect(response.statusCode).toBe(201);
+    expect(response.body).toMatchObject({
+      uploadSession: { expectedProfileRevision: 4 },
+    });
+  });
+
+  it("requires a valid profile revision for every property hero media session", async () => {
+    const app = buildMediaApp({
+      permissions: ["marketplace.profile.manage"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel_profile_alpenrose",
+          relationship: "owner",
+        },
+      ],
+    });
+    const payload = {
+      purpose: "property.hero_image",
+      visibility: "public",
+      resource: {
+        product: "marketplace",
+        resourceType: "hotel_profile",
+        resourceId: "hotel_profile_alpenrose",
+      },
+      files: [
+        {
+          filename: "hero.webp",
+          contentType: "image/webp",
+          sizeBytes: 1024,
+        },
+      ],
+    };
+
+    const missing = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const invalid = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...payload, expectedProfileRevision: 0 },
+    });
+    const bookingMissing = await injectJson(buildMediaApp(), {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        ...payload,
+        resource: {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+        },
+      },
+    });
+
+    for (const response of [missing, invalid, bookingMissing]) {
+      expect(response.statusCode).toBe(400);
+      expect((response.body as ErrorResponse).code).toBe("invalid_profile_revision");
+    }
+  });
+
+  it("returns a stable conflict when the property changes before hero finalization", async () => {
+    const delegate = createInMemoryPlatformMediaRepository();
+    const repository: PlatformMediaRepository = {
+      ...delegate,
+      async completeUploadSession() {
+        throw new PlatformMediaProfileRevisionConflictError(5);
+      },
+    };
+    const cleanupGeneratedVariants = vi.fn(async () => {
+      throw new Error("variant cleanup unavailable");
+    });
+    const cleanupUploadedFile = vi.fn(async () => undefined);
+    const finalizer = {
+      ...createDeterministicPlatformMediaFinalizer(),
+      cleanupGeneratedVariants,
+      cleanupUploadedFile,
+    };
+    const app = buildMediaApp({
+      repository,
+      finalizer,
+      permissions: ["marketplace.profile.manage"],
+      resources: [
+        {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel_profile_alpenrose",
+          relationship: "owner",
+        },
+      ],
+      targetResolver: {
+        async resolveTarget({ policy }) {
+          return {
+            ok: true,
+            target: {
+              resourceProduct: policy.targetResourceProduct,
+              resourceType: policy.targetResourceType,
+              resourceId: "property_alpenrose",
+              propertyId: "property_alpenrose",
+            },
+          };
+        },
+      },
+    });
+    const created = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "property.hero_image",
+        visibility: "public",
+        expectedProfileRevision: 4,
+        resource: {
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: "hotel_profile_alpenrose",
+        },
+        files: [
+          {
+            filename: "hero.webp",
+            contentType: "image/webp",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    });
+    const createBody = created.body as MediaCreateResponse;
+
+    const finalized = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${createBody.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: createBody.uploadTargets.map((target) => ({
+          uploadTargetId: target.uploadTargetId,
+          contentType: "image/webp",
+          sizeBytes: 1024,
+        })),
+      },
+    });
+
+    expect(finalized.statusCode).toBe(409);
+    expect(finalized.body).toEqual({
+      code: "profile_revision_conflict",
+      message: "The property profile changed while its hero image was being finalized.",
+      currentRevision: 5,
+    });
+    expect(cleanupGeneratedVariants).toHaveBeenCalledOnce();
+    expect(cleanupGeneratedVariants).toHaveBeenCalledWith({
+      session: expect.objectContaining({
+        expectedProfileRevision: 4,
+        status: "signed",
+      }),
+      file: expect.objectContaining({
+        sessionFile: expect.objectContaining({ filename: "hero.webp" }),
+      }),
+      variants: expect.arrayContaining([
+        expect.objectContaining({ variantName: "original_safe" }),
+        expect.objectContaining({ variantName: "large" }),
+        expect.objectContaining({ variantName: "thumbnail" }),
+        expect.objectContaining({ variantName: "blur_preview" }),
+      ]),
+    });
+    expect(cleanupUploadedFile).toHaveBeenCalledOnce();
+    expect(cleanupGeneratedVariants.mock.invocationCallOrder[0]).toBeLessThan(
+      cleanupUploadedFile.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("rejects unsupported content types before signing", async () => {
@@ -1325,6 +1667,7 @@ describe("platform media upload routes", () => {
       payload: {
         purpose: "property.hero_image",
         visibility: "public",
+        expectedProfileRevision: 1,
         resource: {
           product: "booking",
           resourceType: "booking_hotel",
@@ -1467,6 +1810,7 @@ describe("platform media upload routes", () => {
         headers: auth ? { authorization: auth } : undefined,
         payload: {
           purpose: "property.hero_image",
+          expectedProfileRevision: 1,
           resource: {
             product: "booking",
             resourceType: "booking_hotel",
@@ -1502,6 +1846,7 @@ function buildMediaApp(
     enabledPurposes?: readonly PlatformMediaPurpose[];
     allowedOrigins?: string[];
     cleanupTimeoutMs?: number;
+    now?: () => Date;
     organizationId?: string;
     workosOrgId?: string;
     organizationKind?: "creator_workspace" | "hotel_group";
@@ -1518,7 +1863,7 @@ function buildMediaApp(
       enabledPurposes: options.enabledPurposes ?? allMediaPurposes,
       allowedOrigins: options.allowedOrigins,
       cleanupTimeoutMs: options.cleanupTimeoutMs,
-      now: () => new Date("2026-06-12T12:00:00.000Z"),
+      now: options.now ?? (() => new Date("2026-06-12T12:00:00.000Z")),
     },
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", { ...session, workosOrgId }]])),

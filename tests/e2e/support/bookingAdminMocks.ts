@@ -1,14 +1,15 @@
 import type { Page } from "@playwright/test";
-import { createSharedHotelSetupStatusMock, sharedHotelSetupProduct } from "./sharedHotelSetupMocks";
+import { createAdaptiveHotelSetupStatusMock } from "./sharedHotelSetupMocks";
 
 export const BOOKING_ADMIN_HOTEL_ID = "booking_hotel_alpenrose";
-export const BOOKING_ADMIN_PROPERTY_ID = "f6853000-0000-0000-0000-000000000001";
+export const BOOKING_ADMIN_PROPERTY_ID = "f6853000-0000-4000-8000-000000000001";
 export const BOOKING_ADMIN_ORGANIZATION_ID = "org_hotel_group";
 export const BOOKING_ADMIN_HOTEL_SLUG = "hotel-alpenrose";
 export const BOOKING_ADMIN_ROOMS_PATH = `/api/pms/properties/${BOOKING_ADMIN_HOTEL_ID}/rooms`;
 export const BOOKING_ADMIN_ADDON_ITEMS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/addon-items`;
 export const BOOKING_ADMIN_PROMO_CODES_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/promo-codes`;
 export const BOOKING_ADMIN_PROPERTY_LINK_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/property-link`;
+export const BOOKING_ADMIN_PROPERTY_PROFILE_PATH = `/api/hotel-setup/properties/${BOOKING_ADMIN_PROPERTY_ID}/profile`;
 export const BOOKING_ADMIN_PROPERTY_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/property`;
 export const BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/public-bookability`;
 export const BOOKING_ADMIN_ADDON_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/addons`;
@@ -176,6 +177,35 @@ export const defaultBookingAdminPropertySettings: BookingAdminPropertySettingsFi
   guest_count_enabled: false,
 };
 
+export const defaultBookingAdminPropertyProfile = {
+  propertyId: BOOKING_ADMIN_PROPERTY_ID,
+  profileRevision: 1,
+  profile: {
+    displayName: "Alpenrose",
+    propertyType: "hotel",
+    location: {
+      streetAddress: "Alpenstrasse 12",
+      postalCode: "80331",
+      city: "Munich",
+      countryCode: "DE",
+      timezone: "Europe/Berlin",
+      latitude: 48.1372,
+      longitude: 11.5756,
+      localityPublic: true,
+      geoPublic: true,
+      mapDisplayMode: "exact",
+    },
+    contacts: [
+      {
+        channelType: "email",
+        value: "reservations@alpenrose.example",
+        purpose: "guest",
+        isPublic: false,
+      },
+    ],
+  },
+};
+
 const defaultAddonSettings: BookingAdminAddonSettingsFixture = {
   showAddonsStep: true,
   groupAddonsByCategory: true,
@@ -267,7 +297,7 @@ const defaultLastMinuteSettings: BookingAdminLastMinuteSettingsFixture = {
 
 export const defaultCustomDomain: BookingAdminCustomDomainFixture = {
   hotelId: BOOKING_ADMIN_HOTEL_ID,
-  propertyId: "f6853000-0000-0000-0000-000000000001",
+  propertyId: BOOKING_ADMIN_PROPERTY_ID,
   configured: false,
   domain: null,
   status: "not_configured",
@@ -336,37 +366,22 @@ export async function mockBookingAdminShellRoutes(
   await page.route("**/api/booking/hotels/*/settings/design", (route) =>
     route.fulfill({ json: defaultBookingAdminDesignSettings }),
   );
-  await page.route("**/admin/settings/setup-status", (route) =>
-    route.fulfill({
-      json: {
-        setup_complete: false,
-        missing_fields: [],
-        prefill_data: null,
-      },
-    }),
-  );
   await page.route("**/api/hotel-setup/status**", (route) =>
     route.fulfill({
-      json: createSharedHotelSetupStatusMock({
+      json: createAdaptiveHotelSetupStatusMock({
         entryProduct: "booking",
-        returnTo: "/dashboard",
         organizationId: "org_hotel_group",
         organizationDisplayName: "Alpenrose Hotel Group",
+        selectedTracks: ["hotel_operations"],
         propertyId: BOOKING_ADMIN_PROPERTY_ID,
         publicId: "prop_alpenrose",
         propertyDisplayName: "Alpenrose",
         locationSummary: "Munich, DE",
-        products: {
-          booking: sharedHotelSetupProduct("booking", "active"),
-          pms: sharedHotelSetupProduct("pms", "not_selected"),
-          marketplace: sharedHotelSetupProduct("marketplace", "not_selected"),
-        },
-        nextAction: {
-          action: "enter_product",
+        entryDecision: {
           propertyId: BOOKING_ADMIN_PROPERTY_ID,
-          product: "booking",
-          returnTo: "/dashboard",
-          reasonCodes: ["ready"],
+          decision: "enter",
+          destinationRouteKey: "booking.workspace",
+          reasonCode: null,
         },
       }),
     }),
@@ -383,6 +398,9 @@ export async function mockBookingAdminShellRoutes(
         },
       },
     }),
+  );
+  await page.route(`**${BOOKING_ADMIN_PROPERTY_PROFILE_PATH}*`, (route) =>
+    route.fulfill({ json: defaultBookingAdminPropertyProfile }),
   );
   await page.route(`**${BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH}*`, (route) =>
     route.fulfill({

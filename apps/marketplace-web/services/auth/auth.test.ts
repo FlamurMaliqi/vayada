@@ -47,7 +47,7 @@ describe("marketplace AuthKit session recovery", () => {
         expect((init?.headers as Record<string, string>)["Authorization"]).toBe(
           "Bearer hotel-workos-access-token",
         );
-        return jsonResponse({ contractVersion: "shared-hotel-setup-status.v1" });
+        return jsonResponse(marketplaceSetupStatus());
       }),
     );
 
@@ -161,7 +161,7 @@ describe("marketplace AuthKit session recovery", () => {
           });
         }
         if (href.includes("/api/hotel-setup/status")) {
-          return jsonResponse({ contractVersion: "shared-hotel-setup-status.v1" });
+          return jsonResponse(marketplaceSetupStatus());
         }
         if (href.includes("/api/marketplace/collaborations/me")) {
           return jsonResponse({
@@ -726,6 +726,51 @@ describe("authService", () => {
     );
   });
 });
+
+function marketplaceSetupStatus() {
+  return {
+    contractVersion: "adaptive-hotel-setup.v1",
+    organization: {
+      organizationId: "org-hotel-group",
+      displayName: "Alpenrose Hotels",
+      websiteUrl: null,
+      selectedTracks: ["creator_marketplace"],
+      trackRevision: 1,
+      canManageTracks: true,
+      tracks: [
+        {
+          track: "hotel_operations",
+          provisioning: "not_selected",
+          components: [
+            { product: "pms", access: "absent" },
+            { product: "booking", access: "absent" },
+          ],
+          allowedActions: ["add"],
+        },
+        {
+          track: "creator_marketplace",
+          provisioning: "active",
+          components: [{ product: "marketplace", access: "active" }],
+          allowedActions: ["manage_service"],
+        },
+      ],
+    },
+    propertySelection: {
+      state: "no_property",
+      selectedPropertyId: null,
+      availableProperties: [],
+    },
+    entryDecision: {
+      requestedProduct: "marketplace",
+      propertyId: null,
+      decision: "setup_required",
+      destinationRouteKey: "hotel_setup",
+      reasonCode: "property_selection_required",
+    },
+    setupPlan: null,
+    updatedAt: "2026-07-26T10:00:00.000Z",
+  };
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import {
   clearStoredPmsPropertyId,
   getStoredPmsPropertyId,
-  isPmsPropertyReady,
   listPmsProperties,
   storeSelectedPmsPropertyId,
   type PmsPropertySummary,
@@ -173,11 +172,6 @@ export default function HandoffPage() {
       if (!selected && properties.length > 1) {
         localStorage.setItem("pmsSetupComplete", "true");
         window.location.href = "/choose-property";
-        return;
-      }
-      if (selected && !isPmsPropertyReady(selected)) {
-        localStorage.setItem("pmsSetupComplete", "false");
-        window.location.href = `/setup?entryProduct=pms&propertyId=${encodeURIComponent(selected.id)}`;
         return;
       }
       if (safeRedirect) {

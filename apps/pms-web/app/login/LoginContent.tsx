@@ -3,11 +3,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import SharedHotelLoginForm from "@vayada/product-onboarding/SharedHotelLoginForm";
-import { handoffReturnToForOrganization } from "@vayada/product-onboarding/returnTo";
 import { authService } from "@/services/auth";
 import {
   isAuthOrganizationSelectionResponse,
-  type AuthKitSessionResponse,
   type AuthOrganizationSelectionResponse,
 } from "@/services/auth/sessionStore";
 import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
@@ -33,24 +31,18 @@ export function LoginContent({
   const [organizationSelection, setOrganizationSelection] =
     useState<AuthOrganizationSelectionResponse | null>(null);
 
-  const redirectAfterLogin = useCallback(
-    async (session: AuthKitSessionResponse, organizationExplicitlySelected = false) => {
-      const confirmedReturnTo = organizationExplicitlySelected
-        ? handoffReturnToForOrganization(returnTo, session)
-        : returnTo;
-      if (new URL(confirmedReturnTo, "https://vayada.local").pathname === "/handoff") {
-        window.location.href = confirmedReturnTo;
-        return;
-      }
-      const decision = await resolvePmsSetupGuard(returnTo);
-      localStorage.setItem(
-        "pmsSetupComplete",
-        decision.action === "enter_product" ? "true" : "false",
-      );
-      router.push(decision.action === "enter_product" ? returnTo : decision.redirectPath);
-    },
-    [returnTo, router],
-  );
+  const redirectAfterLogin = useCallback(async () => {
+    if (new URL(returnTo, "https://vayada.local").pathname === "/handoff") {
+      window.location.replace(returnTo);
+      return;
+    }
+    const decision = await resolvePmsSetupGuard(returnTo);
+    if (decision.action === "redirect_to_setup") {
+      window.location.replace(decision.redirectPath);
+      return;
+    }
+    router.push(returnTo);
+  }, [returnTo, router]);
 
   const handleOrganizationSelect = useCallback(
     async (workosOrganizationId: string) => {
@@ -62,7 +54,7 @@ export function LoginContent({
           setOrganizationSelection(response);
           return;
         }
-        await redirectAfterLogin(response, true);
+        await redirectAfterLogin();
       } catch (error) {
         setSubmitError(error instanceof Error ? error.message : t("auth.login.unexpectedError"));
       } finally {
@@ -83,7 +75,7 @@ export function LoginContent({
           setOrganizationSelection(response);
           return;
         }
-        await redirectAfterLogin(response);
+        await redirectAfterLogin();
       } catch (error) {
         setSubmitError(error instanceof Error ? error.message : t("auth.login.unexpectedError"));
       } finally {
@@ -105,7 +97,7 @@ export function LoginContent({
           setOrganizationSelection(response);
           return;
         }
-        await redirectAfterLogin(response);
+        await redirectAfterLogin();
       })
       .catch((error) => {
         if (cancelled) return;

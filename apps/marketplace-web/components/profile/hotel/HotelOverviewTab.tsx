@@ -2,7 +2,7 @@
 
 import { MapPinIcon, GlobeAltIcon, PhoneIcon } from "@heroicons/react/24/outline";
 import { Input, Textarea } from "@/components/ui";
-import type { ProfileHotelProfile, HotelEditFormData } from "@/components/profile/types";
+import type { HotelEditFormData } from "@/components/profile/types";
 
 // Hotel icon SVG component
 function HotelIcon({ className = "w-5 h-5" }: { className?: string }) {
@@ -31,7 +31,6 @@ function HotelIcon({ className = "w-5 h-5" }: { className?: string }) {
 }
 
 interface HotelOverviewTabProps {
-  profile: ProfileHotelProfile;
   isEditing: boolean;
   editFormData: HotelEditFormData;
   phone: string;
@@ -40,7 +39,6 @@ interface HotelOverviewTabProps {
 }
 
 export function HotelOverviewTab({
-  profile,
   isEditing,
   editFormData,
   phone,
@@ -79,9 +77,46 @@ export function HotelOverviewTab({
             onChange={(e) => onEditFormChange({ ...editFormData, location: e.target.value })}
             required
             placeholder="City, Country"
-            disabled={!isEditing}
+            disabled
+            helperText={
+              isEditing ? "Address and timezone changes are managed in Hotel setup." : undefined
+            }
             leadingIcon={<MapPinIcon className="w-5 h-5 text-gray-400" />}
           />
+        </div>
+
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+          <label
+            className={`flex items-start gap-3 text-sm text-gray-900 ${
+              isEditing ? "cursor-pointer" : ""
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={editFormData.localityPublic}
+              onChange={(event) =>
+                onEditFormChange({
+                  ...editFormData,
+                  localityPublic: event.target.checked,
+                })
+              }
+              disabled={!isEditing}
+              aria-describedby="hotel-profile-locality-help"
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:cursor-not-allowed"
+            />
+            <span>
+              <span className="block font-semibold">
+                Show city and country on public Vayada surfaces
+              </span>
+              <span
+                id="hotel-profile-locality-help"
+                className="mt-1 block text-xs leading-5 text-gray-600"
+              >
+                Turning this off hides your locality across Vayada’s public surfaces and makes your
+                Marketplace offer private. Your street address and coordinates stay private.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Full-width About */}

@@ -10,29 +10,15 @@ import {
   CheckIcon,
   StarIcon,
 } from "@heroicons/react/24/outline";
-import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
+type Product = "booking" | "pms" | "marketplace";
+
 const BOOKING_ADMIN_URL =
   process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
 const MARKETPLACE_URL = process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
-
-function buildHandoffUrl(baseUrl: string): string {
-  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-  const expiresAt = typeof window !== "undefined" ? localStorage.getItem("token_expires_at") : null;
-  const user = typeof window !== "undefined" ? localStorage.getItem("user") : null;
-  const propertyId =
-    typeof window !== "undefined" ? localStorage.getItem("selectedSharedPropertyId") : null;
-  const params = new URLSearchParams({
-    ...(token && expiresAt ? { token, expires_at: expiresAt } : {}),
-    ...(token && expiresAt && user ? { user: encodeURIComponent(user) } : {}),
-    ...(propertyId ? { property_id: propertyId } : {}),
-  });
-  if (params.size === 0) return baseUrl;
-  return `${baseUrl}/handoff#${params.toString()}`;
-}
 
 interface NavItem {
   labelKey?: string;
@@ -62,8 +48,8 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
-  const [enabledProducts, setEnabledProducts] = useState<Set<SharedHotelSetupProduct>>(
-    () => new Set<SharedHotelSetupProduct>(["pms"]),
+  const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
+    () => new Set<Product>(["pms"]),
   );
   const { t } = useTranslation();
   const switcherRef = useRef<HTMLDivElement>(null);
@@ -85,7 +71,14 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       .then((status) => {
         if (!cancelled) {
           setEnabledProducts(
-            new Set<SharedHotelSetupProduct>(["pms", ...status.hotelGroup.selectedProducts]),
+            new Set<Product>([
+              "pms",
+              ...status.organization.tracks.flatMap((track) =>
+                track.components
+                  .filter((component) => component.access === "active")
+                  .map((component) => component.product),
+              ),
+            ]),
           );
         }
       })
@@ -185,7 +178,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = buildHandoffUrl(BOOKING_ADMIN_URL);
+                  window.location.href = BOOKING_ADMIN_URL;
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >
@@ -226,7 +219,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = buildHandoffUrl(MARKETPLACE_URL);
+                  window.location.href = MARKETPLACE_URL;
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >

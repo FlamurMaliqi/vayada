@@ -550,6 +550,11 @@ describe("marketplace collaboration read routes", () => {
     expect(lifecycleRead?.text).toContain(
       `COALESCE(NULLIF(creator.source_creator_id, ''), creator.id::text) AS "creatorId"`,
     );
+    expect(lifecycleRead?.text).toContain("public_profile.location->>'city'");
+    expect(lifecycleRead?.text).toContain("public_profile.location->>'region'");
+    expect(lifecycleRead?.text).toContain("public_profile.location->>'countryCode'");
+    expect(lifecycleRead?.text).not.toContain("rawMarketplaceLocation");
+    expect(lifecycleRead?.text).not.toContain("raw_marketplace_location");
   });
 
   it.each([
@@ -1737,6 +1742,11 @@ describe.skipIf(!TEST_DATABASE_URL)("marketplace chat attachment persistence", (
         creatorProfileId,
       ]);
       await client.query(`DELETE FROM hotel_catalog.properties WHERE id = $1`, [propertyId]);
+      await client.query(
+        `DELETE FROM platform.idempotency_keys
+         WHERE organization_id = ANY($1::uuid[])`,
+        [[creatorOrganizationId, hotelOrganizationId]],
+      );
       await client.query(`DELETE FROM identity.organizations WHERE id = ANY($1::uuid[])`, [
         [creatorOrganizationId, hotelOrganizationId],
       ]);

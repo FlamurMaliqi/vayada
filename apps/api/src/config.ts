@@ -621,6 +621,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     pmsOperationsAllowedOrigins: readOptionalCsvEnv(env, "PMS_OPERATIONS_ALLOWED_ORIGINS", [
       "https://pms.localhost",
       "https://admin.booking.localhost",
+      "https://marketplace.localhost",
     ]),
     bookingCheckoutCommandSource,
     bookingWebEventSink,

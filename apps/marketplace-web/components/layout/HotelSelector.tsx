@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckIcon, ChevronDownIcon, PlusIcon } from "@heroicons/react/24/outline";
-import type { SharedSetupProperty } from "@vayada/product-onboarding";
+import type { AdaptiveHotelSetupStatus } from "@vayada/product-onboarding";
 
 import { ROUTES } from "@/lib/constants";
 import { SELECTED_SHARED_PROPERTY_ID_KEY } from "@/lib/utils/sharedSetupGuard";
@@ -13,7 +13,9 @@ export function HotelSelector() {
   const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [properties, setProperties] = useState<SharedSetupProperty[]>([]);
+  const [properties, setProperties] = useState<
+    AdaptiveHotelSetupStatus["propertySelection"]["availableProperties"]
+  >([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -23,14 +25,15 @@ export function HotelSelector() {
       .then((status) => {
         if (cancelled) return;
         const storedPropertyId = localStorage.getItem(SELECTED_SHARED_PROPERTY_ID_KEY)?.trim();
+        const availableProperties = status.propertySelection.availableProperties;
         const selected =
-          status.properties.find((property) => property.propertyId === storedPropertyId) ??
-          status.properties.find(
-            (property) => property.propertyId === status.selection.selectedPropertyId,
+          availableProperties.find((property) => property.propertyId === storedPropertyId) ??
+          availableProperties.find(
+            (property) => property.propertyId === status.propertySelection.selectedPropertyId,
           ) ??
-          status.properties[0] ??
+          availableProperties[0] ??
           null;
-        setProperties(status.properties);
+        setProperties(availableProperties);
         setSelectedPropertyId(selected?.propertyId ?? null);
         if (selected) {
           localStorage.setItem(SELECTED_SHARED_PROPERTY_ID_KEY, selected.propertyId);

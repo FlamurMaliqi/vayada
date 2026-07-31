@@ -25,6 +25,11 @@ export const targetApiClient = {
     return client.post<T>(endpoint, data, authenticatedOptions(options));
   },
 
+  async patch<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+    await requireAuthKitSession(options?.signal ?? undefined);
+    return client.patch<T>(endpoint, data, authenticatedOptions(options));
+  },
+
   async delete<T>(endpoint: string, options?: RequestInit): Promise<T> {
     await requireAuthKitSession(options?.signal ?? undefined);
     return client.delete<T>(endpoint, authenticatedOptions(options));

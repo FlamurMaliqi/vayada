@@ -363,7 +363,6 @@ export const authService = {
 
     clearAuthData();
     if (typeof window !== "undefined") {
-      localStorage.removeItem("pmsSetupComplete");
       window.location.href = logoutUrl;
     }
   },

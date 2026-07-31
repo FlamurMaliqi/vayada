@@ -34,10 +34,12 @@ export async function uploadImages(
   files: File | File[],
   purpose: BookingMediaPurpose = "property.gallery_image",
   explicitBookingHotelId?: string,
+  expectedProfileRevision?: number,
 ): Promise<string[]> {
   const fileList = Array.isArray(files) ? files : [files];
   if (fileList.length === 0) return [];
 
+  const profileRevision = validateExpectedProfileRevision(purpose, expectedProfileRevision);
   const token = getAuthKitAccessToken() ?? getAuthBearerToken();
   const headers = {
     "Content-Type": "application/json",
@@ -51,6 +53,7 @@ export async function uploadImages(
     body: JSON.stringify({
       purpose,
       visibility: "public",
+      ...(profileRevision === undefined ? {} : { expectedProfileRevision: profileRevision }),
       resource: {
         product: "booking",
         resourceType: "booking_hotel",
@@ -116,10 +119,27 @@ export async function uploadSingleImage(
   file: File,
   purpose: BookingMediaPurpose = "property.gallery_image",
   explicitBookingHotelId?: string,
+  expectedProfileRevision?: number,
 ): Promise<string> {
-  const urls = await uploadImages(file, purpose, explicitBookingHotelId);
+  const urls = await uploadImages(file, purpose, explicitBookingHotelId, expectedProfileRevision);
   if (!urls[0]) throw new Error("No image URL returned");
   return urls[0];
+}
+
+function validateExpectedProfileRevision(
+  purpose: BookingMediaPurpose,
+  expectedProfileRevision?: number,
+): number | undefined {
+  if (purpose !== "property.hero_image") return undefined;
+  if (
+    expectedProfileRevision === undefined ||
+    !Number.isSafeInteger(expectedProfileRevision) ||
+    expectedProfileRevision < 1 ||
+    expectedProfileRevision > 2_147_483_647
+  ) {
+    throw new Error("A valid property profile revision is required for hero image uploads.");
+  }
+  return expectedProfileRevision;
 }
 
 function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {

@@ -1,14 +1,22 @@
+import {
+  isSetupTaskLaunchable,
+  PRODUCT_ENTRY_PRODUCTS,
+  type AdaptiveHotelSetupStatus,
+  type ProductEntryDecision,
+  type PropertySetupPlan,
+  type SetupComponentProduct,
+  type SetupTask,
+  type SetupTrack,
+} from "@vayada/domain-hotels";
+
 import { isSafeRelativeReturnTo } from "./returnTo";
 
-export const SHARED_HOTEL_SETUP_PRODUCTS = ["booking", "pms", "marketplace"] as const;
-
-export type SharedHotelSetupProduct = (typeof SHARED_HOTEL_SETUP_PRODUCTS)[number];
-export type SharedHotelSetupEntryProduct = SharedHotelSetupProduct;
+export type SharedHotelSetupEntryProduct = ProductEntryDecision["requestedProduct"];
 
 export function parseSharedHotelSetupEntryProduct(
   value: string | null | undefined,
 ): SharedHotelSetupEntryProduct | null {
-  return SHARED_HOTEL_SETUP_PRODUCTS.includes(value as SharedHotelSetupEntryProduct)
+  return PRODUCT_ENTRY_PRODUCTS.includes(value as SetupComponentProduct)
     ? (value as SharedHotelSetupEntryProduct)
     : null;
 }
@@ -24,286 +32,119 @@ export function safeSharedHotelSetupReturnTo(
   return isSafeSharedHotelSetupReturnTo(value) ? value : fallback;
 }
 
-export type SharedPropertyProfileMissingField =
-  | "displayName"
-  | "location"
-  | "website"
-  | "phone"
-  | "description"
-  | "media";
-export type SharedPropertyProfileSource = "canonical" | "legacy_prefill";
-
-export type SharedProductActivation<Product extends SharedHotelSetupProduct> = {
-  product: Product;
-  status: "not_selected" | "selected_incomplete" | "active" | "suspended" | "unavailable";
-  missingSteps: string[];
-  statusReasons: string[];
-  updatedAt: string | null;
-};
-
-export const MARKETPLACE_PROFILE_TOOL_STEPS = [
-  "creatorPitch",
-  "marketplaceOffer",
-  "offerDeliverables",
-  "compensationOptions",
-  "creatorRequirements",
-] as const;
-
-export function isActionableSharedProductActivation(input: {
-  productStatus: SharedProductActivation<SharedHotelSetupProduct>["status"] | null;
-  missingSteps: readonly string[];
-}): boolean {
-  return (
-    input.productStatus === "selected_incomplete" &&
-    input.missingSteps.length > 0 &&
-    !input.missingSteps.includes("productEntitlement")
-  );
-}
-
-export function canOpenMarketplaceProfileTools(input: {
-  product: SharedHotelSetupProduct | null;
-  productStatus: SharedProductActivation<SharedHotelSetupProduct>["status"] | null;
-  missingSteps: readonly string[];
-}): boolean {
-  return input.product === "marketplace" && isActionableSharedProductActivation(input);
-}
-
-export type SharedSetupProperty = {
-  propertyId: string;
-  publicId: string;
-  displayName: string | null;
-  locationSummary: string | null;
-  sharedProfile: {
-    status: "incomplete" | "complete" | "disabled" | "private";
-    source: SharedPropertyProfileSource;
-    completionPercent: number;
-    missingFields: SharedPropertyProfileMissingField[];
-  };
-  products: {
-    booking: SharedProductActivation<"booking">;
-    pms: SharedProductActivation<"pms">;
-    marketplace: SharedProductActivation<"marketplace">;
-  };
-};
-
-export type SharedHotelSetupNextAction =
-  | { action: "create_property"; reasonCodes: string[] }
-  | { action: "select_property"; reasonCodes: string[] }
-  | {
-      action: "complete_shared_profile";
-      propertyId: string;
-      missingFields: SharedPropertyProfileMissingField[];
-      reasonCodes: string[];
-    }
-  | { action: "select_products"; propertyId: string; reasonCodes: string[] }
-  | {
-      action: "complete_product_activation";
-      propertyId: string;
-      product: SharedHotelSetupProduct;
-      missingSteps: string[];
-      reasonCodes: string[];
-    }
-  | {
-      action: "enter_product";
-      propertyId: string;
-      product: SharedHotelSetupProduct;
-      returnTo: string | null;
-      reasonCodes: string[];
-    };
-
-export type SharedHotelSetupStatus = {
-  contractVersion: "shared-hotel-setup-status.v1";
-  entry: {
-    entryProduct: SharedHotelSetupEntryProduct | null;
-    returnTo: string | null;
-  };
-  hotelGroup: {
-    organizationId: string;
-    displayName: string;
-    websiteUrl: string | null;
-    selectedProducts: SharedHotelSetupProduct[];
-  };
-  selection: {
-    state: "no_property" | "single_property" | "multiple_properties";
-    selectedPropertyId: string | null;
-  };
-  properties: SharedSetupProperty[];
-  nextAction: SharedHotelSetupNextAction;
-  updatedAt: string;
-};
-
-export type SharedPropertyProfileLocation = {
-  countryCode: string | null;
-  region: string | null;
-  city: string | null;
-  streetAddress: string | null;
-  postalCode: string | null;
-  rawMarketplaceLocation: string | null;
-  timezone: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  addressPublic: boolean;
-  mapDisplayMode: "hidden" | "approximate" | "exact";
-};
-
-export type SharedPropertyProfileMedia = {
-  mediaType: "hero_image" | "gallery_image" | "logo";
-  url: string;
-  altText: string | null;
-  sortOrder: number;
-};
-
-export type SharedPropertyProfileInput = {
-  displayName: string;
-  propertyType: string | null;
-  location: SharedPropertyProfileLocation;
-  website: string | null;
-  contactEmail: string | null;
-  phone: string | null;
-  shortDescription: string | null;
-  longDescription: string | null;
-  media: SharedPropertyProfileMedia[];
-  /** Optional compare-and-set guard for updates; ignored when creating a property. */
-  expectedUpdatedAt?: string;
-};
-
-export type SharedPropertyProfile = SharedPropertyProfileInput & {
-  propertyId: string;
-  publicId: string;
-  sharedProfile: SharedSetupProperty["sharedProfile"];
-  updatedAt: string;
-};
-
-export type SharedHotelSetupAccountProductSelection = {
-  organizationId: string;
-  selectedProducts: SharedHotelSetupProduct[];
-  updatedAt: string;
-};
-
-export type SharedHotelSetupProductStatus =
-  SharedSetupProperty["products"][SharedHotelSetupProduct]["status"];
+export type SharedSetupProperty =
+  AdaptiveHotelSetupStatus["propertySelection"]["availableProperties"][number];
 
 export type SharedFirstRunSetupScreen =
   | "loading"
+  | "track_selection"
   | "property_profile"
   | "property_selection"
-  | "product_selection"
-  | "product_activation"
-  | "enter_product";
+  | "setup_plan";
 
 export type SharedFirstRunSetupViewModel = {
   screen: SharedFirstRunSetupScreen;
   profileMode: "create" | "update" | null;
   selectedPropertyId: string | null;
   selectedProperty: SharedSetupProperty | null;
-  product: SharedHotelSetupProduct | null;
+  setupPlan: PropertySetupPlan | null;
   title: string;
 };
 
 export function resolveSharedFirstRunSetupView(
-  status: SharedHotelSetupStatus | null,
-  options: { forceCreateProperty?: boolean } = {},
+  status: AdaptiveHotelSetupStatus | null,
+  options: {
+    forceCreateProperty?: boolean;
+    forceTrackSelection?: boolean;
+    editPropertyProfile?: boolean;
+  } = {},
 ): SharedFirstRunSetupViewModel {
-  if (!status) {
-    return {
-      screen: "loading",
-      profileMode: null,
-      selectedPropertyId: null,
-      selectedProperty: null,
-      product: null,
-      title: "Loading setup",
-    };
+  if (!status) return emptyView("loading", "Loading setup");
+
+  if (status.organization.selectedTracks.length === 0 || options.forceTrackSelection) {
+    return emptyView("track_selection", "Choose how you’ll use Vayada");
   }
 
-  if (options.forceCreateProperty || status.nextAction.action === "create_property") {
+  if (options.forceCreateProperty || status.propertySelection.state === "no_property") {
     return {
-      screen: "property_profile",
-      profileMode: "create",
-      selectedPropertyId: null,
-      selectedProperty: null,
-      product: null,
-      title:
-        status.properties.length === 0
+      ...emptyView(
+        "property_profile",
+        status.propertySelection.availableProperties.length === 0
           ? "Let’s get to know your hotel"
           : "Let’s get to know this hotel",
+      ),
+      profileMode: "create",
     };
   }
 
-  if (status.nextAction.action === "select_property") {
-    return {
-      screen: "property_selection",
-      profileMode: null,
-      selectedPropertyId: null,
-      selectedProperty: null,
-      product: null,
-      title: "Choose property",
-    };
+  if (
+    status.propertySelection.state === "multiple_properties" &&
+    status.propertySelection.selectedPropertyId === null
+  ) {
+    return emptyView("property_selection", "Choose hotel");
   }
 
-  if (status.nextAction.action === "complete_shared_profile") {
-    const selectedProperty = findProperty(status, status.nextAction.propertyId);
+  const selectedPropertyId = status.propertySelection.selectedPropertyId;
+  const selectedProperty = selectedPropertyId
+    ? (status.propertySelection.availableProperties.find(
+        (property) => property.propertyId === selectedPropertyId,
+      ) ?? null)
+    : null;
+  const sharedIdentity = status.setupPlan?.tasks.find(({ taskId }) => taskId === "shared_identity");
+  if (
+    selectedPropertyId &&
+    (options.editPropertyProfile ||
+      (sharedIdentity?.ownerProgress !== "owner_complete" &&
+        sharedIdentity?.readiness === "actionable" &&
+        sharedIdentity.callerCapability === "allowed"))
+  ) {
     return {
       screen: "property_profile",
       profileMode: "update",
-      selectedPropertyId: status.nextAction.propertyId,
+      selectedPropertyId,
       selectedProperty,
-      product: null,
+      setupPlan: status.setupPlan,
       title: selectedProperty?.displayName ?? "Complete hotel basics",
     };
   }
 
-  if (status.nextAction.action === "select_products") {
-    return propertyActionView(status, status.nextAction.propertyId, {
-      screen: "product_selection",
-      product: null,
-      title: "How would you like to use Vayada?",
-    });
-  }
-
-  if (status.nextAction.action === "complete_product_activation") {
-    const selectedProperty = findProperty(status, status.nextAction.propertyId);
-    return propertyActionView(status, status.nextAction.propertyId, {
-      screen: "product_activation",
-      product: status.nextAction.product,
-      title:
-        status.nextAction.product === "marketplace"
-          ? `Set up Marketplace for ${selectedProperty?.displayName ?? "selected property"}`
-          : "Continue setup",
-    });
-  }
-
-  return propertyActionView(status, status.nextAction.propertyId, {
-    screen: "enter_product",
-    product: status.nextAction.product,
-    title: "Setup complete",
-  });
-}
-
-export function isSharedHotelSetupProductSelectable(
-  property: SharedSetupProperty | null,
-  product: SharedHotelSetupProduct,
-): boolean {
-  const status = property?.products[product].status;
-  return status !== "suspended";
-}
-
-function propertyActionView(
-  status: SharedHotelSetupStatus,
-  propertyId: string,
-  view: Pick<SharedFirstRunSetupViewModel, "screen" | "product" | "title">,
-): SharedFirstRunSetupViewModel {
-  const selectedProperty = findProperty(status, propertyId);
   return {
-    ...view,
+    screen: "setup_plan",
     profileMode: null,
-    selectedPropertyId: propertyId,
+    selectedPropertyId,
     selectedProperty,
+    setupPlan: status.setupPlan,
+    title: "Set up your hotel",
   };
 }
 
-function findProperty(
-  status: SharedHotelSetupStatus,
-  propertyId: string,
-): SharedSetupProperty | null {
-  return status.properties.find((property) => property.propertyId === propertyId) ?? null;
+export function toggleSetupTrackSelection(
+  selectedTracks: readonly SetupTrack[],
+  lockedTracks: readonly SetupTrack[],
+  track: SetupTrack,
+): SetupTrack[] {
+  if (lockedTracks.includes(track)) return [...selectedTracks];
+  const next = selectedTracks.includes(track)
+    ? selectedTracks.filter((candidate) => candidate !== track)
+    : [...selectedTracks, track];
+  return (["hotel_operations", "creator_marketplace"] as const).filter((candidate) =>
+    next.includes(candidate),
+  );
+}
+
+export function isSetupTaskActionable(
+  task: Pick<SetupTask, "track" | "readiness" | "callerCapability">,
+): boolean {
+  return isSetupTaskLaunchable(task);
+}
+
+function emptyView(screen: SharedFirstRunSetupScreen, title: string): SharedFirstRunSetupViewModel {
+  return {
+    screen,
+    profileMode: null,
+    selectedPropertyId: null,
+    selectedProperty: null,
+    setupPlan: null,
+    title,
+  };
 }

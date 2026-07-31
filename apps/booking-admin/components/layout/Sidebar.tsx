@@ -12,31 +12,15 @@ import {
   Cog6ToothIcon,
   SparklesIcon,
 } from "@heroicons/react/24/outline";
-import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 
+type Product = "booking" | "pms" | "marketplace";
+
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_FRONTEND_URL || "https://pms.vayada.com";
 const MARKETPLACE_URL = process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
 const RESERVATIONS_NAV_ENABLED = process.env.NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED === "true";
-
-function buildHandoffUrl(baseUrl: string): string {
-  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-  const expiresAt = typeof window !== "undefined" ? localStorage.getItem("token_expires_at") : null;
-  const user = typeof window !== "undefined" ? localStorage.getItem("user") : null;
-  const hotelId = typeof window !== "undefined" ? localStorage.getItem("selectedHotelId") : null;
-  const propertyId =
-    typeof window !== "undefined" ? localStorage.getItem("selectedSharedPropertyId") : null;
-  const params = new URLSearchParams({
-    ...(token && expiresAt ? { token, expires_at: expiresAt } : {}),
-    ...(token && expiresAt && user ? { user: encodeURIComponent(user) } : {}),
-    ...(hotelId ? { hotel_id: hotelId } : {}),
-    ...(propertyId ? { property_id: propertyId } : {}),
-  });
-  if (params.size === 0) return baseUrl;
-  return `${baseUrl}/handoff#${params.toString()}`;
-}
 
 interface NavItem {
   labelKey?: string;
@@ -60,8 +44,8 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
-  const [enabledProducts, setEnabledProducts] = useState<Set<SharedHotelSetupProduct>>(
-    () => new Set<SharedHotelSetupProduct>(["booking"]),
+  const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
+    () => new Set<Product>(["booking"]),
   );
   const switcherRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
@@ -84,7 +68,14 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       .then((status) => {
         if (!cancelled) {
           setEnabledProducts(
-            new Set<SharedHotelSetupProduct>(["booking", ...status.hotelGroup.selectedProducts]),
+            new Set<Product>([
+              "booking",
+              ...status.organization.tracks.flatMap((track) =>
+                track.components
+                  .filter((component) => component.access === "active")
+                  .map((component) => component.product),
+              ),
+            ]),
           );
         }
       })
@@ -206,7 +197,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = buildHandoffUrl(PMS_FRONTEND_URL);
+                  window.location.href = PMS_FRONTEND_URL;
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >
@@ -242,7 +233,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = buildHandoffUrl(MARKETPLACE_URL);
+                  window.location.href = MARKETPLACE_URL;
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >

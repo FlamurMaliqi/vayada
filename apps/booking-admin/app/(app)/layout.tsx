@@ -51,9 +51,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
       if (cancelled) return;
       setSetupGuardError(false);
-      localStorage.setItem("setupComplete", decision.action === "enter_product" ? "true" : "false");
       if (decision.action === "redirect_to_setup") {
-        router.replace(decision.redirectPath);
+        window.location.replace(decision.redirectPath);
         return;
       }
       setIsAuthorized(true);
