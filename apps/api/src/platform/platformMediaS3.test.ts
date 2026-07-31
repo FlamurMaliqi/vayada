@@ -526,7 +526,7 @@ describe("S3 platform profile media adapter", () => {
   it("refetches inspected bytes when staging cleanup fails", async () => {
     const source = await validJpeg();
     const cleanupError = new Error("cleanup unavailable");
-    const { client } = fakeS3(async (command) => {
+    const { client, send } = fakeS3(async (command) => {
       if (command instanceof GetObjectCommand) {
         return { ContentLength: source.length, Body: Readable.from([source]) };
       }
@@ -540,11 +540,14 @@ describe("S3 platform profile media adapter", () => {
     await expect(
       adapter.generateVariants({ session, file, fileIndex: 0, policy }),
     ).resolves.toHaveLength(policy.requiredVariants.length);
+    expect(send.mock.calls.filter(([command]) => command instanceof GetObjectCommand)).toHaveLength(
+      2,
+    );
   });
 
   it("does not retain or depend on inspected bytes while staging cleanup settles", async () => {
     const source = await validJpeg();
-    const { client } = fakeS3(async (command) => {
+    const { client, send } = fakeS3(async (command) => {
       if (command instanceof GetObjectCommand) {
         return { ContentLength: source.length, Body: Readable.from([source]) };
       }
@@ -559,11 +562,14 @@ describe("S3 platform profile media adapter", () => {
     await expect(
       adapter.generateVariants({ session, file, fileIndex: 0, policy }),
     ).resolves.toHaveLength(policy.requiredVariants.length);
+    expect(send.mock.calls.filter(([command]) => command instanceof GetObjectCommand)).toHaveLength(
+      2,
+    );
   });
 
   it("allows a fresh verified generation after a visibility validation failure", async () => {
     const source = await validJpeg();
-    const { client } = fakeS3(async (command) =>
+    const { client, send } = fakeS3(async (command) =>
       command instanceof GetObjectCommand
         ? { ContentLength: source.length, Body: Readable.from([source]) }
         : {},
@@ -582,6 +588,9 @@ describe("S3 platform profile media adapter", () => {
     await expect(
       adapter.generateVariants({ session, file, fileIndex: 0, policy }),
     ).resolves.toHaveLength(policy.requiredVariants.length);
+    expect(send.mock.calls.filter(([command]) => command instanceof GetObjectCommand)).toHaveLength(
+      2,
+    );
   });
 
   it("rejects staged bytes changed after inspection before writing variants", async () => {
@@ -740,6 +749,27 @@ describe("S3 platform profile media adapter", () => {
           return { ContentLength: source.length, Body: Readable.from([source]) };
         }
         throw missing;
+      }
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const { session, file } = await inspectValidUpload(adapter, source);
+
+    await expect(
+      adapter.generateVariants({ session, file, fileIndex: 0, policy }),
+    ).rejects.toBeInstanceOf(PlatformMediaStagingChangedError);
+  });
+
+  it("raises the typed staging-changed error when a streamed staged object grows", async () => {
+    const source = await validJpeg();
+    const grown = Buffer.concat([source, Buffer.from([0])]);
+    let getCount = 0;
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        if (getCount++ === 0) {
+          return { ContentLength: source.length, Body: Readable.from([source]) };
+        }
+        return { Body: Readable.from([grown]) };
       }
       return {};
     });

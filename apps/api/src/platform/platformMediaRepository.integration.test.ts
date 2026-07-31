@@ -60,6 +60,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media private staging", () =>
        WHERE id = $1::uuid`,
       [propertyId],
     );
+    await expect(readPropertyRevision()).resolves.toBe(2);
 
     await expect(
       repository.completeUploadSession(completionInput(secondSession)),

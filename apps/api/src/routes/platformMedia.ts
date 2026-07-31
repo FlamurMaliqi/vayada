@@ -23,6 +23,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   isCanonicalPrivatePropertyMediaObject,
   normalizePlatformMediaPathPrefix,
+  PROPERTY_MEDIA_PUBLIC_VARIANT_MAX_DIMENSIONS,
 } from "../platform/propertyMediaVariantContract.js";
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -491,16 +492,6 @@ const heicConversionMessage =
 const publicImageVariants = ["original_safe", "large", "thumbnail", "blur_preview"] as const;
 const providerOriginalVariant = ["provider_original"] as const;
 const defaultMaxImagePixels = 60_000_000;
-const publicImageVariantMaxDimensions: Record<
-  Exclude<PlatformMediaVariantName, "provider_original">,
-  { widthPx: number; heightPx: number }
-> = {
-  original_safe: { widthPx: 1920, heightPx: 1920 },
-  large: { widthPx: 1280, heightPx: 720 },
-  thumbnail: { widthPx: 320, heightPx: 180 },
-  blur_preview: { widthPx: 32, heightPx: 18 },
-};
-
 const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> = {
   "identity.user.profile_image": {
     purpose: "identity.user.profile_image",
@@ -1792,7 +1783,8 @@ export function createPassthroughPlatformMediaTargetResolver(): PlatformMediaTar
   return {
     async resolveTarget({ request, policy }) {
       const propertyMedia = isPropertyMediaPurpose(request.purpose);
-      const roomMedia = request.purpose === "pms.room_type.media";
+      const canonicalPropertyMedia = propertyMedia && isCanonicalHotelMediaPolicy(policy);
+      const roomMedia = canonicalPropertyMedia && request.purpose === "pms.room_type.media";
       return {
         ok: true,
         target: {
@@ -1800,12 +1792,14 @@ export function createPassthroughPlatformMediaTargetResolver(): PlatformMediaTar
           resourceType: policy.targetResourceType,
           resourceId: roomMedia
             ? request.resource.targetResourceId!
-            : propertyMedia
+            : canonicalPropertyMedia
               ? request.resource.resourceId
               : (request.resource.targetResourceId ??
                 request.resource.propertyId ??
                 request.resource.resourceId),
-          propertyId: propertyMedia ? request.resource.resourceId : request.resource.propertyId,
+          propertyId: canonicalPropertyMedia
+            ? request.resource.resourceId
+            : request.resource.propertyId,
         },
       };
     },
@@ -2734,7 +2728,7 @@ function resizedVariantDimensions(
   if (!widthPx || !heightPx || variantName === "provider_original") {
     return widthPx && heightPx ? { widthPx, heightPx } : null;
   }
-  const max = publicImageVariantMaxDimensions[variantName];
+  const max = PROPERTY_MEDIA_PUBLIC_VARIANT_MAX_DIMENSIONS[variantName];
   const scale = Math.min(1, max.widthPx / widthPx, max.heightPx / heightPx);
   return {
     widthPx: Math.max(1, Math.round(widthPx * scale)),

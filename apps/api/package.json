@@ -25,6 +25,7 @@
     "@aws-sdk/client-secrets-manager": "^3.1090.0",
     "@aws-sdk/s3-request-presigner": "^3.1088.0",
     "@openai/agents": "^0.11.6",
+    "@smithy/node-http-handler": "4.9.13",
     "@vayada/backend-auth": "0.0.0",
     "@vayada/backend-authorization": "0.0.0",
     "@vayada/backend-config": "0.0.0",

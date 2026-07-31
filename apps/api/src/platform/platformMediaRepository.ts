@@ -101,11 +101,8 @@ export function createPgPlatformMediaRepository(
         throw new Error("Property hero images require expectedProfileRevision");
       }
       if (
-        (isAutoApproved &&
-          (requestedVisibility !== "public" || !input.policy.autoApprovePublicOnFinalize)) ||
-        (!isAutoApproved &&
-          (input.policy.purpose !== input.request.purpose ||
-            input.policy.autoApprovePublicOnFinalize === true)) ||
+        (isAutoApproved && requestedVisibility !== "public") ||
+        (!isAutoApproved && input.policy.purpose !== input.request.purpose) ||
         (isPropertyMedia && (requestedVisibility !== "private" || !input.policy.privateOnly))
       ) {
         throw new Error("Persistent platform media policy does not support this upload");
@@ -347,7 +344,7 @@ async function resolveTarget(
       target: {
         resourceProduct: input.policy.targetResourceProduct,
         resourceType: input.policy.targetResourceType,
-        resourceId: roomTypeId ?? propertyId,
+        resourceId: input.request.purpose === "pms.room_type.media" ? roomTypeId! : propertyId,
         propertyId,
       },
     };

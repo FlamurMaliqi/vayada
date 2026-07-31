@@ -1,4 +1,7 @@
-import { PROPERTY_MEDIA_PUBLIC_VARIANTS } from "@vayada/domain-hotels";
+import {
+  PROPERTY_MEDIA_PUBLIC_VARIANTS,
+  type PropertyMediaPublicVariantName,
+} from "@vayada/domain-hotels";
 
 import type {
   PlatformMediaObjectRecord,
@@ -7,12 +10,15 @@ import type {
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const MAX_DIMENSIONS = {
+export const PROPERTY_MEDIA_PUBLIC_VARIANT_MAX_DIMENSIONS: Record<
+  PropertyMediaPublicVariantName,
+  { widthPx: number; heightPx: number }
+> = {
   original_safe: { widthPx: 1920, heightPx: 1920 },
   large: { widthPx: 1280, heightPx: 720 },
   thumbnail: { widthPx: 320, heightPx: 180 },
   blur_preview: { widthPx: 32, heightPx: 18 },
-} as const;
+};
 
 export function normalizePlatformMediaPathPrefix(value: string): string {
   const normalized = value.trim().replace(/^\/+|\/+$/g, "");
@@ -41,7 +47,10 @@ export function assertCanonicalPrivatePropertyVariants(input: {
     if (!PROPERTY_MEDIA_PUBLIC_VARIANTS.includes(variant.variantName as never)) {
       throw new Error("Property media contains an unsupported variant");
     }
-    const limits = MAX_DIMENSIONS[variant.variantName as keyof typeof MAX_DIMENSIONS];
+    const limits =
+      PROPERTY_MEDIA_PUBLIC_VARIANT_MAX_DIMENSIONS[
+        variant.variantName as PropertyMediaPublicVariantName
+      ];
     if (
       !variant.checksumSha256 ||
       !SHA256_HEX.test(variant.checksumSha256) ||

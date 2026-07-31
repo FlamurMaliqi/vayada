@@ -7,6 +7,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 
@@ -38,6 +39,9 @@ const MAX_IMAGE_PIXELS = 25_000_000;
 const MAX_RESIZABLE_IMAGE_PIXELS = 60_000_000;
 const PRIVATE_CACHE_CONTROL = "private, no-store";
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const IMAGE_OPERATION_TIMEOUT_SECONDS = 30;
+const S3_CONNECTION_TIMEOUT_MS = 5_000;
+const S3_REQUEST_TIMEOUT_MS = 30_000;
 
 const VARIANTS: Record<
   Exclude<PlatformMediaVariantName, "provider_original">,
@@ -75,7 +79,17 @@ export function createS3PlatformMediaAdapter(
   const cdnBaseUrl = httpsOrigin(options.cdnBaseUrl);
   const publicPathPrefix = pathPrefix(options.publicPathPrefix ?? "media");
   const publicCacheControl = required(options.publicCacheControl, "publicCacheControl");
-  const s3 = options.s3Client ?? new S3Client({ requestChecksumCalculation: "WHEN_REQUIRED" });
+  const s3 =
+    options.s3Client ??
+    new S3Client({
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      requestHandler: NodeHttpHandler.create({
+        connectionTimeout: S3_CONNECTION_TIMEOUT_MS,
+        requestTimeout: S3_REQUEST_TIMEOUT_MS,
+        socketTimeout: S3_REQUEST_TIMEOUT_MS,
+        throwOnRequestTimeout: true,
+      }),
+    });
   const withImageWork = createSerialGate();
 
   return {
@@ -213,19 +227,17 @@ export function createS3PlatformMediaAdapter(
           }
           if (bytes.length !== input.sessionFile.sizeBytes) return sizeMismatch();
 
+          const pixelCeiling = input.policy.resizeOversizedPublicImages
+            ? MAX_RESIZABLE_IMAGE_PIXELS
+            : MAX_IMAGE_PIXELS;
           const maxImagePixels = Math.min(
-            input.policy.maxImagePixels ??
-              (input.policy.resizeOversizedPublicImages
-                ? MAX_RESIZABLE_IMAGE_PIXELS
-                : MAX_IMAGE_PIXELS),
-            input.policy.resizeOversizedPublicImages
-              ? MAX_RESIZABLE_IMAGE_PIXELS
-              : MAX_IMAGE_PIXELS,
+            input.policy.maxImagePixels ?? pixelCeiling,
+            pixelCeiling,
           );
           const image = sharp(bytes, {
             failOn: "error",
             limitInputPixels: maxImagePixels,
-          });
+          }).timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS });
           const metadata = await image.metadata();
           await image.clone().resize({ width: 1, height: 1, fit: "inside" }).toBuffer();
           const contentType = imageContentType(metadata.format);
@@ -392,7 +404,9 @@ async function createVariant(
       throw new Error("Provider-original media must stay private");
     }
     assertSegment(mediaId, "mediaId");
-    const metadata = await sharp(source, { failOn: "error" }).metadata();
+    const metadata = await sharp(source, { failOn: "error" })
+      .timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS })
+      .metadata();
     const contentType = imageContentType(metadata.format);
     if (!contentType) throw new Error("Provider-original media has an unsupported image type");
     const checksumSha256 = sha256(source);
@@ -414,12 +428,15 @@ async function createVariant(
   }
   assertSegment(mediaId, "mediaId");
   const variant = VARIANTS[variantName];
-  let pipeline = sharp(source, { failOn: "error" }).rotate().resize({
-    width: variant.width,
-    height: variant.height,
-    fit: "inside",
-    withoutEnlargement: true,
-  });
+  let pipeline = sharp(source, { failOn: "error" })
+    .timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS })
+    .rotate()
+    .resize({
+      width: variant.width,
+      height: variant.height,
+      fit: "inside",
+      withoutEnlargement: true,
+    });
   if (variant.blur) pipeline = pipeline.blur(variant.blur);
   const output = await pipeline
     .webp({ quality: variant.quality })
@@ -472,7 +489,18 @@ async function readVerifiedStagedObject(input: {
   if (!object.Body) {
     throw new PlatformMediaStagingChangedError("The inspected staged image is no longer available");
   }
-  const bytes = await readBody(object.Body, input.maxBytes);
+  let bytes: Buffer;
+  try {
+    bytes = await readBody(object.Body, input.maxBytes);
+  } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      throw new PlatformMediaStagingChangedError(
+        "The staged image changed after inspection",
+        error,
+      );
+    }
+    throw error;
+  }
   if (bytes.length !== input.expectedSizeBytes || sha256(bytes) !== input.expectedChecksumSha256) {
     throw new PlatformMediaStagingChangedError("The staged image changed after inspection");
   }

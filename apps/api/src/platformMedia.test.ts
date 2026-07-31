@@ -16,6 +16,7 @@ import {
   createDeterministicPlatformMediaFinalizer,
   createDeterministicPlatformMediaUploadSigner,
   createInMemoryPlatformMediaRepository,
+  createPassthroughPlatformMediaTargetResolver,
   PlatformMediaTargetInvalidError,
   type HotelMediaUploadSource,
   type PlatformMediaObjectRecord,
@@ -169,6 +170,34 @@ describe("platform media upload routes", () => {
             : "platform-media-upload.v1";
       expect(contractCase.contractVersion, contractCase.caseId).toBe(expectedContractVersion);
     }
+  });
+
+  it("preserves the legacy room-media target fallback in the passthrough resolver", async () => {
+    const resolver = createPassthroughPlatformMediaTargetResolver();
+
+    await expect(
+      resolver.resolveTarget({
+        context: {},
+        request: {
+          purpose: "pms.room_type.media",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: "legacy-property",
+          },
+          files: [],
+        },
+        policy: {
+          purpose: "pms.room_type.media",
+          targetResourceProduct: "pms",
+          targetResourceType: "room_type",
+          allowedResources: [{ product: "pms", resourceType: "pms_property" }],
+        },
+      } as never),
+    ).resolves.toMatchObject({
+      ok: true,
+      target: { resourceId: "legacy-property" },
+    });
   });
 
   it("allows browser preflight requests from configured admin origins", async () => {
@@ -667,6 +696,7 @@ describe("platform media upload routes", () => {
         })),
       },
     });
+    expect(resolveTarget).toHaveBeenCalledTimes(2);
     roomAvailable = false;
 
     const replay = await injectJson(app, {
