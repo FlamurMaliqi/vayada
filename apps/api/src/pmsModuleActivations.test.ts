@@ -18,6 +18,7 @@ import {
   PmsModuleActivationRepository,
   PmsModuleActivationsResponse,
 } from "./routes/pmsModuleActivations.js";
+import type { PmsReviewRepository } from "./routes/pmsReviews.js";
 
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
 const propertyId = "f6853000-0000-0000-0000-000000000001";
@@ -157,6 +158,7 @@ function buildAuthenticatedApp(
     linkedPropertyId?: string | null;
     linkedRelationship?: ResourceRelationship;
     allowedOrigins?: string[];
+    reviewRepository?: PmsReviewRepository;
   } = {},
 ) {
   const linkedPropertyId =
@@ -181,6 +183,7 @@ function buildAuthenticatedApp(
   return buildApp({
     logger: false,
     pmsModuleActivationRepository: options.repository ?? createActivationRepository(),
+    pmsReviewRepository: options.reviewRepository,
     pmsOperationsAllowedOrigins: options.allowedOrigins,
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
@@ -363,6 +366,71 @@ describe("PMS module activation routes", () => {
       expect(response.statusCode).toBe(expectedStatus);
     },
   );
+});
+
+describe("PMS review routes", () => {
+  let app: ReturnType<typeof buildApp> | null = null;
+  const reviewRepository: PmsReviewRepository = {
+    async list(_context, requestedPropertyId, filters) {
+      expect(requestedPropertyId).toBe(propertyId);
+      expect(filters).toMatchObject({ channel: "booking.com", minRating: 4, limit: 20, offset: 0 });
+      return {
+        total: 1,
+        items: [
+          {
+            reviewId: "review-1",
+            channel: "booking.com",
+            guestDisplayName: "Guest",
+            rating: "5.00",
+            body: "Excellent stay",
+            replyBody: null,
+            reviewedAt: "2026-07-30T10:00:00.000Z",
+            updatedAt: "2026-07-30T10:00:00.000Z",
+          },
+        ],
+      };
+    },
+  };
+
+  afterEach(async () => {
+    await app?.close();
+    app = null;
+  });
+
+  it("lists filtered reviews for an authorized property", async () => {
+    app = buildAuthenticatedApp({ reviewRepository });
+    const response = await injectJson<{
+      items: Array<{ reviewId: string }>;
+      pagination: { total: number };
+    }>(app, {
+      method: "GET",
+      url: `/api/pms/properties/${propertyId}/reviews?channel=booking.com&minRating=4&limit=20`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body.items).toEqual([expect.objectContaining({ reviewId: "review-1" })]);
+    expect(response.body.pagination.total).toBe(1);
+  });
+
+  it.each([
+    ["missing auth", {}, undefined, 401],
+    ["missing permission", { permissions: [] }, { authorization: "Bearer valid-token" }, 403],
+    ["missing entitlement", { entitlements: [] }, { authorization: "Bearer valid-token" }, 403],
+    [
+      "wrong property",
+      { linkedPropertyId: "f6853000-0000-0000-0000-000000000099" },
+      { authorization: "Bearer valid-token" },
+      403,
+    ],
+  ])("denies review reads for %s", async (_name, appOptions, headers, expectedStatus) => {
+    app = buildAuthenticatedApp({ ...appOptions, reviewRepository });
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${propertyId}/reviews`,
+      headers,
+    });
+    expect(response.statusCode).toBe(expectedStatus);
+  });
 });
 
 describe("PG PMS module activation repository", () => {
