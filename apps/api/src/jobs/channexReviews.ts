@@ -60,11 +60,12 @@ export async function runChannexReviewJobs(
           await client.query(
             `INSERT INTO pms.channel_reviews
                (property_id, provider, provider_review_id, channel, guest_display_name,
-                rating, body, reviewed_at, provider_updated_at, provider_snapshot)
-             VALUES ($1, 'channex', $2, $3, $4, $5, $6, $7, $8, $9)
+                rating, body, reply_body, reviewed_at, provider_updated_at, provider_snapshot)
+             VALUES ($1, 'channex', $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (property_id, provider, provider_review_id) DO UPDATE SET
                channel = EXCLUDED.channel, guest_display_name = EXCLUDED.guest_display_name,
                rating = EXCLUDED.rating, body = EXCLUDED.body,
+               reply_body = EXCLUDED.reply_body,
                reviewed_at = EXCLUDED.reviewed_at,
                provider_updated_at = EXCLUDED.provider_updated_at,
                provider_snapshot = EXCLUDED.provider_snapshot, updated_at = now()
@@ -78,6 +79,7 @@ export async function runChannexReviewJobs(
               review.guestName,
               review.rating,
               review.body,
+              review.replyBody,
               review.reviewedAt,
               review.updatedAt,
               JSON.stringify(review.snapshot),
@@ -130,6 +132,7 @@ function parseReview(payload: Record<string, unknown>) {
     guestName: text(review.guest_name) ?? text(review.guest_display_name),
     rating: number(review.rating),
     body: text(review.content) ?? text(review.body) ?? "",
+    replyBody: text(review.reply),
     reviewedAt: text(review.created_at) ?? text(envelope.created_at),
     updatedAt: text(review.updated_at) ?? text(payload.reviewRevision),
     snapshot: {

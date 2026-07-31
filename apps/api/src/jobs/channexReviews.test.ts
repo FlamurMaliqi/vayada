@@ -52,15 +52,18 @@ describe.skipIf(!databaseUrl)("Channex review worker (PostgreSQL)", () => {
     await client.end();
   });
 
-  it("stores a review and completes its durable job", async () => {
-    await insertJob("review-1", "2026-07-30T10:00:00.000Z", "Excellent");
+  it("self-heals a missing original review from an updated review", async () => {
+    await insertJob("review-1", "2026-07-30T10:00:00.000Z", "Excellent", {
+      reply: "Thank you",
+    });
     expect(await runChannexReviewJobs(databaseUrl!, "test-worker")).toEqual({
       processed: 1,
       failed: 0,
     });
-    const review = await client.query(`SELECT body FROM pms.channel_reviews`);
+    const review = await client.query(`SELECT body, reply_body FROM pms.channel_reviews`);
     const job = await client.query(`SELECT status, finished_at FROM platform.jobs`);
     expect(review.rows[0].body).toBe("Excellent");
+    expect(review.rows[0].reply_body).toBe("Thank you");
     expect(job.rows[0]).toMatchObject({ status: "succeeded" });
     expect(job.rows[0].finished_at).not.toBeNull();
   });
@@ -73,8 +76,21 @@ describe.skipIf(!databaseUrl)("Channex review worker (PostgreSQL)", () => {
     expect(review.rows[0].body).toBe("Newest");
   });
 
+  it("keeps one row when an updated review is replayed exactly", async () => {
+    await insertJob("review-1", "2026-07-30T11:00:00.000Z", "Edited");
+    await insertJob("review-1", "2026-07-30T11:00:00.000Z", "Edited");
+    expect(await runChannexReviewJobs(databaseUrl!, "test-worker")).toEqual({
+      processed: 2,
+      failed: 0,
+    });
+    const review = await client.query(
+      `SELECT count(*)::int AS count, max(body) AS body FROM pms.channel_reviews`,
+    );
+    expect(review.rows[0]).toMatchObject({ count: 1, body: "Edited" });
+  });
+
   it("dead-letters an unmapped review without violating terminal constraints", async () => {
-    await insertJob("review-2", "2026-07-30T10:00:00.000Z", "Unknown", "unmapped", 1);
+    await insertJob("review-2", "2026-07-30T10:00:00.000Z", "Unknown", {}, "unmapped", 1);
     expect(await runChannexReviewJobs(databaseUrl!, "test-worker")).toEqual({
       processed: 0,
       failed: 1,
@@ -88,6 +104,7 @@ describe.skipIf(!databaseUrl)("Channex review worker (PostgreSQL)", () => {
     reviewId: string,
     updatedAt: string,
     body: string,
+    reviewFields: Record<string, unknown> = {},
     externalPropertyId = "external-property",
     maxAttempts = 5,
   ) {
@@ -101,7 +118,9 @@ describe.skipIf(!databaseUrl)("Channex review worker (PostgreSQL)", () => {
           reviewId,
           reviewRevision: updatedAt,
           rawPayload: {
-            payload: { review: { id: reviewId, content: body, updated_at: updatedAt } },
+            payload: {
+              review: { id: reviewId, content: body, updated_at: updatedAt, ...reviewFields },
+            },
           },
         },
       ],
