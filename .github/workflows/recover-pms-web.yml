@@ -7,6 +7,13 @@ on:
         description: Immutable production recovery tag
         required: true
         default: prod-recovery-c879df4-pms-web
+      cutover_justification:
+        description: Why this production recovery is required
+        required: true
+      rollback_image:
+        description: Existing canonical PMS image to restore if cutover fails
+        required: true
+        default: 269416271598.dkr.ecr.eu-west-1.amazonaws.com/vayada-pms-frontend:5d6248c4963a9dda0ff6e8bccaac4d867499de87
 
 permissions:
   id-token: write
@@ -23,6 +30,8 @@ env:
   APP_DIR: apps/pms-web
   APPROVED_SOURCE_REF: c879df4fb2b207ff69eb87442743aee7e42536ff
   IMAGE_TAG: ${{ inputs.image_tag }}
+  CUTOVER_JUSTIFICATION: ${{ inputs.cutover_justification }}
+  ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
 
 jobs:
   build-and-deploy:
@@ -71,10 +80,37 @@ jobs:
             exit "${result}"
           fi
 
+      - name: Validate cutover and rollback plan
+        shell: bash
+        run: |
+          if [ -z "${CUTOVER_JUSTIFICATION//[[:space:]]/}" ]; then
+            echo "::error::A production cutover justification is required."
+            exit 1
+          fi
+
+          rollback_prefix="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:"
+          if [[ "${ROLLBACK_IMAGE}" != "${rollback_prefix}"* ]]; then
+            echo "::error::Rollback image must reference the canonical PMS ECR repository by tag."
+            exit 1
+          fi
+
+          rollback_tag="${ROLLBACK_IMAGE#"${rollback_prefix}"}"
+          if [ "${#rollback_tag}" -gt 128 ] || [[ ! "${rollback_tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Rollback image tag is invalid."
+            exit 1
+          fi
+
+          aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids "imageTag=${rollback_tag}" \
+            --query 'imageDetails[0].{digest:imageDigest,pushed:imagePushedAt,tags:imageTags}' \
+            --output json
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push immutable production image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -89,6 +125,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Record cutover and rollback plan
+        env:
+          DEPLOY_IMAGE: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}@${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Canonical PMS production recovery"
+            printf '%s\n' "- Approved source: ${APPROVED_SOURCE_REF}"
+            printf '%s\n' "- Deploy image: ${DEPLOY_IMAGE}"
+            printf '%s\n' "- Rollback image: ${ROLLBACK_IMAGE}"
+            printf '%s\n' "- Cutover justification: ${CUTOVER_JUSTIFICATION}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Dispatch canonical PMS deployment
         uses: peter-evans/repository-dispatch@v3
         with:
@@ -100,5 +148,7 @@ jobs:
               "service": "pms-frontend",
               "ecr_repo": "${{ env.ECR_REPOSITORY }}",
               "image_sha": "${{ env.IMAGE_TAG }}",
+              "image_digest": "${{ steps.build.outputs.digest }}",
+              "rollback_image": "${{ env.ROLLBACK_IMAGE }}",
               "environment": "production"
             }
