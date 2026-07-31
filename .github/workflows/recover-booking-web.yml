@@ -1,37 +1,41 @@
-name: Deploy Next Booking Web
+name: Recover Booking Web
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "apps/booking-web/**"
-      - ".github/workflows/deploy-next-booking-web.yml"
+    inputs:
+      source_ref:
+        description: Approved source commit to rebuild
+        required: true
+        default: c879df4fb2b207ff69eb87442743aee7e42536ff
+      image_tag:
+        description: Immutable production recovery tag
+        required: true
+        default: prod-recovery-c879df4
 
 permissions:
   id-token: write
   contents: read
 
 concurrency:
-  group: deploy-next-booking-web-${{ github.ref }}
+  group: recover-booking-web-production
   cancel-in-progress: false
 
 env:
   AWS_REGION: eu-west-1
-  ECR_REPOSITORY: vayada-next-booking-frontend
+  ECR_REPOSITORY: vayada-booking-frontend
   AWS_ACCOUNT_ID: 269416271598
   APP_DIR: apps/booking-web
-  NEXT_API_URL: https://next-api.vayada.com
 
 jobs:
-  build-and-push:
-    name: Build and Push to ECR
+  build-and-deploy:
+    name: Rebuild and deploy canonical Booking image
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
+      - name: Checkout approved source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -45,23 +49,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push Docker image
+      - name: Build and push immutable production image
         uses: docker/build-push-action@v5
         with:
           context: ./${{ env.APP_DIR }}
           platforms: linux/amd64
           push: true
           build-args: |
-            NEXT_PUBLIC_BOOKING_WEB_API_URL=${{ env.NEXT_API_URL }}
-            NEXT_PUBLIC_API_URL=${{ env.NEXT_API_URL }}
+            NEXT_PUBLIC_BOOKING_WEB_API_URL=https://target-api.vayada.com
+            NEXT_PUBLIC_API_URL=https://target-api.vayada.com
             NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_51T4q9THtaQeEOmq25xCQRtxOCZ7WKDN8Bpmo2jMuQCKGLPxjoU7cApWRR0fysdKgxjLsEs7zoL00qaAB6boaNMC600tH1jDPWD
           tags: |
-            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest
-            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }}
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ inputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Dispatch deploy to platform
+      - name: Dispatch canonical Booking deployment
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
@@ -69,8 +72,8 @@ jobs:
           event-type: app-image-published
           client-payload: |
             {
-              "service": "next-booking-frontend",
+              "service": "booking-frontend",
               "ecr_repo": "${{ env.ECR_REPOSITORY }}",
-              "image_sha": "next-${{ github.sha }}",
-              "environment": "next"
+              "image_sha": "${{ inputs.image_tag }}",
+              "environment": "production"
             }
