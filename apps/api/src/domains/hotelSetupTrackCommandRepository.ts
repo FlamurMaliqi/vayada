@@ -519,7 +519,10 @@ async function provisionTrack(
          )
          OR (
            identity.product_entitlements.status = 'suspended'
-           AND identity.product_entitlements.expires_at <= $4::timestamptz
+           AND (
+             identity.product_entitlements.expires_at <= $4::timestamptz
+             OR identity.product_entitlements.starts_at > $4::timestamptz
+           )
          )
        )`,
     [organizationId, missingEntitlements, SETUP_SOURCE, now.toISOString()],
@@ -613,6 +616,16 @@ async function initializeProductRecords(
            AND link.product = 'marketplace'
            AND link.resource_type = 'hotel_profile'
            AND link.status = 'active'
+           AND EXISTS (
+             SELECT 1
+             FROM identity.organization_resource_links catalog
+             WHERE catalog.organization_id = link.organization_id
+               AND catalog.product = 'hotel_catalog'
+               AND catalog.resource_type = 'property'
+               AND catalog.resource_id = link.resource_id
+               AND catalog.relationship = link.relationship
+               AND catalog.status = 'active'
+           )
            AND NOT EXISTS (
              SELECT 1
              FROM marketplace.marketplace_hotel_profiles profile

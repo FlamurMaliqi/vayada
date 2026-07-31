@@ -370,6 +370,34 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     expect(await selectedProducts(suspended.organizationId)).toEqual(["booking", "pms"]);
     expect(await linkedProducts(suspended.organizationId)).toEqual(["booking", "pms"]);
 
+    const scheduledOwnSuspension = await createFixture();
+    await client.query(
+      `INSERT INTO identity.product_entitlements (
+         organization_id, product, entitlement_key, status, starts_at, metadata
+       )
+       VALUES (
+         $1::uuid, 'booking', 'booking-engine', 'suspended',
+         $2::timestamptz + interval '1 day', '{"source":"adaptive_hotel_setup"}'::jsonb
+       )`,
+      [scheduledOwnSuspension.organizationId, occurredAt],
+    );
+    const scheduledOwnSuspensionResult = await repository.updateTracks(
+      command(scheduledOwnSuspension, {
+        selectedTracks: ["hotel_operations"],
+        expectedRevision: 0,
+        idempotencyKey: "setup-scheduled-own-suspension",
+      }),
+    );
+    expect(scheduledOwnSuspensionResult).toMatchObject({
+      ok: true,
+      response: {
+        tracks: [
+          { track: "hotel_operations", provisioning: "active" },
+          { track: "creator_marketplace", provisioning: "not_selected" },
+        ],
+      },
+    });
+
     const billing = await createFixture();
     await client.query(
       `INSERT INTO finance.billing_entitlements (
@@ -606,6 +634,24 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     expect(await selectedProducts(profileOperator.organizationId)).toEqual([]);
     expect(await linkedProducts(profileOperator.organizationId)).toEqual([]);
 
+    const strayMarketplaceLink = await createFixture();
+    await client.query(
+      `INSERT INTO identity.organization_resource_links (
+         organization_id, product, resource_type, resource_id, relationship, status
+       )
+       VALUES ($1::uuid, 'marketplace', 'hotel_profile', $2, 'owner', 'active')`,
+      [strayMarketplaceLink.organizationId, randomUUID()],
+    );
+    await expect(
+      repository.updateTracks(
+        command(strayMarketplaceLink, {
+          selectedTracks: ["creator_marketplace"],
+          expectedRevision: 0,
+          idempotencyKey: "setup-stray-marketplace-link",
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+
     const mixedMarketplace = await createFixture();
     const mixedMarketplaceCreated = await repository.updateTracks(
       command(mixedMarketplace, {
@@ -743,8 +789,17 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
       await client.query("COMMIT");
       blockerOpen = false;
 
-      const [trackResult, createdProperty] = await Promise.all([trackPromise, propertyPromise]);
-      propertyIds.push(createdProperty.propertyId);
+      const [trackSettled, propertySettled] = await Promise.allSettled([
+        trackPromise,
+        propertyPromise,
+      ]);
+      if (propertySettled.status === "fulfilled") {
+        propertyIds.push(propertySettled.value.propertyId);
+      }
+      if (trackSettled.status === "rejected") throw trackSettled.reason;
+      if (propertySettled.status === "rejected") throw propertySettled.reason;
+      const trackResult = trackSettled.value;
+      const createdProperty = propertySettled.value;
       expect(trackResult.ok).toBe(true);
       expect(
         await linkedProductsForProperty(propertyRace.organizationId, createdProperty.propertyId),

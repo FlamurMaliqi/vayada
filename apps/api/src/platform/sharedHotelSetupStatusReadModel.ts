@@ -286,7 +286,10 @@ async function writePropertyProfile(
   const missingFields = profileInputMissingFields(input.profile);
   const profileStatus = missingFields.length === 0 ? "complete" : "incomplete";
   const payload = propertyProfileWritePayload(input.profile);
-  if (input.mode === "create" && pool.connect) {
+  if (input.mode === "create") {
+    if (!pool.connect) {
+      throw new Error("Property creation requires a transactional database pool");
+    }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -317,23 +320,15 @@ async function writePropertyProfile(
       client.release();
     }
   }
-  const result =
-    input.mode === "create"
-      ? await pool.query<PropertyProfileWriteRow>(createPropertyProfileSql(), [
-          input.organizationId,
-          payload,
-          profileStatus,
-          missingFields,
-        ])
-      : await pool.query<PropertyProfileWriteRow>(updatePropertyProfileSql(), [
-          input.organizationId,
-          input.propertyId,
-          payload,
-          profileStatus,
-          missingFields,
-          input.expectedPropertyType,
-          input.expectedUpdatedAt,
-        ]);
+  const result = await pool.query<PropertyProfileWriteRow>(updatePropertyProfileSql(), [
+    input.organizationId,
+    input.propertyId,
+    payload,
+    profileStatus,
+    missingFields,
+    input.expectedPropertyType,
+    input.expectedUpdatedAt,
+  ]);
 
   return result.rows[0]?.propertyId ?? null;
 }
