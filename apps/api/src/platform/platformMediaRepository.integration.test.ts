@@ -100,18 +100,27 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media private staging", () =>
     });
     const persistedVariants = await client.query<{
       mediaId: string;
+      variantName: string;
       visibility: string;
       storageKey: string;
       publicCdnUrl: string | null;
     }>(
-      `SELECT media_object_id::text AS "mediaId", visibility,
+      `SELECT media_object_id::text AS "mediaId", variant_name AS "variantName", visibility,
               storage_key AS "storageKey", public_cdn_url AS "publicCdnUrl"
        FROM platform.media_variants
        WHERE media_object_id IN ($1::uuid, $2::uuid)
-       ORDER BY media_object_id`,
+       ORDER BY media_object_id, variant_name`,
       [initialMediaId, secondMediaId],
     );
-    expect(persistedVariants.rows).toHaveLength(2);
+    expect(persistedVariants.rows).toHaveLength(8);
+    for (const mediaId of [initialMediaId, secondMediaId]) {
+      expect(
+        persistedVariants.rows
+          .filter((variant) => variant.mediaId === mediaId)
+          .map((variant) => variant.variantName)
+          .sort(),
+      ).toEqual([...PROPERTY_MEDIA_PUBLIC_VARIANTS].sort());
+    }
     expect(
       persistedVariants.rows.every(
         ({ visibility, storageKey, publicCdnUrl }) =>
