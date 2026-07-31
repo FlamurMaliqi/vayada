@@ -69,7 +69,7 @@ describe.skipIf(!databaseUrl)("Channex review worker (PostgreSQL)", () => {
     expect(review.rows[0].body).toBe("Excellent");
     expect(review.rows[0].reply_body).toBe("Thank you");
     expect(review.rows[0]).toMatchObject({
-      channel: "BookingCom",
+      channel: "booking.com",
       guest_display_name: "Ada Guest",
       rating: 9.5,
     });

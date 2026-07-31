@@ -126,10 +126,13 @@ function parseReview(payload: Record<string, unknown>) {
   const reviewId = text(payload.reviewId) ?? text(review.id);
   const externalPropertyId = text(payload.propertyId) ?? text(envelope.property_id);
   if (!reviewId || !externalPropertyId) throw new Error("Invalid Channex review payload");
+  const channel = canonicalChannel(
+    text(review.ota) ?? text(review.channel) ?? text(envelope.channel),
+  );
   return {
     reviewId,
     externalPropertyId,
-    channel: text(review.ota) ?? text(review.channel) ?? text(envelope.channel),
+    channel,
     guestName:
       text(review.reviewer_name) ?? text(review.guest_name) ?? text(review.guest_display_name),
     rating: number(review.overall_score) ?? number(review.rating),
@@ -138,11 +141,25 @@ function parseReview(payload: Record<string, unknown>) {
     reviewedAt: text(review.received_at) ?? text(review.created_at) ?? text(envelope.created_at),
     updatedAt: text(payload.reviewRevision) ?? text(raw.timestamp) ?? text(review.updated_at),
     snapshot: {
-      channel: text(review.ota) ?? text(review.channel),
+      channel,
       rating: number(review.overall_score) ?? number(review.rating),
       updatedAt: text(payload.reviewRevision) ?? text(raw.timestamp) ?? text(review.updated_at),
     },
   };
+}
+
+function canonicalChannel(value: string | null): string | null {
+  if (!value) return null;
+  switch (value.replace(/[^a-z0-9]/gi, "").toLowerCase()) {
+    case "bookingcom":
+      return "booking.com";
+    case "airbnb":
+      return "airbnb";
+    case "expedia":
+      return "expedia";
+    default:
+      return value.toLowerCase();
+  }
 }
 
 function record(value: unknown): Record<string, unknown> {
