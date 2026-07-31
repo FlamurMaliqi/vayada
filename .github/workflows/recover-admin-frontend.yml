@@ -1,0 +1,222 @@
+name: Recover Admin Frontend
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Canonical admin service to recover
+        required: true
+        type: choice
+        options:
+          - booking-admin
+          - marketplace-admin
+      rollback_tag:
+        description: Existing image tag to restore if the cutover fails
+        required: true
+      cutover_justification:
+        description: Why this production recovery is required
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: recover-${{ inputs.service }}-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  AWS_ACCOUNT_ID: 269416271598
+  ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+  CUTOVER_JUSTIFICATION: ${{ inputs.cutover_justification }}
+
+jobs:
+  build-and-deploy:
+    name: Rebuild and deploy ${{ inputs.service }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve approved recovery configuration
+        id: config
+        env:
+          SERVICE: ${{ inputs.service }}
+        shell: bash
+        run: |
+          case "${SERVICE}" in
+            booking-admin)
+              echo "source_ref=c879df4fb2b207ff69eb87442743aee7e42536ff" >> "${GITHUB_OUTPUT}"
+              echo "image_tag=prod-recovery-booking-admin-c879df4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+              echo "app_dir=apps/booking-admin" >> "${GITHUB_OUTPUT}"
+              echo "ecr_repository=vayada-booking-admin-frontend" >> "${GITHUB_OUTPUT}"
+              echo "platform_service=booking-admin" >> "${GITHUB_OUTPUT}"
+              ;;
+            marketplace-admin)
+              echo "source_ref=3c7c216956e2d770bcf0542c56e864b86880d115" >> "${GITHUB_OUTPUT}"
+              echo "image_tag=prod-recovery-marketplace-admin-3c7c216-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+              echo "app_dir=apps/vayada-admin" >> "${GITHUB_OUTPUT}"
+              echo "ecr_repository=vayada-admin-frontend" >> "${GITHUB_OUTPUT}"
+              echo "platform_service=marketplace-admin" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "::error::Unsupported recovery service."
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout approved source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.config.outputs.source_ref }}
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::269416271598:role/vayada-github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Validate recovery and rollback images
+        id: rollback
+        env:
+          ECR_REPOSITORY: ${{ steps.config.outputs.ecr_repository }}
+          IMAGE_TAG: ${{ steps.config.outputs.image_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CUTOVER_JUSTIFICATION//[[:space:]]/}" ]; then
+            echo "::error::A production cutover justification is required."
+            exit 1
+          fi
+
+          if [ "${#IMAGE_TAG}" -gt 128 ] || [[ ! "${IMAGE_TAG}" =~ ^prod-recovery-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid recovery image tag '${IMAGE_TAG}'."
+            exit 1
+          fi
+
+          if [ "${#ROLLBACK_TAG}" -gt 128 ] || [[ ! "${ROLLBACK_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Invalid rollback image tag '${ROLLBACK_TAG}'."
+            exit 1
+          fi
+
+          set +e
+          output="$(
+            aws ecr describe-images \
+              --repository-name "${ECR_REPOSITORY}" \
+              --image-ids "imageTag=${IMAGE_TAG}" 2>&1
+          )"
+          result=$?
+          set -e
+          if [ "${result}" -eq 0 ]; then
+            echo "::error::Recovery image tag '${IMAGE_TAG}' already exists."
+            exit 1
+          fi
+          if ! grep -q "ImageNotFoundException" <<<"${output}"; then
+            echo "${output}"
+            exit "${result}"
+          fi
+
+          rollback_digest="$(
+            aws ecr describe-images \
+              --repository-name "${ECR_REPOSITORY}" \
+              --image-ids "imageTag=${ROLLBACK_TAG}" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text
+          )"
+          if [[ ! "${rollback_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::ECR did not return a valid rollback image digest."
+            exit 1
+          fi
+
+          repository_uri="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+          echo "image=${repository_uri}@${rollback_digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Booking Admin image
+        if: inputs.service == 'booking-admin'
+        id: build-booking
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./${{ steps.config.outputs.app_dir }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://booking-api.vayada.com
+            NEXT_PUBLIC_PMS_URL=https://pms-api.vayada.com
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ steps.config.outputs.ecr_repository }}:${{ steps.config.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Vayada Admin image
+        if: inputs.service == 'marketplace-admin'
+        id: build-marketplace
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./${{ steps.config.outputs.app_dir }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://api.vayada.com
+            NEXT_PUBLIC_AUTH_API_URL=https://api.vayada.com
+            NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=false
+            NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=true
+            NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true
+            NEXT_PUBLIC_PMS_API_URL=https://pms-api.vayada.com
+            NEXT_PUBLIC_BOOKING_API_URL=https://api.vayada.com
+            NEXT_PUBLIC_PMS_URL=https://api.vayada.com
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ steps.config.outputs.ecr_repository }}:${{ steps.config.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate published image digest
+        id: deploy-image
+        env:
+          DEPLOY_DIGEST: ${{ steps.build-booking.outputs.digest || steps.build-marketplace.outputs.digest }}
+        shell: bash
+        run: |
+          if [[ ! "${DEPLOY_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Build did not return a valid image digest."
+            exit 1
+          fi
+          echo "digest=${DEPLOY_DIGEST}" >> "${GITHUB_OUTPUT}"
+
+      - name: Record cutover and rollback plan
+        env:
+          DEPLOY_DIGEST: ${{ steps.deploy-image.outputs.digest }}
+          ECR_REPOSITORY: ${{ steps.config.outputs.ecr_repository }}
+          PINNED_ROLLBACK_IMAGE: ${{ steps.rollback.outputs.image }}
+          SOURCE_REF: ${{ steps.config.outputs.source_ref }}
+        run: |
+          deploy_image="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}@${DEPLOY_DIGEST}"
+          {
+            echo "### Canonical admin production recovery"
+            printf '%s\n' "- Service: ${{ inputs.service }}"
+            printf '%s\n' "- Approved source: ${SOURCE_REF}"
+            printf '%s\n' "- Deploy image: ${deploy_image}"
+            printf '%s\n' "- Rollback image: ${PINNED_ROLLBACK_IMAGE}"
+            printf '%s\n' "- Cutover justification: ${CUTOVER_JUSTIFICATION}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Dispatch canonical admin deployment
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
+          repository: vayada-marketplace/vayada-platform
+          event-type: app-image-published
+          client-payload: |
+            {
+              "service": "${{ steps.config.outputs.platform_service }}",
+              "ecr_repo": "${{ steps.config.outputs.ecr_repository }}",
+              "image_sha": "${{ steps.config.outputs.image_tag }}",
+              "image_digest": "${{ steps.deploy-image.outputs.digest }}",
+              "rollback_image": "${{ steps.rollback.outputs.image }}",
+              "environment": "production"
+            }
