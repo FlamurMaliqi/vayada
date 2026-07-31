@@ -34,7 +34,9 @@ type IdempotencyRow = {
   id: string;
   status: string;
   requestFingerprintHash: string;
-  idempotencyMetadata: Record<string, unknown>;
+  responseStatusCode: number | null;
+  responseBodyHash: string | null;
+  idempotencyMetadata: unknown;
 };
 
 type EntitlementRow = {
@@ -659,6 +661,8 @@ async function findReplay(
        id,
        status,
        request_fingerprint_hash AS "requestFingerprintHash",
+       response_status_code AS "responseStatusCode",
+       response_body_hash AS "responseBodyHash",
        idempotency_metadata AS "idempotencyMetadata"
      FROM platform.idempotency_keys
      WHERE operation_scope = 'hotel_catalog'
@@ -676,8 +680,20 @@ async function findReplay(
   }
   if (existing.status !== "completed") return conflict("command_in_progress");
 
-  const stored = existing.idempotencyMetadata["result"];
-  return parseStoredHotelSetupTrackCommandResult(stored) ?? conflict("idempotency_key_conflict");
+  const stored = isRecord(existing.idempotencyMetadata)
+    ? existing.idempotencyMetadata["result"]
+    : null;
+  const parsed = parseStoredHotelSetupTrackCommandResult(stored);
+  if (!parsed) return conflict("idempotency_key_conflict");
+  const expectedStatus = parsed.ok ? 200 : 409;
+  const responseBody = parsed.ok ? parsed.response : parsed.error;
+  if (
+    existing.responseStatusCode !== expectedStatus ||
+    existing.responseBodyHash !== sha256(canonicalJson(responseBody))
+  ) {
+    return conflict("idempotency_key_conflict");
+  }
+  return parsed;
 }
 
 async function reserveIdempotency(
@@ -742,7 +758,7 @@ async function completeIdempotency(
     [
       id,
       result.ok ? 200 : 409,
-      sha256(JSON.stringify(responseBody)),
+      sha256(canonicalJson(responseBody)),
       now.toISOString(),
       JSON.stringify(result),
     ],
@@ -845,10 +861,7 @@ function conflict(
 }
 
 const SETUP_COMMAND_ERROR_CODES = [
-  "invalid_setup_request",
   "track_revision_conflict",
-  "idempotency_key_conflict",
-  "command_in_progress",
   "track_removal_requires_service_management",
 ] as const satisfies readonly SetupCommandError["code"][];
 
@@ -874,8 +887,9 @@ function isUpdateTracksResponse(value: unknown): value is UpdateTracksResponse {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["trackRevision", "selectedTracks", "tracks"]) ||
-    !isRevision(value["trackRevision"]) ||
+    !isRevision(value["trackRevision"], 1) ||
     !Array.isArray(value["selectedTracks"]) ||
+    value["selectedTracks"].length === 0 ||
     value["selectedTracks"].some((track) => !isSetupTrack(track)) ||
     new Set(value["selectedTracks"]).size !== value["selectedTracks"].length ||
     !Array.isArray(value["tracks"]) ||
@@ -883,16 +897,30 @@ function isUpdateTracksResponse(value: unknown): value is UpdateTracksResponse {
   ) {
     return false;
   }
-  return value["tracks"].every((track, index) => isTrackStatus(track, SETUP_TRACKS[index]!));
+  const selectedTracks = value["selectedTracks"] as SetupTrack[];
+  const canonicalTracks = SETUP_TRACKS.filter((track) => selectedTracks.includes(track));
+  return (
+    sameTracks(selectedTracks, canonicalTracks) &&
+    value["tracks"].every((track, index) =>
+      isTrackStatus(track, SETUP_TRACKS[index]!, selectedTracks),
+    )
+  );
 }
 
-function isTrackStatus(value: unknown, expectedTrack: SetupTrack): value is TrackStatus {
+function isTrackStatus(
+  value: unknown,
+  expectedTrack: SetupTrack,
+  selectedTracks: SetupTrack[],
+): value is TrackStatus {
   const products = SETUP_TRACK_COMPONENT_PRODUCTS[expectedTrack];
+  const selected = selectedTracks.includes(expectedTrack);
   return (
     isRecord(value) &&
     hasOnlyKeys(value, ["track", "provisioning", "components", "allowedActions"]) &&
     value["track"] === expectedTrack &&
-    ["not_selected", "active", "blocked"].includes(String(value["provisioning"])) &&
+    (selected
+      ? value["provisioning"] === "active" || value["provisioning"] === "blocked"
+      : value["provisioning"] === "not_selected") &&
     Array.isArray(value["components"]) &&
     value["components"].length === products.length &&
     value["components"].every(
@@ -903,25 +931,27 @@ function isTrackStatus(value: unknown, expectedTrack: SetupTrack): value is Trac
         ["absent", "active", "suspended", "unavailable"].includes(String(component["access"])),
     ) &&
     Array.isArray(value["allowedActions"]) &&
-    value["allowedActions"].every((action) => action === "add" || action === "manage_service") &&
-    new Set(value["allowedActions"]).size === value["allowedActions"].length
+    value["allowedActions"].length === 1 &&
+    value["allowedActions"][0] === (selected ? "manage_service" : "add")
   );
 }
 
 function isSetupCommandError(value: unknown): value is SetupCommandError {
   return (
     isRecord(value) &&
-    hasOnlyKeys(
-      value,
-      value["currentRevision"] === undefined ? ["code"] : ["code", "currentRevision"],
-    ) &&
-    SETUP_COMMAND_ERROR_CODES.includes(value["code"] as SetupCommandError["code"]) &&
-    (value["currentRevision"] === undefined || isRevision(value["currentRevision"]))
+    hasOnlyKeys(value, ["code", "currentRevision"]) &&
+    (value["code"] === SETUP_COMMAND_ERROR_CODES[0] ||
+      value["code"] === SETUP_COMMAND_ERROR_CODES[1]) &&
+    isRevision(value["currentRevision"])
   );
 }
 
-function isRevision(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
+function isRevision(value: unknown, minimum = 0): value is number {
+  return (
+    Number.isSafeInteger(value) &&
+    (value as number) >= minimum &&
+    (value as number) <= 2_147_483_647
+  );
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -936,6 +966,19 @@ function sameTracks(left: SetupTrack[], right: SetupTrack[]): boolean {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new TypeError("Cannot canonicalize an undefined JSON value");
+  return serialized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

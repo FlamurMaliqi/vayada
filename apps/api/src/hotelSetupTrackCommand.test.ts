@@ -54,9 +54,19 @@ describe("stored hotel setup track command results", () => {
     {},
     { ok: true, response: {} },
     { ok: true, response: { trackRevision: 1, selectedTracks: [], tracks: [] } },
+    {
+      ok: true,
+      response: {
+        trackRevision: 2_147_483_648,
+        selectedTracks: ["hotel_operations"],
+        tracks: [],
+      },
+    },
     { ok: false },
     { ok: false, error: {} },
     { ok: false, error: { code: "unknown_error" } },
+    { ok: false, error: { code: "track_revision_conflict" } },
+    { ok: false, error: { code: "idempotency_key_conflict", currentRevision: 1 } },
   ])("rejects malformed persisted result metadata: %j", (stored) => {
     expect(parseStoredHotelSetupTrackCommandResult(stored)).toBeNull();
   });
@@ -170,9 +180,16 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     const reusedKey = await repository.updateTracks({
       ...operations,
       selectedTracks: ["hotel_operations", "creator_marketplace"],
-      expectedRevision: 1,
     });
     expect(reusedKey).toMatchObject({
+      ok: false,
+      error: { code: "idempotency_key_conflict" },
+    });
+    const reusedKeyWithChangedRevision = await repository.updateTracks({
+      ...operations,
+      expectedRevision: 1,
+    });
+    expect(reusedKeyWithChangedRevision).toMatchObject({
       ok: false,
       error: { code: "idempotency_key_conflict" },
     });
@@ -247,6 +264,42 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         code: "track_removal_requires_service_management",
         currentRevision: 2,
       },
+    });
+  });
+
+  it.each([
+    {
+      id: "null-metadata",
+      mutation: `idempotency_metadata = 'null'::jsonb`,
+    },
+    {
+      id: "status-mismatch",
+      mutation: `response_status_code = 409`,
+    },
+    {
+      id: "hash-mismatch",
+      mutation: `response_body_hash = repeat('0', 64)`,
+    },
+  ])("rejects a stored replay with $id", async ({ id, mutation }) => {
+    const fixture = await createFixture();
+    const request = command(fixture, {
+      selectedTracks: ["hotel_operations"],
+      expectedRevision: 0,
+      idempotencyKey: `setup-malformed-replay-${id}`,
+    });
+    await expect(repository.updateTracks(request)).resolves.toMatchObject({ ok: true });
+    await client.query(
+      `UPDATE platform.idempotency_keys
+       SET ${mutation}
+       WHERE operation_scope = 'hotel_catalog'
+         AND operation = 'hotel_setup.tracks.update'
+         AND organization_id = $1::uuid`,
+      [fixture.organizationId],
+    );
+
+    await expect(repository.updateTracks(request)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "idempotency_key_conflict" },
     });
   });
 
