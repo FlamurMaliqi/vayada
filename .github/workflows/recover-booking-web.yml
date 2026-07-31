@@ -10,7 +10,7 @@ on:
       image_tag:
         description: Immutable production recovery tag
         required: true
-        default: prod-recovery-c879df4
+        default: prod-recovery-c879df4-pms-url
 
 permissions:
   id-token: write
@@ -25,6 +25,7 @@ env:
   ECR_REPOSITORY: vayada-booking-frontend
   AWS_ACCOUNT_ID: 269416271598
   APP_DIR: apps/booking-web
+  IMAGE_TAG: ${{ inputs.image_tag }}
 
 jobs:
   build-and-deploy:
@@ -46,6 +47,33 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Verify immutable recovery tag is unused
+        shell: bash
+        run: |
+          if [[ ! "${IMAGE_TAG}" =~ ^prod-recovery-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid recovery image tag '${IMAGE_TAG}'."
+            exit 1
+          fi
+
+          set +e
+          output="$(
+            aws ecr describe-images \
+              --repository-name "${ECR_REPOSITORY}" \
+              --image-ids "imageTag=${IMAGE_TAG}" 2>&1
+          )"
+          result=$?
+          set -e
+
+          if [ "${result}" -eq 0 ]; then
+            echo "::error::Recovery image tag '${IMAGE_TAG}' already exists."
+            exit 1
+          fi
+
+          if ! grep -q "ImageNotFoundException" <<<"${output}"; then
+            echo "${output}"
+            exit "${result}"
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -58,9 +86,10 @@ jobs:
           build-args: |
             NEXT_PUBLIC_BOOKING_WEB_API_URL=https://booking-api.vayada.com
             NEXT_PUBLIC_API_URL=https://booking-api.vayada.com
+            NEXT_PUBLIC_PMS_URL=https://pms-api.vayada.com
             NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_51T4q9THtaQeEOmq25xCQRtxOCZ7WKDN8Bpmo2jMuQCKGLPxjoU7cApWRR0fysdKgxjLsEs7zoL00qaAB6boaNMC600tH1jDPWD
           tags: |
-            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ inputs.image_tag }}
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -74,6 +103,6 @@ jobs:
             {
               "service": "booking-frontend",
               "ecr_repo": "${{ env.ECR_REPOSITORY }}",
-              "image_sha": "${{ inputs.image_tag }}",
+              "image_sha": "${{ env.IMAGE_TAG }}",
               "environment": "production"
             }
