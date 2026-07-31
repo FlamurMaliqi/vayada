@@ -22,7 +22,7 @@ concurrency:
 
 env:
   AWS_REGION: eu-west-1
-  ECR_REPOSITORY: vayada-booking-admin-frontend
+  ECR_REPOSITORY: vayada-next-booking-admin-frontend
   AWS_ACCOUNT_ID: 269416271598
   APP_DIR: apps/booking-admin
   NEXT_API_URL: https://next-api.vayada.com
@@ -60,11 +60,11 @@ jobs:
             --build-arg 'NEXT_PUBLIC_BOOKING_URL_TEMPLATE=https://{slug}.next-booking.vayada.com' \
             --build-arg NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED=true \
             -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest \
-            -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }} \
+            -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }} \
             -f ${{ env.APP_DIR }}/Dockerfile \
             .
           docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest
-          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }}
 
       - name: Dispatch deploy to platform
         uses: peter-evans/repository-dispatch@v3
@@ -76,6 +76,6 @@ jobs:
             {
               "service": "next-booking-admin",
               "ecr_repo": "${{ env.ECR_REPOSITORY }}",
-              "image_sha": "${{ github.sha }}",
+              "image_sha": "next-${{ github.sha }}",
               "environment": "next"
             }
