@@ -10,6 +10,7 @@ import {
   type DirectBookingSetup,
   type PublicBookabilityPublication,
 } from "@/services/api/hotelOperationsSetupClient";
+import { ApiErrorResponse } from "@/services/api/client";
 
 import {
   OperationField,
@@ -108,7 +109,15 @@ export function DirectBookingPublicationForm({
             heroImage,
             setup.profileRevision,
           );
-          setSetup((current) => (current ? { ...current, heroImageUrl } : current));
+          setSetup((current) =>
+            current
+              ? {
+                  ...current,
+                  heroImageUrl,
+                  profileRevision: Math.max(current.profileRevision, setup.profileRevision + 1),
+                }
+              : current,
+          );
           setHeroImage(null);
           if (heroImageInput.current) heroImageInput.current.value = "";
         }
@@ -124,6 +133,16 @@ export function DirectBookingPublicationForm({
         setSettingsSaved(true);
         saved = true;
       } catch (cause) {
+        if (cause instanceof ApiErrorResponse && cause.data.code === "profile_revision_conflict") {
+          try {
+            const refreshed = await hotelOperationsSetupApi.getDirectBookingSetup(propertyId);
+            setSetup((current) =>
+              current ? { ...current, profileRevision: refreshed.profileRevision } : current,
+            );
+          } catch {
+            // Preserve the original conflict; a later page reload can recover if refresh fails.
+          }
+        }
         setError(hotelOperationsErrorMessage(cause, "Direct booking settings could not be saved."));
         setSubmitting(false);
         return;

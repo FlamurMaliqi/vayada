@@ -453,18 +453,21 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         ) AS timezone_is_valid,
       COALESCE(NULLIF(input.booking_default_language, ''), input.default_locale, 'en') AS locale,
       NULLIF(upper(trim(input.finance_default_currency)), '') AS currency,
-      COALESCE(input.payments_enabled, FALSE)
-        AND input.payment_provider_status = 'active'
-        AND input.payment_provider_onboarding_status = 'completed'
-        AND input.payment_provider_charges_enabled = TRUE
-        AND (
-          COALESCE(input.accepted_methods, ARRAY[]::text[])
-            && ARRAY['card', 'wallet']::text[]
-          OR (
-            input.payment_provider = 'xendit'
-            AND 'xendit' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
-          )
-        ) AS online_payment_ready,
+      COALESCE(
+        COALESCE(input.payments_enabled, FALSE)
+          AND input.payment_provider_status = 'active'
+          AND input.payment_provider_onboarding_status = 'completed'
+          AND input.payment_provider_charges_enabled = TRUE
+          AND (
+            COALESCE(input.accepted_methods, ARRAY[]::text[])
+              && ARRAY['card', 'wallet']::text[]
+            OR (
+              input.payment_provider = 'xendit'
+              AND 'xendit' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
+            )
+          ),
+        FALSE
+      ) AS online_payment_ready,
       COALESCE(input.payments_enabled, FALSE)
         AND COALESCE(input.accepted_methods, ARRAY[]::text[])
           && ARRAY[

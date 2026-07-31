@@ -1086,6 +1086,28 @@ describe("shared hotel setup status route", () => {
     );
   });
 
+  it("rejects unauthenticated property creation before validating its body", async () => {
+    const createPropertyProfile = vi.fn();
+    app = buildSharedSetupApp({
+      linkedResources: [],
+      repository: {
+        ...unusedStatusMethods(),
+        ...unusedPropertyProfileMethods(),
+        createPropertyProfile,
+      },
+    });
+
+    const response = await injectJson<Record<string, unknown>>(app, {
+      method: "POST",
+      url: "/api/hotel-setup/properties",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.code).not.toBe("invalid_setup_request");
+    expect(createPropertyProfile).not.toHaveBeenCalled();
+  });
+
   it("requires one stable Idempotency-Key for property creation", async () => {
     const createPropertyProfile = vi.fn();
     app = buildSharedSetupApp({

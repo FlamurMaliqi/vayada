@@ -90,8 +90,8 @@ export interface UpdateHotelProfileRequest {
   name?: string;
   location?: string;
   email?: string;
-  about?: string;
-  website?: string;
+  about?: string | null;
+  website?: string | null;
   phone?: string;
   localityPublic?: boolean;
   picture?: string | null; // allow clearing or replacing

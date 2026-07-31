@@ -252,14 +252,15 @@ export async function registerSharedHotelSetupStatusRoutes(
   });
 
   app.post("/properties", async (request, reply) => {
+    const access = resolveSharedSetupAccess(request, reply, null, "hotel_catalog.setup.manage");
+    if (!access) return reply;
+
     const profileInput = parseCreatePropertyProfile(
       request.body as SharedPropertyProfileBody,
       reply,
     );
     if (profileInput === false) return reply;
 
-    const access = resolveSharedSetupAccess(request, reply, null, "hotel_catalog.setup.manage");
-    if (!access) return reply;
     if (
       hasPublishedPropertySurface(profileInput) &&
       !ensurePublicPropertyPublicationPermission(access.context, reply)

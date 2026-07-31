@@ -45,10 +45,10 @@ export function buildHotelProfileDetailsUpdate(
     payload.localityPublic = form.localityPublic;
   }
   if ((form.website || "") !== (hotelProfile.website || "")) {
-    payload.website = form.website.trim() || undefined;
+    payload.website = form.website.trim() || null;
   }
   if ((form.about || "") !== (hotelProfile.about || "")) {
-    payload.about = form.about.trim() || undefined;
+    payload.about = form.about.trim() || null;
   }
   if ((phone || "") !== (hotelProfile.phone || "")) {
     payload.phone = phone || undefined;
@@ -279,18 +279,10 @@ export function useHotelProfile(
       setHotelPicturePreview(null);
       setHotelProfilePictureFile(null);
     } catch (error: unknown) {
-      const detail = error instanceof ApiErrorResponse ? error.data.detail : null;
-      const message =
-        error instanceof ApiErrorResponse && error.data.code === "profile_revision_conflict"
-          ? "This hotel profile changed in another tab. Refresh the page before choosing the cover photo again."
-          : error instanceof HotelAddressSetupRequiredError
-            ? error.message
-            : typeof detail === "string"
-              ? detail
-              : Array.isArray(detail) && detail[0]?.msg
-                ? detail[0].msg
-                : "Failed to save profile";
-      showError("Failed to Save Profile", formatErrorForModal(detail || message));
+      showError(
+        "Failed to Save Profile",
+        formatErrorForModal(profileSaveErrorMessage(error, "Failed to save profile")),
+      );
     } finally {
       setIsSavingHotelProfile(false);
     }
@@ -365,14 +357,10 @@ export function useHotelProfile(
       await loadProfile();
       setIsEditingContact(false);
     } catch (error: unknown) {
-      const detail = error instanceof ApiErrorResponse ? error.data.detail : null;
-      const message =
-        typeof detail === "string"
-          ? detail
-          : Array.isArray(detail) && detail[0]?.msg
-            ? detail[0].msg
-            : "Failed to save contact information";
-      showError("Failed to Save Contact Information", formatErrorForModal(detail || message));
+      showError(
+        "Failed to Save Contact Information",
+        formatErrorForModal(profileSaveErrorMessage(error, "Failed to save contact information")),
+      );
     } finally {
       setIsSavingContact(false);
     }
@@ -410,4 +398,16 @@ export function useHotelProfile(
     handleCancelHotelEdit,
     handleSaveHotelContact,
   };
+}
+
+export function profileSaveErrorMessage(error: unknown, fallback: string): string | string[] {
+  if (error instanceof ApiErrorResponse && error.data.code === "profile_revision_conflict") {
+    return "This hotel profile changed in another tab. Refresh the page and make your changes again.";
+  }
+  if (error instanceof HotelAddressSetupRequiredError) return error.message;
+
+  const detail = error instanceof ApiErrorResponse ? error.data.detail : null;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg;
+  return fallback;
 }

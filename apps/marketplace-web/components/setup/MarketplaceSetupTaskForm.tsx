@@ -268,6 +268,7 @@ export function MarketplaceSetupTaskForm({
     }
 
     setError("");
+    onDirty();
     setCoverSelection((current) => ({ ...current, file }));
     const reader = new FileReader();
     reader.onloadend = () => {
@@ -618,7 +619,10 @@ export function MarketplaceSetupTaskForm({
               onDirty();
               hotelForm.updateListing(...args);
             }}
-            onImageChange={hotelForm.handleListingImageChange}
+            onImageChange={(...args) => {
+              onDirty();
+              hotelForm.handleListingImageChange(...args);
+            }}
             onRemoveImage={(...args) => {
               onDirty();
               hotelForm.removeListingImage(...args);
@@ -666,12 +670,18 @@ export function MarketplaceSetupTaskForm({
           embedded
           imageInputRefs={hotelForm.listingImageInputRefs}
           coverPhotoInputRef={coverInputRef}
-          onFormChange={hotelForm.handleFormChange}
+          onFormChange={(...args) => {
+            onDirty();
+            hotelForm.handleFormChange(...args);
+          }}
           onCoverPhotoChange={handleCoverChange}
           onClearCoverPhoto={clearCoverSelection}
           onToggleCollapse={hotelForm.toggleListingCollapse}
           onUpdateListing={hotelForm.updateListing}
-          onImageChange={hotelForm.handleListingImageChange}
+          onImageChange={(...args) => {
+            onDirty();
+            hotelForm.handleListingImageChange(...args);
+          }}
           onRemoveImage={hotelForm.removeListingImage}
           onCountryInputChange={hotelForm.handleCountryInputChange}
           onPrevStep={handleBack}
