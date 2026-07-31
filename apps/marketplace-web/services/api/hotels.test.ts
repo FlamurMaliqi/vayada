@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PropertyProfileResponse } from "@vayada/domain-hotels";
 
 vi.mock("@vayada/marketplace-shared/api/discovery", () => ({
   getAllMarketplaceOffers: vi.fn(),
@@ -835,6 +836,82 @@ describe("hotel target self-service client", () => {
           url.endsWith(`/marketplace/properties/${propertyId}/profile`) && method === "PUT",
       ),
     ).toHaveLength(2);
+  });
+
+  it("does not treat a same-valued non-general contact as an applied canonical write", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const guestPhone = {
+      channelType: "phone" as const,
+      value: "+49 89 555555",
+      purpose: "guest" as const,
+      isPublic: false,
+    };
+    const baseProfile = sharedProfile as PropertyProfileResponse;
+    let currentProfile: PropertyProfileResponse = {
+      ...baseProfile,
+      profile: { ...baseProfile.profile, contacts: [guestPhone] },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        requests.push({ url: href, method, body });
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          if (method === "PUT") {
+            currentProfile = {
+              ...currentProfile,
+              profileRevision: 4,
+              profile: {
+                ...currentProfile.profile,
+                contacts: [
+                  guestPhone,
+                  {
+                    channelType: "phone",
+                    value: "+49 89 555555",
+                    purpose: "general",
+                    isPublic: false,
+                  },
+                ],
+              },
+            };
+          }
+          return jsonResponse(currentProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          return jsonResponse(publicProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
+          return jsonResponse(marketplaceProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/offers`)) {
+          return jsonResponse({ offers: [targetOffer] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    await hotelService.updateMyProfile({ phone: "+49 89 555555" }, propertyId, profileRevisions);
+
+    expect(requests).toContainEqual({
+      url: `https://api.localhost/api/hotel-setup/properties/${propertyId}/profile`,
+      method: "PUT",
+      body: {
+        expectedProfileRevision: 3,
+        patch: {
+          contacts: [
+            guestPhone,
+            {
+              channelType: "phone",
+              value: "+49 89 555555",
+              purpose: "general",
+              isPublic: false,
+            },
+          ],
+        },
+      },
+    });
   });
 
   it("sends the editor-loaded revision so a stale save reaches the backend conflict check", async () => {

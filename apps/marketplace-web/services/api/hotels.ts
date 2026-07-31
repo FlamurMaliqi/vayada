@@ -621,16 +621,44 @@ function canonicalProfileUpdateMatches(
   ) {
     return false;
   }
-  for (const channelType of ["website", "email", "phone"] as const) {
-    if (
-      Object.hasOwn(update, channelType) &&
-      normalizedOptionalText(profileContactValue(response, channelType)) !==
-        normalizedOptionalText(update[channelType])
-    ) {
-      return false;
+  let expectedContacts = response.profile.contacts;
+  for (const [channelType, isPublic] of [
+    ["website", true],
+    ["email", false],
+    ["phone", false],
+  ] as const) {
+    if (Object.hasOwn(update, channelType)) {
+      expectedContacts = withGeneralContact(
+        expectedContacts,
+        channelType,
+        normalizedOptionalText(update[channelType]),
+        isPublic,
+      );
     }
   }
+  if (!samePropertyContacts(response.profile.contacts, expectedContacts)) {
+    return false;
+  }
   return true;
+}
+
+function samePropertyContacts(
+  left: readonly PropertyProfileContact[],
+  right: readonly PropertyProfileContact[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((contact, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        contact.channelType === other.channelType &&
+        contact.value === other.value &&
+        contact.purpose === other.purpose &&
+        contact.isPublic === other.isPublic
+      );
+    })
+  );
 }
 
 function applyPublicPropertyProfileUpdate(
