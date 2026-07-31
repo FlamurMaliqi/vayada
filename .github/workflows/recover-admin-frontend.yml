@@ -10,9 +10,6 @@ on:
         options:
           - booking-admin
           - marketplace-admin
-      rollback_tag:
-        description: Existing image tag to restore if the cutover fails
-        required: true
       cutover_justification:
         description: Why this production recovery is required
         required: true
@@ -28,7 +25,6 @@ concurrency:
 env:
   AWS_REGION: eu-west-1
   AWS_ACCOUNT_ID: 269416271598
-  ROLLBACK_TAG: ${{ inputs.rollback_tag }}
   CUTOVER_JUSTIFICATION: ${{ inputs.cutover_justification }}
 
 jobs:
@@ -45,17 +41,52 @@ jobs:
           case "${SERVICE}" in
             booking-admin)
               echo "source_ref=c879df4fb2b207ff69eb87442743aee7e42536ff" >> "${GITHUB_OUTPUT}"
+              echo "rollback_source_ref=e3809df436514fc14df84f0adf14f365856fea2c" >> "${GITHUB_OUTPUT}"
               echo "image_tag=prod-recovery-booking-admin-c879df4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+              echo "rollback_tag=prod-rollback-booking-admin-e3809df-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
               echo "app_dir=apps/booking-admin" >> "${GITHUB_OUTPUT}"
               echo "ecr_repository=vayada-booking-admin-frontend" >> "${GITHUB_OUTPUT}"
               echo "platform_service=booking-admin" >> "${GITHUB_OUTPUT}"
+              {
+                echo "build_args<<EOF"
+                echo "NEXT_PUBLIC_API_URL=https://booking-api.vayada.com"
+                echo "NEXT_PUBLIC_PMS_URL=https://pms-api.vayada.com"
+                echo "EOF"
+                echo "rollback_build_args<<EOF"
+                echo "NEXT_PUBLIC_API_URL=https://booking-api.vayada.com"
+                echo "NEXT_PUBLIC_PMS_URL=https://pms-api.vayada.com"
+                echo "EOF"
+              } >> "${GITHUB_OUTPUT}"
               ;;
             marketplace-admin)
               echo "source_ref=3c7c216956e2d770bcf0542c56e864b86880d115" >> "${GITHUB_OUTPUT}"
+              echo "rollback_source_ref=9d8d4f85217740c0f79adf9e84a4f1065c9f8647" >> "${GITHUB_OUTPUT}"
               echo "image_tag=prod-recovery-marketplace-admin-3c7c216-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+              echo "rollback_tag=prod-rollback-marketplace-admin-9d8d4f8-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
               echo "app_dir=apps/vayada-admin" >> "${GITHUB_OUTPUT}"
               echo "ecr_repository=vayada-admin-frontend" >> "${GITHUB_OUTPUT}"
               echo "platform_service=marketplace-admin" >> "${GITHUB_OUTPUT}"
+              {
+                echo "build_args<<EOF"
+                echo "NEXT_PUBLIC_API_URL=https://api.vayada.com"
+                echo "NEXT_PUBLIC_AUTH_API_URL=https://api.vayada.com"
+                echo "NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=false"
+                echo "NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=true"
+                echo "NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true"
+                echo "NEXT_PUBLIC_PMS_API_URL=https://pms-api.vayada.com"
+                echo "NEXT_PUBLIC_BOOKING_API_URL=https://api.vayada.com"
+                echo "NEXT_PUBLIC_PMS_URL=https://api.vayada.com"
+                echo "EOF"
+                echo "rollback_build_args<<EOF"
+                echo "NEXT_PUBLIC_API_URL=https://api.vayada.com"
+                echo "NEXT_PUBLIC_AUTH_API_URL=https://api.vayada.com"
+                echo "NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=false"
+                echo "NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=true"
+                echo "NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true"
+                echo "NEXT_PUBLIC_BOOKING_API_URL=https://api.vayada.com"
+                echo "NEXT_PUBLIC_PMS_URL=https://api.vayada.com"
+                echo "EOF"
+              } >> "${GITHUB_OUTPUT}"
               ;;
             *)
               echo "::error::Unsupported recovery service."
@@ -63,10 +94,10 @@ jobs:
               ;;
           esac
 
-      - name: Checkout approved source
+      - name: Checkout approved rollback source
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.config.outputs.source_ref }}
+          ref: ${{ steps.config.outputs.rollback_source_ref }}
           persist-credentials: false
 
       - name: Configure AWS credentials
@@ -78,11 +109,11 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Validate recovery and rollback images
-        id: rollback
+      - name: Validate recovery image tags
         env:
           ECR_REPOSITORY: ${{ steps.config.outputs.ecr_repository }}
           IMAGE_TAG: ${{ steps.config.outputs.image_tag }}
+          ROLLBACK_TAG: ${{ steps.config.outputs.rollback_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -96,103 +127,94 @@ jobs:
             exit 1
           fi
 
-          if [ "${#ROLLBACK_TAG}" -gt 128 ] || [[ ! "${ROLLBACK_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+          if [ "${#ROLLBACK_TAG}" -gt 128 ] || [[ ! "${ROLLBACK_TAG}" =~ ^prod-rollback-[A-Za-z0-9._-]+$ ]]; then
             echo "::error::Invalid rollback image tag '${ROLLBACK_TAG}'."
             exit 1
           fi
 
-          set +e
-          output="$(
-            aws ecr describe-images \
-              --repository-name "${ECR_REPOSITORY}" \
-              --image-ids "imageTag=${IMAGE_TAG}" 2>&1
-          )"
-          result=$?
-          set -e
-          if [ "${result}" -eq 0 ]; then
-            echo "::error::Recovery image tag '${IMAGE_TAG}' already exists."
-            exit 1
-          fi
-          if ! grep -q "ImageNotFoundException" <<<"${output}"; then
-            echo "${output}"
-            exit "${result}"
-          fi
-
-          rollback_digest="$(
-            aws ecr describe-images \
-              --repository-name "${ECR_REPOSITORY}" \
-              --image-ids "imageTag=${ROLLBACK_TAG}" \
-              --query 'imageDetails[0].imageDigest' \
-              --output text
-          )"
-          if [[ ! "${rollback_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo "::error::ECR did not return a valid rollback image digest."
-            exit 1
-          fi
-
-          repository_uri="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
-          echo "image=${repository_uri}@${rollback_digest}" >> "${GITHUB_OUTPUT}"
+          for tag in "${IMAGE_TAG}" "${ROLLBACK_TAG}"; do
+            set +e
+            output="$(
+              aws ecr describe-images \
+                --repository-name "${ECR_REPOSITORY}" \
+                --image-ids "imageTag=${tag}" 2>&1
+            )"
+            result=$?
+            set -e
+            if [ "${result}" -eq 0 ]; then
+              echo "::error::Recovery image tag '${tag}' already exists."
+              exit 1
+            fi
+            if ! grep -q "ImageNotFoundException" <<<"${output}"; then
+              echo "${output}"
+              exit "${result}"
+            fi
+          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push Booking Admin image
-        if: inputs.service == 'booking-admin'
-        id: build-booking
+      - name: Build and push rollback image
+        id: build-rollback
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./${{ steps.config.outputs.app_dir }}/Dockerfile
           platforms: linux/amd64
           push: true
-          build-args: |
-            NEXT_PUBLIC_API_URL=https://booking-api.vayada.com
-            NEXT_PUBLIC_PMS_URL=https://pms-api.vayada.com
+          build-args: ${{ steps.config.outputs.rollback_build_args }}
           tags: |
-            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ steps.config.outputs.ecr_repository }}:${{ steps.config.outputs.image_tag }}
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ steps.config.outputs.ecr_repository }}:${{ steps.config.outputs.rollback_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and push Vayada Admin image
-        if: inputs.service == 'marketplace-admin'
-        id: build-marketplace
+      - name: Checkout approved production source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.config.outputs.source_ref }}
+          persist-credentials: false
+
+      - name: Build and push production image
+        id: build-production
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./${{ steps.config.outputs.app_dir }}/Dockerfile
           platforms: linux/amd64
           push: true
-          build-args: |
-            NEXT_PUBLIC_API_URL=https://api.vayada.com
-            NEXT_PUBLIC_AUTH_API_URL=https://api.vayada.com
-            NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=false
-            NEXT_PUBLIC_AUTHKIT_LEGACY_FALLBACK_ENABLED=true
-            NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true
-            NEXT_PUBLIC_PMS_API_URL=https://pms-api.vayada.com
-            NEXT_PUBLIC_BOOKING_API_URL=https://api.vayada.com
-            NEXT_PUBLIC_PMS_URL=https://api.vayada.com
+          build-args: ${{ steps.config.outputs.build_args }}
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ steps.config.outputs.ecr_repository }}:${{ steps.config.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Validate published image digest
-        id: deploy-image
+      - name: Validate published image digests
+        id: images
         env:
-          DEPLOY_DIGEST: ${{ steps.build-booking.outputs.digest || steps.build-marketplace.outputs.digest }}
+          DEPLOY_DIGEST: ${{ steps.build-production.outputs.digest }}
+          ECR_REPOSITORY: ${{ steps.config.outputs.ecr_repository }}
+          ROLLBACK_DIGEST: ${{ steps.build-rollback.outputs.digest }}
         shell: bash
         run: |
           if [[ ! "${DEPLOY_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo "::error::Build did not return a valid image digest."
+            echo "::error::Production build did not return a valid image digest."
             exit 1
           fi
-          echo "digest=${DEPLOY_DIGEST}" >> "${GITHUB_OUTPUT}"
+          if [[ ! "${ROLLBACK_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Rollback build did not return a valid image digest."
+            exit 1
+          fi
+
+          repository_uri="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+          echo "deploy_digest=${DEPLOY_DIGEST}" >> "${GITHUB_OUTPUT}"
+          echo "rollback_image=${repository_uri}@${ROLLBACK_DIGEST}" >> "${GITHUB_OUTPUT}"
 
       - name: Record cutover and rollback plan
         env:
-          DEPLOY_DIGEST: ${{ steps.deploy-image.outputs.digest }}
+          DEPLOY_DIGEST: ${{ steps.images.outputs.deploy_digest }}
           ECR_REPOSITORY: ${{ steps.config.outputs.ecr_repository }}
-          PINNED_ROLLBACK_IMAGE: ${{ steps.rollback.outputs.image }}
+          PINNED_ROLLBACK_IMAGE: ${{ steps.images.outputs.rollback_image }}
+          ROLLBACK_SOURCE_REF: ${{ steps.config.outputs.rollback_source_ref }}
           SOURCE_REF: ${{ steps.config.outputs.source_ref }}
         run: |
           deploy_image="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}@${DEPLOY_DIGEST}"
@@ -201,6 +223,7 @@ jobs:
             printf '%s\n' "- Service: ${{ inputs.service }}"
             printf '%s\n' "- Approved source: ${SOURCE_REF}"
             printf '%s\n' "- Deploy image: ${deploy_image}"
+            printf '%s\n' "- Rollback source: ${ROLLBACK_SOURCE_REF}"
             printf '%s\n' "- Rollback image: ${PINNED_ROLLBACK_IMAGE}"
             printf '%s\n' "- Cutover justification: ${CUTOVER_JUSTIFICATION}"
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -216,7 +239,7 @@ jobs:
               "service": "${{ steps.config.outputs.platform_service }}",
               "ecr_repo": "${{ steps.config.outputs.ecr_repository }}",
               "image_sha": "${{ steps.config.outputs.image_tag }}",
-              "image_digest": "${{ steps.deploy-image.outputs.digest }}",
-              "rollback_image": "${{ steps.rollback.outputs.image }}",
+              "image_digest": "${{ steps.images.outputs.deploy_digest }}",
+              "rollback_image": "${{ steps.images.outputs.rollback_image }}",
               "environment": "production"
             }
