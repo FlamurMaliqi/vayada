@@ -177,7 +177,38 @@ describe("platform media upload routes", () => {
 
     await expect(
       resolver.resolveTarget({
-        context: {},
+        context: {
+          actor: {
+            internalUserId: "legacy-user",
+            providerIdentity: {
+              provider: "workos",
+              providerUserId: "workos-legacy-user",
+            },
+            email: "legacy@example.test",
+            status: "active",
+          },
+          selectedOrganization: {
+            organizationId: "legacy-organization",
+            kind: "hotel_group",
+            status: "active",
+          },
+          membership: {
+            membershipId: "legacy-membership",
+            status: "active",
+            roleKey: "owner",
+            workosRoleSlugs: ["owner"],
+            permissions: ["pms.operations.manage"],
+          },
+          linkedResources: [],
+          entitlements: [],
+          locale: "en",
+          currency: "EUR",
+          audit: {
+            requestId: "legacy-room-media-resolver",
+            source: "web",
+            receivedAt: "2026-07-31T12:00:00.000Z",
+          },
+        },
         request: {
           purpose: "pms.room_type.media",
           resource: {
@@ -189,11 +220,19 @@ describe("platform media upload routes", () => {
         },
         policy: {
           purpose: "pms.room_type.media",
+          permission: "pms.operations.manage",
           targetResourceProduct: "pms",
           targetResourceType: "room_type",
+          allowedRelationships: ["owner", "operator"],
           allowedResources: [{ product: "pms", resourceType: "pms_property" }],
+          allowedContentTypes: ["image/jpeg"],
+          allowedExtensions: [".jpg"],
+          maxFileSizeBytes: 20 * 1024 * 1024,
+          maxFileCount: 1,
+          privateOnly: false,
+          requiredVariants: ["original_safe"],
         },
-      } as never),
+      } satisfies Parameters<typeof resolver.resolveTarget>[0]),
     ).resolves.toMatchObject({
       ok: true,
       target: { resourceId: "legacy-property" },
