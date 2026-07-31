@@ -12,6 +12,8 @@
  * cutover the hotel catalog will be the single authoritative source.
  */
 
+export * from "./adaptiveHotelSetup.js";
+
 // ---------------------------------------------------------------------------
 // Scalar aliases
 // ---------------------------------------------------------------------------

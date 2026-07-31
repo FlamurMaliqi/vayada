@@ -312,6 +312,113 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     }
   });
 
+  it("creates constrained organization setup track intents without backfilling", async () => {
+    assertSafeTestDatabase(TEST_DATABASE_URL!);
+
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await client.connect();
+    try {
+      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+        await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      }
+
+      await client.query(`
+        CREATE SCHEMA identity;
+        CREATE SCHEMA hotel_catalog;
+        CREATE TABLE identity.organizations (id UUID PRIMARY KEY);
+
+        INSERT INTO identity.organizations (id)
+        SELECT (
+          '00000000-0000-4000-8000-' || lpad(value::text, 12, '0')
+        )::UUID
+        FROM generate_series(1, 8) AS value;
+      `);
+
+      const migrationSql = await readFile(
+        join(REAL_MIGRATIONS_DIR, "0041_adaptive_hotel_setup.sql"),
+        "utf8",
+      );
+      await client.query(migrationSql);
+
+      const { rows: initialRows } = await client.query(
+        `SELECT organization_id
+         FROM hotel_catalog.organization_setup_track_intents`,
+      );
+      expect(initialRows).toHaveLength(0);
+
+      const organizationId = (suffix: number) =>
+        `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
+      const { rows: canonicalRows } = await client.query<{
+        selected_tracks: string[];
+        revision: number;
+        has_timestamps: boolean;
+      }>(
+        `INSERT INTO hotel_catalog.organization_setup_track_intents
+           (organization_id, selected_tracks)
+         VALUES
+           ($1, ARRAY['hotel_operations']),
+           ($2, ARRAY['creator_marketplace']),
+           ($3, ARRAY['hotel_operations', 'creator_marketplace'])
+         RETURNING
+           selected_tracks,
+           revision,
+           created_at IS NOT NULL AND updated_at IS NOT NULL AS has_timestamps`,
+        [organizationId(1), organizationId(2), organizationId(3)],
+      );
+      expect(canonicalRows.map((row) => row.selected_tracks)).toEqual([
+        ["hotel_operations"],
+        ["creator_marketplace"],
+        ["hotel_operations", "creator_marketplace"],
+      ]);
+      expect(canonicalRows.every((row) => row.revision === 1 && row.has_timestamps)).toBe(true);
+
+      const invalidSelections = [
+        [],
+        ["booking"],
+        ["creator_marketplace", "hotel_operations"],
+        ["hotel_operations", "hotel_operations"],
+      ];
+      for (const [index, selectedTracks] of invalidSelections.entries()) {
+        await expect(
+          client.query(
+            `INSERT INTO hotel_catalog.organization_setup_track_intents
+               (organization_id, selected_tracks)
+             VALUES ($1, $2::TEXT[])`,
+            [organizationId(index + 4), selectedTracks],
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+      }
+
+      await expect(
+        client.query(
+          `INSERT INTO hotel_catalog.organization_setup_track_intents
+             (organization_id, selected_tracks, revision)
+           VALUES ($1, ARRAY['hotel_operations'], 0)`,
+          [organizationId(8)],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      await expect(
+        client.query(
+          `INSERT INTO hotel_catalog.organization_setup_track_intents
+             (organization_id, selected_tracks)
+           VALUES ($1, ARRAY['creator_marketplace'])`,
+          [organizationId(1)],
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+
+      await expect(
+        client.query(
+          `INSERT INTO hotel_catalog.organization_setup_track_intents
+             (organization_id, selected_tracks)
+           VALUES ('00000000-0000-4000-8000-000000000099', ARRAY['hotel_operations'])`,
+        ),
+      ).rejects.toMatchObject({ code: "23503" });
+    } finally {
+      await client.end();
+    }
+  });
+
   it("applies booking, PMS, finance, marketplace, distribution, platform, and intelligence DDL with private data boundaries", async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
 
