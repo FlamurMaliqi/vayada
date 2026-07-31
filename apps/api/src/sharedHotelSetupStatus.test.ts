@@ -1702,6 +1702,16 @@ describe("shared hotel setup status route", () => {
           const result = await query(text, values);
           return { rows: result.rows as unknown as T[] };
         },
+        connect: async () => ({
+          query: async <T extends QueryResultRow = QueryResultRow>(
+            text: string,
+            values?: readonly unknown[],
+          ) => {
+            const result = await query(text, values);
+            return { rows: result.rows as unknown as T[] };
+          },
+          release: vi.fn(),
+        }),
         end: vi.fn(async () => undefined),
       },
     });
@@ -1716,7 +1726,11 @@ describe("shared hotel setup status route", () => {
       sharedProfile: { status: "complete" },
     });
 
-    const createSql = query.mock.calls[0]![0];
+    const createCall = query.mock.calls.find(([text]) =>
+      text.includes("INSERT INTO hotel_catalog.properties"),
+    );
+    if (!createCall) throw new Error("Expected the transactional property create query");
+    const [createSql, createValues] = createCall;
     expect(createSql).toContain("INSERT INTO hotel_catalog.properties");
     expect(createSql).toContain("INSERT INTO identity.organization_resource_links");
     expect(createSql).toContain("'hotel_catalog'");
@@ -1739,7 +1753,7 @@ describe("shared hotel setup status route", () => {
     expect(createSql).toContain("AND media.source_system = 'platform'");
     expect(createSql).not.toContain("INSERT INTO identity.organizations");
     expect(createSql).not.toContain("property_source_links");
-    expect(query.mock.calls[0]![1]).toMatchObject([
+    expect(createValues).toMatchObject([
       organizationId,
       expect.objectContaining({
         display_name: "Alpenrose Munich",

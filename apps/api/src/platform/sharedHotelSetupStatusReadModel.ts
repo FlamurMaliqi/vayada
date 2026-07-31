@@ -17,6 +17,13 @@ type SharedHotelSetupStatusPool = {
     text: string,
     values?: readonly unknown[],
   ): Promise<Pick<QueryResult<T>, "rows">>;
+  connect?(): Promise<{
+    query<T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      values?: readonly unknown[],
+    ): Promise<Pick<QueryResult<T>, "rows">>;
+    release(): void;
+  }>;
   end(): Promise<void>;
 };
 
@@ -147,12 +154,11 @@ export function createPgSharedHotelSetupStatusRepository(config: {
   }
 
   const ownsPool = config.pool === undefined;
-  const pool =
-    config.pool ??
+  const pool = (config.pool ??
     new pg.Pool({
       connectionString: config.connectionString,
       max: config.max,
-    });
+    })) as SharedHotelSetupStatusPool;
 
   return {
     async getHotelSetupStatus({ organizationId, propertyIds }) {
@@ -280,23 +286,49 @@ async function writePropertyProfile(
   const missingFields = profileInputMissingFields(input.profile);
   const profileStatus = missingFields.length === 0 ? "complete" : "incomplete";
   const payload = propertyProfileWritePayload(input.profile);
-  const result =
-    input.mode === "create"
-      ? await pool.query<PropertyProfileWriteRow>(createPropertyProfileSql(), [
-          input.organizationId,
-          payload,
-          profileStatus,
-          missingFields,
-        ])
-      : await pool.query<PropertyProfileWriteRow>(updatePropertyProfileSql(), [
-          input.organizationId,
-          input.propertyId,
-          payload,
-          profileStatus,
-          missingFields,
-          input.expectedPropertyType,
-          input.expectedUpdatedAt,
-        ]);
+  if (input.mode === "create") {
+    if (!pool.connect) {
+      throw new Error("Property creation requires a transactional database pool");
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const organization = await client.query(
+        `SELECT id
+         FROM identity.organizations
+         WHERE id = $1::uuid
+           AND kind = 'hotel_group'
+           AND status = 'active'
+         FOR UPDATE`,
+        [input.organizationId],
+      );
+      if (organization.rows.length !== 1) {
+        throw new Error("Active hotel-group organization was not found");
+      }
+      const result = await client.query<PropertyProfileWriteRow>(createPropertyProfileSql(), [
+        input.organizationId,
+        payload,
+        profileStatus,
+        missingFields,
+      ]);
+      await client.query("COMMIT");
+      return result.rows[0]?.propertyId ?? null;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const result = await pool.query<PropertyProfileWriteRow>(updatePropertyProfileSql(), [
+    input.organizationId,
+    input.propertyId,
+    payload,
+    profileStatus,
+    missingFields,
+    input.expectedPropertyType,
+    input.expectedUpdatedAt,
+  ]);
 
   return result.rows[0]?.propertyId ?? null;
 }
