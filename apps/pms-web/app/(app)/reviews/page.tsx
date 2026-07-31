@@ -87,6 +87,16 @@ export default function ReviewsPage() {
               <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">
                 {review.body}
               </p>
+              {review.replyBody && (
+                <div className="mt-4 rounded-lg bg-gray-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Property response
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-gray-700">
+                    {review.replyBody}
+                  </p>
+                </div>
+              )}
               {review.reviewedAt && (
                 <time className="mt-3 block text-xs text-gray-400">
                   {new Date(review.reviewedAt).toLocaleDateString()}

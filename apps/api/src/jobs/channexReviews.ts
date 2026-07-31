@@ -60,11 +60,12 @@ export async function runChannexReviewJobs(
           await client.query(
             `INSERT INTO pms.channel_reviews
                (property_id, provider, provider_review_id, channel, guest_display_name,
-                rating, body, reviewed_at, provider_updated_at, provider_snapshot)
-             VALUES ($1, 'channex', $2, $3, $4, $5, $6, $7, $8, $9)
+                rating, body, reply_body, reviewed_at, provider_updated_at, provider_snapshot)
+             VALUES ($1, 'channex', $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (property_id, provider, provider_review_id) DO UPDATE SET
                channel = EXCLUDED.channel, guest_display_name = EXCLUDED.guest_display_name,
                rating = EXCLUDED.rating, body = EXCLUDED.body,
+               reply_body = EXCLUDED.reply_body,
                reviewed_at = EXCLUDED.reviewed_at,
                provider_updated_at = EXCLUDED.provider_updated_at,
                provider_snapshot = EXCLUDED.provider_snapshot, updated_at = now()
@@ -78,6 +79,7 @@ export async function runChannexReviewJobs(
               review.guestName,
               review.rating,
               review.body,
+              review.replyBody,
               review.reviewedAt,
               review.updatedAt,
               JSON.stringify(review.snapshot),
@@ -119,25 +121,45 @@ export async function runChannexReviewJobs(
 function parseReview(payload: Record<string, unknown>) {
   const raw = record(payload.rawPayload);
   const envelope = record(raw.payload);
-  const review = record(envelope.review);
+  const nestedReview = record(envelope.review);
+  const review = Object.keys(nestedReview).length > 0 ? nestedReview : envelope;
   const reviewId = text(payload.reviewId) ?? text(review.id);
   const externalPropertyId = text(payload.propertyId) ?? text(envelope.property_id);
   if (!reviewId || !externalPropertyId) throw new Error("Invalid Channex review payload");
+  const channel = canonicalChannel(
+    text(review.ota) ?? text(review.channel) ?? text(envelope.channel),
+  );
   return {
     reviewId,
     externalPropertyId,
-    channel: text(review.channel) ?? text(envelope.channel),
-    guestName: text(review.guest_name) ?? text(review.guest_display_name),
-    rating: number(review.rating),
+    channel,
+    guestName:
+      text(review.reviewer_name) ?? text(review.guest_name) ?? text(review.guest_display_name),
+    rating: number(review.overall_score) ?? number(review.rating),
     body: text(review.content) ?? text(review.body) ?? "",
-    reviewedAt: text(review.created_at) ?? text(envelope.created_at),
-    updatedAt: text(review.updated_at) ?? text(payload.reviewRevision),
+    replyBody: text(review.reply),
+    reviewedAt: text(review.received_at) ?? text(review.created_at) ?? text(envelope.created_at),
+    updatedAt: text(payload.reviewRevision) ?? text(raw.timestamp) ?? text(review.updated_at),
     snapshot: {
-      channel: text(review.channel),
-      rating: number(review.rating),
-      updatedAt: text(review.updated_at),
+      channel,
+      rating: number(review.overall_score) ?? number(review.rating),
+      updatedAt: text(payload.reviewRevision) ?? text(raw.timestamp) ?? text(review.updated_at),
     },
   };
+}
+
+function canonicalChannel(value: string | null): string | null {
+  if (!value) return null;
+  switch (value.replace(/[^a-z0-9]/gi, "").toLowerCase()) {
+    case "bookingcom":
+      return "booking.com";
+    case "airbnb":
+      return "airbnb";
+    case "expedia":
+      return "expedia";
+    default:
+      return value.toLowerCase();
+  }
 }
 
 function record(value: unknown): Record<string, unknown> {
