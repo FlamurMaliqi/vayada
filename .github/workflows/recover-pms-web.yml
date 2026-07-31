@@ -81,6 +81,7 @@ jobs:
           fi
 
       - name: Validate cutover and rollback plan
+        id: rollback
         shell: bash
         run: |
           if [ -z "${CUTOVER_JUSTIFICATION//[[:space:]]/}" ]; then
@@ -100,11 +101,20 @@ jobs:
             exit 1
           fi
 
-          aws ecr describe-images \
-            --repository-name "${ECR_REPOSITORY}" \
-            --image-ids "imageTag=${rollback_tag}" \
-            --query 'imageDetails[0].{digest:imageDigest,pushed:imagePushedAt,tags:imageTags}' \
-            --output json
+          rollback_digest="$(
+            aws ecr describe-images \
+              --repository-name "${ECR_REPOSITORY}" \
+              --image-ids "imageTag=${rollback_tag}" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text
+          )"
+          if [[ ! "${rollback_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::ECR did not return a valid rollback image digest."
+            exit 1
+          fi
+
+          rollback_image="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}@${rollback_digest}"
+          echo "image=${rollback_image}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -128,12 +138,13 @@ jobs:
       - name: Record cutover and rollback plan
         env:
           DEPLOY_IMAGE: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          PINNED_ROLLBACK_IMAGE: ${{ steps.rollback.outputs.image }}
         run: |
           {
             echo "### Canonical PMS production recovery"
             printf '%s\n' "- Approved source: ${APPROVED_SOURCE_REF}"
             printf '%s\n' "- Deploy image: ${DEPLOY_IMAGE}"
-            printf '%s\n' "- Rollback image: ${ROLLBACK_IMAGE}"
+            printf '%s\n' "- Rollback image: ${PINNED_ROLLBACK_IMAGE}"
             printf '%s\n' "- Cutover justification: ${CUTOVER_JUSTIFICATION}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
@@ -149,6 +160,6 @@ jobs:
               "ecr_repo": "${{ env.ECR_REPOSITORY }}",
               "image_sha": "${{ env.IMAGE_TAG }}",
               "image_digest": "${{ steps.build.outputs.digest }}",
-              "rollback_image": "${{ env.ROLLBACK_IMAGE }}",
+              "rollback_image": "${{ steps.rollback.outputs.image }}",
               "environment": "production"
             }
