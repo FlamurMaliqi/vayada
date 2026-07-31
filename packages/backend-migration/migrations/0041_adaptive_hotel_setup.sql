@@ -1,4 +1,4 @@
--- Migration: 0040_adaptive_hotel_setup
+-- Migration: 0041_adaptive_hotel_setup
 -- Owner: domain-hotels
 -- See: VAY-965, engineering/adaptive-hotel-onboarding.md
 --

@@ -335,7 +335,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       `);
 
       const migrationSql = await readFile(
-        join(REAL_MIGRATIONS_DIR, "0040_adaptive_hotel_setup.sql"),
+        join(REAL_MIGRATIONS_DIR, "0041_adaptive_hotel_setup.sql"),
         "utf8",
       );
       await client.query(migrationSql);
