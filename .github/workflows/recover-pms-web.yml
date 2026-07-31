@@ -1,0 +1,165 @@
+name: Recover PMS Web
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable production recovery tag
+        required: true
+        default: prod-recovery-c879df4-pms-web
+      cutover_justification:
+        description: Why this production recovery is required
+        required: true
+      rollback_image:
+        description: Existing canonical PMS image to restore if cutover fails
+        required: true
+        default: 269416271598.dkr.ecr.eu-west-1.amazonaws.com/vayada-pms-frontend:5d6248c4963a9dda0ff6e8bccaac4d867499de87
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: recover-pms-web-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  ECR_REPOSITORY: vayada-pms-frontend
+  AWS_ACCOUNT_ID: 269416271598
+  APP_DIR: apps/pms-web
+  APPROVED_SOURCE_REF: c879df4fb2b207ff69eb87442743aee7e42536ff
+  IMAGE_TAG: ${{ inputs.image_tag }}
+  CUTOVER_JUSTIFICATION: ${{ inputs.cutover_justification }}
+  ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
+
+jobs:
+  build-and-deploy:
+    name: Rebuild and deploy canonical PMS image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout approved source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.APPROVED_SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::269416271598:role/vayada-github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Verify immutable recovery tag is unused
+        shell: bash
+        run: |
+          if [ "${#IMAGE_TAG}" -gt 128 ] || [[ ! "${IMAGE_TAG}" =~ ^prod-recovery-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid recovery image tag '${IMAGE_TAG}'."
+            exit 1
+          fi
+
+          set +e
+          output="$(
+            aws ecr describe-images \
+              --repository-name "${ECR_REPOSITORY}" \
+              --image-ids "imageTag=${IMAGE_TAG}" 2>&1
+          )"
+          result=$?
+          set -e
+
+          if [ "${result}" -eq 0 ]; then
+            echo "::error::Recovery image tag '${IMAGE_TAG}' already exists."
+            exit 1
+          fi
+
+          if ! grep -q "ImageNotFoundException" <<<"${output}"; then
+            echo "${output}"
+            exit "${result}"
+          fi
+
+      - name: Validate cutover and rollback plan
+        id: rollback
+        shell: bash
+        run: |
+          if [ -z "${CUTOVER_JUSTIFICATION//[[:space:]]/}" ]; then
+            echo "::error::A production cutover justification is required."
+            exit 1
+          fi
+
+          rollback_prefix="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:"
+          if [[ "${ROLLBACK_IMAGE}" != "${rollback_prefix}"* ]]; then
+            echo "::error::Rollback image must reference the canonical PMS ECR repository by tag."
+            exit 1
+          fi
+
+          rollback_tag="${ROLLBACK_IMAGE#"${rollback_prefix}"}"
+          if [ "${#rollback_tag}" -gt 128 ] || [[ ! "${rollback_tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Rollback image tag is invalid."
+            exit 1
+          fi
+
+          rollback_digest="$(
+            aws ecr describe-images \
+              --repository-name "${ECR_REPOSITORY}" \
+              --image-ids "imageTag=${rollback_tag}" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text
+          )"
+          if [[ ! "${rollback_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::ECR did not return a valid rollback image digest."
+            exit 1
+          fi
+
+          rollback_image="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}@${rollback_digest}"
+          echo "image=${rollback_image}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push immutable production image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./${{ env.APP_DIR }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_AUTH_API_URL=https://booking-api.vayada.com
+            NEXT_PUBLIC_PMS_API_URL=https://pms-api.vayada.com
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Record cutover and rollback plan
+        env:
+          DEPLOY_IMAGE: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          PINNED_ROLLBACK_IMAGE: ${{ steps.rollback.outputs.image }}
+        run: |
+          {
+            echo "### Canonical PMS production recovery"
+            printf '%s\n' "- Approved source: ${APPROVED_SOURCE_REF}"
+            printf '%s\n' "- Deploy image: ${DEPLOY_IMAGE}"
+            printf '%s\n' "- Rollback image: ${PINNED_ROLLBACK_IMAGE}"
+            printf '%s\n' "- Cutover justification: ${CUTOVER_JUSTIFICATION}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Dispatch canonical PMS deployment
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
+          repository: vayada-marketplace/vayada-platform
+          event-type: app-image-published
+          client-payload: |
+            {
+              "service": "pms-frontend",
+              "ecr_repo": "${{ env.ECR_REPOSITORY }}",
+              "image_sha": "${{ env.IMAGE_TAG }}",
+              "image_digest": "${{ steps.build.outputs.digest }}",
+              "rollback_image": "${{ steps.rollback.outputs.image }}",
+              "environment": "production"
+            }
