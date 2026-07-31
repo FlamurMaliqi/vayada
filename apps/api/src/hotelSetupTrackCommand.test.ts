@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
   createPgHotelSetupTrackCommandRepository,
+  parseStoredHotelSetupTrackCommandResult,
   type HotelSetupTrackCommand,
   type HotelSetupTrackCommandRepository,
 } from "./domains/hotelSetupTrackCommandRepository.js";
@@ -12,6 +13,54 @@ import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotel
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const occurredAt = "2026-07-26T16:00:00.000Z";
+
+describe("stored hotel setup track command results", () => {
+  it("accepts complete success and conflict results", () => {
+    expect(
+      parseStoredHotelSetupTrackCommandResult({
+        ok: true,
+        response: {
+          trackRevision: 1,
+          selectedTracks: ["hotel_operations"],
+          tracks: [
+            {
+              track: "hotel_operations",
+              provisioning: "active",
+              components: [
+                { product: "pms", access: "active" },
+                { product: "booking", access: "active" },
+              ],
+              allowedActions: ["manage_service"],
+            },
+            {
+              track: "creator_marketplace",
+              provisioning: "not_selected",
+              components: [{ product: "marketplace", access: "absent" }],
+              allowedActions: ["add"],
+            },
+          ],
+        },
+      }),
+    ).not.toBeNull();
+    expect(
+      parseStoredHotelSetupTrackCommandResult({
+        ok: false,
+        error: { code: "track_revision_conflict", currentRevision: 1 },
+      }),
+    ).not.toBeNull();
+  });
+
+  it.each([
+    {},
+    { ok: true, response: {} },
+    { ok: true, response: { trackRevision: 1, selectedTracks: [], tracks: [] } },
+    { ok: false },
+    { ok: false, error: {} },
+    { ok: false, error: { code: "unknown_error" } },
+  ])("rejects malformed persisted result metadata: %j", (stored) => {
+    expect(parseStoredHotelSetupTrackCommandResult(stored)).toBeNull();
+  });
+});
 
 describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () => {
   const organizationIds: string[] = [];
@@ -209,7 +258,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
        )
        VALUES (
          $1::uuid, 'booking', 'booking-engine', 'suspended',
-         $2::timestamptz + interval '1 day', '{"source":"adaptive_hotel_setup"}'::jsonb
+         $2::timestamptz, '{"source":"adaptive_hotel_setup"}'::jsonb
        )`,
       [suspended.organizationId, occurredAt],
     );
@@ -384,6 +433,48 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     });
     expect(await linkedProducts(suspendedBilling.organizationId)).toEqual([]);
 
+    const futureBilling = await createFixture();
+    const futureBillingIdentity = await client.query<{ id: string }>(
+      `INSERT INTO identity.product_entitlements (
+         organization_id, product, entitlement_key, status, starts_at, metadata
+       )
+       VALUES (
+         $1::uuid, 'pms', 'property-management', 'active', $2::timestamptz,
+         '{"source":"finance"}'::jsonb
+       )
+       RETURNING id`,
+      [futureBilling.organizationId, occurredAt],
+    );
+    await client.query(
+      `INSERT INTO finance.billing_entitlements (
+         organization_id, identity_entitlement_id, product, entitlement_key,
+         billing_status, billing_provider, starts_at
+       )
+       VALUES (
+         $1::uuid, $2::uuid, 'pms', 'property-management', 'suspended', 'manual',
+         $3::timestamptz + interval '1 day'
+       )`,
+      [futureBilling.organizationId, futureBillingIdentity.rows[0]!.id, occurredAt],
+    );
+    const futureBillingResult = await repository.updateTracks(
+      command(futureBilling, {
+        selectedTracks: ["hotel_operations"],
+        expectedRevision: 0,
+        idempotencyKey: "setup-future-billing-suspension",
+      }),
+    );
+    expect(
+      futureBillingResult.ok
+        ? futureBillingResult.response.tracks.find((track) => track.track === "hotel_operations")
+        : null,
+    ).toMatchObject({
+      provisioning: "active",
+      components: [
+        { product: "pms", access: "active" },
+        { product: "booking", access: "active" },
+      ],
+    });
+
     const resourceScoped = await createFixture();
     const secondPropertyId = await addProperty(resourceScoped.organizationId);
     await client.query(
@@ -397,6 +488,18 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
          '{"source":"finance"}'::jsonb
       )`,
       [resourceScoped.organizationId, resourceScoped.propertyId, occurredAt],
+    );
+    await client.query(
+      `INSERT INTO identity.product_entitlements (
+         organization_id, product, entitlement_key, status,
+         resource_product, resource_type, resource_id, starts_at, metadata
+       )
+       VALUES (
+         $1::uuid, 'pms', 'property-management', 'suspended',
+         'pms', 'pms_property', $2, $3::timestamptz,
+         '{"source":"finance"}'::jsonb
+       )`,
+      [resourceScoped.organizationId, secondPropertyId, occurredAt],
     );
     await client.query(
       `INSERT INTO finance.billing_entitlements (
@@ -445,10 +548,46 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         : null,
     ).toMatchObject({
       provisioning: "blocked",
-      components: [{ product: "marketplace", access: "unavailable" }],
+      components: [{ product: "marketplace", access: "absent" }],
     });
     expect(await selectedProducts(profileOperator.organizationId)).toEqual([]);
     expect(await linkedProducts(profileOperator.organizationId)).toEqual([]);
+
+    const mixedMarketplace = await createFixture();
+    const mixedMarketplaceCreated = await repository.updateTracks(
+      command(mixedMarketplace, {
+        selectedTracks: ["creator_marketplace"],
+        expectedRevision: 0,
+        idempotencyKey: "setup-mixed-marketplace",
+      }),
+    );
+    expect(mixedMarketplaceCreated.ok).toBe(true);
+    const conflictedPropertyId = await addProperty(mixedMarketplace.organizationId);
+    const conflictedOwner = await createOrganizationForProperty(conflictedPropertyId);
+    await client.query(
+      `INSERT INTO marketplace.marketplace_hotel_profiles (
+         property_id, organization_id, source_system, source_hotel_profile_id
+       )
+       VALUES ($1::uuid, $2::uuid, 'marketplace', $1)`,
+      [conflictedPropertyId, conflictedOwner.organizationId],
+    );
+    const mixedMarketplaceStatus = await repository.updateTracks(
+      command(mixedMarketplace, {
+        selectedTracks: ["creator_marketplace"],
+        expectedRevision: 1,
+        idempotencyKey: "setup-mixed-marketplace-status",
+      }),
+    );
+    expect(
+      mixedMarketplaceStatus.ok
+        ? mixedMarketplaceStatus.response.tracks.find(
+            (track) => track.track === "creator_marketplace",
+          )
+        : null,
+    ).toMatchObject({
+      provisioning: "blocked",
+      components: [{ product: "marketplace", access: "active" }],
+    });
   });
 
   it("serializes first writes and rolls the whole command back on audit failure", async () => {

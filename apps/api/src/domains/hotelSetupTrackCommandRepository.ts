@@ -4,6 +4,7 @@ import type { RequestAuditMetadata } from "@vayada/backend-auth";
 import {
   SETUP_TRACKS,
   SETUP_TRACK_COMPONENT_PRODUCTS,
+  isSetupTrack,
   type SetupCommandError,
   type SetupComponentProduct,
   type SetupTrack,
@@ -50,6 +51,7 @@ type EntitlementRow = {
 type BillingRow = {
   product: SetupComponentProduct;
   billingStatus: string;
+  startsAt: Date | string | null;
   expiresAt: Date | string | null;
 };
 
@@ -64,6 +66,11 @@ type ProductLink = CatalogLink & {
 };
 
 type ComponentAccess = TrackStatus["components"][number]["access"];
+type ProvisioningState = {
+  access: Record<SetupComponentProduct, ComponentAccess>;
+  links: ProductLink[];
+  marketplaceProfileConflict: boolean;
+};
 
 const OPERATION = "hotel_setup.tracks.update";
 const SETUP_SOURCE = "adaptive_hotel_setup";
@@ -274,7 +281,7 @@ async function loadProvisioningState(
   organizationId: string,
   catalogLinks: CatalogLink[],
   now: Date,
-): Promise<{ access: Record<SetupComponentProduct, ComponentAccess>; links: ProductLink[] }> {
+): Promise<ProvisioningState> {
   const entitlements = await client.query<EntitlementRow>(
     `SELECT
        product,
@@ -297,7 +304,11 @@ async function loadProvisioningState(
     [organizationId, COMPONENT_PRODUCTS],
   );
   const billing = await client.query<BillingRow>(
-    `SELECT product, billing_status AS "billingStatus", expires_at AS "expiresAt"
+    `SELECT
+       product,
+       billing_status AS "billingStatus",
+       starts_at AS "startsAt",
+       expires_at AS "expiresAt"
      FROM finance.billing_entitlements
      WHERE organization_id = $1::uuid
        AND product = ANY($2::text[])
@@ -341,7 +352,6 @@ async function loadProvisioningState(
       componentAccess(product, entitlements.rows, billing.rows, now),
     ]),
   ) as Record<SetupComponentProduct, ComponentAccess>;
-  if (marketplaceProfileConflicts.rowCount) access.marketplace = "unavailable";
   return {
     access,
     links: links.rows.filter((link) =>
@@ -350,6 +360,7 @@ async function loadProvisioningState(
           catalog.propertyId === link.propertyId && catalog.relationship === link.relationship,
       ),
     ),
+    marketplaceProfileConflict: (marketplaceProfileConflicts.rowCount ?? 0) > 0,
   };
 }
 
@@ -362,7 +373,10 @@ function componentAccess(
   const productEntitlements = entitlements.filter((row) => row.product === product);
   const accountEntitlements = productEntitlements.filter(isAccountScoped);
   const productBilling = billing.filter((row) => row.product === product);
-  const currentBilling = productBilling.filter(
+  const startedBilling = productBilling.filter(
+    (row) => !row.startsAt || new Date(row.startsAt) <= now,
+  );
+  const currentBilling = startedBilling.filter(
     (row) => !row.expiresAt || new Date(row.expiresAt) > now,
   );
   if (currentBilling.some((row) => ["past_due", "suspended"].includes(row.billingStatus))) {
@@ -375,17 +389,20 @@ function componentAccess(
       (!row.startsAt || new Date(row.startsAt) <= now) &&
       (!row.expiresAt || new Date(row.expiresAt) > now),
   );
-  const suspended = productEntitlements.some(
-    (row) => row.status === "suspended" && (!row.expiresAt || new Date(row.expiresAt) > now),
+  const suspended = accountEntitlements.some(
+    (row) =>
+      row.status === "suspended" &&
+      (!row.startsAt || new Date(row.startsAt) <= now) &&
+      (!row.expiresAt || new Date(row.expiresAt) > now),
   );
   if (suspended) return "suspended";
   const billingAllowsAccess = currentBilling.some((row) =>
     ["trialing", "active"].includes(row.billingStatus),
   );
-  if (active && (productBilling.length === 0 || billingAllowsAccess)) return "active";
+  if (active && (startedBilling.length === 0 || billingAllowsAccess)) return "active";
 
   const externalCanonicalRow = accountEntitlements.some((row) => row.source !== SETUP_SOURCE);
-  return externalCanonicalRow || productBilling.length > 0 ? "unavailable" : "absent";
+  return externalCanonicalRow || startedBilling.length > 0 ? "unavailable" : "absent";
 }
 
 function isAccountScoped(row: EntitlementRow): boolean {
@@ -394,20 +411,23 @@ function isAccountScoped(row: EntitlementRow): boolean {
 
 function trackIsBlocked(
   track: SetupTrack,
-  state: { access: Record<SetupComponentProduct, ComponentAccess>; links: ProductLink[] },
+  state: ProvisioningState,
   catalogLinks: CatalogLink[],
 ): boolean {
-  return SETUP_TRACK_COMPONENT_PRODUCTS[track].some(
-    (product) =>
-      state.access[product] === "suspended" ||
-      state.access[product] === "unavailable" ||
-      hasBlockedLink(product, state.links, catalogLinks),
+  return (
+    (track === "creator_marketplace" && state.marketplaceProfileConflict) ||
+    SETUP_TRACK_COMPONENT_PRODUCTS[track].some(
+      (product) =>
+        state.access[product] === "suspended" ||
+        state.access[product] === "unavailable" ||
+        hasBlockedLink(product, state.links, catalogLinks),
+    )
   );
 }
 
 function trackIsActive(
   track: SetupTrack,
-  state: { access: Record<SetupComponentProduct, ComponentAccess>; links: ProductLink[] },
+  state: ProvisioningState,
   catalogLinks: CatalogLink[],
 ): boolean {
   return SETUP_TRACK_COMPONENT_PRODUCTS[track].every(
@@ -609,7 +629,7 @@ async function initializeProductRecords(
 function toTrackStatus(
   track: SetupTrack,
   selectedTracks: SetupTrack[],
-  state: { access: Record<SetupComponentProduct, ComponentAccess>; links: ProductLink[] },
+  state: ProvisioningState,
   catalogLinks: CatalogLink[],
 ): TrackStatus {
   const selected = selectedTracks.includes(track);
@@ -657,9 +677,7 @@ async function findReplay(
   if (existing.status !== "completed") return conflict("command_in_progress");
 
   const stored = existing.idempotencyMetadata["result"];
-  return isRecord(stored)
-    ? (stored as HotelSetupTrackCommandResult)
-    : conflict("idempotency_key_conflict");
+  return parseStoredHotelSetupTrackCommandResult(stored) ?? conflict("idempotency_key_conflict");
 }
 
 async function reserveIdempotency(
@@ -824,6 +842,92 @@ function conflict(
     ok: false,
     error: { code, ...(currentRevision === undefined ? {} : { currentRevision }) },
   };
+}
+
+const SETUP_COMMAND_ERROR_CODES = [
+  "invalid_setup_request",
+  "track_revision_conflict",
+  "idempotency_key_conflict",
+  "command_in_progress",
+  "track_removal_requires_service_management",
+] as const satisfies readonly SetupCommandError["code"][];
+
+export function parseStoredHotelSetupTrackCommandResult(
+  value: unknown,
+): HotelSetupTrackCommandResult | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, value["ok"] === true ? ["ok", "response"] : ["ok", "error"])
+  ) {
+    return null;
+  }
+  if (value["ok"] === true && isUpdateTracksResponse(value["response"])) {
+    return { ok: true, response: value["response"] };
+  }
+  if (value["ok"] === false && isSetupCommandError(value["error"])) {
+    return { ok: false, error: value["error"] };
+  }
+  return null;
+}
+
+function isUpdateTracksResponse(value: unknown): value is UpdateTracksResponse {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["trackRevision", "selectedTracks", "tracks"]) ||
+    !isRevision(value["trackRevision"]) ||
+    !Array.isArray(value["selectedTracks"]) ||
+    value["selectedTracks"].some((track) => !isSetupTrack(track)) ||
+    new Set(value["selectedTracks"]).size !== value["selectedTracks"].length ||
+    !Array.isArray(value["tracks"]) ||
+    value["tracks"].length !== SETUP_TRACKS.length
+  ) {
+    return false;
+  }
+  return value["tracks"].every((track, index) => isTrackStatus(track, SETUP_TRACKS[index]!));
+}
+
+function isTrackStatus(value: unknown, expectedTrack: SetupTrack): value is TrackStatus {
+  const products = SETUP_TRACK_COMPONENT_PRODUCTS[expectedTrack];
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["track", "provisioning", "components", "allowedActions"]) &&
+    value["track"] === expectedTrack &&
+    ["not_selected", "active", "blocked"].includes(String(value["provisioning"])) &&
+    Array.isArray(value["components"]) &&
+    value["components"].length === products.length &&
+    value["components"].every(
+      (component, index) =>
+        isRecord(component) &&
+        hasOnlyKeys(component, ["product", "access"]) &&
+        component["product"] === products[index] &&
+        ["absent", "active", "suspended", "unavailable"].includes(String(component["access"])),
+    ) &&
+    Array.isArray(value["allowedActions"]) &&
+    value["allowedActions"].every((action) => action === "add" || action === "manage_service") &&
+    new Set(value["allowedActions"]).size === value["allowedActions"].length
+  );
+}
+
+function isSetupCommandError(value: unknown): value is SetupCommandError {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(
+      value,
+      value["currentRevision"] === undefined ? ["code"] : ["code", "currentRevision"],
+    ) &&
+    SETUP_COMMAND_ERROR_CODES.includes(value["code"] as SetupCommandError["code"]) &&
+    (value["currentRevision"] === undefined || isRevision(value["currentRevision"]))
+  );
+}
+
+function isRevision(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return (
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+  );
 }
 
 function sameTracks(left: SetupTrack[], right: SetupTrack[]): boolean {
