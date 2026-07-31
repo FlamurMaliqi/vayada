@@ -1,20 +1,19 @@
 {
-  "contractVersion": "platform-media-upload.v1",
   "cases": [
     {
       "caseId": "property-gallery-upload-session",
-      "description": "An authorized hotel owner uploads public property gallery media to the canonical property.",
+      "contractVersion": "platform-media-upload.v2",
+      "description": "An authorized hotel owner stages private property gallery media for a later CAS assignment.",
       "request": {
         "path": "/api/media/upload-sessions",
         "method": "POST",
         "body": {
           "purpose": "property.gallery_image",
-          "visibility": "public",
+          "visibility": "private",
           "resource": {
-            "product": "booking",
-            "resourceType": "booking_hotel",
-            "resourceId": "booking_hotel_alpenrose",
-            "propertyId": "property_alpenrose"
+            "product": "hotel_catalog",
+            "resourceType": "property",
+            "resourceId": "00000000-0000-4000-8000-000000000040"
           },
           "files": [
             {
@@ -39,17 +38,14 @@
       },
       "expected": {
         "status": 201,
-        "requestedVisibility": "public",
-        "effectiveVisibility": "public",
+        "requestedVisibility": "private",
+        "effectiveVisibility": "private",
         "finalizeStatus": 200,
         "mediaObjectCount": 1,
         "mediaObject": {
           "purpose": "property.gallery_image",
-          "resourceProduct": "hotel_catalog",
-          "resourceType": "property",
-          "resourceId": "property_alpenrose",
-          "approvalStatus": "approved",
-          "lifecycleStatus": "active"
+          "status": "private_ready",
+          "publicVariants": []
         },
         "requiredVariants": ["original_safe", "large", "thumbnail", "blur_preview"],
         "sideEffects": ["variant_generation", "audit_event"]
@@ -57,18 +53,18 @@
     },
     {
       "caseId": "property-gallery-batch-upload-session",
+      "contractVersion": "platform-media-upload.v2",
       "description": "Gallery upload sessions sign and finalize one media object per file.",
       "request": {
         "path": "/api/media/upload-sessions",
         "method": "POST",
         "body": {
           "purpose": "property.gallery_image",
-          "visibility": "public",
+          "visibility": "private",
           "resource": {
-            "product": "booking",
-            "resourceType": "booking_hotel",
-            "resourceId": "booking_hotel_alpenrose",
-            "propertyId": "property_alpenrose"
+            "product": "hotel_catalog",
+            "resourceType": "property",
+            "resourceId": "00000000-0000-4000-8000-000000000040"
           },
           "files": [
             {
@@ -104,8 +100,8 @@
       },
       "expected": {
         "status": 201,
-        "requestedVisibility": "public",
-        "effectiveVisibility": "public",
+        "requestedVisibility": "private",
+        "effectiveVisibility": "private",
         "finalizeStatus": 200,
         "mediaObjectCount": 2,
         "requiredVariants": ["original_safe", "large", "thumbnail", "blur_preview"],
@@ -114,18 +110,19 @@
     },
     {
       "caseId": "property-gallery-deny-unresolved-property-target",
-      "description": "Property media cannot claim an arbitrary catalog property ID from a booking hotel link.",
+      "contractVersion": "platform-media-upload.v2",
+      "description": "Property media cannot claim a second property ID beside its canonical resource.",
       "request": {
         "path": "/api/media/upload-sessions",
         "method": "POST",
         "body": {
           "purpose": "property.gallery_image",
-          "visibility": "public",
+          "visibility": "private",
           "resource": {
-            "product": "booking",
-            "resourceType": "booking_hotel",
-            "resourceId": "booking_hotel_alpenrose",
-            "propertyId": "property_elsewhere"
+            "product": "hotel_catalog",
+            "resourceType": "property",
+            "resourceId": "00000000-0000-4000-8000-000000000040",
+            "propertyId": "00000000-0000-4000-8000-000000000099"
           },
           "files": [
             {
@@ -138,12 +135,13 @@
         }
       },
       "expected": {
-        "status": 403,
-        "errorCode": "media_target_forbidden"
+        "status": 400,
+        "errorCode": "invalid_resource_scope"
       }
     },
     {
       "caseId": "private-chat-attachment-rejects-public-visibility",
+      "contractVersion": "platform-media-upload.v1",
       "description": "Collaboration chat attachments are private only.",
       "request": {
         "path": "/api/media/upload-sessions",
@@ -172,18 +170,18 @@
     },
     {
       "caseId": "property-hero-rejects-pdf",
-      "description": "Public property image purposes reject non-image files before signing.",
+      "contractVersion": "platform-media-upload.v2",
+      "description": "Private property image staging rejects non-image files before signing.",
       "request": {
         "path": "/api/media/upload-sessions",
         "method": "POST",
         "body": {
           "purpose": "property.hero_image",
-          "visibility": "public",
-          "expectedProfileRevision": 1,
+          "visibility": "private",
           "resource": {
-            "product": "booking",
-            "resourceType": "booking_hotel",
-            "resourceId": "booking_hotel_alpenrose"
+            "product": "hotel_catalog",
+            "resourceType": "property",
+            "resourceId": "00000000-0000-4000-8000-000000000040"
           },
           "files": [
             {
@@ -201,19 +199,19 @@
     },
     {
       "caseId": "pms-room-type-media-upload-session",
+      "contractVersion": "platform-media-upload.v2",
       "description": "PMS room type images use platform media sessions and target the PMS room type media snapshot.",
       "request": {
         "path": "/api/media/upload-sessions",
         "method": "POST",
         "body": {
           "purpose": "pms.room_type.media",
-          "visibility": "public",
+          "visibility": "private",
           "resource": {
-            "product": "pms",
-            "resourceType": "pms_hotel",
-            "resourceId": "pms_hotel_alpenrose",
-            "propertyId": "property_alpenrose",
-            "targetResourceId": "room_type_suite"
+            "product": "hotel_catalog",
+            "resourceType": "property",
+            "resourceId": "00000000-0000-4000-8000-000000000040",
+            "targetResourceId": "00000000-0000-4000-8000-000000000050"
           },
           "files": [
             {
@@ -237,17 +235,14 @@
       },
       "expected": {
         "status": 201,
-        "requestedVisibility": "public",
+        "requestedVisibility": "private",
         "effectiveVisibility": "private",
         "finalizeStatus": 200,
         "mediaObjectCount": 1,
         "mediaObject": {
           "purpose": "pms.room_type.media",
-          "resourceProduct": "pms",
-          "resourceType": "room_type",
-          "resourceId": "room_type_suite",
-          "approvalStatus": "pending_domain_approval",
-          "lifecycleStatus": "staged"
+          "status": "private_ready",
+          "publicVariants": []
         },
         "requiredVariants": ["original_safe", "large", "thumbnail", "blur_preview"],
         "sideEffects": ["variant_generation", "audit_event"]
@@ -255,6 +250,7 @@
     },
     {
       "caseId": "marketplace-creator-profile-upload-session",
+      "contractVersion": "platform-media-upload.v1",
       "description": "Creator profile image uploads use the marketplace creator profile resource and return a platform media object ID.",
       "request": {
         "path": "/api/media/upload-sessions",
@@ -307,6 +303,7 @@
     },
     {
       "caseId": "pms-import-source-image-job",
+      "contractVersion": "platform-media-import.v1",
       "description": "PMS external source images queue a platform media import job instead of PMS-owned downloads.",
       "request": {
         "path": "/api/media/imports",
@@ -340,6 +337,7 @@
     },
     {
       "caseId": "marketplace-offer-media-upload-session",
+      "contractVersion": "platform-media-upload.v1",
       "description": "Marketplace offer media batches through platform media and returns one media object per file.",
       "request": {
         "path": "/api/media/upload-sessions",

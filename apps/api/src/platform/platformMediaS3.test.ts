@@ -11,9 +11,10 @@ import { Readable } from "node:stream";
 import sharp from "sharp";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type {
-  PlatformMediaPurposePolicy,
-  PlatformMediaSessionRecord,
+import {
+  PlatformMediaStagingChangedError,
+  type PlatformMediaPurposePolicy,
+  type PlatformMediaSessionRecord,
 } from "../routes/platformMedia.js";
 import { createS3PlatformMediaAdapter } from "./platformMediaS3.js";
 
@@ -386,7 +387,12 @@ describe("S3 platform profile media adapter", () => {
     }
   });
 
-  it("deletes every generated variant by exact key and refuses another media namespace", async () => {
+  it.each([
+    "property.hero_image",
+    "property.gallery_image",
+    "property.logo",
+    "pms.room_type.media",
+  ] as const)("keeps finalized hotel media variants private for %s", async (purpose) => {
     const source = await validJpeg();
     const { client, send } = fakeS3(async (command) =>
       command instanceof GetObjectCommand
@@ -394,97 +400,42 @@ describe("S3 platform profile media adapter", () => {
         : {},
     );
     const adapter = createAdapter(client);
-    const { session, file } = await inspectValidUpload(adapter, source);
-    const variants = await adapter.generateVariants({ session, file, fileIndex: 0, policy });
-    send.mockClear();
-
-    await adapter.cleanupGeneratedVariants!({ session, file, variants });
-
-    expect(
-      send.mock.calls.map(([command]) => {
-        expect(command).toBeInstanceOf(DeleteObjectCommand);
-        return (command as DeleteObjectCommand).input;
-      }),
-    ).toEqual(
-      variants.map((variant) => ({
-        Bucket: bucketName,
-        Key: variant.storageKey,
-      })),
-    );
-
-    const cleanupError = new Error("one delete failed");
-    send.mockImplementation(async (command) => {
-      if (command instanceof DeleteObjectCommand && command.input.Key === variants[0]!.storageKey) {
-        throw cleanupError;
-      }
-      return {};
+    const hotelPolicy = propertyPolicy(purpose);
+    const session = propertySession(source.length, purpose);
+    const sessionFile = session.files[0]!;
+    const uploadTarget = session.uploadTargets[0]!;
+    const inspected = await adapter.inspectUploadedFile({
+      session,
+      sessionFile,
+      uploadTarget,
+      clientFile: { uploadTargetId },
+      policy: hotelPolicy,
     });
-    await expect(adapter.cleanupGeneratedVariants!({ session, file, variants })).rejects.toThrow(
-      "One or more generated variants could not be deleted",
-    );
-    expect(send).toHaveBeenCalledTimes(variants.length * 2);
+    if (!inspected.ok) throw new Error("Expected hotel image inspection to succeed");
 
-    send.mockClear();
-    await expect(
-      adapter.cleanupGeneratedVariants!({
-        session,
-        file,
-        variants: [
-          {
-            ...variants[0]!,
-            storageKey: variants[0]!.storageKey.replace(`/${mediaId}/`, "/another-media/"),
-          },
-        ],
-      }),
-    ).rejects.toThrow("restricted to the exact media namespace");
-    expect(send).not.toHaveBeenCalled();
+    const variants = await adapter.generateVariants({
+      session,
+      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+      fileIndex: 0,
+      policy: hotelPolicy,
+    });
+
+    expect(variants).toHaveLength(hotelPolicy.requiredVariants.length);
+    expect(
+      variants.every(
+        (variant) =>
+          variant.visibility === "private" &&
+          variant.publicCdnUrl === null &&
+          variant.storageKey.startsWith("private/media/"),
+      ),
+    ).toBe(true);
+    const puts = send.mock.calls
+      .map(([command]) => command)
+      .filter((command): command is PutObjectCommand => command instanceof PutObjectCommand);
+    expect(puts).toHaveLength(hotelPolicy.requiredVariants.length);
+    expect(puts.every((put) => put.input.CacheControl === privateCacheControl)).toBe(true);
+    expect(puts.every((put) => put.input.Key?.startsWith("private/media/"))).toBe(true);
   });
-
-  it.each(["property.hero_image", "property.gallery_image"] as const)(
-    "publishes approved Booking %s variants through the configured CDN",
-    async (purpose) => {
-      const source = await validJpeg();
-      const { client, send } = fakeS3(async (command) =>
-        command instanceof GetObjectCommand
-          ? { ContentLength: source.length, Body: Readable.from([source]) }
-          : {},
-      );
-      const adapter = createAdapter(client);
-      const bookingPolicy = propertyPolicy(purpose);
-      const session = propertySession(source.length, purpose);
-      const sessionFile = session.files[0]!;
-      const uploadTarget = session.uploadTargets[0]!;
-      const inspected = await adapter.inspectUploadedFile({
-        session,
-        sessionFile,
-        uploadTarget,
-        clientFile: { uploadTargetId },
-        policy: bookingPolicy,
-      });
-      if (!inspected.ok) throw new Error("Expected Booking image inspection to succeed");
-
-      const variants = await adapter.generateVariants({
-        session,
-        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
-        fileIndex: 0,
-        policy: bookingPolicy,
-      });
-
-      expect(variants).toHaveLength(bookingPolicy.requiredVariants.length);
-      expect(
-        variants.every(
-          (variant) =>
-            variant.visibility === "public" &&
-            variant.publicCdnUrl?.startsWith("https://cdn.vayada.test/") === true,
-        ),
-      ).toBe(true);
-      const puts = send.mock.calls
-        .map(([command]) => command)
-        .filter((command): command is PutObjectCommand => command instanceof PutObjectCommand);
-      expect(puts).toHaveLength(bookingPolicy.requiredVariants.length);
-      expect(puts.every((put) => put.input.CacheControl === cacheControl)).toBe(true);
-    },
-  );
 
   it("rejects marketplace offer variants that bypass pending approval", async () => {
     const source = await validJpeg();
@@ -572,7 +523,7 @@ describe("S3 platform profile media adapter", () => {
     ).resolves.toMatchObject({ ok: false, code: "media_type_mismatch" });
   });
 
-  it("clears inspected bytes when staging cleanup fails", async () => {
+  it("refetches inspected bytes when staging cleanup fails", async () => {
     const source = await validJpeg();
     const cleanupError = new Error("cleanup unavailable");
     const { client } = fakeS3(async (command) => {
@@ -586,12 +537,12 @@ describe("S3 platform profile media adapter", () => {
     const { session, file } = await inspectValidUpload(adapter, source);
 
     await expect(adapter.cleanupUploadedFile!({ session, file })).rejects.toBe(cleanupError);
-    await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
-      "Image must be inspected before variants are generated",
-    );
+    await expect(
+      adapter.generateVariants({ session, file, fileIndex: 0, policy }),
+    ).resolves.toHaveLength(policy.requiredVariants.length);
   });
 
-  it("clears inspected bytes before staging cleanup settles", async () => {
+  it("does not retain or depend on inspected bytes while staging cleanup settles", async () => {
     const source = await validJpeg();
     const { client } = fakeS3(async (command) => {
       if (command instanceof GetObjectCommand) {
@@ -605,12 +556,12 @@ describe("S3 platform profile media adapter", () => {
 
     void adapter.cleanupUploadedFile!({ session, file });
 
-    await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
-      "Image must be inspected before variants are generated",
-    );
+    await expect(
+      adapter.generateVariants({ session, file, fileIndex: 0, policy }),
+    ).resolves.toHaveLength(policy.requiredVariants.length);
   });
 
-  it("clears inspected bytes when variant generation rejects private visibility", async () => {
+  it("allows a fresh verified generation after a visibility validation failure", async () => {
     const source = await validJpeg();
     const { client } = fakeS3(async (command) =>
       command instanceof GetObjectCommand
@@ -628,8 +579,128 @@ describe("S3 platform profile media adapter", () => {
         policy,
       }),
     ).rejects.toThrow("Auto-approved image variants require public visibility");
+    await expect(
+      adapter.generateVariants({ session, file, fileIndex: 0, policy }),
+    ).resolves.toHaveLength(policy.requiredVariants.length);
+  });
+
+  it("rejects staged bytes changed after inspection before writing variants", async () => {
+    const source = await validJpeg();
+    const changed = Buffer.from(source);
+    changed[changed.length - 1] = changed[changed.length - 1]! ^ 1;
+    let getCount = 0;
+    const { client, send } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        const bytes = getCount++ === 0 ? source : changed;
+        return { ContentLength: bytes.length, Body: Readable.from([bytes]) };
+      }
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const { session, file } = await inspectValidUpload(adapter, source);
+
     await expect(adapter.generateVariants({ session, file, fileIndex: 0, policy })).rejects.toThrow(
-      "Image must be inspected before variants are generated",
+      "staged image changed after inspection",
+    );
+    expect(send.mock.calls.some(([command]) => command instanceof PutObjectCommand)).toBe(false);
+  });
+
+  it("serializes image work across concurrent upload sessions", async () => {
+    const source = await validJpeg();
+    let activeGets = 0;
+    let maxActiveGets = 0;
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        activeGets += 1;
+        maxActiveGets = Math.max(maxActiveGets, activeGets);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeGets -= 1;
+        return { ContentLength: source.length, Body: Readable.from([source]) };
+      }
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const first = profileSession(source.length);
+    const second: PlatformMediaSessionRecord = {
+      ...profileSession(source.length),
+      sessionId: "session_01J_SECOND",
+      uploadTargets: [
+        {
+          ...profileSession(source.length).uploadTargets[0]!,
+          stagingKey: "staging/session_01J_SECOND/1/profile.jpg",
+        },
+      ],
+    };
+
+    await Promise.all(
+      [first, second].map((session) =>
+        adapter.inspectUploadedFile({
+          session,
+          sessionFile: session.files[0]!,
+          uploadTarget: session.uploadTargets[0]!,
+          clientFile: { uploadTargetId: session.files[0]!.uploadTargetId },
+          policy,
+        }),
+      ),
+    );
+
+    expect(maxActiveGets).toBe(1);
+  });
+
+  it("serializes mixed generation and inspection across the adapter", async () => {
+    const source = await validJpeg();
+    const events: string[] = [];
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        events.push(`get:start:${command.input.Key}`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        events.push(`get:end:${command.input.Key}`);
+        return { ContentLength: source.length, Body: Readable.from([source]) };
+      }
+      if (command instanceof PutObjectCommand) {
+        events.push(`put:${command.input.Key}`);
+      }
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const inspected = await inspectValidUpload(adapter, source);
+    const second = profileSession(source.length);
+    second.sessionId = "session_01J_MIXED";
+    second.uploadTargets = [
+      {
+        ...second.uploadTargets[0]!,
+        stagingKey: "staging/session_01J_MIXED/1/profile.jpg",
+      },
+    ];
+    events.length = 0;
+
+    await Promise.all([
+      adapter.generateVariants({
+        session: inspected.session,
+        file: inspected.file,
+        fileIndex: 0,
+        policy,
+      }),
+      adapter.inspectUploadedFile({
+        session: second,
+        sessionFile: second.files[0]!,
+        uploadTarget: second.uploadTargets[0]!,
+        clientFile: { uploadTargetId: second.files[0]!.uploadTargetId },
+        policy,
+      }),
+    ]);
+
+    const secondGet = events.indexOf("get:start:staging/session_01J_MIXED/1/profile.jpg");
+    expect(secondGet).toBeGreaterThan(0);
+    expect(events.slice(0, secondGet)).toEqual(
+      expect.arrayContaining([
+        `get:start:${stagingKey}`,
+        `get:end:${stagingKey}`,
+        expect.stringMatching(/^put:/),
+      ]),
+    );
+    expect(events.slice(secondGet)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/^put:/)]),
     );
   });
 
@@ -654,6 +725,30 @@ describe("S3 platform profile media adapter", () => {
         policy,
       }),
     ).resolves.toMatchObject({ ok: false, code: "media_upload_missing" });
+  });
+
+  it("raises the typed staging-changed error when generation loses the inspected object", async () => {
+    const source = await validJpeg();
+    let getCount = 0;
+    const missing = Object.assign(new Error("missing"), {
+      name: "NoSuchKey",
+      $metadata: { httpStatusCode: 404 },
+    });
+    const { client } = fakeS3(async (command) => {
+      if (command instanceof GetObjectCommand) {
+        if (getCount++ === 0) {
+          return { ContentLength: source.length, Body: Readable.from([source]) };
+        }
+        throw missing;
+      }
+      return {};
+    });
+    const adapter = createAdapter(client);
+    const { session, file } = await inspectValidUpload(adapter, source);
+
+    await expect(
+      adapter.generateVariants({ session, file, fileIndex: 0, policy }),
+    ).rejects.toBeInstanceOf(PlatformMediaStagingChangedError);
   });
 
   it("propagates S3 infrastructure failures", async () => {
@@ -782,6 +877,34 @@ describe("S3 platform profile media adapter", () => {
     ).resolves.toMatchObject({ ok: false, code: "invalid_media_dimensions" });
   });
 
+  it("accepts larger room images within the trusted resize ceiling", async () => {
+    const source = await sharp({
+      create: { width: 6_000, height: 5_000, channels: 3, background: "#334455" },
+    })
+      .jpeg({ quality: 40 })
+      .toBuffer();
+    const { client } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = propertySession(source.length, "pms.room_type.media");
+
+    await expect(
+      adapter.inspectUploadedFile({
+        session,
+        sessionFile: session.files[0]!,
+        uploadTarget: session.uploadTargets[0]!,
+        clientFile: { uploadTargetId },
+        policy: propertyPolicy("pms.room_type.media"),
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      inspection: { widthPx: 6_000, heightPx: 5_000 },
+    });
+  });
+
   it("rejects an oversized S3 object before reading its body", async () => {
     const transformToByteArray = vi.fn(async () => new Uint8Array());
     const { client } = fakeS3(async (command) =>
@@ -883,11 +1006,11 @@ describe("S3 platform profile media adapter", () => {
     const session = profileSession(100);
     const unsupportedPolicy = {
       ...policy,
-      purpose: "property.logo" as const,
+      purpose: "pms.messaging.attachment" as const,
     };
     const unsupportedSession = {
       ...session,
-      purpose: "property.logo" as const,
+      purpose: "pms.messaging.attachment" as const,
     };
     await expect(
       adapter.inspectUploadedFile({
@@ -1025,16 +1148,28 @@ const chatPolicy: PlatformMediaPurposePolicy = {
 };
 
 function propertyPolicy(
-  purpose: "property.hero_image" | "property.gallery_image",
+  purpose:
+    | "property.hero_image"
+    | "property.gallery_image"
+    | "property.logo"
+    | "pms.room_type.media",
 ): PlatformMediaPurposePolicy {
   return {
     ...offerPolicy,
     purpose,
-    allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
-    maxFileCount: purpose === "property.hero_image" ? 1 : 25,
-    autoApprovePublicOnFinalize: true,
-    targetResourceProduct: "hotel_catalog",
-    targetResourceType: "property",
+    allowedResources: [{ product: "hotel_catalog", resourceType: "property" }],
+    maxFileCount:
+      purpose === "property.hero_image" || purpose === "property.logo"
+        ? 1
+        : purpose === "pms.room_type.media"
+          ? 20
+          : 25,
+    autoApprovePublicOnFinalize: undefined,
+    privateOnly: true,
+    maxImagePixels: purpose === "pms.room_type.media" ? 60_000_000 : offerPolicy.maxImagePixels,
+    resizeOversizedPublicImages: purpose === "pms.room_type.media" || undefined,
+    targetResourceProduct: purpose === "pms.room_type.media" ? "pms" : "hotel_catalog",
+    targetResourceType: purpose === "pms.room_type.media" ? "room_type" : "property",
   };
 }
 
@@ -1078,23 +1213,31 @@ function chatSession(sizeBytes: number): PlatformMediaSessionRecord {
 
 function propertySession(
   sizeBytes: number,
-  purpose: "property.hero_image" | "property.gallery_image",
+  purpose:
+    | "property.hero_image"
+    | "property.gallery_image"
+    | "property.logo"
+    | "pms.room_type.media",
 ): PlatformMediaSessionRecord {
+  const roomMedia = purpose === "pms.room_type.media";
   return {
     ...profileSession(sizeBytes),
     purpose,
-    requestedVisibility: "public",
-    effectiveVisibility: "public",
+    requestedVisibility: "private",
+    effectiveVisibility: "private",
     resource: {
-      product: "booking",
-      resourceType: "booking_hotel",
-      resourceId: "booking_hotel_01J_TEST",
+      product: "hotel_catalog",
+      resourceType: "property",
+      resourceId: "00000000-0000-4000-8000-000000000040",
+      ...(roomMedia ? { targetResourceId: "00000000-0000-4000-8000-000000000050" } : {}),
     },
     target: {
-      resourceProduct: "hotel_catalog",
-      resourceType: "property",
-      resourceId: "property_01J_TEST",
-      propertyId: "property_01J_TEST",
+      resourceProduct: roomMedia ? "pms" : "hotel_catalog",
+      resourceType: roomMedia ? "room_type" : "property",
+      resourceId: roomMedia
+        ? "00000000-0000-4000-8000-000000000050"
+        : "00000000-0000-4000-8000-000000000040",
+      propertyId: "00000000-0000-4000-8000-000000000040",
     },
   };
 }

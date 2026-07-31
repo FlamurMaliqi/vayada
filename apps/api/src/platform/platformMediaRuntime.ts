@@ -1,5 +1,8 @@
 import type { MarketplaceCreatorProfileMediaRepository } from "../routes/marketplaceCreatorSelfService.js";
-import type { PlatformMediaRoutesOptions } from "../routes/platformMedia.js";
+import type {
+  HotelMediaUploadSource,
+  PlatformMediaRoutesOptions,
+} from "../routes/platformMedia.js";
 import { createPgPlatformMediaCleanupStore } from "../jobs/platformMediaCleanup.js";
 import {
   createPgS3MarketplaceOfferMediaPromotion,
@@ -17,6 +20,7 @@ export type PlatformMediaRuntimeInput = {
   allowedOrigins?: string[];
   targetDatabaseUrl: string;
   platformMediaServing?: PlatformMediaServingConfig;
+  hotelMediaUploadSource: HotelMediaUploadSource;
 };
 
 export type PlatformMediaRuntimeFactories = {
@@ -54,6 +58,7 @@ export function composePlatformMediaRuntime(
   const repository = factories.createRepository({
     connectionString: input.targetDatabaseUrl,
     publicCdnBaseUrl: input.platformMediaServing.cdnBaseUrl,
+    mediaPathPrefix: input.platformMediaServing.publicPathPrefix,
   });
   const adapter = factories.createAdapter({
     bucketName: input.platformMediaServing.bucketName,
@@ -69,6 +74,17 @@ export function composePlatformMediaRuntime(
     connectionString: input.targetDatabaseUrl,
     objectDeleter: adapter,
   });
+  const enabledPurposes: PlatformMediaRoutesOptions["enabledPurposes"] = [
+    "identity.user.profile_image",
+    "property.hero_image",
+    "property.gallery_image",
+    "marketplace.creator.profile_image",
+    "marketplace.offer.media",
+    "marketplace.collaboration_chat.attachment",
+    ...(input.hotelMediaUploadSource === "target"
+      ? (["property.logo", "pms.room_type.media"] as const)
+      : []),
+  ];
 
   return {
     profileMediaRepository: repository,
@@ -84,15 +100,10 @@ export function composePlatformMediaRuntime(
       signer: adapter,
       targetResolver: repository,
       finalizer: adapter,
-      enabledPurposes: [
-        "identity.user.profile_image",
-        "property.hero_image",
-        "property.gallery_image",
-        "marketplace.creator.profile_image",
-        "marketplace.offer.media",
-        "marketplace.collaboration_chat.attachment",
-      ],
+      enabledPurposes,
       bucketName: input.platformMediaServing.bucketName,
+      mediaPathPrefix: input.platformMediaServing.publicPathPrefix,
+      hotelMediaUploadSource: input.hotelMediaUploadSource,
       allowedOrigins: input.allowedOrigins ?? [],
     },
   };

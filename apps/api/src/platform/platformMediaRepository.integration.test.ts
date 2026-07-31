@@ -1,8 +1,8 @@
+import { PROPERTY_MEDIA_PUBLIC_VARIANTS } from "@vayada/domain-hotels";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { PlatformMediaSessionRecord } from "../routes/platformMedia.js";
-import { PlatformMediaProfileRevisionConflictError } from "../routes/platformMedia.js";
 import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -12,7 +12,7 @@ const propertyId = "96969696-9696-4696-8696-969696969603";
 const initialSessionId = "96969696-9696-4696-8696-969696969604";
 const staleSessionId = "96969696-9696-4696-8696-969696969605";
 
-describe.skipIf(!TEST_DATABASE_URL)("property hero media profile revision CAS", () => {
+describe.skipIf(!TEST_DATABASE_URL)("property hero media private staging", () => {
   const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
   const repository = createPgPlatformMediaRepository({
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
@@ -46,14 +46,14 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media profile revision CAS", 
     await client.end();
   });
 
-  it("preserves the current hero and rolls back all media rows when finalization is stale", async () => {
-    const initialSession = await createSession(initialSessionId, 1);
+  it("does not assign media or advance the property revision during finalization", async () => {
+    const initialSession = await createSession(initialSessionId);
     const initialMediaId = initialSession.files[0]!.mediaId;
-    await repository.completeUploadSession(completionInput(initialSession, "initial"));
+    await repository.completeUploadSession(completionInput(initialSession));
 
-    await expect(readPropertyRevision()).resolves.toBe(2);
-    const staleSession = await createSession(staleSessionId, 2);
-    const staleMediaId = staleSession.files[0]!.mediaId;
+    await expect(readPropertyRevision()).resolves.toBe(1);
+    const secondSession = await createSession(staleSessionId);
+    const secondMediaId = secondSession.files[0]!.mediaId;
     await client.query(
       `UPDATE hotel_catalog.properties
        SET profile_revision = profile_revision + 1
@@ -62,50 +62,73 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media profile revision CAS", 
     );
 
     await expect(
-      repository.completeUploadSession(completionInput(staleSession, "stale")),
-    ).rejects.toMatchObject({
-      name: PlatformMediaProfileRevisionConflictError.name,
-      code: "profile_revision_conflict",
-      currentRevision: 3,
+      repository.completeUploadSession(completionInput(secondSession)),
+    ).resolves.toMatchObject({
+      uploadSession: { status: "completed" },
+      mediaObjects: [
+        {
+          mediaId: secondMediaId,
+          visibility: "private",
+          approvalStatus: "private",
+          lifecycleStatus: "staged",
+        },
+      ],
     });
-
-    await expect(readPropertyRevision()).resolves.toBe(3);
-    await expect(
-      client.query<{ mediaId: string }>(
-        `SELECT platform_media_object_id::text AS "mediaId"
-         FROM hotel_catalog.property_media
-         WHERE property_id = $1::uuid
-           AND media_type = 'hero_image'
-           AND public_approved = TRUE`,
-        [propertyId],
-      ),
-    ).resolves.toMatchObject({ rows: [{ mediaId: initialMediaId }] });
+    await expect(readPropertyRevision()).resolves.toBe(2);
     await expect(
       client.query<{ count: string }>(
         `SELECT count(*)::text AS count
-         FROM platform.media_objects
-         WHERE id = $1::uuid`,
-        [staleMediaId],
+         FROM hotel_catalog.property_media
+         WHERE property_id = $1::uuid`,
+        [propertyId],
       ),
     ).resolves.toMatchObject({ rows: [{ count: "0" }] });
     await expect(
-      client.query<{ status: string; expectedRevision: string }>(
-        `SELECT session_status AS status,
-                completion_metadata -> 'session' ->> 'expectedProfileRevision'
-                  AS "expectedRevision"
+      client.query<{ mediaId: string; visibility: string; publicApproved: boolean }>(
+        `SELECT id::text AS "mediaId", visibility,
+                public_approved AS "publicApproved"
+         FROM platform.media_objects
+         WHERE id IN ($1::uuid, $2::uuid)
+         ORDER BY id`,
+        [initialMediaId, secondMediaId],
+      ),
+    ).resolves.toMatchObject({
+      rows: expect.arrayContaining([
+        { mediaId: initialMediaId, visibility: "private", publicApproved: false },
+        { mediaId: secondMediaId, visibility: "private", publicApproved: false },
+      ]),
+    });
+    const persistedVariants = await client.query<{
+      mediaId: string;
+      visibility: string;
+      storageKey: string;
+      publicCdnUrl: string | null;
+    }>(
+      `SELECT media_object_id::text AS "mediaId", visibility,
+              storage_key AS "storageKey", public_cdn_url AS "publicCdnUrl"
+       FROM platform.media_variants
+       WHERE media_object_id IN ($1::uuid, $2::uuid)
+       ORDER BY media_object_id`,
+      [initialMediaId, secondMediaId],
+    );
+    expect(persistedVariants.rows).toHaveLength(2);
+    expect(
+      persistedVariants.rows.every(
+        ({ visibility, storageKey, publicCdnUrl }) =>
+          visibility === "private" && storageKey.startsWith("private/") && publicCdnUrl === null,
+      ),
+    ).toBe(true);
+    await expect(
+      client.query<{ status: string }>(
+        `SELECT session_status AS status
          FROM platform.media_upload_sessions
          WHERE id = $1::uuid`,
         [staleSessionId],
       ),
-    ).resolves.toMatchObject({
-      rows: [{ status: "signed", expectedRevision: "2" }],
-    });
+    ).resolves.toMatchObject({ rows: [{ status: "completed" }] });
   });
 
-  async function createSession(
-    sessionId: string,
-    expectedProfileRevision: number,
-  ): Promise<PlatformMediaSessionRecord> {
+  async function createSession(sessionId: string): Promise<PlatformMediaSessionRecord> {
     return repository.createUploadSession({
       sessionId,
       uploadSessionKey: `media.profile-revision:${sessionId}`,
@@ -116,11 +139,10 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media profile revision CAS", 
       } as never,
       request: {
         purpose: "property.hero_image",
-        visibility: "public",
-        expectedProfileRevision,
+        visibility: "private",
         resource: {
-          product: "marketplace",
-          resourceType: "hotel_profile",
+          product: "hotel_catalog",
+          resourceType: "property",
           resourceId: propertyId,
         },
         files: [
@@ -134,7 +156,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media profile revision CAS", 
       },
       policy: {
         purpose: "property.hero_image",
-        autoApprovePublicOnFinalize: true,
+        privateOnly: true,
       } as never,
       target: {
         resourceProduct: "hotel_catalog",
@@ -168,9 +190,27 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media profile revision CAS", 
     });
   }
 
-  function completionInput(session: PlatformMediaSessionRecord, label: string) {
+  function completionInput(session: PlatformMediaSessionRecord) {
     const mediaId = session.files[0]!.mediaId;
-    const storageKey = `public/properties/platform-media-cas/${mediaId}/original_safe/${label}.webp`;
+    const variantDimensions = {
+      original_safe: { widthPx: 1200, heightPx: 800 },
+      large: { widthPx: 1080, heightPx: 720 },
+      thumbnail: { widthPx: 270, heightPx: 180 },
+      blur_preview: { widthPx: 27, heightPx: 18 },
+    } as const;
+    const variants = PROPERTY_MEDIA_PUBLIC_VARIANTS.map((variantName, index) => {
+      const checksumSha256 = (index + 2).toString(16).repeat(64);
+      return {
+        variantName,
+        visibility: "private" as const,
+        storageKey: `private/media/${mediaId}/${variantName}/sha256-${checksumSha256}.webp`,
+        contentType: "image/webp",
+        ...variantDimensions[variantName],
+        sizeBytes: 900 - index * 100,
+        checksumSha256,
+        publicCdnUrl: null,
+      };
+    });
     return {
       session,
       files: [
@@ -186,21 +226,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media profile revision CAS", 
           },
         },
       ],
-      variantSets: [
-        [
-          {
-            variantName: "original_safe" as const,
-            visibility: "public" as const,
-            storageKey,
-            contentType: "image/webp",
-            widthPx: 1200,
-            heightPx: 800,
-            sizeBytes: 900,
-            checksumSha256: "b".repeat(64),
-            publicCdnUrl: `https://cdn.example.test/${storageKey.slice("public/".length)}`,
-          },
-        ],
-      ],
+      variantSets: [variants],
       bucketName: "vayada-test-media",
       now: "2026-07-27T12:01:00.000Z",
       auditEvent: {

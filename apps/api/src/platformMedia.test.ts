@@ -16,10 +16,12 @@ import {
   createDeterministicPlatformMediaFinalizer,
   createDeterministicPlatformMediaUploadSigner,
   createInMemoryPlatformMediaRepository,
+  PlatformMediaTargetInvalidError,
+  type HotelMediaUploadSource,
   type PlatformMediaObjectRecord,
   type PlatformMediaPurpose,
-  PlatformMediaProfileRevisionConflictError,
   type PlatformMediaRepository,
+  type PlatformMediaSessionRecord,
   type PlatformMediaTargetResolver,
   type PlatformMediaUploadFinalizer,
 } from "./routes/platformMedia.js";
@@ -41,6 +43,10 @@ const uploadContractCases = JSON.parse(
 ) as {
   cases: Array<{
     caseId: string;
+    contractVersion:
+      | "platform-media-upload.v1"
+      | "platform-media-upload.v2"
+      | "platform-media-import.v1";
     request: {
       path: string;
       method: "POST";
@@ -56,7 +62,7 @@ const uploadContractCases = JSON.parse(
       effectiveVisibility?: string;
       finalizeStatus?: number;
       mediaObjectCount?: number;
-      mediaObject?: Record<string, string>;
+      mediaObject?: Record<string, unknown>;
       requiredVariants?: string[];
       sideEffects?: string[];
     };
@@ -102,13 +108,30 @@ type MediaCreateResponse = {
     headers: Record<string, string>;
     expiresAt: string;
   }>;
-  mediaObjects?: PlatformMediaObjectRecord[];
+  mediaObjects?: Array<PlatformMediaObjectRecord | PrivateHotelMediaResponse>;
   sideEffects?: string[];
 };
 
 type MediaFinalizeResponse = {
   mediaObject: PlatformMediaObjectRecord;
   mediaObjects: PlatformMediaObjectRecord[];
+  sideEffects: string[];
+};
+
+type PrivateHotelMediaResponse = {
+  mediaObjectId: string;
+  purpose:
+    | "property.logo"
+    | "property.hero_image"
+    | "property.gallery_image"
+    | "pms.room_type.media";
+  status: "private_ready";
+  publicVariants: [];
+};
+
+type PrivateHotelMediaFinalizeResponse = {
+  mediaObject: PrivateHotelMediaResponse;
+  mediaObjects: PrivateHotelMediaResponse[];
   sideEffects: string[];
 };
 
@@ -134,6 +157,20 @@ type ErrorResponse = {
 };
 
 describe("platform media upload routes", () => {
+  it("labels each fixture with the contract selected by its request shape", () => {
+    for (const contractCase of uploadContractCases.cases) {
+      const body = contractCase.request.body;
+      const resource = body["resource"] as Record<string, unknown> | undefined;
+      const expectedContractVersion =
+        body["purpose"] === "pms.import.source_image"
+          ? "platform-media-import.v1"
+          : resource?.["product"] === "hotel_catalog" && resource["resourceType"] === "property"
+            ? "platform-media-upload.v2"
+            : "platform-media-upload.v1";
+      expect(contractCase.contractVersion, contractCase.caseId).toBe(expectedContractVersion);
+    }
+  });
+
   it("allows browser preflight requests from configured admin origins", async () => {
     const app = buildMediaApp({ allowedOrigins: ["https://admin.booking.localhost"] });
 
@@ -174,7 +211,7 @@ describe("platform media upload routes", () => {
     expect(response.headers.vary).toBe("Origin");
   });
 
-  it("rejects disabled media purposes on create, finalize, and import", async () => {
+  it("rejects disabled media purposes for new work while allowing signed sessions to drain", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     const enabledApp = buildMediaApp({ repository });
     const create = await injectJson(enabledApp, {
@@ -215,13 +252,18 @@ describe("platform media upload routes", () => {
       payload: pmsImportSourceImageCase.request.body,
     });
 
-    for (const response of [createDisabled, finalizeDisabled, importDisabled]) {
+    for (const response of [createDisabled, importDisabled]) {
       expect(response.statusCode).toBe(503);
       expect((response.body as ErrorResponse).code).toBe("media_purpose_unavailable");
     }
+    expect(finalizeDisabled.statusCode).toBe(200);
+    expectPrivateHotelMediaResponse(
+      (finalizeDisabled.body as PrivateHotelMediaFinalizeResponse).mediaObject,
+      "property.gallery_image",
+    );
   });
 
-  it("creates a signed property upload session and finalizes it with public variants", async () => {
+  it("creates and finalizes private property media without exposing storage details", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     const app = buildMediaApp({ repository });
 
@@ -234,7 +276,7 @@ describe("platform media upload routes", () => {
 
     expect(create.statusCode).toBe(propertyGalleryCase.expected.status);
     const createBody = create.body as MediaCreateResponse;
-    expect(createBody.contractVersion).toBe("platform-media-upload.v1");
+    expect(createBody.contractVersion).toBe(propertyGalleryCase.contractVersion);
     expect(createBody.uploadSession.requestedVisibility).toBe(
       propertyGalleryCase.expected.requestedVisibility,
     );
@@ -250,6 +292,7 @@ describe("platform media upload routes", () => {
       },
     });
     expect(createBody.uploadTargets[0]!.uploadUrl).toContain("staging%2F");
+    expect(createBody.uploadTargets[0]).not.toHaveProperty("stagingKey");
     expect(repository.auditEvents).toHaveLength(1);
     expect(repository.auditEvents[0]).toMatchObject({
       action: "platform_media.upload_session.created",
@@ -270,17 +313,25 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(propertyGalleryCase.expected.finalizeStatus);
-    const finalizeBody = finalize.body as MediaFinalizeResponse;
+    const finalizeBody = finalize.body as PrivateHotelMediaFinalizeResponse;
     expect(finalizeBody.mediaObjects).toHaveLength(
       propertyGalleryCase.expected.mediaObjectCount ?? 1,
     );
     expect(finalizeBody.mediaObject).toMatchObject(propertyGalleryCase.expected.mediaObject!);
-    expect(finalizeBody.mediaObject.variants.map((variant) => variant.variantName)).toEqual([
-      ...(propertyGalleryCase.expected.requiredVariants ?? []),
-    ]);
+    expectPrivateHotelMediaResponse(finalizeBody.mediaObject, "property.gallery_image");
+    const completed = repository.sessions.get(createBody.uploadSession.sessionId);
+    expect(completed?.completedMediaObject).toMatchObject({
+      visibility: "private",
+      requestedVisibility: "private",
+      approvalStatus: "private",
+      lifecycleStatus: "staged",
+    });
+    expect(completed?.completedMediaObject?.variants.map((variant) => variant.variantName)).toEqual(
+      [...(propertyGalleryCase.expected.requiredVariants ?? [])],
+    );
     expect(
-      finalizeBody.mediaObject.variants.every(
-        (variant) => variant.publicCdnUrl?.startsWith("https://") === true,
+      completed?.completedMediaObject?.variants.every(
+        (variant) => variant.visibility === "private" && variant.publicCdnUrl === null,
       ),
     ).toBe(true);
     expect(finalizeBody.sideEffects).toEqual(propertyGalleryCase.expected.sideEffects);
@@ -314,9 +365,614 @@ describe("platform media upload routes", () => {
       },
     });
     expect(authenticatedReplay.statusCode).toBe(200);
-    expect((authenticatedReplay.body as { sideEffects: string[] }).sideEffects).toEqual([
-      "idempotency_replay",
-    ]);
+    const authenticatedReplayBody = authenticatedReplay.body as PrivateHotelMediaFinalizeResponse;
+    expectPrivateHotelMediaResponse(authenticatedReplayBody.mediaObject, "property.gallery_image");
+    expect(authenticatedReplayBody.sideEffects).toEqual(["idempotency_replay"]);
+  });
+
+  it.each(["property.hero_image", "property.gallery_image"] as const)(
+    "preserves frozen legacy %s create, finalize, and replay behavior",
+    async (purpose) => {
+      const repository = createInMemoryPlatformMediaRepository();
+      const app = buildMediaApp({
+        repository,
+        hotelMediaUploadSource: "legacy",
+        permissions: ["booking.settings.manage"],
+        resources: [legacyBookingResource],
+        targetResolver: legacyPropertyMediaTargetResolver,
+      });
+      const payload = legacyPropertyUploadPayload(purpose, `legacy-${purpose}`);
+
+      const create = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload,
+      });
+      expect(create.statusCode).toBe(201);
+      const created = create.body as MediaCreateResponse;
+      expect(created.contractVersion).toBe("platform-media-upload.v1");
+      expect(created.uploadSession).toMatchObject({
+        requestedVisibility: "public",
+        effectiveVisibility: "public",
+      });
+
+      const files = [
+        {
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+          contentType: "image/jpeg",
+          sizeBytes: 2048,
+          checksumSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          widthPx: 1800,
+          heightPx: 1200,
+        },
+      ];
+      const finalize = await injectJson(app, {
+        method: "POST",
+        url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: { files },
+      });
+      expect(finalize.statusCode).toBe(200);
+      const finalized = finalize.body as MediaFinalizeResponse;
+      expect(finalized.mediaObject).toMatchObject({
+        purpose,
+        visibility: "public",
+        approvalStatus: "approved",
+        lifecycleStatus: "active",
+      });
+      expect(
+        finalized.mediaObject.variants.every(
+          (variant) =>
+            variant.visibility === "public" && variant.publicCdnUrl?.startsWith("https://"),
+        ),
+      ).toBe(true);
+
+      const replay = await injectJson(app, {
+        method: "POST",
+        url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: { files },
+      });
+      expect(replay.statusCode).toBe(200);
+      expect((replay.body as MediaFinalizeResponse).sideEffects).toEqual(["idempotency_replay"]);
+    },
+  );
+
+  it("rejects target-shaped creation in legacy mode and keeps logo and PMS room creation dark", async () => {
+    const legacyEnabledPurposes = allMediaPurposes.filter(
+      (purpose) => purpose !== "property.logo" && purpose !== "pms.room_type.media",
+    );
+    const app = buildMediaApp({
+      hotelMediaUploadSource: "legacy",
+      enabledPurposes: legacyEnabledPurposes,
+      permissions: [
+        "hotel_catalog.setup.manage",
+        "booking.settings.manage",
+        "pms.operations.manage",
+      ],
+      resources: [
+        legacyBookingResource,
+        {
+          product: "pms",
+          resourceType: "pms_property",
+          resourceId: "pms_property_alpenrose",
+          relationship: "owner",
+        },
+        {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
+          relationship: "owner",
+        },
+      ],
+    });
+    const requests = [
+      propertyGalleryCase.request.body,
+      {
+        purpose: "property.logo",
+        visibility: "private",
+        resource: {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+          propertyId: "property_alpenrose",
+        },
+        files: [{ filename: "logo.webp", contentType: "image/webp", sizeBytes: 1024 }],
+      },
+      {
+        purpose: "pms.room_type.media",
+        visibility: "private",
+        resource: {
+          product: "pms",
+          resourceType: "pms_property",
+          resourceId: "pms_property_alpenrose",
+          propertyId: "property_alpenrose",
+          targetResourceId: "room_type_suite",
+        },
+        files: [{ filename: "suite.webp", contentType: "image/webp", sizeBytes: 1024 }],
+      },
+    ];
+
+    for (const payload of requests) {
+      const response = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload,
+      });
+      expect(response.statusCode).toBe(503);
+      expect((response.body as ErrorResponse).code).toBe("media_purpose_unavailable");
+    }
+  });
+
+  it("salts deterministic upload-session IDs by legacy and canonical contract version", async () => {
+    const legacyApp = buildMediaApp({
+      repository: createInMemoryPlatformMediaRepository(),
+      hotelMediaUploadSource: "legacy",
+      permissions: ["booking.settings.manage"],
+      resources: [legacyBookingResource],
+      targetResolver: legacyPropertyMediaTargetResolver,
+    });
+    const targetApp = buildMediaApp({ repository: createInMemoryPlatformMediaRepository() });
+    const idempotencyKey = "same-cross-contract-key";
+
+    const legacyCreate = await injectJson(legacyApp, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: legacyPropertyUploadPayload("property.gallery_image", idempotencyKey),
+    });
+    const targetCreate = await injectJson(targetApp, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...propertyGalleryCase.request.body, idempotencyKey },
+    });
+
+    expect(legacyCreate.statusCode).toBe(201);
+    expect(targetCreate.statusCode).toBe(201);
+    expect((legacyCreate.body as MediaCreateResponse).contractVersion).toBe(
+      "platform-media-upload.v1",
+    );
+    expect((targetCreate.body as MediaCreateResponse).contractVersion).toBe(
+      "platform-media-upload.v2",
+    );
+    expect((legacyCreate.body as MediaCreateResponse).uploadSession.sessionId).not.toBe(
+      (targetCreate.body as MediaCreateResponse).uploadSession.sessionId,
+    );
+  });
+
+  it("finalizes a signed legacy session after the runtime flips to target mode", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const shared = {
+      repository,
+      permissions: ["booking.settings.manage"] as PermissionKey[],
+      resources: [legacyBookingResource],
+      targetResolver: legacyPropertyMediaTargetResolver,
+    };
+    const legacyApp = buildMediaApp({ ...shared, hotelMediaUploadSource: "legacy" });
+    const targetApp = buildMediaApp({ ...shared, hotelMediaUploadSource: "target" });
+    const create = await injectJson(legacyApp, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: legacyPropertyUploadPayload("property.gallery_image", "legacy-drain"),
+    });
+    const created = create.body as MediaCreateResponse;
+
+    const finalize = await injectJson(targetApp, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: [
+          {
+            uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+            contentType: "image/jpeg",
+            sizeBytes: 2048,
+            widthPx: 1800,
+            heightPx: 1200,
+          },
+        ],
+      },
+    });
+
+    expect(create.statusCode).toBe(201);
+    expect(finalize.statusCode).toBe(200);
+    expect((finalize.body as MediaFinalizeResponse).mediaObject.visibility).toBe("public");
+  });
+
+  it("finalizes a signed target-only logo session after rollback to legacy mode", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const targetApp = buildMediaApp({ repository });
+    const rollbackApp = buildMediaApp({
+      repository,
+      hotelMediaUploadSource: "legacy",
+      enabledPurposes: allMediaPurposes.filter((purpose) => purpose !== "property.logo"),
+    });
+    const payload = {
+      purpose: "property.logo",
+      visibility: "private",
+      resource: {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: "00000000-0000-4000-8000-000000000040",
+      },
+      files: [{ filename: "logo.webp", contentType: "image/webp", sizeBytes: 1024 }],
+    };
+    const create = await injectJson(targetApp, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const created = create.body as MediaCreateResponse;
+
+    const finalize = await injectJson(rollbackApp, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: [
+          {
+            uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+            contentType: "image/webp",
+            sizeBytes: 1024,
+            widthPx: 1200,
+            heightPx: 800,
+          },
+        ],
+      },
+    });
+
+    expect(create.statusCode).toBe(201);
+    expect(finalize.statusCode).toBe(200);
+    expectPrivateHotelMediaResponse(
+      (finalize.body as PrivateHotelMediaFinalizeResponse).mediaObject,
+      "property.logo",
+    );
+  });
+
+  it("replays completed room-media creation after the room is deleted or reparented", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    let roomAvailable = true;
+    const resolveTarget = vi.fn<PlatformMediaTargetResolver["resolveTarget"]>(async (input) =>
+      roomAvailable
+        ? propertyMediaTargetResolver.resolveTarget(input)
+        : {
+            ok: false,
+            statusCode: 403,
+            code: "media_target_forbidden",
+            message: "Room no longer belongs to the property.",
+          },
+    );
+    const app = buildMediaApp({ repository, targetResolver: { resolveTarget } });
+    const payload = { ...pmsRoomTypeMediaCase.request.body, idempotencyKey: "room-replay" };
+    const create = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    const created = create.body as MediaCreateResponse;
+    const finalize = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: pmsRoomTypeMediaCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    });
+    roomAvailable = false;
+
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+
+    expect(create.statusCode).toBe(201);
+    expect(finalize.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(200);
+    expect((replay.body as MediaCreateResponse).contractVersion).toBe("platform-media-upload.v2");
+    expect((replay.body as MediaCreateResponse).sideEffects).toEqual(["idempotency_replay"]);
+    expect(resolveTarget).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides sessions from another actor or organization behind the same not-found response", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const ownerApp = buildMediaApp({ repository });
+    const create = await injectJson(ownerApp, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const otherOrganizationApp = buildMediaApp({
+      repository,
+      organizationId: "org_media_second",
+      workosOrgId: "workos_media_org_second",
+    });
+    const otherActorApp = buildMediaApp({ repository, userId: "user_media_second" });
+
+    for (const crossScopeApp of [otherOrganizationApp, otherActorApp]) {
+      const crossScope = await injectJson(crossScopeApp, {
+        method: "POST",
+        url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          files: propertyGalleryCase.finalize!.files.map((file) => ({
+            ...file,
+            uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+          })),
+        },
+      });
+      const unknownSession = await injectJson(crossScopeApp, {
+        method: "POST",
+        url: "/api/media/upload-sessions/00000000-0000-4000-8000-000000000099/finalize",
+        headers: { authorization: "Bearer valid-token" },
+        payload: { files: [] },
+      });
+
+      expect(crossScope.statusCode).toBe(404);
+      expect(crossScope.body).toEqual(unknownSession.body);
+      expect((crossScope.body as ErrorResponse).code).toBe("upload_session_not_found");
+    }
+  });
+
+  it.each([
+    {
+      name: "public visibility",
+      mutate: (session: PlatformMediaSessionRecord) => ({
+        ...session,
+        requestedVisibility: "public" as const,
+        effectiveVisibility: "public" as const,
+      }),
+    },
+    {
+      name: "a legacy Booking resource",
+      mutate: (session: PlatformMediaSessionRecord) => ({
+        ...session,
+        resource: {
+          product: "booking" as const,
+          resourceType: "booking_hotel" as const,
+          resourceId: "booking_hotel_alpenrose",
+        },
+      }),
+    },
+  ])("rejects a signed hotel-media session carrying $name", async ({ mutate }) => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const app = buildMediaApp({ repository });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const session = repository.sessions.get(created.uploadSession.sessionId)!;
+    repository.sessions.set(session.sessionId, mutate(session));
+
+    const finalize = await app.inject({
+      method: "POST",
+      url: `/api/media/upload-sessions/${session.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { files: [] },
+    });
+
+    expect(finalize.statusCode).toBe(409);
+    expect(finalize.json<ErrorResponse>().code).toBe("upload_session_not_reusable");
+    expect(finalize.headers["cache-control"]).toBe("private, no-store");
+    expect(repository.sessions.get(session.sessionId)?.status).toBe("signed");
+  });
+
+  it("does not replay a completed hotel-media session carrying legacy public visibility", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const app = buildMediaApp({ repository });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const finalizeFiles = propertyGalleryCase.finalize!.files.map((file) => ({
+      ...file,
+      uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+    }));
+    await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { files: finalizeFiles },
+    });
+    const completed = repository.sessions.get(created.uploadSession.sessionId)!;
+    repository.sessions.set(completed.sessionId, {
+      ...completed,
+      requestedVisibility: "public",
+      effectiveVisibility: "public",
+    });
+
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${completed.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { files: finalizeFiles },
+    });
+
+    expect(replay.statusCode).toBe(409);
+    expect((replay.body as ErrorResponse).code).toBe("upload_session_not_reusable");
+    expect(JSON.stringify(replay.body)).not.toContain("storageKey");
+    expect(JSON.stringify(replay.body)).not.toContain("publicCdnUrl");
+  });
+
+  it("rejects room finalization when the room no longer belongs to the property", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    let roomBelongsToProperty = true;
+    const app = buildMediaApp({
+      repository,
+      targetResolver: {
+        async resolveTarget(input) {
+          return roomBelongsToProperty
+            ? propertyMediaTargetResolver.resolveTarget(input)
+            : {
+                ok: false,
+                statusCode: 403,
+                code: "media_target_forbidden",
+                message: "Property media target is unavailable.",
+              };
+        },
+      },
+    });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: pmsRoomTypeMediaCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsRoomTypeMediaCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    roomBelongsToProperty = false;
+
+    const finalize = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { files: [] },
+    });
+
+    expect(finalize.statusCode).toBe(409);
+    expect((finalize.body as ErrorResponse).code).toBe("upload_session_not_reusable");
+    expect(
+      repository.sessions.get(created.uploadSession.sessionId)?.completedMediaObject,
+    ).toBeUndefined();
+  });
+
+  it("replays completed room media after the room relationship later changes", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    let roomBelongsToProperty = true;
+    const resolveTarget = vi.fn(
+      async (input: Parameters<PlatformMediaTargetResolver["resolveTarget"]>[0]) =>
+        roomBelongsToProperty
+          ? propertyMediaTargetResolver.resolveTarget(input)
+          : {
+              ok: false as const,
+              statusCode: 403 as const,
+              code: "media_target_forbidden",
+              message: "Property media target is unavailable.",
+            },
+    );
+    const generateVariants = vi.fn(createDeterministicPlatformMediaFinalizer().generateVariants);
+    const app = buildMediaApp({
+      repository,
+      targetResolver: { resolveTarget },
+      finalizer: { ...createDeterministicPlatformMediaFinalizer(), generateVariants },
+    });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: pmsRoomTypeMediaCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsRoomTypeMediaCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const finalizeRequest = {
+      method: "POST" as const,
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: pmsRoomTypeMediaCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    };
+
+    expect((await injectJson(app, finalizeRequest)).statusCode).toBe(200);
+    const resolverCalls = resolveTarget.mock.calls.length;
+    const generationCalls = generateVariants.mock.calls.length;
+    roomBelongsToProperty = false;
+    const replay = await injectJson(app, finalizeRequest);
+
+    expect(replay.statusCode).toBe(200);
+    expect((replay.body as { sideEffects: string[] }).sideEffects).toEqual(["idempotency_replay"]);
+    expect(resolveTarget).toHaveBeenCalledTimes(resolverCalls);
+    expect(generateVariants).toHaveBeenCalledTimes(generationCalls);
+  });
+
+  it("rejects replay when persisted private property variants are malformed", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const app = buildMediaApp({ repository });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: propertyGalleryCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: propertyGalleryCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const finalizeRequest = {
+      method: "POST" as const,
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: propertyGalleryCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    };
+    expect((await injectJson(app, finalizeRequest)).statusCode).toBe(200);
+    const completed = repository.sessions.get(created.uploadSession.sessionId)!;
+    const malformed = {
+      ...completed.completedMediaObjects![0]!,
+      variants: completed.completedMediaObjects![0]!.variants.map((variant, index) =>
+        index === 0 ? { ...variant, storageKey: `staging/${completed.sessionId}/unsafe` } : variant,
+      ),
+    };
+    repository.sessions.set(completed.sessionId, {
+      ...completed,
+      completedMediaObject: malformed,
+      completedMediaObjects: [malformed],
+    });
+
+    const replay = await injectJson(app, finalizeRequest);
+    expect(replay.statusCode).toBe(409);
+    expect((replay.body as ErrorResponse).code).toBe("upload_session_not_reusable");
+    expect(JSON.stringify(replay.body)).not.toContain("storageKey");
+  });
+
+  it("maps a transactional room-target race to a non-reusable session", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    repository.completeUploadSession = async () => {
+      throw new PlatformMediaTargetInvalidError();
+    };
+    const app = buildMediaApp({ repository });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: pmsRoomTypeMediaCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsRoomTypeMediaCase.request.body,
+    });
+    const created = create.body as MediaCreateResponse;
+    const response = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: pmsRoomTypeMediaCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+        })),
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect((response.body as ErrorResponse).code).toBe("upload_session_not_reusable");
+    expect(repository.sessions.get(created.uploadSession.sessionId)?.status).toBe("signed");
   });
 
   it("replays an idempotent signed session and rejects reuse for different files", async () => {
@@ -496,7 +1152,7 @@ describe("platform media upload routes", () => {
     expect(response.headers.vary).toBe("Origin, Authorization");
   });
 
-  it("does not clean staging when durable completion fails", async () => {
+  it("retains generated variants and staging when durable completion fails", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     repository.completeUploadSession = async () => {
       throw new Error("database unavailable");
@@ -610,21 +1266,36 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(propertyGalleryBatchCase.expected.finalizeStatus);
-    const finalizeBody = finalize.body as MediaFinalizeResponse;
+    const finalizeBody = finalize.body as PrivateHotelMediaFinalizeResponse;
     expect(finalizeBody.mediaObjects).toHaveLength(
       propertyGalleryBatchCase.expected.mediaObjectCount ?? 2,
     );
-    expect(finalizeBody.mediaObject.mediaId).toBe(finalizeBody.mediaObjects[0]!.mediaId);
-    expect(finalizeBody.mediaObjects.map((mediaObject) => mediaObject.originalFilename)).toEqual([
-      "alpine suite.jpg",
-      "patio.png",
-    ]);
-    expect(finalizeBody.mediaObjects[0]!.storageKey).toContain("/1/active/alpine suite.jpg");
-    expect(finalizeBody.mediaObjects[1]!.storageKey).toContain("/2/active/patio.png");
-    expect(finalizeBody.mediaObjects[1]!.variants.map((variant) => variant.storageKey)).toEqual(
+    expect(finalizeBody.mediaObject.mediaObjectId).toBe(
+      finalizeBody.mediaObjects[0]!.mediaObjectId,
+    );
+    expect(finalizeBody.mediaObjects.map(({ mediaObjectId }) => mediaObjectId)).toHaveLength(2);
+    expect(new Set(finalizeBody.mediaObjects.map(({ mediaObjectId }) => mediaObjectId)).size).toBe(
+      2,
+    );
+    for (const mediaObject of finalizeBody.mediaObjects) {
+      expectPrivateHotelMediaResponse(mediaObject, "property.gallery_image");
+    }
+    const completed = repository.sessions.get(createBody.uploadSession.sessionId);
+    expect(
+      completed?.completedMediaObjects?.map((mediaObject) => mediaObject.originalFilename),
+    ).toEqual(["alpine suite.jpg", "patio.png"]);
+    expect(completed?.completedMediaObjects?.[0]!.storageKey).toMatch(
+      /^private\/media\/.+\/original_safe\/sha256-[a-f0-9]{64}\.webp$/,
+    );
+    expect(completed?.completedMediaObjects?.[1]!.storageKey).toMatch(
+      /^private\/media\/.+\/original_safe\/sha256-[a-f0-9]{64}\.webp$/,
+    );
+    expect(
+      completed?.completedMediaObjects?.[1]!.variants.map((variant) => variant.storageKey),
+    ).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("/2/variants/original_safe"),
-        expect.stringContaining("/2/variants/thumbnail"),
+        expect.stringContaining("/original_safe/sha256-"),
+        expect.stringContaining("/thumbnail/sha256-"),
       ]),
     );
     expect((repository.auditEvents[1]!.metadata as { mediaIds: string[] }).mediaIds).toHaveLength(
@@ -1090,29 +1761,17 @@ describe("platform media upload routes", () => {
     },
   );
 
-  it("allows marketplace hotel profile owners to create property hero media sessions", async () => {
+  it("allows canonical property owners to create private hero media sessions", async () => {
     const app = buildMediaApp({
-      permissions: ["marketplace.profile.manage"],
+      permissions: ["hotel_catalog.setup.manage"],
       resources: [
         {
-          product: "marketplace",
-          resourceType: "hotel_profile",
-          resourceId: "hotel_profile_alpenrose",
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
           relationship: "owner",
         },
       ],
-      targetResolver: {
-        async resolveTarget({ request, policy }) {
-          return {
-            ok: true,
-            target: {
-              resourceProduct: policy.targetResourceProduct,
-              resourceType: policy.targetResourceType,
-              resourceId: request.resource.targetResourceId ?? request.resource.resourceId,
-            },
-          };
-        },
-      },
     });
 
     const response = await injectJson(app, {
@@ -1121,13 +1780,11 @@ describe("platform media upload routes", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         purpose: "property.hero_image",
-        visibility: "public",
-        expectedProfileRevision: 4,
+        visibility: "private",
         resource: {
-          product: "marketplace",
-          resourceType: "hotel_profile",
-          resourceId: "hotel_profile_alpenrose",
-          targetResourceId: "property_alpenrose",
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
         },
         files: [
           {
@@ -1142,29 +1799,98 @@ describe("platform media upload routes", () => {
 
     expect(response.statusCode).toBe(201);
     expect(response.body).toMatchObject({
-      uploadSession: { expectedProfileRevision: 4 },
+      uploadSession: {
+        purpose: "property.hero_image",
+        requestedVisibility: "private",
+        effectiveVisibility: "private",
+      },
     });
   });
 
-  it("requires a valid profile revision for every property hero media session", async () => {
+  it.each(["property.hero_image", "property.logo"] as const)(
+    "finalizes %s as a private-ready library item and rejects public staging",
+    async (purpose) => {
+      const repository = createInMemoryPlatformMediaRepository();
+      const app = buildMediaApp({ repository });
+      const payload = {
+        purpose,
+        visibility: "private",
+        resource: {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
+        },
+        files: [
+          {
+            clientFileId: purpose,
+            filename: `${purpose}.webp`,
+            contentType: "image/webp",
+            sizeBytes: 1024,
+          },
+        ],
+      };
+
+      const create = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload,
+      });
+      expect(create.statusCode).toBe(201);
+      const created = create.body as MediaCreateResponse;
+
+      const finalize = await injectJson(app, {
+        method: "POST",
+        url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          files: [
+            {
+              uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+              contentType: "image/webp",
+              sizeBytes: 1024,
+              widthPx: 1200,
+              heightPx: 800,
+            },
+          ],
+        },
+      });
+      expect(finalize.statusCode).toBe(200);
+      expectPrivateHotelMediaResponse(
+        (finalize.body as PrivateHotelMediaFinalizeResponse).mediaObject,
+        purpose,
+      );
+
+      const publicCreate = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: { ...payload, visibility: "public" },
+      });
+      expect(publicCreate.statusCode).toBe(400);
+      expect((publicCreate.body as ErrorResponse).code).toBe("invalid_media_visibility");
+    },
+  );
+
+  it("keeps assignment revisions out and rejects legacy-shaped uploads in target mode", async () => {
     const app = buildMediaApp({
-      permissions: ["marketplace.profile.manage"],
+      permissions: ["hotel_catalog.setup.manage", "booking.settings.manage"],
       resources: [
         {
-          product: "marketplace",
-          resourceType: "hotel_profile",
-          resourceId: "hotel_profile_alpenrose",
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
           relationship: "owner",
         },
       ],
     });
     const payload = {
       purpose: "property.hero_image",
-      visibility: "public",
+      visibility: "private",
       resource: {
-        product: "marketplace",
-        resourceType: "hotel_profile",
-        resourceId: "hotel_profile_alpenrose",
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: "00000000-0000-4000-8000-000000000040",
       },
       files: [
         {
@@ -1175,24 +1901,20 @@ describe("platform media upload routes", () => {
       ],
     };
 
-    const missing = await injectJson(app, {
+    const revision = await injectJson(app, {
       method: "POST",
       url: "/api/media/upload-sessions",
       headers: { authorization: "Bearer valid-token" },
-      payload,
+      payload: { ...payload, expectedProfileRevision: 1 },
     });
-    const invalid = await injectJson(app, {
-      method: "POST",
-      url: "/api/media/upload-sessions",
-      headers: { authorization: "Bearer valid-token" },
-      payload: { ...payload, expectedProfileRevision: 0 },
-    });
-    const bookingMissing = await injectJson(buildMediaApp(), {
+    const legacyResource = await injectJson(app, {
       method: "POST",
       url: "/api/media/upload-sessions",
       headers: { authorization: "Bearer valid-token" },
       payload: {
         ...payload,
+        visibility: "public",
+        expectedProfileRevision: 1,
         resource: {
           product: "booking",
           resourceType: "booking_hotel",
@@ -1201,118 +1923,10 @@ describe("platform media upload routes", () => {
       },
     });
 
-    for (const response of [missing, invalid, bookingMissing]) {
-      expect(response.statusCode).toBe(400);
-      expect((response.body as ErrorResponse).code).toBe("invalid_profile_revision");
-    }
-  });
-
-  it("returns a stable conflict when the property changes before hero finalization", async () => {
-    const delegate = createInMemoryPlatformMediaRepository();
-    const repository: PlatformMediaRepository = {
-      ...delegate,
-      async completeUploadSession() {
-        throw new PlatformMediaProfileRevisionConflictError(5);
-      },
-    };
-    const cleanupGeneratedVariants = vi.fn(async () => {
-      throw new Error("variant cleanup unavailable");
-    });
-    const cleanupUploadedFile = vi.fn(async () => undefined);
-    const finalizer = {
-      ...createDeterministicPlatformMediaFinalizer(),
-      cleanupGeneratedVariants,
-      cleanupUploadedFile,
-    };
-    const app = buildMediaApp({
-      repository,
-      finalizer,
-      permissions: ["marketplace.profile.manage"],
-      resources: [
-        {
-          product: "marketplace",
-          resourceType: "hotel_profile",
-          resourceId: "hotel_profile_alpenrose",
-          relationship: "owner",
-        },
-      ],
-      targetResolver: {
-        async resolveTarget({ policy }) {
-          return {
-            ok: true,
-            target: {
-              resourceProduct: policy.targetResourceProduct,
-              resourceType: policy.targetResourceType,
-              resourceId: "property_alpenrose",
-              propertyId: "property_alpenrose",
-            },
-          };
-        },
-      },
-    });
-    const created = await injectJson(app, {
-      method: "POST",
-      url: "/api/media/upload-sessions",
-      headers: { authorization: "Bearer valid-token" },
-      payload: {
-        purpose: "property.hero_image",
-        visibility: "public",
-        expectedProfileRevision: 4,
-        resource: {
-          product: "marketplace",
-          resourceType: "hotel_profile",
-          resourceId: "hotel_profile_alpenrose",
-        },
-        files: [
-          {
-            filename: "hero.webp",
-            contentType: "image/webp",
-            sizeBytes: 1024,
-          },
-        ],
-      },
-    });
-    const createBody = created.body as MediaCreateResponse;
-
-    const finalized = await injectJson(app, {
-      method: "POST",
-      url: `/api/media/upload-sessions/${createBody.uploadSession.sessionId}/finalize`,
-      headers: { authorization: "Bearer valid-token" },
-      payload: {
-        files: createBody.uploadTargets.map((target) => ({
-          uploadTargetId: target.uploadTargetId,
-          contentType: "image/webp",
-          sizeBytes: 1024,
-        })),
-      },
-    });
-
-    expect(finalized.statusCode).toBe(409);
-    expect(finalized.body).toEqual({
-      code: "profile_revision_conflict",
-      message: "The property profile changed while its hero image was being finalized.",
-      currentRevision: 5,
-    });
-    expect(cleanupGeneratedVariants).toHaveBeenCalledOnce();
-    expect(cleanupGeneratedVariants).toHaveBeenCalledWith({
-      session: expect.objectContaining({
-        expectedProfileRevision: 4,
-        status: "signed",
-      }),
-      file: expect.objectContaining({
-        sessionFile: expect.objectContaining({ filename: "hero.webp" }),
-      }),
-      variants: expect.arrayContaining([
-        expect.objectContaining({ variantName: "original_safe" }),
-        expect.objectContaining({ variantName: "large" }),
-        expect.objectContaining({ variantName: "thumbnail" }),
-        expect.objectContaining({ variantName: "blur_preview" }),
-      ]),
-    });
-    expect(cleanupUploadedFile).toHaveBeenCalledOnce();
-    expect(cleanupGeneratedVariants.mock.invocationCallOrder[0]).toBeLessThan(
-      cleanupUploadedFile.mock.invocationCallOrder[0]!,
-    );
+    expect(revision.statusCode).toBe(400);
+    expect((revision.body as ErrorResponse).code).toBe("invalid_profile_revision");
+    expect(legacyResource.statusCode).toBe(503);
+    expect((legacyResource.body as ErrorResponse).code).toBe("media_purpose_unavailable");
   });
 
   it("rejects unsupported content types before signing", async () => {
@@ -1410,12 +2024,12 @@ describe("platform media upload routes", () => {
     const repository = createInMemoryPlatformMediaRepository();
     const app = buildMediaApp({
       repository,
-      permissions: ["pms.operations.manage"],
+      permissions: ["hotel_catalog.setup.manage"],
       resources: [
         {
-          product: "pms",
-          resourceType: "pms_hotel",
-          resourceId: "pms_hotel_alpenrose",
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
           relationship: "owner",
         },
       ],
@@ -1445,11 +2059,14 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(pmsRoomTypeMediaCase.expected.finalizeStatus);
-    const finalizeBody = finalize.body as MediaFinalizeResponse;
+    const finalizeBody = finalize.body as PrivateHotelMediaFinalizeResponse;
     expect(finalizeBody.mediaObject).toMatchObject(pmsRoomTypeMediaCase.expected.mediaObject!);
-    expect(finalizeBody.mediaObject.variants.map((variant) => variant.variantName)).toEqual([
-      ...(pmsRoomTypeMediaCase.expected.requiredVariants ?? []),
-    ]);
+    expectPrivateHotelMediaResponse(finalizeBody.mediaObject, "pms.room_type.media");
+    expect(
+      repository.sessions
+        .get(createBody.uploadSession.sessionId)
+        ?.completedMediaObject?.variants.map((variant) => variant.variantName),
+    ).toEqual([...(pmsRoomTypeMediaCase.expected.requiredVariants ?? [])]);
     expect(finalizeBody.sideEffects).toEqual(pmsRoomTypeMediaCase.expected.sideEffects);
   });
 
@@ -1457,12 +2074,12 @@ describe("platform media upload routes", () => {
     const repository = createInMemoryPlatformMediaRepository();
     const app = buildMediaApp({
       repository,
-      permissions: ["pms.operations.manage"],
+      permissions: ["hotel_catalog.setup.manage"],
       resources: [
         {
-          product: "pms",
-          resourceType: "pms_hotel",
-          resourceId: "pms_hotel_alpenrose",
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
           relationship: "owner",
         },
       ],
@@ -1499,17 +2116,20 @@ describe("platform media upload routes", () => {
             uploadTargetId: createBody.uploadTargets[0]!.uploadTargetId,
             contentType: "image/jpeg",
             sizeBytes: sourceSizeBytes,
-            widthPx: 12000,
-            heightPx: 6750,
+            widthPx: 7680,
+            heightPx: 4320,
           },
         ],
       },
     });
 
     expect(finalize.statusCode).toBe(200);
-    const mediaObject = (finalize.body as MediaFinalizeResponse).mediaObject;
-    expect(mediaObject).toMatchObject(pmsRoomTypeMediaCase.expected.mediaObject!);
-    expect(mediaObject.variants).toEqual(
+    const safeMediaObject = (finalize.body as PrivateHotelMediaFinalizeResponse).mediaObject;
+    expectPrivateHotelMediaResponse(safeMediaObject, "pms.room_type.media");
+    const mediaObject = repository.sessions.get(
+      createBody.uploadSession.sessionId,
+    )?.completedMediaObject;
+    expect(mediaObject?.variants).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ variantName: "original_safe", widthPx: 1920, heightPx: 1080 }),
         expect.objectContaining({ variantName: "large", widthPx: 1280, heightPx: 720 }),
@@ -1517,7 +2137,92 @@ describe("platform media upload routes", () => {
         expect.objectContaining({ variantName: "blur_preview", widthPx: 32, heightPx: 18 }),
       ]),
     );
-    expect(mediaObject.variants.every((variant) => variant.sizeBytes < sourceSizeBytes)).toBe(true);
+    expect(mediaObject?.variants.every((variant) => variant.sizeBytes < sourceSizeBytes)).toBe(
+      true,
+    );
+  });
+
+  it("rejects PMS room sources above the 60 megapixel inspection limit", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const app = buildMediaApp({ repository });
+    const create = await injectJson(app, {
+      method: "POST",
+      url: pmsRoomTypeMediaCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: pmsRoomTypeMediaCase.request.body,
+    });
+    const createBody = create.body as MediaCreateResponse;
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${createBody.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: pmsRoomTypeMediaCase.finalize!.files.map((file) => ({
+          ...file,
+          uploadTargetId: createBody.uploadTargets[0]!.uploadTargetId,
+          widthPx: 10_000,
+          heightPx: 6_001,
+        })),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((response.body as ErrorResponse).code).toBe("invalid_media_dimensions");
+    expect(repository.sessions.get(createBody.uploadSession.sessionId)?.status).toBe("signed");
+  });
+
+  it("generates a maximum-size room image batch one file at a time", async () => {
+    const repository = createInMemoryPlatformMediaRepository();
+    const baseFinalizer = createDeterministicPlatformMediaFinalizer();
+    let activeGenerations = 0;
+    let maxActiveGenerations = 0;
+    const generateVariants = vi.fn(async (input) => {
+      activeGenerations += 1;
+      maxActiveGenerations = Math.max(maxActiveGenerations, activeGenerations);
+      await Promise.resolve();
+      try {
+        return await baseFinalizer.generateVariants(input);
+      } finally {
+        activeGenerations -= 1;
+      }
+    });
+    const app = buildMediaApp({
+      repository,
+      finalizer: { ...baseFinalizer, generateVariants },
+    });
+    const files = Array.from({ length: 20 }, (_, index) => ({
+      clientFileId: `room-${index + 1}`,
+      filename: `room-${index + 1}.jpg`,
+      contentType: "image/jpeg",
+      sizeBytes: 10 * 1024 * 1024,
+    }));
+    const create = await injectJson(app, {
+      method: "POST",
+      url: pmsRoomTypeMediaCase.request.path,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...pmsRoomTypeMediaCase.request.body, files },
+    });
+    const createBody = create.body as MediaCreateResponse;
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${createBody.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: createBody.uploadTargets.map((target) => ({
+          uploadTargetId: target.uploadTargetId,
+          contentType: "image/jpeg",
+          sizeBytes: 10 * 1024 * 1024,
+          widthPx: 10_000,
+          heightPx: 6_000,
+        })),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(generateVariants).toHaveBeenCalledTimes(20);
+    expect(maxActiveGenerations).toBe(1);
   });
 
   it("keeps oversized source-pixel rejection for non-PMS public images", async () => {
@@ -1666,12 +2371,11 @@ describe("platform media upload routes", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         purpose: "property.hero_image",
-        visibility: "public",
-        expectedProfileRevision: 1,
+        visibility: "private",
         resource: {
-          product: "booking",
-          resourceType: "booking_hotel",
-          resourceId: "booking_hotel_alpenrose",
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
         },
         files: [
           {
@@ -1826,12 +2530,12 @@ describe("platform media upload routes", () => {
     {
       name: "missing authentication",
       auth: undefined,
-      permissions: ["booking.settings.manage"],
+      permissions: ["hotel_catalog.setup.manage"],
       resources: [
         {
-          product: "booking",
-          resourceType: "booking_hotel",
-          resourceId: "booking_hotel_alpenrose",
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
           relationship: "owner",
         },
       ],
@@ -1843,9 +2547,9 @@ describe("platform media upload routes", () => {
       permissions: [],
       resources: [
         {
-          product: "booking",
-          resourceType: "booking_hotel",
-          resourceId: "booking_hotel_alpenrose",
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "00000000-0000-4000-8000-000000000040",
           relationship: "owner",
         },
       ],
@@ -1854,7 +2558,7 @@ describe("platform media upload routes", () => {
     {
       name: "missing linked resource",
       auth: "Bearer valid-token",
-      permissions: ["booking.settings.manage"],
+      permissions: ["hotel_catalog.setup.manage"],
       resources: [],
       expectedStatus: 403,
     },
@@ -1871,11 +2575,11 @@ describe("platform media upload routes", () => {
         headers: auth ? { authorization: auth } : undefined,
         payload: {
           purpose: "property.hero_image",
-          expectedProfileRevision: 1,
+          visibility: "private",
           resource: {
-            product: "booking",
-            resourceType: "booking_hotel",
-            resourceId: "booking_hotel_alpenrose",
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: "00000000-0000-4000-8000-000000000040",
           },
           files: [
             {
@@ -1904,12 +2608,14 @@ function buildMediaApp(
     }>;
     targetResolver?: PlatformMediaTargetResolver;
     finalizer?: PlatformMediaUploadFinalizer;
+    hotelMediaUploadSource?: HotelMediaUploadSource;
     enabledPurposes?: readonly PlatformMediaPurpose[];
     allowedOrigins?: string[];
     cleanupTimeoutMs?: number;
     now?: () => Date;
     organizationId?: string;
     workosOrgId?: string;
+    userId?: string;
     organizationKind?: "creator_workspace" | "hotel_group";
   } = {},
 ): ReturnType<typeof buildApp> {
@@ -1921,6 +2627,7 @@ function buildMediaApp(
       signer: createDeterministicPlatformMediaUploadSigner(),
       targetResolver: options.targetResolver ?? propertyMediaTargetResolver,
       finalizer: options.finalizer ?? createDeterministicPlatformMediaFinalizer(),
+      hotelMediaUploadSource: options.hotelMediaUploadSource ?? "target",
       enabledPurposes: options.enabledPurposes ?? allMediaPurposes,
       allowedOrigins: options.allowedOrigins,
       cleanupTimeoutMs: options.cleanupTimeoutMs,
@@ -1928,14 +2635,18 @@ function buildMediaApp(
     },
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", { ...session, workosOrgId }]])),
-      repository: identityRepository(options.resources, {
-        organizationId: options.organizationId ?? "org_media",
-        workosOrgId,
-        kind: options.organizationKind ?? "hotel_group",
-      }),
+      repository: identityRepository(
+        options.resources,
+        {
+          organizationId: options.organizationId ?? "org_media",
+          workosOrgId,
+          kind: options.organizationKind ?? "hotel_group",
+        },
+        options.userId,
+      ),
       rolePermissionRepository: {
         async findPermissionsForRole() {
-          return options.permissions ?? ["booking.settings.manage"];
+          return options.permissions ?? ["hotel_catalog.setup.manage"];
         },
       },
     },
@@ -1945,21 +2656,29 @@ function buildMediaApp(
 const propertyMediaTargetResolver: PlatformMediaTargetResolver = {
   async resolveTarget({ request, policy }) {
     if (
-      policy.targetResourceProduct === "hotel_catalog" &&
-      request.resource.resourceId === "booking_hotel_alpenrose" &&
-      request.resource.propertyId === "property_alpenrose"
+      request.resource.product === "hotel_catalog" &&
+      request.resource.resourceType === "property" &&
+      request.resource.resourceId === "00000000-0000-4000-8000-000000000040"
     ) {
       return {
         ok: true,
         target: {
-          resourceProduct: "hotel_catalog",
-          resourceType: "property",
-          resourceId: "property_alpenrose",
-          propertyId: "property_alpenrose",
+          resourceProduct: policy.targetResourceProduct,
+          resourceType: policy.targetResourceType,
+          resourceId:
+            request.purpose === "pms.room_type.media"
+              ? request.resource.targetResourceId!
+              : request.resource.resourceId,
+          propertyId: request.resource.resourceId,
         },
       };
     }
-    if (policy.targetResourceProduct === "hotel_catalog") {
+    if (
+      request.purpose === "property.hero_image" ||
+      request.purpose === "property.gallery_image" ||
+      request.purpose === "property.logo" ||
+      request.purpose === "pms.room_type.media"
+    ) {
       return {
         ok: false,
         statusCode: 403,
@@ -1979,6 +2698,71 @@ const propertyMediaTargetResolver: PlatformMediaTargetResolver = {
   },
 };
 
+const legacyBookingResource: {
+  product: Product;
+  resourceType: ResourceType;
+  resourceId: string;
+  relationship: ResourceRelationship;
+} = {
+  product: "booking",
+  resourceType: "booking_hotel",
+  resourceId: "booking_hotel_alpenrose",
+  relationship: "owner",
+};
+
+const legacyPropertyMediaTargetResolver: PlatformMediaTargetResolver = {
+  async resolveTarget({ request, policy }) {
+    if (
+      request.resource.product === "booking" &&
+      request.resource.resourceType === "booking_hotel" &&
+      request.resource.resourceId === "booking_hotel_alpenrose" &&
+      request.resource.propertyId === "property_alpenrose"
+    ) {
+      return {
+        ok: true,
+        target: {
+          resourceProduct: policy.targetResourceProduct,
+          resourceType: policy.targetResourceType,
+          resourceId: "property_alpenrose",
+          propertyId: "property_alpenrose",
+        },
+      };
+    }
+    return {
+      ok: false,
+      statusCode: 403,
+      code: "media_target_forbidden",
+      message: "Legacy media target is not linked to this booking hotel.",
+    };
+  },
+};
+
+function legacyPropertyUploadPayload(
+  purpose: "property.hero_image" | "property.gallery_image",
+  idempotencyKey: string,
+) {
+  return {
+    purpose,
+    visibility: "public",
+    idempotencyKey,
+    ...(purpose === "property.hero_image" ? { expectedProfileRevision: 1 } : {}),
+    resource: {
+      product: "booking",
+      resourceType: "booking_hotel",
+      resourceId: "booking_hotel_alpenrose",
+      propertyId: "property_alpenrose",
+    },
+    files: [
+      {
+        clientFileId: purpose,
+        filename: `${purpose}.jpg`,
+        contentType: "image/jpeg",
+        sizeBytes: 2048,
+      },
+    ],
+  };
+}
+
 function identityRepository(
   resources: Array<{
     product: Product;
@@ -1987,9 +2771,9 @@ function identityRepository(
     relationship: ResourceRelationship;
   }> = [
     {
-      product: "booking",
-      resourceType: "booking_hotel",
-      resourceId: "booking_hotel_alpenrose",
+      product: "hotel_catalog",
+      resourceType: "property",
+      resourceId: "00000000-0000-4000-8000-000000000040",
       relationship: "owner",
     },
   ],
@@ -2002,11 +2786,12 @@ function identityRepository(
     workosOrgId: "workos_media_org",
     kind: "hotel_group",
   },
+  userId = "user_media",
 ): IdentityRepository {
   return {
     async findUserByProviderUserId() {
       return {
-        userId: "user_media",
+        userId,
         email: "media@example.com",
         status: "active",
       };
@@ -2033,6 +2818,18 @@ function identityRepository(
       }));
     },
   };
+}
+
+function expectPrivateHotelMediaResponse(
+  mediaObject: PrivateHotelMediaResponse,
+  purpose: PrivateHotelMediaResponse["purpose"],
+): void {
+  expect(mediaObject).toEqual({
+    mediaObjectId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    purpose,
+    status: "private_ready",
+    publicVariants: [],
+  });
 }
 
 function contractCase(caseId: string): (typeof uploadContractCases.cases)[number] {
