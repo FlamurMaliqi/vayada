@@ -38,9 +38,11 @@ jobs:
     steps:
       - name: Resolve approved recovery configuration
         id: config
+        env:
+          SERVICE: ${{ inputs.service }}
         shell: bash
         run: |
-          case "${{ inputs.service }}" in
+          case "${SERVICE}" in
             booking-admin)
               echo "source_ref=c879df4fb2b207ff69eb87442743aee7e42536ff" >> "${GITHUB_OUTPUT}"
               echo "image_tag=prod-recovery-booking-admin-c879df4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
@@ -137,7 +139,7 @@ jobs:
       - name: Build and push Booking Admin image
         if: inputs.service == 'booking-admin'
         id: build-booking
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./${{ steps.config.outputs.app_dir }}/Dockerfile
@@ -154,7 +156,7 @@ jobs:
       - name: Build and push Vayada Admin image
         if: inputs.service == 'marketplace-admin'
         id: build-marketplace
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./${{ steps.config.outputs.app_dir }}/Dockerfile
