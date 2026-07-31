@@ -1,129 +1,209 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
+import { authService } from "@/services/auth";
+import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStore";
+import { settingsService, type HotelSummary } from "@/services/settings";
 import {
-  canonicalSetupReturnUrl,
-  errorForHandoffFailure,
-  invalidHandoffError,
-  resolveOpaqueHandoffLocation,
-  type HandoffError,
+  isSafeRelativeReturnTo,
+  missingOrganizationHandoffLoginPath,
+  organizationSelectionLoginPath,
 } from "@vayada/product-onboarding/returnTo";
 
-import { resolveBookingSetupTaskDestination } from "@/lib/utils/bookingSetupTaskRoute";
-import { authService } from "@/services/auth";
-import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
-import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStore";
-import { settingsService } from "@/services/settings";
-
-const MARKETPLACE_FRONTEND_URL =
-  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
-
 export default function HandoffPage() {
-  const [handoffError, setHandoffError] = useState<HandoffError | null>(null);
-  const startedRef = useRef(false);
-  const setupReturnUrlRef = useRef(new URL("/setup", MARKETPLACE_FRONTEND_URL).toString());
-
   useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
+    if (typeof window === "undefined") return;
 
-    const location = resolveOpaqueHandoffLocation(window.location);
-    if (!location) {
-      setHandoffError(invalidHandoffError());
-      return;
-    }
-    const { code, loginPath } = location;
+    // Auth data arrives in the URL hash so it never hits server logs.
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const token = hashParams.get("token");
+    const expiresAt = hashParams.get("expires_at");
+    const userData = hashParams.get("user");
+    const handoffHotelId = hashParams.get("hotel_id");
+    const propertyId = hashParams.get("property_id");
+    const organizationId = hashParams.get("organization_id")?.trim() || null;
+    const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
+    const organizationSelectionPath = organizationSelectionLoginPath(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash,
+    );
+
+    // Optional `?redirect=...` query param tells us where to go after
+    // auth. Used by the PMS header's "Add Property" button which
+    // needs to land on /setup?mode=add instead of /dashboard.
+    const queryParams = new URLSearchParams(window.location.search);
+    const redirectParam = queryParams.get("redirect");
+    // Only honor same-origin relative paths — never trust an arbitrary URL
+    const safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
 
     void (async () => {
-      try {
-        if (!authService.isAuthKitEnabled()) {
-          if (!(await authService.ensureSession())) {
-            window.location.replace(loginPath);
-            return;
-          }
-        } else {
+      if (token && expiresAt) {
+        localStorage.setItem("access_token", token);
+        localStorage.setItem("token_expires_at", expiresAt);
+      } else if (!authService.isAuthKitEnabled()) {
+        if (!(await authService.ensureSession())) {
+          window.location.href = organizationSelectionPath;
+          return;
+        }
+      } else {
+        try {
           let session = await authService.refreshSession();
           if (isAuthOrganizationSelectionResponse(session)) {
-            if (session.organizations.length !== 1) {
-              window.location.replace(loginPath);
+            const organization = organizationId
+              ? session.organizations.find(
+                  (candidate) => candidate.organizationId === organizationId,
+                )
+              : workosOrganizationId
+                ? session.organizations.find(
+                    (candidate) => candidate.workosOrganizationId === workosOrganizationId,
+                  )
+                : session.organizations.length === 1
+                  ? session.organizations[0]
+                  : undefined;
+
+            if (
+              !organization ||
+              (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
               return;
             }
+
             session = await authService.refreshSession(
-              session.organizations[0]!.workosOrganizationId,
+              workosOrganizationId ?? organization.workosOrganizationId,
             );
-            if (isAuthOrganizationSelectionResponse(session)) {
-              window.location.replace(loginPath);
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          } else if (
+            (organizationId && session.organizationId !== organizationId) ||
+            (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+          ) {
+            if (!workosOrganizationId) {
+              window.location.href = missingOrganizationHandoffLoginPath();
+              return;
+            }
+            session = await authService.refreshSession(workosOrganizationId);
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              session.workosOrganizationId !== workosOrganizationId
+            ) {
+              window.location.href = organizationSelectionPath;
               return;
             }
           }
+        } catch {
+          window.location.href = organizationSelectionPath;
+          return;
         }
+      }
+
+      if (token && expiresAt && userData) {
+        try {
+          const user = JSON.parse(decodeURIComponent(userData));
+          localStorage.setItem("isLoggedIn", "true");
+          localStorage.setItem("userId", user.id);
+          localStorage.setItem("userEmail", user.email);
+          localStorage.setItem("userName", user.name);
+          localStorage.setItem("userType", user.type);
+          localStorage.setItem("userStatus", user.status);
+          localStorage.setItem("user", JSON.stringify(user));
+        } catch {
+          /* ignore */
+        }
+      }
+
+      let hotels: HotelSummary[];
+      try {
+        hotels = await settingsService.listHotels();
       } catch {
-        window.location.replace(loginPath);
+        localStorage.setItem("setupComplete", "false");
+        const explicitId = propertyId?.trim() || handoffHotelId?.trim();
+        window.location.href = explicitId
+          ? `/setup?entryProduct=booking&propertyId=${encodeURIComponent(explicitId)}`
+          : "/setup";
         return;
       }
 
-      try {
-        const handoff = await sharedHotelSetupApi.exchangeHandoff({ code });
-        setupReturnUrlRef.current =
-          canonicalSetupReturnUrl(
-            handoff.returnUrl,
-            handoff.propertyId,
-            MARKETPLACE_FRONTEND_URL,
-          ) ?? setupReturnUrlRef.current;
-        const destination = resolveBookingSetupTaskDestination({
-          propertyId: handoff.propertyId,
-          taskId: handoff.taskId,
-          destinationRouteKey: handoff.destinationRouteKey,
-          planRevision: handoff.issuedPlanRevision,
-          returnUrl: handoff.returnUrl,
-          marketplaceOrigin: MARKETPLACE_FRONTEND_URL,
-        });
-        if (!destination) {
-          throw new Error("The requested setup task does not have a Booking destination.");
-        }
+      const storedPropertyId = localStorage.getItem("selectedSharedPropertyId")?.trim();
+      const storedHotelId = localStorage.getItem("selectedHotelId")?.trim();
+      const requestedPropertyId = propertyId?.trim();
+      const requestedHotelId = handoffHotelId?.trim();
+      const explicitSelectionRequested = Boolean(requestedPropertyId || requestedHotelId);
+      let selected = requestedPropertyId
+        ? (hotels.find(
+            (hotel) => hotel.propertyId === requestedPropertyId || hotel.id === requestedPropertyId,
+          ) ?? null)
+        : requestedHotelId
+          ? (hotels.find((hotel) => hotel.id === requestedHotelId) ?? null)
+          : storedPropertyId
+            ? (hotels.find(
+                (hotel) => hotel.propertyId === storedPropertyId || hotel.id === storedPropertyId,
+              ) ?? null)
+            : storedHotelId
+              ? (hotels.find((hotel) => hotel.id === storedHotelId) ?? null)
+              : null;
+      const explicitSelectionMissing = explicitSelectionRequested && !selected;
 
-        const hotels = await settingsService.listHotels();
-        const selected = hotels.find(
-          (hotel) => hotel.propertyId === handoff.propertyId || hotel.id === handoff.propertyId,
-        );
-        if (!selected) {
-          throw new Error("The requested property is not available in Booking Admin.");
-        }
-
-        localStorage.setItem("selectedSharedPropertyId", handoff.propertyId);
-        localStorage.setItem("selectedHotelId", selected.id);
-        window.location.replace(destination);
-      } catch (error: unknown) {
-        setHandoffError(errorForHandoffFailure(error));
+      if (
+        (requestedPropertyId || requestedHotelId || storedPropertyId || storedHotelId) &&
+        !selected
+      ) {
+        localStorage.removeItem("selectedSharedPropertyId");
+        localStorage.removeItem("selectedHotelId");
       }
-    })();
+      if (!explicitSelectionRequested && !selected && hotels.length === 1) {
+        selected = hotels[0]!;
+      }
+      if (selected) {
+        localStorage.setItem("selectedSharedPropertyId", selected.propertyId ?? selected.id);
+        localStorage.setItem("selectedHotelId", selected.id);
+      }
+
+      if (safeRedirect && !explicitSelectionMissing) {
+        localStorage.setItem("setupComplete", "true");
+        window.location.href = safeRedirect;
+        return;
+      }
+      if (explicitSelectionMissing) {
+        localStorage.setItem("setupComplete", "false");
+        if (requestedPropertyId) {
+          window.location.href = `/setup?entryProduct=booking&propertyId=${encodeURIComponent(requestedPropertyId)}`;
+        } else if (hotels.length > 1) {
+          window.location.href = "/choose-property";
+        } else {
+          window.location.href = "/setup";
+        }
+        return;
+      }
+      if (hotels.length === 0) {
+        localStorage.setItem("setupComplete", "false");
+        window.location.href = "/setup";
+        return;
+      }
+      if (!selected && hotels.length > 1) {
+        localStorage.setItem("setupComplete", "true");
+        window.location.href = "/choose-property";
+        return;
+      }
+
+      localStorage.setItem("setupComplete", "true");
+      window.location.href = "/dashboard";
+    })().catch(() => {
+      window.location.href = organizationSelectionPath;
+    });
   }, []);
 
-  if (handoffError) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
-        <section className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
-          <h1 className="text-lg font-semibold text-gray-950">
-            {handoffError.refreshPlan ? "Setup plan changed" : "Setup link unavailable"}
-          </h1>
-          <p className="mt-2 text-sm text-gray-600">{handoffError.message}</p>
-          <button
-            type="button"
-            onClick={() => {
-              window.location.replace(setupReturnUrlRef.current);
-            }}
-            className="mt-5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700"
-          >
-            {handoffError.refreshPlan ? "Refresh setup plan" : "Return to setup"}
-          </button>
-        </section>
-      </main>
-    );
-  }
-
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
     </div>
   );
 }

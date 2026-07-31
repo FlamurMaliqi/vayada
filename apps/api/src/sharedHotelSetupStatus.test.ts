@@ -2311,6 +2311,15 @@ describe("shared hotel setup status route", () => {
 
   it("creates canonical product links while preserving explicit contact privacy and purpose", async () => {
     const query = vi.fn(async (text: string, _values?: readonly unknown[]) => {
+      if (text.includes("FROM platform.idempotency_keys")) {
+        return { rows: [] };
+      }
+      if (text.includes("INSERT INTO platform.idempotency_keys")) {
+        return { rows: [{ id: "99999999-9999-4999-8999-999999999901" }] };
+      }
+      if (text.includes("UPDATE platform.idempotency_keys")) {
+        return { rows: [{ id: "99999999-9999-4999-8999-999999999901" }] };
+      }
       if (text.includes("INSERT INTO hotel_catalog.properties")) {
         return { rows: [{ propertyId }] };
       }

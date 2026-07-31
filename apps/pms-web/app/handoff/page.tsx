@@ -1,148 +1,199 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import {
-  canonicalSetupReturnUrl,
-  errorForHandoffFailure,
-  invalidHandoffError,
-  resolveOpaqueHandoffLocation,
-  type HandoffError,
-} from "@vayada/product-onboarding/returnTo";
-
+  clearStoredPmsPropertyId,
+  getStoredPmsPropertyId,
+  listPmsProperties,
+  storeSelectedPmsPropertyId,
+  type PmsPropertySummary,
+} from "@/services/api/pmsPropertyClient";
 import { authService } from "@/services/auth";
 import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStore";
-import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
-import { listPmsProperties, storeSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
-
-const MARKETPLACE_FRONTEND_URL =
-  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
+import {
+  isSafeRelativeReturnTo,
+  missingOrganizationHandoffLoginPath,
+  organizationSelectionLoginPath,
+} from "@vayada/product-onboarding/returnTo";
 
 export default function HandoffPage() {
-  const [handoffError, setHandoffError] = useState<HandoffError | null>(null);
-  const startedRef = useRef(false);
-  const setupReturnUrlRef = useRef(new URL("/setup", MARKETPLACE_FRONTEND_URL).toString());
-
   useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
+    if (typeof window === "undefined") return;
 
-    const location = resolveOpaqueHandoffLocation(window.location);
-    if (!location) {
-      setHandoffError(invalidHandoffError());
-      return;
-    }
-    const { code, loginPath } = location;
+    // Auth data in URL hash (not query) so it never hits server logs.
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const token = hashParams.get("token");
+    const expiresAt = hashParams.get("expires_at");
+    const userData = hashParams.get("user");
+    const handoffHotelId = hashParams.get("hotel_id");
+    const propertyId = hashParams.get("property_id");
+    const organizationId = hashParams.get("organization_id")?.trim() || null;
+    const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
+    const organizationSelectionPath = organizationSelectionLoginPath(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash,
+    );
+
+    // Optional `?redirect=...` query param — honored if it's a
+    // same-origin relative path, else ignored. Used when another
+    // app needs to hand off and land on a specific page (e.g.
+    // /choose-property, /setup?mode=add).
+    const queryParams = new URLSearchParams(window.location.search);
+    const redirectParam = queryParams.get("redirect");
+    const safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
 
     void (async () => {
-      try {
-        if (!authService.isAuthKitEnabled()) {
-          if (!(await authService.ensureSession())) {
-            window.location.replace(loginPath);
-            return;
-          }
-        } else {
-          let session = await authService.refreshSession();
-          if (isAuthOrganizationSelectionResponse(session)) {
-            if (session.organizations.length !== 1) {
-              window.location.replace(loginPath);
-              return;
-            }
-            session = await authService.refreshSession(
-              session.organizations[0]!.workosOrganizationId,
-            );
-            if (isAuthOrganizationSelectionResponse(session)) {
-              window.location.replace(loginPath);
-              return;
-            }
-          }
+      if (token && expiresAt) {
+        localStorage.setItem("access_token", token);
+        localStorage.setItem("token_expires_at", expiresAt);
+      } else if (!authService.isAuthKitEnabled()) {
+        if (!(await authService.ensureSession())) {
+          window.location.href = organizationSelectionPath;
+          return;
         }
+      } else {
+        try {
+          const session = await authService.refreshSession();
+          if (isAuthOrganizationSelectionResponse(session)) {
+            const organization = organizationId
+              ? session.organizations.find(
+                  (candidate) => candidate.organizationId === organizationId,
+                )
+              : workosOrganizationId
+                ? session.organizations.find(
+                    (candidate) => candidate.workosOrganizationId === workosOrganizationId,
+                  )
+                : session.organizations.length === 1
+                  ? session.organizations[0]
+                  : undefined;
+
+            if (
+              !organization ||
+              (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+
+            const selectedSession = await authService.refreshSession(
+              workosOrganizationId ?? organization.workosOrganizationId,
+            );
+            if (
+              isAuthOrganizationSelectionResponse(selectedSession) ||
+              (organizationId && selectedSession.organizationId !== organizationId) ||
+              (workosOrganizationId &&
+                selectedSession.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          } else if (
+            (organizationId && session.organizationId !== organizationId) ||
+            (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+          ) {
+            if (!workosOrganizationId) {
+              window.location.href = missingOrganizationHandoffLoginPath();
+              return;
+            }
+            const selectedSession = await authService.refreshSession(workosOrganizationId);
+            if (
+              isAuthOrganizationSelectionResponse(selectedSession) ||
+              (organizationId && selectedSession.organizationId !== organizationId) ||
+              selectedSession.workosOrganizationId !== workosOrganizationId
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          }
+        } catch {
+          window.location.href = organizationSelectionPath;
+          return;
+        }
+      }
+
+      if (token && expiresAt && userData) {
+        try {
+          const user = JSON.parse(decodeURIComponent(userData));
+          localStorage.setItem("isLoggedIn", "true");
+          localStorage.setItem("userId", user.id);
+          localStorage.setItem("userEmail", user.email);
+          localStorage.setItem("userName", user.name);
+          localStorage.setItem("userType", user.type);
+          localStorage.setItem("userStatus", user.status);
+          localStorage.setItem("user", JSON.stringify(user));
+        } catch {
+          /* ignore */
+        }
+      }
+
+      let properties: PmsPropertySummary[];
+      try {
+        properties = await listPmsProperties();
       } catch {
-        window.location.replace(loginPath);
+        localStorage.setItem("pmsSetupComplete", "false");
+        const requestedPropertyId = propertyId?.trim() || handoffHotelId?.trim();
+        window.location.href = requestedPropertyId
+          ? `/setup?entryProduct=pms&propertyId=${encodeURIComponent(requestedPropertyId)}`
+          : "/setup";
         return;
       }
 
-      try {
-        const handoff = await sharedHotelSetupApi.exchangeHandoff({ code });
-        setupReturnUrlRef.current =
-          canonicalSetupReturnUrl(
-            handoff.returnUrl,
-            handoff.propertyId,
-            MARKETPLACE_FRONTEND_URL,
-          ) ?? setupReturnUrlRef.current;
-        const destination = pmsSetupTaskDestination(handoff);
-        if (!destination) {
-          throw new Error("The requested setup task does not have a PMS destination.");
-        }
+      const explicitPropertyId = propertyId?.trim() || handoffHotelId?.trim() || null;
+      const requestedPropertyId = explicitPropertyId || getStoredPmsPropertyId();
+      let selected = requestedPropertyId
+        ? (properties.find((property) => property.id === requestedPropertyId) ?? null)
+        : null;
 
-        const properties = await listPmsProperties();
-        const selected = properties.find((property) => property.id === handoff.propertyId);
-        if (!selected) {
-          throw new Error("The requested property is not available in PMS.");
-        }
-
-        storeSelectedPmsPropertyId(selected.id);
-        window.location.replace(destination);
-      } catch (error: unknown) {
-        setHandoffError(errorForHandoffFailure(error));
+      if (requestedPropertyId && !selected) {
+        clearStoredPmsPropertyId();
       }
-    })();
+      if (!explicitPropertyId && !selected && properties.length === 1) {
+        selected = properties[0]!;
+      }
+      if (selected) {
+        storeSelectedPmsPropertyId(selected.id);
+      }
+
+      if (isExplicitSetupRedirect(safeRedirect)) {
+        window.location.href = safeRedirect;
+        return;
+      }
+      if (explicitPropertyId && !selected) {
+        localStorage.setItem("pmsSetupComplete", "false");
+        window.location.href = `/setup?entryProduct=pms&propertyId=${encodeURIComponent(explicitPropertyId)}`;
+        return;
+      }
+      if (properties.length === 0) {
+        localStorage.setItem("pmsSetupComplete", "false");
+        window.location.href = "/setup";
+        return;
+      }
+      if (!selected && properties.length > 1) {
+        localStorage.setItem("pmsSetupComplete", "true");
+        window.location.href = "/choose-property";
+        return;
+      }
+      if (safeRedirect) {
+        window.location.href = safeRedirect;
+        return;
+      }
+
+      localStorage.setItem("pmsSetupComplete", "true");
+      window.location.href = "/dashboard";
+    })().catch(() => {
+      localStorage.setItem("pmsSetupComplete", "false");
+      window.location.href = "/setup";
+    });
   }, []);
 
-  if (handoffError) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
-        <section className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
-          <h1 className="text-lg font-semibold text-gray-950">
-            {handoffError.refreshPlan ? "Setup plan changed" : "Setup link unavailable"}
-          </h1>
-          <p className="mt-2 text-sm text-gray-600">{handoffError.message}</p>
-          <button
-            type="button"
-            onClick={() => {
-              window.location.replace(setupReturnUrlRef.current);
-            }}
-            className="mt-5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700"
-          >
-            {handoffError.refreshPlan ? "Refresh setup plan" : "Return to setup"}
-          </button>
-        </section>
-      </main>
-    );
-  }
-
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
     </div>
   );
 }
 
-function pmsSetupTaskDestination(handoff: {
-  propertyId: string;
-  taskId: string;
-  issuedPlanRevision: string;
-  destinationRouteKey: string;
-  returnUrl: string;
-}): string | null {
-  if (
-    handoff.taskId !== "rooms_rates_availability" ||
-    handoff.destinationRouteKey !== "pms.rooms_rates_availability"
-  ) {
-    return null;
-  }
-
-  const returnUrl = canonicalSetupReturnUrl(
-    handoff.returnUrl,
-    handoff.propertyId,
-    MARKETPLACE_FRONTEND_URL,
-  );
-  if (!returnUrl) return null;
-
-  return `/rooms/new?${new URLSearchParams({
-    onboarding: "pms-activation",
-    taskId: handoff.taskId,
-    destinationRouteKey: handoff.destinationRouteKey,
-    planRevision: handoff.issuedPlanRevision,
-    returnUrl,
-  }).toString()}`;
+function isExplicitSetupRedirect(path: string | null): path is string {
+  return path === "/setup" || path?.startsWith("/setup?") === true;
 }

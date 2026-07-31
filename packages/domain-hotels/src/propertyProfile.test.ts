@@ -37,6 +37,33 @@ const response: PropertyProfileResponse = {
 };
 
 describe("canonical property profile wire contract", () => {
+  it("accepts stored incomplete profiles on reads while keeping create writes strict", () => {
+    const incomplete = {
+      propertyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      profileRevision: 1,
+      profile: {
+        displayName: "",
+        propertyType: "",
+        location: {
+          streetAddress: "",
+          postalCode: "",
+          city: "",
+          countryCode: "",
+          timezone: "",
+          latitude: null,
+          longitude: null,
+          localityPublic: false,
+          geoPublic: false,
+          mapDisplayMode: "hidden",
+        },
+        contacts: [],
+      },
+    };
+
+    expect(parsePropertyProfileResponse(incomplete)).toEqual(incomplete);
+    expect(parseCreatePropertyProfileRequest(incomplete.profile)).toBeNull();
+  });
+
   it("parses only the exact nested create profile", () => {
     expect(parseCreatePropertyProfileRequest(response.profile)).toEqual(response.profile);
     expect(

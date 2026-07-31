@@ -7,7 +7,13 @@ import { FormNavigationButtons } from "../FormNavigationButtons";
 import { HotelBasicInfoStep } from "./HotelBasicInfoStep";
 import { HotelListingsStep } from "./HotelListingsStep";
 import type { ListingCardSection } from "./ListingCard";
-import type { HotelTaskSection } from "@/app/profile/complete/hotelTaskFlow";
+
+type HotelTaskSection =
+  | "public_profile"
+  | "creator_profile"
+  | "offer_details"
+  | "offerings"
+  | "requirements";
 
 interface HotelProfileFormProps {
   // Form state
@@ -17,7 +23,7 @@ interface HotelProfileFormProps {
   // Step management
   currentStep: number;
   totalSteps: number;
-  activeSection: HotelTaskSection;
+  activeSection?: HotelTaskSection;
 
   // UI state
   error: string;
@@ -65,7 +71,7 @@ export function HotelProfileForm({
   listings,
   currentStep,
   totalSteps,
-  activeSection,
+  activeSection: requestedSection,
   error,
   submitting,
   canProceed,
@@ -93,6 +99,15 @@ export function HotelProfileForm({
   onNextStep,
   onSubmit,
 }: HotelProfileFormProps) {
+  const activeSection: HotelTaskSection =
+    requestedSection ??
+    (currentStep === 1
+      ? "creator_profile"
+      : currentStep === 2
+        ? "offer_details"
+        : currentStep === 3
+          ? "offerings"
+          : "requirements");
   const listingSection: ListingCardSection =
     activeSection === "offer_details"
       ? "details"

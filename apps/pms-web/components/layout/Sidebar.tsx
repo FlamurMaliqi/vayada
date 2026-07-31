@@ -10,7 +10,6 @@ import {
   CheckIcon,
   StarIcon,
 } from "@heroicons/react/24/outline";
-import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";

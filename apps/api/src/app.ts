@@ -13,10 +13,6 @@ import {
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
-import {
-  registerHotelSetupHandoffRoutes,
-  type HotelSetupHandoffRoutesOptions,
-} from "./routes/hotelSetupHandoffs.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
 import type { AskAuditRepository, AskRoutesOptions } from "./routes/ask.js";
@@ -185,10 +181,6 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
-  hotelSetupHandoffs?: Omit<
-    HotelSetupHandoffRoutesOptions,
-    "setupStatusRepository" | "trackCommandRepository"
-  >;
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
   identityAdminUsersReadRepository?: IdentityAdminUsersReadRepository;
@@ -376,19 +368,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerSharedHotelSetupStatusRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
-      trackCommandRepository: options.hotelSetupTrackCommandRepository,
-    });
-  }
-  if (options.hotelSetupHandoffs) {
-    if (!options.sharedHotelSetupStatusRepository || !options.hotelSetupTrackCommandRepository) {
-      throw new Error(
-        "shared hotel setup status and track repositories are required with hotelSetupHandoffs",
-      );
-    }
-    app.register(registerHotelSetupHandoffRoutes, {
-      prefix: "/api/hotel-setup",
-      ...options.hotelSetupHandoffs,
-      setupStatusRepository: options.sharedHotelSetupStatusRepository,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
     });
   }

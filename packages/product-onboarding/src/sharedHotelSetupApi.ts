@@ -1,19 +1,11 @@
 import {
-  parseCreateHotelSetupHandoffRequest,
-  parseCreateHotelSetupHandoffResponse,
   parseAdaptiveHotelSetupStatus,
-  parseExchangeHotelSetupHandoffRequest,
-  parseExchangeHotelSetupHandoffResponse,
   parsePropertyProfileResponse,
   parsePublicPropertyProfileResponse,
   parseUpdatePublicPropertyProfileRequest,
   parseUpdatePropertyProfileRequest,
   type AdaptiveHotelSetupStatus,
-  type CreateHotelSetupHandoffRequest,
-  type CreateHotelSetupHandoffResponse,
   type CreatePropertyProfileRequest,
-  type ExchangeHotelSetupHandoffRequest,
-  type ExchangeHotelSetupHandoffResponse,
   type PropertyProfileResponse,
   type PublicPropertyProfileResponse,
   type UpdatePropertyProfileRequest,
@@ -69,10 +61,6 @@ export type SharedHotelSetupApi = {
     request: UpdatePublicPropertyProfileRequest,
   ): Promise<PublicPropertyProfileResponse>;
   updateTracks(request: UpdateTracksRequest, idempotencyKey: string): Promise<UpdateTracksResponse>;
-  createHandoff(request: CreateHotelSetupHandoffRequest): Promise<CreateHotelSetupHandoffResponse>;
-  exchangeHandoff(
-    request: ExchangeHotelSetupHandoffRequest,
-  ): Promise<ExchangeHotelSetupHandoffResponse>;
 };
 
 export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): SharedHotelSetupApi {
@@ -138,28 +126,6 @@ export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): S
         request,
         idempotencyOptions(idempotencyKey),
       ),
-    createHandoff: async (request) => {
-      const input = parseCreateHotelSetupHandoffRequest(request);
-      if (!input) throw new Error("Hotel setup handoff request is invalid.");
-      const response = parseCreateHotelSetupHandoffResponse(
-        await client.post<unknown>("/api/hotel-setup/handoffs", input),
-      );
-      if (!response) {
-        throw new Error("Hotel setup handoff data is invalid. Refresh the plan and try again.");
-      }
-      return response;
-    },
-    exchangeHandoff: async (request) => {
-      const input = parseExchangeHotelSetupHandoffRequest(request);
-      if (!input) throw new Error("Hotel setup handoff code is invalid.");
-      const response = parseExchangeHotelSetupHandoffResponse(
-        await client.post<unknown>("/api/hotel-setup/handoffs/exchange", input),
-      );
-      if (!response) {
-        throw new Error("Hotel setup handoff data is invalid. Return to the setup plan.");
-      }
-      return response;
-    },
   };
 }
 

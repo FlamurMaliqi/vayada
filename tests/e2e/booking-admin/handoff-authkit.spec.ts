@@ -1,186 +1,229 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
-
+import { expect, test, type Page } from "@playwright/test";
 import {
   BOOKING_ADMIN_HOTEL_ID,
   BOOKING_ADMIN_ORGANIZATION_ID,
   BOOKING_ADMIN_PROPERTY_ID,
   mockBookingAdminShellRoutes,
 } from "../support/bookingAdminMocks";
+import {
+  createSharedHotelSetupStatusMock,
+  sharedHotelSetupProduct,
+} from "../support/sharedHotelSetupMocks";
 
-const HANDOFF_CODE = "G".repeat(43);
-const LOGIN_RESUME_CODE = "H".repeat(43);
-const INVALID_CONTEXT_CODE = "I".repeat(43);
-const WORKOS_ORGANIZATION_ID = "org_workos_hotel_group";
+const TARGET_WORKOS_ORGANIZATION_ID = "org_workos_hotel_group";
+const OTHER_ORGANIZATION_ID = "org_other_hotel_group";
+const OTHER_WORKOS_ORGANIZATION_ID = "org_workos_other_hotel_group";
+const OTHER_HOTEL_ID = "booking_hotel_bergwald";
+const OTHER_PROPERTY_ID = "f6853000-0000-0000-0000-000000000002";
 
-test.describe("booking-admin opaque AuthKit handoff", () => {
-  test("preserves only the opaque code when credential sign-in is required", async ({ page }) => {
-    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      return route.fulfill({
-        status: 401,
-        headers: corsHeaders(route),
-        json: { error: "missing_session" },
-      });
-    });
-
-    await page.goto(`/handoff?code=${LOGIN_RESUME_CODE}`);
-
-    await expect(page).toHaveURL(/\/login\?auth=callback/);
-    const loginUrl = new URL(page.url());
-    expect(loginUrl.searchParams.get("returnTo")).toBe(`/handoff?code=${LOGIN_RESUME_CODE}`);
-    expect(loginUrl.searchParams.get("returnTo")).not.toContain("#");
-    expect(loginUrl.searchParams.get("returnTo")).not.toContain("property");
-    await expect(page.getByLabel("Email address")).toBeVisible();
-  });
-
-  test("keeps the exact opaque return path through explicit hotel-group selection", async ({
+test.describe("booking-admin AuthKit handoff", () => {
+  test("selects the organization hinted by the handoff and keeps the property context", async ({
     page,
   }) => {
     await mockBookingAdminShellRoutes(page);
-    let selected = false;
-    const refreshRequests: unknown[] = [];
-    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      return route.fulfill({
-        headers: corsHeaders(route),
-        json: selected ? authenticatedSession() : organizationSelectionResponse(),
-      });
-    });
-    await page.route(/\/auth\/session\/refresh$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      selected = true;
-      const request = route.request().postDataJSON();
-      if (request && typeof request === "object" && "organizationId" in request) {
-        refreshRequests.push(request);
-      }
-      return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
-    });
-    const exchangeRequests: unknown[] = [];
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      exchangeRequests.push(route.request().postDataJSON());
-      return route.fulfill({
-        headers: corsHeaders(route),
-        json: {
-          propertyId: BOOKING_ADMIN_PROPERTY_ID,
-          taskId: "guest_settings_policies",
-          issuedPlanRevision: "e2e-plan-1",
-          destinationRouteKey: "booking.guest_settings_policies",
-          returnUrl: marketplaceSetupReturnUrl(),
-        },
-      });
-    });
-    await page.route(/\/settings\?/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Settings</title>" }),
+    const refreshRequests = await mockOrganizationSelection(page);
+
+    await page.goto(
+      `/handoff#organization_id=${BOOKING_ADMIN_ORGANIZATION_ID}&workos_organization_id=${TARGET_WORKOS_ORGANIZATION_ID}&property_id=${BOOKING_ADMIN_PROPERTY_ID}`,
     );
 
-    await page.goto(`/handoff?code=${HANDOFF_CODE}`);
-
-    await expect(page).toHaveURL(/\/login\?auth=callback/);
-    expect(new URL(page.url()).searchParams.get("returnTo")).toBe(`/handoff?code=${HANDOFF_CODE}`);
-    await page.getByRole("button", { name: "Alpenrose Hotel Group" }).click();
-
-    await expect.poll(() => new URL(page.url()).pathname).toBe("/settings");
-    expect(refreshRequests).toEqual([
-      { organizationId: WORKOS_ORGANIZATION_ID, surface: "booking-admin" },
+    await expect(page).toHaveURL(/\/dashboard$/);
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([
+      { organizationId: TARGET_WORKOS_ORGANIZATION_ID, surface: "booking-admin" },
     ]);
-    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
     expect(
       await page.evaluate(() => ({
         propertyId: localStorage.getItem("selectedSharedPropertyId"),
         hotelId: localStorage.getItem("selectedHotelId"),
       })),
-    ).toEqual({
-      propertyId: BOOKING_ADMIN_PROPERTY_ID,
-      hotelId: BOOKING_ADMIN_HOTEL_ID,
-    });
+    ).toEqual({ propertyId: BOOKING_ADMIN_PROPERTY_ID, hotelId: BOOKING_ADMIN_HOTEL_ID });
   });
 
-  test("rejects extra query or fragment context before authentication or exchange", async ({
+  test("honors a WorkOS-only organization hint for a normal session", async ({ page }) => {
+    await mockBookingAdminShellRoutes(page);
+    const refreshRequests: unknown[] = [];
+    let selected = false;
+    await page.route("**/auth/session/refresh", (route) => {
+      selected = true;
+      refreshRequests.push(route.request().postDataJSON());
+      return route.fulfill({ json: authenticatedSession() });
+    });
+    await page.route("**/auth/session?surface=booking-admin", (route) =>
+      route.fulfill({
+        json: selected
+          ? authenticatedSession()
+          : authenticatedSession(
+              OTHER_HOTEL_ID,
+              OTHER_ORGANIZATION_ID,
+              OTHER_WORKOS_ORGANIZATION_ID,
+            ),
+      }),
+    );
+
+    await page.goto(
+      `/handoff#workos_organization_id=${TARGET_WORKOS_ORGANIZATION_ID}&property_id=${BOOKING_ADMIN_PROPERTY_ID}`,
+    );
+
+    await expect(page).toHaveURL(/\/dashboard$/);
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([
+      { organizationId: TARGET_WORKOS_ORGANIZATION_ID, surface: "booking-admin" },
+    ]);
+    expect(
+      await page.evaluate(() => ({
+        propertyId: localStorage.getItem("selectedSharedPropertyId"),
+        hotelId: localStorage.getItem("selectedHotelId"),
+      })),
+    ).toEqual({ propertyId: BOOKING_ADMIN_PROPERTY_ID, hotelId: BOOKING_ADMIN_HOTEL_ID });
+  });
+
+  test("shows a terminal error when a wrong-org session lacks the WorkOS hint", async ({
     page,
   }) => {
-    let authRequests = 0;
-    let exchangeRequests = 0;
-    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
-      authRequests += 1;
-      return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
-    });
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
-      exchangeRequests += 1;
-      return route.fulfill({
-        status: 409,
-        headers: corsHeaders(route),
-        json: { code: "invalid_handoff" },
-      });
-    });
+    await page.route("**/auth/session?surface=booking-admin", (route) =>
+      route.fulfill({
+        json: authenticatedSession(
+          OTHER_HOTEL_ID,
+          OTHER_ORGANIZATION_ID,
+          OTHER_WORKOS_ORGANIZATION_ID,
+        ),
+      }),
+    );
+    await page.goto(
+      `/handoff#organization_id=${BOOKING_ADMIN_ORGANIZATION_ID}&property_id=${BOOKING_ADMIN_PROPERTY_ID}`,
+    );
 
-    await page.goto(`/handoff?code=${INVALID_CONTEXT_CODE}&extra=untrusted#untrusted=value`);
-
-    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
+    await expect(page).toHaveURL(/\/login\?auth_error=/);
+    const loginUrl = new URL(page.url());
+    expect(loginUrl.searchParams.has("auth")).toBe(false);
+    expect(loginUrl.searchParams.has("returnTo")).toBe(false);
+    await expect(page.getByRole("heading", { name: "Sign in to vayada" })).toBeVisible();
     await expect(
-      page.getByText("This setup link is invalid, expired, or has already been used."),
+      page.getByText(
+        "This handoff is missing hotel-group context. Return to the previous app and try again.",
+      ),
     ).toBeVisible();
-    expect(authRequests).toBe(0);
-    expect(exchangeRequests).toBe(0);
   });
 
-  test("returns to the exact setup property after a post-exchange hotel lookup failure", async ({
+  test("preserves the exact handoff when credential sign-in is required", async ({ page }) => {
+    await page.route("**/auth/session?surface=booking-admin", (route) =>
+      route.fulfill({ status: 401, json: { error: "missing_session" } }),
+    );
+    const redirect = "/setup?mode=add";
+    const query = new URLSearchParams({ redirect }).toString();
+    const hash = new URLSearchParams({
+      organization_id: BOOKING_ADMIN_ORGANIZATION_ID,
+      workos_organization_id: TARGET_WORKOS_ORGANIZATION_ID,
+      property_id: BOOKING_ADMIN_PROPERTY_ID,
+      hotel_id: BOOKING_ADMIN_HOTEL_ID,
+    }).toString();
+    const returnTo = `/handoff?${query}#${hash}`;
+
+    await page.goto(returnTo);
+
+    await expect(page).toHaveURL(/\/login\?auth=callback/);
+    expect(new URL(page.url()).searchParams.get("returnTo")).toBe(returnTo);
+    await expect(page.getByRole("heading", { name: "Sign in to vayada" })).toBeVisible();
+    await expect(page.getByLabel("Email address")).toBeVisible();
+  });
+
+  test("uses the existing organization selector and preserves the handoff when no candidate matches", async ({
     page,
   }) => {
     await mockBookingAdminShellRoutes(page);
-    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
-    });
-    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      return route.fulfill({
-        status: 503,
-        headers: corsHeaders(route),
-        json: { code: "setup_status_unavailable" },
-      });
-    });
+    const refreshRequests = await mockOrganizationSelection(page);
+    const hash = new URLSearchParams({
+      organization_id: "org_not_available",
+      property_id: BOOKING_ADMIN_PROPERTY_ID,
+      hotel_id: BOOKING_ADMIN_HOTEL_ID,
+    }).toString();
+    const returnTo = `/handoff#${hash}`;
 
-    const exchangeRequests: unknown[] = [];
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      exchangeRequests.push(route.request().postDataJSON());
-      return route.fulfill({
-        headers: corsHeaders(route),
+    await page.goto(returnTo);
+
+    await expect(page).toHaveURL(/\/login\?auth=callback/);
+    await expect(page.getByRole("heading", { name: "Choose hotel group" })).toBeVisible();
+    await expect(page.getByRole("textbox")).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get("returnTo")).toBe(returnTo);
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([]);
+
+    await page.getByRole("button", { name: "Alpenrose Hotel Group" }).click();
+
+    await expect(page).toHaveURL(/\/dashboard$/);
+    expect(organizationSelectionRequests(refreshRequests)).toEqual([
+      { organizationId: TARGET_WORKOS_ORGANIZATION_ID, surface: "booking-admin" },
+    ]);
+    expect(
+      await page.evaluate(() => ({
+        propertyId: localStorage.getItem("selectedSharedPropertyId"),
+        hotelId: localStorage.getItem("selectedHotelId"),
+      })),
+    ).toEqual({ propertyId: BOOKING_ADMIN_PROPERTY_ID, hotelId: BOOKING_ADMIN_HOTEL_ID });
+  });
+
+  test("does not replace an inaccessible explicit property with another singleton", async ({
+    page,
+  }) => {
+    await mockBookingAdminShellRoutes(page);
+    await page.route("**/api/hotel-setup/status**", (route) => {
+      const requestedPropertyId = new URL(route.request().url()).searchParams.get("propertyId");
+      if (requestedPropertyId === BOOKING_ADMIN_PROPERTY_ID) {
+        return route.fulfill({ status: 404, json: { detail: "Property not found" } });
+      }
+      return route.fulfill({ json: bookingStatus(OTHER_PROPERTY_ID) });
+    });
+    await page.route("**/api/booking/hotels/*/property-link", (route) =>
+      route.fulfill({
         json: {
-          propertyId: BOOKING_ADMIN_PROPERTY_ID,
-          taskId: "guest_settings_policies",
-          issuedPlanRevision: "e2e-plan-1",
-          destinationRouteKey: "booking.guest_settings_policies",
-          returnUrl: marketplaceSetupReturnUrl(),
+          hotelId: OTHER_HOTEL_ID,
+          propertyId: OTHER_PROPERTY_ID,
+          resourceLinks: { bookingHotel: true, pmsProperty: true, financeProperty: true },
         },
-      });
-    });
-    await page.route(/\/handoff-history-start$/, (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: "<!doctype html><title>Before handoff</title>",
       }),
     );
-    await page.route(marketplaceSetupReturnUrl(), (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: "<!doctype html><title>Setup wizard</title>",
-      }),
+    await mockOrganizationSelection(page, OTHER_HOTEL_ID);
+
+    await page.goto(
+      `/handoff#organization_id=${BOOKING_ADMIN_ORGANIZATION_ID}&property_id=${BOOKING_ADMIN_PROPERTY_ID}`,
     );
 
-    await page.goto("/handoff-history-start");
-    await page.goto(`/handoff?code=${HANDOFF_CODE}`);
-
-    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
-    await page.getByRole("button", { name: "Return to setup" }).click();
-    await expect.poll(() => page.url()).toBe(marketplaceSetupReturnUrl());
-
-    await page.goBack();
-    await expect.poll(() => new URL(page.url()).pathname).toBe("/handoff-history-start");
-    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
+    await expect(page).toHaveURL(
+      new RegExp(
+        `/setup\\?entryProduct=booking&propertyId=${encodeURIComponent(BOOKING_ADMIN_PROPERTY_ID)}$`,
+      ),
+    );
+    expect(
+      await page.evaluate(() => ({
+        propertyId: localStorage.getItem("selectedSharedPropertyId"),
+        hotelId: localStorage.getItem("selectedHotelId"),
+      })),
+    ).toEqual({ propertyId: null, hotelId: null });
   });
 });
+
+async function mockOrganizationSelection(page: Page, hotelId = BOOKING_ADMIN_HOTEL_ID) {
+  let selected = false;
+  const refreshRequests: unknown[] = [];
+  await page.route("**/auth/session/refresh", (route) => {
+    selected = true;
+    refreshRequests.push(route.request().postDataJSON());
+    return route.fulfill({ json: authenticatedSession(hotelId) });
+  });
+  await page.route("**/auth/session?surface=booking-admin", (route) =>
+    route.fulfill({
+      json: selected ? authenticatedSession(hotelId) : organizationSelectionResponse(),
+    }),
+  );
+  return refreshRequests;
+}
+
+function organizationSelectionRequests(requests: unknown[]): unknown[] {
+  return requests.filter(
+    (request) =>
+      Boolean(request) &&
+      typeof request === "object" &&
+      typeof (request as { organizationId?: unknown }).organizationId === "string",
+  );
+}
 
 function organizationSelectionResponse() {
   return {
@@ -188,14 +231,14 @@ function organizationSelectionResponse() {
     csrfToken: "e2e-booking-csrf-token",
     organizations: [
       {
-        organizationId: "22222222-2222-4222-8222-222222222222",
-        workosOrganizationId: "org_workos_other_hotel_group",
+        organizationId: OTHER_ORGANIZATION_ID,
+        workosOrganizationId: OTHER_WORKOS_ORGANIZATION_ID,
         displayName: "Other Hotel Group",
         kind: "hotel_group",
       },
       {
         organizationId: BOOKING_ADMIN_ORGANIZATION_ID,
-        workosOrganizationId: WORKOS_ORGANIZATION_ID,
+        workosOrganizationId: TARGET_WORKOS_ORGANIZATION_ID,
         displayName: "Alpenrose Hotel Group",
         kind: "hotel_group",
       },
@@ -204,13 +247,17 @@ function organizationSelectionResponse() {
   };
 }
 
-function authenticatedSession() {
+function authenticatedSession(
+  hotelId = BOOKING_ADMIN_HOTEL_ID,
+  organizationId = BOOKING_ADMIN_ORGANIZATION_ID,
+  workosOrganizationId = TARGET_WORKOS_ORGANIZATION_ID,
+) {
   return {
-    accessToken: fakeBookingAdminJwt(),
+    accessToken: "e2e-booking-authkit-token",
     csrfToken: "e2e-booking-csrf-token",
-    organizationId: BOOKING_ADMIN_ORGANIZATION_ID,
-    workosOrganizationId: WORKOS_ORGANIZATION_ID,
-    resources: { "booking:booking_hotel": [BOOKING_ADMIN_HOTEL_ID] },
+    organizationId,
+    workosOrganizationId,
+    resources: { "booking:booking_hotel": [hotelId] },
     user: sessionUser(),
   };
 }
@@ -220,44 +267,32 @@ function sessionUser() {
     id: "user_booking_owner",
     email: "owner@example.com",
     name: "Booking Owner",
-    phone: "+49 89 123456",
-    profilePictureUrl: "https://media.example/booking-owner.webp",
-    profilePictureMediaObjectId: "media-booking-owner",
     status: "active",
     workosUserId: "workos_user_booking_owner",
   };
 }
 
-function fakeBookingAdminJwt(): string {
-  return `header.${Buffer.from(
-    JSON.stringify({
-      org: BOOKING_ADMIN_ORGANIZATION_ID,
-      resources: { "booking:booking_hotel": [BOOKING_ADMIN_HOTEL_ID] },
-    }),
-  ).toString("base64url")}.signature`;
-}
-
-function marketplaceSetupReturnUrl(): string {
-  const origin =
-    process.env.E2E_MARKETPLACE_BASE_URL ||
-    (process.env.E2E_START_SERVERS === "1"
-      ? "http://marketplace.localhost:3000"
-      : "https://marketplace.localhost");
-  const url = new URL("/setup", origin);
-  url.searchParams.set("propertyId", BOOKING_ADMIN_PROPERTY_ID);
-  return url.toString();
-}
-
-function corsHeaders(route: Route) {
-  return {
-    "access-control-allow-credentials": "true",
-    "access-control-allow-headers": "authorization, content-type, x-vayada-csrf",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-origin": route.request().headers().origin ?? "http://127.0.0.1:3003",
-    "content-type": "application/json",
-  };
-}
-
-async function fulfillCorsPreflight(route: Route) {
-  await route.fulfill({ status: 204, headers: corsHeaders(route) });
+function bookingStatus(propertyId: string) {
+  return createSharedHotelSetupStatusMock({
+    entryProduct: "booking",
+    returnTo: "/dashboard",
+    organizationId: BOOKING_ADMIN_ORGANIZATION_ID,
+    organizationDisplayName: "Alpenrose Hotel Group",
+    propertyId,
+    publicId: `public-${propertyId}`,
+    propertyDisplayName: "Bergwald",
+    locationSummary: "Garmisch-Partenkirchen, DE",
+    products: {
+      booking: sharedHotelSetupProduct("booking", "active"),
+      pms: sharedHotelSetupProduct("pms", "not_selected"),
+      marketplace: sharedHotelSetupProduct("marketplace", "not_selected"),
+    },
+    nextAction: {
+      action: "enter_product",
+      propertyId,
+      product: "booking",
+      returnTo: "/dashboard",
+      reasonCodes: ["ready"],
+    },
+  });
 }

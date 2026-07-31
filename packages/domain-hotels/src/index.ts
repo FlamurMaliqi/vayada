@@ -13,7 +13,6 @@
  */
 
 export * from "./adaptiveHotelSetup.js";
-export * from "./hotelSetupHandoff.js";
 export * from "./propertyProfile.js";
 export * from "./publicPropertyProfile.js";
 

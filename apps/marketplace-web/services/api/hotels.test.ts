@@ -732,6 +732,111 @@ describe("hotel target self-service client", () => {
     ]);
   });
 
+  it("resumes a multi-field profile save after canonical and public writes already committed", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    let currentProfile = sharedProfile;
+    let currentPublicProfile = publicProfile;
+    let currentMarketplaceProfile = marketplaceProfile;
+    let marketplaceWriteAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url);
+        const method = init?.method ?? "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        requests.push({ url: href, method, body });
+
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/profile`)) {
+          if (method === "PUT") {
+            currentProfile = {
+              ...sharedProfile,
+              profileRevision: 4,
+              profile: {
+                ...sharedProfile.profile,
+                displayName: "Alpenrose Retry Hotel",
+                contacts: sharedProfile.profile.contacts.map((contact) =>
+                  contact.channelType === "phone"
+                    ? { ...contact, value: "+49 89 111111" }
+                    : contact,
+                ),
+              },
+            };
+            currentPublicProfile = { ...publicProfile, profileRevision: 4 };
+          }
+          return jsonResponse(currentProfile);
+        }
+        if (href.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`)) {
+          if (method === "PUT") {
+            currentPublicProfile = {
+              ...currentPublicProfile,
+              profileRevision: 5,
+              publicProfile: {
+                ...currentPublicProfile.publicProfile,
+                shortDescription: "Retry-safe description.",
+              },
+            };
+          }
+          return jsonResponse(currentPublicProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/profile`)) {
+          if (method === "PUT") {
+            marketplaceWriteAttempts += 1;
+            if (marketplaceWriteAttempts === 1) {
+              return jsonResponse({ detail: "Temporary Marketplace profile failure" }, 503);
+            }
+            currentMarketplaceProfile = {
+              ...marketplaceProfile,
+              hostSummary: "Retry-safe description.",
+            };
+          }
+          return jsonResponse(currentMarketplaceProfile);
+        }
+        if (href.endsWith(`/marketplace/properties/${propertyId}/offers`)) {
+          return jsonResponse({ offers: [targetOffer] });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${href}`);
+      }),
+    );
+
+    const save = () =>
+      hotelService.updateMyProfile(
+        {
+          name: "Alpenrose Retry Hotel",
+          phone: "+49 89 111111",
+          about: "Retry-safe description.",
+        },
+        propertyId,
+        profileRevisions,
+      );
+
+    await expect(save()).rejects.toBeTruthy();
+    await expect(save()).resolves.toMatchObject({
+      name: "Alpenrose Retry Hotel",
+      phone: "+49 89 111111",
+      publicAbout: "Retry-safe description.",
+      marketplaceAbout: "Retry-safe description.",
+    });
+
+    expect(
+      requests.filter(
+        ({ url, method }) =>
+          url.endsWith(`/hotel-setup/properties/${propertyId}/profile`) && method === "PUT",
+      ),
+    ).toHaveLength(1);
+    expect(
+      requests.filter(
+        ({ url, method }) =>
+          url.endsWith(`/hotel-setup/properties/${propertyId}/public-profile`) && method === "PUT",
+      ),
+    ).toHaveLength(1);
+    expect(
+      requests.filter(
+        ({ url, method }) =>
+          url.endsWith(`/marketplace/properties/${propertyId}/profile`) && method === "PUT",
+      ),
+    ).toHaveLength(2);
+  });
+
   it("sends the editor-loaded revision so a stale save reaches the backend conflict check", async () => {
     const requests: Array<{ method: string; body: unknown }> = [];
     vi.stubGlobal(

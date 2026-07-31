@@ -4,8 +4,6 @@ import { describe, expect, it } from "vitest";
 import { createSharedHotelSetupApi, type SharedHotelSetupHttpClient } from "./sharedHotelSetupApi";
 
 describe("createSharedHotelSetupApi", () => {
-  const handoffCode = "7_8FkqvJvK_vOS5Ke4iFAScHY6LmDsQUviRLKfS1dCk";
-
   it("parses the adaptive status contract and rejects an obsolete response", async () => {
     const validApi = createSharedHotelSetupApi(clientReturning(validStatus()));
     const invalidApi = createSharedHotelSetupApi(
@@ -83,77 +81,6 @@ describe("createSharedHotelSetupApi", () => {
     const api = createSharedHotelSetupApi(client);
 
     await expect(api.getPublicPropertyProfile("property-1")).resolves.toEqual(validPublicProfile());
-  });
-
-  it("creates and exchanges the exact server-validated handoff wire", async () => {
-    const calls: Array<{ endpoint: string; data: unknown }> = [];
-    const client: SharedHotelSetupHttpClient = {
-      get: async <T>() => validStatus() as T,
-      put: async <T>() => validStatus() as T,
-      post: async <T>(endpoint: string, data?: unknown) => {
-        calls.push({ endpoint, data });
-        return (
-          endpoint.endsWith("/exchange")
-            ? {
-                propertyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-                taskId: "guest_settings_policies",
-                issuedPlanRevision: "tracks:1|guest_settings_policies:revision-1:fresh",
-                destinationRouteKey: "booking.guest_settings_policies",
-                returnUrl:
-                  "https://marketplace.vayada.com/setup?propertyId=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-              }
-            : {
-                launchUrl: `https://admin.booking.vayada.com/handoff?code=${handoffCode}`,
-                expiresAt: "2026-07-26T18:05:00.000Z",
-              }
-        ) as T;
-      },
-    };
-    const api = createSharedHotelSetupApi(client);
-    const createRequest = {
-      propertyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      taskId: "guest_settings_policies" as const,
-      planRevision: "tracks:1|guest_settings_policies:revision-1:fresh",
-    };
-
-    await expect(api.createHandoff(createRequest)).resolves.toEqual({
-      launchUrl: `https://admin.booking.vayada.com/handoff?code=${handoffCode}`,
-      expiresAt: "2026-07-26T18:05:00.000Z",
-    });
-    await expect(api.exchangeHandoff({ code: handoffCode })).resolves.toMatchObject({
-      propertyId: createRequest.propertyId,
-      destinationRouteKey: "booking.guest_settings_policies",
-    });
-    expect(calls).toEqual([
-      { endpoint: "/api/hotel-setup/handoffs", data: createRequest },
-      { endpoint: "/api/hotel-setup/handoffs/exchange", data: { code: handoffCode } },
-    ]);
-  });
-
-  it("rejects client-added routes and malformed handoff responses", async () => {
-    const api = createSharedHotelSetupApi(
-      clientReturning({
-        launchUrl:
-          "https://admin.booking.vayada.com/handoff?code=7_8FkqvJvK_vOS5Ke4iFAScHY6LmDsQUviRLKfS1dCk&propertyId=secret",
-        expiresAt: "2026-07-26T18:05:00.000Z",
-      }),
-    );
-
-    await expect(
-      api.createHandoff({
-        propertyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        taskId: "guest_settings_policies",
-        planRevision: "tracks:1",
-        destinationRoute: "https://attacker.example/handoff",
-      } as never),
-    ).rejects.toThrow("handoff request is invalid");
-    await expect(
-      api.createHandoff({
-        propertyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        taskId: "guest_settings_policies",
-        planRevision: "tracks:1",
-      }),
-    ).rejects.toThrow("handoff data is invalid");
   });
 });
 

@@ -86,11 +86,62 @@ export function parsePropertyProfileResponse(value: unknown): PropertyProfileRes
     !propertyId ||
     !Number.isSafeInteger(profileRevision) ||
     (profileRevision as number) < 1 ||
-    !isPropertyProfile(profile)
+    !isReadablePropertyProfile(profile)
   ) {
     return null;
   }
   return value as PropertyProfileResponse;
+}
+
+// Stored draft profiles keep the complete response shape while required facts
+// are still being collected. Writes remain strict; reads accept empty strings
+// so an incomplete property can be reopened and completed by the wizard.
+function isReadablePropertyProfile(value: unknown): value is PropertyProfile {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["displayName", "propertyType", "location", "contacts"])
+  ) {
+    return false;
+  }
+  return (
+    typeof value["displayName"] === "string" &&
+    typeof value["propertyType"] === "string" &&
+    isReadablePropertyProfileLocation(value["location"]) &&
+    Array.isArray(value["contacts"]) &&
+    value["contacts"].every(isPropertyProfileContact)
+  );
+}
+
+function isReadablePropertyProfileLocation(value: unknown): value is PropertyProfileLocation {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "streetAddress",
+      "postalCode",
+      "city",
+      "countryCode",
+      "timezone",
+      "latitude",
+      "longitude",
+      "localityPublic",
+      "geoPublic",
+      "mapDisplayMode",
+    ])
+  ) {
+    return false;
+  }
+  return (
+    ["streetAddress", "postalCode", "city", "countryCode", "timezone"].every(
+      (key) => typeof value[key] === "string",
+    ) &&
+    isNullableFiniteNumber(value["latitude"]) &&
+    isNullableFiniteNumber(value["longitude"]) &&
+    typeof value["localityPublic"] === "boolean" &&
+    typeof value["geoPublic"] === "boolean" &&
+    PROPERTY_PROFILE_MAP_DISPLAY_MODES.includes(
+      value["mapDisplayMode"] as PropertyProfileMapDisplayMode,
+    )
+  );
 }
 
 export function parseUpdatePropertyProfileRequest(

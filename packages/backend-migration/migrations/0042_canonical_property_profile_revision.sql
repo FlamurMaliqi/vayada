@@ -1,4 +1,4 @@
--- Migration: 0041_canonical_property_profile_revision
+-- Migration: 0042_canonical_property_profile_revision
 -- Owner: domain-hotels
 -- See: engineering/adaptive-hotel-onboarding.md
 

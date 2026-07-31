@@ -1,18 +1,17 @@
 import { expect, test, type Page } from "@playwright/test";
-import { createAdaptiveHotelSetupStatusMock } from "../support/sharedHotelSetupMocks";
+import {
+  createSharedHotelSetupStatusMock,
+  sharedHotelSetupProduct,
+} from "../support/sharedHotelSetupMocks";
 import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 
 const PROPERTY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const OTHER_PROPERTY_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const WORKOS_ORGANIZATION_ID = "org_workos_hotel_group";
-const HANDOFF_CODE = "D".repeat(43);
-const LOGIN_RESUME_CODE = "E".repeat(43);
-const USED_CODE = "F".repeat(43);
-const SHARED_IDENTITY_CODE = "J".repeat(43);
-const LEGACY_CREATOR_PROFILE_CODE = "K".repeat(43);
 
-test.describe("marketplace-web opaque setup handoff", () => {
-  test("selects the only hotel group, exchanges the code, and opens the canonical setup flow", async ({
+test.describe("marketplace-web AuthKit handoff", () => {
+  test("ignores legacy credentials, selects the hinted hotel group, and opens activation", async ({
     page,
   }) => {
     const refreshRequests: unknown[] = [];
@@ -20,7 +19,19 @@ test.describe("marketplace-web opaque setup handoff", () => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
       return route.fulfill({
         headers: corsHeaders(route),
-        json: organizationSelectionResponse(),
+        json: {
+          organizationSelectionRequired: true,
+          csrfToken: "e2e-marketplace-csrf-token",
+          organizations: [
+            {
+              organizationId: ORGANIZATION_ID,
+              workosOrganizationId: WORKOS_ORGANIZATION_ID,
+              displayName: "Alpenrose Hotel Group",
+              kind: "hotel_group",
+            },
+          ],
+          user: sessionUser(),
+        },
       });
     });
     await page.route(/\/auth\/session\/refresh$/, async (route) => {
@@ -28,250 +39,85 @@ test.describe("marketplace-web opaque setup handoff", () => {
       refreshRequests.push(route.request().postDataJSON());
       return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
     });
-    await mockMarketplaceStatus(page);
-
-    const exchangeRequests: unknown[] = [];
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
+    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      exchangeRequests.push(route.request().postDataJSON());
       return route.fulfill({
         headers: corsHeaders(route),
-        json: exchangedHandoff(),
+        json: marketplaceStatus(PROPERTY_ID),
       });
     });
-    await page.route(/\/setup\?propertyId=/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Setup</title>" }),
-    );
-    await page.route(/\/before-handoff$/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Before</title>" }),
+    await page.route(/\/profile\/complete\?activation=marketplace&propertyId=/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Activation</title>" }),
     );
 
-    await page.goto("/before-handoff");
-    await page.goto(`/handoff?code=${HANDOFF_CODE}`);
+    const redirect = `/profile/complete?activation=marketplace&propertyId=${PROPERTY_ID}`;
+    const handoffQuery = new URLSearchParams({ redirect }).toString();
+    const handoffFragment = new URLSearchParams({
+      token: "untrusted-legacy-token",
+      expires_at: String(Date.now() + 60_000),
+      user: JSON.stringify({
+        id: "attacker-controlled-id",
+        email: "attacker@example.test",
+        type: "creator",
+      }),
+      organization_id: ORGANIZATION_ID,
+      workos_organization_id: WORKOS_ORGANIZATION_ID,
+      property_id: PROPERTY_ID,
+    }).toString();
+    await page.goto(`/handoff?${handoffQuery}#${handoffFragment}`);
 
-    await expect(page).toHaveURL(marketplaceSetupReturnUrl());
-    const destination = new URL(page.url());
-    expect([...destination.searchParams.keys()]).toEqual(["propertyId"]);
-    expect(destination.hash).toBe("");
-    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
+    await expect(page).toHaveURL(new RegExp(`/profile/complete\\?activation=marketplace`));
     expect(refreshRequests).toEqual([
       { organizationId: WORKOS_ORGANIZATION_ID, surface: "marketplace-web" },
     ]);
-    expect(await page.evaluate(() => localStorage.getItem("selectedSharedPropertyId"))).toBe(
-      PROPERTY_ID,
+    expect(await page.evaluate(() => localStorage.getItem("access_token"))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("userEmail"))).toBe(
+      "owner@alpenrose.example",
     );
-
-    await page.goBack();
-    await expect(page).toHaveURL(/\/before-handoff$/);
-    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
+    expect(page.url()).not.toContain("/login");
   });
 
-  test("resumes authentication with only the opaque code and leaves no consumed history entry", async ({
-    page,
-  }) => {
-    let sessionRequests = 0;
-    let resumeAuthentication!: () => void;
-    const resumeAuthenticationGate = new Promise<void>((resolve) => {
-      resumeAuthentication = resolve;
-    });
-    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      sessionRequests += 1;
-      if (sessionRequests > 1) {
-        await resumeAuthenticationGate;
-        return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
-      }
-      return route.fulfill({
-        status: 401,
-        headers: corsHeaders(route),
-        json: { error: "session_expired" },
-      });
-    });
-    await page.route(/\/auth\/session\/refresh$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
-    });
-    await mockMarketplaceStatus(page);
-    const exchangeRequests: unknown[] = [];
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      exchangeRequests.push(route.request().postDataJSON());
-      return route.fulfill({ headers: corsHeaders(route), json: exchangedHandoff() });
-    });
-    await page.route(/\/setup\?propertyId=/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Setup</title>" }),
-    );
-    await page.route(/\/before-handoff$/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Before</title>" }),
-    );
-
-    await page.goto("/before-handoff");
-    await page.goto(`/handoff?code=${LOGIN_RESUME_CODE}`);
-
-    await expect(page).toHaveURL(/\/login\?auth=callback/);
-    const loginUrl = new URL(page.url());
-    expect(loginUrl.searchParams.get("returnTo")).toBe(`/handoff?code=${LOGIN_RESUME_CODE}`);
-    expect(loginUrl.searchParams.get("returnTo")).not.toContain("#");
-    expect(loginUrl.searchParams.get("returnTo")).not.toContain("property");
-
-    resumeAuthentication();
-    await expect(page).toHaveURL(marketplaceSetupReturnUrl());
-    expect(exchangeRequests).toEqual([{ code: LOGIN_RESUME_CODE }]);
-    await page.goBack();
-    await expect(page).toHaveURL(/\/before-handoff$/);
-  });
-
-  test("routes the shared identity task back to the canonical setup hub", async ({ page }) => {
-    await mockDirectAuthSession(page);
-    await mockMarketplaceStatus(page);
-    const exchangeRequests: unknown[] = [];
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      exchangeRequests.push(route.request().postDataJSON());
-      return route.fulfill({
-        headers: corsHeaders(route),
-        json: {
-          ...exchangedHandoff(),
-          taskId: "shared_identity",
-          destinationRouteKey: "hotel_catalog.shared_identity",
-        },
-      });
-    });
-    await page.route(/\/setup\?propertyId=/, (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Setup</title>" }),
-    );
-
-    await page.goto(`/handoff?code=${SHARED_IDENTITY_CODE}`);
-
-    await expect(page).toHaveURL(marketplaceSetupReturnUrl());
-    expect(exchangeRequests).toEqual([{ code: SHARED_IDENTITY_CODE }]);
-    const destination = new URL(page.url());
-    expect([...destination.searchParams.keys()]).toEqual(["propertyId"]);
-    expect(destination.hash).toBe("");
-  });
-
-  test("rejects a legacy hotel creator_profile handoff", async ({ page }) => {
-    await mockDirectAuthSession(page);
-    await mockMarketplaceStatus(page);
-    const exchangeRequests: unknown[] = [];
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
-      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      exchangeRequests.push(route.request().postDataJSON());
-      return route.fulfill({
-        headers: corsHeaders(route),
-        json: {
-          ...exchangedHandoff(),
-          taskId: "creator_profile",
-          destinationRouteKey: "marketplace.creator_profile",
-        },
-      });
-    });
-
-    await page.goto(`/handoff?code=${LEGACY_CREATOR_PROFILE_CODE}`);
-
-    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
-    expect(exchangeRequests).toEqual([{ code: LEGACY_CREATOR_PROFILE_CODE }]);
-  });
-
-  test("does not replay a consumed handoff when post-exchange validation fails", async ({
+  test("does not replace an unavailable explicit property with another singleton", async ({
     page,
   }) => {
     await mockDirectAuthSession(page);
-    const exchangeRequests: unknown[] = [];
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
+    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-      exchangeRequests.push(route.request().postDataJSON());
       return route.fulfill({
         headers: corsHeaders(route),
-        json: exchangedHandoff(),
+        json: marketplaceStatus(OTHER_PROPERTY_ID),
       });
     });
-    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, (route) =>
-      route.fulfill({
-        status: 500,
-        headers: corsHeaders(route),
-        json: { code: "read_model_unavailable" },
-      }),
-    );
-    await page.route(/\/before-handoff$/, (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: "<!doctype html><title>Before</title><h1>Before handoff</h1>",
-      }),
-    );
-    await page.route(/\/setup\?propertyId=/, (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: "<!doctype html><title>Setup</title><h1>Setup refreshed</h1>",
-      }),
-    );
+    await stubMarketplaceSetup(page);
 
-    await page.goto("/before-handoff");
-    await page.goto(`/handoff?code=${HANDOFF_CODE}`);
+    await page.goto(`/handoff#${handoffFragment(PROPERTY_ID)}`);
 
-    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
-    await page.getByRole("button", { name: "Return to setup" }).click();
-    await expect(page.getByRole("heading", { name: "Setup refreshed" })).toBeVisible();
-    expect(page.url()).toBe(marketplaceSetupReturnUrl());
-
-    await page.goBack();
-    await expect(page.getByRole("heading", { name: "Before handoff" })).toBeVisible();
-    expect(exchangeRequests).toEqual([{ code: HANDOFF_CODE }]);
+    await expect(page).toHaveURL(
+      new RegExp(`/setup\\?entryProduct=marketplace&propertyId=${PROPERTY_ID}$`),
+    );
+    expect(await page.evaluate(() => localStorage.getItem("selectedSharedPropertyId"))).toBeNull();
   });
 
-  test("shows a terminal error for an invalid, expired, or reused code", async ({ page }) => {
+  test("keeps an authenticated user in setup when status loading fails", async ({ page }) => {
     await mockDirectAuthSession(page);
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
+    await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
       return route.fulfill({
-        status: 410,
+        status: 503,
         headers: corsHeaders(route),
-        json: { code: "invalid_handoff" },
+        json: { message: "Unavailable" },
       });
     });
+    await stubMarketplaceSetup(page);
 
-    await page.goto(`/handoff?code=${USED_CODE}`);
+    await page.goto(`/handoff#${handoffFragment(PROPERTY_ID)}`);
 
-    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
-    await expect(
-      page.getByText("This setup link is invalid, expired, or has already been used."),
-    ).toBeVisible();
-    expect(new URL(page.url()).searchParams.toString()).toBe(`code=${USED_CODE}`);
-  });
-
-  test("rejects query and fragment context that is not the opaque code", async ({ page }) => {
-    let authRequests = 0;
-    let exchangeRequests = 0;
-    await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
-      authRequests += 1;
-      return route.fulfill({ headers: corsHeaders(route), json: authenticatedSession() });
-    });
-    await page.route(/\/api\/hotel-setup\/handoffs\/exchange$/, async (route) => {
-      exchangeRequests += 1;
-      return route.fulfill({
-        status: 409,
-        headers: corsHeaders(route),
-        json: { code: "invalid_handoff" },
-      });
-    });
-
-    await page.goto(`/handoff?code=${USED_CODE}&extra=untrusted#untrusted=value`);
-
-    await expect(page.getByRole("heading", { name: "Setup link unavailable" })).toBeVisible();
-    expect(authRequests).toBe(0);
-    expect(exchangeRequests).toBe(0);
+    await expect(page).toHaveURL(
+      new RegExp(`/setup\\?entryProduct=marketplace&propertyId=${PROPERTY_ID}$`),
+    );
+    expect(page.url()).not.toContain("/login");
   });
 });
-
-async function mockMarketplaceStatus(page: Page) {
-  await page.route(/\/api\/hotel-setup\/status(?:\?|$)/, async (route) => {
-    if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
-    return route.fulfill({
-      headers: corsHeaders(route),
-      json: marketplaceStatus(),
-    });
-  });
-}
 
 async function mockDirectAuthSession(page: Page) {
   await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
@@ -280,69 +126,43 @@ async function mockDirectAuthSession(page: Page) {
   });
 }
 
-function organizationSelectionResponse() {
-  return {
-    organizationSelectionRequired: true,
-    csrfToken: "e2e-marketplace-csrf-token",
-    organizations: [
-      {
-        organizationId: ORGANIZATION_ID,
-        workosOrganizationId: WORKOS_ORGANIZATION_ID,
-        displayName: "Alpenrose Hotel Group",
-        kind: "hotel_group",
-      },
-    ],
-    user: sessionUser(),
-  };
+async function stubMarketplaceSetup(page: Page) {
+  await page.route(/\/setup\?entryProduct=marketplace&propertyId=/, (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Setup</title>" }),
+  );
 }
 
-function marketplaceStatus() {
-  return createAdaptiveHotelSetupStatusMock({
+function handoffFragment(propertyId: string) {
+  return new URLSearchParams({
+    organization_id: ORGANIZATION_ID,
+    workos_organization_id: WORKOS_ORGANIZATION_ID,
+    property_id: propertyId,
+  }).toString();
+}
+
+function marketplaceStatus(propertyId: string) {
+  return createSharedHotelSetupStatusMock({
     entryProduct: "marketplace",
+    returnTo: "/marketplace",
     organizationId: ORGANIZATION_ID,
     organizationDisplayName: "Alpenrose Hotel Group",
-    selectedTracks: ["creator_marketplace"],
-    propertyId: PROPERTY_ID,
-    publicId: `public-${PROPERTY_ID}`,
+    propertyId,
+    publicId: `public-${propertyId}`,
     propertyDisplayName: "Alpenrose",
     locationSummary: "Munich, DE",
-    taskOverrides: {
-      public_profile: {
-        ownerProgress: "not_started",
-        readiness: "actionable",
-        actionableBy: "owner",
-        reasonCodes: ["public_profile_required"],
-      },
+    products: {
+      booking: sharedHotelSetupProduct("booking", "active"),
+      pms: sharedHotelSetupProduct("pms", "active"),
+      marketplace: sharedHotelSetupProduct("marketplace", "selected_incomplete"),
     },
-    recommendedTaskId: "public_profile",
-    entryDecision: {
-      propertyId: PROPERTY_ID,
-      decision: "enter",
-      destinationRouteKey: "marketplace.workspace",
-      reasonCode: null,
+    nextAction: {
+      action: "complete_product_activation",
+      propertyId,
+      product: "marketplace",
+      returnTo: "/marketplace",
+      reasonCodes: ["entry_product_activation_incomplete"],
     },
   });
-}
-
-function exchangedHandoff() {
-  return {
-    propertyId: PROPERTY_ID,
-    taskId: "public_profile",
-    issuedPlanRevision: "e2e-plan-1",
-    destinationRouteKey: "hotel_catalog.public_profile",
-    returnUrl: marketplaceSetupReturnUrl(),
-  };
-}
-
-function marketplaceSetupReturnUrl() {
-  const origin =
-    process.env.E2E_MARKETPLACE_BASE_URL ||
-    (process.env.E2E_START_SERVERS === "1"
-      ? "http://127.0.0.1:3000"
-      : "https://marketplace.localhost");
-  const url = new URL("/setup", origin);
-  url.searchParams.set("propertyId", PROPERTY_ID);
-  return url.toString();
 }
 
 function authenticatedSession() {

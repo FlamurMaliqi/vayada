@@ -14,7 +14,7 @@ interface MediaTabProps {
   handleImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   removeHeroImage: () => void;
   resetContent: () => void;
-  publicationSetup: {
+  publicationSetup?: {
     localityPublic: boolean;
     hasCanonicalPublicMedia: boolean;
     publicDescription: string;
@@ -33,7 +33,7 @@ export default function MediaTab({
   handleImageUpload,
   removeHeroImage,
   resetContent,
-  publicationSetup,
+  publicationSetup = null,
 }: MediaTabProps) {
   const subtextMaxLength = publicationSetup ? 500 : 1000;
   const displayedSubtext = publicationSetup?.publicDescription ?? heroSubtext;

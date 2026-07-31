@@ -326,7 +326,6 @@ export const hotelService = {
     return updateHotelProfile(data, propertyId, revisions, {
       publicProfile: true,
       marketplaceProfile: true,
-      resumeAppliedCanonicalUpdate: true,
     });
   },
 
@@ -508,7 +507,6 @@ async function updateHotelProfile(
   targets: {
     publicProfile: boolean;
     marketplaceProfile: boolean;
-    resumeAppliedCanonicalUpdate?: boolean;
   },
 ): Promise<HotelProfile> {
   if (data instanceof FormData) {
@@ -528,7 +526,7 @@ async function updateHotelProfile(
   );
   let expectedPublicProfileRevision = revisions.publicProfileRevision;
   if (canonicalUpdate) {
-    if (targets.resumeAppliedCanonicalUpdate && canonicalProfileUpdateMatches(property, data)) {
+    if (canonicalProfileUpdateMatches(property, data)) {
       if (property.profileRevision !== revisions.canonicalProfileRevision) {
         expectedPublicProfileRevision = property.profileRevision;
       }
@@ -611,10 +609,28 @@ function canonicalProfileUpdateMatches(
   response: PropertyProfileResponse,
   update: UpdateHotelProfileRequest,
 ): boolean {
-  return (
+  if (
+    update.name !== undefined &&
+    response.profile.displayName !== (update.name.trim() || response.profile.displayName)
+  ) {
+    return false;
+  }
+  if (
     update.localityPublic !== undefined &&
-    response.profile.location.localityPublic === update.localityPublic
-  );
+    response.profile.location.localityPublic !== update.localityPublic
+  ) {
+    return false;
+  }
+  for (const channelType of ["website", "email", "phone"] as const) {
+    if (
+      Object.hasOwn(update, channelType) &&
+      normalizedOptionalText(profileContactValue(response, channelType)) !==
+        normalizedOptionalText(update[channelType])
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function applyPublicPropertyProfileUpdate(

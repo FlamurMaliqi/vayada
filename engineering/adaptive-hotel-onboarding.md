@@ -249,8 +249,6 @@ GET  /api/hotel-setup/properties/:propertyId/profile
 PUT  /api/hotel-setup/properties/:propertyId/profile
 GET  /api/hotel-setup/properties/:propertyId/public-profile
 PUT  /api/hotel-setup/properties/:propertyId/public-profile
-POST /api/hotel-setup/handoffs
-POST /api/hotel-setup/handoffs/exchange
 ```
 
 `@vayada/domain-hotels` is the single wire authority. The API and all three apps
@@ -340,7 +338,7 @@ type SetupCommandError = {
 };
 ```
 
-### Property and Handoff Contracts
+### Property Contracts
 
 `GET /property-types` returns the server-owned
 `adaptive-hotel-property-types.v1` catalog. Clients never keep a fallback list.
@@ -427,26 +425,16 @@ actionable until the normalized Catalog description and Marketplace host
 summary match, so a failed second write cannot advance the wizard with divergent
 copy.
 
-Handoff creation accepts `{ propertyId, taskId, planRevision }` and returns
-`{ launchUrl, expiresAt }`. The destination exchanges the opaque code once for
-`{ propertyId, taskId, issuedPlanRevision, destinationRouteKey, returnUrl }`.
-Invalid, expired, reused, or unauthorized handoffs return `invalid_handoff`; a
-changed plan returns `refresh_plan`.
+## Canonical Wizard
 
-## Canonical Wizard and Handoff
-
-`HOTEL_SETUP_BASE_URL` points to the canonical `marketplace-web /setup` wizard.
-Canonical setup links keep the requested `entryProduct` separate from the
+`marketplace-web /setup` is the canonical wizard. Canonical setup links keep the requested
+`entryProduct` separate from the
 allowlisted `returnProduct`. The latter identifies the app that sent the owner
 into setup; `returnTo` remains a validated relative path. Booking, PMS, and
 Marketplace set their own return product rather than trusting query input, and
 the canonical wizard resolves that pair against the configured product origin.
 This preserves exact product-local return paths without accepting an arbitrary
 redirect origin.
-
-Task launches use a short-lived, single-use server handoff containing the
-organization, property, task, plan revision, allowlisted destination route, and
-wizard return route.
 
 Before launching a task, Marketplace stores the already validated entry and
 return context in tab-scoped session storage for that property. The server-issued
@@ -455,13 +443,11 @@ Marketplace restores the validated context before rendering the wizard. The
 context is cleared when the owner exits setup or enters a product, so completing
 one task does not silently change the original return app.
 
-The browser receives only an opaque code. The destination exchanges it once and
-independently rechecks the current session, organization membership, entitlement,
-permission, and property resource link. Handoff context never grants access.
-
-Every actionable task must have a tested destination adapter, consistent
-onboarding header, and a validated return to the canonical wizard before it
-appears in the step list. "Save and exit" returns to the wizard without
+Every actionable task renders through a tested inline adapter in the canonical
+wizard. Each save independently rechecks the current session, organization
+membership, entitlement, permission, property resource link, and current plan
+revision. The legacy product authentication handoff remains separate and never
+acts as setup-task authority. "Save and exit" leaves the wizard without
 implicitly submitting incomplete data.
 
 ## Implementation and Cutover
@@ -472,7 +458,7 @@ clean release:
 1. target schema plus shared runtime types/parsers;
 2. atomic track/profile/readiness API;
 3. shared adaptive wizard and all three app consumers;
-4. handoff adapters, old-contract deletion, and end-to-end validation.
+4. inline task adapters, old-contract deletion, and end-to-end validation.
 
 No stack slice introduces a long-lived compatibility layer. Until the complete
 stack is ready, the current environment may continue using the current code.

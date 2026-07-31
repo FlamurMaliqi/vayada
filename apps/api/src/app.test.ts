@@ -2357,36 +2357,6 @@ describe("vayada-api", () => {
     });
   });
 
-  it("requires canonical setup repositories before mounting hotel handoffs", () => {
-    expect(() =>
-      buildApp({
-        logger: false,
-        hotelSetupHandoffs: {
-          repository: {
-            async issue() {
-              throw new Error("not used");
-            },
-            async findActive() {
-              return null;
-            },
-            async consume() {
-              return null;
-            },
-            async close() {},
-          },
-          hotelSetupBaseUrl: "https://marketplace.localhost/setup",
-          destinationOrigins: {
-            marketplace: "https://marketplace.localhost",
-            bookingAdmin: "https://admin.booking.localhost",
-            pms: "https://pms.localhost",
-          },
-        },
-      }),
-    ).toThrow(
-      "shared hotel setup status and track repositories are required with hotelSetupHandoffs",
-    );
-  });
-
   it("allows configured browser CORS origins on authenticated booking routes", async () => {
     app = buildAuthenticatedApp({
       browserAllowedOrigins: ["https://next-booking-admin.vayada.com"],
