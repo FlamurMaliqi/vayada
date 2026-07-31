@@ -30,6 +30,7 @@ import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInve
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
+import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { createTargetPublicHotelProfileRepository } from "./routes/aiHotels.js";
 import {
   createPgBookingWebAffiliateHotelResolver,
@@ -50,6 +51,7 @@ import {
   createXenditBankValidator,
 } from "./routes/finance.js";
 import { createPgPmsModuleActivationRepository } from "./routes/pmsModuleActivations.js";
+import { createPgPmsReviewRepository } from "./routes/pmsReviews.js";
 import { createPgMarketplaceCollaborationReadRepository } from "./routes/marketplaceCollaborations.js";
 import { createPgMarketplaceTripRepository } from "./routes/marketplaceTrips.js";
 import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js";
@@ -460,6 +462,7 @@ const app = buildApp({
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
   pmsModuleActivationRepository,
+  pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
   pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
@@ -547,6 +550,28 @@ const app = buildApp({
   bookingWebAffiliateHotelResolver,
   bookingWebAffiliateRepository,
   platformMedia: platformMediaRuntime?.routes,
+});
+
+let activeChannexReviewBatch: Promise<void> | undefined;
+const runChannexReviews = () => {
+  if (activeChannexReviewBatch) return;
+  activeChannexReviewBatch = runChannexReviewJobs(targetDatabaseUrl)
+    .then(({ failed }) => {
+      if (failed > 0) app.log.warn({ failed }, "Channex review ingestion completed with failures");
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Channex review ingestion failed"))
+    .finally(() => {
+      activeChannexReviewBatch = undefined;
+    });
+};
+const channexReviewTimer = hasProviderWebhookSecret
+  ? setInterval(runChannexReviews, 5_000)
+  : undefined;
+channexReviewTimer?.unref();
+if (hasProviderWebhookSecret) runChannexReviews();
+app.addHook("onClose", async () => {
+  if (channexReviewTimer) clearInterval(channexReviewTimer);
+  await activeChannexReviewBatch;
 });
 
 let activeRetryBatch: Promise<void> | undefined;

@@ -133,6 +133,7 @@ import {
   registerPmsModuleActivationRoutes,
   type PmsModuleActivationRepository,
 } from "./routes/pmsModuleActivations.js";
+import { registerPmsReviewRoutes, type PmsReviewRepository } from "./routes/pmsReviews.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
@@ -149,6 +150,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
+  pmsReviewRepository?: PmsReviewRepository;
   pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
   pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
   pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
@@ -410,6 +412,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/pms",
       repository: options.pmsModuleActivationRepository,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
+    });
+  }
+  if (options.pmsReviewRepository) {
+    app.register(registerPmsReviewRoutes, {
+      prefix: "/api/pms",
+      repository: options.pmsReviewRepository,
     });
   }
   if (options.financeRepository) {

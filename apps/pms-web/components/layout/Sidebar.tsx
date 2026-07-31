@@ -3,7 +3,13 @@
 import { Fragment, useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BoltIcon, ChevronLeftIcon, ChevronDownIcon, CheckIcon } from "@heroicons/react/24/outline";
+import {
+  BoltIcon,
+  ChevronLeftIcon,
+  ChevronDownIcon,
+  CheckIcon,
+  StarIcon,
+} from "@heroicons/react/24/outline";
 import type { SharedHotelSetupProduct } from "@vayada/product-onboarding";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
@@ -41,6 +47,7 @@ const CORE_NAV_ITEMS: Omit<NavItem, "badge">[] = [
   { labelKey: "layout.sidebar.dashboard", href: "/dashboard", icon: DashboardIcon },
   { labelKey: "layout.sidebar.calendar", href: "/calendar", icon: CalendarIcon },
   { labelKey: "layout.sidebar.reservations", href: "/bookings", icon: ReservationsIcon },
+  { label: "Reviews", href: "/reviews", icon: StarIcon },
   { labelKey: "layout.sidebar.roomsAndRates", href: "/rooms", icon: RoomsIcon },
   {
     labelKey: "layout.sidebar.channelManager",

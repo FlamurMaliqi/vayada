@@ -5,13 +5,13 @@ _VAY-839 research decision. Related: VAY-772, VAY-794._
 ## Recommendation
 
 Use Channex webhooks as durable triggers and observability, not as the sole
-source of truth for provider state. For C1, subscribe to `message` and
-`booking` only. Keep booking import pull/feed-owned: the webhook should enqueue
+source of truth for provider state. For C1, subscribe to `message`, `booking`,
+`review`, and `updated_review`. Keep booking import pull/feed-owned: the webhook should enqueue
 or wake the target booking revision ingestion job, and that job should pull the
 booking revision/feed from Channex before mutating PMS state.
 
-Do not subscribe to ARI, sync/error, channel lifecycle, Airbnb request, or
-review events in the C1 production switch. Those events either require target
+Do not subscribe to ARI, sync/error, channel lifecycle, or Airbnb request
+events in the C1 production switch. Those events either require target
 jobs that do not yet own the corresponding side effects, or they are operational
 alerts that should first land in a lower-risk observability workflow.
 
@@ -44,7 +44,9 @@ Target `apps/api` currently:
 - previews `channex.message.ingest` and `channex.booking.ingest` domain events
   and jobs;
 - falls back to a payload-hash receipt key for unknown Channex event types;
-- does not yet implement mutating target handlers for every Channex event class.
+- stores `review` and `updated_review` events through an idempotent durable job
+  consumer and exposes property-scoped review reads to the PMS;
+- does not yet implement mutating target handlers for every other Channex event class.
 
 ## Event Decision Matrix
 
@@ -67,8 +69,8 @@ Target `apps/api` currently:
 | `accepted_reservation`  | Do not subscribe                                         | Defer with Airbnb request workflow                            | Derived from a deferred request flow.                                                                                                                                    |
 | `declined_reservation`  | Do not subscribe                                         | Defer with Airbnb request workflow                            | Derived from a deferred request flow.                                                                                                                                    |
 | `inquiry`               | Do not subscribe                                         | Defer unless PMS messaging/product scope requires it          | Airbnb-specific and overlaps with messaging UX decisions.                                                                                                                |
-| `review`                | Do not subscribe                                         | Defer until PMS review ingestion exists                       | Reviews are not part of C1 Channex operational ownership.                                                                                                                |
-| `updated_review`        | Do not subscribe                                         | Defer until PMS review ingestion exists                       | Same as `review`.                                                                                                                                                        |
+| `review`                | Subscribe and process                                    | Keep                                                          | The target PMS owns durable, idempotent review storage and a protected read surface.                                                                                     |
+| `updated_review`        | Subscribe and upsert                                     | Keep                                                          | Uses the same provider review identity, so revisions update the existing review instead of duplicating it.                                                               |
 | `new_channel`           | Do not subscribe                                         | Add only if channel lifecycle automation is product-owned     | Channel lifecycle state is currently admin/setup-owned, not an automatic mutating event.                                                                                 |
 | `updated_channel`       | Do not subscribe                                         | Add only if channel lifecycle automation is product-owned     | Same as `new_channel`.                                                                                                                                                   |
 | `disconnected_channel`  | Do not subscribe                                         | Add as operational alert after channel health workflow exists | Important alert, but should not auto-mutate until owner workflow exists.                                                                                                 |

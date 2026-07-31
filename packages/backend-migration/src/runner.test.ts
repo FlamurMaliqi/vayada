@@ -288,7 +288,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       `);
 
       const migrationSql = await readFile(
-        join(REAL_MIGRATIONS_DIR, "0038_repair_marketplace_offer_operator_links.sql"),
+        join(REAL_MIGRATIONS_DIR, "0039_repair_marketplace_offer_operator_links.sql"),
         "utf8",
       );
       await client.query(migrationSql);
@@ -456,6 +456,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "channel_booking_mappings",
         "channel_connections",
         "channel_rate_plan_mappings",
+        "channel_reviews",
         "channel_room_type_mappings",
         "channel_sync_status",
         "checkin_checklist_templates",
