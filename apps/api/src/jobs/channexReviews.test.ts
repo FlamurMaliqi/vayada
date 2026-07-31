@@ -60,10 +60,21 @@ describe.skipIf(!databaseUrl)("Channex review worker (PostgreSQL)", () => {
       processed: 1,
       failed: 0,
     });
-    const review = await client.query(`SELECT body, reply_body FROM pms.channel_reviews`);
+    const review = await client.query(
+      `SELECT body, reply_body, channel, guest_display_name, rating::float AS rating,
+              reviewed_at, provider_updated_at
+       FROM pms.channel_reviews`,
+    );
     const job = await client.query(`SELECT status, finished_at FROM platform.jobs`);
     expect(review.rows[0].body).toBe("Excellent");
     expect(review.rows[0].reply_body).toBe("Thank you");
+    expect(review.rows[0]).toMatchObject({
+      channel: "BookingCom",
+      guest_display_name: "Ada Guest",
+      rating: 9.5,
+    });
+    expect(review.rows[0].reviewed_at.toISOString()).toBe("2026-07-29T10:00:00.000Z");
+    expect(review.rows[0].provider_updated_at.toISOString()).toBe("2026-07-30T10:00:00.000Z");
     expect(job.rows[0]).toMatchObject({ status: "succeeded" });
     expect(job.rows[0].finished_at).not.toBeNull();
   });
@@ -118,8 +129,15 @@ describe.skipIf(!databaseUrl)("Channex review worker (PostgreSQL)", () => {
           reviewId,
           reviewRevision: updatedAt,
           rawPayload: {
+            timestamp: updatedAt,
             payload: {
-              review: { id: reviewId, content: body, updated_at: updatedAt, ...reviewFields },
+              id: reviewId,
+              content: body,
+              ota: "BookingCom",
+              overall_score: 9.5,
+              reviewer_name: "Ada Guest",
+              received_at: "2026-07-29T10:00:00.000Z",
+              ...reviewFields,
             },
           },
         },

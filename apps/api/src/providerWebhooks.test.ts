@@ -560,6 +560,7 @@ describe("target provider webhook routes", () => {
           eventFamily: event,
           propertyId: "prop_alpenrose",
           reviewId: "review_123",
+          reviewRevision: "2026-07-30T20:00:00.000Z",
         },
       });
       expect(store.domainEvents).toHaveLength(1);
@@ -965,14 +966,16 @@ function channexReviewPayload(
 ): Record<string, unknown> {
   return {
     event,
+    property_id: "prop_alpenrose",
+    timestamp: updatedAt,
     payload: {
-      property_id: "prop_alpenrose",
-      review: {
-        id: "review_123",
-        rating: 5,
-        content: "Sanitized review fixture",
-        updated_at: updatedAt,
-      },
+      id: "review_123",
+      overall_score: 5,
+      content: "Sanitized review fixture",
+      reply: "Thank you for staying with us.",
+      ota: "BookingCom",
+      reviewer_name: "Ada Guest",
+      received_at: "2026-07-29T20:00:00.000Z",
     },
   };
 }

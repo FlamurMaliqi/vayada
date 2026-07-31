@@ -121,24 +121,26 @@ export async function runChannexReviewJobs(
 function parseReview(payload: Record<string, unknown>) {
   const raw = record(payload.rawPayload);
   const envelope = record(raw.payload);
-  const review = record(envelope.review);
+  const nestedReview = record(envelope.review);
+  const review = Object.keys(nestedReview).length > 0 ? nestedReview : envelope;
   const reviewId = text(payload.reviewId) ?? text(review.id);
   const externalPropertyId = text(payload.propertyId) ?? text(envelope.property_id);
   if (!reviewId || !externalPropertyId) throw new Error("Invalid Channex review payload");
   return {
     reviewId,
     externalPropertyId,
-    channel: text(review.channel) ?? text(envelope.channel),
-    guestName: text(review.guest_name) ?? text(review.guest_display_name),
-    rating: number(review.rating),
+    channel: text(review.ota) ?? text(review.channel) ?? text(envelope.channel),
+    guestName:
+      text(review.reviewer_name) ?? text(review.guest_name) ?? text(review.guest_display_name),
+    rating: number(review.overall_score) ?? number(review.rating),
     body: text(review.content) ?? text(review.body) ?? "",
     replyBody: text(review.reply),
-    reviewedAt: text(review.created_at) ?? text(envelope.created_at),
-    updatedAt: text(review.updated_at) ?? text(payload.reviewRevision),
+    reviewedAt: text(review.received_at) ?? text(review.created_at) ?? text(envelope.created_at),
+    updatedAt: text(payload.reviewRevision) ?? text(raw.timestamp) ?? text(review.updated_at),
     snapshot: {
-      channel: text(review.channel),
-      rating: number(review.rating),
-      updatedAt: text(review.updated_at),
+      channel: text(review.ota) ?? text(review.channel),
+      rating: number(review.overall_score) ?? number(review.rating),
+      updatedAt: text(payload.reviewRevision) ?? text(raw.timestamp) ?? text(review.updated_at),
     },
   };
 }

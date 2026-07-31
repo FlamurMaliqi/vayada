@@ -505,13 +505,15 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
   }
 
   if (envelope.family === "review" || envelope.family === "updated_review") {
-    const review = optionalRecord(nestedPayload, "review") ?? {};
+    const review = optionalRecord(nestedPayload, "review") ?? nestedPayload;
     const reviewId =
       optionalString(nestedPayload, "review_id") ??
       optionalString(nestedPayload, "id") ??
       optionalString(review, "id");
     const reviewRevision =
-      optionalString(nestedPayload, "updated_at") ?? optionalString(review, "updated_at");
+      optionalString(payload, "timestamp") ??
+      optionalString(nestedPayload, "updated_at") ??
+      optionalString(review, "updated_at");
     if (reviewId) {
       const revisionMarker =
         envelope.family === "updated_review" ? `:${reviewRevision ?? "unknown"}` : "";
