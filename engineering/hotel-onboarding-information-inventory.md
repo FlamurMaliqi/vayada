@@ -2935,13 +2935,27 @@ Each additional adult or child costs EUR 30 per night.
   load, keep the form unavailable and show Retry. Never replace unknown values
   with plausible defaults.
 - Save through one idempotent, expected-versioned Step 7 command.
-- The backend orchestrator validates the source revisions and derived
-  currency, saves the Booking-owned choices and check-in/out policy, projects
-  only the approved public summary to Hotel Catalog, generates the policy
-  bundle, stores confirmation evidence, and
-  commits the audit/outbox event as one accepted operation.
-- A failure in any owned write leaves the previous accepted Step 7 aggregate
-  unchanged. Preserve every draft field in the browser.
+- The accepted-operation boundary is one Booking-owned database transaction.
+  It validates every source revision and the derived currency, writes the
+  Booking guest-experience choices and check-in/out policy, generates the
+  version-bound policy bundle and confirmation evidence, records the audit
+  entry, and appends one outbox event. It does not open a cross-database
+  transaction with Hotel Catalog.
+- The command requires a stable command/idempotency key and the expected Step 7
+  aggregate revision. An exact retry returns the original receipt; a changed
+  payload under the same key is rejected. A failure before the Booking
+  transaction commits leaves the previous accepted aggregate unchanged.
+  Preserve every draft field in the browser.
+- A Catalog projector consumes the outbox event and writes only the approved
+  public policy summary with the event ID as its idempotency key and the
+  expected Catalog profile revision. Booking records the projection receipt.
+  Step 7 readiness remains pending while that receipt is missing or references
+  a different source revision.
+- Retryable projection failures remain in the outbox retry/dead-letter workflow.
+  A reconciler compares accepted Step 7 revisions with Catalog projection
+  receipts and replays missing events. A Catalog revision conflict never
+  overwrites newer data: it marks the projection stale, reloads the current
+  Catalog revision, and requires deterministic recomposition before retry.
 - An accepted Step 7 save updates canonical, non-public working configuration
   plus the resumable draft manifest. Public checkout continues using the
   currently published Booking revision until Step 9 advances it.

@@ -43,7 +43,7 @@ not expose product-native database fields or provider-shaped payloads.
 | Booking base URL                                                                   | Distribution                 | Catalog slug/domain, verified custom-domain state, booking-web route rules                               | Public-safe                                                           | Required for public bookability; must share host policy with canonical URL                                            | Used by public profile, quote deep links, structured data, and sitemap generation.                                  |
 | Default locale                                                                     | Hotel/property catalog       | Owner setup, Booking translations, marketplace copy, product default                                     | Public-safe                                                           | Required; default to `en` only when no explicit owner locale exists                                                   | Hreflang must not list locales without real pages/content.                                                          |
 | Supported locales                                                                  | Hotel/property catalog       | Existing translations and public page availability                                                       | Public-safe                                                           | Include only locales with renderable content or defined fallback behavior                                             | Distribution consumes this list and may return `locale_not_supported` for unsupported public API requests.          |
-| Default currency                                                                   | Finance                      | Booking hotel currency, payment settings, PMS room/rate currency during migration                        | Public-safe                                                           | Required for quotes; ISO-4217 uppercase; no silent fallback for quote totals                                          | Booking/checkout consumes this for quote and checkout; target owner is Finance/payment capability.                  |
+| Default pricing currency                                                           | PMS operations               | PMS property pricing settings; Booking/Finance currency fields are migration inputs only                 | Public-safe                                                           | Required for quotes; ISO-4217 uppercase; no silent fallback for quote totals                                          | Booking and Finance consume the PMS projection; neither owns a steady-state currency write.                         |
 | Supported currencies                                                               | Finance                      | Payment capability, exchange-rate support, booking quote capability                                      | Public-safe                                                           | Optional list; unsupported public quote currency fails with `currency_not_supported`                                  | Distribution consumes this list; do not expose provider/private payment account details.                            |
 | Timezone                                                                           | Hotel/property catalog       | PMS hotel timezone, Booking hotel timezone, owner setup                                                  | Public-safe                                                           | Required IANA timezone for quotes, same-day cutoff, analytics buckets; do not silently default to UTC for bookability | If unknown, profile may render but quote returns unavailable/stale reason until fixed.                              |
 | Country                                                                            | Hotel/property catalog       | PMS country, Booking location/contact, Marketplace free-form location                                    | Public-safe                                                           | Normalize to ISO-3166 alpha-2 for machine contracts; human display may localize                                       | Required for structured address when public profile is complete.                                                    |
@@ -52,7 +52,7 @@ not expose product-native database fields or provider-shaped payloads.
 | Street address, postal code                                                        | Hotel/property catalog       | PMS address, Booking contact address, owner setup                                                        | Public-safe when owner marks public                                   | Optional for public profile; required for full `PostalAddress` JSON-LD if exposed                                     | Some properties may hide exact street address before booking; support field-level public flag.                      |
 | Latitude and longitude                                                             | Hotel/property catalog       | PMS latitude/longitude, Booking map fields, geocoding from verified address                              | Public-safe when owner marks public                                   | Both required to emit `GeoCoordinates`; valid ranges only; omit if incomplete                                         | Do not infer from free-form Marketplace text without confirmation.                                                  |
 | Map display config                                                                 | Hotel/property catalog       | Owner setup, Booking map fields                                                                          | Public-safe when enabled                                              | Optional; controls exact pin vs approximate area                                                                      | Distinct from canonical lat/long storage.                                                                           |
-| Short and long descriptions                                                        | Hotel/property catalog       | Booking hotel copy, marketplace hotel profiles/listings, PMS property details                            | Public-safe                                                           | Optional but required for GEO completeness; locale-aware; no private ops notes                                        | Marketplace-specific listing pitch remains marketplace-owned overlay.                                               |
+| Short summary                                                                      | Hotel/property catalog       | Canonical short description; legacy long description is migration fallback only                          | Public-safe                                                           | Required for onboarding publication; locale-aware; no private operations notes                                        | Marketplace-specific listing pitch remains a Marketplace-owned overlay.                                             |
 | Public hero image, gallery images, logo                                            | Hotel/property catalog       | Booking branding/images, marketplace images, PMS property/room media                                     | Public-safe when approved                                             | URLs must be stable and crawlable; include alt text where available; preserve source attribution/rights               | Room-specific media belongs to PMS room/rate facts until projected publicly.                                        |
 | Property-level amenities/benefits                                                  | Hotel/property catalog       | Booking benefits, PMS hotel benefits, marketplace amenities/profile fields                               | Public-safe                                                           | Normalize to controlled keys plus display labels; custom labels allowed with review                                   | Room-specific amenities remain PMS-owned and feed room offer snapshots.                                             |
 | Accessibility facts                                                                | Hotel/property catalog       | Owner setup, PMS/Marketplace fields where present                                                        | Public-safe when verified                                             | Optional; do not infer from generic amenities                                                                         | Important for search/AI comparison but must be accurate.                                                            |
@@ -69,16 +69,71 @@ not expose product-native database fields or provider-shaped payloads.
 | Bookability status                                                                 | Distribution                 | Catalog profile status, Booking policy/capability, PMS availability readiness, Finance payment readiness | Public-safe status/reason codes                                       | Required for public AI profile; reason codes must be stable and non-sensitive                                         | VAY-665 builds the projection/read model.                                                                           |
 | Channex property ID, room/rate/channel mappings, sync status, credentials, markups | PMS operations               | PMS Channex integration state                                                                            | Internal/private except coarse setup health when explicitly projected | Never part of canonical public profile; Distribution consumes normalized public fields only                           | Channex-shaped payloads must stay behind PMS/channel adapters.                                                      |
 
+## Catalog Public Profile Read Model
+
+`property_public_profile_read_model.v1` is a Catalog-owned projection with this
+JSON shape:
+
+```ts
+type PropertyPublicProfileReadModelV1 = {
+  propertyId: string;
+  propertyType: string;
+  locale: string;
+  shortSummary: string | null;
+  location: {
+    countryCode: string | null;
+    city: string | null;
+    timezone: string;
+    postalCode: string | null;
+    streetAddress: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    mapDisplayMode: "hidden" | "approximate" | "exact";
+  };
+  contacts: Array<{
+    channelType: "email" | "phone" | "website" | "whatsapp" | "instagram" | "facebook" | "x";
+    value: string;
+    purpose: "general" | "operations" | "guest" | "creator";
+  }>;
+  media: Array<{
+    mediaObjectId: string;
+    mediaType: "hero_image" | "gallery_image" | "logo";
+    url: string;
+    altText: string | null;
+    sortOrder: number;
+  }>;
+};
+```
+
+The projector reads `propertyType`, the public-safe location fields, and only
+contact channels whose Catalog metadata explicitly marks them public. City and
+country are null unless `localityPublic` is true; street/postal data stays null
+until a separate public-address decision exists; coordinates are included only
+when `geoPublic` and the map-display policy allow them. It reads locale and media
+from the canonical Catalog profile/assignments. It maps the single summary as
+`shortSummary = shortDescription ?? longDescription` during migration; after
+backfill, `longDescription` is not a second public source.
+
+The existing validated `PublicPropertyProfileResponse` remains a compatibility
+contract until a versioned parser/client cutover lands. Its accepted nested keys
+remain exactly `locale`, `shortDescription`, `longDescription`, and `media`;
+adapters must not add `propertyType`, `location`, `contacts`, or `shortSummary`
+to that payload. Instead, the new read-model endpoint uses its own validator,
+and compatibility adapters combine the canonical `PropertyProfileResponse`
+with `PublicPropertyProfileResponse` and apply the mapping above. After every
+consumer moves to `property_public_profile_read_model.v1`, the compatibility
+response can be retired explicitly.
+
 ## Source Mapping Rules
 
-| Current source                                  | What it may feed                                                                                                                                          | What it must not become                                                                 |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Booking `booking_hotels` and translations       | Public display name, slug history, custom domain, descriptions, currency migration input, booking policy/config, benefits, public contact, locale content | Permanent owner of all hotel identity; raw public API schema                            |
-| PMS `hotels`                                    | Timezone, address, country, city, latitude/longitude, PMS setup facts, Channex-required setup input                                                       | Public profile owner; Booking Engine backend; public Channex-shaped contract            |
-| PMS room/rate tables                            | Room offer snapshots, public quote availability/rate inputs, room-specific amenities/media                                                                | Hotel-level identity/profile owner; raw public table exposure                           |
-| Marketplace `hotel_profiles` / `hotel_listings` | Marketplace-specific listing overlays plus seed data for profile copy, images, and free-form location                                                     | Canonical structured address without confidence/owner confirmation                      |
-| Finance/payment settings                        | Default and supported currencies, public payment capability summaries                                                                                     | Public exposure of provider account IDs, payout state, bank details, private risk state |
-| Channex integration data                        | PMS/channel setup health, provider mappings behind PMS adapters                                                                                           | Canonical public hotel profile, Booking dependency, public AI/profile payload shape     |
+| Current source                                  | What it may feed                                                                                                                                          | What it must not become                                                                                                                   |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Booking `booking_hotels` and translations       | Public display name, slug history, custom domain, descriptions, currency migration input, booking policy/config, benefits, public contact, locale content | Permanent owner of all hotel identity; raw public API schema                                                                              |
+| PMS `hotels`                                    | Timezone, address, country, city, latitude/longitude, PMS setup facts, Channex-required setup input                                                       | Public profile owner; Booking Engine backend; public Channex-shaped contract                                                              |
+| PMS room/rate tables                            | Room offer snapshots, public quote availability/rate inputs, room-specific amenities/media                                                                | Hotel-level identity/profile owner; raw public table exposure                                                                             |
+| Marketplace `hotel_profiles` / `hotel_listings` | Marketplace-specific listing overlays plus seed data for profile copy, images, and free-form location                                                     | Canonical structured address without confidence/owner confirmation                                                                        |
+| Finance/payment settings                        | Supported payment currencies and public payment capability summaries; legacy default currency is migration-only input                                     | A steady-state default-pricing-currency write; public exposure of provider account IDs, payout state, bank details, or private risk state |
+| Channex integration data                        | PMS/channel setup health, provider mappings behind PMS adapters                                                                                           | Canonical public hotel profile, Booking dependency, public AI/profile payload shape                                                       |
 
 ### Marketplace Free-Form Location Deprecation
 
@@ -106,9 +161,14 @@ Deprecation lifecycle:
 - **Locale**: catalog owns default/supported content locales; Distribution may
   serve fallback text but must report the locale actually used. Hreflang should
   include only public pages that exist.
-- **Currency**: Finance owns payment/currency capability, while Booking consumes
-  it for quote and checkout. Public quote requests with unsupported currency
-  fail clearly instead of silently converting through an unapproved path.
+- **Currency**: PMS owns one property pricing currency and projects it to
+  Booking and Finance. Finance owns method/currency capability, not the property
+  pricing-currency write. `UpdatePropertyCurrencyCommand` and
+  `finance.currency.update` are migration-only compatibility contracts and must
+  be removed after backfill; new setup/runtime callers use
+  `pms.setPropertyPricingCurrency`. Public quote requests with unsupported
+  currency fail clearly instead of silently converting through an unapproved
+  path.
 
 ## Channex Boundary
 
@@ -118,20 +178,20 @@ the owner of public hotel profile facts.
 
 ### Channex Adapter Input Map
 
-| Channex-facing input                                      | Canonical owner        | Mapping rule                                                                                                                     |
-| --------------------------------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Property title/name                                       | Hotel/property catalog | Map from public display name; PMS adapter may transform to provider limits.                                                      |
-| Property type/category                                    | Hotel/property catalog | Map normalized catalog category where available; omit or use adapter default only when Channex requires it.                      |
-| Country, region, city, postal code, street address        | Hotel/property catalog | Use structured catalog location fields; do not parse marketplace free-form location inside the Channex adapter.                  |
-| Latitude/longitude                                        | Hotel/property catalog | Use verified catalog geo fields only; omit if incomplete or not public/approved for provider use.                                |
-| Timezone                                                  | Hotel/property catalog | Use catalog IANA timezone; block provider setup if missing.                                                                      |
-| Currency                                                  | Finance                | Use Finance-owned property currency/payment capability; PMS room/rate currencies must be reconciled to this before channel sync. |
-| Public contact                                            | Hotel/property catalog | Public contact comes from catalog field-level public contact.                                                                    |
-| Channel operations contact                                | PMS operations         | Operational channel contact remains PMS-private.                                                                                 |
-| Room type identity, occupancy, room-level amenities/media | PMS operations         | PMS owns operational room/rate product; only public-safe room facts may feed Distribution snapshots.                             |
-| Rate plan identity, restrictions, ARI values              | PMS operations         | PMS owns rate plans, rate rules, inventory, restrictions, and ARI sync.                                                          |
-| Channex property/room/rate/channel mapping IDs            | PMS operations         | Private provider mapping state; never part of public profile or public bookability schema.                                       |
-| Credentials, webhook payloads, sync errors, retries       | PMS operations         | Private operational state; jobs/events/audit may store receipts and attempts; Distribution may consume normalized reason codes.  |
+| Channex-facing input                                      | Canonical owner        | Mapping rule                                                                                                                    |
+| --------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Property title/name                                       | Hotel/property catalog | Map from public display name; PMS adapter may transform to provider limits.                                                     |
+| Property type/category                                    | Hotel/property catalog | Map normalized catalog category where available; omit or use adapter default only when Channex requires it.                     |
+| Country, region, city, postal code, street address        | Hotel/property catalog | Use structured catalog location fields; do not parse marketplace free-form location inside the Channex adapter.                 |
+| Latitude/longitude                                        | Hotel/property catalog | Use verified catalog geo fields only; omit if incomplete or not public/approved for provider use.                               |
+| Timezone                                                  | Hotel/property catalog | Use catalog IANA timezone; block provider setup if missing.                                                                     |
+| Currency                                                  | PMS operations         | Use the PMS-owned property pricing currency; Finance capability and Booking quote projections consume it read-only.             |
+| Public contact                                            | Hotel/property catalog | Public contact comes from catalog field-level public contact.                                                                   |
+| Channel operations contact                                | PMS operations         | Operational channel contact remains PMS-private.                                                                                |
+| Room type identity, occupancy, room-level amenities/media | PMS operations         | PMS owns operational room/rate product; only public-safe room facts may feed Distribution snapshots.                            |
+| Rate plan identity, restrictions, ARI values              | PMS operations         | PMS owns rate plans, rate rules, inventory, restrictions, and ARI sync.                                                         |
+| Channex property/room/rate/channel mapping IDs            | PMS operations         | Private provider mapping state; never part of public profile or public bookability schema.                                      |
+| Credentials, webhook payloads, sync errors, retries       | PMS operations         | Private operational state; jobs/events/audit may store receipts and attempts; Distribution may consume normalized reason codes. |
 
 Allowed flow:
 
