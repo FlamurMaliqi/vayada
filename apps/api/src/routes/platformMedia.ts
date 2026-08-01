@@ -478,6 +478,13 @@ const heicConversionMessage =
 const publicImageVariants = ["original_safe", "large", "thumbnail", "blur_preview"] as const;
 const providerOriginalVariant = ["provider_original"] as const;
 const defaultMaxImagePixels = 60_000_000;
+
+export function isAutoApprovedPublicMediaPurpose(purpose: PlatformMediaPurpose): boolean {
+  return (
+    purpose === "identity.user.profile_image" || purpose === "marketplace.creator.profile_image"
+  );
+}
+
 const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> = {
   "identity.user.profile_image": {
     purpose: "identity.user.profile_image",
@@ -489,7 +496,7 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     maxFileSizeBytes: 5 * 1024 * 1024,
     maxFileCount: 1,
     maxImagePixels: defaultMaxImagePixels,
-    autoApprovePublicOnFinalize: true,
+    autoApprovePublicOnFinalize: isAutoApprovedPublicMediaPurpose("identity.user.profile_image"),
     privateOnly: false,
     targetResourceProduct: "platform",
     targetResourceType: "user_profile",
@@ -580,7 +587,9 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     maxFileSizeBytes: 5 * 1024 * 1024,
     maxFileCount: 1,
     maxImagePixels: defaultMaxImagePixels,
-    autoApprovePublicOnFinalize: true,
+    autoApprovePublicOnFinalize: isAutoApprovedPublicMediaPurpose(
+      "marketplace.creator.profile_image",
+    ),
     privateOnly: false,
     targetResourceProduct: "marketplace",
     targetResourceType: "creator_profile",
@@ -1129,7 +1138,7 @@ export async function registerPlatformMediaRoutes(
     }
 
     const context = enforceRoutePolicy(request, {
-      permission: permissionForResource(policy, request.body.resource),
+      permission: permissionForResource(policy),
       resource: {
         product: request.body.resource.product,
         resourceType: request.body.resource.resourceType,
@@ -1787,7 +1796,7 @@ function authorizeMediaResource(
     return {
       ok: true,
       context: enforceRoutePolicy(request, {
-        permission: permissionForResource(policy, resource),
+        permission: permissionForResource(policy),
         resource: {
           product: resource.product,
           resourceType: resource.resourceType,
@@ -1799,7 +1808,7 @@ function authorizeMediaResource(
   }
 
   const context = enforceRoutePolicy(request, {
-    permission: permissionForResource(policy, resource),
+    permission: permissionForResource(policy),
   });
   const collaborationPolicy =
     context.selectedOrganization.kind === "creator_workspace"
@@ -1849,14 +1858,7 @@ function authorizeMediaResource(
   return { ok: true, context };
 }
 
-function permissionForResource(
-  policy: PlatformMediaPurposePolicy,
-  resource: PlatformMediaResourceScope,
-): PermissionKey {
-  if (isPropertyMediaPurpose(policy.purpose)) {
-    if (resource.product === "booking") return "booking.settings.manage";
-    if (resource.product === "marketplace") return "marketplace.profile.manage";
-  }
+function permissionForResource(policy: PlatformMediaPurposePolicy): PermissionKey {
   if (!policy.permission) throw new Error(`${policy.purpose} does not use a role permission.`);
   return policy.permission;
 }

@@ -7,6 +7,7 @@ import {
   type PlatformMediaAuditEvent,
   PlatformMediaCompletionError,
   PlatformMediaTargetInvalidError,
+  isAutoApprovedPublicMediaPurpose,
   type PlatformMediaObjectRecord,
   type PlatformMediaRepository,
   type PlatformMediaSessionRecord,
@@ -562,10 +563,7 @@ function bindCompletionFilesToSession(
 }
 
 function isAutoApprovedPublicSession(session: PlatformMediaSessionRecord): boolean {
-  return (
-    session.purpose === "identity.user.profile_image" ||
-    session.purpose === "marketplace.creator.profile_image"
-  );
+  return isAutoApprovedPublicMediaPurpose(session.purpose);
 }
 
 function mediaObjectFor(
