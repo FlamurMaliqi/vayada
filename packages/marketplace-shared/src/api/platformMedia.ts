@@ -14,9 +14,10 @@ export type PlatformMediaPurpose =
   | "marketplace.collaboration_chat.attachment";
 
 export type PlatformMediaResourceScope = {
-  product: "platform" | "booking" | "marketplace";
+  product: "platform" | "hotel_catalog" | "booking" | "marketplace";
   resourceType:
     | "user_profile"
+    | "property"
     | "booking_hotel"
     | "hotel_profile"
     | "marketplace_offer"

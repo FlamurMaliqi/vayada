@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   HOTEL_ACTIVE_STATUSES,
   HOTEL_CATALOG_SETUP_FIELDS,
+  PROPERTY_MEDIA_AUTHORIZATION,
   SHARED_PROPERTY_TYPE_OPTIONS,
   hotelCatalogCommandTypes,
   hotelCatalogIdempotencyKey,
@@ -38,6 +39,11 @@ describe("@vayada/domain-hotels", () => {
   it("exports the shared property type catalog", () => {
     expect(SHARED_PROPERTY_TYPE_OPTIONS).toContainEqual({ value: "hotel", label: "Hotel" });
     expect(SHARED_PROPERTY_TYPE_OPTIONS).toContainEqual({ value: "other", label: "Other" });
+  });
+
+  it("exports the canonical property media authorization contract", () => {
+    expect(PROPERTY_MEDIA_AUTHORIZATION.product).toBe("hotel_catalog");
+    expect(PROPERTY_MEDIA_AUTHORIZATION.resourceType).toBe("property");
   });
 
   it("builds a stable idempotency key", () => {

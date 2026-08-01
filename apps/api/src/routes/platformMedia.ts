@@ -11,6 +11,7 @@ import {
   MARKETPLACE_COLLABORATION_CREATOR_WRITE_POLICY,
   MARKETPLACE_COLLABORATION_HOTEL_WRITE_POLICY,
 } from "@vayada/domain-marketplace";
+import { PROPERTY_MEDIA_AUTHORIZATION } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -471,9 +472,13 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
   },
   "property.hero_image": {
     purpose: "property.hero_image",
-    permission: "booking.settings.manage",
-    allowedRelationships: ["owner", "operator"],
+    permission: PROPERTY_MEDIA_AUTHORIZATION.permission,
+    allowedRelationships: PROPERTY_MEDIA_AUTHORIZATION.allowedRelationships,
     allowedResources: [
+      {
+        product: PROPERTY_MEDIA_AUTHORIZATION.product,
+        resourceType: PROPERTY_MEDIA_AUTHORIZATION.resourceType,
+      },
       { product: "booking", resourceType: "booking_hotel" },
       { product: "marketplace", resourceType: "hotel_profile" },
     ],
@@ -490,9 +495,15 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
   },
   "property.gallery_image": {
     purpose: "property.gallery_image",
-    permission: "booking.settings.manage",
-    allowedRelationships: ["owner", "operator"],
-    allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
+    permission: PROPERTY_MEDIA_AUTHORIZATION.permission,
+    allowedRelationships: PROPERTY_MEDIA_AUTHORIZATION.allowedRelationships,
+    allowedResources: [
+      {
+        product: PROPERTY_MEDIA_AUTHORIZATION.product,
+        resourceType: PROPERTY_MEDIA_AUTHORIZATION.resourceType,
+      },
+      { product: "booking", resourceType: "booking_hotel" },
+    ],
     allowedContentTypes: imageContentTypes,
     allowedExtensions: imageExtensions,
     maxFileSizeBytes: 10 * 1024 * 1024,
@@ -506,9 +517,15 @@ const purposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePolicy> 
   },
   "property.logo": {
     purpose: "property.logo",
-    permission: "booking.settings.manage",
-    allowedRelationships: ["owner", "operator"],
-    allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
+    permission: PROPERTY_MEDIA_AUTHORIZATION.permission,
+    allowedRelationships: PROPERTY_MEDIA_AUTHORIZATION.allowedRelationships,
+    allowedResources: [
+      {
+        product: PROPERTY_MEDIA_AUTHORIZATION.product,
+        resourceType: PROPERTY_MEDIA_AUTHORIZATION.resourceType,
+      },
+      { product: "booking", resourceType: "booking_hotel" },
+    ],
     allowedContentTypes: imageContentTypes,
     allowedExtensions: imageExtensions,
     maxFileSizeBytes: 10 * 1024 * 1024,
@@ -1788,11 +1805,20 @@ function permissionForResource(
   policy: PlatformMediaPurposePolicy,
   resource: PlatformMediaResourceScope,
 ): PermissionKey {
-  if (policy.purpose === "property.hero_image" && resource.product === "marketplace") {
-    return "marketplace.profile.manage";
+  if (isPropertyMediaPurpose(policy.purpose)) {
+    if (resource.product === "booking") return "booking.settings.manage";
+    if (resource.product === "marketplace") return "marketplace.profile.manage";
   }
   if (!policy.permission) throw new Error(`${policy.purpose} does not use a role permission.`);
   return policy.permission;
+}
+
+function isPropertyMediaPurpose(purpose: PlatformMediaPurpose): boolean {
+  return (
+    purpose === "property.hero_image" ||
+    purpose === "property.gallery_image" ||
+    purpose === "property.logo"
+  );
 }
 
 function validateResourceScope(
