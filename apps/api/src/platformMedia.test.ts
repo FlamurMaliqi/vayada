@@ -45,9 +45,7 @@ const uploadContractCases = JSON.parse(
   cases: Array<{
     caseId: string;
     contractVersion:
-      | "platform-media-upload.v1"
-      | "platform-media-upload.v2"
-      | "platform-media-import.v1";
+      "platform-media-upload.v1" | "platform-media-upload.v2" | "platform-media-import.v1";
     request: {
       path: string;
       method: "POST";
@@ -122,10 +120,7 @@ type MediaFinalizeResponse = {
 type PrivateHotelMediaResponse = {
   mediaObjectId: string;
   purpose:
-    | "property.logo"
-    | "property.hero_image"
-    | "property.gallery_image"
-    | "pms.room_type.media";
+    "property.logo" | "property.hero_image" | "property.gallery_image" | "pms.room_type.media";
   status: "private_ready";
   publicVariants: [];
 };
@@ -2555,7 +2550,7 @@ describe("platform media upload routes", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         purpose: "property.gallery_image",
-        visibility: "public",
+        visibility: "private",
         resource: {
           product: "hotel_catalog",
           resourceType: "property",

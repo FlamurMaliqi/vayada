@@ -1179,10 +1179,7 @@ const chatPolicy: PlatformMediaPurposePolicy = {
 
 function propertyPolicy(
   purpose:
-    | "property.hero_image"
-    | "property.gallery_image"
-    | "property.logo"
-    | "pms.room_type.media",
+    "property.hero_image" | "property.gallery_image" | "property.logo" | "pms.room_type.media",
 ): PlatformMediaPurposePolicy {
   return {
     ...offerPolicy,
@@ -1244,10 +1241,7 @@ function chatSession(sizeBytes: number): PlatformMediaSessionRecord {
 function propertySession(
   sizeBytes: number,
   purpose:
-    | "property.hero_image"
-    | "property.gallery_image"
-    | "property.logo"
-    | "pms.room_type.media",
+    "property.hero_image" | "property.gallery_image" | "property.logo" | "pms.room_type.media",
 ): PlatformMediaSessionRecord {
   const roomMedia = purpose === "pms.room_type.media";
   return {

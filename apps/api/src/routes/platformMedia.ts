@@ -48,20 +48,10 @@ export type PlatformMediaPurpose =
 export type PlatformMediaVisibility = "public" | "private";
 
 export type PlatformMediaVariantName =
-  | "original_safe"
-  | "large"
-  | "thumbnail"
-  | "blur_preview"
-  | "provider_original";
+  "original_safe" | "large" | "thumbnail" | "blur_preview" | "provider_original";
 
 export type PlatformMediaResourceProduct =
-  | "hotel_catalog"
-  | "booking"
-  | "pms"
-  | "marketplace"
-  | "distribution"
-  | "platform"
-  | "migration";
+  "hotel_catalog" | "booking" | "pms" | "marketplace" | "distribution" | "platform" | "migration";
 
 export type PlatformMediaResourceScope = {
   product: Product;
@@ -2011,14 +2001,6 @@ function permissionForResource(
   }
   if (!policy.permission) throw new Error(`${policy.purpose} does not use a role permission.`);
   return policy.permission;
-}
-
-function isPropertyMediaPurpose(purpose: PlatformMediaPurpose): boolean {
-  return (
-    purpose === "property.hero_image" ||
-    purpose === "property.gallery_image" ||
-    purpose === "property.logo"
-  );
 }
 
 function validateResourceScope(
