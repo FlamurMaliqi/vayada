@@ -77,13 +77,25 @@ JSON shape:
 ```ts
 type PropertyPublicProfileReadModelV1 = {
   propertyId: string;
-  propertyType: string;
+  propertyType:
+    | "hotel"
+    | "resort"
+    | "hostel"
+    | "apartment"
+    | "aparthotel"
+    | "guesthouse"
+    | "bed_and_breakfast"
+    | "villa"
+    | "vacation_rental"
+    | "motel"
+    | "other"
+    | null;
   locale: string;
   shortSummary: string | null;
   location: {
     countryCode: string | null;
     city: string | null;
-    timezone: string;
+    timezone: string | null;
     postalCode: string | null;
     streetAddress: string | null;
     latitude: number | null;
@@ -106,11 +118,15 @@ type PropertyPublicProfileReadModelV1 = {
 ```
 
 The projector reads `propertyType`, the public-safe location fields, and only
-contact channels whose Catalog metadata explicitly marks them public. City and
-country are null unless `localityPublic` is true; street/postal data stays null
-until a separate public-address decision exists; coordinates are included only
-when `geoPublic` and the map-display policy allow them. It reads locale and media
-from the canonical Catalog profile/assignments. It maps the single summary as
+contact channels whose Catalog metadata explicitly marks them public. Unknown
+property types and timezones project as `null`; a missing timezone blocks
+date-sensitive quotes but does not block profile rendering. City and country
+are null unless `localityPublic` is true; street/postal data stays null until a
+separate public-address decision exists; coordinates are included only when
+`geoPublic` and the map-display policy allow them. It reads locale and media
+from the canonical Catalog profile/assignments, but includes a media item only
+when Catalog has approved it, its canonical URL is stable, and its usage rights
+are currently valid. It maps the single summary as
 `shortSummary = shortDescription ?? longDescription` during migration; after
 backfill, `longDescription` is not a second public source.
 
