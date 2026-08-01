@@ -600,6 +600,26 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           [session!.id],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        client.query(
+          `UPDATE hotel_catalog.property_setup_sessions
+           SET completed_step_ids = ARRAY['present_hotel', NULL]::TEXT[]
+           WHERE id = $1::UUID`,
+          [session!.id],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        client.query(
+          `UPDATE hotel_catalog.property_setup_sessions
+           SET
+             status = 'completed',
+             completed_at = now(),
+             retention_expires_at = now() + INTERVAL '31 days',
+             updated_at = now()
+           WHERE id = $1::UUID`,
+          [session!.id],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
 
       await client.query(
         `UPDATE hotel_catalog.property_setup_sessions

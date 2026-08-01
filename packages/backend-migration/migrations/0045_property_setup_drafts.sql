@@ -4,6 +4,9 @@
 --
 -- Stores resumable, incomplete setup input without duplicating canonical
 -- hotel, Marketplace, Booking, PMS, or Finance records.
+-- Writers persist selected tracks in canonical order: hotel_operations before
+-- creator_marketplace. Writers that extend retention also set updated_at in
+-- the same statement; setup-draft timestamps are application-maintained.
 
 CREATE FUNCTION hotel_catalog.property_setup_step_ids_are_unique(step_ids TEXT[])
 RETURNS BOOLEAN
@@ -11,8 +14,8 @@ LANGUAGE SQL
 IMMUTABLE
 PARALLEL SAFE
 AS $$
-  SELECT cardinality(step_ids) = count(DISTINCT value)
-  FROM unnest(step_ids) AS values(value);
+  SELECT cardinality(step_ids) = count(DISTINCT step_id)
+  FROM unnest(step_ids) AS unnested(step_id);
 $$;
 
 CREATE TABLE hotel_catalog.property_setup_sessions (
@@ -48,6 +51,8 @@ CREATE TABLE hotel_catalog.property_setup_sessions (
     ),
   CONSTRAINT chk_property_setup_sessions_revisions
     CHECK (track_revision >= 1 AND revision >= 1),
+  -- Keep the supported step IDs explicit in each constraint so every dumped
+  -- constraint remains self-contained; update all three lists together.
   CONSTRAINT chk_property_setup_sessions_resume_step
     CHECK (
       resume_step_id IS NULL
