@@ -69,7 +69,7 @@ describe("@vayada/domain-finance constants", () => {
   it("exports finance command types", () => {
     expect(financeCommandTypes).toContain("finance.payment.methods.update");
     expect(financeCommandTypes).toContain("finance.payment.instant_book.update");
-    expect(financeCommandTypes).toContain("finance.currency.update");
+    expect(financeCommandTypes).not.toContain("finance.currency.update");
     expect(financeCommandTypes).toContain("finance.billing.plan.update");
     expect(financeCommandTypes).toContain("finance.add_on.price.update");
     expect(financeCommandTypes).toContain("finance.manual_payment.record");

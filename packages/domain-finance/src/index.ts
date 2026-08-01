@@ -1453,18 +1453,6 @@ export type UpdateInstantBookCommand = FinanceCommandBase<
   UpdateInstantBookPayload
 >;
 
-/** Update the property default currency. Owner: Finance. */
-export type UpdatePropertyCurrencyPayload = {
-  currency: FinanceCurrencyCode;
-  /** All currencies the property accepts (includes the new default). Optional — omit to leave supported currencies unchanged. */
-  supportedCurrencies?: FinanceCurrencyCode[];
-};
-
-export type UpdatePropertyCurrencyCommand = FinanceCommandBase<
-  "finance.currency.update",
-  UpdatePropertyCurrencyPayload
->;
-
 /** Update billing plan. Owner: Finance/Platform-admin. */
 export type UpdateBillingPlanPayload = {
   activePlan: FinanceBillingPlan;
@@ -1511,7 +1499,6 @@ export type SettleManualCheckoutChargeCommand = FinanceCommandBase<
 export type FinanceCommand =
   | UpdatePaymentMethodsCommand
   | UpdateInstantBookCommand
-  | UpdatePropertyCurrencyCommand
   | UpdateBillingPlanCommand
   | UpdateAddOnPriceCommand
   | FinanceManualPaymentRecordCommand
@@ -1524,7 +1511,6 @@ export type FinanceCommand =
 export const financeCommandTypes = [
   "finance.payment.methods.update",
   "finance.payment.instant_book.update",
-  "finance.currency.update",
   "finance.billing.plan.update",
   "finance.add_on.price.update",
   "finance.manual_payment.record",
