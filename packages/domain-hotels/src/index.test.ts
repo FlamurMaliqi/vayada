@@ -5,6 +5,7 @@ import {
   HOTEL_CATALOG_SETUP_FIELDS,
   PROPERTY_MEDIA_AUTHORIZATION,
   SHARED_PROPERTY_TYPE_OPTIONS,
+  createPropertyMediaProjectionInput,
   hotelCatalogCommandTypes,
   hotelCatalogIdempotencyKey,
   type HotelCatalogCommand,
@@ -44,6 +45,7 @@ describe("@vayada/domain-hotels", () => {
   it("exports the canonical property media authorization contract", () => {
     expect(PROPERTY_MEDIA_AUTHORIZATION.product).toBe("hotel_catalog");
     expect(PROPERTY_MEDIA_AUTHORIZATION.resourceType).toBe("property");
+    expect(createPropertyMediaProjectionInput).toBeTypeOf("function");
   });
 
   it("builds a stable idempotency key", () => {
