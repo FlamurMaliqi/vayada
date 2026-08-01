@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   PROPERTY_MEDIA_AUTHORIZATION,
+  PROPERTY_MEDIA_LIBRARY_STATUSES,
   PROPERTY_MEDIA_MAX_GALLERY_ITEMS,
+  PROPERTY_MEDIA_PRESENTATION_ROLES,
+  PROPERTY_MEDIA_PUBLIC_VARIANTS,
+  PROPERTY_MEDIA_UPLOAD_PURPOSES,
   parseAssignPropertyLogoRequest,
   parsePropertyMediaLibraryItem,
   parseReplacePropertyPresentationMediaRequest,
@@ -20,6 +24,15 @@ describe("canonical property media contract", () => {
       resourceType: "property",
       allowedRelationships: ["owner", "operator"],
     });
+    expect(Object.isFrozen(PROPERTY_MEDIA_AUTHORIZATION)).toBe(true);
+    expect(Object.isFrozen(PROPERTY_MEDIA_AUTHORIZATION.allowedRelationships)).toBe(true);
+    expect(Object.isFrozen(PROPERTY_MEDIA_UPLOAD_PURPOSES)).toBe(true);
+    expect(Object.isFrozen(PROPERTY_MEDIA_PRESENTATION_ROLES)).toBe(true);
+    expect(Object.isFrozen(PROPERTY_MEDIA_PUBLIC_VARIANTS)).toBe(true);
+    expect(Object.isFrozen(PROPERTY_MEDIA_LIBRARY_STATUSES)).toBe(true);
+    expect(() =>
+      (PROPERTY_MEDIA_AUTHORIZATION.allowedRelationships as unknown as string[]).push("viewer"),
+    ).toThrow(TypeError);
   });
 
   it("keeps upload purpose separate from presentation role and hides private URLs", () => {
@@ -63,6 +76,18 @@ describe("canonical property media contract", () => {
       ],
     };
     expect(parsePropertyMediaLibraryItem(publicItem)).toEqual(publicItem);
+    const snapshot = parsePropertyMediaLibraryItem({
+      ...publicItem,
+      mediaObjectId: coverId.toUpperCase(),
+    });
+    expect(snapshot?.mediaObjectId).toBe(coverId);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot?.publicVariants)).toBe(true);
+    expect(Object.isFrozen(snapshot?.publicVariants[0])).toBe(true);
+    publicItem.publicVariants[0]!.publicUrl = "https://attacker.example/replaced.webp";
+    expect(snapshot?.publicVariants[0]?.publicUrl).toBe(
+      "https://cdn.example/property/cover-large.webp",
+    );
     expect(
       parsePropertyMediaLibraryItem({
         ...publicItem,
@@ -88,6 +113,13 @@ describe("canonical property media contract", () => {
       },
     };
     expect(parseAssignPropertyLogoRequest(request)).toEqual(request);
+    const canonical = parseAssignPropertyLogoRequest({
+      ...request,
+      assignment: { ...request.assignment, mediaObjectId: logoId.toUpperCase() },
+    });
+    expect(canonical?.assignment?.mediaObjectId).toBe(logoId);
+    expect(Object.isFrozen(canonical)).toBe(true);
+    expect(Object.isFrozen(canonical?.assignment)).toBe(true);
     expect(
       parseAssignPropertyLogoRequest({
         expectedProfileRevision: 3,
@@ -113,7 +145,13 @@ describe("canonical property media contract", () => {
         { mediaObjectId: galleryId, role: "gallery", altText: "Lobby", sortOrder: 1 },
       ],
     };
-    expect(parseReplacePropertyPresentationMediaRequest(request)).toEqual(request);
+    const parsed = parseReplacePropertyPresentationMediaRequest(request);
+    expect(parsed).toEqual(request);
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed?.assignments)).toBe(true);
+    expect(Object.isFrozen(parsed?.assignments[0])).toBe(true);
+    request.assignments[0]!.altText = "mutated after parsing";
+    expect(parsed?.assignments[0]?.altText).toBeNull();
     expect(
       parseReplacePropertyPresentationMediaRequest({
         ...request,
@@ -143,6 +181,15 @@ describe("canonical property media contract", () => {
       parseReplacePropertyPresentationMediaRequest({
         expectedProfileRevision: 4,
         assignments: [cover, { ...cover, mediaObjectId: galleryId, sortOrder: 1 }],
+      }),
+    ).toBeNull();
+    expect(
+      parseReplacePropertyPresentationMediaRequest({
+        expectedProfileRevision: 4,
+        assignments: [
+          { ...cover, role: "gallery", mediaObjectId: galleryId.toUpperCase() },
+          { ...cover, role: "gallery", mediaObjectId: galleryId, sortOrder: 1 },
+        ],
       }),
     ).toBeNull();
     expect(
@@ -194,5 +241,55 @@ describe("canonical property media contract", () => {
         legacyImageUrls: [],
       }),
     ).toBeNull();
+  });
+
+  it("rejects inherited fields and non-plain records", () => {
+    const inheritedRevision = Object.create({ expectedProfileRevision: 4 }) as Record<
+      string,
+      unknown
+    >;
+    inheritedRevision["assignments"] = [];
+    expect(parseReplacePropertyPresentationMediaRequest(inheritedRevision)).toBeNull();
+
+    const inheritedAssignment = Object.create({ mediaObjectId: galleryId }) as Record<
+      string,
+      unknown
+    >;
+    inheritedAssignment["role"] = "gallery";
+    inheritedAssignment["altText"] = null;
+    inheritedAssignment["sortOrder"] = 0;
+    expect(
+      parseReplacePropertyPresentationMediaRequest({
+        expectedProfileRevision: 4,
+        assignments: [inheritedAssignment],
+      }),
+    ).toBeNull();
+
+    class MediaRequest {
+      expectedProfileRevision = 4;
+      assignments: unknown[] = [];
+    }
+    expect(parseReplacePropertyPresentationMediaRequest(new MediaRequest())).toBeNull();
+
+    const accessorRequest = { assignments: [] as unknown[] } as Record<string, unknown>;
+    Object.defineProperty(accessorRequest, "expectedProfileRevision", {
+      enumerable: true,
+      get: () => 4,
+    });
+    expect(parseReplacePropertyPresentationMediaRequest(accessorRequest)).toBeNull();
+
+    const hiddenFieldRequest = { expectedProfileRevision: 4, assignments: [] };
+    Object.defineProperty(hiddenFieldRequest, "legacyMedia", {
+      enumerable: false,
+      value: [],
+    });
+    expect(parseReplacePropertyPresentationMediaRequest(hiddenFieldRequest)).toBeNull();
+
+    const symbolFieldRequest = { expectedProfileRevision: 4, assignments: [] };
+    Object.defineProperty(symbolFieldRequest, Symbol("legacyMedia"), {
+      enumerable: true,
+      value: [],
+    });
+    expect(parseReplacePropertyPresentationMediaRequest(symbolFieldRequest)).toBeNull();
   });
 });

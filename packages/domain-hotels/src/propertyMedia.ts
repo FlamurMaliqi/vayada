@@ -1,30 +1,34 @@
-export const PROPERTY_MEDIA_UPLOAD_PURPOSES = [
+export const PROPERTY_MEDIA_UPLOAD_PURPOSES = Object.freeze([
   "property.logo",
   "property.hero_image",
   "property.gallery_image",
   "pms.room_type.media",
-] as const;
+] as const);
 
-export const PROPERTY_MEDIA_PRESENTATION_ROLES = ["logo", "cover", "gallery"] as const;
-export const PROPERTY_MEDIA_PUBLIC_VARIANTS = [
+export const PROPERTY_MEDIA_PRESENTATION_ROLES = Object.freeze([
+  "logo",
+  "cover",
+  "gallery",
+] as const);
+export const PROPERTY_MEDIA_PUBLIC_VARIANTS = Object.freeze([
   "original_safe",
   "large",
   "thumbnail",
   "blur_preview",
-] as const;
-export const PROPERTY_MEDIA_LIBRARY_STATUSES = [
+] as const);
+export const PROPERTY_MEDIA_LIBRARY_STATUSES = Object.freeze([
   "processing",
   "private_ready",
   "public_ready",
   "rejected",
-] as const;
+] as const);
 
-export const PROPERTY_MEDIA_AUTHORIZATION = {
+export const PROPERTY_MEDIA_AUTHORIZATION = Object.freeze({
   permission: "hotel_catalog.setup.manage",
   product: "hotel_catalog",
   resourceType: "property",
-  allowedRelationships: ["owner", "operator"],
-} as const;
+  allowedRelationships: Object.freeze(["owner", "operator"] as const),
+} as const);
 
 export const PROPERTY_MEDIA_MAX_GALLERY_ITEMS = 25;
 
@@ -46,7 +50,7 @@ export type PropertyMediaLibraryItem = {
   mediaObjectId: string;
   purpose: PropertyMediaUploadPurpose;
   status: PropertyMediaLibraryStatus;
-  publicVariants: PropertyMediaPublicVariant[];
+  publicVariants: readonly PropertyMediaPublicVariant[];
 };
 
 export type PropertyMediaAssignment = {
@@ -63,14 +67,16 @@ export type AssignPropertyLogoRequest = {
 
 export type ReplacePropertyPresentationMediaRequest = {
   expectedProfileRevision: number;
-  assignments: Array<PropertyMediaAssignment & { role: "cover" | "gallery" }>;
+  assignments: readonly (PropertyMediaAssignment & { role: "cover" | "gallery" })[];
 };
 
 export type PropertyMediaCommandResponse = {
   outcome: "updated" | "idempotent_replay";
   profileRevision: number;
   logoAssignment: (PropertyMediaAssignment & { role: "logo"; sortOrder: 0 }) | null;
-  presentationAssignments: Array<PropertyMediaAssignment & { role: "cover" | "gallery" }>;
+  presentationAssignments: readonly (PropertyMediaAssignment & {
+    role: "cover" | "gallery";
+  })[];
 };
 
 export type PropertyMediaCommandError =
@@ -87,19 +93,25 @@ export function parsePropertyMediaLibraryItem(value: unknown): PropertyMediaLibr
     !isUuid(value["mediaObjectId"]) ||
     !PROPERTY_MEDIA_UPLOAD_PURPOSES.includes(value["purpose"] as PropertyMediaUploadPurpose) ||
     !PROPERTY_MEDIA_LIBRARY_STATUSES.includes(value["status"] as PropertyMediaLibraryStatus) ||
-    !Array.isArray(value["publicVariants"]) ||
-    !value["publicVariants"].every(isPublicVariant)
+    !Array.isArray(value["publicVariants"])
   ) {
     return null;
   }
-  const variants = value["publicVariants"] as PropertyMediaPublicVariant[];
+  const parsedVariants = value["publicVariants"].map(parsePublicVariant);
+  if (parsedVariants.some((variant) => variant === null)) return null;
+  const variants = parsedVariants as PropertyMediaPublicVariant[];
   if (
     new Set(variants.map(({ variantName }) => variantName)).size !== variants.length ||
     (value["status"] === "public_ready" ? variants.length === 0 : variants.length > 0)
   ) {
     return null;
   }
-  return value as PropertyMediaLibraryItem;
+  return Object.freeze({
+    mediaObjectId: normalizeUuid(value["mediaObjectId"]),
+    purpose: value["purpose"] as PropertyMediaUploadPurpose,
+    status: value["status"] as PropertyMediaLibraryStatus,
+    publicVariants: Object.freeze(variants as PropertyMediaPublicVariant[]),
+  });
 }
 
 export function parseAssignPropertyLogoRequest(value: unknown): AssignPropertyLogoRequest | null {
@@ -110,11 +122,18 @@ export function parseAssignPropertyLogoRequest(value: unknown): AssignPropertyLo
   ) {
     return null;
   }
-  if (value["assignment"] === null) return value as AssignPropertyLogoRequest;
+  if (value["assignment"] === null) {
+    return Object.freeze({
+      expectedProfileRevision: value["expectedProfileRevision"] as number,
+      assignment: null,
+    });
+  }
   const assignment = parseAssignment(value["assignment"]);
-  return assignment?.role === "logo" && assignment.sortOrder === 0
-    ? (value as AssignPropertyLogoRequest)
-    : null;
+  if (assignment?.role !== "logo" || assignment.sortOrder !== 0) return null;
+  return Object.freeze({
+    expectedProfileRevision: value["expectedProfileRevision"] as number,
+    assignment: assignment as PropertyMediaAssignment & { role: "logo"; sortOrder: 0 },
+  });
 }
 
 export function parseReplacePropertyPresentationMediaRequest(
@@ -132,7 +151,12 @@ export function parseReplacePropertyPresentationMediaRequest(
   if (assignments.some((assignment) => assignment === null)) return null;
   const parsed = assignments as PropertyMediaAssignment[];
   if (!isValidPresentationAssignments(parsed)) return null;
-  return value as ReplacePropertyPresentationMediaRequest;
+  return Object.freeze({
+    expectedProfileRevision: value["expectedProfileRevision"] as number,
+    assignments: Object.freeze(
+      parsed as (PropertyMediaAssignment & { role: "cover" | "gallery" })[],
+    ),
+  });
 }
 
 function isValidPresentationAssignments(assignments: PropertyMediaAssignment[]): boolean {
@@ -142,8 +166,8 @@ function isValidPresentationAssignments(assignments: PropertyMediaAssignment[]):
     assignments.some(({ role }) => role === "logo") ||
     coverCount > 1 ||
     galleryCount > PROPERTY_MEDIA_MAX_GALLERY_ITEMS ||
-    new Set(assignments.map(({ mediaObjectId, role }) => `${role}:${mediaObjectId}`)).size !==
-      assignments.length ||
+    new Set(assignments.map(({ mediaObjectId, role }) => `${role}:${mediaObjectId.toLowerCase()}`))
+      .size !== assignments.length ||
     assignments.some(({ sortOrder }, index) => sortOrder !== index) ||
     (coverCount === 1 && assignments[0]?.role !== "cover")
   );
@@ -160,18 +184,29 @@ function parseAssignment(value: unknown): PropertyMediaAssignment | null {
   ) {
     return null;
   }
-  return value as PropertyMediaAssignment;
+  return Object.freeze({
+    mediaObjectId: normalizeUuid(value["mediaObjectId"]),
+    role: value["role"] as PropertyMediaPresentationRole,
+    altText: value["altText"] as string | null,
+    sortOrder: value["sortOrder"] as number,
+  });
 }
 
-function isPublicVariant(value: unknown): value is PropertyMediaPublicVariant {
-  return (
-    isRecord(value) &&
-    hasOnlyKeys(value, ["variantName", "publicUrl"]) &&
-    PROPERTY_MEDIA_PUBLIC_VARIANTS.includes(
+function parsePublicVariant(value: unknown): PropertyMediaPublicVariant | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["variantName", "publicUrl"]) ||
+    !PROPERTY_MEDIA_PUBLIC_VARIANTS.includes(
       value["variantName"] as PropertyMediaPublicVariantName,
-    ) &&
-    isPublicHttpsUrl(value["publicUrl"])
-  );
+    ) ||
+    !isPublicHttpsUrl(value["publicUrl"])
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    variantName: value["variantName"] as PropertyMediaPublicVariantName,
+    publicUrl: value["publicUrl"] as string,
+  });
 }
 
 function isPublicHttpsUrl(value: unknown): value is string {
@@ -185,11 +220,19 @@ function isPublicHttpsUrl(value: unknown): value is string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Reflect.ownKeys(value).every((key) => {
+    if (typeof key !== "string") return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+  });
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  return Object.keys(value).every((key) => allowed.includes(key));
+  const keys = Reflect.ownKeys(value);
+  return keys.length === allowed.length && allowed.every((key) => Object.hasOwn(value, key));
 }
 
 function isUuid(value: unknown): value is string {
@@ -197,6 +240,10 @@ function isUuid(value: unknown): value is string {
     typeof value === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
+}
+
+function normalizeUuid(value: string): string {
+  return value.toLowerCase();
 }
 
 function isNullableString(value: unknown): value is string | null {
