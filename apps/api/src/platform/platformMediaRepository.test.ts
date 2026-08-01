@@ -122,6 +122,36 @@ describe("PostgreSQL platform media repository", () => {
     expect(database.queries).toEqual([]);
   });
 
+  it("rejects noncanonical property media before persistence", async () => {
+    const database = createFakeDatabase();
+
+    await expect(
+      createSession(repositoryFor(database.pool), "property.hero_image", "private", {
+        product: "booking",
+        resourceType: "hotel",
+        resourceId: "booking_hotel_alpenrose",
+      } as never),
+    ).rejects.toThrow("Property media requires a canonical property target");
+    expect(database.queries).toEqual([]);
+  });
+
+  it("rejects a persisted noncanonical property session during finalization", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "property.hero_image");
+    database.updateSession({
+      resource: {
+        product: "booking",
+        resourceType: "hotel",
+        resourceId: "booking_hotel_alpenrose",
+      } as never,
+    });
+
+    await expect(repository.completeUploadSession(completionInput(session))).rejects.toBeInstanceOf(
+      PlatformMediaTargetInvalidError,
+    );
+  });
+
   it("completes once, replays idempotently, and reads media from a fresh repository", async () => {
     const database = createFakeDatabase();
     const first = repositoryFor(database.pool);
@@ -359,73 +389,6 @@ describe("PostgreSQL platform media repository", () => {
     },
   );
 
-  it("resolves, completes, and replays frozen legacy-public property media", async () => {
-    const database = createFakeDatabase();
-    const repository = repositoryFor(database.pool);
-    const resolved = await repository.resolveTarget({
-      request: {
-        purpose: "property.gallery_image",
-        visibility: "public",
-        resource: {
-          product: "booking",
-          resourceType: "booking_hotel",
-          resourceId: "booking_hotel_alpenrose",
-          propertyId: PROPERTY_ID,
-        },
-        files: [],
-      },
-      policy: {
-        targetResourceProduct: "hotel_catalog",
-        targetResourceType: "property",
-      } as never,
-      context: {} as never,
-    });
-    expect(resolved).toEqual({
-      ok: true,
-      target: {
-        resourceProduct: "hotel_catalog",
-        resourceType: "property",
-        resourceId: PROPERTY_ID,
-        propertyId: PROPERTY_ID,
-      },
-    });
-
-    const session = await createSession(repository, "property.gallery_image", "public", "legacy");
-    const completion = completionInput(session);
-    const completed = await repository.completeUploadSession(completion);
-    expect(completed.mediaObjects[0]).toMatchObject({
-      purpose: "property.gallery_image",
-      propertyId: PROPERTY_ID,
-      visibility: "public",
-      requestedVisibility: "public",
-      approvalStatus: "approved",
-      lifecycleStatus: "active",
-      variants: expect.arrayContaining([
-        expect.objectContaining({
-          variantName: "original_safe",
-          visibility: "public",
-          publicCdnUrl: expect.stringMatching(/^https:\/\//),
-        }),
-      ]),
-    });
-    expect(
-      database.clientQueries.some(({ text }) =>
-        text.includes("INSERT INTO hotel_catalog.property_media"),
-      ),
-    ).toBe(true);
-
-    await expect(repository.completeUploadSession(completion)).resolves.toMatchObject({
-      uploadSession: { status: "completed" },
-      mediaObjects: [
-        {
-          purpose: "property.gallery_image",
-          visibility: "public",
-          approvalStatus: "approved",
-        },
-      ],
-    });
-  });
-
   it.each([
     ["a missing variant", (variants: PlatformMediaObjectRecord["variants"]) => variants.slice(1)],
     [
@@ -635,7 +598,7 @@ async function createSession(
     | "property.logo"
     | "pms.room_type.media" = "identity.user.profile_image",
   visibility?: "public" | "private",
-  propertyMediaSource: "canonical" | "legacy" = "canonical",
+  resourceOverride?: PlatformMediaSessionRecord["resource"],
 ) {
   const isProfile = purpose === "identity.user.profile_image";
   const isOffer = purpose === "marketplace.offer.media";
@@ -647,29 +610,19 @@ async function createSession(
     "pms.room_type.media",
   ].includes(purpose);
   const isRoomMedia = purpose === "pms.room_type.media";
-  const product = isProfile
-    ? "platform"
-    : isOffer || isChat
-      ? "marketplace"
-      : propertyMediaSource === "legacy"
-        ? "booking"
-        : "hotel_catalog";
+  const product = isProfile ? "platform" : isOffer || isChat ? "marketplace" : "hotel_catalog";
   const resourceType = isProfile
     ? "user_profile"
     : isOffer
       ? "marketplace_offer"
       : isChat
         ? "creator_profile"
-        : propertyMediaSource === "legacy"
-          ? "booking_hotel"
-          : "property";
+        : "property";
   const resourceId = isProfile
     ? "00000000-0000-4000-8000-000000000001"
     : isOffer || isChat
       ? "00000000-0000-4000-8000-000000000020"
-      : propertyMediaSource === "legacy"
-        ? "booking_hotel_alpenrose"
-        : PROPERTY_ID;
+      : PROPERTY_ID;
   const filename = isProfile
     ? "profile.jpg"
     : isOffer
@@ -690,16 +643,12 @@ async function createSession(
     request: {
       purpose,
       visibility: visibility ?? (isChat || isPropertyMedia ? "private" : "public"),
-      resource: {
+      resource: resourceOverride ?? {
         product,
         resourceType,
         resourceId,
-        ...(propertyMediaSource === "legacy" ? { propertyId: PROPERTY_ID } : {}),
         ...(isRoomMedia ? { targetResourceId: ROOM_TYPE_ID } : {}),
       },
-      ...(propertyMediaSource === "legacy" && purpose === "property.hero_image"
-        ? { expectedProfileRevision: 1 }
-        : {}),
       files: [
         {
           clientFileId: purpose,
@@ -711,9 +660,8 @@ async function createSession(
     },
     policy: {
       purpose,
-      autoApprovePublicOnFinalize:
-        isProfile || (isPropertyMedia && propertyMediaSource === "legacy") ? true : undefined,
-      privateOnly: (isPropertyMedia && propertyMediaSource === "canonical") || isChat,
+      autoApprovePublicOnFinalize: isProfile ? true : undefined,
+      privateOnly: isPropertyMedia || isChat,
     } as never,
     target: {
       resourceProduct: isProfile
@@ -953,6 +901,10 @@ function createFakeDatabase(failAuditAction?: string) {
       const row = committed.mediaRows.get(mediaId);
       if (!row) throw new Error(`Unknown fake media row ${mediaId}`);
       committed.mediaRows.set(mediaId, { ...row, ...patch });
+    },
+    updateSession(patch: Partial<PlatformMediaSessionRecord>) {
+      if (!committed.session) throw new Error("Missing fake upload session");
+      committed.session = { ...committed.session, ...patch };
     },
     pool: {
       query: poolQuery,
