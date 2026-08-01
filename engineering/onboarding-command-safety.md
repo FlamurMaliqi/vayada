@@ -11,7 +11,10 @@ domain-specific repositories and results.
 ## Route and authorization boundary
 
 Protected setup adapters resolve a typed `RequestContext` and call
-`enforceRoutePolicy` before invoking a command repository. The selected
+`enforceRoutePolicy` before invoking a command repository. For commands with a
+body, authorization runs in a route-scoped `onRequest` hook, before Fastify
+parses that body; an unauthenticated or unauthorized malformed request therefore
+returns the same `401` or `403` denial as a well-formed request. The selected
 organization and linked resource come from that authorized context; a browser
 sequence, header, email address, or legacy ownership column is not an
 authorization boundary.
@@ -19,6 +22,13 @@ authorization boundary.
 Authorization is checked on every attempt, including an exact retry. A stored
 result is only replayed after the current request is authorized for the same
 tenant and operation.
+
+`hotel_setup.tracks.update` is an organization-scoped bootstrap command. It
+requires an active hotel-group context and
+`hotel_catalog.products.manage`, but it does not require a product entitlement
+or linked property: track selection precedes property creation and provisions
+the selected product entitlements and resource links. Later property-scoped
+setup commands apply their relevant entitlement and linked-resource checks.
 
 ## Idempotency identity
 
@@ -109,4 +119,6 @@ or successful retry dispatch must never be presented as success.
 The fixture vocabulary in
 `engineering/fixtures/onboarding-command-safety/cases.json` covers exact retry,
 changed payload, changed revision, concurrent stale write, and injected audit
-rollback for reuse by later setup commands.
+rollback in `cases`, plus the authentication, permission, organization-scope,
+revoked-retry, and allowed-access matrix in `authorizationCases`, for reuse by
+later setup commands.

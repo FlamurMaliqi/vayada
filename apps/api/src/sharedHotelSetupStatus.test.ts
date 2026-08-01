@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 
 import {
@@ -49,6 +50,36 @@ const session: VerifiedSession = {
   workosOrgId: "org_workos_hotel_group",
   sessionId: "session_hotel_owner",
   expiresAt: futureExpiry,
+};
+
+type TrackAuthorizationCase = {
+  id: string;
+  given: {
+    authentication: "missing" | "invalid" | "valid";
+    permissions: PermissionKey[];
+    organizationKind: "hotel_group" | "creator_workspace";
+    revokePermissionBeforeExactRetry?: boolean;
+  };
+  expected: {
+    status: 200 | 401 | 403;
+    errorCode?: "unauthenticated" | "missing_permission" | "invalid_organization_scope";
+    category?: "authentication" | "authorization";
+    message?: string;
+    attemptRepositoryCalls: number;
+  };
+};
+
+const commandSafetyFixture = JSON.parse(
+  readFileSync(
+    new URL("../../../engineering/fixtures/onboarding-command-safety/cases.json", import.meta.url),
+    "utf8",
+  ),
+) as {
+  baseRequest: {
+    selectedTracks: UpdateTracksResponse["selectedTracks"];
+    expectedRevision: number;
+  };
+  authorizationCases: TrackAuthorizationCase[];
 };
 
 let app: FastifyInstance | undefined;
@@ -992,37 +1023,143 @@ describe("shared hotel setup status route", () => {
     expect(response.body).toEqual(conflict);
   });
 
-  it("requires the owner-level permission for setup track changes", async () => {
-    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
-    app = buildSharedSetupApp({
-      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
-      repository: repositoryWith([]),
-      trackCommandRepository: {
-        updateTracks,
-        getTrackStatus: unusedTrackCommandRepository().getTrackStatus,
-        async close() {},
-      },
-    });
+  it("passes the fixture-driven setup track authorization matrix before repository replay", async () => {
+    expect(commandSafetyFixture.authorizationCases.map(({ id }) => id)).toEqual([
+      "missing_auth",
+      "invalid_bearer",
+      "missing_permission",
+      "wrong_organization_scope",
+      "permission_revoked_before_exact_retry",
+      "allowed",
+    ]);
 
-    const response = await injectJson<{ code: string }>(app, {
-      method: "PUT",
-      url: "/api/hotel-setup/tracks",
-      headers: {
-        authorization: "Bearer valid-token",
-        "idempotency-key": "permission-denied",
-      },
-      payload: { selectedTracks: ["hotel_operations"], expectedRevision: 0 },
-    });
+    for (const authorizationCase of commandSafetyFixture.authorizationCases) {
+      const permissions = [...authorizationCase.given.permissions];
+      let repositoryCalls = 0;
+      const responseBody: UpdateTracksResponse = {
+        trackRevision: 1,
+        selectedTracks: [],
+        tracks: [],
+      };
+      app = buildSharedSetupApp({
+        organizationKind: authorizationCase.given.organizationKind,
+        permissions,
+        linkedResources: [],
+        repository: repositoryWith([]),
+        trackCommandRepository: {
+          async updateTracks() {
+            repositoryCalls += 1;
+            return { ok: true, response: responseBody };
+          },
+          getTrackStatus: unusedTrackCommandRepository().getTrackStatus,
+          async close() {},
+        },
+      });
 
-    expect(response.statusCode).toBe(403);
-    expect(updateTracks).not.toHaveBeenCalled();
+      const request = {
+        method: "PUT" as const,
+        url: "/api/hotel-setup/tracks",
+        headers: {
+          ...(authorizationCase.given.authentication === "missing"
+            ? {}
+            : {
+                authorization:
+                  authorizationCase.given.authentication === "valid"
+                    ? "Bearer valid-token"
+                    : "Bearer invalid-token",
+              }),
+          "idempotency-key": `authorization-${authorizationCase.id}`,
+        },
+        payload: {
+          selectedTracks: commandSafetyFixture.baseRequest.selectedTracks,
+          expectedRevision: commandSafetyFixture.baseRequest.expectedRevision,
+        },
+      };
+
+      if (authorizationCase.given.revokePermissionBeforeExactRetry) {
+        const firstAttempt = await injectJson(app, request);
+        expect(firstAttempt.statusCode, authorizationCase.id).toBe(200);
+        expect(repositoryCalls, authorizationCase.id).toBe(1);
+        permissions.splice(0, permissions.length);
+      }
+
+      const repositoryCallsBeforeAttempt = repositoryCalls;
+      const response = await injectJson<Record<string, unknown>>(app, request);
+      expect(response.statusCode, authorizationCase.id).toBe(authorizationCase.expected.status);
+      expect(repositoryCalls - repositoryCallsBeforeAttempt, authorizationCase.id).toBe(
+        authorizationCase.expected.attemptRepositoryCalls,
+      );
+
+      if (authorizationCase.expected.errorCode) {
+        expect(response.body, authorizationCase.id).toEqual({
+          statusCode: authorizationCase.expected.status,
+          code: authorizationCase.expected.errorCode,
+          category: authorizationCase.expected.category,
+          message: authorizationCase.expected.message,
+        });
+      }
+
+      await app.close();
+      app = undefined;
+    }
   });
 
-  it("rejects setup track changes outside an active hotel group", async () => {
-    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+  it("denies unauthorized setup track requests before parsing malformed JSON", async () => {
+    const malformedPayload = '{"selectedTracks":';
+    const deniedCases = commandSafetyFixture.authorizationCases.filter(
+      ({ id }) => id !== "allowed" && id !== "permission_revoked_before_exact_retry",
+    );
+
+    for (const authorizationCase of deniedCases) {
+      const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+      app = buildSharedSetupApp({
+        organizationKind: authorizationCase.given.organizationKind,
+        permissions: authorizationCase.given.permissions,
+        linkedResources: [],
+        repository: repositoryWith([]),
+        trackCommandRepository: {
+          updateTracks,
+          getTrackStatus: unusedTrackCommandRepository().getTrackStatus,
+          async close() {},
+        },
+      });
+      const response = await requestWithRawHeaders(app, malformedPayload, {
+        ...(authorizationCase.given.authentication === "missing"
+          ? {}
+          : {
+              authorization:
+                authorizationCase.given.authentication === "valid"
+                  ? "Bearer valid-token"
+                  : "Bearer invalid-token",
+            }),
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(malformedPayload)),
+        "idempotency-key": `malformed-${authorizationCase.id}`,
+      });
+
+      expect(response.statusCode, authorizationCase.id).toBe(authorizationCase.expected.status);
+      expect(response.body, authorizationCase.id).toEqual({
+        statusCode: authorizationCase.expected.status,
+        code: authorizationCase.expected.errorCode,
+        category: authorizationCase.expected.category,
+        message: authorizationCase.expected.message,
+      });
+      expect(updateTracks, authorizationCase.id).not.toHaveBeenCalled();
+
+      await app.close();
+      app = undefined;
+    }
+  });
+
+  it("checks revoked permission before parsing a malformed exact retry", async () => {
+    const permissions: PermissionKey[] = ["hotel_catalog.products.manage"];
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>(async () => ({
+      ok: true,
+      response: { trackRevision: 1, selectedTracks: [], tracks: [] },
+    }));
     app = buildSharedSetupApp({
-      organizationKind: "creator_workspace",
-      permissions: ["hotel_catalog.products.manage"],
+      permissions,
+      linkedResources: [],
       repository: repositoryWith([]),
       trackCommandRepository: {
         updateTracks,
@@ -1030,21 +1167,67 @@ describe("shared hotel setup status route", () => {
         async close() {},
       },
     });
+    const authorizationCase = commandSafetyFixture.authorizationCases.find(
+      ({ id }) => id === "permission_revoked_before_exact_retry",
+    );
+    if (!authorizationCase) throw new Error("Missing revoked-permission authorization fixture");
+    const headers = {
+      authorization: "Bearer valid-token",
+      "content-type": "application/json",
+      "idempotency-key": `authorization-${authorizationCase.id}`,
+    };
 
-    const response = await injectJson<{ detail: string }>(app, {
+    const firstAttempt = await injectJson(app, {
       method: "PUT",
       url: "/api/hotel-setup/tracks",
-      headers: {
-        authorization: "Bearer valid-token",
-        "idempotency-key": "wrong-organization",
+      headers,
+      payload: {
+        selectedTracks: commandSafetyFixture.baseRequest.selectedTracks,
+        expectedRevision: commandSafetyFixture.baseRequest.expectedRevision,
       },
-      payload: { selectedTracks: ["creator_marketplace"], expectedRevision: 0 },
+    });
+    expect(firstAttempt.statusCode).toBe(200);
+    expect(updateTracks).toHaveBeenCalledTimes(1);
+
+    permissions.splice(0, permissions.length);
+    const malformedPayload = '{"selectedTracks":';
+    const retry = await requestWithRawHeaders(app, malformedPayload, {
+      ...headers,
+      "content-length": String(Buffer.byteLength(malformedPayload)),
     });
 
-    expect(response.statusCode).toBe(403);
-    expect(response.body).toEqual({
-      detail: "This endpoint is only available for hotel groups.",
+    expect(retry.statusCode).toBe(authorizationCase.expected.status);
+    expect(retry.body).toEqual({
+      statusCode: authorizationCase.expected.status,
+      code: authorizationCase.expected.errorCode,
+      category: authorizationCase.expected.category,
+      message: authorizationCase.expected.message,
     });
+    expect(updateTracks).toHaveBeenCalledTimes(1);
+  });
+
+  it("parses the body only after setup track authorization succeeds", async () => {
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.products.manage"],
+      linkedResources: [],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        updateTracks,
+        getTrackStatus: unusedTrackCommandRepository().getTrackStatus,
+        async close() {},
+      },
+    });
+    const malformedPayload = '{"selectedTracks":';
+
+    const response = await requestWithRawHeaders(app, malformedPayload, {
+      authorization: "Bearer valid-token",
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(malformedPayload)),
+      "idempotency-key": "malformed-allowed",
+    });
+
+    expect(response.statusCode).toBe(400);
     expect(updateTracks).not.toHaveBeenCalled();
   });
 

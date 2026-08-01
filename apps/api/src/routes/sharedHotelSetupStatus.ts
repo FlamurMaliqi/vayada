@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
-import type { PermissionKey } from "@vayada/backend-auth";
-import { hasPermission } from "@vayada/backend-authorization";
+import { UnauthorizedError, type PermissionKey } from "@vayada/backend-auth";
+import { AuthorizationError, hasPermission } from "@vayada/backend-authorization";
 import {
   ADAPTIVE_HOTEL_SETUP_CONTRACT_VERSION,
   isSetupTaskLaunchable,
@@ -115,6 +115,13 @@ type SharedPropertyProfileParams = {
 
 type SharedPropertyProfileBody = Record<string, unknown> | undefined;
 
+type SharedHotelSetupTrackAccessError = {
+  statusCode: 401 | 403;
+  code: "unauthenticated" | "missing_permission" | "invalid_organization_scope";
+  category: "authentication" | "authorization";
+  message: string;
+};
+
 const ENTRY_PRODUCTS: readonly SharedHotelSetupEntryProduct[] = ["booking", "pms", "marketplace"];
 const SHARED_PROPERTY_TYPE_VALUES = new Set<string>(
   SHARED_PROPERTY_TYPE_OPTIONS.map(({ value }) => value),
@@ -129,6 +136,7 @@ export async function registerSharedHotelSetupStatusRoutes(
   options: SharedHotelSetupStatusRoutesOptions,
 ): Promise<void> {
   const { repository, trackCommandRepository, now = () => new Date() } = options;
+  const trackUpdateAccess = new WeakMap<FastifyRequest, ReturnType<typeof enforceRoutePolicy>>();
 
   app.addHook("onClose", async () => {
     await Promise.all([repository.close?.(), trackCommandRepository.close()]);
@@ -422,32 +430,43 @@ export async function registerSharedHotelSetupStatusRoutes(
     });
   });
 
-  app.put("/tracks", async (request, reply) => {
-    const access = resolveSharedSetupAccess(request, reply, null, "hotel_catalog.products.manage");
-    if (!access) return reply;
+  app.put(
+    "/tracks",
+    {
+      async onRequest(request, reply) {
+        const access = resolveSharedSetupTrackUpdateAccess(request, reply);
+        if (!access) return reply;
+        trackUpdateAccess.set(request, access);
+      },
+    },
+    async (request, reply) => {
+      const context = trackUpdateAccess.get(request);
+      if (!context) {
+        throw new Error("Hotel setup track access context was not resolved before body parsing");
+      }
 
-    const update = parseUpdateTracksRequest(request.body);
-    if (!update) {
-      return invalidSetupRequest(
-        reply,
-        "Request must include valid selectedTracks and expectedRevision.",
-      );
-    }
+      const update = parseUpdateTracksRequest(request.body);
+      if (!update) {
+        return invalidSetupRequest(
+          reply,
+          "Request must include valid selectedTracks and expectedRevision.",
+        );
+      }
 
-    const idempotencyKey = parseIdempotencyKey(request, reply);
-    if (!idempotencyKey) return reply;
+      const idempotencyKey = parseIdempotencyKey(request, reply);
+      if (!idempotencyKey) return reply;
 
-    const context = access.context;
-    const result = await trackCommandRepository.updateTracks({
-      organizationId: access.organizationId,
-      actorUserId: context.actor.internalUserId,
-      audit: context.audit,
-      idempotencyKey,
-      ...update,
-    });
-    if (!result.ok) return reply.status(409).send(result.error);
-    return result.response;
-  });
+      const result = await trackCommandRepository.updateTracks({
+        organizationId: context.selectedOrganization.organizationId,
+        actorUserId: context.actor.internalUserId,
+        audit: context.audit,
+        idempotencyKey,
+        ...update,
+      });
+      if (!result.ok) return reply.status(409).send(result.error);
+      return result.response;
+    },
+  );
 }
 
 function ensurePublicPropertyPublicationPermission(
@@ -514,6 +533,52 @@ function propertyPublicationSurface(profile: SharedPropertyProfileInput): {
       .filter(({ isPublic }) => isPublic)
       .map(({ channelType, purpose, value }) => `${channelType}\u0000${purpose}\u0000${value}`)
       .sort(),
+  };
+}
+
+function resolveSharedSetupTrackUpdateAccess(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): ReturnType<typeof enforceRoutePolicy> | null {
+  try {
+    const context = enforceRoutePolicy(request, {
+      permission: "hotel_catalog.products.manage",
+    });
+    if (context.selectedOrganization.kind !== "hotel_group") {
+      reply.status(403).send({
+        statusCode: 403,
+        code: "invalid_organization_scope",
+        category: "authorization",
+        message: "Hotel setup track changes require a hotel-group organization.",
+      } satisfies SharedHotelSetupTrackAccessError);
+      return null;
+    }
+
+    return context;
+  } catch (error) {
+    const accessError = toSharedSetupTrackAccessError(error);
+    if (!accessError) throw error;
+    reply.status(accessError.statusCode).send(accessError);
+    return null;
+  }
+}
+
+function toSharedSetupTrackAccessError(error: unknown): SharedHotelSetupTrackAccessError | null {
+  if (error instanceof UnauthorizedError) {
+    return {
+      statusCode: 401,
+      code: "unauthenticated",
+      category: "authentication",
+      message: "A valid access token is required.",
+    };
+  }
+  if (!(error instanceof AuthorizationError)) return null;
+
+  return {
+    statusCode: 403,
+    code: "missing_permission",
+    category: "authorization",
+    message: "Missing required hotel product management permission.",
   };
 }
 
