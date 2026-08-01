@@ -91,7 +91,9 @@ type IdempotencyRow = {
   id: string;
   status: string;
   requestFingerprintHash: string;
-  idempotencyMetadata: Record<string, unknown>;
+  responseStatusCode: number | null;
+  responseBodyHash: string | null;
+  idempotencyMetadata: unknown;
   expiresAt: Date | string;
 };
 
@@ -339,7 +341,8 @@ async function lockAuthorizedScope(
       AND role_grant.role_key = membership.role_key
       AND role_grant.permission_key = $4
      WHERE property.id = $2::uuid
-     FOR UPDATE OF property, property_link, actor, membership`,
+     FOR UPDATE OF property, property_link, actor, membership
+     FOR KEY SHARE OF role_grant`,
     [command.organizationId, command.propertyId, command.actorUserId, permission],
   );
   return (result.rowCount ?? 0) > 0;
@@ -613,6 +616,8 @@ async function findReplay(
        id::text AS id,
        status,
        request_fingerprint_hash AS "requestFingerprintHash",
+       response_status_code AS "responseStatusCode",
+       response_body_hash AS "responseBodyHash",
        idempotency_metadata AS "idempotencyMetadata",
        expires_at AS "expiresAt"
      FROM platform.idempotency_keys
@@ -632,8 +637,16 @@ async function findReplay(
     return failure({ code: "idempotency_key_conflict" });
   }
   if (existing.status !== "completed") return failure({ code: "command_in_progress" });
-  const stored = existing.idempotencyMetadata["result"];
+  const stored = isRecord(existing.idempotencyMetadata)
+    ? existing.idempotencyMetadata["result"]
+    : undefined;
   if (!isSaveResult(stored)) return failure({ code: "idempotency_key_conflict" });
+  if (
+    existing.responseStatusCode !== (stored.ok ? 200 : 409) ||
+    existing.responseBodyHash !== sha256(stableJson(stored))
+  ) {
+    return failure({ code: "idempotency_key_conflict" });
+  }
   return stored.ok ? { ok: true, receipt: { ...stored.receipt, replayed: true } } : stored;
 }
 

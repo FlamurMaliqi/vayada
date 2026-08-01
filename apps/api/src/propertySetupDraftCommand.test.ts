@@ -32,6 +32,7 @@ const unavailableBaseRevisionKeys = new Map<string, Set<PropertySetupBaseRevisio
 describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () => {
   const organizationIds: string[] = [];
   const propertyIds: string[] = [];
+  const roleKeys: string[] = [];
   const userIds: string[] = [];
   let client: pg.Client;
   let repository: PropertySetupDraftCommandRepository;
@@ -76,6 +77,12 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
         "DELETE FROM identity.organization_memberships WHERE organization_id = ANY($1::uuid[])",
         [organizationIds],
       );
+      if (roleKeys.length > 0) {
+        await client.query(
+          "DELETE FROM identity.role_permission_grants WHERE role_key = ANY($1::text[])",
+          [roleKeys],
+        );
+      }
       await client.query("DELETE FROM hotel_catalog.properties WHERE id = ANY($1::uuid[])", [
         propertyIds,
       ]);
@@ -90,6 +97,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     } finally {
       organizationIds.length = 0;
       propertyIds.length = 0;
+      roleKeys.length = 0;
       userIds.length = 0;
       unavailableBaseRevisionKeys.clear();
     }
@@ -302,6 +310,45 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
       expect.stringContaining(".attempt.2.v1"),
       expect.stringContaining(".attempt.3.v1"),
     ]);
+  });
+
+  it("rejects replay metadata whose stored response integrity no longer verifies", async () => {
+    const fixture = await createFixture(["hotel_operations"]);
+    const save = command(fixture, {
+      idempotencyKey: "tampered-replay",
+      payload: { "profile.short_description": "Integrity-protected draft." },
+      dirtyFields: ["profile.short_description"],
+    });
+    expect((await repository.saveStepDraft(save)).ok).toBe(true);
+
+    const original = await client.query<{ responseBodyHash: string }>(
+      `SELECT response_body_hash AS "responseBodyHash"
+       FROM platform.idempotency_keys
+       WHERE property_id = $1::uuid`,
+      [fixture.propertyId],
+    );
+    await client.query(
+      `UPDATE platform.idempotency_keys
+       SET response_body_hash = repeat('0', 64)
+       WHERE property_id = $1::uuid`,
+      [fixture.propertyId],
+    );
+    await expect(repository.saveStepDraft(save)).resolves.toEqual({
+      ok: false,
+      error: { code: "idempotency_key_conflict" },
+    });
+
+    await client.query(
+      `UPDATE platform.idempotency_keys
+       SET response_body_hash = $2,
+           idempotency_metadata = 'null'::jsonb
+       WHERE property_id = $1::uuid`,
+      [fixture.propertyId, original.rows[0]!.responseBodyHash],
+    );
+    await expect(repository.saveStepDraft(save)).resolves.toEqual({
+      ok: false,
+      error: { code: "idempotency_key_conflict" },
+    });
   });
 
   it("isolates the same idempotency key across authorized organizations", async () => {
@@ -720,6 +767,73 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
         ),
     );
 
+    const roleKey = `draft_command_${randomUUID().replaceAll("-", "")}`;
+    roleKeys.push(roleKey);
+    await client.query(
+      `INSERT INTO identity.role_permission_grants (
+         organization_kind, role_key, permission_key
+       )
+       VALUES ('hotel_group', $1, 'hotel_catalog.setup.manage')`,
+      [roleKey],
+    );
+    await client.query(
+      `UPDATE identity.organization_memberships
+       SET role_key = $3
+       WHERE organization_id = $1::uuid AND user_id = $2::uuid`,
+      [fixture.organizationId, fixture.actorUserId, roleKey],
+    );
+    await expectDeniedAfter(
+      () =>
+        client.query(
+          `DELETE FROM identity.role_permission_grants
+           WHERE organization_kind = 'hotel_group'
+             AND role_key = $1
+             AND permission_key = 'hotel_catalog.setup.manage'`,
+          [roleKey],
+        ),
+      () =>
+        client.query(
+          `INSERT INTO identity.role_permission_grants (
+             organization_kind, role_key, permission_key
+           )
+           VALUES ('hotel_group', $1, 'hotel_catalog.setup.manage')
+           ON CONFLICT (organization_kind, role_key, permission_key) DO NOTHING`,
+          [roleKey],
+        ),
+    );
+
+    const lockTimeoutUrl = new URL(TEST_DATABASE_URL!);
+    lockTimeoutUrl.searchParams.set("options", "-c lock_timeout=200ms");
+    const revoker = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    const lockingPool = createInterceptingPool(() => undefined, lockTimeoutUrl.toString());
+    const lockingRepository = createPgPropertySetupDraftCommandRepository({
+      connectionString: TEST_DATABASE_URL!,
+      pool: lockingPool,
+      lockCurrentBaseRevisions: lockTestBaseRevisions,
+      now: () => new Date(occurredAt),
+    });
+    await revoker.connect();
+    try {
+      await revoker.query("BEGIN");
+      await revoker.query(
+        `DELETE FROM identity.role_permission_grants
+         WHERE organization_kind = 'hotel_group'
+           AND role_key = $1
+           AND permission_key = 'hotel_catalog.setup.manage'`,
+        [roleKey],
+      );
+      await expect(
+        lockingRepository.saveStepDraft(
+          command(fixture, { idempotencyKey: "authorization-concurrent-revocation" }),
+        ),
+      ).rejects.toMatchObject({ code: "55P03" });
+    } finally {
+      await revoker.query("ROLLBACK");
+      await revoker.end();
+      await lockingRepository.close();
+      await lockingPool.end();
+    }
+
     const persisted = await client.query<{ sessions: number; idempotencyKeys: number }>(
       `SELECT
          (SELECT count(*)::integer
@@ -944,8 +1058,11 @@ function command(fixture: Fixture, overrides: CommandOverrides): PropertySetupDr
   };
 }
 
-function createInterceptingPool(onQuery: (text: string) => void): PropertySetupDraftCommandPool {
-  const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
+function createInterceptingPool(
+  onQuery: (text: string) => void,
+  connectionString: string = TEST_DATABASE_URL!,
+): PropertySetupDraftCommandPool {
+  const pool = new pg.Pool({ connectionString });
   return {
     async connect() {
       const connection = await pool.connect();
