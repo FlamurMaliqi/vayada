@@ -1,3 +1,4 @@
+import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 import type { QueryResultRow } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
@@ -77,7 +78,12 @@ function validMedia(
 
 function harness(
   media: StoredMedia[],
-  options: { targetAuthorized?: boolean; afterTargetQuery?: () => void } = {},
+  options: {
+    targetAuthorized?: boolean;
+    afterTargetQuery?: () => void;
+    targetResult?: unknown;
+    transformMediaRows?: (rows: unknown[]) => unknown[];
+  } = {},
 ): {
   resolver: ReturnType<typeof createPgHotelMediaResolutionPort>;
   queries: { text: string; values: readonly unknown[] }[];
@@ -94,6 +100,7 @@ function harness(
       queries.push({ text, values });
       if (text.includes("hotel_media_target_resolution")) {
         options.afterTargetQuery?.();
+        if (options.targetResult) return options.targetResult as never;
         return {
           rows: [{ authorized: options.targetAuthorized ?? true }] as unknown as T[],
         };
@@ -101,28 +108,29 @@ function harness(
       const requestedIds = values[3] as string[];
       const ownerScope = values[0];
       const propertyScope = values[1];
+      const rows = requestedIds.map((requestedMediaObjectId, index) => {
+        const stored = byId.get(requestedMediaObjectId);
+        const scoped =
+          stored?.ownerOrganizationId === ownerScope && stored?.propertyId === propertyScope;
+        return {
+          requestOrdinal: index + 1,
+          resolution: !stored || !scoped ? "not_found" : "scoped",
+          mediaObjectId: scoped ? stored!.mediaObjectId : null,
+          bucket: scoped ? stored!.bucket : null,
+          storageKey: scoped ? stored!.storageKey : null,
+          storageKind: scoped ? stored!.storageKind : null,
+          visibility: scoped ? stored!.visibility : null,
+          purpose: scoped ? stored!.purpose : null,
+          ownerOrganizationId: scoped ? stored!.ownerOrganizationId : null,
+          propertyId: scoped ? stored!.propertyId : null,
+          lifecycleStatus: scoped ? stored!.lifecycleStatus : null,
+          contentType: scoped ? stored!.contentType : null,
+          publicApproved: scoped ? stored!.publicApproved : null,
+          variants: scoped ? stored!.variants : [],
+        } as unknown as T;
+      });
       return {
-        rows: requestedIds.map((requestedMediaObjectId, index) => {
-          const stored = byId.get(requestedMediaObjectId);
-          const scoped =
-            stored?.ownerOrganizationId === ownerScope && stored?.propertyId === propertyScope;
-          return {
-            requestOrdinal: index + 1,
-            resolution: !stored || !scoped ? "not_found" : "scoped",
-            mediaObjectId: scoped ? stored!.mediaObjectId : null,
-            bucket: scoped ? stored!.bucket : null,
-            storageKey: scoped ? stored!.storageKey : null,
-            storageKind: scoped ? stored!.storageKind : null,
-            visibility: scoped ? stored!.visibility : null,
-            purpose: scoped ? stored!.purpose : null,
-            ownerOrganizationId: scoped ? stored!.ownerOrganizationId : null,
-            propertyId: scoped ? stored!.propertyId : null,
-            lifecycleStatus: scoped ? stored!.lifecycleStatus : null,
-            contentType: scoped ? stored!.contentType : null,
-            publicApproved: scoped ? stored!.publicApproved : null,
-            variants: scoped ? stored!.variants : [],
-          } as unknown as T;
-        }),
+        rows: (options.transformMediaRows?.(rows) ?? rows) as T[],
       };
     },
     end,
@@ -143,39 +151,37 @@ function harness(
 }
 
 describe("persistent hotel media resolver", () => {
-  it("preserves requested order and duplicates as deeply immutable property snapshots", async () => {
+  it("feeds ordered detached snapshots into the opaque trusted-batch port", async () => {
     const first = validMedia(firstMediaId, { purpose: "property.logo" });
-    const second = validMedia(secondMediaId, { purpose: "pms.room_type.media" });
+    const second = validMedia(secondMediaId, { purpose: "property.gallery_image" });
     const { resolver, queries, end } = harness([first, second]);
 
-    const result = await resolver.resolvePublicMedia({
+    const result = await createHotelMediaResolutionPort(resolver).resolvePublicMedia({
       ownerOrganizationId: organizationId,
       target: { kind: "property", propertyId },
-      mediaObjectIds: [secondMediaId, firstMediaId, secondMediaId],
+      mediaObjectIds: [secondMediaId, firstMediaId],
     });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.media.map(({ mediaObjectId }) => mediaObjectId)).toEqual([
+    expect(result.batch.media.map(({ mediaObjectId }) => mediaObjectId)).toEqual([
       secondMediaId,
       firstMediaId,
-      secondMediaId,
     ]);
-    expect(result.media.map(({ purpose }) => purpose)).toEqual([
-      "pms.room_type.media",
+    expect(result.batch.media.map(({ purpose }) => purpose)).toEqual([
+      "property.gallery_image",
       "property.logo",
-      "pms.room_type.media",
     ]);
-    expect(Object.isFrozen(result.resolvedTarget)).toBe(true);
-    expect(Object.isFrozen(result.resolvedTarget.target)).toBe(true);
-    expect(Object.isFrozen(result.media)).toBe(true);
-    expect(Object.isFrozen(result.media[0])).toBe(true);
-    expect(Object.isFrozen(result.media[0]!.publicVariants)).toBe(true);
-    expect(Object.isFrozen(result.media[0]!.publicVariants[0])).toBe(true);
+    expect(Object.isFrozen(result.batch)).toBe(true);
+    expect(Object.isFrozen(result.batch.target)).toBe(true);
+    expect(Object.isFrozen(result.batch.media)).toBe(true);
+    expect(Object.isFrozen(result.batch.media[0])).toBe(true);
+    expect(Object.isFrozen(result.batch.media[0]!.publicVariants)).toBe(true);
+    expect(Object.isFrozen(result.batch.media[0]!.publicVariants[0])).toBe(true);
 
     second.variants[0]!.publicUrl = "https://attacker.example/changed.webp";
-    expect(result.media[0]!.publicVariants[0].publicUrl).toContain("cdn.example.test");
-    expect(queries[1]!.values[3]).toEqual([secondMediaId, firstMediaId, secondMediaId]);
+    expect(result.batch.media[0]!.publicVariants[0].publicUrl).toContain("cdn.example.test");
+    expect(queries[1]!.values[3]).toEqual([secondMediaId, firstMediaId]);
     expect(queries[1]!.text).toContain("media.owner_organization_id = $1::uuid");
     expect(queries[1]!.text).toContain("property.id = $2::uuid");
     expect(queries[1]!.text).toContain(
@@ -189,7 +195,7 @@ describe("persistent hotel media resolver", () => {
 
   it("proves a room belongs to the property while allowing shared property media", async () => {
     const { resolver, queries } = harness([validMedia()]);
-    const result = await resolver.resolvePublicMedia({
+    const result = await resolver.loadPublicMedia({
       ownerOrganizationId: organizationId,
       target: { kind: "room_type", propertyId, roomTypeId },
       mediaObjectIds: [firstMediaId],
@@ -197,10 +203,7 @@ describe("persistent hotel media resolver", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.resolvedTarget).toMatchObject({
-      ownerOrganizationId: organizationId,
-      target: { kind: "room_type", propertyId, roomTypeId },
-    });
+    expect(result.resolvedTarget).toEqual({ kind: "room_type", propertyId, roomTypeId });
     expect(queries[0]!.values).toEqual([organizationId, propertyId, roomTypeId]);
     expect(queries[0]!.text).toContain("room_type.id = $3::uuid");
     expect(queries[0]!.text).toContain("room_type.property_id = property.id");
@@ -224,7 +227,7 @@ describe("persistent hotel media resolver", () => {
       },
     });
 
-    const result = await resolver.resolvePublicMedia({
+    const result = await resolver.loadPublicMedia({
       ownerOrganizationId: organizationId,
       target: target as never,
       mediaObjectIds: [firstMediaId],
@@ -232,9 +235,28 @@ describe("persistent hotel media resolver", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.resolvedTarget.target).toEqual({ kind: "property", propertyId });
+    expect(result.resolvedTarget).toEqual({ kind: "property", propertyId });
     expect(queries[0]!.values).toEqual([organizationId, propertyId, null]);
     expect(queries[1]!.values.slice(0, 3)).toEqual([organizationId, propertyId, null]);
+  });
+
+  it("uses one immutable media-id snapshot across asynchronous resolution", async () => {
+    const mediaObjectIds = [firstMediaId];
+    const { resolver, queries } = harness([validMedia()], {
+      afterTargetQuery() {
+        mediaObjectIds[0] = secondMediaId;
+        mediaObjectIds.push(secondMediaId);
+      },
+    });
+
+    const result = await resolver.loadPublicMedia({
+      ownerOrganizationId: organizationId,
+      target: { kind: "property", propertyId },
+      mediaObjectIds,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(queries[1]!.values[3]).toEqual([firstMediaId]);
   });
 
   it("fails target and media cross-scope checks without exposing media rows", async () => {
@@ -254,7 +276,7 @@ describe("persistent hotel media resolver", () => {
     ]) {
       const { resolver, queries } = harness([validMedia()], { targetAuthorized: false });
       await expect(
-        resolver.resolvePublicMedia({ ...input, mediaObjectIds: [firstMediaId] }),
+        resolver.loadPublicMedia({ ...input, mediaObjectIds: [firstMediaId] }),
       ).resolves.toEqual({
         ok: false,
         error: { code: "media_not_authorized", mediaObjectIds: [firstMediaId] },
@@ -268,10 +290,10 @@ describe("persistent hotel media resolver", () => {
     ]) {
       const { resolver } = harness([media]);
       await expect(
-        resolver.resolvePublicMedia({
+        resolver.loadPublicMedia({
           ownerOrganizationId: organizationId,
           target: { kind: "property", propertyId },
-          mediaObjectIds: [firstMediaId, firstMediaId],
+          mediaObjectIds: [firstMediaId],
         }),
       ).resolves.toEqual({
         ok: false,
@@ -283,7 +305,7 @@ describe("persistent hotel media resolver", () => {
   it("classifies missing objects and unsupported hotel purposes safely", async () => {
     const missing = harness([]);
     await expect(
-      missing.resolver.resolvePublicMedia({
+      missing.resolver.loadPublicMedia({
         ownerOrganizationId: organizationId,
         target: { kind: "property", propertyId },
         mediaObjectIds: [firstMediaId],
@@ -295,7 +317,7 @@ describe("persistent hotel media resolver", () => {
 
     const unsupported = harness([validMedia(firstMediaId, { purpose: "marketplace.offer.media" })]);
     await expect(
-      unsupported.resolver.resolvePublicMedia({
+      unsupported.resolver.loadPublicMedia({
         ownerOrganizationId: organizationId,
         target: { kind: "property", propertyId },
         mediaObjectIds: [firstMediaId],
@@ -323,7 +345,7 @@ describe("persistent hotel media resolver", () => {
     ]) {
       const { resolver, queries } = harness([validMedia()]);
       await expect(
-        resolver.resolvePublicMedia({ ...input, mediaObjectIds: [firstMediaId] }),
+        resolver.loadPublicMedia({ ...input, mediaObjectIds: [firstMediaId] }),
       ).resolves.toEqual({
         ok: false,
         error: { code: "media_not_authorized", mediaObjectIds: [firstMediaId] },
@@ -333,7 +355,7 @@ describe("persistent hotel media resolver", () => {
 
     const { resolver, queries } = harness([validMedia()]);
     await expect(
-      resolver.resolvePublicMedia({
+      resolver.loadPublicMedia({
         ownerOrganizationId: organizationId,
         target: { kind: "property", propertyId },
         mediaObjectIds: ["not-media", "not-media"],
@@ -346,7 +368,7 @@ describe("persistent hotel media resolver", () => {
 
     const unknownTarget = harness([validMedia()]);
     await expect(
-      unknownTarget.resolver.resolvePublicMedia({
+      unknownTarget.resolver.loadPublicMedia({
         ownerOrganizationId: organizationId,
         target: {
           kind: "not_room_type",
@@ -360,6 +382,201 @@ describe("persistent hotel media resolver", () => {
       error: { code: "media_not_authorized", mediaObjectIds: [firstMediaId] },
     });
     expect(unknownTarget.queries).toHaveLength(0);
+  });
+
+  it("accepts every PostgreSQL UUID version while retaining RFC variant bits", async () => {
+    for (const mediaObjectId of [
+      "00000000-0000-0000-8000-000000000001",
+      "00000000-0000-7000-9000-000000000002",
+      "00000000-0000-8000-a000-000000000003",
+    ]) {
+      const { resolver } = harness([validMedia(mediaObjectId)]);
+      const result = await resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: [mediaObjectId],
+      });
+      expect(result.ok).toBe(true);
+    }
+
+    const { resolver, queries } = harness([]);
+    await expect(
+      resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: ["00000000-0000-7000-7000-000000000004"],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "media_not_found" } });
+    expect(queries).toHaveLength(1);
+  });
+
+  it("rejects hostile caller shapes without invoking accessors", async () => {
+    const { resolver, queries } = harness([validMedia()]);
+    let getterCalls = 0;
+    const accessor = {
+      ownerOrganizationId: organizationId,
+      target: { kind: "property", propertyId },
+    } as Record<string, unknown>;
+    Object.defineProperty(accessor, "mediaObjectIds", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return [firstMediaId];
+      },
+    });
+    await expect(resolver.loadPublicMedia(accessor as never)).resolves.toMatchObject({ ok: false });
+
+    const sparse = new Array(1);
+    await expect(
+      resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: sparse,
+      } as never),
+    ).resolves.toMatchObject({ ok: false });
+
+    class MediaIds extends Array<string> {}
+    await expect(
+      resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: new MediaIds(firstMediaId),
+      } as never),
+    ).resolves.toMatchObject({ ok: false });
+
+    expect(getterCalls).toBe(0);
+    expect(queries).toHaveLength(0);
+  });
+
+  it("requires exact database result cardinality and plain data rows", async () => {
+    const extraTarget = harness([validMedia()], {
+      targetResult: { rows: [{ authorized: true }, { authorized: true }] },
+    });
+    await expect(
+      extraTarget.resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: [firstMediaId],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "media_not_authorized" } });
+
+    const extra = harness([validMedia()], {
+      transformMediaRows: (rows) => [...rows, rows[0]],
+    });
+    await expect(
+      extra.resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: [firstMediaId],
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "media_not_found", mediaObjectIds: [firstMediaId] },
+    });
+
+    let rowGetterCalls = 0;
+    const hostileRow = harness([validMedia()], {
+      transformMediaRows(rows) {
+        const row = { ...(rows[0] as Record<string, unknown>) };
+        Object.defineProperty(row, "mediaObjectId", {
+          enumerable: true,
+          get() {
+            rowGetterCalls += 1;
+            return firstMediaId;
+          },
+        });
+        return [row];
+      },
+    });
+    await expect(
+      hostileRow.resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: [firstMediaId],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "media_not_found" } });
+    expect(rowGetterCalls).toBe(0);
+
+    let rowsGetterCalls = 0;
+    const hostileResult = {};
+    Object.defineProperty(hostileResult, "rows", {
+      enumerable: true,
+      get() {
+        rowsGetterCalls += 1;
+        return [{ authorized: true }];
+      },
+    });
+    const target = harness([validMedia()], { targetResult: hostileResult });
+    await expect(
+      target.resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: [firstMediaId],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "media_not_authorized" } });
+    expect(rowsGetterCalls).toBe(0);
+  });
+
+  it("rejects accessor-backed variant snapshots without invoking them", async () => {
+    let getterCalls = 0;
+    const variant = {
+      visibility: "public",
+      storageKey: `public/media/${firstMediaId}/original_safe/v1.webp`,
+      contentType: "image/webp",
+      publicUrl: `https://cdn.example.test/media/${firstMediaId}/original_safe/v1.webp`,
+    } as Record<string, unknown>;
+    Object.defineProperty(variant, "variantName", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "original_safe";
+      },
+    });
+    const { resolver } = harness([
+      validMedia(firstMediaId, { variants: [variant as unknown as StoredVariant] }),
+    ]);
+    await expect(
+      resolver.loadPublicMedia({
+        ownerOrganizationId: organizationId,
+        target: { kind: "property", propertyId },
+        mediaObjectIds: [firstMediaId],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "media_not_ready" } });
+    expect(getterCalls).toBe(0);
+  });
+
+  it("requires canonical serving configuration values", () => {
+    const pool = { query: vi.fn(), end: vi.fn(async () => undefined) } as unknown as ResolverPool;
+    for (const serving of [
+      {
+        bucketName: " vayada-media-test",
+        cdnBaseUrl: "https://cdn.example.test",
+        publicPathPrefix: "media",
+      },
+      {
+        bucketName: "vayada-media-test",
+        cdnBaseUrl: "https://cdn.example.test/",
+        publicPathPrefix: "media",
+      },
+      {
+        bucketName: "vayada-media-test",
+        cdnBaseUrl: "https://cdn.example.test:443",
+        publicPathPrefix: "media",
+      },
+      {
+        bucketName: "vayada-media-test",
+        cdnBaseUrl: "https://cdn.example.test",
+        publicPathPrefix: "/media/",
+      },
+    ]) {
+      expect(() =>
+        createPgHotelMediaResolutionPort({
+          connectionString: "postgresql://unused",
+          serving,
+          pool,
+        }),
+      ).toThrow(/canonical|safe non-empty path/);
+    }
   });
 
   it.each([
@@ -382,7 +599,7 @@ describe("persistent hotel media resolver", () => {
     async (_label, overrides) => {
       const { resolver } = harness([validMedia(firstMediaId, overrides)]);
       await expect(
-        resolver.resolvePublicMedia({
+        resolver.loadPublicMedia({
           ownerOrganizationId: organizationId,
           target: { kind: "property", propertyId },
           mediaObjectIds: [firstMediaId],
@@ -410,6 +627,24 @@ describe("persistent hotel media resolver", () => {
         {
           ...validMedia().variants[0]!,
           publicUrl: `https://cdn.example.test/private/${firstMediaId}/original_safe/v1.webp`,
+        },
+      ],
+    ],
+    [
+      "URL normalized from an explicit default port",
+      [
+        {
+          ...validMedia().variants[0]!,
+          publicUrl: `https://cdn.example.test:443/media/${firstMediaId}/original_safe/v1.webp`,
+        },
+      ],
+    ],
+    [
+      "percent-encoded canonical filename",
+      [
+        {
+          ...validMedia().variants[0]!,
+          publicUrl: `https://cdn.example.test/media/${firstMediaId}/original_safe/%761.webp`,
         },
       ],
     ],
@@ -505,7 +740,7 @@ describe("persistent hotel media resolver", () => {
     async (_label, variants) => {
       const { resolver } = harness([validMedia(firstMediaId, { variants })]);
       await expect(
-        resolver.resolvePublicMedia({
+        resolver.loadPublicMedia({
           ownerOrganizationId: organizationId,
           target: { kind: "property", propertyId },
           mediaObjectIds: [firstMediaId],

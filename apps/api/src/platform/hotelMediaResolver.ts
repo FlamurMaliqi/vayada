@@ -1,13 +1,12 @@
 import {
   PROPERTY_MEDIA_PUBLIC_VARIANTS,
   PROPERTY_MEDIA_UPLOAD_PURPOSES,
-  type HotelMediaResolutionPort,
+  type HotelMediaResolutionAdapter,
   type HotelMediaResolutionTarget,
+  type PublicHotelMediaResolutionSnapshot,
   type PropertyMediaPublicVariant,
   type PropertyMediaPublicVariantName,
   type PropertyMediaUploadPurpose,
-  type ResolvedHotelMediaTarget,
-  type ResolvedPublicHotelMedia,
 } from "@vayada/domain-hotels";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
@@ -21,8 +20,8 @@ type HotelMediaResolverPool = {
   end(): Promise<void>;
 };
 
-type TargetRow = QueryResultRow & { authorized: boolean };
-type MediaRow = QueryResultRow & {
+type TargetRow = { authorized: boolean };
+type MediaRow = {
   requestOrdinal: number | string;
   resolution: "scoped" | "not_found" | "not_authorized";
   mediaObjectId: string | null;
@@ -49,10 +48,13 @@ type VariantRow = {
 
 type MediaResolutionErrorCode = "media_not_found" | "media_not_authorized" | "media_not_ready";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_PUBLIC_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+$/;
 const SAFE_HOTEL_IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const RESOLVER_CONNECTION_TIMEOUT_MS = 5_000;
+const RESOLVER_STATEMENT_TIMEOUT_MS = 10_000;
+const RESOLVER_QUERY_TIMEOUT_MS = 12_000;
 
 export type PgHotelMediaResolverConfig = {
   connectionString: string;
@@ -61,7 +63,7 @@ export type PgHotelMediaResolverConfig = {
   pool?: HotelMediaResolverPool;
 };
 
-export type PersistentHotelMediaResolutionPort = HotelMediaResolutionPort & {
+export type PersistentHotelMediaResolutionAdapter = HotelMediaResolutionAdapter & {
   close?(): Promise<void>;
 };
 
@@ -149,60 +151,70 @@ const RESOLVE_MEDIA_SQL = `
 
 export function createPgHotelMediaResolutionPort(
   config: PgHotelMediaResolverConfig,
-): PersistentHotelMediaResolutionPort {
+): PersistentHotelMediaResolutionAdapter {
   if (!config.connectionString.trim()) {
     throw new Error("Hotel media resolver connectionString must not be empty");
   }
   const scope = configuredPublicScope(config.serving);
   const ownsPool = !config.pool;
-  const pool =
-    config.pool ??
-    new pg.Pool({
-      connectionString: config.connectionString,
-      max: config.max,
-    });
+  const pool = config.pool ?? createHotelMediaResolverPool(config);
 
   return {
-    async resolvePublicMedia(input) {
-      const requestedIds = [...input.mediaObjectIds];
-      const ownerOrganizationId = input.ownerOrganizationId;
-      const targetSnapshot = snapshotTarget(input.target);
-      if (!targetSnapshot || !isValidTarget(ownerOrganizationId, targetSnapshot)) {
+    async loadPublicMedia(input) {
+      const requestedIds = snapshotRequestedIds(input);
+      const request = snapshotResolverRequest(input);
+      if (!request || !isValidTarget(request.ownerOrganizationId, request.target)) {
         return failure("media_not_authorized", requestedIds);
       }
-      const target = await pool.query<TargetRow>(RESOLVE_TARGET_SQL, [
+      const ownerOrganizationId = normalizeUuid(request.ownerOrganizationId)!;
+      const targetSnapshot = normalizeTarget(request.target)!;
+      const targetResult = await pool.query<TargetRow>(RESOLVE_TARGET_SQL, [
         ownerOrganizationId,
         targetSnapshot.propertyId,
         targetSnapshot.kind === "room_type" ? targetSnapshot.roomTypeId : null,
       ]);
-      if (target.rows[0]?.authorized !== true) {
+      const targetRows = snapshotQueryRows(targetResult);
+      if (
+        !targetRows ||
+        targetRows.length !== 1 ||
+        !isExactDataRecord(targetRows[0], ["authorized"]) ||
+        targetRows[0]["authorized"] !== true
+      ) {
         return failure("media_not_authorized", requestedIds);
       }
 
-      const resolvedTarget = freezeResolvedTarget(ownerOrganizationId, targetSnapshot);
+      const resolvedTarget = freezeResolvedTarget(targetSnapshot);
       if (requestedIds.length === 0) {
         return { ok: true, resolvedTarget, media: Object.freeze([]) };
       }
-      const malformedIds = requestedIds.filter(
-        (mediaObjectId) => !UUID_PATTERN.test(mediaObjectId),
-      );
+      const malformedIds = requestedIds.filter((mediaObjectId) => !normalizeUuid(mediaObjectId));
       if (malformedIds.length > 0) {
         return failure("media_not_found", malformedIds);
+      }
+      const canonicalRequestedIds = requestedIds.map(
+        (mediaObjectId) => normalizeUuid(mediaObjectId)!,
+      );
+      if (new Set(canonicalRequestedIds).size !== canonicalRequestedIds.length) {
+        return failure("media_not_authorized", canonicalRequestedIds);
       }
 
       const result = await pool.query<MediaRow>(RESOLVE_MEDIA_SQL, [
         ownerOrganizationId,
         targetSnapshot.propertyId,
         targetSnapshot.kind === "room_type" ? targetSnapshot.roomTypeId : null,
-        requestedIds,
+        canonicalRequestedIds,
       ]);
+      const resultRows = snapshotQueryRows(result);
+      if (!resultRows || resultRows.length !== canonicalRequestedIds.length) {
+        return failure("media_not_found", canonicalRequestedIds);
+      }
       const notFound: string[] = [];
       const notAuthorized: string[] = [];
       const notReady: string[] = [];
-      const resolved: ResolvedPublicHotelMedia[] = [];
+      const resolved: PublicHotelMediaResolutionSnapshot[] = [];
 
-      requestedIds.forEach((requestedId, index) => {
-        const row = result.rows[index];
+      canonicalRequestedIds.forEach((requestedId, index) => {
+        const row = snapshotMediaRow(resultRows[index]);
         if (
           !row ||
           Number(row.requestOrdinal) !== index + 1 ||
@@ -246,10 +258,27 @@ export function createPgHotelMediaResolutionPort(
   };
 }
 
+function createHotelMediaResolverPool(config: PgHotelMediaResolverConfig): HotelMediaResolverPool {
+  const pool = new pg.Pool({
+    connectionString: config.connectionString,
+    max: config.max,
+    connectionTimeoutMillis: RESOLVER_CONNECTION_TIMEOUT_MS,
+    statement_timeout: RESOLVER_STATEMENT_TIMEOUT_MS,
+    query_timeout: RESOLVER_QUERY_TIMEOUT_MS,
+  });
+  pool.on("error", (error) => {
+    process.emitWarning("Hotel media resolver PostgreSQL pool emitted an idle-client error", {
+      code: "HOTEL_MEDIA_RESOLVER_POOL_ERROR",
+      detail: error.message,
+    });
+  });
+  return pool;
+}
+
 function toResolvedPublicMedia(
   row: MediaRow,
   scope: ConfiguredPublicScope,
-): ResolvedPublicHotelMedia | null {
+): PublicHotelMediaResolutionSnapshot | null {
   const variants = parseReadyVariants(row.variants, row.mediaObjectId, scope);
   if (
     row.resolution !== "scoped" ||
@@ -280,15 +309,15 @@ function toResolvedPublicMedia(
     propertyId: row.propertyId,
     purpose: row.purpose,
     publicVariants: variants,
-  }) as ResolvedPublicHotelMedia;
+  }) as PublicHotelMediaResolutionSnapshot;
 }
 
 function parseReadyVariants(
   value: unknown,
   mediaObjectId: string | null,
   scope: ConfiguredPublicScope,
-): ResolvedPublicHotelMedia["publicVariants"] | null {
-  if (!mediaObjectId || !Array.isArray(value) || value.length === 0) return null;
+): PublicHotelMediaResolutionSnapshot["publicVariants"] | null {
+  if (!mediaObjectId || !isDensePlainArray(value) || value.length === 0) return null;
   const names = new Set<string>();
   const variants: Readonly<PropertyMediaPublicVariant>[] = [];
   for (const candidate of value) {
@@ -318,46 +347,153 @@ function parseReadyVariants(
     );
   }
   if (!names.has("original_safe")) return null;
-  return Object.freeze(variants) as ResolvedPublicHotelMedia["publicVariants"];
+  return Object.freeze(variants) as PublicHotelMediaResolutionSnapshot["publicVariants"];
 }
 
-function freezeResolvedTarget(
-  ownerOrganizationId: string,
-  target: HotelMediaResolutionTarget,
-): ResolvedHotelMediaTarget {
-  const targetSnapshot =
-    target.kind === "property"
-      ? Object.freeze({ kind: "property" as const, propertyId: target.propertyId })
-      : Object.freeze({
-          kind: "room_type" as const,
-          propertyId: target.propertyId,
-          roomTypeId: target.roomTypeId,
-        });
-  return Object.freeze({
-    ownerOrganizationId,
-    target: targetSnapshot,
-  }) as ResolvedHotelMediaTarget;
+function freezeResolvedTarget(target: HotelMediaResolutionTarget): HotelMediaResolutionTarget {
+  return target.kind === "property"
+    ? Object.freeze({ kind: "property" as const, propertyId: target.propertyId })
+    : Object.freeze({
+        kind: "room_type" as const,
+        propertyId: target.propertyId,
+        roomTypeId: target.roomTypeId,
+      });
 }
 
 function failure(code: MediaResolutionErrorCode, mediaObjectIds: readonly string[]) {
-  return {
+  return Object.freeze({
     ok: false as const,
-    error: {
+    error: Object.freeze({
       code,
-      mediaObjectIds: [...new Set(mediaObjectIds)],
-    },
-  };
+      mediaObjectIds: Object.freeze([...new Set(mediaObjectIds)]) as unknown as string[],
+    }),
+  });
 }
 
-function snapshotTarget(target: HotelMediaResolutionTarget): HotelMediaResolutionTarget | null {
-  const kind = target.kind;
-  const propertyId = target.propertyId;
-  if (kind === "property") return Object.freeze({ kind, propertyId });
-  if (kind === "room_type") {
-    const roomTypeId = target.roomTypeId;
-    return Object.freeze({ kind, propertyId, roomTypeId });
+function snapshotRequestedIds(value: unknown): string[] {
+  if (!isExactDataRecord(value, ["ownerOrganizationId", "target", "mediaObjectIds"])) return [];
+  const mediaObjectIds = value["mediaObjectIds"];
+  return isDensePlainArray(mediaObjectIds) &&
+    mediaObjectIds.every((item) => typeof item === "string")
+    ? [...(mediaObjectIds as string[])]
+    : [];
+}
+
+function snapshotResolverRequest(value: unknown): {
+  ownerOrganizationId: string;
+  target: HotelMediaResolutionTarget;
+  mediaObjectIds: readonly string[];
+} | null {
+  if (!isExactDataRecord(value, ["ownerOrganizationId", "target", "mediaObjectIds"])) return null;
+  const ownerOrganizationId = value["ownerOrganizationId"];
+  const target = snapshotInputTarget(value["target"]);
+  const mediaObjectIds = snapshotRequestedIds(value);
+  if (
+    typeof ownerOrganizationId !== "string" ||
+    !target ||
+    !isDensePlainArray(value["mediaObjectIds"]) ||
+    mediaObjectIds.length !== value["mediaObjectIds"].length
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    ownerOrganizationId,
+    target,
+    mediaObjectIds: Object.freeze(mediaObjectIds),
+  });
+}
+
+function snapshotInputTarget(value: unknown): HotelMediaResolutionTarget | null {
+  if (!isPlainDataRecord(value) || typeof value["kind"] !== "string") return null;
+  if (
+    value["kind"] === "property" &&
+    isExactDataRecord(value, ["kind", "propertyId"]) &&
+    typeof value["propertyId"] === "string"
+  ) {
+    return Object.freeze({ kind: "property", propertyId: value["propertyId"] });
+  }
+  if (
+    value["kind"] === "room_type" &&
+    isExactDataRecord(value, ["kind", "propertyId", "roomTypeId"]) &&
+    typeof value["propertyId"] === "string" &&
+    typeof value["roomTypeId"] === "string"
+  ) {
+    return Object.freeze({
+      kind: "room_type",
+      propertyId: value["propertyId"],
+      roomTypeId: value["roomTypeId"],
+    });
   }
   return null;
+}
+
+function normalizeTarget(target: HotelMediaResolutionTarget): HotelMediaResolutionTarget | null {
+  const propertyId = normalizeUuid(target.propertyId);
+  if (!propertyId) return null;
+  if (target.kind === "property") return Object.freeze({ kind: "property", propertyId });
+  const roomTypeId = normalizeUuid(target.roomTypeId);
+  return roomTypeId ? Object.freeze({ kind: "room_type", propertyId, roomTypeId }) : null;
+}
+
+function normalizeUuid(value: unknown): string | null {
+  return typeof value === "string" && UUID_PATTERN.test(value) ? value.toLowerCase() : null;
+}
+
+function snapshotQueryRows(value: unknown): unknown[] | null {
+  if (typeof value !== "object" || value === null) return null;
+  const descriptor = Object.getOwnPropertyDescriptor(value, "rows");
+  return descriptor && Object.hasOwn(descriptor, "value") && isDensePlainArray(descriptor.value)
+    ? [...descriptor.value]
+    : null;
+}
+
+function snapshotMediaRow(value: unknown): MediaRow | null {
+  const keys = [
+    "requestOrdinal",
+    "resolution",
+    "mediaObjectId",
+    "bucket",
+    "storageKey",
+    "storageKind",
+    "visibility",
+    "purpose",
+    "ownerOrganizationId",
+    "propertyId",
+    "lifecycleStatus",
+    "contentType",
+    "publicApproved",
+    "variants",
+  ] as const;
+  if (!isExactDataRecord(value, keys)) return null;
+  const requestOrdinal = value["requestOrdinal"];
+  const resolution = value["resolution"];
+  const nullableStrings = keys.slice(2, 12).map((key) => value[key]);
+  if (
+    !["scoped", "not_found", "not_authorized"].includes(resolution as string) ||
+    !["number", "string"].includes(typeof requestOrdinal) ||
+    !Number.isSafeInteger(Number(requestOrdinal)) ||
+    Number(requestOrdinal) < 1 ||
+    nullableStrings.some((item) => item !== null && typeof item !== "string") ||
+    (value["publicApproved"] !== null && typeof value["publicApproved"] !== "boolean")
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    requestOrdinal: requestOrdinal as number | string,
+    resolution: resolution as MediaRow["resolution"],
+    mediaObjectId: value["mediaObjectId"] as string | null,
+    bucket: value["bucket"] as string | null,
+    storageKey: value["storageKey"] as string | null,
+    storageKind: value["storageKind"] as string | null,
+    visibility: value["visibility"] as string | null,
+    purpose: value["purpose"] as string | null,
+    ownerOrganizationId: value["ownerOrganizationId"] as string | null,
+    propertyId: value["propertyId"] as string | null,
+    lifecycleStatus: value["lifecycleStatus"] as string | null,
+    contentType: value["contentType"] as string | null,
+    publicApproved: value["publicApproved"] as boolean | null,
+    variants: value["variants"],
+  });
 }
 
 function isValidTarget(ownerOrganizationId: string, target: HotelMediaResolutionTarget): boolean {
@@ -378,8 +514,18 @@ function isSupportedPurpose(value: unknown): value is PropertyMediaUploadPurpose
 }
 
 function isVariantRow(value: unknown): value is VariantRow {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const row = value as Record<string, unknown>;
+  if (
+    !isExactDataRecord(value, [
+      "variantName",
+      "visibility",
+      "storageKey",
+      "contentType",
+      "publicUrl",
+    ])
+  ) {
+    return false;
+  }
+  const row = value;
   return (
     typeof row["variantName"] === "string" &&
     typeof row["visibility"] === "string" &&
@@ -389,10 +535,40 @@ function isVariantRow(value: unknown): value is VariantRow {
   );
 }
 
-function isImageContentType(value: unknown): value is string {
+function isPlainDataRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Reflect.ownKeys(value).every((key) => {
+    if (typeof key !== "string") return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+  });
+}
+
+function isExactDataRecord(
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, unknown> {
   return (
-    typeof value === "string" && SAFE_HOTEL_IMAGE_CONTENT_TYPES.has(value.trim().toLowerCase())
+    isPlainDataRecord(value) &&
+    Reflect.ownKeys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
   );
+}
+
+function isDensePlainArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || !keys.includes("length")) return false;
+  return Array.from({ length: value.length }, (_, index) => String(index)).every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+  });
+}
+
+function isImageContentType(value: unknown): value is string {
+  return typeof value === "string" && SAFE_HOTEL_IMAGE_CONTENT_TYPES.has(value);
 }
 
 function isPublicStorageKey(
@@ -417,20 +593,25 @@ function configuredPublicScope(
 ): ConfiguredPublicScope {
   const bucketName = serving.bucketName.trim();
   const publicPathPrefix = serving.publicPathPrefix.trim().replace(/^\/+|\/+$/g, "");
-  const cdn = new URL(serving.cdnBaseUrl);
-  if (!bucketName) throw new Error("Hotel media resolver bucketName must not be empty");
+  const configuredCdnBaseUrl = serving.cdnBaseUrl.trim();
+  const cdn = new URL(configuredCdnBaseUrl);
+  if (!bucketName || bucketName !== serving.bucketName) {
+    throw new Error("Hotel media resolver bucketName must be a canonical non-empty value");
+  }
   if (
     cdn.protocol !== "https:" ||
     cdn.pathname !== "/" ||
     cdn.search ||
     cdn.hash ||
     cdn.username ||
-    cdn.password
+    cdn.password ||
+    configuredCdnBaseUrl !== cdn.origin
   ) {
-    throw new Error("Hotel media resolver cdnBaseUrl must be an HTTPS origin");
+    throw new Error("Hotel media resolver cdnBaseUrl must be a canonical HTTPS origin");
   }
   if (
     !publicPathPrefix ||
+    publicPathPrefix !== serving.publicPathPrefix ||
     publicPathPrefix.split("/").some((segment) => !SAFE_PATH_SEGMENT.test(segment))
   ) {
     throw new Error("Hotel media resolver publicPathPrefix must be a safe non-empty path");
@@ -448,13 +629,6 @@ function isPublicCdnUrl(
   scope: ConfiguredPublicScope,
 ): value is string {
   if (!value) return false;
-  try {
-    const url = new URL(value);
-    const expected = new URL(storageKey.slice("public/".length), `${scope.cdnOrigin}/`).toString();
-    return (
-      !url.username && !url.password && !url.search && !url.hash && url.toString() === expected
-    );
-  } catch {
-    return false;
-  }
+  const expected = `${scope.cdnOrigin}/${storageKey.slice("public/".length)}`;
+  return value === expected;
 }
