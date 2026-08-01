@@ -31,10 +31,10 @@ export type HotelUtcDateTime = string;
 /**
  * Setup completion fields tracked by the hotel catalog.
  *
- * Note: `currency` is intentionally omitted — currency configuration is owned
- * by `@vayada/domain-finance` (see `UpdatePropertyCurrencyCommand`).  Setup
- * wizards and onboarding flows that need currency completion status should
- * query the finance domain's payment settings read model.
+ * Note: `currency` is intentionally omitted — property pricing currency is
+ * owned by PMS operations. Setup wizards and onboarding flows consume its
+ * read-only projection; Finance owns supported payment-currency capability,
+ * not the property pricing-currency write.
  *
  * `payment` tracks binary setup completion (has at least one payment method
  * configured).  This flag is DERIVED from `@vayada/domain-finance`

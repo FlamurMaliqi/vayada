@@ -179,12 +179,11 @@ Deprecation lifecycle:
   include only public pages that exist.
 - **Currency**: PMS owns one property pricing currency and projects it to
   Booking and Finance. Finance owns method/currency capability, not the property
-  pricing-currency write. `UpdatePropertyCurrencyCommand` and
-  `finance.currency.update` are migration-only compatibility contracts and must
-  be removed after backfill; new setup/runtime callers use
-  `pms.setPropertyPricingCurrency`. Public quote requests with unsupported
-  currency fail clearly instead of silently converting through an unapproved
-  path.
+  pricing-currency write. The former `UpdatePropertyCurrencyCommand` and
+  `finance.currency.update` contracts have been removed; new setup/runtime
+  callers use the target `pms.setPropertyPricingCurrency` contract. Public quote
+  requests with unsupported currency fail clearly instead of silently
+  converting through an unapproved path.
 
 ## Channex Boundary
 
