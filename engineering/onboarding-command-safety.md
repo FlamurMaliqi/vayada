@@ -119,4 +119,6 @@ or successful retry dispatch must never be presented as success.
 The fixture vocabulary in
 `engineering/fixtures/onboarding-command-safety/cases.json` covers exact retry,
 changed payload, changed revision, concurrent stale write, and injected audit
-rollback for reuse by later setup commands.
+rollback in `cases`, plus the authentication, permission, organization-scope,
+revoked-retry, and allowed-access matrix in `authorizationCases`, for reuse by
+later setup commands.
