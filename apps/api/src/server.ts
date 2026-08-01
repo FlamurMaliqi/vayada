@@ -32,6 +32,10 @@ import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperations
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
+import {
+  createPgPropertySetupDraftRetentionStore,
+  startPropertySetupDraftRetentionWorker,
+} from "./jobs/propertySetupDraftRetention.js";
 import { createTargetPublicHotelProfileRepository } from "./routes/aiHotels.js";
 import {
   createPgBookingWebAffiliateHotelResolver,
@@ -666,6 +670,20 @@ if (platformMediaRuntime) {
     await platformMediaRuntime.cleanupStore.close();
   });
 }
+
+const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker({
+  store: createPgPropertySetupDraftRetentionStore({
+    connectionString: targetDatabaseUrl,
+  }),
+  enabled: config.propertySetupDraftRetentionEnabled,
+  intervalMs: config.propertySetupDraftRetentionIntervalMs,
+  batchSize: config.propertySetupDraftRetentionBatchSize,
+  logger: app.log,
+});
+
+app.addHook("onClose", async () => {
+  await propertySetupDraftRetentionWorker.close();
+});
 
 try {
   await app.listen({ host: config.host, port: config.port });
