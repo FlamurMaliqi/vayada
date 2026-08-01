@@ -118,7 +118,6 @@ export type ApiConfig = {
   bookingWebEventSink: BookingWebEventSink;
   bookingHostBase?: string;
   platformMediaServing?: PlatformMediaServingConfig;
-  hotelMediaUploadSource: "legacy" | "target";
   platformMediaCleanupEnabled: boolean;
   platformMediaCleanupIntervalMs: number;
   pmsInventoryPublicOfferRetryEnabled: boolean;
@@ -532,12 +531,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const platformMediaServing = loadPlatformMediaServingConfig(env, {
     incomplete: targetDatabaseUrl && auth ? "error" : "disabled",
   });
-  const hotelMediaUploadSource = readSourceEnv(
-    env,
-    "HOTEL_MEDIA_UPLOAD_SOURCE",
-    ["legacy", "target"],
-    "legacy",
-  );
   assertNextApiRuntimeConfig(env, {
     apiRuntime,
     publicHotelProfileSource,
@@ -592,14 +585,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       "Target Marketplace with complete auth requires complete PLATFORM_MEDIA_* config because creator profile photos are required",
     );
   }
-  if (
-    hotelMediaUploadSource === "target" &&
-    (apiRuntime !== "next" || !targetDatabaseUrl || !auth || !platformMediaServing)
-  ) {
-    throw new Error(
-      "HOTEL_MEDIA_UPLOAD_SOURCE=target requires API_RUNTIME=next, TARGET_DATABASE_URL, complete auth, and complete PLATFORM_MEDIA_* config",
-    );
-  }
   if (creatorPlatformConnections && (!targetDatabaseUrl || !auth)) {
     throw new Error(
       "Creator platform connections require TARGET_DATABASE_URL and complete auth config",
@@ -642,7 +627,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     bookingWebEventSink,
     bookingHostBase: readOptionalEnv(env, "BOOKING_HOST_BASE"),
     platformMediaServing,
-    hotelMediaUploadSource,
     platformMediaCleanupEnabled: readBooleanEnv(env, "PLATFORM_MEDIA_CLEANUP_ENABLED", true),
     platformMediaCleanupIntervalMs: readPositiveIntegerEnv(
       env,

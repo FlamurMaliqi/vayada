@@ -6,7 +6,6 @@ import {
   type ApprovedPublicProfileImageRepository,
   type PlatformMediaAuditEvent,
   PlatformMediaCompletionError,
-  PlatformMediaProfileRevisionConflictError,
   PlatformMediaTargetInvalidError,
   type PlatformMediaObjectRecord,
   type PlatformMediaRepository,
@@ -49,7 +48,6 @@ type SessionRow = {
 type MediaObjectRow = { record: PlatformMediaObjectRecord };
 type PropertyTargetRow = { propertyId: string };
 type CollaborationTargetRow = { collaborationId: string; propertyId: string };
-type PropertyRevisionRow = { profileRevision: string | number };
 
 const supportedPurposes = new Set([
   "identity.user.profile_image",
@@ -93,12 +91,8 @@ export function createPgPlatformMediaRepository(
       }
       const isAutoApproved = input.policy.autoApprovePublicOnFinalize === true;
       const isPropertyMedia = isCanonicalPropertyMediaRequest(input.request);
-      if (
-        input.request.purpose === "property.hero_image" &&
-        !isPropertyMedia &&
-        input.request.expectedProfileRevision === undefined
-      ) {
-        throw new Error("Property hero images require expectedProfileRevision");
+      if (propertyMediaPurposes.has(input.request.purpose) && !isPropertyMedia) {
+        throw new Error("Property media requires a canonical property target");
       }
       if (
         (isAutoApproved && requestedVisibility !== "public") ||
@@ -133,7 +127,6 @@ export function createPgPlatformMediaRepository(
         uploadTargets: input.uploadTargets,
         stagingPrefix: input.stagingPrefix,
         status: "signed",
-        expectedProfileRevision: input.request.expectedProfileRevision,
         expiresAt: input.expiresAt,
         createdAt: input.now,
       };
@@ -364,37 +357,7 @@ async function resolveTarget(
       },
     };
   }
-  const sourceTable =
-    input.request.resource.product === "booking" ? "booking_hotels" : "hotel_profiles";
-  const result = await queryable.query<PropertyTargetRow>(
-    `WITH property_candidates AS (
-       SELECT property.id
-       FROM hotel_catalog.properties property
-       WHERE property.id::text = $3
-       UNION
-       SELECT source.property_id
-       FROM hotel_catalog.property_source_links source
-       WHERE source.source_system = $1
-         AND source.source_table = $2
-         AND source.source_id = $3
-         AND source.status = 'active'
-     )
-     SELECT id::text AS "propertyId"
-     FROM property_candidates
-     LIMIT 2`,
-    [input.request.resource.product, sourceTable, input.request.resource.resourceId],
-  );
-  if (result.rows.length !== 1) return propertyMediaTargetForbidden();
-  const propertyId = result.rows[0]!.propertyId;
-  return {
-    ok: true,
-    target: {
-      resourceProduct: "hotel_catalog",
-      resourceType: "property",
-      resourceId: propertyId,
-      propertyId,
-    },
-  };
+  return propertyMediaTargetForbidden();
 }
 
 function propertyMediaTargetForbidden() {
@@ -476,6 +439,9 @@ async function completeUploadSession(
     if (!supportedPurposes.has(session.purpose)) {
       throw new Error("Persistent platform media cannot finalize this purpose");
     }
+    if (propertyMediaPurposes.has(session.purpose) && !isCanonicalPropertyMediaRequest(session)) {
+      throw new PlatformMediaTargetInvalidError();
+    }
     const isAutoApproved = isAutoApprovedPublicSession(session);
     if (
       (isAutoApproved &&
@@ -497,13 +463,11 @@ async function completeUploadSession(
         input.now,
       ),
     );
-    await lockPropertyProfileRevision(client, session);
     for (const mediaObject of mediaObjects) {
       await insertMediaObject(client, mediaObject);
       for (const variant of mediaObject.variants) {
         await insertVariant(client, mediaObject.mediaId, variant, input.now);
       }
-      await upsertPropertyMediaProjection(client, mediaObject, input.now);
     }
 
     const completedSession: PlatformMediaSessionRecord = {
@@ -546,10 +510,7 @@ async function completeUploadSession(
           new AggregateError([error, rollbackError], "Platform media rollback failed"),
         );
       }
-      if (
-        error instanceof PlatformMediaTargetInvalidError ||
-        error instanceof PlatformMediaProfileRevisionConflictError
-      ) {
+      if (error instanceof PlatformMediaTargetInvalidError) {
         throw error;
       }
       throw new PlatformMediaCompletionError("rolled_back", error);
@@ -603,44 +564,8 @@ function bindCompletionFilesToSession(
 function isAutoApprovedPublicSession(session: PlatformMediaSessionRecord): boolean {
   return (
     session.purpose === "identity.user.profile_image" ||
-    session.purpose === "marketplace.creator.profile_image" ||
-    (!isCanonicalPropertyMediaRequest(session) &&
-      (session.purpose === "property.hero_image" || session.purpose === "property.gallery_image"))
+    session.purpose === "marketplace.creator.profile_image"
   );
-}
-
-async function lockPropertyProfileRevision(
-  client: Queryable,
-  session: PlatformMediaSessionRecord,
-): Promise<void> {
-  if (
-    isCanonicalPropertyMediaRequest(session) ||
-    (session.purpose !== "property.hero_image" && session.purpose !== "property.gallery_image")
-  ) {
-    return;
-  }
-  const propertyId = session.target.propertyId;
-  if (!propertyId) throw new Error("Property media requires a canonical property target");
-
-  const result = await client.query<PropertyRevisionRow>(
-    `SELECT property.profile_revision AS "profileRevision"
-     FROM hotel_catalog.properties property
-     WHERE property.id = $1::uuid
-     FOR UPDATE`,
-    [propertyId],
-  );
-  const profileRevision = Number(result.rows[0]?.profileRevision);
-  if (!Number.isSafeInteger(profileRevision) || profileRevision < 1) {
-    throw new Error("Property media target was not found");
-  }
-  if (session.purpose === "property.hero_image") {
-    if (session.expectedProfileRevision === undefined) {
-      throw new Error("Property hero images require expectedProfileRevision");
-    }
-    if (profileRevision !== session.expectedProfileRevision) {
-      throw new PlatformMediaProfileRevisionConflictError(profileRevision);
-    }
-  }
 }
 
 function mediaObjectFor(
@@ -839,147 +764,6 @@ async function insertVariant(
       variant.publicCdnUrl,
       now,
     ],
-  );
-}
-
-async function upsertPropertyMediaProjection(
-  client: Queryable,
-  mediaObject: PlatformMediaObjectRecord,
-  now: string,
-): Promise<void> {
-  if (
-    mediaObject.resourceProduct !== "hotel_catalog" ||
-    mediaObject.resourceType !== "property" ||
-    mediaObject.visibility !== "public" ||
-    (mediaObject.purpose !== "property.hero_image" &&
-      mediaObject.purpose !== "property.gallery_image")
-  ) {
-    return;
-  }
-  const propertyId = mediaObject.propertyId;
-  const publicUrl = mediaObject.variants.find(
-    ({ variantName }) => variantName === "original_safe",
-  )?.publicCdnUrl;
-  if (
-    !propertyId ||
-    !publicUrl?.startsWith("https://") ||
-    mediaObject.approvalStatus !== "approved" ||
-    mediaObject.lifecycleStatus !== "active"
-  ) {
-    throw new Error("Approved property media requires a canonical property and public URL");
-  }
-
-  const mediaType = mediaObject.purpose === "property.hero_image" ? "hero_image" : "gallery_image";
-  const rightsMetadata = JSON.stringify({ platformMediaObjectId: mediaObject.mediaId });
-  await client.query(
-    `WITH superseded_hero AS (
-       UPDATE hotel_catalog.property_media
-       SET public_approved = FALSE,
-           updated_at = $6::timestamptz
-       WHERE $3 = 'hero_image'
-         AND property_id = $2::uuid
-         AND media_type = 'hero_image'
-         AND source_system = 'platform'
-         AND platform_media_object_id IS DISTINCT FROM $1::uuid
-       RETURNING id
-     ),
-     updated AS (
-       UPDATE hotel_catalog.property_media
-       SET property_id = $2::uuid,
-           media_type = $3,
-           url = $4,
-           sort_order = CASE WHEN $3 = 'hero_image' THEN 0 ELSE sort_order END,
-           source_system = 'platform',
-           public_approved = TRUE,
-           rights_metadata = COALESCE(rights_metadata, '{}'::jsonb) || $5::jsonb,
-           updated_at = $6::timestamptz
-       WHERE platform_media_object_id = $1::uuid
-       RETURNING id
-     ),
-     next_sort AS (
-       SELECT CASE
-         WHEN $3 = 'hero_image' THEN 0
-         ELSE GREATEST(COALESCE(MAX(sort_order) + 1, 1), 1)
-       END AS sort_order
-       FROM hotel_catalog.property_media
-       WHERE property_id = $2::uuid
-     ),
-     inserted AS (
-       INSERT INTO hotel_catalog.property_media
-         (property_id, media_type, url, alt_text, sort_order, source_system,
-          public_approved, rights_metadata, platform_media_object_id, created_at, updated_at)
-       SELECT $2::uuid, $3, $4, NULL, next_sort.sort_order, 'platform',
-              TRUE, $5::jsonb, $1::uuid, $6::timestamptz, $6::timestamptz
-       FROM next_sort
-       WHERE NOT EXISTS (SELECT 1 FROM updated)
-       RETURNING id
-     ),
-     projected_media AS (
-       SELECT id FROM updated
-       UNION ALL
-       SELECT id FROM inserted
-     ),
-     completeness AS (
-       SELECT
-         property.id AS property_id,
-         ARRAY_REMOVE(
-           ARRAY[
-             CASE WHEN NOT EXISTS (
-               SELECT 1
-               FROM hotel_catalog.property_profiles profile
-               WHERE profile.property_id = property.id
-                 AND profile.locale = property.default_locale
-                 AND COALESCE(
-                   NULLIF(BTRIM(profile.short_description), ''),
-                   NULLIF(BTRIM(profile.long_description), '')
-                 ) IS NOT NULL
-             ) THEN 'description' END,
-             CASE WHEN NOT EXISTS (
-               SELECT 1
-               FROM hotel_catalog.property_media media
-               JOIN platform.media_objects media_object
-                 ON media_object.id = media.platform_media_object_id
-                AND media_object.property_id = media.property_id
-                AND media_object.visibility = 'public'
-                AND media_object.public_approved = TRUE
-                AND media_object.lifecycle_status = 'active'
-               JOIN platform.media_variants variant
-                 ON variant.media_object_id = media_object.id
-                AND variant.variant_name = 'original_safe'
-                AND variant.visibility = 'public'
-                AND NULLIF(variant.public_cdn_url, '') IS NOT NULL
-               WHERE media.property_id = property.id
-                 AND media.public_approved = TRUE
-                 AND media.source_system = 'platform'
-             )
-             AND NOT EXISTS (SELECT 1 FROM projected_media)
-             THEN 'media' END
-           ]::text[],
-           NULL
-         ) AS reasons
-       FROM hotel_catalog.properties property
-       WHERE property.id = $2::uuid
-     ),
-     advanced_property AS (
-       UPDATE hotel_catalog.properties property
-       SET completeness_reasons = completeness.reasons,
-           profile_status = CASE
-             WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status
-             WHEN cardinality(completeness.reasons) = 0 THEN 'complete'
-             ELSE 'incomplete'
-           END,
-           profile_revision = property.profile_revision + 1,
-           updated_at = $6::timestamptz
-       FROM completeness
-       WHERE property.id = completeness.property_id
-         AND (
-           EXISTS (SELECT 1 FROM superseded_hero)
-           OR EXISTS (SELECT 1 FROM projected_media)
-         )
-       RETURNING property.id
-     )
-     SELECT id FROM advanced_property`,
-    [mediaObject.mediaId, propertyId, mediaType, publicUrl, rightsMetadata, now],
   );
 }
 

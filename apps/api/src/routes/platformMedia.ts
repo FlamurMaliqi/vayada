@@ -31,8 +31,6 @@ export const PLATFORM_MEDIA_UPLOAD_CONTRACT_VERSION = "platform-media-upload.v1"
 export const CANONICAL_HOTEL_MEDIA_UPLOAD_CONTRACT_VERSION = "platform-media-upload.v2" as const;
 export const PLATFORM_MEDIA_IMPORT_CONTRACT_VERSION = "platform-media-import.v1" as const;
 
-export type HotelMediaUploadSource = "legacy" | "target";
-
 export type PlatformMediaPurpose =
   | "identity.user.profile_image"
   | "property.hero_image"
@@ -48,10 +46,20 @@ export type PlatformMediaPurpose =
 export type PlatformMediaVisibility = "public" | "private";
 
 export type PlatformMediaVariantName =
-  "original_safe" | "large" | "thumbnail" | "blur_preview" | "provider_original";
+  | "original_safe"
+  | "large"
+  | "thumbnail"
+  | "blur_preview"
+  | "provider_original";
 
 export type PlatformMediaResourceProduct =
-  "hotel_catalog" | "booking" | "pms" | "marketplace" | "distribution" | "platform" | "migration";
+  | "hotel_catalog"
+  | "booking"
+  | "pms"
+  | "marketplace"
+  | "distribution"
+  | "platform"
+  | "migration";
 
 export type PlatformMediaResourceScope = {
   product: Product;
@@ -72,7 +80,6 @@ export type PlatformMediaUploadSessionRequest = {
   idempotencyKey?: string;
   purpose: PlatformMediaPurpose;
   visibility?: PlatformMediaVisibility;
-  expectedProfileRevision?: number;
   resource: PlatformMediaResourceScope;
   files: PlatformMediaUploadFileRequest[];
 };
@@ -127,7 +134,6 @@ export type PlatformMediaSessionRecord = {
   uploadTargets: PlatformMediaUploadTarget[];
   stagingPrefix: string;
   status: "signed" | "completed" | "failed";
-  expectedProfileRevision?: number;
   expiresAt: string;
   createdAt: string;
   completedAt?: string;
@@ -260,15 +266,6 @@ export class PlatformMediaStagingChangedError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message, { cause });
     this.name = "PlatformMediaStagingChangedError";
-  }
-}
-
-export class PlatformMediaProfileRevisionConflictError extends Error {
-  readonly code = "profile_revision_conflict";
-
-  constructor(readonly currentRevision: number) {
-    super("The property profile changed while its hero image was being finalized.");
-    this.name = "PlatformMediaProfileRevisionConflictError";
   }
 }
 
@@ -451,7 +448,6 @@ export type PlatformMediaRoutesOptions = {
   allowedOrigins?: string[];
   bucketName?: string;
   mediaPathPrefix?: string;
-  hotelMediaUploadSource?: HotelMediaUploadSource;
   cleanupTimeoutMs?: number;
   now?: () => Date;
 };
@@ -675,75 +671,14 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
   },
 };
 
-const legacyHotelMediaPolicies: Partial<Record<PlatformMediaPurpose, PlatformMediaPurposePolicy>> =
-  {
-    "property.hero_image": {
-      ...targetPurposePolicies["property.hero_image"],
-      permission: "booking.settings.manage",
-      allowedRelationships: ["owner", "operator"],
-      allowedResources: [
-        { product: "booking", resourceType: "booking_hotel" },
-        { product: "marketplace", resourceType: "hotel_profile" },
-      ],
-      autoApprovePublicOnFinalize: true,
-      privateOnly: false,
-    },
-    "property.gallery_image": {
-      ...targetPurposePolicies["property.gallery_image"],
-      permission: "booking.settings.manage",
-      allowedRelationships: ["owner", "operator"],
-      allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
-      autoApprovePublicOnFinalize: true,
-      privateOnly: false,
-    },
-    "property.logo": {
-      ...targetPurposePolicies["property.logo"],
-      permission: "booking.settings.manage",
-      allowedRelationships: ["owner", "operator"],
-      allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
-      privateOnly: false,
-    },
-    "pms.room_type.media": {
-      ...targetPurposePolicies["pms.room_type.media"],
-      permission: "pms.operations.manage",
-      allowedRelationships: ["owner", "operator"],
-      allowedResources: [
-        { product: "pms", resourceType: "pms_property" },
-        { product: "pms", resourceType: "pms_hotel" },
-      ],
-      privateOnly: false,
-    },
-  };
-
-function policyForPurpose(
-  purpose: PlatformMediaPurpose,
-  hotelMediaUploadSource: HotelMediaUploadSource,
-): PlatformMediaPurposePolicy {
-  return hotelMediaUploadSource === "legacy" && legacyHotelMediaPolicies[purpose]
-    ? legacyHotelMediaPolicies[purpose]!
-    : targetPurposePolicies[purpose];
+function policyForPurpose(purpose: PlatformMediaPurpose): PlatformMediaPurposePolicy {
+  return targetPurposePolicies[purpose];
 }
 
 function policyForSession(
   session: Pick<PlatformMediaSessionRecord, "purpose" | "resource">,
-  hotelMediaUploadSource: HotelMediaUploadSource,
 ): PlatformMediaPurposePolicy {
-  if (isCanonicalHotelMediaSession(session)) return targetPurposePolicies[session.purpose];
-  return (
-    legacyHotelMediaPolicies[session.purpose] ??
-    policyForPurpose(session.purpose, hotelMediaUploadSource)
-  );
-}
-
-function hotelMediaSourceForRequest(
-  request: Pick<PlatformMediaUploadSessionRequest, "purpose" | "resource"> | undefined,
-  configuredSource: HotelMediaUploadSource,
-): HotelMediaUploadSource {
-  if (!request || !isPropertyMediaPurpose(request.purpose)) return configuredSource;
-  return request.resource?.product === PROPERTY_MEDIA_AUTHORIZATION.product &&
-    request.resource?.resourceType === PROPERTY_MEDIA_AUTHORIZATION.resourceType
-    ? "target"
-    : "legacy";
+  return policyForPurpose(session.purpose);
 }
 
 export async function registerPlatformMediaRoutes(
@@ -752,7 +687,6 @@ export async function registerPlatformMediaRoutes(
 ): Promise<void> {
   const bucketName = options.bucketName ?? "vayada-media-local";
   const mediaPathPrefix = normalizePlatformMediaPathPrefix(options.mediaPathPrefix ?? "media");
-  const hotelMediaUploadSource = options.hotelMediaUploadSource ?? "legacy";
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
   const now = options.now ?? (() => new Date());
   app.addHook("onClose", async () => {
@@ -774,14 +708,10 @@ export async function registerPlatformMediaRoutes(
   app.post<{ Body: PlatformMediaUploadSessionRequest }>(
     "/upload-sessions",
     async (request, reply) => {
-      const requestHotelMediaSource = hotelMediaSourceForRequest(
-        request.body,
-        hotelMediaUploadSource,
-      );
-      const validation = validateUploadSessionRequest(request.body, requestHotelMediaSource);
+      const validation = validateUploadSessionRequest(request.body);
       if (!validation.ok) return sendMediaError(reply, 400, validation.code, validation.message);
 
-      const policy = policyForPurpose(request.body.purpose, requestHotelMediaSource);
+      const policy = policyForPurpose(request.body.purpose);
       const resourceError = validateResourceScope(request.body.resource, policy);
       if (resourceError) {
         return sendMediaError(reply, 400, resourceError.code, resourceError.message);
@@ -875,11 +805,7 @@ export async function registerPlatformMediaRoutes(
           mediaPathPrefix,
         });
       }
-      if (
-        !existingSession &&
-        (requestHotelMediaSource !== hotelMediaUploadSource ||
-          !isPurposeEnabled(options, request.body.purpose))
-      ) {
+      if (!existingSession && !isPurposeEnabled(options, request.body.purpose)) {
         return sendPurposeUnavailable(reply);
       }
 
@@ -1026,7 +952,7 @@ export async function registerPlatformMediaRoutes(
       if (!session) {
         return sendMediaError(reply, 404, "upload_session_not_found", "Upload session not found.");
       }
-      const policy = policyForSession(session, hotelMediaUploadSource);
+      const policy = policyForSession(session);
       const resourceError = validateResourceScope(session.resource, policy);
       if (resourceError || !sessionVisibilityMatchesPolicy(session, policy)) {
         return sendNonReusableUploadSession(reply);
@@ -1153,13 +1079,6 @@ export async function registerPlatformMediaRoutes(
       } catch (error) {
         if (error instanceof PlatformMediaTargetInvalidError) {
           return sendNonReusableUploadSession(reply);
-        }
-        if (error instanceof PlatformMediaProfileRevisionConflictError) {
-          return reply.code(409).send({
-            code: error.code,
-            message: error.message,
-            currentRevision: error.currentRevision,
-          });
         }
         throw error;
       }
@@ -1335,7 +1254,6 @@ function uploadSessionMatchesRequest(
     session.ownerOrganizationId === expected.context.selectedOrganization.organizationId &&
     session.purpose === expected.request.purpose &&
     session.requestedVisibility === (expected.request.visibility ?? "private") &&
-    session.expectedProfileRevision === expected.request.expectedProfileRevision &&
     JSON.stringify(resourceProjection(session.resource)) ===
       JSON.stringify(resourceProjection(expected.request.resource)) &&
     JSON.stringify(targetProjection(session.target)) ===
@@ -1351,7 +1269,6 @@ function uploadRequestFromSession(
   return {
     purpose: session.purpose,
     visibility: session.requestedVisibility,
-    expectedProfileRevision: session.expectedProfileRevision,
     resource: session.resource,
     files: session.files.map(({ clientFileId, filename, contentType, sizeBytes }) => ({
       clientFileId,
@@ -1616,7 +1533,6 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
         uploadTargets: input.uploadTargets,
         stagingPrefix: input.stagingPrefix,
         status: "signed",
-        expectedProfileRevision: input.request.expectedProfileRevision,
         expiresAt: input.expiresAt,
         createdAt: input.now,
       };
@@ -1769,36 +1685,8 @@ function recordInMemoryAudit(
   }
 }
 
-export function createPassthroughPlatformMediaTargetResolver(): PlatformMediaTargetResolver {
-  return {
-    async resolveTarget({ request, policy }) {
-      const propertyMedia = isPropertyMediaPurpose(request.purpose);
-      const canonicalPropertyMedia = propertyMedia && isCanonicalHotelMediaPolicy(policy);
-      const roomMedia = canonicalPropertyMedia && request.purpose === "pms.room_type.media";
-      return {
-        ok: true,
-        target: {
-          resourceProduct: policy.targetResourceProduct,
-          resourceType: policy.targetResourceType,
-          resourceId: roomMedia
-            ? request.resource.targetResourceId!
-            : canonicalPropertyMedia
-              ? request.resource.resourceId
-              : (request.resource.targetResourceId ??
-                request.resource.propertyId ??
-                request.resource.resourceId),
-          propertyId: canonicalPropertyMedia
-            ? request.resource.resourceId
-            : request.resource.propertyId,
-        },
-      };
-    },
-  };
-}
-
 function validateUploadSessionRequest(
   body: PlatformMediaUploadSessionRequest | undefined,
-  hotelMediaUploadSource: HotelMediaUploadSource,
 ): { ok: true } | { ok: false; code: string; message: string } {
   if (!body || typeof body !== "object") {
     return { ok: false, code: "invalid_upload_request", message: "Request body is required." };
@@ -1828,41 +1716,11 @@ function validateUploadSessionRequest(
   if (!body.resource || typeof body.resource !== "object") {
     return { ok: false, code: "invalid_resource_scope", message: "Resource scope is required." };
   }
-  if (hotelMediaUploadSource === "target" && "expectedProfileRevision" in body) {
+  if ("expectedProfileRevision" in body) {
     return {
       ok: false,
       code: "invalid_profile_revision",
       message: "Media assignment revisions belong on assignment commands, not upload sessions.",
-    };
-  }
-  if (
-    body.expectedProfileRevision !== undefined &&
-    (!Number.isInteger(body.expectedProfileRevision) ||
-      body.expectedProfileRevision < 1 ||
-      body.expectedProfileRevision > 2_147_483_647)
-  ) {
-    return {
-      ok: false,
-      code: "invalid_profile_revision",
-      message: "expectedProfileRevision must be an integer between 1 and 2147483647.",
-    };
-  }
-  if (body.purpose !== "property.hero_image" && body.expectedProfileRevision !== undefined) {
-    return {
-      ok: false,
-      code: "invalid_profile_revision",
-      message: "expectedProfileRevision is only supported for property hero images.",
-    };
-  }
-  if (
-    hotelMediaUploadSource === "legacy" &&
-    body.purpose === "property.hero_image" &&
-    body.expectedProfileRevision === undefined
-  ) {
-    return {
-      ok: false,
-      code: "invalid_profile_revision",
-      message: "Property hero images require expectedProfileRevision.",
     };
   }
   if (!Array.isArray(body.files) || body.files.length === 0) {
@@ -2416,9 +2274,6 @@ function serializeSession(session: PlatformMediaSessionRecord): Record<string, u
     resource: session.resource,
     target: session.target,
     fileCount: session.files.length,
-    ...(session.expectedProfileRevision !== undefined
-      ? { expectedProfileRevision: session.expectedProfileRevision }
-      : {}),
   };
 }
 

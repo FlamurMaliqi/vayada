@@ -310,7 +310,6 @@ const platformMediaRuntime = composePlatformMediaRuntime({
   auth: config.auth,
   targetDatabaseUrl,
   platformMediaServing: config.platformMediaServing,
-  hotelMediaUploadSource: config.hotelMediaUploadSource,
   allowedOrigins: config.authSession?.authAllowedOrigins,
 });
 

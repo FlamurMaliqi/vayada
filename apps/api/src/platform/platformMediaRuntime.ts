@@ -1,8 +1,5 @@
 import type { MarketplaceCreatorProfileMediaRepository } from "../routes/marketplaceCreatorSelfService.js";
-import type {
-  HotelMediaUploadSource,
-  PlatformMediaRoutesOptions,
-} from "../routes/platformMedia.js";
+import type { PlatformMediaRoutesOptions } from "../routes/platformMedia.js";
 import { createPgPlatformMediaCleanupStore } from "../jobs/platformMediaCleanup.js";
 import {
   createPgS3MarketplaceOfferMediaPromotion,
@@ -20,7 +17,6 @@ export type PlatformMediaRuntimeInput = {
   allowedOrigins?: string[];
   targetDatabaseUrl: string;
   platformMediaServing?: PlatformMediaServingConfig;
-  hotelMediaUploadSource: HotelMediaUploadSource;
 };
 
 export type PlatformMediaRuntimeFactories = {
@@ -81,9 +77,8 @@ export function composePlatformMediaRuntime(
     "marketplace.creator.profile_image",
     "marketplace.offer.media",
     "marketplace.collaboration_chat.attachment",
-    ...(input.hotelMediaUploadSource === "target"
-      ? (["property.logo", "pms.room_type.media"] as const)
-      : []),
+    "property.logo",
+    "pms.room_type.media",
   ];
 
   return {
@@ -103,7 +98,6 @@ export function composePlatformMediaRuntime(
       enabledPurposes,
       bucketName: input.platformMediaServing.bucketName,
       mediaPathPrefix: input.platformMediaServing.publicPathPrefix,
-      hotelMediaUploadSource: input.hotelMediaUploadSource,
       allowedOrigins: input.allowedOrigins ?? [],
     },
   };
