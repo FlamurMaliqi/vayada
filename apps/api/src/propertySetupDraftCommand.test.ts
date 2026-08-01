@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type {
   PropertySetupBaseRevisionKey,
@@ -181,8 +181,13 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
       ],
     });
 
-    const metadata = await client.query<{ metadata: Record<string, unknown> }>(
-      `SELECT idempotency_metadata AS metadata
+    const metadata = await client.query<{
+      metadata: Record<string, unknown>;
+      responseBodyHash: string;
+    }>(
+      `SELECT
+         idempotency_metadata AS metadata,
+         response_body_hash AS "responseBodyHash"
        FROM platform.idempotency_keys
        WHERE property_id = $1::uuid`,
       [fixture.propertyId],
@@ -205,6 +210,9 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     const recorded = JSON.stringify({ metadata: metadata.rows, audit: audit.rows });
     expect(recorded).not.toContain("A quiet hotel beside the old town.");
     expect(recorded).not.toContain("profile:7");
+    expect(metadata.rows[0]?.responseBodyHash).toBe(
+      sha256(stableJson(created.ok ? created.receipt : created.error)),
+    );
     expect(audit.rows).toMatchObject([
       {
         organizationId: null,
@@ -1107,4 +1115,22 @@ function assertSafeTestDatabase(url: string): void {
   if (!/(^|[_-])test([_-]|$)/i.test(databaseName)) {
     throw new Error(`Refusing to use non-test database "${databaseName}"`);
   }
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJsonValue(entry)]),
+  );
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }

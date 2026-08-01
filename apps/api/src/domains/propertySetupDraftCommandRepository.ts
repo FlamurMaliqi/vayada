@@ -643,7 +643,7 @@ async function findReplay(
   if (!isSaveResult(stored)) return failure({ code: "idempotency_key_conflict" });
   if (
     existing.responseStatusCode !== (stored.ok ? 200 : 409) ||
-    existing.responseBodyHash !== sha256(stableJson(stored))
+    existing.responseBodyHash !== sha256(stableJson(idempotencyResponseBody(stored)))
   ) {
     return failure({ code: "idempotency_key_conflict" });
   }
@@ -741,7 +741,7 @@ async function completeIdempotency(
     [
       id,
       result.ok ? 200 : 409,
-      sha256(stableJson(result)),
+      sha256(stableJson(idempotencyResponseBody(result))),
       savedAt.toISOString(),
       JSON.stringify(result),
     ],
@@ -749,6 +749,12 @@ async function completeIdempotency(
   if (completed.rowCount !== 1) {
     throw new Error("Property setup draft idempotency completion failed");
   }
+}
+
+function idempotencyResponseBody(
+  result: SavePropertySetupDraftResult,
+): SavePropertySetupDraftReceipt | SavePropertySetupDraftError {
+  return result.ok ? result.receipt : result.error;
 }
 
 async function recordAudit(
