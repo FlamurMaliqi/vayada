@@ -16,6 +16,7 @@ export * from "./adaptiveHotelSetup.js";
 export * from "./hotelMediaProjection.js";
 export * from "./propertyMedia.js";
 export * from "./propertyMediaWire.js";
+export * from "./propertySetupDraft.js";
 export * from "./propertyProfile.js";
 export * from "./publicPropertyProfile.js";
 

@@ -1,0 +1,254 @@
+import type { SetupTrack } from "./adaptiveHotelSetup.js";
+
+export const PROPERTY_SETUP_DRAFT_CONTRACT_VERSION = "property-setup-draft.v1" as const;
+export const PROPERTY_SETUP_ACTIVE_RETENTION_DAYS = 90;
+export const PROPERTY_SETUP_COMPLETED_RETENTION_DAYS = 30;
+export const PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION = "potential_incidental_pii" as const;
+export type PropertySetupStepPermission =
+  | "hotel_catalog.setup.manage"
+  | "marketplace.profile.manage"
+  | "booking.settings.manage"
+  | "pms.operations.manage";
+
+export const PROPERTY_SETUP_STEP_DEFINITIONS = [
+  {
+    stepId: "present_hotel",
+    track: "shared",
+    permission: "hotel_catalog.setup.manage",
+    baseRevisionKeys: ["hotel_catalog.profile", "hotel_catalog.media", "hotel_catalog.amenities"],
+    fields: [
+      "profile.short_description",
+      "profile.hero_image",
+      "profile.gallery_images",
+      "profile.amenities",
+    ],
+  },
+  {
+    stepId: "marketplace_preferences",
+    track: "creator_marketplace",
+    permission: "marketplace.profile.manage",
+    baseRevisionKeys: ["marketplace.collaboration_preferences"],
+    fields: [
+      "marketplace.preferences.compensation_types",
+      "marketplace.preferences.content_platforms",
+      "marketplace.preferences.content_types",
+      "marketplace.preferences.availability",
+    ],
+  },
+  {
+    stepId: "booking_design",
+    track: "hotel_operations",
+    permission: "booking.settings.manage",
+    baseRevisionKeys: ["booking.design", "hotel_catalog.profile", "hotel_catalog.media"],
+    fields: ["booking.primary_color", "booking.font_pairing"],
+  },
+  {
+    stepId: "rooms",
+    track: "hotel_operations",
+    permission: "pms.operations.manage",
+    baseRevisionKeys: ["pms.room_types", "pms.room_units", "pms.room_media"],
+    fields: [
+      "room.name",
+      "room.category",
+      "room.max_occupancy",
+      "room.max_adults",
+      "room.max_children",
+      "room.beds",
+      "room.bedrooms",
+      "room.bathrooms",
+      "room.bathroom_type",
+      "room.size",
+      "room.description",
+      "room.unit_count",
+      "room.images",
+      "room.amenities",
+    ],
+  },
+  {
+    stepId: "pricing",
+    track: "hotel_operations",
+    permission: "pms.operations.manage",
+    baseRevisionKeys: ["pms.pricing_settings", "pms.rate_plans", "pms.rate_rules"],
+    fields: [
+      "rate.currency",
+      "rate.base_nightly_rate",
+      "rate.free_cancellation_deadline_days",
+      "rate.non_refundable_enabled",
+      "rate.non_refundable_discount",
+      "rate.seasons",
+      "rate.seasonal_prices",
+      "rate.weekend_days",
+      "rate.weekend_surcharge",
+      "rate.occupancy_prices",
+      "rate.mandatory_charges_acknowledged",
+    ],
+  },
+  {
+    stepId: "calendar",
+    track: "hotel_operations",
+    permission: "pms.operations.manage",
+    baseRevisionKeys: [
+      "pms.operating_calendar",
+      "pms.inventory",
+      "pms.room_types",
+      "hotel_catalog.location",
+    ],
+    fields: ["rate.operating_periods", "rate.minimum_stay", "rate.initial_availability"],
+  },
+  {
+    stepId: "guest_experience",
+    track: "hotel_operations",
+    permission: "booking.settings.manage",
+    baseRevisionKeys: [
+      "booking.guest_experience",
+      "pms.pricing_settings",
+      "pms.rate_plans",
+      "pms.room_types",
+      "hotel_catalog.location",
+    ],
+    fields: [
+      "guest.default_language",
+      "guest.children_enabled",
+      "guest.adult_age_threshold",
+      "guest.phone_required",
+      "guest.arrival_time_enabled",
+      "guest.special_requests_enabled",
+      "policy.check_in_time",
+      "policy.check_out_time",
+      "policy.cancellation_bundle_confirmation",
+    ],
+  },
+  {
+    stepId: "payments",
+    track: "hotel_operations",
+    permission: "booking.settings.manage",
+    baseRevisionKeys: ["finance.payment_methods", "pms.pricing_settings"],
+    fields: ["payment.accepted_methods"],
+  },
+  {
+    stepId: "review",
+    track: "shared",
+    permission: "hotel_catalog.setup.manage",
+    baseRevisionKeys: [],
+    fields: [],
+  },
+] as const satisfies readonly {
+  stepId: string;
+  track: "shared" | SetupTrack;
+  permission: PropertySetupStepPermission;
+  baseRevisionKeys: readonly string[];
+  fields: readonly string[];
+}[];
+
+export type PropertySetupStepDefinition = (typeof PROPERTY_SETUP_STEP_DEFINITIONS)[number];
+export type PropertySetupStepId = PropertySetupStepDefinition["stepId"];
+type DefinitionFor<TStepId extends PropertySetupStepId> = Extract<
+  PropertySetupStepDefinition,
+  { stepId: TStepId }
+>;
+type FieldFor<TStepId extends PropertySetupStepId> = DefinitionFor<TStepId>["fields"][number];
+type BaseRevisionKeyFor<TStepId extends PropertySetupStepId> =
+  DefinitionFor<TStepId>["baseRevisionKeys"][number];
+export type PropertySetupFieldId = PropertySetupStepDefinition["fields"][number];
+export type PropertySetupDraftPayload<TStepId extends PropertySetupStepId> = [
+  FieldFor<TStepId>,
+] extends [never]
+  ? Readonly<Record<string, never>>
+  : Readonly<Partial<Record<FieldFor<TStepId>, JsonValue>>>;
+export type PropertySetupBaseRevisions<TStepId extends PropertySetupStepId> = [
+  BaseRevisionKeyFor<TStepId>,
+] extends [never]
+  ? Readonly<Record<string, never>>
+  : Readonly<Record<BaseRevisionKeyFor<TStepId>, string>>;
+
+export type SavePropertySetupDraftRequest = {
+  [TStepId in PropertySetupStepId]: {
+    stepId: TStepId;
+    payload: PropertySetupDraftPayload<TStepId>;
+    dirtyFields: FieldFor<TStepId>[];
+    expectedBaseRevisions: PropertySetupBaseRevisions<TStepId>;
+    expectedTrackRevision: number;
+    expectedSessionRevision: number;
+    expectedDraftRevision: number;
+  };
+}[PropertySetupStepId];
+
+export type PropertySetupStepDraft = {
+  [TStepId in PropertySetupStepId]: {
+    stepId: TStepId;
+    payload: PropertySetupDraftPayload<TStepId>;
+    dirtyFields: FieldFor<TStepId>[];
+    /** Bound to the owner read response; never accepted as an authorization claim. */
+    baseRevisions: PropertySetupBaseRevisions<TStepId>;
+    piiClassification: typeof PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION;
+    retentionExpiresAt: string;
+    revision: number;
+    updatedAt: string;
+  };
+}[PropertySetupStepId];
+
+export type PropertySetupSession = {
+  contractVersion: typeof PROPERTY_SETUP_DRAFT_CONTRACT_VERSION;
+  sessionId: string;
+  organizationId: string;
+  propertyId: string;
+  selectedTracks: SetupTrack[];
+  trackRevision: number;
+  revision: number;
+  resumeStepId: PropertySetupStepId | null;
+  /** Updated only by a server-validated step command; saving a draft never adds entries. */
+  completedStepIds: PropertySetupStepId[];
+  drafts: PropertySetupStepDraft[];
+  retentionExpiresAt: string;
+};
+
+export type PropertySetupDraftProgress = {
+  complete: number;
+  total: number;
+  steps: Array<{
+    stepId: PropertySetupStepId;
+    position: number;
+    state: "not_started" | "in_progress" | "complete";
+  }>;
+};
+
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export function getActivePropertySetupStepIds(
+  selectedTracks: readonly SetupTrack[],
+): PropertySetupStepId[] {
+  const selected = new Set(selectedTracks);
+  return PROPERTY_SETUP_STEP_DEFINITIONS.filter(({ track }) =>
+    track === "shared" ? selected.size > 0 : selected.has(track),
+  ).map(({ stepId }) => stepId);
+}
+
+export function buildPropertySetupDraftProgress(
+  selectedTracks: readonly SetupTrack[],
+  completedStepIds: readonly PropertySetupStepId[],
+  draftStepIds: readonly PropertySetupStepId[],
+): PropertySetupDraftProgress {
+  const activeStepIds = getActivePropertySetupStepIds(selectedTracks);
+  const completed = new Set(completedStepIds);
+  const drafted = new Set(draftStepIds);
+  const steps = activeStepIds.map((stepId, index) => ({
+    stepId,
+    position: index + 1,
+    state: completed.has(stepId)
+      ? ("complete" as const)
+      : drafted.has(stepId)
+        ? ("in_progress" as const)
+        : ("not_started" as const),
+  }));
+  return {
+    complete: steps.filter(({ state }) => state === "complete").length,
+    total: steps.length,
+    steps,
+  };
+}
