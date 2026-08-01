@@ -1104,6 +1104,133 @@ describe("shared hotel setup status route", () => {
     }
   });
 
+  it("denies unauthorized setup track requests before parsing malformed JSON", async () => {
+    const malformedPayload = '{"selectedTracks":';
+    const deniedCases = commandSafetyFixture.authorizationCases.filter(
+      ({ id }) => id !== "allowed" && id !== "permission_revoked_before_exact_retry",
+    );
+
+    for (const authorizationCase of deniedCases) {
+      const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+      app = buildSharedSetupApp({
+        organizationKind: authorizationCase.given.organizationKind,
+        permissions: authorizationCase.given.permissions,
+        linkedResources: [],
+        repository: repositoryWith([]),
+        trackCommandRepository: {
+          updateTracks,
+          getTrackStatus: unusedTrackCommandRepository().getTrackStatus,
+          async close() {},
+        },
+      });
+      const response = await requestWithRawHeaders(app, malformedPayload, {
+        ...(authorizationCase.given.authentication === "missing"
+          ? {}
+          : {
+              authorization:
+                authorizationCase.given.authentication === "valid"
+                  ? "Bearer valid-token"
+                  : "Bearer invalid-token",
+            }),
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(malformedPayload)),
+        "idempotency-key": `malformed-${authorizationCase.id}`,
+      });
+
+      expect(response.statusCode, authorizationCase.id).toBe(authorizationCase.expected.status);
+      expect(response.body, authorizationCase.id).toEqual({
+        statusCode: authorizationCase.expected.status,
+        code: authorizationCase.expected.errorCode,
+        category: authorizationCase.expected.category,
+        message: authorizationCase.expected.message,
+      });
+      expect(updateTracks, authorizationCase.id).not.toHaveBeenCalled();
+
+      await app.close();
+      app = undefined;
+    }
+  });
+
+  it("checks revoked permission before parsing a malformed exact retry", async () => {
+    const permissions: PermissionKey[] = ["hotel_catalog.products.manage"];
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>(async () => ({
+      ok: true,
+      response: { trackRevision: 1, selectedTracks: [], tracks: [] },
+    }));
+    app = buildSharedSetupApp({
+      permissions,
+      linkedResources: [],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        updateTracks,
+        getTrackStatus: unusedTrackCommandRepository().getTrackStatus,
+        async close() {},
+      },
+    });
+    const authorizationCase = commandSafetyFixture.authorizationCases.find(
+      ({ id }) => id === "permission_revoked_before_exact_retry",
+    );
+    if (!authorizationCase) throw new Error("Missing revoked-permission authorization fixture");
+    const headers = {
+      authorization: "Bearer valid-token",
+      "content-type": "application/json",
+      "idempotency-key": `authorization-${authorizationCase.id}`,
+    };
+
+    const firstAttempt = await injectJson(app, {
+      method: "PUT",
+      url: "/api/hotel-setup/tracks",
+      headers,
+      payload: {
+        selectedTracks: commandSafetyFixture.baseRequest.selectedTracks,
+        expectedRevision: commandSafetyFixture.baseRequest.expectedRevision,
+      },
+    });
+    expect(firstAttempt.statusCode).toBe(200);
+    expect(updateTracks).toHaveBeenCalledTimes(1);
+
+    permissions.splice(0, permissions.length);
+    const malformedPayload = '{"selectedTracks":';
+    const retry = await requestWithRawHeaders(app, malformedPayload, {
+      ...headers,
+      "content-length": String(Buffer.byteLength(malformedPayload)),
+    });
+
+    expect(retry.statusCode).toBe(authorizationCase.expected.status);
+    expect(retry.body).toEqual({
+      statusCode: authorizationCase.expected.status,
+      code: authorizationCase.expected.errorCode,
+      category: authorizationCase.expected.category,
+      message: authorizationCase.expected.message,
+    });
+    expect(updateTracks).toHaveBeenCalledTimes(1);
+  });
+
+  it("parses the body only after setup track authorization succeeds", async () => {
+    const updateTracks = vi.fn<HotelSetupTrackCommandRepository["updateTracks"]>();
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.products.manage"],
+      linkedResources: [],
+      repository: repositoryWith([]),
+      trackCommandRepository: {
+        updateTracks,
+        getTrackStatus: unusedTrackCommandRepository().getTrackStatus,
+        async close() {},
+      },
+    });
+    const malformedPayload = '{"selectedTracks":';
+
+    const response = await requestWithRawHeaders(app, malformedPayload, {
+      authorization: "Bearer valid-token",
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(malformedPayload)),
+      "idempotency-key": "malformed-allowed",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(updateTracks).not.toHaveBeenCalled();
+  });
+
   it("creates the first canonical property profile with explicit contact metadata", async () => {
     const input = minimalHotelInput();
     const createPropertyProfile = vi.fn(

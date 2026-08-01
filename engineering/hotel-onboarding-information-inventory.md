@@ -3917,7 +3917,8 @@ schema a partial production source of truth.
   Organization-scoped track selection instead tests authentication, active
   hotel-group membership, owner-level permission, revoked access before replay,
   and allowed access; it cannot require the entitlements and links that it
-  provisions.
+  provisions. Its route-scoped `onRequest` authorization must run before body
+  parsing, with raw malformed-JSON tests proving denial takes precedence.
 - **Idempotency and conflict:** exact retry replays the original result; the
   same key with another payload or expected source manifest returns `409`;
   concurrent or stale revision changes cannot overwrite newer work.

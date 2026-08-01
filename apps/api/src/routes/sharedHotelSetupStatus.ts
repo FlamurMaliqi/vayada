@@ -136,6 +136,7 @@ export async function registerSharedHotelSetupStatusRoutes(
   options: SharedHotelSetupStatusRoutesOptions,
 ): Promise<void> {
   const { repository, trackCommandRepository, now = () => new Date() } = options;
+  const trackUpdateAccess = new WeakMap<FastifyRequest, ReturnType<typeof enforceRoutePolicy>>();
 
   app.addHook("onClose", async () => {
     await Promise.all([repository.close?.(), trackCommandRepository.close()]);
@@ -429,32 +430,43 @@ export async function registerSharedHotelSetupStatusRoutes(
     });
   });
 
-  app.put("/tracks", async (request, reply) => {
-    const access = resolveSharedSetupTrackUpdateAccess(request, reply);
-    if (!access) return reply;
+  app.put(
+    "/tracks",
+    {
+      async onRequest(request, reply) {
+        const access = resolveSharedSetupTrackUpdateAccess(request, reply);
+        if (!access) return reply;
+        trackUpdateAccess.set(request, access);
+      },
+    },
+    async (request, reply) => {
+      const context = trackUpdateAccess.get(request);
+      if (!context) {
+        throw new Error("Hotel setup track access context was not resolved before body parsing");
+      }
 
-    const update = parseUpdateTracksRequest(request.body);
-    if (!update) {
-      return invalidSetupRequest(
-        reply,
-        "Request must include valid selectedTracks and expectedRevision.",
-      );
-    }
+      const update = parseUpdateTracksRequest(request.body);
+      if (!update) {
+        return invalidSetupRequest(
+          reply,
+          "Request must include valid selectedTracks and expectedRevision.",
+        );
+      }
 
-    const idempotencyKey = parseIdempotencyKey(request, reply);
-    if (!idempotencyKey) return reply;
+      const idempotencyKey = parseIdempotencyKey(request, reply);
+      if (!idempotencyKey) return reply;
 
-    const context = access;
-    const result = await trackCommandRepository.updateTracks({
-      organizationId: context.selectedOrganization.organizationId,
-      actorUserId: context.actor.internalUserId,
-      audit: context.audit,
-      idempotencyKey,
-      ...update,
-    });
-    if (!result.ok) return reply.status(409).send(result.error);
-    return result.response;
-  });
+      const result = await trackCommandRepository.updateTracks({
+        organizationId: context.selectedOrganization.organizationId,
+        actorUserId: context.actor.internalUserId,
+        audit: context.audit,
+        idempotencyKey,
+        ...update,
+      });
+      if (!result.ok) return reply.status(409).send(result.error);
+      return result.response;
+    },
+  );
 }
 
 function ensurePublicPropertyPublicationPermission(

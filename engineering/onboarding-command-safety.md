@@ -11,7 +11,10 @@ domain-specific repositories and results.
 ## Route and authorization boundary
 
 Protected setup adapters resolve a typed `RequestContext` and call
-`enforceRoutePolicy` before invoking a command repository. The selected
+`enforceRoutePolicy` before invoking a command repository. For commands with a
+body, authorization runs in a route-scoped `onRequest` hook, before Fastify
+parses that body; an unauthenticated or unauthorized malformed request therefore
+returns the same `401` or `403` denial as a well-formed request. The selected
 organization and linked resource come from that authorized context; a browser
 sequence, header, email address, or legacy ownership column is not an
 authorization boundary.
