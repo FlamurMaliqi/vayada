@@ -14,6 +14,8 @@ import {
 } from "@vayada/domain-hotels";
 import pg, { type PoolClient } from "pg";
 
+import { hotelSetupTrackRequestFingerprint } from "./hotelSetupTrackCommandFingerprint.js";
+
 export type HotelSetupTrackCommand = UpdateTracksRequest & {
   organizationId: string;
   idempotencyKey: string;
@@ -98,13 +100,7 @@ export function createPgHotelSetupTrackCommandRepository(config: {
       const client = await pool.connect();
       const occurredAt = now();
       const keyHash = sha256(command.idempotencyKey);
-      const fingerprint = sha256(
-        JSON.stringify({
-          organizationId: command.organizationId,
-          selectedTracks: command.selectedTracks,
-          expectedRevision: command.expectedRevision,
-        }),
-      );
+      const fingerprint = hotelSetupTrackRequestFingerprint(command);
 
       try {
         await client.query("BEGIN");
