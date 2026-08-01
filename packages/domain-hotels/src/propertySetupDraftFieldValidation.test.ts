@@ -91,6 +91,13 @@ describe("property setup draft field validation", () => {
     }
   });
 
+  it.each(["unknown.field", "__proto__", "constructor", "toString"])(
+    "rejects the unregistered field name %s",
+    (field) => {
+      expect(isPropertySetupDraftFieldValue(field as PropertySetupFieldId, null)).toBe(false);
+    },
+  );
+
   it.each([
     ["marketplace.preferences.availability", { mode: "selected_months", months: [] }],
     ["room.name", { "room:1": null }],

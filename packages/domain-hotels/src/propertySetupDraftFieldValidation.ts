@@ -130,6 +130,9 @@ export function isPropertySetupDraftFieldValue(
   field: PropertySetupFieldId,
   value: unknown,
 ): value is JsonValue {
+  if (!Object.hasOwn(FIELD_VALIDATORS, field)) {
+    return false;
+  }
   return FIELD_VALIDATORS[field](value);
 }
 

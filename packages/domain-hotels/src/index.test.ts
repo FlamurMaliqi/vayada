@@ -8,6 +8,7 @@ import {
   createPropertyMediaProjectionInput,
   hotelCatalogCommandTypes,
   hotelCatalogIdempotencyKey,
+  isPropertySetupDraftFieldValue,
   parsePropertyMediaCommandResponse,
   type HotelCatalogCommand,
   type HotelCatalogCommandBus,
@@ -48,6 +49,12 @@ describe("@vayada/domain-hotels", () => {
     expect(PROPERTY_MEDIA_AUTHORIZATION.resourceType).toBe("property");
     expect(createPropertyMediaProjectionInput).toBeTypeOf("function");
     expect(parsePropertyMediaCommandResponse).toBeTypeOf("function");
+  });
+
+  it("exports property setup draft field validation", () => {
+    expect(isPropertySetupDraftFieldValue("profile.short_description", "A quiet hotel.")).toBe(
+      true,
+    );
   });
 
   it("builds a stable idempotency key", () => {
