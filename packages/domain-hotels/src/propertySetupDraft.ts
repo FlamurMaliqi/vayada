@@ -105,6 +105,7 @@ export const PROPERTY_SETUP_STEP_DEFINITIONS = [
       "pms.rate_plans",
       "pms.room_types",
       "hotel_catalog.location",
+      "hotel_catalog.policy",
     ],
     fields: [
       "guest.default_language",

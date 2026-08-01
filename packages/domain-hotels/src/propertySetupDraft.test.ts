@@ -57,7 +57,7 @@ describe("property setup draft contract", () => {
       pricing: "pms.pricing_settings|pms.rate_plans|pms.rate_rules",
       calendar: "pms.operating_calendar|pms.inventory|pms.room_types|hotel_catalog.location",
       guest_experience:
-        "booking.guest_experience|pms.pricing_settings|pms.rate_plans|pms.room_types|hotel_catalog.location",
+        "booking.guest_experience|pms.pricing_settings|pms.rate_plans|pms.room_types|hotel_catalog.location|hotel_catalog.policy",
       payments: "finance.payment_methods|pms.pricing_settings",
       review: "",
     });
