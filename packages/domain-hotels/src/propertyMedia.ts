@@ -31,6 +31,7 @@ export const PROPERTY_MEDIA_AUTHORIZATION = Object.freeze({
 } as const);
 
 export const PROPERTY_MEDIA_MAX_GALLERY_ITEMS = 25;
+export const PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH = 500;
 
 export type PropertyMediaUploadPurpose = (typeof PROPERTY_MEDIA_UPLOAD_PURPOSES)[number];
 export type PropertyMediaPresentationRole = (typeof PROPERTY_MEDIA_PRESENTATION_ROLES)[number];
@@ -179,7 +180,7 @@ function parseAssignment(value: unknown): PropertyMediaAssignment | null {
     !hasOnlyKeys(value, ["mediaObjectId", "role", "altText", "sortOrder"]) ||
     !isUuid(value["mediaObjectId"]) ||
     !PROPERTY_MEDIA_PRESENTATION_ROLES.includes(value["role"] as PropertyMediaPresentationRole) ||
-    !isNullableString(value["altText"]) ||
+    !isValidAltText(value["altText"]) ||
     !isNonNegativeInteger(value["sortOrder"])
   ) {
     return null;
@@ -246,8 +247,11 @@ function normalizeUuid(value: string): string {
   return value.toLowerCase();
 }
 
-function isNullableString(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
+function isValidAltText(value: unknown): value is string | null {
+  return (
+    value === null ||
+    (typeof value === "string" && value.length <= PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH)
+  );
 }
 
 function isPositiveRevision(value: unknown): value is number {

@@ -1750,6 +1750,67 @@ describe("platform media upload routes", () => {
     }
   });
 
+  it("accepts the canonical Hotel Catalog property authorization contract", async () => {
+    const app = buildMediaApp({
+      permissions: ["hotel_catalog.setup.manage"],
+      resources: [
+        {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "property_alpenrose",
+          relationship: "operator",
+        },
+      ],
+      targetResolver: {
+        async resolveTarget({ request, policy }) {
+          return {
+            ok: true,
+            target: {
+              resourceProduct: policy.targetResourceProduct,
+              resourceType: policy.targetResourceType,
+              resourceId: request.resource.resourceId,
+              propertyId: request.resource.resourceId,
+            },
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "property.gallery_image",
+        visibility: "public",
+        resource: {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "property_alpenrose",
+        },
+        files: [
+          {
+            filename: "gallery.webp",
+            contentType: "image/webp",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.body).toMatchObject({
+      uploadSession: {
+        target: {
+          resourceProduct: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "property_alpenrose",
+          propertyId: "property_alpenrose",
+        },
+      },
+    });
+  });
+
   const denialCases: Array<{
     name: string;
     auth?: string;

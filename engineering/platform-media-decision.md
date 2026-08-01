@@ -121,6 +121,32 @@ storage, or where a provider upload is part of the product command:
 This avoids routing normal browser uploads through product APIs while preserving
 backend control for workflows that are not simple object writes.
 
+### Property-media authorization compatibility
+
+The canonical property-media route contract uses
+`PROPERTY_MEDIA_AUTHORIZATION`: permission `hotel_catalog.setup.manage`, an
+active `hotel_catalog:property` resource link, and relationship `owner` or
+`operator`. The shared platform-media client accepts that resource shape.
+
+Until Booking Admin and Marketplace hotel-profile uploads have canonical
+property IDs in their session state, `apps/api` keeps a bounded compatibility
+input for `booking:booking_hotel` and `marketplace:hotel_profile`. Those inputs
+retain their existing `booking.settings.manage` or
+`marketplace.profile.manage` permission check and exact active source-resource
+link check. The persistent target resolver must then resolve exactly one active
+`hotel_catalog.property_source_links` row and replace the caller's resource
+with the canonical `hotel_catalog:property` target before a session is stored.
+It rejects missing or ambiguous mappings and never trusts a caller-provided
+target property ID. The compatibility path does not create a second property
+media owner or dual-write product media state.
+
+`apps/booking-admin/lib/utils/uploadImage.ts` is the remaining Booking producer
+of the legacy resource shape. It must switch to the canonical property resource
+as soon as Booking session state exposes that ID. Marketplace callers must do
+the same before the legacy hotel-profile input is removed. Removal requires
+tests proving both clients use canonical resource links; it does not depend on
+or introduce a publisher or PMS runtime adapter.
+
 ## Validation and Limits
 
 Platform media applies a purpose-specific policy before signing and again during

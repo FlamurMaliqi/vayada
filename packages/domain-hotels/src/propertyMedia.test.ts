@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   PROPERTY_MEDIA_AUTHORIZATION,
   PROPERTY_MEDIA_LIBRARY_STATUSES,
+  PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH,
   PROPERTY_MEDIA_MAX_GALLERY_ITEMS,
   PROPERTY_MEDIA_PRESENTATION_ROLES,
   PROPERTY_MEDIA_PUBLIC_VARIANTS,
@@ -158,6 +159,32 @@ describe("canonical property media contract", () => {
         assignments: [
           ...request.assignments,
           { mediaObjectId: logoId, role: "logo", altText: null, sortOrder: 2 },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it("bounds assignment alt text", () => {
+    const request = {
+      expectedProfileRevision: 4,
+      assignments: [
+        {
+          mediaObjectId: galleryId,
+          role: "gallery",
+          altText: "a".repeat(PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH),
+          sortOrder: 0,
+        },
+      ],
+    };
+    expect(parseReplacePropertyPresentationMediaRequest(request)).not.toBeNull();
+    expect(
+      parseReplacePropertyPresentationMediaRequest({
+        ...request,
+        assignments: [
+          {
+            ...request.assignments[0],
+            altText: "a".repeat(PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH + 1),
+          },
         ],
       }),
     ).toBeNull();
