@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type {
-  PropertySetupBaseRevisionKey,
-  SavePropertySetupDraftRequest,
+import {
+  PROPERTY_SETUP_ACTIVE_RETENTION_DAYS,
+  type PropertySetupBaseRevisionKey,
+  type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -17,7 +18,9 @@ import {
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const occurredAt = "2026-07-30T14:00:00.000Z";
-const retentionExpiresAt = "2026-10-28T14:00:00.000Z";
+const retentionExpiresAt = new Date(
+  Date.parse(occurredAt) + PROPERTY_SETUP_ACTIVE_RETENTION_DAYS * 86_400_000,
+).toISOString();
 const PRESENT_BASE = {
   "hotel_catalog.profile": "profile:7",
   "hotel_catalog.media": "media:4",
@@ -59,6 +62,15 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
       );
       await client.query(
         "DELETE FROM platform.idempotency_keys WHERE property_id = ANY($1::uuid[])",
+        [propertyIds],
+      );
+      await client.query(
+        `DELETE FROM hotel_catalog.property_setup_step_drafts
+         WHERE session_id IN (
+           SELECT id
+           FROM hotel_catalog.property_setup_sessions
+           WHERE property_id = ANY($1::uuid[])
+         )`,
         [propertyIds],
       );
       await client.query(
@@ -1126,7 +1138,7 @@ function sortJsonValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, entry]) => [key, sortJsonValue(entry)]),
   );
 }

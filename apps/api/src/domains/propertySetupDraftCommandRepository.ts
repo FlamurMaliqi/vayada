@@ -7,6 +7,7 @@ import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
   PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
   PROPERTY_SETUP_STEP_DEFINITIONS,
+  SETUP_TRACKS,
   type PropertySetupBaseRevisionKey,
   type SavePropertySetupDraftError,
   type SavePropertySetupDraftReceipt,
@@ -160,6 +161,7 @@ export function createPgPropertySetupDraftCommandRepository(
           await rollbackQuietly(client);
           return failure({ code: "setup_scope_unavailable" });
         }
+        await lockDraftScope(client, command.organizationId, command.propertyId);
 
         const replay = await findReplay(client, command, keyHash, fingerprint, savedAt);
         if (replay) {
@@ -308,7 +310,7 @@ async function lockOrganization(
      WHERE id = $1::uuid
        AND kind = 'hotel_group'
        AND status = 'active'
-     FOR UPDATE`,
+     FOR SHARE`,
     [organizationId],
   );
   return result.rowCount === 1;
@@ -341,11 +343,25 @@ async function lockAuthorizedScope(
       AND role_grant.role_key = membership.role_key
       AND role_grant.permission_key = $4
      WHERE property.id = $2::uuid
-     FOR UPDATE OF property, property_link, actor, membership
+     FOR SHARE OF property, property_link, actor, membership
      FOR KEY SHARE OF role_grant`,
     [command.organizationId, command.propertyId, command.actorUserId, permission],
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+async function lockDraftScope(
+  client: PropertySetupDraftCommandClient,
+  organizationId: string,
+  propertyId: string,
+): Promise<void> {
+  await client.query(
+    `SELECT pg_advisory_xact_lock(
+       hashtext('hotel_setup.property_draft:' || $1::uuid::text),
+       hashtext($2::uuid::text)
+     )`,
+    [organizationId, propertyId],
+  );
 }
 
 async function lockTrackIntent(
@@ -356,7 +372,7 @@ async function lockTrackIntent(
     `SELECT selected_tracks AS "selectedTracks", revision
      FROM hotel_catalog.organization_setup_track_intents
      WHERE organization_id = $1::uuid
-     FOR UPDATE`,
+     FOR SHARE`,
     [organizationId],
   );
   return result.rows[0] ?? null;
@@ -642,7 +658,7 @@ async function findReplay(
     : undefined;
   if (!isSaveResult(stored)) return failure({ code: "idempotency_key_conflict" });
   if (
-    existing.responseStatusCode !== (stored.ok ? 200 : 409) ||
+    existing.responseStatusCode !== idempotencyResponseStatus(stored) ||
     existing.responseBodyHash !== sha256(stableJson(idempotencyResponseBody(stored)))
   ) {
     return failure({ code: "idempotency_key_conflict" });
@@ -740,7 +756,7 @@ async function completeIdempotency(
        AND status = 'in_progress'`,
     [
       id,
-      result.ok ? 200 : 409,
+      idempotencyResponseStatus(result),
       sha256(stableJson(idempotencyResponseBody(result))),
       savedAt.toISOString(),
       JSON.stringify(result),
@@ -755,6 +771,10 @@ function idempotencyResponseBody(
   result: SavePropertySetupDraftResult,
 ): SavePropertySetupDraftReceipt | SavePropertySetupDraftError {
   return result.ok ? result.receipt : result.error;
+}
+
+function idempotencyResponseStatus(result: SavePropertySetupDraftResult): 200 | 409 {
+  return result.ok ? 200 : 409;
 }
 
 async function recordAudit(
@@ -956,8 +976,10 @@ function isSaveError(value: unknown): value is SavePropertySetupDraftError {
 function isSelectedTracks(value: unknown[]): value is SetupTrack[] {
   return (
     value.length >= 1 &&
-    value.length <= 2 &&
-    value.every((track) => track === "hotel_operations" || track === "creator_marketplace") &&
+    value.length <= SETUP_TRACKS.length &&
+    value.every(
+      (track) => typeof track === "string" && SETUP_TRACKS.includes(track as SetupTrack),
+    ) &&
     new Set(value).size === value.length
   );
 }
@@ -998,7 +1020,7 @@ function sortJsonValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, entry]) => [key, sortJsonValue(entry)]),
   );
 }
