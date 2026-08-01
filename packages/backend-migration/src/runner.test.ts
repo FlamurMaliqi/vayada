@@ -6,7 +6,13 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { computeChecksum, discoverMigrations, runMigrations } from "./runner.js";
+import {
+  computeChecksum,
+  discoverMigrations,
+  isNonTransactionalMigration,
+  runMigrations,
+  splitNonTransactionalMigration,
+} from "./runner.js";
 import { DEFAULT_TARGET_SCHEMAS } from "./targetSchemas.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
@@ -81,6 +87,26 @@ describe("discoverMigrations", () => {
     expect(file.name).toBe("identity");
     expect(file.filename).toBe("0001_identity.sql");
     expect(file.path).toBe(join(tmpDir, "0001_identity.sql"));
+  });
+});
+
+describe("isNonTransactionalMigration", () => {
+  it("recognizes only the explicit standalone directive", () => {
+    expect(isNonTransactionalMigration("-- vayada:no-transaction\nSELECT 1;")).toBe(true);
+    expect(isNonTransactionalMigration("  -- vayada:no-transaction  \nSELECT 1;")).toBe(true);
+    expect(isNonTransactionalMigration("-- mentions vayada:no-transaction\nSELECT 1;")).toBe(false);
+  });
+
+  it("splits explicit non-transactional statement boundaries", () => {
+    expect(
+      splitNonTransactionalMigration(
+        "-- vayada:no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS example;\n" +
+          "-- vayada:next-statement\nCREATE INDEX CONCURRENTLY example ON target (id);",
+      ),
+    ).toEqual([
+      "-- vayada:no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS example;",
+      "CREATE INDEX CONCURRENTLY example ON target (id);",
+    ]);
   });
 });
 
@@ -179,6 +205,40 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
     expect(second.applied).toEqual([]);
     expect(second.skipped).toEqual(["0001"]);
     expect(second.failed).toBeNull();
+  });
+
+  it("runs explicitly non-transactional migrations outside a transaction", async () => {
+    await writeFile(
+      join(tmpDir, "0001_table.sql"),
+      `CREATE SCHEMA migration_runner_test;
+       CREATE TABLE migration_runner_test.concurrent_index (id UUID PRIMARY KEY, scope_id UUID NOT NULL);`,
+    );
+    await writeFile(
+      join(tmpDir, "0002_index.sql"),
+      `-- vayada:no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS migration_runner_test.uq_migration_runner_concurrent_index;\n-- vayada:next-statement\nCREATE UNIQUE INDEX CONCURRENTLY uq_migration_runner_concurrent_index\n  ON migration_runner_test.concurrent_index (id, scope_id);`,
+    );
+
+    const result = await runMigrations({
+      connectionString: TEST_DATABASE_URL!,
+      migrationsDir: tmpDir,
+      environment: "local",
+      appliedBy: "test",
+    });
+
+    expect(result).toMatchObject({ applied: ["0001", "0002"], failed: null });
+
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await client.connect();
+    try {
+      const { rows } = await client.query<{ is_valid: boolean }>(
+        `SELECT indisvalid AS is_valid
+         FROM pg_index
+         WHERE indexrelid = 'migration_runner_test.uq_migration_runner_concurrent_index'::regclass`,
+      );
+      expect(rows).toEqual([{ is_valid: true }]);
+    } finally {
+      await client.end();
+    }
   });
 
   it("fails and records a ledger row when a previously applied migration file is modified", async () => {
@@ -822,6 +882,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
            condeferred AS is_initially_deferred
          FROM pg_constraint
          WHERE conname IN (
+           'chk_property_media_sort_order',
            'chk_pms_room_types_room_media_revision',
            'chk_pms_room_type_media_alt_text',
            'chk_pms_room_type_media_sort_order',
@@ -844,6 +905,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "char_length(alt_text) <= 500",
       );
       expect(mediaConstraint.get("fk_property_media_platform_object_property")).toMatchObject({
+        is_validated: false,
+      });
+      expect(mediaConstraint.get("chk_property_media_sort_order")).toMatchObject({
         is_validated: false,
       });
       expect(mediaConstraint.get("fk_platform_media_variants_object_visibility")).toMatchObject({

@@ -346,6 +346,30 @@ or uptime for those URLs until they are copied. Keeping them explicit in
 `media_objects.source_type` makes that risk queryable and keeps cleanup work
 out of product tables.
 
+## Assignment Constraint Cutover
+
+The initial canonical-assignment migration adds
+`chk_property_media_sort_order` and
+`fk_property_media_platform_object_property` as `NOT VALID`. New and updated
+rows are still checked immediately, while existing legacy rows can be cleaned
+without holding the deployment migration open.
+
+The property-media writer cutover must inventory and repair negative sort
+orders and property/object ownership mismatches. After that parity check passes,
+a dedicated follow-up migration must run:
+
+```sql
+ALTER TABLE hotel_catalog.property_media
+  VALIDATE CONSTRAINT chk_property_media_sort_order;
+ALTER TABLE hotel_catalog.property_media
+  VALIDATE CONSTRAINT fk_property_media_platform_object_property;
+```
+
+That follow-up migration must verify both constraints have
+`pg_constraint.convalidated = true`. The initial migration's regression test
+deliberately expects `false`; changing that expectation before legacy cleanup
+would hide an incomplete cutover.
+
 ## Implementation Tickets to Create on Acceptance
 
 1. Define platform media registry DDL and migration contracts.

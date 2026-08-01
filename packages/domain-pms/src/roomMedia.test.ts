@@ -63,6 +63,21 @@ describe("room media command contract", () => {
     ).toBeNull();
   });
 
+  it("accepts PostgreSQL UUID versions beyond the legacy v1-v5 range", () => {
+    for (const mediaObjectId of [
+      "00000000-0000-0000-8000-000000000001",
+      "00000000-0000-7000-9000-000000000002",
+      "00000000-0000-8000-a000-000000000003",
+    ]) {
+      expect(
+        parseReplaceRoomMediaRequest({
+          expectedRoomMediaRevision: 3,
+          assignments: [{ mediaObjectId, altText: null, sortOrder: 0 }],
+        }),
+      ).not.toBeNull();
+    }
+  });
+
   it("rejects duplicate media, gaps, oversized sets, and unknown fields", () => {
     expect(
       parseReplaceRoomMediaRequest({

@@ -55,6 +55,8 @@ export type RunResult = {
 };
 
 const MIGRATION_FILENAME_RE = /^(\d{4})_([a-z][a-z0-9_]*)\.sql$/;
+const NON_TRANSACTIONAL_MIGRATION_DIRECTIVE = "-- vayada:no-transaction";
+const NON_TRANSACTIONAL_STATEMENT_SEPARATOR = "-- vayada:next-statement";
 
 export const ADVISORY_LOCK_ID = 8734516;
 
@@ -65,6 +67,22 @@ const LOCK_RETRY_DELAY_MS = 500;
 
 export function computeChecksum(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+export function isNonTransactionalMigration(content: string): boolean {
+  return content
+    .split(/\r?\n/u)
+    .some((line) => line.trim() === NON_TRANSACTIONAL_MIGRATION_DIRECTIVE);
+}
+
+export function splitNonTransactionalMigration(content: string): string[] {
+  const statements = content
+    .split(new RegExp(`^\\s*${NON_TRANSACTIONAL_STATEMENT_SEPARATOR}\\s*$`, "mu"))
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
+  if (statements.length === 0)
+    throw new Error("Non-transactional migration contains no statements");
+  return statements;
 }
 
 export async function discoverMigrations(dir: string): Promise<MigrationFile[]> {
@@ -187,6 +205,7 @@ export async function applyMigrations(config: RunnerConfig, client: pg.Client): 
   for (const migration of migrations) {
     const content = await readFile(migration.path, "utf8");
     const checksum = computeChecksum(content);
+    const transactional = !isNonTransactionalMigration(content);
 
     const existing = await getAppliedRow(client, migration.version);
 
@@ -221,9 +240,11 @@ export async function applyMigrations(config: RunnerConfig, client: pg.Client): 
     const startedAt = Date.now();
 
     try {
-      await client.query("BEGIN");
-      await client.query(content);
-      // Ledger insert is inside the transaction so DDL and record are atomic.
+      if (transactional) await client.query("BEGIN");
+      const statements = transactional ? [content] : splitNonTransactionalMigration(content);
+      for (const statement of statements) await client.query(statement);
+      // Transactional DDL and its ledger row are atomic. Non-transactional
+      // migrations must be idempotent because their ledger insert is separate.
       await insertLedgerRow(client, {
         ...migration,
         checksum_sha256: checksum,
@@ -237,11 +258,11 @@ export async function applyMigrations(config: RunnerConfig, client: pg.Client): 
         statement_count: null,
         requires_rebuild: false,
       });
-      await client.query("COMMIT");
+      if (transactional) await client.query("COMMIT");
 
       result.applied.push(migration.version);
     } catch (error) {
-      await client.query("ROLLBACK");
+      if (transactional) await client.query("ROLLBACK");
 
       const failureReason = error instanceof Error ? error.message : String(error);
 

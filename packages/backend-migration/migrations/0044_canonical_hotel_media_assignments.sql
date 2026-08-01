@@ -1,4 +1,4 @@
--- Migration: 0043_canonical_hotel_media_assignments
+-- Migration: 0044_canonical_hotel_media_assignments
 -- Owner: domain-hotels / domain-pms
 -- See: engineering/hotel-onboarding-information-inventory.md
 --
@@ -8,7 +8,7 @@
 
 ALTER TABLE platform.media_objects
   ADD CONSTRAINT uq_platform_media_objects_id_property
-  UNIQUE (id, property_id);
+  UNIQUE USING INDEX uq_platform_media_objects_id_property;
 
 ALTER TABLE platform.media_variants
   ALTER CONSTRAINT fk_platform_media_variants_object_visibility
