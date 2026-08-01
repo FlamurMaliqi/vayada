@@ -3,15 +3,22 @@ import { randomUUID } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import {
-  PlatformMediaProfileRevisionConflictError,
   type ApprovedPublicProfileImageRepository,
   type PlatformMediaAuditEvent,
+  PlatformMediaCompletionError,
+  PlatformMediaProfileRevisionConflictError,
+  PlatformMediaTargetInvalidError,
   type PlatformMediaObjectRecord,
   type PlatformMediaRepository,
   type PlatformMediaSessionRecord,
   type PlatformMediaTargetResolver,
   type PlatformMediaVariantRecord,
 } from "../routes/platformMedia.js";
+import {
+  assertCanonicalPrivatePropertyVariants,
+  isCanonicalPrivatePropertyMediaObject,
+  normalizePlatformMediaPathPrefix,
+} from "./propertyMediaVariantContract.js";
 
 type Queryable = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -29,6 +36,7 @@ type PlatformMediaPool = Queryable & {
 type PgPlatformMediaRepositoryConfig = {
   connectionString: string;
   publicCdnBaseUrl: string;
+  mediaPathPrefix?: string;
   max?: number;
   pool?: PlatformMediaPool;
 };
@@ -47,15 +55,17 @@ const supportedPurposes = new Set([
   "identity.user.profile_image",
   "property.hero_image",
   "property.gallery_image",
+  "property.logo",
   "marketplace.creator.profile_image",
   "marketplace.offer.media",
   "marketplace.collaboration_chat.attachment",
+  "pms.room_type.media",
 ]);
-const autoApprovedPublicPurposes = new Set([
-  "identity.user.profile_image",
+const propertyMediaPurposes = new Set([
   "property.hero_image",
   "property.gallery_image",
-  "marketplace.creator.profile_image",
+  "property.logo",
+  "pms.room_type.media",
 ]);
 const CANONICAL_UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
@@ -71,6 +81,7 @@ export function createPgPlatformMediaRepository(
 
   const ownsPool = !config.pool;
   const pool: PlatformMediaPool = config.pool ?? createPlatformMediaPool(config);
+  const mediaPathPrefix = normalizePlatformMediaPathPrefix(config.mediaPathPrefix ?? "media");
 
   return {
     persistent: true,
@@ -80,22 +91,23 @@ export function createPgPlatformMediaRepository(
       if (!supportedPurposes.has(input.request.purpose)) {
         throw new Error("Persistent platform media does not support this upload purpose");
       }
+      const isAutoApproved = input.policy.autoApprovePublicOnFinalize === true;
+      const isPropertyMedia = isCanonicalPropertyMediaRequest(input.request);
       if (
         input.request.purpose === "property.hero_image" &&
+        !isPropertyMedia &&
         input.request.expectedProfileRevision === undefined
       ) {
         throw new Error("Property hero images require expectedProfileRevision");
       }
-      const isAutoApproved = autoApprovedPublicPurposes.has(input.request.purpose);
       if (
-        (isAutoApproved &&
-          (requestedVisibility !== "public" || !input.policy.autoApprovePublicOnFinalize)) ||
-        (!isAutoApproved &&
-          (input.policy.purpose !== input.request.purpose ||
-            input.policy.autoApprovePublicOnFinalize === true))
+        (isAutoApproved && requestedVisibility !== "public") ||
+        (!isAutoApproved && input.policy.purpose !== input.request.purpose) ||
+        (isPropertyMedia && (requestedVisibility !== "private" || !input.policy.privateOnly))
       ) {
         throw new Error("Persistent platform media policy does not support this upload");
       }
+      if (isPropertyMedia) assertCanonicalPropertyMediaSessionInput(input);
 
       const files = input.request.files.map((file, index) => {
         const uploadTarget = input.uploadTargets[index];
@@ -183,6 +195,12 @@ export function createPgPlatformMediaRepository(
     async findUploadSession(sessionId) {
       return readSession(pool, sessionId);
     },
+    async findUploadSessionForActor(input) {
+      return readSession(pool, input.sessionId, false, {
+        actorUserId: input.actorUserId,
+        ownerOrganizationId: input.ownerOrganizationId,
+      });
+    },
     async renewSignedUploadSession(input) {
       const renewed = {
         ...input.session,
@@ -231,7 +249,7 @@ export function createPgPlatformMediaRepository(
       return resolveTarget(pool, input);
     },
     async completeUploadSession(input) {
-      return completeUploadSession(pool, input);
+      return completeUploadSession(pool, input, mediaPathPrefix);
     },
     async createImportJob() {
       throw new Error(
@@ -293,6 +311,45 @@ async function resolveTarget(
     };
   }
 
+  if (isCanonicalPropertyMediaRequest(input.request)) {
+    const propertyId = input.request.resource.resourceId;
+    const roomTypeId = input.request.resource.targetResourceId;
+    if (
+      !CANONICAL_UUID.test(propertyId) ||
+      (input.request.purpose === "pms.room_type.media" &&
+        (!roomTypeId || !CANONICAL_UUID.test(roomTypeId)))
+    ) {
+      return propertyMediaTargetForbidden();
+    }
+    const result =
+      input.request.purpose === "pms.room_type.media"
+        ? await queryable.query<PropertyTargetRow>(
+            `SELECT room_type.property_id::text AS "propertyId"
+             FROM pms.room_types room_type
+             WHERE room_type.id = $1::uuid
+               AND room_type.property_id = $2::uuid
+             LIMIT 1`,
+            [roomTypeId, propertyId],
+          )
+        : await queryable.query<PropertyTargetRow>(
+            `SELECT property.id::text AS "propertyId"
+             FROM hotel_catalog.properties property
+             WHERE property.id = $1::uuid
+             LIMIT 1`,
+            [propertyId],
+          );
+    if (result.rows.length !== 1) return propertyMediaTargetForbidden();
+    return {
+      ok: true,
+      target: {
+        resourceProduct: input.policy.targetResourceProduct,
+        resourceType: input.policy.targetResourceType,
+        resourceId: input.request.purpose === "pms.room_type.media" ? roomTypeId! : propertyId,
+        propertyId,
+      },
+    };
+  }
+
   if (input.policy.targetResourceProduct !== "hotel_catalog") {
     return {
       ok: true,
@@ -307,7 +364,6 @@ async function resolveTarget(
       },
     };
   }
-
   const sourceTable =
     input.request.resource.product === "booking" ? "booking_hotels" : "hotel_profiles";
   const result = await queryable.query<PropertyTargetRow>(
@@ -328,15 +384,7 @@ async function resolveTarget(
      LIMIT 2`,
     [input.request.resource.product, sourceTable, input.request.resource.resourceId],
   );
-  if (result.rows.length !== 1) {
-    return {
-      ok: false,
-      statusCode: 403,
-      code: "media_target_forbidden",
-      message: "Property media target is not linked to this hotel resource.",
-    };
-  }
-
+  if (result.rows.length !== 1) return propertyMediaTargetForbidden();
   const propertyId = result.rows[0]!.propertyId;
   return {
     ok: true,
@@ -349,17 +397,71 @@ async function resolveTarget(
   };
 }
 
+function propertyMediaTargetForbidden() {
+  return {
+    ok: false as const,
+    statusCode: 403 as const,
+    code: "media_target_forbidden",
+    message: "Property media target is unavailable.",
+  };
+}
+
+function assertCanonicalPropertyMediaSessionInput(
+  input: Parameters<PlatformMediaRepository["createUploadSession"]>[0],
+): void {
+  const propertyId = input.request.resource.resourceId;
+  const roomTypeId = input.request.resource.targetResourceId;
+  const isRoomMedia = input.request.purpose === "pms.room_type.media";
+  const hasCanonicalResource =
+    input.request.resource.product === "hotel_catalog" &&
+    input.request.resource.resourceType === "property" &&
+    CANONICAL_UUID.test(propertyId) &&
+    (input.request.resource.propertyId === undefined ||
+      input.request.resource.propertyId === propertyId);
+  const hasCanonicalTarget =
+    input.target.propertyId === propertyId &&
+    (isRoomMedia
+      ? CANONICAL_UUID.test(roomTypeId ?? "") &&
+        input.target.resourceProduct === "pms" &&
+        input.target.resourceType === "room_type" &&
+        input.target.resourceId === roomTypeId
+      : roomTypeId === undefined &&
+        input.target.resourceProduct === "hotel_catalog" &&
+        input.target.resourceType === "property" &&
+        input.target.resourceId === propertyId);
+  if (!hasCanonicalResource || !hasCanonicalTarget) {
+    throw new Error("Property media requires a canonical property target");
+  }
+}
+
+function isCanonicalPropertyMediaRequest(
+  request: Pick<PlatformMediaSessionRecord, "purpose" | "resource">,
+): boolean {
+  return (
+    propertyMediaPurposes.has(request.purpose) &&
+    request.resource.product === "hotel_catalog" &&
+    request.resource.resourceType === "property"
+  );
+}
+
 async function completeUploadSession(
   pool: PlatformMediaPool,
   input: Parameters<PlatformMediaRepository["completeUploadSession"]>[0],
+  mediaPathPrefix: string,
 ): ReturnType<PlatformMediaRepository["completeUploadSession"]> {
   const client = await pool.connect();
+  let transactionStarted = false;
+  let commitAttempted = false;
+  let uncertainCommitError: unknown;
   try {
     await client.query("BEGIN");
+    transactionStarted = true;
     const session = await readSession(client, input.session.sessionId, true);
     if (!session) throw new Error("Platform media upload session was not found");
     if (session.status === "completed") {
+      assertCompletedPropertyMediaIsCanonical(session, mediaPathPrefix);
       await recordAudit(client, input.auditEvent);
+      commitAttempted = true;
       await client.query("COMMIT");
       return {
         uploadSession: session,
@@ -374,7 +476,7 @@ async function completeUploadSession(
     if (!supportedPurposes.has(session.purpose)) {
       throw new Error("Persistent platform media cannot finalize this purpose");
     }
-    const isAutoApproved = autoApprovedPublicPurposes.has(session.purpose);
+    const isAutoApproved = isAutoApprovedPublicSession(session);
     if (
       (isAutoApproved &&
         (session.requestedVisibility !== "public" || session.effectiveVisibility !== "public")) ||
@@ -382,9 +484,18 @@ async function completeUploadSession(
     ) {
       throw new Error("Persistent platform media session has an invalid visibility state");
     }
+    await lockCurrentRoomTarget(client, session);
 
-    const mediaObjects = input.files.map((file, index) =>
-      mediaObjectFor(session, file, input.variantSets[index] ?? [], input.bucketName, input.now),
+    const files = bindCompletionFilesToSession(session, input.files);
+    const mediaObjects = files.map((file, index) =>
+      mediaObjectFor(
+        session,
+        file,
+        input.variantSets[index] ?? [],
+        input.bucketName,
+        mediaPathPrefix,
+        input.now,
+      ),
     );
     await lockPropertyProfileRevision(client, session);
     for (const mediaObject of mediaObjects) {
@@ -419,27 +530,97 @@ async function completeUploadSession(
       ],
     );
     await recordAudit(client, input.auditEvent);
+    commitAttempted = true;
     await client.query("COMMIT");
     return { uploadSession: completedSession, mediaObjects };
   } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
+    if (!transactionStarted) {
+      throw new PlatformMediaCompletionError("rolled_back", error);
+    }
+    if (!commitAttempted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        throw new PlatformMediaCompletionError(
+          "unknown",
+          new AggregateError([error, rollbackError], "Platform media rollback failed"),
+        );
+      }
+      if (
+        error instanceof PlatformMediaTargetInvalidError ||
+        error instanceof PlatformMediaProfileRevisionConflictError
+      ) {
+        throw error;
+      }
+      throw new PlatformMediaCompletionError("rolled_back", error);
+    }
+    uncertainCommitError = error;
   } finally {
     client.release();
   }
+
+  try {
+    const reconciled = await readSession(pool, input.session.sessionId);
+    if (reconciled?.status === "completed") {
+      assertCompletedPropertyMediaIsCanonical(reconciled, mediaPathPrefix);
+      return {
+        uploadSession: reconciled,
+        mediaObjects:
+          reconciled.completedMediaObjects ??
+          (reconciled.completedMediaObject ? [reconciled.completedMediaObject] : []),
+      };
+    }
+  } catch (reconciliationError) {
+    throw new PlatformMediaCompletionError(
+      "unknown",
+      new AggregateError(
+        [uncertainCommitError, reconciliationError],
+        "Platform media commit reconciliation failed",
+      ),
+    );
+  }
+  throw new PlatformMediaCompletionError("unknown", uncertainCommitError);
+}
+
+function bindCompletionFilesToSession(
+  session: PlatformMediaSessionRecord,
+  files: Parameters<PlatformMediaRepository["completeUploadSession"]>[0]["files"],
+): Parameters<PlatformMediaRepository["completeUploadSession"]>[0]["files"] {
+  if (files.length !== session.files.length) {
+    throw new Error("Platform media completion file count does not match the signed session");
+  }
+  const byUploadTargetId = new Map(files.map((file) => [file.uploadTarget.uploadTargetId, file]));
+  if (byUploadTargetId.size !== files.length) {
+    throw new Error("Platform media completion contains duplicate upload targets");
+  }
+  return session.files.map((sessionFile) => {
+    const file = byUploadTargetId.get(sessionFile.uploadTargetId);
+    if (!file) throw new Error("Platform media completion is missing a signed upload target");
+    return { ...file, sessionFile };
+  });
+}
+
+function isAutoApprovedPublicSession(session: PlatformMediaSessionRecord): boolean {
+  return (
+    session.purpose === "identity.user.profile_image" ||
+    session.purpose === "marketplace.creator.profile_image" ||
+    (!isCanonicalPropertyMediaRequest(session) &&
+      (session.purpose === "property.hero_image" || session.purpose === "property.gallery_image"))
+  );
 }
 
 async function lockPropertyProfileRevision(
   client: Queryable,
   session: PlatformMediaSessionRecord,
 ): Promise<void> {
-  if (session.purpose !== "property.hero_image" && session.purpose !== "property.gallery_image") {
+  if (
+    isCanonicalPropertyMediaRequest(session) ||
+    (session.purpose !== "property.hero_image" && session.purpose !== "property.gallery_image")
+  ) {
     return;
   }
   const propertyId = session.target.propertyId;
-  if (!propertyId) {
-    throw new Error("Property media requires a canonical property target");
-  }
+  if (!propertyId) throw new Error("Property media requires a canonical property target");
 
   const result = await client.query<PropertyRevisionRow>(
     `SELECT property.profile_revision AS "profileRevision"
@@ -467,8 +648,16 @@ function mediaObjectFor(
   file: Parameters<PlatformMediaRepository["completeUploadSession"]>[0]["files"][number],
   variants: PlatformMediaVariantRecord[],
   bucketName: string,
+  mediaPathPrefix: string,
   now: string,
 ): PlatformMediaObjectRecord {
+  if (isCanonicalPropertyMediaRequest(session)) {
+    assertCanonicalPrivatePropertyVariants({
+      mediaId: file.sessionFile.mediaId,
+      variants,
+      mediaPathPrefix,
+    });
+  }
   const originalSafe =
     variants.find(({ variantName }) => variantName === "original_safe") ??
     variants.find(({ variantName }) => variantName === "provider_original");
@@ -525,6 +714,52 @@ function mediaObjectFor(
     variants,
     createdAt: now,
   };
+}
+
+async function lockCurrentRoomTarget(
+  client: Queryable,
+  session: PlatformMediaSessionRecord,
+): Promise<void> {
+  if (session.purpose !== "pms.room_type.media" || !isCanonicalPropertyMediaRequest(session)) {
+    return;
+  }
+  const propertyId = session.target.propertyId;
+  if (!propertyId || !CANONICAL_UUID.test(session.target.resourceId)) {
+    throw new Error("PMS room media requires a canonical room target");
+  }
+  const result = await client.query<PropertyTargetRow>(
+    `SELECT room_type.property_id::text AS "propertyId"
+     FROM pms.room_types room_type
+     WHERE room_type.id = $1::uuid
+       AND room_type.property_id = $2::uuid
+     FOR KEY SHARE`,
+    [session.target.resourceId, propertyId],
+  );
+  if (result.rows.length !== 1) {
+    throw new PlatformMediaTargetInvalidError();
+  }
+}
+
+function assertCompletedPropertyMediaIsCanonical(
+  session: PlatformMediaSessionRecord,
+  mediaPathPrefix: string,
+): void {
+  if (!isCanonicalPropertyMediaRequest(session)) return;
+  const mediaObjects =
+    session.completedMediaObjects ??
+    (session.completedMediaObject ? [session.completedMediaObject] : []);
+  const expectedMediaIds = new Set(session.files.map(({ mediaId }) => mediaId));
+  if (
+    mediaObjects.length !== expectedMediaIds.size ||
+    mediaObjects.some(
+      (mediaObject) =>
+        !expectedMediaIds.delete(mediaObject.mediaId) ||
+        mediaObject.purpose !== session.purpose ||
+        !isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix }),
+    )
+  ) {
+    throw new Error("Completed property media is not reusable");
+  }
 }
 
 async function insertMediaObject(
@@ -613,8 +848,11 @@ async function upsertPropertyMediaProjection(
   now: string,
 ): Promise<void> {
   if (
-    mediaObject.purpose !== "property.hero_image" &&
-    mediaObject.purpose !== "property.gallery_image"
+    mediaObject.resourceProduct !== "hotel_catalog" ||
+    mediaObject.resourceType !== "property" ||
+    mediaObject.visibility !== "public" ||
+    (mediaObject.purpose !== "property.hero_image" &&
+      mediaObject.purpose !== "property.gallery_image")
   ) {
     return;
   }
@@ -749,19 +987,34 @@ async function readSession(
   queryable: Queryable,
   sessionId: string,
   forUpdate = false,
+  scope?: { actorUserId: string; ownerOrganizationId: string },
 ): Promise<PlatformMediaSessionRecord | null> {
-  if (!CANONICAL_UUID.test(sessionId)) return null;
+  if (
+    !CANONICAL_UUID.test(sessionId) ||
+    (scope &&
+      (!CANONICAL_UUID.test(scope.actorUserId) || !CANONICAL_UUID.test(scope.ownerOrganizationId)))
+  ) {
+    return null;
+  }
   const result = await queryable.query<SessionRow>(
     `SELECT completion_metadata -> 'session' AS session,
             completed_media_object_id::text AS "completedMediaObjectId",
             completion_metadata -> 'mediaObjectIds' AS "mediaObjectIds"
      FROM platform.media_upload_sessions
-     WHERE id = $1::uuid${forUpdate ? " FOR UPDATE" : ""}`,
-    [sessionId],
+     WHERE id = $1::uuid
+       ${scope ? "AND actor_user_id = $2::uuid AND owner_organization_id = $3::uuid" : ""}
+     ${forUpdate ? "FOR UPDATE" : ""}`,
+    scope ? [sessionId, scope.actorUserId, scope.ownerOrganizationId] : [sessionId],
   );
   const row = result.rows[0];
   if (!row?.session) return null;
   if (row.session.status !== "completed") return row.session;
+  if (
+    isCanonicalPropertyMediaRequest(row.session) &&
+    (row.session.completedMediaObjects?.length || row.session.completedMediaObject)
+  ) {
+    return row.session;
+  }
 
   const mediaObjectIds = completedMediaObjectIds(row);
   if (mediaObjectIds.length === 0) {

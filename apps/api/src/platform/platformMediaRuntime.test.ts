@@ -25,6 +25,7 @@ const completeInput: PlatformMediaRuntimeInput = {
   auth: {},
   targetDatabaseUrl: "postgresql://target-db",
   platformMediaServing,
+  hotelMediaUploadSource: "target",
   allowedOrigins: ["https://marketplace.vayada.com"],
 };
 
@@ -52,6 +53,7 @@ describe("platform media runtime composition", () => {
     expect(factories.createRepository).toHaveBeenCalledWith({
       connectionString: "postgresql://target-db",
       publicCdnBaseUrl: "https://cdn.vayada.com",
+      mediaPathPrefix: "profile-media",
     });
     expect(factories.createAdapter).toHaveBeenCalledOnce();
     expect(factories.createAdapter).toHaveBeenCalledWith({
@@ -74,6 +76,7 @@ describe("platform media runtime composition", () => {
     expect(runtime.profileMediaRepository).toBe(repository);
     expect(runtime.offerMediaPromotion).toBe(offerMediaPromotion);
     expect(runtime.cleanupStore).toBe(cleanupStore);
+    expect(runtime.routes.mediaPathPrefix).toBe("profile-media");
     expect(runtime.collaborationAttachments).toEqual({
       repository,
       signer: adapter,
@@ -91,10 +94,32 @@ describe("platform media runtime composition", () => {
         "marketplace.creator.profile_image",
         "marketplace.offer.media",
         "marketplace.collaboration_chat.attachment",
+        "property.logo",
+        "pms.room_type.media",
       ],
       bucketName: "vayada-media-production",
       allowedOrigins: ["https://marketplace.vayada.com"],
+      hotelMediaUploadSource: "target",
     });
+  });
+
+  it("keeps canonical logo and room uploads dark in legacy mode", () => {
+    const { factories } = fakeFactories();
+    const runtime = composePlatformMediaRuntime(
+      { ...completeInput, hotelMediaUploadSource: "legacy" },
+      factories,
+    );
+    if (!runtime) throw new Error("Expected complete media configuration to compose a runtime");
+
+    expect(runtime.routes.enabledPurposes).toEqual([
+      "identity.user.profile_image",
+      "property.hero_image",
+      "property.gallery_image",
+      "marketplace.creator.profile_image",
+      "marketplace.offer.media",
+      "marketplace.collaboration_chat.attachment",
+    ]);
+    expect(runtime.routes.hotelMediaUploadSource).toBe("legacy");
   });
 });
 

@@ -1,9 +1,11 @@
+import { PROPERTY_MEDIA_PUBLIC_VARIANTS } from "@vayada/domain-hotels";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
   PlatformMediaObjectRecord,
   PlatformMediaSessionRecord,
 } from "../routes/platformMedia.js";
+import { PlatformMediaTargetInvalidError } from "../routes/platformMedia.js";
 import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
 
 describe("PostgreSQL platform media repository", () => {
@@ -81,6 +83,43 @@ describe("PostgreSQL platform media repository", () => {
         text.includes("INSERT INTO platform.product_audit_events"),
       ),
     ).toHaveLength(1);
+  });
+
+  it("scopes persistent upload-session reads to both actor and organization", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository);
+
+    await expect(
+      repository.findUploadSessionForActor({
+        sessionId: session.sessionId,
+        actorUserId: session.actorUserId,
+        ownerOrganizationId: session.ownerOrganizationId,
+      }),
+    ).resolves.toMatchObject({ sessionId: session.sessionId });
+    await expect(
+      repository.findUploadSessionForActor({
+        sessionId: session.sessionId,
+        actorUserId: "00000000-0000-4000-8000-000000000099",
+        ownerOrganizationId: session.ownerOrganizationId,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      repository.findUploadSessionForActor({
+        sessionId: session.sessionId,
+        actorUserId: session.actorUserId,
+        ownerOrganizationId: "00000000-0000-4000-8000-000000000099",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects public property media before persistence", async () => {
+    const database = createFakeDatabase();
+
+    await expect(
+      createSession(repositoryFor(database.pool), "property.hero_image", "public"),
+    ).rejects.toThrow("Persistent platform media policy does not support this upload");
+    expect(database.queries).toEqual([]);
   });
 
   it("completes once, replays idempotently, and reads media from a fresh repository", async () => {
@@ -251,146 +290,248 @@ describe("PostgreSQL platform media repository", () => {
     ]);
   });
 
-  it("rejects property hero sessions without an expected profile revision", async () => {
-    const database = createFakeDatabase();
-
-    await expect(
-      createSession(repositoryFor(database.pool), "property.hero_image"),
-    ).rejects.toThrow("Property hero images require expectedProfileRevision");
-    expect(database.queries).toEqual([]);
-  });
-
-  it.each(["property.hero_image", "property.gallery_image"] as const)(
-    "resolves and persists requested-public %s against the canonical property",
-    async (purpose) => {
+  it.each([
+    ["property.hero_image", null],
+    ["property.gallery_image", null],
+    ["property.logo", null],
+    ["pms.room_type.media", ROOM_TYPE_ID],
+  ] as const)(
+    "resolves and persists private-staged %s against the canonical property",
+    async (purpose, roomTypeId) => {
       const database = createFakeDatabase();
       const repository = repositoryFor(database.pool);
       const resolved = await repository.resolveTarget({
         request: {
           purpose,
-          visibility: "public",
+          visibility: "private",
           resource: {
-            product: "booking",
-            resourceType: "booking_hotel",
-            resourceId: BOOKING_HOTEL_ID,
-            propertyId: "00000000-0000-4000-8000-000000000099",
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: PROPERTY_ID,
+            ...(roomTypeId ? { targetResourceId: roomTypeId } : {}),
           },
           files: [],
         },
         policy: {
-          targetResourceProduct: "hotel_catalog",
-          targetResourceType: "property",
+          targetResourceProduct: roomTypeId ? "pms" : "hotel_catalog",
+          targetResourceType: roomTypeId ? "room_type" : "property",
         } as never,
         context: {} as never,
       });
       expect(resolved).toEqual({
         ok: true,
         target: {
-          resourceProduct: "hotel_catalog",
-          resourceType: "property",
-          resourceId: PROPERTY_ID,
+          resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
+          resourceType: roomTypeId ? "room_type" : "property",
+          resourceId: roomTypeId ?? PROPERTY_ID,
           propertyId: PROPERTY_ID,
         },
       });
 
-      const session = await createSession(
-        repository,
-        purpose,
-        purpose === "property.hero_image" ? 1 : undefined,
-      );
-      if (purpose === "property.hero_image") {
-        expect(session.expectedProfileRevision).toBe(1);
-      }
+      const session = await createSession(repository, purpose);
       const completed = await repository.completeUploadSession(completionInput(session));
       expect(completed.mediaObjects[0]).toMatchObject({
         purpose,
         propertyId: PROPERTY_ID,
-        resourceProduct: "hotel_catalog",
-        resourceType: "property",
-        resourceId: PROPERTY_ID,
-        visibility: "public",
-        requestedVisibility: "public",
-        approvalStatus: "approved",
-        lifecycleStatus: "active",
-        variants: [
+        resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
+        resourceType: roomTypeId ? "room_type" : "property",
+        resourceId: roomTypeId ?? PROPERTY_ID,
+        visibility: "private",
+        requestedVisibility: "private",
+        approvalStatus: "private",
+        lifecycleStatus: "staged",
+        variants: expect.arrayContaining([
           expect.objectContaining({
-            visibility: "public",
-            publicCdnUrl: "https://cdn.example.com/media/profile/original-safe.webp",
+            visibility: "private",
+            publicCdnUrl: null,
           }),
-        ],
+        ]),
       });
-      const projection = database.clientQueries.find(({ text }) =>
-        text.includes("INSERT INTO hotel_catalog.property_media"),
-      );
-      expect(projection?.values).toEqual([
-        session.files[0]!.mediaId,
-        PROPERTY_ID,
-        purpose === "property.hero_image" ? "hero_image" : "gallery_image",
-        "https://cdn.example.com/media/profile/original-safe.webp",
-        JSON.stringify({ platformMediaObjectId: session.files[0]!.mediaId }),
-        "2026-07-16T12:01:00.000Z",
-      ]);
-      expect(projection?.text).toContain("platform_media_object_id = $1::uuid");
-      expect(projection?.text).toContain("source_system = 'platform'");
-      expect(projection?.text).toContain("public_approved = TRUE");
-      expect(projection?.text).toContain("COALESCE(MAX(sort_order) + 1, 1)");
-      expect(projection?.text).not.toContain("FOR UPDATE");
-      expect(projection?.text).toContain("advanced_property AS");
-      expect(projection?.text).toContain("projected_media AS");
-      expect(projection?.text).toContain("completeness AS");
-      expect(projection?.text).toContain("BTRIM(profile.short_description)");
-      expect(projection?.text).toContain("THEN 'description' END");
-      expect(projection?.text).toContain("THEN 'media' END");
-      expect(projection?.text).toContain("SET completeness_reasons = completeness.reasons");
-      expect(projection?.text).toContain(
-        "WHEN property.profile_status IN ('disabled', 'private') THEN property.profile_status",
-      );
-      expect(projection?.text).toContain(
-        "WHEN cardinality(completeness.reasons) = 0 THEN 'complete'",
-      );
-      expect(projection?.text).toContain("profile_revision = property.profile_revision + 1");
-      expect(
-        database.clientQueries.findIndex(({ text }) =>
-          text.includes('SELECT property.profile_revision AS "profileRevision"'),
-        ),
-      ).toBeLessThan(
-        database.clientQueries.findIndex(({ text }) =>
-          text.includes("INSERT INTO platform.media_objects"),
-        ),
+      expect(completed.mediaObjects[0]!.variants.map(({ variantName }) => variantName)).toEqual(
+        PROPERTY_MEDIA_PUBLIC_VARIANTS,
       );
       expect(
-        database.clientQueries.findIndex(({ text }) =>
-          text.includes("INSERT INTO hotel_catalog.property_media"),
-        ),
-      ).toBeGreaterThan(
-        database.clientQueries.findIndex(({ text }) =>
-          text.includes("INSERT INTO platform.media_variants"),
-        ),
+        database.clientQueries.some(({ text }) => text.includes("hotel_catalog.property_media")),
+      ).toBe(false);
+      expect(database.clientQueries.some(({ text }) => text.includes("profile_revision"))).toBe(
+        false,
       );
     },
   );
 
-  it("rolls back hero finalization before media writes when the profile revision is stale", async () => {
+  it("resolves, completes, and replays frozen legacy-public property media", async () => {
     const database = createFakeDatabase();
     const repository = repositoryFor(database.pool);
-    const session = await createSession(repository, "property.hero_image", 2);
+    const resolved = await repository.resolveTarget({
+      request: {
+        purpose: "property.gallery_image",
+        visibility: "public",
+        resource: {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+          propertyId: PROPERTY_ID,
+        },
+        files: [],
+      },
+      policy: {
+        targetResourceProduct: "hotel_catalog",
+        targetResourceType: "property",
+      } as never,
+      context: {} as never,
+    });
+    expect(resolved).toEqual({
+      ok: true,
+      target: {
+        resourceProduct: "hotel_catalog",
+        resourceType: "property",
+        resourceId: PROPERTY_ID,
+        propertyId: PROPERTY_ID,
+      },
+    });
 
-    await expect(repository.completeUploadSession(completionInput(session))).rejects.toMatchObject({
-      code: "profile_revision_conflict",
-      currentRevision: 1,
+    const session = await createSession(repository, "property.gallery_image", "public", "legacy");
+    const completion = completionInput(session);
+    const completed = await repository.completeUploadSession(completion);
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose: "property.gallery_image",
+      propertyId: PROPERTY_ID,
+      visibility: "public",
+      requestedVisibility: "public",
+      approvalStatus: "approved",
+      lifecycleStatus: "active",
+      variants: expect.arrayContaining([
+        expect.objectContaining({
+          variantName: "original_safe",
+          visibility: "public",
+          publicCdnUrl: expect.stringMatching(/^https:\/\//),
+        }),
+      ]),
     });
-    expect(database.session).toMatchObject({
-      status: "signed",
-      expectedProfileRevision: 2,
-    });
-    expect(database.mediaRowCount).toBe(0);
-    expect(database.propertyRevision).toBe(1);
-    expect(database.queries.at(-1)?.text).toBe("ROLLBACK");
     expect(
       database.clientQueries.some(({ text }) =>
-        text.includes("INSERT INTO platform.media_objects"),
+        text.includes("INSERT INTO hotel_catalog.property_media"),
       ),
-    ).toBe(false);
+    ).toBe(true);
+
+    await expect(repository.completeUploadSession(completion)).resolves.toMatchObject({
+      uploadSession: { status: "completed" },
+      mediaObjects: [
+        {
+          purpose: "property.gallery_image",
+          visibility: "public",
+          approvalStatus: "approved",
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ["a missing variant", (variants: PlatformMediaObjectRecord["variants"]) => variants.slice(1)],
+    [
+      "a duplicate variant",
+      (variants: PlatformMediaObjectRecord["variants"]) => [
+        variants[0]!,
+        variants[0]!,
+        ...variants.slice(2),
+      ],
+    ],
+    [
+      "a foreign storage key",
+      (variants: PlatformMediaObjectRecord["variants"]) =>
+        variants.map((variant, index) =>
+          index === 0
+            ? { ...variant, storageKey: variant.storageKey.replace("/media/", "/other/") }
+            : variant,
+        ),
+    ],
+    [
+      "a public URL",
+      (variants: PlatformMediaObjectRecord["variants"]) =>
+        variants.map((variant, index) =>
+          index === 0
+            ? { ...variant, publicCdnUrl: "https://cdn.example.com/unsafe.webp" }
+            : variant,
+        ),
+    ],
+    [
+      "a non-WebP MIME type",
+      (variants: PlatformMediaObjectRecord["variants"]) =>
+        variants.map((variant, index) =>
+          index === 0 ? { ...variant, contentType: "image/jpeg" } : variant,
+        ),
+    ],
+  ])("rejects property media persistence with %s", async (_label, mutateVariants) => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "property.gallery_image");
+    const completion = completionInput(session);
+    completion.variantSets[0] = mutateVariants(
+      completion.variantSets[0]!,
+    ) as (typeof completion.variantSets)[0];
+
+    await expect(repository.completeUploadSession(completion)).rejects.toMatchObject({
+      outcome: "rolled_back",
+    });
+    expect(database.session?.status).toBe("signed");
+    expect(database.mediaRowCount).toBe(0);
+  });
+
+  it("rolls back when the room target changes inside the completion transaction", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "pms.room_type.media");
+    database.setRoomTargetExists(false);
+
+    await expect(repository.completeUploadSession(completionInput(session))).rejects.toBeInstanceOf(
+      PlatformMediaTargetInvalidError,
+    );
+    expect(database.session?.status).toBe("signed");
+    expect(database.mediaRowCount).toBe(0);
+    expect(database.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("replays completed room media without requiring the room to still exist", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "pms.room_type.media");
+    const completion = completionInput(session);
+    await repository.completeUploadSession(completion);
+    database.setRoomTargetExists(false);
+
+    await expect(repository.completeUploadSession(completion)).resolves.toMatchObject({
+      uploadSession: { status: "completed" },
+      mediaObjects: [{ mediaId: session.files[0]!.mediaId }],
+    });
+  });
+
+  it("reconciles a COMMIT that applied before its acknowledgement was lost", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository);
+    database.setCommitMode("apply_then_throw");
+
+    await expect(repository.completeUploadSession(completionInput(session))).resolves.toMatchObject(
+      {
+        uploadSession: { status: "completed" },
+        mediaObjects: [{ mediaId: session.files[0]!.mediaId }],
+      },
+    );
+    expect(database.session?.status).toBe("completed");
+    expect(database.mediaRowCount).toBe(1);
+  });
+
+  it("reports an unknown outcome when COMMIT fails before applying", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository);
+    database.setCommitMode("throw_before_apply");
+
+    await expect(repository.completeUploadSession(completionInput(session))).rejects.toMatchObject({
+      outcome: "unknown",
+    });
+    expect(database.session?.status).toBe("signed");
+    expect(database.mediaRowCount).toBe(0);
   });
 
   it("records append-only platform audit events", async () => {
@@ -449,7 +590,10 @@ describe("PostgreSQL platform media repository", () => {
     const session = await createSession(repository);
     const completion = completionInput(session);
 
-    await expect(repository.completeUploadSession(completion)).rejects.toThrow("audit failed");
+    await expect(repository.completeUploadSession(completion)).rejects.toMatchObject({
+      outcome: "rolled_back",
+      cause: expect.objectContaining({ message: "audit failed" }),
+    });
     expect(database.session?.status).toBe("signed");
     expect(database.queries.at(-1)?.text).toBe("ROLLBACK");
     expect(
@@ -477,8 +621,8 @@ function repositoryFor(pool: ReturnType<typeof createFakeDatabase>["pool"]) {
   });
 }
 
-const BOOKING_HOTEL_ID = "00000000-0000-4000-8000-000000000030";
 const PROPERTY_ID = "00000000-0000-4000-8000-000000000040";
+const ROOM_TYPE_ID = "00000000-0000-4000-8000-000000000050";
 
 async function createSession(
   repository: ReturnType<typeof createPgPlatformMediaRepository>,
@@ -487,25 +631,45 @@ async function createSession(
     | "marketplace.offer.media"
     | "marketplace.collaboration_chat.attachment"
     | "property.hero_image"
-    | "property.gallery_image" = "identity.user.profile_image",
-  expectedProfileRevision?: number,
+    | "property.gallery_image"
+    | "property.logo"
+    | "pms.room_type.media" = "identity.user.profile_image",
+  visibility?: "public" | "private",
+  propertyMediaSource: "canonical" | "legacy" = "canonical",
 ) {
   const isProfile = purpose === "identity.user.profile_image";
   const isOffer = purpose === "marketplace.offer.media";
   const isChat = purpose === "marketplace.collaboration_chat.attachment";
-  const product = isProfile ? "platform" : isOffer || isChat ? "marketplace" : "booking";
+  const isPropertyMedia = [
+    "property.hero_image",
+    "property.gallery_image",
+    "property.logo",
+    "pms.room_type.media",
+  ].includes(purpose);
+  const isRoomMedia = purpose === "pms.room_type.media";
+  const product = isProfile
+    ? "platform"
+    : isOffer || isChat
+      ? "marketplace"
+      : propertyMediaSource === "legacy"
+        ? "booking"
+        : "hotel_catalog";
   const resourceType = isProfile
     ? "user_profile"
     : isOffer
       ? "marketplace_offer"
       : isChat
         ? "creator_profile"
-        : "booking_hotel";
+        : propertyMediaSource === "legacy"
+          ? "booking_hotel"
+          : "property";
   const resourceId = isProfile
     ? "00000000-0000-4000-8000-000000000001"
     : isOffer || isChat
       ? "00000000-0000-4000-8000-000000000020"
-      : BOOKING_HOTEL_ID;
+      : propertyMediaSource === "legacy"
+        ? "booking_hotel_alpenrose"
+        : PROPERTY_ID;
   const filename = isProfile
     ? "profile.jpg"
     : isOffer
@@ -525,13 +689,17 @@ async function createSession(
     } as never,
     request: {
       purpose,
-      visibility: isChat ? "private" : "public",
-      expectedProfileRevision,
+      visibility: visibility ?? (isChat || isPropertyMedia ? "private" : "public"),
       resource: {
         product,
         resourceType,
         resourceId,
+        ...(propertyMediaSource === "legacy" ? { propertyId: PROPERTY_ID } : {}),
+        ...(isRoomMedia ? { targetResourceId: ROOM_TYPE_ID } : {}),
       },
+      ...(propertyMediaSource === "legacy" && purpose === "property.hero_image"
+        ? { expectedProfileRevision: 1 }
+        : {}),
       files: [
         {
           clientFileId: purpose,
@@ -543,22 +711,34 @@ async function createSession(
     },
     policy: {
       purpose,
-      autoApprovePublicOnFinalize: isOffer || isChat ? undefined : true,
+      autoApprovePublicOnFinalize:
+        isProfile || (isPropertyMedia && propertyMediaSource === "legacy") ? true : undefined,
+      privateOnly: (isPropertyMedia && propertyMediaSource === "canonical") || isChat,
     } as never,
     target: {
-      resourceProduct: isProfile ? "platform" : isOffer || isChat ? "marketplace" : "hotel_catalog",
+      resourceProduct: isProfile
+        ? "platform"
+        : isOffer || isChat
+          ? "marketplace"
+          : isRoomMedia
+            ? "pms"
+            : "hotel_catalog",
       resourceType: isProfile
         ? "user_profile"
         : isOffer
           ? "marketplace_offer"
           : isChat
             ? "collaboration"
-            : "property",
+            : isRoomMedia
+              ? "room_type"
+              : "property",
       resourceId: isChat
         ? "collaboration-target-001"
         : isProfile || isOffer
           ? resourceId
-          : PROPERTY_ID,
+          : isRoomMedia
+            ? ROOM_TYPE_ID
+            : PROPERTY_ID,
       propertyId: isChat ? PROPERTY_ID : isProfile || isOffer ? undefined : PROPERTY_ID,
     },
     uploadTargets: [
@@ -590,9 +770,15 @@ async function createSession(
 function completionInput(session: PlatformMediaSessionRecord) {
   const isPrivate = session.effectiveVisibility === "private";
   const isChat = session.purpose === "marketplace.collaboration_chat.attachment";
-  const storageKey = isPrivate
-    ? "private/media/offer/original-safe.webp"
-    : "media/profile/original-safe.webp";
+  const isPropertyMedia = [
+    "property.hero_image",
+    "property.gallery_image",
+    "property.logo",
+    "pms.room_type.media",
+  ].includes(session.purpose);
+  const variantNames = isPropertyMedia
+    ? PROPERTY_MEDIA_PUBLIC_VARIANTS
+    : [isChat ? ("provider_original" as const) : ("original_safe" as const)];
   return {
     session,
     files: [
@@ -609,21 +795,34 @@ function completionInput(session: PlatformMediaSessionRecord) {
       },
     ],
     variantSets: [
-      [
-        {
-          variantName: isChat ? ("provider_original" as const) : ("original_safe" as const),
+      variantNames.map((variantName, index) => {
+        const checksumSha256 = String.fromCharCode(98 + index).repeat(64);
+        const storageKey = isPropertyMedia
+          ? `${isPrivate ? "private" : "public"}/media/${session.files[0]!.mediaId}/${variantName}/sha256-${checksumSha256}.webp`
+          : isPrivate
+            ? "private/media/offer/original-safe.webp"
+            : "media/profile/original-safe.webp";
+        const dimensions =
+          variantName === "blur_preview"
+            ? { widthPx: 32, heightPx: 18 }
+            : variantName === "thumbnail"
+              ? { widthPx: 320, heightPx: 180 }
+              : variantName === "large"
+                ? { widthPx: 800, heightPx: 720 }
+                : { widthPx: 800, heightPx: 800 };
+        return {
+          variantName,
           visibility: session.effectiveVisibility,
           storageKey,
           contentType: "image/webp",
-          widthPx: 800,
-          heightPx: 800,
+          ...dimensions,
           sizeBytes: 900,
-          checksumSha256: "b".repeat(64),
+          checksumSha256,
           publicCdnUrl: isPrivate
             ? null
-            : "https://cdn.example.com/media/profile/original-safe.webp",
-        },
-      ],
+            : `https://cdn.example.com/${storageKey.replace(/^public\//, "")}`,
+        };
+      }),
     ],
     policy: { autoApprovePublicOnFinalize: true } as never,
     bucketName: "vayada-media-production",
@@ -676,13 +875,13 @@ type FakeDatabaseState = {
   session: PlatformMediaSessionRecord | null;
   mediaRows: Map<string, FakeMediaRow>;
   variantRows: FakeVariantRow[];
-  propertyLinks: Map<string, string>;
-  propertyRevision: number;
 };
 
 function createFakeDatabase(failAuditAction?: string) {
   let committed = emptyDatabaseState();
   let transaction: FakeDatabaseState | null = null;
+  let roomTargetExists = true;
+  let commitMode: "normal" | "apply_then_throw" | "throw_before_apply" = "normal";
   const queries: QueryCall[] = [];
   const poolQueries: QueryCall[] = [];
   const clientQueries: QueryCall[] = [];
@@ -694,7 +893,7 @@ function createFakeDatabase(failAuditAction?: string) {
     const call = { text, values };
     queries.push(call);
     poolQueries.push(call);
-    return executeFakeQuery(committed, text, values, failAuditActions);
+    return executeFakeQuery(committed, text, values, failAuditActions, roomTargetExists);
   });
 
   const clientQuery = vi.fn(async (text: string, values?: readonly unknown[]) => {
@@ -711,11 +910,26 @@ function createFakeDatabase(failAuditAction?: string) {
     }
     if (text === "COMMIT") {
       if (!transaction) throw new Error("Missing fake database transaction");
+      if (commitMode === "throw_before_apply") {
+        transaction = null;
+        commitMode = "normal";
+        throw new Error("commit acknowledgement lost before apply");
+      }
       committed = transaction;
       transaction = null;
+      if (commitMode === "apply_then_throw") {
+        commitMode = "normal";
+        throw new Error("commit acknowledgement lost after apply");
+      }
       return { rows: [] };
     }
-    return executeFakeQuery(transaction ?? committed, text, values, failAuditActions);
+    return executeFakeQuery(
+      transaction ?? committed,
+      text,
+      values,
+      failAuditActions,
+      roomTargetExists,
+    );
   });
 
   return {
@@ -725,13 +939,16 @@ function createFakeDatabase(failAuditAction?: string) {
     get mediaRowCount() {
       return committed.mediaRows.size;
     },
-    get propertyRevision() {
-      return committed.propertyRevision;
-    },
     queries,
     poolQueries,
     clientQueries,
     failAuditActions,
+    setRoomTargetExists(value: boolean) {
+      roomTargetExists = value;
+    },
+    setCommitMode(value: "normal" | "apply_then_throw" | "throw_before_apply") {
+      commitMode = value;
+    },
     updateMediaRow(mediaId: string, patch: Partial<FakeMediaRow>) {
       const row = committed.mediaRows.get(mediaId);
       if (!row) throw new Error(`Unknown fake media row ${mediaId}`);
@@ -752,8 +969,6 @@ function emptyDatabaseState(): FakeDatabaseState {
     session: null,
     mediaRows: new Map(),
     variantRows: [],
-    propertyLinks: new Map([[BOOKING_HOTEL_ID, PROPERTY_ID]]),
-    propertyRevision: 1,
   };
 }
 
@@ -762,6 +977,7 @@ function executeFakeQuery(
   text: string,
   values: readonly unknown[] | undefined,
   failAuditActions: ReadonlySet<string>,
+  roomTargetExists: boolean,
 ) {
   if (
     text.includes("INSERT INTO platform.product_audit_events") &&
@@ -769,17 +985,29 @@ function executeFakeQuery(
   ) {
     throw new Error("audit failed");
   }
-  if (text.includes("WITH property_candidates AS")) {
-    const propertyId = state.propertyLinks.get(String(values?.[2]));
-    return { rows: propertyId ? [{ propertyId }] : [] };
+  if (text.includes("WITH property_candidates")) {
+    return String(values?.[2]) === "booking_hotel_alpenrose"
+      ? { rows: [{ propertyId: PROPERTY_ID }] }
+      : { rows: [] };
+  } else if (
+    text.includes('property.profile_revision AS "profileRevision"') &&
+    text.includes("FROM hotel_catalog.properties property")
+  ) {
+    return String(values?.[0]) === PROPERTY_ID ? { rows: [{ profileRevision: 1 }] } : { rows: [] };
+  } else if (text.includes("FROM hotel_catalog.properties property")) {
+    return String(values?.[0]) === PROPERTY_ID
+      ? { rows: [{ propertyId: PROPERTY_ID }] }
+      : { rows: [] };
+  } else if (text.includes("FROM pms.room_types room_type")) {
+    return roomTargetExists &&
+      String(values?.[0]) === ROOM_TYPE_ID &&
+      String(values?.[1]) === PROPERTY_ID
+      ? { rows: [{ propertyId: PROPERTY_ID }] }
+      : { rows: [] };
   } else if (text.includes("INSERT INTO platform.media_upload_sessions")) {
     if (state.session) return { rows: [] };
     state.session = metadata(values?.[15]).session;
     return { rows: [{ id: state.session.sessionId }] };
-  } else if (text.includes('SELECT property.profile_revision AS "profileRevision"')) {
-    return String(values?.[0]) === PROPERTY_ID
-      ? { rows: [{ profileRevision: state.propertyRevision }] }
-      : { rows: [] };
   } else if (text.includes("platform_media_upload_session_renewal")) {
     if (
       state.session?.sessionId === String(values?.[0]) &&
@@ -799,17 +1027,25 @@ function executeFakeQuery(
     }
     return { rows: [] };
   } else if (text.includes("completion_metadata -> 'session'")) {
+    const scoped =
+      text.includes("actor_user_id = $2::uuid") &&
+      text.includes("owner_organization_id = $3::uuid");
+    const matchesScope =
+      !scoped ||
+      (state.session?.actorUserId === String(values?.[1]) &&
+        state.session.ownerOrganizationId === String(values?.[2]));
     return {
-      rows: state.session
-        ? [
-            {
-              session: state.session,
-              completedMediaObjectId: state.session.completedMediaObject?.mediaId ?? null,
-              mediaObjectIds:
-                state.session.completedMediaObjects?.map(({ mediaId }) => mediaId) ?? null,
-            },
-          ]
-        : [],
+      rows:
+        state.session && matchesScope
+          ? [
+              {
+                session: state.session,
+                completedMediaObjectId: state.session.completedMediaObject?.mediaId ?? null,
+                mediaObjectIds:
+                  state.session.completedMediaObjects?.map(({ mediaId }) => mediaId) ?? null,
+              },
+            ]
+          : [],
     };
   } else if (text.includes("UPDATE platform.media_upload_sessions")) {
     state.session = metadata(values?.[2]).session;
@@ -853,9 +1089,6 @@ function executeFakeQuery(
       publicCdnUrl: optionalString(values?.[9]) ?? null,
       createdAt: String(values?.[10]),
     });
-  } else if (text.includes("INSERT INTO hotel_catalog.property_media")) {
-    state.propertyRevision += 1;
-    return { rows: [{ id: PROPERTY_ID }] };
   } else if (text.includes("FROM platform.media_objects media")) {
     const row = state.mediaRows.get(String(values?.[0]));
     return { rows: row ? [{ record: mediaRecord(row, state.variantRows) }] : [] };

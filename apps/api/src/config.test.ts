@@ -17,6 +17,19 @@ const completeCreatorPlatformConnectionEnv = {
   ...completeCreatorMarketplaceEnv,
 };
 
+const completeTargetHotelMediaEnv = {
+  ...completeCreatorMarketplaceEnv,
+  API_RUNTIME: "next",
+  PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+  BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
+  PUBLIC_BOOKABILITY_SOURCE: "target",
+  BOOKING_SETTINGS_SOURCE: "target",
+  BOOKING_RESERVATIONS_SOURCE: "target",
+  PMS_OPERATIONS_SOURCE: "target",
+  FINANCE_SOURCE: "target",
+  BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+};
+
 describe("api config", () => {
   it("keeps auth disabled when auth env values are absent", () => {
     expect(loadConfig({}).auth).toBeUndefined();
@@ -475,6 +488,28 @@ describe("api config", () => {
     ).toThrow(
       "Target Marketplace with complete auth requires complete PLATFORM_MEDIA_* config because creator profile photos are required",
     );
+  });
+
+  it("keeps canonical hotel uploads dark until the target cutover is explicit", () => {
+    expect(loadConfig({}).hotelMediaUploadSource).toBe("legacy");
+    expect(
+      loadConfig({
+        ...completeTargetHotelMediaEnv,
+        HOTEL_MEDIA_UPLOAD_SOURCE: "target",
+      }).hotelMediaUploadSource,
+    ).toBe("target");
+  });
+
+  it("rejects invalid or incomplete canonical hotel-upload cutover config", () => {
+    expect(() => loadConfig({ HOTEL_MEDIA_UPLOAD_SOURCE: "mixed" })).toThrow(
+      "HOTEL_MEDIA_UPLOAD_SOURCE must be one of: legacy, target",
+    );
+    expect(() =>
+      loadConfig({
+        ...completeCreatorMarketplaceEnv,
+        HOTEL_MEDIA_UPLOAD_SOURCE: "target",
+      }),
+    ).toThrow("HOTEL_MEDIA_UPLOAD_SOURCE=target requires API_RUNTIME=next");
   });
 
   it("keeps PMS operations routes disabled by default", () => {

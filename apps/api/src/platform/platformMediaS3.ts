@@ -7,16 +7,18 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 
-import type {
-  PlatformMediaFinalizedFileInspection,
-  PlatformMediaPurpose,
-  PlatformMediaUploadFinalizer,
-  PlatformMediaUploadSigner,
-  PlatformMediaVariantName,
-  PlatformMediaVariantRecord,
+import {
+  PlatformMediaStagingChangedError,
+  type PlatformMediaFinalizedFileInspection,
+  type PlatformMediaPurpose,
+  type PlatformMediaUploadFinalizer,
+  type PlatformMediaUploadSigner,
+  type PlatformMediaVariantName,
+  type PlatformMediaVariantRecord,
 } from "../routes/platformMedia.js";
 import type { PlatformMediaObjectDeleter } from "../jobs/platformMediaCleanup.js";
 import type { PrivateDownloadPolicy } from "./mediaServing.js";
@@ -25,15 +27,21 @@ const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "identity.user.profile_image",
   "property.hero_image",
   "property.gallery_image",
+  "property.logo",
   "marketplace.creator.profile_image",
   "marketplace.offer.media",
   "marketplace.collaboration_chat.attachment",
+  "pms.room_type.media",
 ]);
 const IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const MAX_SIGNED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 25_000_000;
+const MAX_RESIZABLE_IMAGE_PIXELS = 60_000_000;
 const PRIVATE_CACHE_CONTROL = "private, no-store";
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const IMAGE_OPERATION_TIMEOUT_SECONDS = 30;
+const S3_CONNECTION_TIMEOUT_MS = 5_000;
+const S3_REQUEST_TIMEOUT_MS = 30_000;
 
 const VARIANTS: Record<
   Exclude<PlatformMediaVariantName, "provider_original">,
@@ -62,11 +70,6 @@ export type S3PlatformMediaAdapter = PlatformMediaUploadSigner &
   PlatformMediaPrivateDownloadSigner &
   PlatformMediaObjectDeleter;
 
-type CachedUpload = {
-  bytes: Buffer;
-  inspection: PlatformMediaFinalizedFileInspection;
-};
-
 class UploadTooLargeError extends Error {}
 
 export function createS3PlatformMediaAdapter(
@@ -76,8 +79,18 @@ export function createS3PlatformMediaAdapter(
   const cdnBaseUrl = httpsOrigin(options.cdnBaseUrl);
   const publicPathPrefix = pathPrefix(options.publicPathPrefix ?? "media");
   const publicCacheControl = required(options.publicCacheControl, "publicCacheControl");
-  const s3 = options.s3Client ?? new S3Client({ requestChecksumCalculation: "WHEN_REQUIRED" });
-  const uploads = new Map<string, CachedUpload>();
+  const s3 =
+    options.s3Client ??
+    new S3Client({
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      requestHandler: NodeHttpHandler.create({
+        connectionTimeout: S3_CONNECTION_TIMEOUT_MS,
+        requestTimeout: S3_REQUEST_TIMEOUT_MS,
+        socketTimeout: S3_REQUEST_TIMEOUT_MS,
+        throwOnRequestTimeout: true,
+      }),
+    });
+  const withImageWork = createSerialGate();
 
   return {
     async deleteObject(input) {
@@ -170,139 +183,137 @@ export function createS3PlatformMediaAdapter(
     },
 
     async inspectUploadedFile(input) {
-      if (
-        !isSupportedPurpose(input.session.purpose) ||
-        input.policy.purpose !== input.session.purpose
-      ) {
-        return unsupportedPurpose();
-      }
-
-      const cacheKey = uploadCacheKey(input.session.sessionId, input.sessionFile.uploadTargetId);
-      uploads.delete(cacheKey);
-      const maxBytes = Math.min(input.sessionFile.sizeBytes, input.policy.maxFileSizeBytes);
-
-      assertStagingKey(input.uploadTarget.stagingKey, input.session.sessionId);
-      let object: GetObjectCommandOutput;
-      try {
-        object = await s3.send(
-          new GetObjectCommand({ Bucket: bucketName, Key: input.uploadTarget.stagingKey }),
-        );
-      } catch (error) {
-        if (isMissingS3ObjectError(error)) return missingUpload();
-        throw error;
-      }
-      try {
-        if (object.ContentLength !== undefined && object.ContentLength > maxBytes) {
-          return tooLarge();
-        }
+      return withImageWork(async () => {
         if (
-          object.ContentLength !== undefined &&
-          object.ContentLength !== input.sessionFile.sizeBytes
+          !isSupportedPurpose(input.session.purpose) ||
+          input.policy.purpose !== input.session.purpose
         ) {
-          return sizeMismatch();
-        }
-        if (!object.Body) {
-          return missingUpload();
+          return unsupportedPurpose();
         }
 
-        const bytes = await readBody(object.Body, maxBytes);
-        if (bytes.length === 0) {
-          return {
-            ok: false,
-            code: "invalid_media_size",
-            message: "Images cannot be empty.",
-          };
-        }
-        if (bytes.length !== input.sessionFile.sizeBytes) return sizeMismatch();
+        const maxBytes = Math.min(input.sessionFile.sizeBytes, input.policy.maxFileSizeBytes);
 
-        const maxImagePixels = Math.min(
-          input.policy.maxImagePixels ?? MAX_IMAGE_PIXELS,
-          MAX_IMAGE_PIXELS,
-        );
-        const image = sharp(bytes, {
-          failOn: "error",
-          limitInputPixels: maxImagePixels,
-        });
-        const metadata = await image.metadata();
-        await image.clone().resize({ width: 1, height: 1, fit: "inside" }).toBuffer();
-        const contentType = imageContentType(metadata.format);
-        if (!contentType || !IMAGE_CONTENT_TYPES.has(contentType)) {
-          return {
-            ok: false,
-            code: "unsupported_media_type",
-            message: "Images must contain valid JPG, PNG, WebP, or GIF bytes.",
-          };
+        assertStagingKey(input.uploadTarget.stagingKey, input.session.sessionId);
+        let object: GetObjectCommandOutput;
+        try {
+          object = await s3.send(
+            new GetObjectCommand({ Bucket: bucketName, Key: input.uploadTarget.stagingKey }),
+          );
+        } catch (error) {
+          if (isMissingS3ObjectError(error)) return missingUpload();
+          throw error;
         }
-        if (contentType !== normalizeContentType(input.sessionFile.contentType)) {
-          return {
-            ok: false,
-            code: "media_type_mismatch",
-            message: "Image bytes must match the signed content type.",
-          };
-        }
-        const widthPx = metadata.autoOrient.width;
-        const heightPx = metadata.autoOrient.height;
-        if (widthPx * heightPx > maxImagePixels) {
-          return invalidDimensions();
-        }
+        try {
+          if (object.ContentLength !== undefined && object.ContentLength > maxBytes) {
+            return tooLarge();
+          }
+          if (
+            object.ContentLength !== undefined &&
+            object.ContentLength !== input.sessionFile.sizeBytes
+          ) {
+            return sizeMismatch();
+          }
+          if (!object.Body) {
+            return missingUpload();
+          }
 
-        const checksumSha256 = sha256(bytes);
-        if (
-          input.clientFile.contentType !== undefined &&
-          normalizeContentType(input.clientFile.contentType) !== contentType
-        ) {
-          return {
-            ok: false,
-            code: "media_type_mismatch",
-            message: "Finalized content type must match the inspected upload.",
-          };
-        }
-        if (
-          input.clientFile.sizeBytes !== undefined &&
-          input.clientFile.sizeBytes !== bytes.length
-        ) {
-          return sizeMismatch();
-        }
-        if (
-          input.clientFile.checksumSha256 !== undefined &&
-          input.clientFile.checksumSha256 !== checksumSha256
-        ) {
-          return {
-            ok: false,
-            code: "media_checksum_mismatch",
-            message: "Finalized checksum must match the inspected upload.",
-          };
-        }
+          const bytes = await readBody(object.Body, maxBytes);
+          if (bytes.length === 0) {
+            return {
+              ok: false,
+              code: "invalid_media_size",
+              message: "Images cannot be empty.",
+            };
+          }
+          if (bytes.length !== input.sessionFile.sizeBytes) return sizeMismatch();
 
-        const inspection = {
-          contentType,
-          sizeBytes: bytes.length,
-          checksumSha256,
-          widthPx,
-          heightPx,
-        } satisfies PlatformMediaFinalizedFileInspection;
-        uploads.set(cacheKey, { bytes, inspection });
-        return { ok: true, inspection };
-      } catch (error) {
-        if (error instanceof UploadTooLargeError) return tooLarge();
-        if (error instanceof Error && /pixel limit|image dimensions/i.test(error.message)) {
-          return invalidDimensions();
+          const pixelCeiling = input.policy.resizeOversizedPublicImages
+            ? MAX_RESIZABLE_IMAGE_PIXELS
+            : MAX_IMAGE_PIXELS;
+          const maxImagePixels = Math.min(
+            input.policy.maxImagePixels ?? pixelCeiling,
+            pixelCeiling,
+          );
+          const image = sharp(bytes, {
+            failOn: "error",
+            limitInputPixels: maxImagePixels,
+          }).timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS });
+          const metadata = await image.metadata();
+          await image.clone().resize({ width: 1, height: 1, fit: "inside" }).toBuffer();
+          const contentType = imageContentType(metadata.format);
+          if (!contentType || !IMAGE_CONTENT_TYPES.has(contentType)) {
+            return {
+              ok: false,
+              code: "unsupported_media_type",
+              message: "Images must contain valid JPG, PNG, WebP, or GIF bytes.",
+            };
+          }
+          if (contentType !== normalizeContentType(input.sessionFile.contentType)) {
+            return {
+              ok: false,
+              code: "media_type_mismatch",
+              message: "Image bytes must match the signed content type.",
+            };
+          }
+          const widthPx = metadata.autoOrient.width;
+          const heightPx = metadata.autoOrient.height;
+          if (widthPx * heightPx > maxImagePixels) {
+            return invalidDimensions();
+          }
+
+          const checksumSha256 = sha256(bytes);
+          if (
+            input.clientFile.contentType !== undefined &&
+            normalizeContentType(input.clientFile.contentType) !== contentType
+          ) {
+            return {
+              ok: false,
+              code: "media_type_mismatch",
+              message: "Finalized content type must match the inspected upload.",
+            };
+          }
+          if (
+            input.clientFile.sizeBytes !== undefined &&
+            input.clientFile.sizeBytes !== bytes.length
+          ) {
+            return sizeMismatch();
+          }
+          if (
+            input.clientFile.checksumSha256 !== undefined &&
+            input.clientFile.checksumSha256 !== checksumSha256
+          ) {
+            return {
+              ok: false,
+              code: "media_checksum_mismatch",
+              message: "Finalized checksum must match the inspected upload.",
+            };
+          }
+
+          const inspection = {
+            contentType,
+            sizeBytes: bytes.length,
+            checksumSha256,
+            widthPx,
+            heightPx,
+          } satisfies PlatformMediaFinalizedFileInspection;
+          return { ok: true, inspection };
+        } catch (error) {
+          if (error instanceof UploadTooLargeError) return tooLarge();
+          if (error instanceof Error && /pixel limit|image dimensions/i.test(error.message)) {
+            return invalidDimensions();
+          }
+          if (!isInvalidImageError(error)) throw error;
+          return {
+            ok: false,
+            code: "invalid_media_image",
+            message: "The staged object is not a valid supported image.",
+          };
         }
-        if (!isInvalidImageError(error)) throw error;
-        return {
-          ok: false,
-          code: "invalid_media_image",
-          message: "The staged object is not a valid supported image.",
-        };
-      }
+      });
     },
 
     async generateVariants(input) {
-      const cacheKey = uploadCacheKey(
-        input.session.sessionId,
-        input.file.sessionFile.uploadTargetId,
-      );
-      try {
+      return withImageWork(async () => {
         if (
           !isSupportedPurpose(input.session.purpose) ||
           input.policy.purpose !== input.session.purpose
@@ -322,15 +333,24 @@ export function createS3PlatformMediaAdapter(
           throw new Error("Auto-approved image variants require public visibility");
         }
 
-        const upload = uploads.get(cacheKey);
-        if (!upload || upload.inspection.checksumSha256 !== input.file.inspection.checksumSha256) {
-          throw new Error("Image must be inspected before variants are generated");
+        const expectedChecksum = input.file.inspection.checksumSha256;
+        if (!expectedChecksum) {
+          throw new Error("Image must have an inspected checksum before variant generation");
         }
+        assertStagingKey(input.file.uploadTarget.stagingKey, input.session.sessionId);
+        const source = await readVerifiedStagedObject({
+          s3,
+          bucketName,
+          storageKey: input.file.uploadTarget.stagingKey,
+          expectedSizeBytes: input.file.inspection.sizeBytes,
+          expectedChecksumSha256: expectedChecksum,
+          maxBytes: Math.min(input.file.sessionFile.sizeBytes, input.policy.maxFileSizeBytes),
+        });
 
         const variants: PlatformMediaVariantRecord[] = [];
         for (const variantName of input.policy.requiredVariants) {
           const { record, bytes } = await createVariant(
-            upload.bytes,
+            source,
             input.file.sessionFile.mediaId,
             variantName,
             publicPathPrefix,
@@ -357,17 +377,10 @@ export function createS3PlatformMediaAdapter(
           });
         }
         return variants;
-      } finally {
-        uploads.delete(cacheKey);
-      }
+      });
     },
 
     async cleanupUploadedFile(input) {
-      const cacheKey = uploadCacheKey(
-        input.session.sessionId,
-        input.file.sessionFile.uploadTargetId,
-      );
-      uploads.delete(cacheKey);
       assertStagingKey(input.file.uploadTarget.stagingKey, input.session.sessionId);
       await s3.send(
         new DeleteObjectCommand({
@@ -375,33 +388,6 @@ export function createS3PlatformMediaAdapter(
           Key: input.file.uploadTarget.stagingKey,
         }),
       );
-    },
-
-    async cleanupGeneratedVariants(input) {
-      for (const variant of input.variants) {
-        assertGeneratedVariantKey(
-          variant,
-          input.session.effectiveVisibility,
-          input.file.sessionFile.mediaId,
-          publicPathPrefix,
-        );
-      }
-      const cleanupResults = await Promise.allSettled(
-        input.variants.map(async (variant) =>
-          s3.send(
-            new DeleteObjectCommand({
-              Bucket: bucketName,
-              Key: variant.storageKey,
-            }),
-          ),
-        ),
-      );
-      const failures = cleanupResults.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      if (failures.length > 0) {
-        throw new AggregateError(failures, "One or more generated variants could not be deleted");
-      }
     },
   };
 }
@@ -418,7 +404,9 @@ async function createVariant(
       throw new Error("Provider-original media must stay private");
     }
     assertSegment(mediaId, "mediaId");
-    const metadata = await sharp(source, { failOn: "error" }).metadata();
+    const metadata = await sharp(source, { failOn: "error" })
+      .timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS })
+      .metadata();
     const contentType = imageContentType(metadata.format);
     if (!contentType) throw new Error("Provider-original media has an unsupported image type");
     const checksumSha256 = sha256(source);
@@ -440,12 +428,15 @@ async function createVariant(
   }
   assertSegment(mediaId, "mediaId");
   const variant = VARIANTS[variantName];
-  let pipeline = sharp(source, { failOn: "error" }).rotate().resize({
-    width: variant.width,
-    height: variant.height,
-    fit: "inside",
-    withoutEnlargement: true,
-  });
+  let pipeline = sharp(source, { failOn: "error" })
+    .timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS })
+    .rotate()
+    .resize({
+      width: variant.width,
+      height: variant.height,
+      fit: "inside",
+      withoutEnlargement: true,
+    });
   if (variant.blur) pipeline = pipeline.blur(variant.blur);
   const output = await pipeline
     .webp({ quality: variant.quality })
@@ -467,6 +458,69 @@ async function createVariant(
       checksumSha256,
       publicCdnUrl: null,
     },
+  };
+}
+
+async function readVerifiedStagedObject(input: {
+  s3: S3Client;
+  bucketName: string;
+  storageKey: string;
+  expectedSizeBytes: number;
+  expectedChecksumSha256: string;
+  maxBytes: number;
+}): Promise<Buffer> {
+  let object: GetObjectCommandOutput;
+  try {
+    object = await input.s3.send(
+      new GetObjectCommand({ Bucket: input.bucketName, Key: input.storageKey }),
+    );
+  } catch (error) {
+    if (isMissingS3ObjectError(error)) {
+      throw new PlatformMediaStagingChangedError(
+        "The inspected staged image is no longer available",
+        error,
+      );
+    }
+    throw error;
+  }
+  if (object.ContentLength !== undefined && object.ContentLength !== input.expectedSizeBytes) {
+    throw new PlatformMediaStagingChangedError("The staged image changed after inspection");
+  }
+  if (!object.Body) {
+    throw new PlatformMediaStagingChangedError("The inspected staged image is no longer available");
+  }
+  let bytes: Buffer;
+  try {
+    bytes = await readBody(object.Body, input.maxBytes);
+  } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      throw new PlatformMediaStagingChangedError(
+        "The staged image changed after inspection",
+        error,
+      );
+    }
+    throw error;
+  }
+  if (bytes.length !== input.expectedSizeBytes || sha256(bytes) !== input.expectedChecksumSha256) {
+    throw new PlatformMediaStagingChangedError("The staged image changed after inspection");
+  }
+  return bytes;
+}
+
+function createSerialGate() {
+  let tail = Promise.resolve();
+  return async function withSerialGate<T>(work: () => Promise<T>): Promise<T> {
+    const previous = tail;
+    let release!: () => void;
+    tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
   };
 }
 
@@ -537,34 +591,8 @@ function assertStagingKey(stagingKey: string, sessionId: string): void {
   }
 }
 
-function assertGeneratedVariantKey(
-  variant: PlatformMediaVariantRecord,
-  visibility: "private" | "public",
-  mediaId: string,
-  publicPathPrefix: string,
-): void {
-  assertSegment(mediaId, "mediaId");
-  const expectedPrefix = `${visibility}/${publicPathPrefix}/${mediaId}/`;
-  const relativeKey = variant.storageKey.slice(expectedPrefix.length);
-  const [variantName, filename, ...extraSegments] = relativeKey.split("/");
-  if (
-    variant.visibility !== visibility ||
-    !variant.storageKey.startsWith(expectedPrefix) ||
-    variant.storageKey.includes("..") ||
-    extraSegments.length > 0 ||
-    variantName !== variant.variantName ||
-    !/^sha256-[a-f0-9]{64}\.(?:webp|jpg|jpeg|png|gif)$/.test(filename ?? "")
-  ) {
-    throw new Error("Generated variant cleanup is restricted to the exact media namespace");
-  }
-}
-
 function normalizeContentType(value: string): string {
   return value.split(";", 1)[0]!.trim().toLowerCase();
-}
-
-function uploadCacheKey(sessionId: string, uploadTargetId: string): string {
-  return `${sessionId}:${uploadTargetId}`;
 }
 
 function sha256(value: Uint8Array): string {
