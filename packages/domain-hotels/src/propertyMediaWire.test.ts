@@ -38,6 +38,7 @@ describe("property media wire contract", () => {
         mediaObjectIds: [mediaObjectId],
       }),
     ).not.toBeNull();
+    expect(parsePropertyMediaCommandError({ code: "command_in_progress" })).not.toBeNull();
     expect(
       parsePropertyMediaCommandError({
         code: "media_not_ready",
@@ -59,6 +60,18 @@ describe("property media wire contract", () => {
         mediaObjectIds: [mediaObjectId, mediaObjectId.toUpperCase()],
       }),
     ).toBeNull();
+  });
+
+  it("accepts PostgreSQL UUID versions beyond the legacy v1-v5 range", () => {
+    for (const id of [
+      "00000000-0000-0000-8000-000000000001",
+      "00000000-0000-7000-9000-000000000002",
+      "00000000-0000-8000-a000-000000000003",
+    ]) {
+      expect(
+        parsePropertyMediaCommandError({ code: "media_not_ready", mediaObjectIds: [id] }),
+      ).not.toBeNull();
+    }
   });
 
   it("rejects inherited, accessor, hidden, symbolic, sparse, and subclassed shapes", () => {

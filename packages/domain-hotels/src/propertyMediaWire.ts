@@ -50,6 +50,13 @@ export function parsePropertyMediaCommandError(value: unknown): PropertyMediaCom
         })
       : null;
   }
+  if (["idempotency_key_conflict", "command_in_progress"].includes(value["code"])) {
+    return isExactDataRecord(value, ["code"])
+      ? Object.freeze({
+          code: value["code"] as "idempotency_key_conflict" | "command_in_progress",
+        })
+      : null;
+  }
   if (
     !["media_not_found", "media_not_authorized", "media_not_ready"].includes(value["code"]) ||
     !isExactDataRecord(value, ["code", "mediaObjectIds"]) ||
@@ -105,7 +112,7 @@ function isDensePlainArray(value: unknown): value is unknown[] {
 function isUuid(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
 }
 

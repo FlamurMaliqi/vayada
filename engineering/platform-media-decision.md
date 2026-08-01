@@ -188,12 +188,12 @@ authorized for download.
 Public approval is separate from upload success. A completed upload may remain
 private until the owning domain marks it public-safe.
 
-For `property.hero_image` and `property.gallery_image`, an upload by an
-authorized hotel owner or operator is the owning-domain approval and finalizes
-directly to public variants. Other purposes keep their explicit approval rules.
-The same finalization transaction projects these images into
-`hotel_catalog.property_media` using `platform_media_object_id`; a new hero
-supersedes the previous platform hero, while gallery images append in order.
+Hotel-media finalization leaves the object and safe variants private. A later
+Hotel Catalog or PMS assignment command performs the owning-domain approval,
+promotes the selected variants, and atomically updates the revisioned
+assignment set. Upload purpose records why the object entered the library; it
+does not restrict whether the same property-owned object can later be assigned
+as logo, cover, gallery, or room media.
 
 ### Serving Environment Contract
 
@@ -345,6 +345,30 @@ The tradeoff is that the platform cannot enforce deletion, variant generation,
 or uptime for those URLs until they are copied. Keeping them explicit in
 `media_objects.source_type` makes that risk queryable and keeps cleanup work
 out of product tables.
+
+## Assignment Constraint Cutover
+
+The initial canonical-assignment migration adds
+`chk_property_media_sort_order` and
+`fk_property_media_platform_object_property` as `NOT VALID`. New and updated
+rows are still checked immediately, while existing legacy rows can be cleaned
+without holding the deployment migration open.
+
+The property-media writer cutover must inventory and repair negative sort
+orders and property/object ownership mismatches. After that parity check passes,
+a dedicated follow-up migration must run:
+
+```sql
+ALTER TABLE hotel_catalog.property_media
+  VALIDATE CONSTRAINT chk_property_media_sort_order;
+ALTER TABLE hotel_catalog.property_media
+  VALIDATE CONSTRAINT fk_property_media_platform_object_property;
+```
+
+That follow-up migration must verify both constraints have
+`pg_constraint.convalidated = true`. The initial migration's regression test
+deliberately expects `false`; changing that expectation before legacy cleanup
+would hide an incomplete cutover.
 
 ## Implementation Tickets to Create on Acceptance
 

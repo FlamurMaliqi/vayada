@@ -82,6 +82,7 @@ export type PropertyMediaCommandResponse = {
 
 export type PropertyMediaCommandError =
   | { code: "profile_revision_conflict"; currentRevision: number }
+  | { code: "idempotency_key_conflict" | "command_in_progress" }
   | {
       code: "media_not_found" | "media_not_authorized" | "media_not_ready";
       mediaObjectIds: string[];
@@ -239,7 +240,7 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 function isUuid(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
 }
 
