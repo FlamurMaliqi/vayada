@@ -185,16 +185,15 @@ export async function registerPropertySetupRouteRoutes(
         request.log.error({ err: error }, "Failed to load property setup track selection");
         return unavailable(reply);
       }
-      if (trackStatus.selectedTracks.length === 0) {
+      const selectedTracks = SETUP_TRACKS.filter((track) =>
+        trackStatus.selectedTracks.includes(track),
+      );
+      if (selectedTracks.length === 0) {
         return reply.status(409).send({
           code: "setup_track_selection_required",
           detail: "Select at least one Vayada service before loading property setup.",
         });
       }
-
-      const selectedTracks = SETUP_TRACKS.filter((track) =>
-        trackStatus.selectedTracks.includes(track),
-      );
       try {
         enforceSelectedTrackPolicies(request, propertyId, selectedTracks);
       } catch (error) {

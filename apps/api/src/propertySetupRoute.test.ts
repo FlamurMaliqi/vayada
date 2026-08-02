@@ -30,6 +30,7 @@ const organizationId = "11111111-1111-4111-8111-111111111111";
 const propertyId = "22222222-2222-4222-8222-222222222222";
 const userId = "33333333-3333-4333-8333-333333333333";
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+const retentionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
 
 const session: VerifiedSession = {
   workosUserId: "user_workos_hotel_owner",
@@ -330,6 +331,7 @@ describe("property setup route", () => {
       result: { outcome: "track_revision_conflict", currentRevision: 5 },
       expectedStatus: 409,
       expectedCode: "setup_track_revision_conflict",
+      expectedBody: { currentRevision: 5 },
     },
     {
       name: "owner provider failure",
@@ -353,26 +355,32 @@ describe("property setup route", () => {
     result: PropertySetupRouteStateReadResult;
     expectedStatus: number;
     expectedCode: string;
-  }>)("maps $name without caching it", async ({ result, expectedStatus, expectedCode }) => {
-    app = buildRouteApp({
-      selectedTracks: ["creator_marketplace"],
-      routeStateReadPort: {
-        async getPropertySetupRouteState() {
-          return result;
+    expectedBody?: Readonly<Record<string, unknown>>;
+  }>)(
+    "maps $name without caching it",
+    async ({ result, expectedStatus, expectedCode, expectedBody }) => {
+      app = buildRouteApp({
+        selectedTracks: ["creator_marketplace"],
+        routeStateReadPort: {
+          async getPropertySetupRouteState() {
+            return result;
+          },
         },
-      },
-    });
+      });
 
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/hotel-setup/properties/${propertyId}/route`,
-      headers: { authorization: "Bearer valid-token" },
-    });
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/hotel-setup/properties/${propertyId}/route`,
+        headers: { authorization: "Bearer valid-token" },
+      });
 
-    expect(response.statusCode).toBe(expectedStatus);
-    expect(response.json<{ code: string }>().code).toBe(expectedCode);
-    expect(response.headers["cache-control"]).toBe("private, no-store");
-  });
+      expect(response.statusCode).toBe(expectedStatus);
+      const body = response.json<{ code: string }>();
+      expect(body.code).toBe(expectedCode);
+      if (expectedBody) expect(body).toMatchObject(expectedBody);
+      expect(response.headers["cache-control"]).toBe("private, no-store");
+    },
+  );
 
   it("fails closed when the owner snapshot is incomplete or stale", async () => {
     app = buildRouteApp({
@@ -497,6 +505,33 @@ describe("property setup route", () => {
       getPropertySetupRouteState: vi.fn(async () => ({ outcome: "not_found" as const })),
     };
     app = buildRouteApp({ selectedTracks: [], routeStateReadPort });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "GET",
+      url: `/api/hotel-setup/properties/${propertyId}/route`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.code).toBe("setup_track_selection_required");
+    expect(routeStateReadPort.getPropertySetupRouteState).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed track status without a supported setup track", async () => {
+    const routeStateReadPort = {
+      getPropertySetupRouteState: vi.fn(async () => ({ outcome: "not_found" as const })),
+    };
+    app = buildRouteApp({
+      routeStateReadPort,
+      trackRepository: {
+        ...makeTrackRepository(),
+        getTrackStatus: vi.fn(async () => ({
+          trackRevision: 4,
+          selectedTracks: ["unsupported_track"] as unknown as SetupTrack[],
+          tracks: [],
+        })),
+      },
+    });
 
     const response = await injectJson<{ code: string }>(app, {
       method: "GET",
@@ -668,12 +703,12 @@ function makePropertySetupSession(): PropertySetupSession {
           "hotel_catalog.media": "media-r1",
         },
         piiClassification: "potential_incidental_pii",
-        retentionExpiresAt: "2026-10-30T00:00:00.000Z",
+        retentionExpiresAt,
         revision: 2,
         updatedAt: "2026-07-30T00:00:00.000Z",
       },
     ],
-    retentionExpiresAt: "2026-10-30T00:00:00.000Z",
+    retentionExpiresAt,
   };
 }
 
