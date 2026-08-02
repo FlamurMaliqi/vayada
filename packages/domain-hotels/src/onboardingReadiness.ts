@@ -117,12 +117,14 @@ type DeepReadonly<T> = T extends readonly (infer Item)[]
     : T;
 
 export type ProductReadinessResult = DeepReadonly<ProductReadinessEvaluation> & {
+  readonly outcome: "evaluated";
   readonly sourceManifestHash: SourceManifestHash;
   readonly readinessHash: ProductReadinessHash;
 };
 
 /** Typed product-level failure when readiness cannot be evaluated at all. */
 export type ReadinessProviderFailure = {
+  readonly outcome: "provider_failure";
   contractVersion: typeof PRODUCT_READINESS_CONTRACT_VERSION;
   propertyId: string;
   product: ReadinessProduct;
@@ -183,6 +185,7 @@ export async function createProductReadinessResult(
   );
   return deepFreeze({
     ...snapshot,
+    outcome: "evaluated" as const,
     sourceManifestHash,
     readinessHash,
   });
@@ -373,11 +376,13 @@ function canonicalJson(value: unknown): string {
   }
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
   if (Array.isArray(value)) {
+    // Contract arrays are unordered sets. Ordered arrays require a new canonicalization contract.
     return `[${value.map(canonicalJson).sort().join(",")}]`;
   }
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     return `{${Object.keys(record)
+      .filter((key) => record[key] !== undefined)
       .sort()
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
       .join(",")}}`;

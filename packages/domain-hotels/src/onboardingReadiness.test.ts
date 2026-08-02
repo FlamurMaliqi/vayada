@@ -21,15 +21,20 @@ type HashFixture = {
   expected: Record<"sourceManifestHash" | "readinessHash", `sha256:${string}`>;
 };
 
-const fixture = JSON.parse(
-  readFileSync(
-    new URL(
-      "../../../engineering/fixtures/onboarding-readiness-contract/hash-case.json",
-      import.meta.url,
-    ),
-    "utf8",
-  ),
-) as HashFixture;
+// The fixture remains repository-shared so other runtimes can verify the same hash vectors.
+const HASH_FIXTURE_URL = new URL(
+  "../../../engineering/fixtures/onboarding-readiness-contract/hash-case.json",
+  import.meta.url,
+);
+const fixture = JSON.parse(readHashFixture()) as HashFixture;
+
+function readHashFixture(): string {
+  try {
+    return readFileSync(HASH_FIXTURE_URL, "utf8");
+  } catch (error) {
+    throw new Error(`Required shared readiness hash fixture is unavailable: ${String(error)}`);
+  }
+}
 
 function fixtureEvaluation(): ProductReadinessEvaluation {
   return structuredClone({
@@ -54,6 +59,7 @@ describe("onboarding source manifest and readiness contract", () => {
       createProductReadinessResult(reordered),
     ]);
 
+    expect(original.outcome).toBe("evaluated");
     expect(original.sourceManifestHash).toBe(fixture.expected.sourceManifestHash);
     expect(original.readinessHash).toBe(fixture.expected.readinessHash);
     expect(replay).toMatchObject({
@@ -132,6 +138,7 @@ describe("onboarding source manifest and readiness contract", () => {
 
   it("keeps owner omissions, waits, provider failures, and system failures distinct", () => {
     const providerFailure = {
+      outcome: "provider_failure",
       contractVersion: PRODUCT_READINESS_CONTRACT_VERSION,
       propertyId: fixture.evaluation.propertyId,
       product: "booking",
@@ -149,6 +156,37 @@ describe("onboarding source manifest and readiness contract", () => {
     expect(READINESS_BLOCKER_KINDS).toEqual(["user_fixable", "external_pending", "system_error"]);
     expect(READINESS_ERROR_SOURCES).toEqual(["provider", "system"]);
     expect(providerFailure.error).toMatchObject({ errorSource: "provider", retryable: true });
+  });
+
+  it("rolls each blocker kind into the product status", async () => {
+    for (const { kind, status, errorSource } of [
+      { kind: "user_fixable", status: "blocked", errorSource: undefined },
+      { kind: "external_pending", status: "pending", errorSource: undefined },
+      { kind: "system_error", status: "error", errorSource: "system" },
+    ] as const) {
+      const evaluation = fixtureEvaluation();
+      const group = evaluation.groups[0]!;
+      const step = group.steps[0]!;
+      const entity = step.entities[0]!;
+      const blocker = entity.blockers[0]! as unknown as {
+        kind: string;
+        errorSource?: string;
+      };
+      blocker.kind = kind;
+      if (errorSource === undefined) delete blocker.errorSource;
+      else blocker.errorSource = errorSource;
+      evaluation.status = status;
+      group.status = status;
+      step.status = status;
+      entity.status = status;
+
+      const result = await createProductReadinessResult(evaluation);
+      expect(result).toMatchObject({
+        outcome: "evaluated",
+        status,
+        groups: [{ status, steps: [{ status, entities: [{ status }] }] }],
+      });
+    }
   });
 
   it("rejects unsupported runtime contract and enum values", async () => {
@@ -210,6 +248,23 @@ describe("onboarding source manifest and readiness contract", () => {
     errorBlocker.kind = "system_error";
     errorBlocker.errorSource = "database";
     await expect(createProductReadinessResult(unknownErrorSource)).rejects.toThrow("error source");
+
+    const forbiddenErrorSource = fixtureEvaluation();
+    const userFixableBlocker = forbiddenErrorSource.groups[0]!.steps[0]!.entities[0]!
+      .blockers[0]! as unknown as { errorSource?: string };
+    userFixableBlocker.errorSource = "provider";
+    await expect(createProductReadinessResult(forbiddenErrorSource)).rejects.toThrow(
+      "Only system-error blockers",
+    );
+
+    const explicitUndefined = fixtureEvaluation();
+    const optionalErrorSource = explicitUndefined.groups[0]!.steps[0]!.entities[0]!
+      .blockers[0]! as unknown as { errorSource?: string };
+    optionalErrorSource.errorSource = undefined;
+    await expect(createProductReadinessResult(explicitUndefined)).resolves.toMatchObject({
+      outcome: "evaluated",
+      readinessHash: fixture.expected.readinessHash,
+    });
   });
 
   it("rejects status rollups that disagree with their child results", async () => {
