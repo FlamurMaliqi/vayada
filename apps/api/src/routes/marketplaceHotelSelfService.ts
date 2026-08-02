@@ -289,7 +289,6 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
         );
         if (!result.rows[0]) return null;
         await syncPropertyOfferReadModels(client, {
-          organizationId: input.organizationId,
           propertyId: input.propertyId,
         });
         return readProfile(client, input.organizationId, input.propertyId);

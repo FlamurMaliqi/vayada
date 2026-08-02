@@ -18,6 +18,10 @@ import type {
   UpdatePublicPropertyProfileResult,
 } from "../routes/sharedHotelSetupStatus.js";
 import { syncPropertyOfferReadModels } from "../routes/marketplaceAdmin.js";
+import {
+  ACTIVE_PROPERTY_MEDIA_PUBLICATION_PREDICATE,
+  APPROVED_PUBLIC_PROPERTY_MEDIA_OBJECT_PREDICATE,
+} from "./propertyMediaPublicationJob.js";
 
 type SharedHotelSetupQueryClient = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -320,6 +324,21 @@ async function writePublicPropertyProfile(
       return { status: "conflict", currentRevision };
     }
 
+    if (input.patch.media !== undefined) {
+      const pendingMediaCommand = await client.query(
+        `SELECT job.id
+         FROM platform.jobs job
+         WHERE ${ACTIVE_PROPERTY_MEDIA_PUBLICATION_PREDICATE}
+         LIMIT 1
+         FOR UPDATE`,
+        [input.propertyId],
+      );
+      if (pendingMediaCommand.rows.length > 0) {
+        await client.query("ROLLBACK");
+        return { status: "command_in_progress" };
+      }
+    }
+
     let approvedMedia: ApprovedPropertyMediaRow[] = [];
     if (input.patch.media !== undefined && input.patch.media.length > 0) {
       const mediaObjectIds = input.patch.media.map(({ mediaObjectId }) => mediaObjectId);
@@ -409,7 +428,6 @@ async function writePublicPropertyProfile(
 
     await advancePublicProfileRevision(client, input.propertyId);
     await syncPropertyOfferReadModels(client, {
-      organizationId: input.organizationId,
       propertyId: input.propertyId,
     });
     const updated = await loadPublicPropertyProfile(client, input.organizationId, input.propertyId);
@@ -511,9 +529,17 @@ async function replacePublicPropertyMedia(
   );
 }
 
-async function advancePublicProfileRevision(
+export async function advancePublicProfileRevision(
   client: SharedHotelSetupQueryClient,
   propertyId: string,
+): Promise<void> {
+  return updatePublicProfileCompleteness(client, propertyId, true);
+}
+
+async function updatePublicProfileCompleteness(
+  client: SharedHotelSetupQueryClient,
+  propertyId: string,
+  advanceRevision: boolean,
 ): Promise<void> {
   await client.query(
     `WITH completeness AS (
@@ -562,11 +588,11 @@ async function advancePublicProfileRevision(
            WHEN cardinality(completeness.reasons) = 0 THEN 'complete'
            ELSE 'incomplete'
          END,
-         profile_revision = property.profile_revision + 1,
+         profile_revision = property.profile_revision + CASE WHEN $2::boolean THEN 1 ELSE 0 END,
          updated_at = now()
      FROM completeness
      WHERE property.id = completeness.property_id`,
-    [propertyId],
+    [propertyId, advanceRevision],
   );
 }
 
@@ -670,7 +696,6 @@ async function writePropertyProfile(
       const propertyId = result.rows[0]?.propertyId ?? null;
       if (propertyId) {
         await syncPropertyOfferReadModels(client, {
-          organizationId: input.organizationId,
           propertyId,
         });
       }
@@ -1227,29 +1252,22 @@ function publicPropertyProfileSql(): string {
       SELECT jsonb_agg(
         jsonb_build_object(
           'mediaObjectId', media_object.id::text,
-          'mediaType', CASE media_object.purpose
-            WHEN 'property.hero_image' THEN 'hero_image'
-            WHEN 'property.logo' THEN 'logo'
-            ELSE 'gallery_image'
-          END,
+          'mediaType', media.media_type,
           'url', variant.public_cdn_url,
           'altText', media.alt_text,
           'sortOrder', media.sort_order
         )
-        ORDER BY media.sort_order, media.created_at, media.id
+        ORDER BY
+          CASE media.media_type WHEN 'logo' THEN 0 WHEN 'hero_image' THEN 1 ELSE 2 END,
+          media.sort_order,
+          media.created_at,
+          media.id
       ) AS items
       FROM hotel_catalog.property_media media
       JOIN platform.media_objects media_object
         ON media_object.id = media.platform_media_object_id
        AND media_object.property_id = property.id
-       AND media_object.visibility = 'public'
-       AND media_object.public_approved = TRUE
-       AND media_object.lifecycle_status = 'active'
-       AND media_object.purpose IN (
-         'property.hero_image',
-         'property.gallery_image',
-         'property.logo'
-       )
+       AND ${APPROVED_PUBLIC_PROPERTY_MEDIA_OBJECT_PREDICATE}
       JOIN platform.media_variants variant
         ON variant.media_object_id = media_object.id
        AND variant.variant_name = 'original_safe'
@@ -1768,14 +1786,7 @@ function adaptiveHotelSetupFactsSql(): string {
       JOIN platform.media_objects media_object
         ON media_object.id = media.platform_media_object_id
        AND media_object.property_id = property.id
-       AND media_object.visibility = 'public'
-       AND media_object.public_approved = TRUE
-       AND media_object.lifecycle_status = 'active'
-       AND media_object.purpose IN (
-         'property.hero_image',
-         'property.gallery_image',
-         'property.logo'
-       )
+       AND ${APPROVED_PUBLIC_PROPERTY_MEDIA_OBJECT_PREDICATE}
       JOIN platform.media_variants media_variant
         ON media_variant.media_object_id = media_object.id
        AND media_variant.variant_name = 'original_safe'

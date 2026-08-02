@@ -62,15 +62,17 @@ export function parsePublicPropertyProfileResponse(
   ) {
     return null;
   }
-  const mediaIds = publicProfile["media"].map(
-    (item) => (item as PublicPropertyProfileMedia).mediaObjectId,
-  );
-  const sortOrders = publicProfile["media"].map(
-    (item) => (item as PublicPropertyProfileMedia).sortOrder,
-  );
+  const mediaRoles = publicProfile["media"].map((item) => {
+    const media = item as PublicPropertyProfileMedia;
+    return `${media.mediaType}:${media.mediaObjectId.toLowerCase()}`;
+  });
+  const roleOrders = publicProfile["media"].map((item) => {
+    const media = item as PublicPropertyProfileMedia;
+    return `${media.mediaType}:${media.sortOrder}`;
+  });
   if (
-    new Set(mediaIds).size !== mediaIds.length ||
-    new Set(sortOrders).size !== sortOrders.length
+    new Set(mediaRoles).size !== mediaRoles.length ||
+    new Set(roleOrders).size !== roleOrders.length
   ) {
     return null;
   }

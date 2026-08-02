@@ -564,7 +564,6 @@ describe("marketplace admin routes", () => {
     };
 
     await syncPropertyOfferReadModels(client, {
-      organizationId: "f8012000-0000-0000-0000-000000000001",
       propertyId,
     });
 
@@ -572,6 +571,9 @@ describe("marketplace admin routes", () => {
     expect(
       statements.find((statement) => statement.includes('offer.id::text AS "offerId"')),
     ).toContain("offer.offer_status <> 'archived'");
+    expect(
+      statements.find((statement) => statement.includes('offer.id::text AS "offerId"')),
+    ).not.toContain("offer.organization_id");
   });
 
   it("loads pending offers for a hotel review without reading them through identity", async () => {

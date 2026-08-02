@@ -43,6 +43,38 @@ describe("canonical public property profile wire contract", () => {
         },
       }),
     ).toBeNull();
+    expect(
+      parsePublicPropertyProfileResponse({
+        ...response,
+        publicProfile: {
+          ...response.publicProfile,
+          media: [
+            response.publicProfile.media[0],
+            {
+              ...response.publicProfile.media[0],
+              mediaType: "gallery_image",
+              sortOrder: 1,
+            },
+          ],
+        },
+      }),
+    ).not.toBeNull();
+    expect(
+      parsePublicPropertyProfileResponse({
+        ...response,
+        publicProfile: {
+          ...response.publicProfile,
+          media: [
+            response.publicProfile.media[0],
+            {
+              ...response.publicProfile.media[0],
+              mediaObjectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              mediaType: "logo",
+            },
+          ],
+        },
+      }),
+    ).not.toBeNull();
   });
 
   it("parses sparse patches and rejects duplicate media references", () => {

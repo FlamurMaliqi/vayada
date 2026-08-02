@@ -149,7 +149,7 @@ describe("resolved hotel media projection contract", () => {
     ).toBeNull();
   });
 
-  it("rejects cross-scope, wrong-target, and wrong-purpose adapter output", async () => {
+  it("rejects cross-scope and wrong-target adapter output", async () => {
     for (const result of [
       {
         ok: true as const,
@@ -160,11 +160,6 @@ describe("resolved hotel media projection contract", () => {
         ok: true as const,
         resolvedTarget: { kind: "property" as const, propertyId },
         media: [mediaSnapshot({ ownerOrganizationId: "other-organization" })],
-      },
-      {
-        ok: true as const,
-        resolvedTarget: { kind: "property" as const, propertyId },
-        media: [mediaSnapshot({ purpose: "pms.room_type.media" })],
       },
     ]) {
       const resolved = await resolutionPort(result).resolvePublicMedia({
@@ -177,6 +172,22 @@ describe("resolved hotel media projection contract", () => {
         error: { code: "media_not_authorized", mediaObjectIds: [mediaObjectId] },
       });
     }
+  });
+
+  it("allows canonical media to cross upload-purpose and assignment-role boundaries", async () => {
+    const propertyMedia = await propertyBatch(mediaSnapshot({ purpose: "pms.room_type.media" }));
+    expect(propertyMedia.media[0]?.purpose).toBe("pms.room_type.media");
+
+    const roomResult = await resolutionPort({
+      ok: true,
+      resolvedTarget: { kind: "room_type", propertyId, roomTypeId },
+      media: [mediaSnapshot({ purpose: "property.gallery_image" })],
+    }).resolvePublicMedia({
+      ownerOrganizationId: organizationId,
+      target: { kind: "room_type", propertyId, roomTypeId },
+      mediaObjectIds: [mediaObjectId],
+    });
+    expect(roomResult.ok && roomResult.batch.media[0]?.purpose).toBe("property.gallery_image");
   });
 
   it("requires exact requested-media cardinality and canonicalizes UUIDs", async () => {

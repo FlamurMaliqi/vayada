@@ -50,10 +50,17 @@ export function parsePropertyMediaCommandError(value: unknown): PropertyMediaCom
         })
       : null;
   }
-  if (["idempotency_key_conflict", "command_in_progress"].includes(value["code"])) {
+  if (
+    ["idempotency_key_conflict", "command_in_progress", "media_publication_failed"].includes(
+      value["code"],
+    )
+  ) {
     return isExactDataRecord(value, ["code"])
       ? Object.freeze({
-          code: value["code"] as "idempotency_key_conflict" | "command_in_progress",
+          code: value["code"] as
+            | "idempotency_key_conflict"
+            | "command_in_progress"
+            | "media_publication_failed",
         })
       : null;
   }

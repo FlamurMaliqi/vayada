@@ -2013,7 +2013,6 @@ export function createPgTargetBookingSettingsRepository(config: {
         }
 
         await syncPropertyOfferReadModels(transaction, {
-          organizationId,
           propertyId: row.propertyId,
         });
         await transaction.query("COMMIT");

@@ -312,7 +312,6 @@ function snapshotResolvedMedia(
     ]) ||
     value.ownerOrganizationId !== request.ownerOrganizationId ||
     value.propertyId !== request.target.propertyId ||
-    !purposeMatchesTarget(value.purpose, request.target) ||
     !Array.isArray(value.publicVariants)
   ) {
     return null;
@@ -397,15 +396,6 @@ function resolvePropertyAssignment(
         sortOrder: assignment.sortOrder,
       })
     : null;
-}
-
-function purposeMatchesTarget(
-  purpose: PropertyMediaUploadPurpose,
-  target: HotelMediaResolutionTarget,
-): boolean {
-  return target.kind === "room_type"
-    ? purpose === "pms.room_type.media"
-    : purpose !== "pms.room_type.media";
 }
 
 function sameTarget(left: HotelMediaResolutionTarget, right: HotelMediaResolutionTarget): boolean {

@@ -2089,7 +2089,7 @@ export async function syncOfferReadModel(
 
 export async function syncPropertyOfferReadModels(
   client: Pick<MarketplaceAdminPool, "query">,
-  input: { organizationId: string; propertyId: string },
+  input: { propertyId: string },
 ): Promise<void> {
   if (!(await ensureCanonicalPropertySlug(client, input.propertyId))) return;
   await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [input.propertyId]);
@@ -2097,11 +2097,10 @@ export async function syncPropertyOfferReadModels(
   const offers = await client.query<{ offerId: string }>(
     `SELECT offer.id::text AS "offerId"
      FROM marketplace.marketplace_offers offer
-     WHERE offer.organization_id = $1::uuid
-       AND offer.property_id = $2::uuid
+     WHERE offer.property_id = $1::uuid
        AND offer.offer_status <> 'archived'
      ORDER BY offer.id`,
-    [input.organizationId, input.propertyId],
+    [input.propertyId],
   );
   for (const { offerId } of offers.rows) {
     await syncOfferReadModel(client, offerId, "initialize", {

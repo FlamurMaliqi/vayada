@@ -5,6 +5,8 @@ import type {
 import pg from "pg";
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 
+import { APPROVED_PUBLIC_PROPERTY_MEDIA_OBJECT_PREDICATE } from "./propertyMediaPublicationJob.js";
+
 type PublicationPool = {
   connect(): Promise<PoolClient>;
   end(): Promise<void>;
@@ -132,17 +134,16 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
           'sortOrder', media.sort_order,
           'platformMediaObjectId', media.platform_media_object_id::text
         ))
-        ORDER BY media.sort_order, media.id
+        ORDER BY
+          CASE media.media_type WHEN 'logo' THEN 0 WHEN 'hero_image' THEN 1 ELSE 2 END,
+          media.sort_order,
+          media.id
       ) AS media
     FROM (
-      SELECT DISTINCT ON (candidate.property_id, media_variant.public_cdn_url)
+      SELECT
         candidate.id,
         candidate.property_id,
-        CASE media_object.purpose
-          WHEN 'property.hero_image' THEN 'hero_image'
-          WHEN 'property.logo' THEN 'logo'
-          ELSE 'gallery_image'
-        END AS media_type,
+        candidate.media_type,
         media_variant.public_cdn_url AS url,
         candidate.alt_text,
         candidate.sort_order,
@@ -151,14 +152,7 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
       JOIN platform.media_objects media_object
         ON media_object.id = candidate.platform_media_object_id
        AND media_object.property_id = candidate.property_id
-       AND media_object.visibility = 'public'
-       AND media_object.public_approved = TRUE
-       AND media_object.lifecycle_status = 'active'
-       AND media_object.purpose IN (
-         'property.hero_image',
-         'property.gallery_image',
-         'property.logo'
-       )
+       AND ${APPROVED_PUBLIC_PROPERTY_MEDIA_OBJECT_PREDICATE}
       JOIN platform.media_variants media_variant
         ON media_variant.media_object_id = media_object.id
        AND media_variant.variant_name = 'original_safe'
@@ -167,12 +161,6 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
       WHERE candidate.property_id = $1::uuid
         AND candidate.public_approved = TRUE
         AND candidate.source_system = 'platform'
-      ORDER BY
-        candidate.property_id,
-        media_variant.public_cdn_url,
-        CASE media_object.purpose WHEN 'property.hero_image' THEN 0 ELSE 1 END,
-        candidate.sort_order,
-        candidate.id
     ) media
     GROUP BY media.property_id
   ),
