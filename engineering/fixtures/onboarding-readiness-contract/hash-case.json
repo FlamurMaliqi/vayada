@@ -30,7 +30,7 @@
         "status": "blocked",
         "steps": [
           {
-            "owningStepId": "choose_payments",
+            "owningStepId": "payments",
             "status": "blocked",
             "entities": [
               {
@@ -48,7 +48,7 @@
                     "message": "Choose at least one payment method that is ready.",
                     "product": "booking",
                     "groupId": "booking.payments",
-                    "owningStepId": "choose_payments",
+                    "owningStepId": "payments",
                     "source": {
                       "ownerDomain": "finance",
                       "entityType": "payment_settings",
@@ -66,6 +66,6 @@
   },
   "expected": {
     "sourceManifestHash": "sha256:1b0c6a31c51166701894bd525539c222c57dc38c195cda83cad60609473b00b7",
-    "readinessHash": "sha256:6a625a2c2c1bcff4aa7282f9c3432685a34468e216bd68d1fb91a3e62ad9bff7"
+    "readinessHash": "sha256:8fbbb3af82474856cc80a88239f1807deb79a07fd8d43f30fc199d24566f79c9"
   }
 }

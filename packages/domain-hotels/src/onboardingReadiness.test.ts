@@ -12,6 +12,7 @@ import {
   type ReadinessProviderFailure,
   type SourceManifest,
 } from "./onboardingReadiness.js";
+import type { PropertySetupStepId } from "./propertySetupDraft.js";
 
 type HashFixture = {
   contractVersion: string;
@@ -63,30 +64,33 @@ describe("onboarding source manifest and readiness contract", () => {
 
   it("keeps nested readiness contribution order out of hash identity", async () => {
     const evaluation = fixtureEvaluation();
-    const buildGroup = (groupId: ReadinessGroupId): ReadinessGroupResult => ({
-      groupId,
-      status: "blocked",
-      steps: ["primary", "secondary"].map((suffix) => {
-        const owningStepId = `${groupId}.${suffix}`;
-        return {
-          owningStepId,
-          status: "blocked",
-          entities: evaluation.sourceManifest.sources.map((source, sourceIndex) => ({
-            source,
+    const buildGroup = (groupId: ReadinessGroupId): ReadinessGroupResult => {
+      const owningStepIds: PropertySetupStepId[] =
+        groupId === "booking.payments" ? ["payments", "review"] : ["present_hotel", "review"];
+      return {
+        groupId,
+        status: "blocked",
+        steps: owningStepIds.map((owningStepId) => {
+          return {
+            owningStepId,
             status: "blocked",
-            blockers: ["missing", "stale"].map((code) => ({
-              kind: "user_fixable",
-              code: `${groupId}.${sourceIndex}.${code}`,
-              message: "Complete the required setup.",
-              product: "booking",
-              groupId,
-              owningStepId,
+            entities: evaluation.sourceManifest.sources.map((source, sourceIndex) => ({
               source,
+              status: "blocked",
+              blockers: ["missing", "stale"].map((code) => ({
+                kind: "user_fixable",
+                code: `${groupId}.${sourceIndex}.${code}`,
+                message: "Complete the required setup.",
+                product: "booking",
+                groupId,
+                owningStepId,
+                source,
+              })),
             })),
-          })),
-        };
-      }),
-    });
+          };
+        }),
+      };
+    };
     evaluation.groups = [buildGroup("booking.hotel_profile"), buildGroup("booking.payments")];
     const reversed = structuredClone(evaluation);
     reversed.sourceManifest = {
@@ -147,6 +151,134 @@ describe("onboarding source manifest and readiness contract", () => {
     expect(providerFailure.error).toMatchObject({ errorSource: "provider", retryable: true });
   });
 
+  it("rejects unsupported runtime contract and enum values", async () => {
+    const wrongReadinessVersion = fixtureEvaluation();
+    (wrongReadinessVersion as { contractVersion: string }).contractVersion =
+      "onboarding-product-readiness.v2";
+    await expect(createProductReadinessResult(wrongReadinessVersion)).rejects.toThrow(
+      /readiness uses an unsupported contract version/i,
+    );
+
+    const wrongManifestVersion = fixtureEvaluation();
+    (wrongManifestVersion.sourceManifest as { contractVersion: string }).contractVersion =
+      "onboarding-source-manifest.v2";
+    await expect(createProductReadinessResult(wrongManifestVersion)).rejects.toThrow(
+      /manifest uses an unsupported contract version/i,
+    );
+
+    const unknownProduct = fixtureEvaluation();
+    (unknownProduct as { product: string }).product = "pms";
+    await expect(createProductReadinessResult(unknownProduct)).rejects.toThrow("readiness product");
+
+    const unknownDomain = fixtureEvaluation();
+    (unknownDomain.sourceManifest.sources[0]! as { ownerDomain: string }).ownerDomain = "sales";
+    await expect(createProductReadinessResult(unknownDomain)).rejects.toThrow("owner domain");
+
+    const invalidPropertyId = fixtureEvaluation();
+    (invalidPropertyId as unknown as { propertyId: unknown }).propertyId = null;
+    (invalidPropertyId.sourceManifest as unknown as { propertyId: unknown }).propertyId = null;
+    await expect(createProductReadinessResult(invalidPropertyId)).rejects.toThrow("property ID");
+
+    for (const [field, value, message] of [
+      ["entityType", "", "entity type"],
+      ["entityId", null, "entity ID"],
+      ["revision", 7, "revision"],
+    ] as const) {
+      const invalidSource = fixtureEvaluation();
+      (invalidSource.sourceManifest.sources[0]! as unknown as Record<string, unknown>)[field] =
+        value;
+      await expect(createProductReadinessResult(invalidSource)).rejects.toThrow(message);
+    }
+
+    const unknownStatus = fixtureEvaluation();
+    (unknownStatus.groups[0]! as { status: string }).status = "complete";
+    await expect(createProductReadinessResult(unknownStatus)).rejects.toThrow(
+      "group readiness status",
+    );
+
+    const unknownKind = fixtureEvaluation();
+    (
+      unknownKind.groups[0]!.steps[0]!.entities[0]!.blockers[0]! as unknown as {
+        kind: string;
+      }
+    ).kind = "warning";
+    await expect(createProductReadinessResult(unknownKind)).rejects.toThrow("blocker kind");
+
+    const unknownErrorSource = fixtureEvaluation();
+    const errorBlocker = unknownErrorSource.groups[0]!.steps[0]!.entities[0]!
+      .blockers[0]! as unknown as { kind: string; errorSource: string };
+    errorBlocker.kind = "system_error";
+    errorBlocker.errorSource = "database";
+    await expect(createProductReadinessResult(unknownErrorSource)).rejects.toThrow("error source");
+  });
+
+  it("rejects status rollups that disagree with their child results", async () => {
+    const wrongEntity = fixtureEvaluation();
+    wrongEntity.groups[0]!.steps[0]!.entities[0]!.status = "ready";
+    await expect(createProductReadinessResult(wrongEntity)).rejects.toThrow(
+      "entity status does not match",
+    );
+
+    const wrongStep = fixtureEvaluation();
+    wrongStep.groups[0]!.steps[0]!.status = "ready";
+    await expect(createProductReadinessResult(wrongStep)).rejects.toThrow(
+      "step status does not match",
+    );
+
+    const wrongGroup = fixtureEvaluation();
+    wrongGroup.groups[0]!.status = "ready";
+    await expect(createProductReadinessResult(wrongGroup)).rejects.toThrow(
+      "group status does not match",
+    );
+
+    const wrongProduct = fixtureEvaluation();
+    wrongProduct.status = "ready";
+    await expect(createProductReadinessResult(wrongProduct)).rejects.toThrow(
+      "product status does not match",
+    );
+
+    const blockerlessBlockedEntity = fixtureEvaluation();
+    blockerlessBlockedEntity.groups[0]!.steps[0]!.entities[0]!.blockers = [];
+    await expect(createProductReadinessResult(blockerlessBlockedEntity)).rejects.toThrow(
+      "entity status does not match",
+    );
+  });
+
+  it("rejects duplicate readiness graph nodes", async () => {
+    const duplicateGroup = fixtureEvaluation();
+    duplicateGroup.groups = [...duplicateGroup.groups, structuredClone(duplicateGroup.groups[0]!)];
+    await expect(createProductReadinessResult(duplicateGroup)).rejects.toThrow("duplicate group");
+
+    const duplicateStep = fixtureEvaluation();
+    duplicateStep.groups[0]!.steps = [
+      ...duplicateStep.groups[0]!.steps,
+      structuredClone(duplicateStep.groups[0]!.steps[0]!),
+    ];
+    await expect(createProductReadinessResult(duplicateStep)).rejects.toThrow("duplicate step");
+
+    const duplicateEntity = fixtureEvaluation();
+    duplicateEntity.groups[0]!.steps[0]!.entities = [
+      ...duplicateEntity.groups[0]!.steps[0]!.entities,
+      structuredClone(duplicateEntity.groups[0]!.steps[0]!.entities[0]!),
+    ];
+    await expect(createProductReadinessResult(duplicateEntity)).rejects.toThrow("duplicate entity");
+  });
+
+  it("rejects readiness claims without a non-empty evidence graph", async () => {
+    const emptyProduct = fixtureEvaluation();
+    emptyProduct.status = "ready";
+    emptyProduct.groups = [];
+    await expect(createProductReadinessResult(emptyProduct)).rejects.toThrow("at least one group");
+
+    const emptyGroup = fixtureEvaluation();
+    emptyGroup.groups[0]!.steps = [];
+    await expect(createProductReadinessResult(emptyGroup)).rejects.toThrow("at least one step");
+
+    const emptyStep = fixtureEvaluation();
+    emptyStep.groups[0]!.steps[0]!.entities = [];
+    await expect(createProductReadinessResult(emptyStep)).rejects.toThrow("at least one entity");
+  });
+
   it("rejects contradictory graphs and snapshots mutable input before hashing", async () => {
     const stale = fixtureEvaluation();
     stale.groups[0]!.steps[0]!.entities[0]!.source.revision = "payment-settings:stale";
@@ -163,6 +295,14 @@ describe("onboarding source manifest and readiness contract", () => {
     };
     await expect(createProductReadinessResult(duplicate)).rejects.toThrow("duplicate entity");
 
+    const unknownStep = fixtureEvaluation();
+    unknownStep.groups[0]!.steps[0]!.owningStepId = "choose_payments" as PropertySetupStepId;
+    unknownStep.groups[0]!.steps[0]!.entities[0]!.blockers[0]!.owningStepId =
+      "choose_payments" as PropertySetupStepId;
+    await expect(createProductReadinessResult(unknownStep)).rejects.toThrow(
+      "property setup route step",
+    );
+
     const unstructuredError = { ...fixtureEvaluation(), status: "error", groups: [] } as const;
     await expect(createProductReadinessResult(unstructuredError)).rejects.toThrow(
       "structured blocker or provider failure",
@@ -174,5 +314,10 @@ describe("onboarding source manifest and readiness contract", () => {
     const snapshot = await pending;
     expect(snapshot.sourceManifestHash).toBe(fixture.expected.sourceManifestHash);
     expect(snapshot.sourceManifest.sources[0]!.revision).not.toBe("provider-account:mutated");
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.sourceManifest.sources[0]!)).toBe(true);
+    expect(() => {
+      (snapshot.groups[0]! as unknown as { status: string }).status = "ready";
+    }).toThrow(TypeError);
   });
 });

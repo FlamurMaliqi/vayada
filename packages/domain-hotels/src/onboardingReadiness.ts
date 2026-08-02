@@ -1,3 +1,5 @@
+import { PROPERTY_SETUP_STEP_DEFINITIONS, type PropertySetupStepId } from "./propertySetupDraft.js";
+
 export const SOURCE_MANIFEST_CONTRACT_VERSION = "onboarding-source-manifest.v1" as const;
 export const PRODUCT_READINESS_CONTRACT_VERSION = "onboarding-product-readiness.v1" as const;
 
@@ -61,7 +63,7 @@ type ReadinessBlockerBase = {
   message: string;
   product: ReadinessProduct;
   groupId: ReadinessGroupId;
-  owningStepId: string;
+  owningStepId: PropertySetupStepId;
   source: SourceEntityRevision;
 };
 
@@ -86,8 +88,7 @@ export type ReadinessEntityResult = {
 };
 
 export type ReadinessStepResult = {
-  /** Opaque here; the adaptive route validates it against its own step model. */
-  owningStepId: string;
+  owningStepId: PropertySetupStepId;
   status: ReadinessStatus;
   entities: readonly ReadinessEntityResult[];
 };
@@ -109,9 +110,15 @@ export type ProductReadinessEvaluation = {
   evaluatedAt: string;
 };
 
-export type ProductReadinessResult = ProductReadinessEvaluation & {
-  sourceManifestHash: SourceManifestHash;
-  readinessHash: ProductReadinessHash;
+type DeepReadonly<T> = T extends readonly (infer Item)[]
+  ? readonly DeepReadonly<Item>[]
+  : T extends object
+    ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+    : T;
+
+export type ProductReadinessResult = DeepReadonly<ProductReadinessEvaluation> & {
+  readonly sourceManifestHash: SourceManifestHash;
+  readonly readinessHash: ProductReadinessHash;
 };
 
 /** Typed product-level failure when readiness cannot be evaluated at all. */
@@ -142,6 +149,15 @@ export interface ReadinessProviderPort {
   ): Promise<ProductReadinessResult | ReadinessProviderFailure>;
 }
 
+const PROPERTY_SETUP_STEP_IDS = new Set(
+  PROPERTY_SETUP_STEP_DEFINITIONS.map(({ stepId }) => stepId),
+);
+const READINESS_PRODUCT_IDS = new Set<string>(READINESS_PRODUCTS);
+const READINESS_SOURCE_DOMAIN_IDS = new Set<string>(READINESS_SOURCE_DOMAINS);
+const READINESS_STATUS_IDS = new Set<string>(READINESS_STATUSES);
+const READINESS_BLOCKER_KIND_IDS = new Set<string>(READINESS_BLOCKER_KINDS);
+const READINESS_ERROR_SOURCE_IDS = new Set<string>(READINESS_ERROR_SOURCES);
+
 export async function hashSourceManifest(manifest: SourceManifest): Promise<SourceManifestHash> {
   const snapshot = structuredClone(manifest);
   assertUniqueManifestSources(snapshot);
@@ -165,31 +181,73 @@ export async function createProductReadinessResult(
       groups: snapshot.groups,
     }),
   );
-  return {
+  return deepFreeze({
     ...snapshot,
     sourceManifestHash,
     readinessHash,
-  };
+  });
 }
 
 function assertReadinessIntegrity(evaluation: ProductReadinessEvaluation): void {
+  if (evaluation.contractVersion !== PRODUCT_READINESS_CONTRACT_VERSION) {
+    throw new Error("Readiness uses an unsupported contract version");
+  }
+  assertNonEmptyString(evaluation.propertyId, "readiness property ID");
+  assertNonEmptyString(evaluation.evaluatedAt, "readiness evaluation timestamp");
+  assertAllowedValue(evaluation.product, READINESS_PRODUCT_IDS, "readiness product");
+  assertAllowedValue(evaluation.status, READINESS_STATUS_IDS, "product readiness status");
   if (evaluation.propertyId !== evaluation.sourceManifest.propertyId) {
     throw new Error("Readiness and source manifest must identify the same property");
   }
   const manifestSources = assertUniqueManifestSources(evaluation.sourceManifest);
+  if (evaluation.groups.length === 0) {
+    if (evaluation.status === "error") {
+      throw new Error("Product errors require a structured blocker or provider failure");
+    }
+    throw new Error("Product readiness requires at least one group");
+  }
   const allowedGroupIds: readonly string[] = READINESS_GROUP_IDS_BY_PRODUCT[evaluation.product];
+  const groupIds = new Set<ReadinessGroupId>();
   let hasStructuredError = false;
   for (const group of evaluation.groups) {
     if (!allowedGroupIds.includes(group.groupId)) {
       throw new Error("Readiness group does not belong to its product");
     }
+    if (groupIds.has(group.groupId)) {
+      throw new Error("Readiness contains a duplicate group");
+    }
+    groupIds.add(group.groupId);
+    assertAllowedValue(group.status, READINESS_STATUS_IDS, "group readiness status");
+    if (group.steps.length === 0) {
+      throw new Error("Readiness groups require at least one step");
+    }
+    const stepIds = new Set<PropertySetupStepId>();
     for (const step of group.steps) {
+      if (!PROPERTY_SETUP_STEP_IDS.has(step.owningStepId)) {
+        throw new Error("Readiness step does not identify a property setup route step");
+      }
+      if (stepIds.has(step.owningStepId)) {
+        throw new Error("Readiness group contains a duplicate step");
+      }
+      stepIds.add(step.owningStepId);
+      assertAllowedValue(step.status, READINESS_STATUS_IDS, "step readiness status");
+      if (step.entities.length === 0) {
+        throw new Error("Readiness steps require at least one entity");
+      }
+      const entityIds = new Set<string>();
       for (const entity of step.entities) {
+        assertSourceEntityRevision(entity.source, "readiness entity source");
         const identity = sourceIdentity(entity.source);
+        if (entityIds.has(identity)) {
+          throw new Error("Readiness step contains a duplicate entity");
+        }
+        entityIds.add(identity);
+        assertAllowedValue(entity.status, READINESS_STATUS_IDS, "entity readiness status");
         if (manifestSources.get(identity) !== entity.source.revision) {
           throw new Error("Readiness entity source is absent or stale in its manifest");
         }
         for (const blocker of entity.blockers) {
+          assertReadinessBlocker(blocker);
           if (blocker.kind === "system_error") hasStructuredError = true;
           if (
             blocker.product !== evaluation.product ||
@@ -201,22 +259,108 @@ function assertReadinessIntegrity(evaluation: ProductReadinessEvaluation): void 
             throw new Error("Readiness blocker coordinates do not match their entity");
           }
         }
+        assertStatusRollup(
+          entity.status,
+          rollupReadinessStatuses(entity.blockers.map(readinessStatusForBlocker)),
+          "entity",
+        );
       }
+      assertStatusRollup(
+        step.status,
+        rollupReadinessStatuses(step.entities.map(({ status }) => status)),
+        "step",
+      );
     }
+    assertStatusRollup(
+      group.status,
+      rollupReadinessStatuses(group.steps.map(({ status }) => status)),
+      "group",
+    );
   }
   if (evaluation.status === "error" && !hasStructuredError) {
     throw new Error("Product errors require a structured blocker or provider failure");
   }
+  assertStatusRollup(
+    evaluation.status,
+    rollupReadinessStatuses(evaluation.groups.map(({ status }) => status)),
+    "product",
+  );
 }
 
 function assertUniqueManifestSources(manifest: SourceManifest): Map<string, SourceRevisionValue> {
+  if (manifest.contractVersion !== SOURCE_MANIFEST_CONTRACT_VERSION) {
+    throw new Error("Source manifest uses an unsupported contract version");
+  }
+  assertNonEmptyString(manifest.propertyId, "source manifest property ID");
   const sources = new Map<string, SourceRevisionValue>();
   for (const source of manifest.sources) {
+    assertSourceEntityRevision(source, "source manifest entity");
     const identity = sourceIdentity(source);
     if (sources.has(identity)) throw new Error("Source manifest contains a duplicate entity");
     sources.set(identity, source.revision);
   }
   return sources;
+}
+
+function assertReadinessBlocker(blocker: ReadinessBlocker): void {
+  assertAllowedValue(blocker.kind, READINESS_BLOCKER_KIND_IDS, "readiness blocker kind");
+  assertNonEmptyString(blocker.code, "readiness blocker code");
+  assertNonEmptyString(blocker.message, "readiness blocker message");
+  assertSourceEntityRevision(blocker.source, "readiness blocker source");
+  if (blocker.kind === "system_error") {
+    assertAllowedValue(
+      blocker.errorSource,
+      READINESS_ERROR_SOURCE_IDS,
+      "readiness blocker error source",
+    );
+  } else if ("errorSource" in blocker && blocker.errorSource !== undefined) {
+    throw new Error("Only system-error blockers may identify an error source");
+  }
+}
+
+function assertSourceEntityRevision(source: SourceEntityRevision, label: string): void {
+  assertAllowedValue(source.ownerDomain, READINESS_SOURCE_DOMAIN_IDS, `${label} owner domain`);
+  assertNonEmptyString(source.entityType, `${label} entity type`);
+  assertNonEmptyString(source.entityId, `${label} entity ID`);
+  assertNonEmptyString(source.revision, `${label} revision`);
+}
+
+function readinessStatusForBlocker(blocker: ReadinessBlocker): ReadinessStatus {
+  switch (blocker.kind) {
+    case "user_fixable":
+      return "blocked";
+    case "external_pending":
+      return "pending";
+    case "system_error":
+      return "error";
+  }
+}
+
+function rollupReadinessStatuses(statuses: readonly ReadinessStatus[]): ReadinessStatus {
+  if (statuses.includes("error")) return "error";
+  if (statuses.includes("blocked")) return "blocked";
+  if (statuses.includes("pending")) return "pending";
+  return "ready";
+}
+
+function assertStatusRollup(
+  actual: ReadinessStatus,
+  expected: ReadinessStatus,
+  scope: "entity" | "step" | "group" | "product",
+): void {
+  if (actual !== expected) {
+    throw new Error(`Readiness ${scope} status does not match its child results`);
+  }
+}
+
+function assertAllowedValue(value: string, allowed: ReadonlySet<string>, label: string): void {
+  if (!allowed.has(value)) throw new Error(`Unsupported ${label}`);
+}
+
+function assertNonEmptyString(value: string, label: string): void {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Invalid ${label}`);
+  }
 }
 
 function sourceIdentity(source: SourceEntityRevision): string {
@@ -239,6 +383,18 @@ function canonicalJson(value: unknown): string {
       .join(",")}}`;
   }
   throw new TypeError(`Unsupported canonical JSON value: ${typeof value}`);
+}
+
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object") return value;
+  const object = value as object;
+  if (seen.has(object)) return value;
+  seen.add(object);
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(nested, seen);
+  }
+  Object.freeze(object);
+  return value;
 }
 
 async function sha256(value: string): Promise<`sha256:${string}`> {
