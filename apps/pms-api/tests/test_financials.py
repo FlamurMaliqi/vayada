@@ -11,6 +11,8 @@ Covers:
 
 from datetime import date, datetime, timedelta, timezone
 
+from app.services.invoice_service import derive_status
+
 from tests.conftest import (
     create_test_booking,
     create_test_booking_with_payment,
@@ -19,6 +21,27 @@ from tests.conftest import (
     create_test_user,
     get_auth_headers,
 )
+
+
+def test_check_in_today_is_not_overdue():
+    today = date(2026, 8, 2)
+    booking = {
+        "status": "confirmed",
+        "total_amount": 100.0,
+        "check_in": today,
+        "channel": "direct",
+        "payment_status": "unpaid",
+    }
+
+    assert derive_status(booking, amount_paid=0, today=today) == "sent"
+    assert (
+        derive_status(
+            {**booking, "check_in": today - timedelta(days=1)},
+            amount_paid=0,
+            today=today,
+        )
+        == "overdue"
+    )
 
 
 class TestListInvoices:
@@ -164,6 +187,16 @@ class TestRecordPayment:
             payment_method="pay_at_property",
             payment_status="unpaid",
         )
+
+        initial_resp = await client.get(
+            f"/admin/financials/invoices/{booking['id']}",
+            headers=get_auth_headers(user["token"]),
+        )
+        assert initial_resp.status_code == 200
+        initial_body = initial_resp.json()
+        assert initial_body["amountPaid"] == 0
+        assert initial_body["payments"] == []
+        assert initial_body["status"] == "sent"
 
         # Partial payment
         resp = await client.post(
