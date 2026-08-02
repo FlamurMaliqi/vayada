@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
+  PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
   type PropertySetupSession,
   type PropertySetupStepDraft,
   type PropertySetupStepId,
@@ -35,27 +36,32 @@ const combinedRoute = [
 
 describe("property setup route", () => {
   it.each([
-    [["creator_marketplace"], marketplaceRoute],
-    [["hotel_operations"], operationsRoute],
-    [["creator_marketplace", "hotel_operations"], combinedRoute],
-  ] as const)("projects the approved route for tracks %j", (selectedTracks, expected) => {
-    const route = project({ selectedTracks });
+    [["creator_marketplace"], marketplaceRoute, ["creator_marketplace"]],
+    [["hotel_operations"], operationsRoute, ["hotel_operations"]],
+    [
+      ["creator_marketplace", "hotel_operations"],
+      combinedRoute,
+      ["hotel_operations", "creator_marketplace"],
+    ],
+  ] as const)(
+    "projects the approved route for tracks %j",
+    (selectedTracks, expected, expectedTracks) => {
+      const route = project({ selectedTracks });
 
-    expect(route.contractVersion).toBe(PROPERTY_SETUP_ROUTE_CONTRACT_VERSION);
-    expect(route).toMatchObject({
-      scope: { organizationId, propertyId },
-      trackRevision: 7,
-      sessionRevision: null,
-    });
-    expect(route.steps.map(({ stepId }) => stepId)).toEqual(expected);
-    expect(route.steps.map(({ position }) => position)).toEqual(
-      expected.map((_, index) => index + 1),
-    );
-    expect(route.selectedTracks).toEqual(
-      selectedTracks.length === 2 ? ["hotel_operations", "creator_marketplace"] : selectedTracks,
-    );
-    expect(route.progress).toEqual({ complete: 0, total: expected.length });
-  });
+      expect(route.contractVersion).toBe(PROPERTY_SETUP_ROUTE_CONTRACT_VERSION);
+      expect(route).toMatchObject({
+        scope: { organizationId, propertyId },
+        trackRevision: 7,
+        sessionRevision: null,
+      });
+      expect(route.steps.map(({ stepId }) => stepId)).toEqual(expected);
+      expect(route.steps.map(({ position }) => position)).toEqual(
+        expected.map((_, index) => index + 1),
+      );
+      expect(route.selectedTracks).toEqual(expectedTracks);
+      expect(route.progress).toEqual({ complete: 0, total: expected.length });
+    },
+  );
 
   it("applies state precedence and recognizes a zero-dirty retained draft", () => {
     const roomBlocker = {
@@ -161,12 +167,24 @@ describe("property setup route", () => {
     });
     expect(combined.steps.find(({ stepId }) => stepId === "rooms")?.state).toBe("complete");
     expect(combined.steps.find(({ stepId }) => stepId === "pricing")?.state).toBe("draft");
+
+    const returnedDraft = combined.steps.find(({ stepId }) => stepId === "booking_design")?.draft;
+    expect(returnedDraft).not.toBeNull();
+    expect(returnedDraft).not.toBe(session.drafts[0]);
+    if (returnedDraft?.stepId !== "booking_design") {
+      throw new Error("Expected an active booking design draft.");
+    }
+    returnedDraft.dirtyFields.push("booking.primary_color");
+    returnedDraft.revision = 99;
+
     expect({ session, ownerFacts }).toEqual(retainedInput);
   });
 
   it("rejects duplicate route inputs, out-of-scope owner facts, and mismatched sessions", () => {
     const duplicate = fact("present_hotel", "saved");
-    expect(() => project({ ownerFacts: [duplicate, duplicate] })).toThrow(/Duplicate/);
+    expect(() => project({ ownerFacts: [duplicate, duplicate] })).toThrow(
+      /Duplicate property setup owner fact/,
+    );
     expect(() =>
       project({
         session: makeSession({
@@ -206,6 +224,41 @@ describe("property setup route", () => {
     expect(() => project({ ownerFacts: [fact("present_hotel", "blocked")] })).toThrow(
       /pair blocked state with blockers/,
     );
+    expect(() => project({ selectedTracks: [] })).toThrow(/unique supported tracks/);
+    expect(() =>
+      project({ selectedTracks: ["creator_marketplace", "creator_marketplace"] }),
+    ).toThrow(/unique supported tracks/);
+    expect(() => project({ selectedTracks: ["unsupported_track" as never] })).toThrow(
+      /unique supported tracks/,
+    );
+    expect(() => project({ trackRevision: -1 })).toThrow(/non-negative safe integer/);
+    expect(() => project({ trackRevision: 1.5 })).toThrow(/non-negative safe integer/);
+    expect(() => project({ trackRevision: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
+      /non-negative safe integer/,
+    );
+    expect(() =>
+      project({ ownerFacts: [fact("unknown_step" as PropertySetupStepId, "saved")] }),
+    ).toThrow(/Unknown property setup step fact/);
+    expect(() =>
+      project({
+        ownerFacts: [
+          {
+            ...fact("present_hotel", "blocked"),
+            blockers: [
+              {
+                code: "unknown_owner_step",
+                product: "hotel_catalog",
+                ownerDomain: "hotel_catalog",
+                owningStepId: "unknown_step" as PropertySetupStepId,
+                message: "Resolve the invalid owner step.",
+                kind: "system_error",
+                sourceRevision: "hotel-catalog-r2",
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/owner fact "present_hotel" has an unknown blocker step "unknown_step"/);
   });
 });
 
@@ -241,7 +294,7 @@ function draft(stepId: PropertySetupStepId, dirtyFields: string[]): PropertySetu
     payload: Object.fromEntries(dirtyFields.map((field) => [field, "draft-value"])),
     dirtyFields,
     baseRevisions: {},
-    piiClassification: "potential_incidental_pii",
+    piiClassification: PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
     retentionExpiresAt: "2026-10-30T00:00:00.000Z",
     revision: 3,
     updatedAt: "2026-07-30T00:00:00.000Z",

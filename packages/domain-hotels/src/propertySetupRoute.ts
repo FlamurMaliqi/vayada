@@ -95,6 +95,8 @@ export function buildPropertySetupRoute(
   ) {
     throw new TypeError("Property setup session is outside the requested scope.");
   }
+  // Drafts and completion intentionally survive track changes. The active
+  // projection below hides out-of-route state until its track is restored.
 
   const facts = indexOwnerFacts(input);
   const activeStepIds = getActivePropertySetupStepIds(selectedTracks);
@@ -108,6 +110,7 @@ export function buildPropertySetupRoute(
     const blockers = (fact?.blockers ?? []).map((blocker) => {
       const owningStepPosition = activePositions.get(blocker.owningStepId);
       if (owningStepPosition === undefined) {
+        // Exposed blockers must always navigate to an active owning step.
         throw new TypeError(
           `Active property setup fact "${stepId}" has a blocker for inactive step "${blocker.owningStepId}".`,
         );
@@ -192,8 +195,11 @@ function indexOwnerFacts(
         `Property setup owner fact "${fact.stepId}" must pair blocked state with blockers.`,
       );
     }
-    if (fact.blockers.some(({ owningStepId }) => !STEP_IDS.has(owningStepId))) {
-      throw new TypeError(`Property setup owner fact has an unknown blocker step.`);
+    const unknownBlocker = fact.blockers.find(({ owningStepId }) => !STEP_IDS.has(owningStepId));
+    if (unknownBlocker) {
+      throw new TypeError(
+        `Property setup owner fact "${fact.stepId}" has an unknown blocker step "${String(unknownBlocker.owningStepId)}".`,
+      );
     }
     facts.set(fact.stepId, fact);
   }
@@ -208,6 +214,8 @@ function mergeStepState(
   if (ownerState === "blocked") return "blocked";
   if (ownerState === "complete") return "complete";
   if (ownerState === "saved") return "saved";
+  // Canonical owner facts win; session completion is a fallback only until an
+  // owner projection exists for the step.
   if (ownerState === undefined && sessionComplete) return "complete";
   return hasDraft ? "draft" : "not_started";
 }
