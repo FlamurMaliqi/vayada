@@ -13,6 +13,7 @@ import {
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
+import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
@@ -83,6 +84,7 @@ import {
   registerSharedHotelSetupStatusRoutes,
   type SharedHotelSetupStatusRepository,
 } from "./routes/sharedHotelSetupStatus.js";
+import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
 import {
   registerIdentityAdminUserRoutes,
   type IdentityAdminUsersReadRepository,
@@ -183,6 +185,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
+  propertyMediaCommandRepository?: PropertyMediaCommandRepository;
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
@@ -372,6 +375,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
+    });
+  }
+  if (options.propertyMediaCommandRepository) {
+    app.register(registerPropertyMediaRoutes, {
+      prefix: "/api/hotel-setup",
+      repository: options.propertyMediaCommandRepository,
     });
   }
   if (options.propertySetupDraftCommandRepository) {

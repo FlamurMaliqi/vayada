@@ -1,6 +1,8 @@
 import type { MarketplaceCreatorProfileMediaRepository } from "../routes/marketplaceCreatorSelfService.js";
+import { syncPropertyOfferReadModels } from "../routes/marketplaceAdmin.js";
 import type { PlatformMediaRoutesOptions } from "../routes/platformMedia.js";
 import { createPgPlatformMediaCleanupStore } from "../jobs/platformMediaCleanup.js";
+import { createPgS3PropertyMediaCommandRepository } from "../domains/propertyMediaCommandRepository.js";
 import {
   createPgS3MarketplaceOfferMediaPromotion,
   type MarketplaceOfferMediaPromotionPort,
@@ -24,6 +26,7 @@ export type PlatformMediaRuntimeFactories = {
   createAdapter: typeof createS3PlatformMediaAdapter;
   createOfferMediaPromotion: typeof createPgS3MarketplaceOfferMediaPromotion;
   createCleanupStore: typeof createPgPlatformMediaCleanupStore;
+  createPropertyMediaCommands: typeof createPgS3PropertyMediaCommandRepository;
 };
 
 export type PlatformMediaRuntime = {
@@ -35,6 +38,7 @@ export type PlatformMediaRuntime = {
     serving: PlatformMediaServingConfig;
   };
   cleanupStore: ReturnType<typeof createPgPlatformMediaCleanupStore>;
+  propertyMediaCommands: ReturnType<typeof createPgS3PropertyMediaCommandRepository>;
   routes: PlatformMediaRoutesOptions;
 };
 
@@ -43,6 +47,7 @@ const productionFactories: PlatformMediaRuntimeFactories = {
   createAdapter: createS3PlatformMediaAdapter,
   createOfferMediaPromotion: createPgS3MarketplaceOfferMediaPromotion,
   createCleanupStore: createPgPlatformMediaCleanupStore,
+  createPropertyMediaCommands: createPgS3PropertyMediaCommandRepository,
 };
 
 export function composePlatformMediaRuntime(
@@ -70,6 +75,11 @@ export function composePlatformMediaRuntime(
     connectionString: input.targetDatabaseUrl,
     objectDeleter: adapter,
   });
+  const propertyMediaCommands = factories.createPropertyMediaCommands({
+    connectionString: input.targetDatabaseUrl,
+    serving: input.platformMediaServing,
+    syncReadModels: syncPropertyOfferReadModels,
+  });
   const enabledPurposes: PlatformMediaRoutesOptions["enabledPurposes"] = [
     "identity.user.profile_image",
     "property.hero_image",
@@ -90,6 +100,7 @@ export function composePlatformMediaRuntime(
       serving: input.platformMediaServing,
     },
     cleanupStore,
+    propertyMediaCommands,
     routes: {
       repository,
       signer: adapter,
