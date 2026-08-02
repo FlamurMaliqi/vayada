@@ -79,7 +79,7 @@ export default defineConfig({
         },
         {
           command:
-            "NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=e2e-google-places NEXT_PUBLIC_BOOKING_ADMIN_URL=http://admin.booking.localhost:3003 NEXT_PUBLIC_PMS_URL=http://pms.localhost:3004 PORT=3000 npm run dev:marketplace-web",
+            "HOTEL_SETUP_ADAPTIVE_SHELL_PREVIEW_ENABLED=true NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=e2e-google-places NEXT_PUBLIC_BOOKING_ADMIN_URL=http://admin.booking.localhost:3003 NEXT_PUBLIC_PMS_URL=http://pms.localhost:3004 PORT=3000 npm run dev:marketplace-web",
           url: "http://127.0.0.1:3000/login?auth=callback",
           reuseExistingServer: !process.env.CI,
           timeout: 120_000,
