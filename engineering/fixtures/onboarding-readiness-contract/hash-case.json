@@ -1,0 +1,71 @@
+{
+  "contractVersion": "onboarding-readiness-hash-fixture.v1",
+  "manifest": {
+    "contractVersion": "onboarding-source-manifest.v1",
+    "propertyId": "property_alpenrose",
+    "sources": [
+      {
+        "ownerDomain": "finance",
+        "entityType": "payment_provider_account",
+        "entityId": "stripe_primary",
+        "revision": "provider-account:7"
+      },
+      {
+        "ownerDomain": "finance",
+        "entityType": "payment_settings",
+        "entityId": "property_alpenrose",
+        "revision": "payment-settings:4"
+      }
+    ]
+  },
+  "evaluation": {
+    "contractVersion": "onboarding-product-readiness.v1",
+    "propertyId": "property_alpenrose",
+    "product": "booking",
+    "status": "blocked",
+    "evaluatedAt": "2026-07-30T09:15:00.000Z",
+    "groups": [
+      {
+        "groupId": "booking.payments",
+        "status": "blocked",
+        "steps": [
+          {
+            "owningStepId": "payments",
+            "status": "blocked",
+            "entities": [
+              {
+                "source": {
+                  "ownerDomain": "finance",
+                  "entityType": "payment_settings",
+                  "entityId": "property_alpenrose",
+                  "revision": "payment-settings:4"
+                },
+                "status": "blocked",
+                "blockers": [
+                  {
+                    "kind": "user_fixable",
+                    "code": "ready_payment_method_required",
+                    "message": "Choose at least one payment method that is ready.",
+                    "product": "booking",
+                    "groupId": "booking.payments",
+                    "owningStepId": "payments",
+                    "source": {
+                      "ownerDomain": "finance",
+                      "entityType": "payment_settings",
+                      "entityId": "property_alpenrose",
+                      "revision": "payment-settings:4"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "sourceManifestHash": "sha256:1b0c6a31c51166701894bd525539c222c57dc38c195cda83cad60609473b00b7",
+    "readinessHash": "sha256:8fbbb3af82474856cc80a88239f1807deb79a07fd8d43f30fc199d24566f79c9"
+  }
+}
