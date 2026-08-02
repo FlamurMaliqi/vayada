@@ -4,7 +4,9 @@ import {
   createProductReadinessResult,
   type ProductReadinessEvaluation,
 } from "@vayada/domain-hotels";
+import { BOOKING_PUBLICATION_FAILURE_CODES } from "@vayada/domain-booking";
 import type {
+  BookingPublicationFailureCode,
   BookingPublicationOperation,
   BookingPublicationRequestError,
   BookingPublicationRequestResult,
@@ -17,7 +19,7 @@ export type BookingPublicationOperationRow = {
   status: BookingPublicationOperation["status"];
   expectedActiveContentRevisionId: string | null;
   resultContentRevisionId: string | null;
-  failureCode: string | null;
+  failureCode: BookingPublicationFailureCode | null;
   requestedAt: Date | string;
   updatedAt: Date | string;
   completedAt: Date | string | null;
@@ -132,7 +134,10 @@ function isOperation(value: unknown): value is BookingPublicationOperation {
     ["pending", "succeeded", "failed", "unknown"].includes(String(value["status"])) &&
     nullableUuid(value["expectedActiveContentRevisionId"]) &&
     nullableUuid(value["resultContentRevisionId"]) &&
-    (value["failureCode"] === null || typeof value["failureCode"] === "string") &&
+    (value["failureCode"] === null ||
+      BOOKING_PUBLICATION_FAILURE_CODES.includes(
+        value["failureCode"] as BookingPublicationFailureCode,
+      )) &&
     isIso(value["requestedAt"]) &&
     isIso(value["updatedAt"]) &&
     (value["completedAt"] === null || isIso(value["completedAt"]))

@@ -25,7 +25,13 @@ CREATE TABLE booking.booking_publication_attempts (
                                                     'pending', 'succeeded', 'failed', 'unknown'
                                                   )),
   result_content_revision_id          UUID,
-  failure_code                        TEXT,
+  failure_code                        TEXT        CHECK (
+                                                  failure_code IS NULL OR failure_code IN (
+                                                    'external_result_unconfirmed',
+                                                    'projection_failed',
+                                                    'source_content_changed'
+                                                  )
+                                                ),
   requested_by_user_id                UUID        NOT NULL REFERENCES identity.users(id),
   requested_at                        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at                          TIMESTAMPTZ NOT NULL DEFAULT now(),

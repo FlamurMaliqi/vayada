@@ -2,6 +2,7 @@ import type { ProductReadinessResult } from "@vayada/domain-hotels";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  BOOKING_PUBLICATION_FAILURE_CODES,
   BOOKING_PUBLICATION_OPERATION_STATUSES,
   type BookingPublicationOperation,
   type ReadyBookingPublicationEvidence,
@@ -22,6 +23,11 @@ describe("Booking onboarding publication contract", () => {
       "succeeded",
       "failed",
       "unknown",
+    ]);
+    expect(BOOKING_PUBLICATION_FAILURE_CODES).toEqual([
+      "external_result_unconfirmed",
+      "projection_failed",
+      "source_content_changed",
     ]);
   });
 

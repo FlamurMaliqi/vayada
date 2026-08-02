@@ -19,5 +19,7 @@ describe("Booking publication attempt target schema", () => {
     expect(migration).toContain("'pending', 'succeeded', 'failed', 'unknown'");
     expect(migration).toContain("status = 'succeeded' AND result_content_revision_id IS NOT NULL");
     expect(migration).toContain("WHERE status IN ('pending', 'unknown')");
+    expect(migration).toContain("'external_result_unconfirmed'");
+    expect(migration).not.toContain("provider_error");
   });
 });

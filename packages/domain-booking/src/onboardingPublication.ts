@@ -10,6 +10,14 @@ export const BOOKING_PUBLICATION_OPERATION_STATUSES = [
 export type BookingPublicationOperationStatus =
   (typeof BOOKING_PUBLICATION_OPERATION_STATUSES)[number];
 
+export const BOOKING_PUBLICATION_FAILURE_CODES = [
+  "external_result_unconfirmed",
+  "projection_failed",
+  "source_content_changed",
+] as const;
+
+export type BookingPublicationFailureCode = (typeof BOOKING_PUBLICATION_FAILURE_CODES)[number];
+
 export type ReadyBookingPublicationEvidence = ProductReadinessResult & {
   readonly product: "booking";
   readonly status: "ready";
@@ -28,7 +36,7 @@ export type BookingPublicationOperation = {
   status: BookingPublicationOperationStatus;
   expectedActiveContentRevisionId: string | null;
   resultContentRevisionId: string | null;
-  failureCode: string | null;
+  failureCode: BookingPublicationFailureCode | null;
   requestedAt: string;
   updatedAt: string;
   completedAt: string | null;
