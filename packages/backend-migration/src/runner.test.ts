@@ -760,6 +760,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     expect(result.applied).toContain("0038");
     expect(result.applied).toContain("0045");
     expect(result.applied).toContain("0046");
+    expect(result.applied).toContain("0047");
 
     const verifyClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await verifyClient.connect();
@@ -777,6 +778,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "booking_change_requests",
         "booking_guests",
         "booking_notes_public",
+        "booking_publication_attempts",
         "booking_settings",
         "booking_status_events",
         "checkout_contexts",
