@@ -124,6 +124,13 @@ attempt stores the expected active public-content revision so the projector can
 compare-and-set the Distribution pointer instead of overwriting a newer
 publication. At most one `pending` or `unknown` attempt may exist per property.
 
+The protected adapter accepts only the expected active revision and the
+readiness/source-manifest hashes last observed by the caller. It obtains the
+complete readiness result from the injected Booking readiness provider after
+route authorization; callers cannot submit or self-assert a `ready` result.
+The adapter is registered only when both the Booking command repository and
+that owner-supplied readiness provider are available.
+
 The request fingerprint is SHA-256 over this exact `JSON.stringify` field
 order. Readiness `evaluatedAt` is excluded because the readiness contract
 explicitly excludes it from identity; the two verified hashes bind the complete
