@@ -153,11 +153,12 @@ class TestRecordPayment:
         user = await create_test_user()
         hotel = await create_test_hotel(str(user["id"]))
         room = await create_test_room_type(str(hotel["id"]))
+        future_check_in = date.today() + timedelta(days=30)
         booking = await create_test_booking_with_payment(
             str(hotel["id"]),
             str(room["id"]),
-            check_in="2026-08-01",
-            check_out="2026-08-05",
+            check_in=future_check_in.isoformat(),
+            check_out=(future_check_in + timedelta(days=4)).isoformat(),
             nightly_rate=250.0,
             status="confirmed",
             payment_method="pay_at_property",
