@@ -143,12 +143,20 @@ describe("property setup route", () => {
     expect(marketplace.steps.find(({ stepId }) => stepId === "booking_design")).toBeUndefined();
     expect(marketplace.steps.find(({ stepId }) => stepId === "rooms")).toBeUndefined();
     expect(marketplace.steps.every(({ blockers }) => blockers.length === 0)).toBe(true);
+    expect(marketplace.steps.some(({ draft: activeDraft }) => activeDraft !== null)).toBe(false);
     expect(combined.resumeStepId).toBe("booking_design");
     expect(combined.sessionRevision).toBe(5);
     expect(combined.steps.find(({ stepId }) => stepId === "booking_design")).toMatchObject({
       stepId: "booking_design",
       position: 3,
       state: "blocked",
+      draft: {
+        stepId: "booking_design",
+        payload: { "booking.font_pairing": "draft-value" },
+        dirtyFields: ["booking.font_pairing"],
+        baseRevisions: {},
+        revision: 3,
+      },
       blockers: [{ ...blocker, owningStepPosition: 3 }],
     });
     expect(combined.steps.find(({ stepId }) => stepId === "rooms")?.state).toBe("complete");
@@ -221,7 +229,16 @@ function fact(
 }
 
 function draft(stepId: PropertySetupStepId, dirtyFields: string[]): PropertySetupStepDraft {
-  return { stepId, dirtyFields, revision: 3 } as PropertySetupStepDraft;
+  return {
+    stepId,
+    payload: Object.fromEntries(dirtyFields.map((field) => [field, "draft-value"])),
+    dirtyFields,
+    baseRevisions: {},
+    piiClassification: "potential_incidental_pii",
+    retentionExpiresAt: "2026-10-30T00:00:00.000Z",
+    revision: 3,
+    updatedAt: "2026-07-30T00:00:00.000Z",
+  } as PropertySetupStepDraft;
 }
 
 function makeSession(overrides: Partial<PropertySetupSession> = {}): PropertySetupSession {

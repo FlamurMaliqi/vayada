@@ -3,6 +3,7 @@ import {
   PROPERTY_SETUP_STEP_DEFINITIONS,
   getActivePropertySetupStepIds,
   type PropertySetupSession,
+  type PropertySetupStepDraft,
   type PropertySetupStepId,
 } from "./propertySetupDraft.js";
 
@@ -74,7 +75,11 @@ export type PropertySetupRouteReadModel = {
     position: number;
     state: PropertySetupRouteStepState;
     sourceRevision: string | null;
-    draftRevision: number | null;
+    /**
+     * Rehydration data for this active step. Callers must supply a session
+     * already filtered to the actor's authorized draft step IDs.
+     */
+    draft: PropertySetupStepDraft | null;
     blockers: PropertySetupRouteBlocker[];
   }>;
 };
@@ -124,7 +129,7 @@ export function buildPropertySetupRoute(
       position: index + 1,
       state,
       sourceRevision: fact?.sourceRevision ?? null,
-      draftRevision: draft?.revision ?? null,
+      draft: draft ? structuredClone(draft) : null,
       blockers,
     };
   });
