@@ -123,19 +123,6 @@ const TRACK_POLICIES = {
         allowedRelationships: ["owner", "operator"],
       },
     },
-    {
-      permission: "pms.finance.read",
-      entitlement: {
-        product: "pms",
-        key: "property-management",
-        resource: { product: "pms", resourceType: "pms_property" },
-      },
-      resource: {
-        product: "pms",
-        resourceType: "pms_property",
-        allowedRelationships: ["owner", "operator", "finance_manager"],
-      },
-    },
   ],
 } as const;
 

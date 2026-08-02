@@ -53,7 +53,6 @@ const allPermissions: PermissionKey[] = [
   "booking.settings.manage",
   "pms.operations.read",
   "pms.operations.manage",
-  "pms.finance.read",
 ];
 
 let app: FastifyInstance | undefined;
@@ -219,12 +218,6 @@ describe("property setup route", () => {
       permissions: allPermissions.filter((permission) => permission !== "pms.operations.read"),
     },
     {
-      name: "Finance permission",
-      linkedResources: productLinks(),
-      entitlements: productEntitlements(),
-      permissions: allPermissions.filter((permission) => permission !== "pms.finance.read"),
-    },
-    {
       name: "suspended Marketplace entitlement",
       linkedResources: productLinks(),
       entitlements: productEntitlements().map((entitlement) =>
@@ -272,6 +265,26 @@ describe("property setup route", () => {
     });
     expect(JSON.stringify(body)).not.toContain(propertyId);
     expect(routeStateReadPort.getPropertySetupRouteState).not.toHaveBeenCalled();
+  });
+
+  it("does not turn Finance access into a route-wide Hotel Operations requirement", async () => {
+    const routeStateReadPort = {
+      getPropertySetupRouteState: vi.fn(async () => ({ outcome: "not_found" as const })),
+    };
+    app = buildRouteApp({
+      selectedTracks: ["hotel_operations"],
+      permissions: allPermissions,
+      routeStateReadPort,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/hotel-setup/properties/${propertyId}/route`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(routeStateReadPort.getPropertySetupRouteState).toHaveBeenCalledOnce();
   });
 
   it.each([
