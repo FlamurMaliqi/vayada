@@ -26,18 +26,27 @@ describe("onboarding publication lifecycle target schema", () => {
     expect(migration.match(/jsonb_array_length\(source_manifest->'sources'\) > 0/g)).toHaveLength(
       2,
     );
+    expect(migration).toContain("distribution.jsonb_has_distribution_private_key(public_content)");
     expect(migration).toContain("distribution.active_public_booking_revision");
   });
 
   it("stores the live ARI watermark outside Booking content revisions", () => {
-    const ariTable = migration.slice(migration.indexOf("distribution.live_ari_watermarks"));
+    const ariStart = migration.indexOf("distribution.live_ari_watermarks");
+    const ariEnd = migration.indexOf("\n);", ariStart);
+    expect(ariStart).toBeGreaterThan(-1);
+    expect(ariEnd).toBeGreaterThan(ariStart);
+    const ariTable = migration.slice(ariStart, ariEnd + 3);
     expect(ariTable).toContain("source_revision");
     expect(ariTable).toContain("watermark_revision");
     expect(ariTable).not.toContain("content_revision_id");
   });
 
-  it("keeps the Marketplace moderation snapshot private", () => {
-    expect(migration).toContain("This is a private moderation snapshot");
-    expect(migration).toContain("Public Marketplace reads must project");
+  it("does not expose private Marketplace moderation state", () => {
+    expect(migration).not.toMatch(
+      /CREATE\s+(?:OR\s+REPLACE\s+)?VIEW[\s\S]*marketplace\.hotel_submission_(?:revisions|moderation)/i,
+    );
+    expect(migration).not.toMatch(
+      /GRANT\s+SELECT\s+ON\s+(?:TABLE\s+)?marketplace\.hotel_submission_(?:revisions|moderation)/i,
+    );
   });
 });

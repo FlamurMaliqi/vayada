@@ -44,8 +44,8 @@ CREATE TRIGGER trg_marketplace_submission_revisions_no_truncate
   BEFORE TRUNCATE ON marketplace.hotel_submission_revisions
   FOR EACH STATEMENT EXECUTE FUNCTION platform.prevent_append_only_mutation();
 
--- This is a private moderation snapshot. Public Marketplace reads must project
--- explicitly approved public fields rather than exposing this document.
+-- Submission revisions are private moderation snapshots. Public Marketplace
+-- reads must project explicitly approved public fields rather than exposing them.
 CREATE TABLE marketplace.hotel_submission_moderation (
   submission_revision_id UUID        PRIMARY KEY,
   property_id            UUID        NOT NULL,
@@ -58,7 +58,12 @@ CREATE TABLE marketplace.hotel_submission_moderation (
   decided_at             TIMESTAMPTZ,
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (
-    (status = 'pending' AND decided_by_user_id IS NULL AND decided_at IS NULL)
+    (
+      status = 'pending'
+      AND decided_by_user_id IS NULL
+      AND decision_reason IS NULL
+      AND decided_at IS NULL
+    )
     OR (status <> 'pending' AND decided_by_user_id IS NOT NULL AND decided_at IS NOT NULL)
   ),
   UNIQUE (submission_revision_id, property_id, status),
