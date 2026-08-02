@@ -20,6 +20,7 @@ export * from "./propertySetupDraft.js";
 export * from "./propertySetupDraftFieldValidation.js";
 export * from "./propertySetupDraftRequest.js";
 export * from "./propertySetupDraftRequestSafety.js";
+export * from "./propertySetupRoute.js";
 export * from "./propertyProfile.js";
 export * from "./publicPropertyProfile.js";
 
