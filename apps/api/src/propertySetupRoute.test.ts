@@ -32,6 +32,11 @@ const userId = "33333333-3333-4333-8333-333333333333";
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
 const retentionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
 
+type OrganizationOverride = {
+  kind?: "hotel_group" | "creator_workspace";
+  status?: "active" | "suspended";
+};
+
 const session: VerifiedSession = {
   workosUserId: "user_workos_hotel_owner",
   workosOrgId: "org_workos_hotel_group",
@@ -262,6 +267,47 @@ describe("property setup route", () => {
     expect(routeStateReadPort.getPropertySetupRouteState).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      name: "creator-workspace organization",
+      organization: { kind: "creator_workspace" as const },
+      expectedStatus: 403,
+      expectedCode: "invalid_organization_scope",
+    },
+    {
+      name: "suspended hotel group",
+      organization: { status: "suspended" as const },
+      expectedStatus: 401,
+      expectedCode: "unauthenticated",
+    },
+  ])(
+    "rejects a $name before reading route state",
+    async ({ organization, expectedStatus, expectedCode }) => {
+      const trackRepository = makeTrackRepository(["creator_marketplace"]);
+      const routeStateReadPort = {
+        getPropertySetupRouteState: vi.fn(async () => ({ outcome: "not_found" as const })),
+      };
+      app = buildRouteApp({
+        organization,
+        routeStateReadPort,
+        trackRepository,
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/hotel-setup/properties/${propertyId}/route`,
+        headers: { authorization: "Bearer valid-token" },
+      });
+      const body = response.json<{ code: string }>();
+
+      expect(response.statusCode).toBe(expectedStatus);
+      expect(body.code).toBe(expectedCode);
+      expect(response.headers["cache-control"]).toBe("private, no-store");
+      expect(trackRepository.getTrackStatus).not.toHaveBeenCalled();
+      expect(routeStateReadPort.getPropertySetupRouteState).not.toHaveBeenCalled();
+    },
+  );
+
   it("authenticates before validating property input and does not read state", async () => {
     const trackRepository = makeTrackRepository(["creator_marketplace"]);
     const routeStateReadPort = {
@@ -336,6 +382,26 @@ describe("property setup route", () => {
     {
       name: "owner provider failure",
       result: { outcome: "provider_failure" },
+      expectedStatus: 503,
+      expectedCode: "property_setup_route_unavailable",
+    },
+    {
+      name: "conflict with an unusable current revision",
+      result: { outcome: "track_revision_conflict", currentRevision: -1 },
+      expectedStatus: 503,
+      expectedCode: "property_setup_route_unavailable",
+    },
+    {
+      name: "duplicated owner fact",
+      result: {
+        outcome: "found",
+        trackRevision: 4,
+        session: null,
+        ownerFacts: [
+          ...makeOwnerFacts(["creator_marketplace"]),
+          ...makeOwnerFacts(["creator_marketplace"]).slice(0, 1),
+        ],
+      },
       expectedStatus: 503,
       expectedCode: "property_setup_route_unavailable",
     },
@@ -577,6 +643,7 @@ function buildRouteApp(options: {
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
   entitlements?: ProductEntitlement[];
+  organization?: OrganizationOverride;
 }): FastifyInstance {
   return buildApp({
     logger: false,
@@ -585,7 +652,7 @@ function buildRouteApp(options: {
       options.trackRepository ?? makeTrackRepository(options.selectedTracks),
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
-      repository: identityRepository(options.linkedResources),
+      repository: identityRepository(options.linkedResources, options.organization),
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? allPermissions;
@@ -619,7 +686,10 @@ function makeTrackRepository(
   };
 }
 
-function identityRepository(linkedResources?: LinkedResource[]): IdentityRepository {
+function identityRepository(
+  linkedResources?: LinkedResource[],
+  organization?: OrganizationOverride,
+): IdentityRepository {
   return {
     async findUserByProviderUserId() {
       return {
@@ -632,8 +702,8 @@ function identityRepository(linkedResources?: LinkedResource[]): IdentityReposit
       return {
         organizationId,
         workosOrgId: session.workosOrgId ?? null,
-        kind: "hotel_group",
-        status: "active",
+        kind: organization?.kind ?? "hotel_group",
+        status: organization?.status ?? "active",
       };
     },
     async findActiveMembership() {
