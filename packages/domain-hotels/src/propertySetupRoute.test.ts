@@ -164,9 +164,16 @@ describe("property setup route", () => {
     expect({ session, ownerFacts }).toEqual(retainedInput);
   });
 
-  it("rejects duplicate and out-of-scope owner facts and mismatched sessions", () => {
+  it("rejects duplicate route inputs, out-of-scope owner facts, and mismatched sessions", () => {
     const duplicate = fact("present_hotel", "saved");
     expect(() => project({ ownerFacts: [duplicate, duplicate] })).toThrow(/Duplicate/);
+    expect(() =>
+      project({
+        session: makeSession({
+          drafts: [draft("present_hotel", ["profile.name"]), draft("present_hotel", [])],
+        }),
+      }),
+    ).toThrow(/Duplicate property setup draft/);
     expect(() =>
       project({
         ownerFacts: [{ ...fact("present_hotel", "saved"), propertyId: "another-property" }],

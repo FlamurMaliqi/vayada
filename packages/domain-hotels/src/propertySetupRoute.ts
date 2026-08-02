@@ -20,12 +20,7 @@ export type PropertySetupRouteStepState = (typeof PROPERTY_SETUP_ROUTE_STEP_STAT
 export type PropertySetupOwnerStepState = Exclude<PropertySetupRouteStepState, "draft">;
 export type PropertySetupBlockerKind = "user_fixable" | "external_pending" | "system_error";
 export type PropertySetupOwnerDomain =
-  | "hotel_catalog"
-  | "marketplace"
-  | "booking"
-  | "pms"
-  | "finance"
-  | "distribution";
+  "hotel_catalog" | "marketplace" | "booking" | "pms" | "finance" | "distribution";
 
 export type PropertySetupOwnerStepBlocker = {
   code: string;
@@ -104,7 +99,7 @@ export function buildPropertySetupRoute(
   const facts = indexOwnerFacts(input);
   const activeStepIds = getActivePropertySetupStepIds(selectedTracks);
   const activePositions = new Map(activeStepIds.map((stepId, index) => [stepId, index + 1]));
-  const drafts = new Map(input.session?.drafts.map((draft) => [draft.stepId, draft]) ?? []);
+  const drafts = indexSessionDrafts(input.session);
   const completed = new Set(input.session?.completedStepIds ?? []);
 
   const steps = activeStepIds.map((stepId, index) => {
@@ -151,6 +146,19 @@ export function buildPropertySetupRoute(
     },
     steps,
   };
+}
+
+function indexSessionDrafts(
+  session: PropertySetupSession | null,
+): Map<PropertySetupStepId, PropertySetupStepDraft> {
+  const drafts = new Map<PropertySetupStepId, PropertySetupStepDraft>();
+  for (const draft of session?.drafts ?? []) {
+    if (drafts.has(draft.stepId)) {
+      throw new TypeError(`Duplicate property setup draft for step "${draft.stepId}".`);
+    }
+    drafts.set(draft.stepId, draft);
+  }
+  return drafts;
 }
 
 function normalizeTracks(selectedTracks: readonly SetupTrack[]): SetupTrack[] {
