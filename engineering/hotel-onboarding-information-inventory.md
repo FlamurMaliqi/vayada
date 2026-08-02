@@ -930,6 +930,14 @@ is reused for a different request, and replays the original result for an exact
 retry. The domain write, idempotency record, audit entry, and outbox events
 commit atomically.
 
+A partial draft save validates its field allowlist and source-revision manifest,
+then stores that manifest as resume metadata. It does not query or lock canonical
+revision sources to prove freshness, and canonical drift alone does not reject
+or erase the draft. Resume may flag a stored manifest as stale. Before any
+canonical apply, the step-owned command must serialize the current owner
+revisions, compare the complete stored manifest in the same transaction, and
+perform no canonical write when they differ.
+
 ### Preserved prerequisite flow
 
 These hotel fields must be complete before the adaptive flow and must never be
@@ -1424,9 +1432,11 @@ accessible radio-group implementation with complete keyboard support.
 - If the save fails, retain both selections and show one actionable error above
   the controls with a Retry action. Do not advance on a success toast before
   the draft save finishes.
-- When the owner resumes, load saved canonical settings first and apply only
-  dirty draft fields created against the same canonical revision. A stale draft
-  must not silently overwrite settings changed in another session.
+- When the owner resumes, load saved canonical settings first and flag a draft
+  whose source manifest is stale. Keep the draft available for recovery, but
+  Review and launch must compare current owner revisions atomically before it
+  applies dirty fields. A stale draft must not silently overwrite settings
+  changed in another session.
 
 ##### Loading, error, and contract states
 
@@ -3691,6 +3701,11 @@ prerequisite contracts are approved.
 - Keep one write owner per fact. Setup drafts may hold incomplete input and
   source revisions, but they must not become another hotel, room, pricing,
   calendar, guest-policy, or payment database.
+- Partial draft persistence validates and stores the source-revision manifest
+  without querying or locking canonical revision sources for freshness and
+  without rejecting canonical drift. Resume may flag stale source data; a
+  step-owned canonical apply must compare that stored manifest against current
+  revisions in the same transaction before writing.
 - Back, Exit, and Review may save a partial step draft. `Save and continue`
   calls one step-owned application command that commits the canonical write and
   progress outcome together; the browser must not sequence a canonical write
@@ -3803,7 +3818,7 @@ Do not bundle all five layers into one large PR.
 | Key                                                                                                        | Review question / deliverable                                                                                                                                                                                                                                           | Depends on                                                                                   | Completion signal                                                                                                                                                                                                                                                                  |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [ONB-00](https://linear.app/vayadacom/issue/VAY-1044/map-onboarding-fields-to-target-domain-owners)        | Does the current target schema and API map every approved onboarding field to exactly one owner, command, and read model? Reconcile existing setup-track, property revision, Marketplace preference, media, PMS, Booking, and Finance work before adding new contracts. | Approved inventory                                                                           | One checked field-to-owner matrix; existing PMS migration/parity work is marked extend rather than greenfield; stale migration-coverage claims and every remaining legacy wizard consumer are identified; no unresolved product-field decision.                                    |
-| [ONB-01](https://linear.app/vayadacom/issue/VAY-1045/add-resumable-onboarding-drafts-and-progress)         | Can setup store one active organization/property session with incomplete per-step input, active-track progress, base revisions, and dirty-field manifests without duplicating canonical domain records?                                                                 | ONB-00                                                                                       | Target DDL and typed contracts define retention/PII and per-step allowlists, round-trip incomplete drafts, retain hidden-track data, reject unknown/excessive/secret input and stale revisions, and never authorize from a draft.                                                  |
+| [ONB-01](https://linear.app/vayadacom/issue/VAY-1045/add-resumable-onboarding-drafts-and-progress)         | Can setup store one active organization/property session with incomplete per-step input, active-track progress, base revisions, and dirty-field manifests without duplicating canonical domain records?                                                                 | ONB-00                                                                                       | Target DDL and typed contracts define retention/PII and per-step allowlists, round-trip incomplete drafts, retain hidden-track data, reject unknown/excessive/secret input, preserve source manifests, block stale canonical overwrites, and never authorize from a draft.         |
 | [ONB-02](https://linear.app/vayadacom/issue/VAY-1046/standardize-onboarding-command-safety)                | Do setup commands consistently reuse full-request fingerprinting, expected revisions, and atomic domain/idempotency/audit/outbox writes, with recoverable status only for long-running or externally uncertain operations?                                              | ONB-00                                                                                       | Exact retries replay the original result; key reuse with different input returns `409`; uncertain external operations have a safe status read; no second idempotency or generic job framework is introduced.                                                                       |
 | [ONB-02A](https://linear.app/vayadacom/issue/VAY-1048/define-onboarding-revision-and-lifecycle-contracts)  | Does every producer use one typed source-manifest/revision vocabulary, one readiness-port result, and explicit immutable submission/publication revision plus active-pointer contracts?                                                                                 | ONB-00, ONB-02                                                                               | A deterministic manifest/readiness hash and structured product/group/step/entity/blocker result are fixture-tested; Marketplace submission and Booking request lifecycles are independent; Distribution's public revision/active pointer and live-ARI watermark are distinct.      |
 | [ONB-03](https://linear.app/vayadacom/issue/VAY-1049/build-the-adaptive-onboarding-route-model)            | Can one read model calculate active steps and progress from selected tracks plus canonical and draft state without deciding product readiness itself?                                                                                                                   | ONB-01                                                                                       | Marketplace-only, Hotel Operations-only, and combined route fixtures return the approved active order, stable step IDs, resumable status, and no invisible numbering gaps.                                                                                                         |

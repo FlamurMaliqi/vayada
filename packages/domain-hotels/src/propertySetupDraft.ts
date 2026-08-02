@@ -168,6 +168,7 @@ export type SavePropertySetupDraftRequest = {
     stepId: TStepId;
     payload: PropertySetupDraftPayload<TStepId>;
     dirtyFields: FieldFor<TStepId>[];
+    /** Source manifest to persist for resume and later canonical-apply validation. */
     expectedBaseRevisions: PropertySetupBaseRevisions<TStepId>;
     expectedTrackRevision: number;
     expectedSessionRevision: number;
@@ -198,14 +199,6 @@ export type SavePropertySetupDraftError =
   | { code: "track_revision_conflict"; currentTrackRevision: number }
   | { code: "session_revision_conflict"; currentSessionRevision: number }
   | { code: "draft_revision_conflict"; currentDraftRevision: number }
-  | {
-      code: "base_revision_conflict";
-      conflictingBaseRevisionKeys: PropertySetupBaseRevisionKey[];
-    }
-  | {
-      code: "base_revision_unavailable";
-      unavailableBaseRevisionKeys: PropertySetupBaseRevisionKey[];
-    }
   | { code: "setup_session_expired"; currentSessionRevision: number }
   | { code: "setup_draft_expired"; currentDraftRevision: number }
   | { code: "idempotency_key_conflict" }
@@ -220,7 +213,7 @@ export type PropertySetupStepDraft = {
     stepId: TStepId;
     payload: PropertySetupDraftPayload<TStepId>;
     dirtyFields: FieldFor<TStepId>[];
-    /** Bound to the owner read response; never accepted as an authorization claim. */
+    /** Revalidate against current owner revisions before applying canonical writes. */
     baseRevisions: PropertySetupBaseRevisions<TStepId>;
     piiClassification: typeof PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION;
     retentionExpiresAt: string;

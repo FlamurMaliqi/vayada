@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   PROPERTY_SETUP_ACTIVE_RETENTION_DAYS,
-  type PropertySetupBaseRevisionKey,
   type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
 import pg from "pg";
@@ -10,7 +9,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
   createPgPropertySetupDraftCommandRepository,
-  type PropertySetupBaseRevisionLock,
   type PropertySetupDraftCommandPool,
   type PropertySetupDraftCommandRepository,
   type PropertySetupDraftSaveCommand,
@@ -26,11 +24,6 @@ const PRESENT_BASE = {
   "hotel_catalog.media": "media:4",
   "hotel_catalog.amenities": "amenities:2",
 };
-const TEST_BASE_REVISIONS = {
-  ...PRESENT_BASE,
-  "marketplace.collaboration_preferences": "preferences:1",
-} satisfies Partial<Record<PropertySetupBaseRevisionKey, string>>;
-const unavailableBaseRevisionKeys = new Map<string, Set<PropertySetupBaseRevisionKey>>();
 
 describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () => {
   const organizationIds: string[] = [];
@@ -46,7 +39,6 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     await client.connect();
     repository = createPgPropertySetupDraftCommandRepository({
       connectionString: TEST_DATABASE_URL!,
-      lockCurrentBaseRevisions: lockTestBaseRevisions,
       now: () => new Date(occurredAt),
     });
   });
@@ -111,7 +103,6 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
       propertyIds.length = 0;
       roleKeys.length = 0;
       userIds.length = 0;
-      unavailableBaseRevisionKeys.clear();
     }
   });
 
@@ -414,7 +405,6 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     const failingRepository = createPgPropertySetupDraftCommandRepository({
       connectionString: TEST_DATABASE_URL!,
       pool: failingPool,
-      lockCurrentBaseRevisions: lockTestBaseRevisions,
       now: () => new Date(occurredAt),
     });
 
@@ -458,7 +448,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     expect(persisted.rows).toEqual([{ sessions: 0, drafts: 0, idempotencyKeys: 0, audits: 0 }]);
   });
 
-  it("returns explicit optimistic and owner-revision conflicts without overwriting", async () => {
+  it("returns explicit optimistic conflicts without overwriting", async () => {
     const fixture = await createFixture(["hotel_operations"]);
     const created = await repository.saveStepDraft(
       command(fixture, {
@@ -504,24 +494,6 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
           error: { code: "draft_revision_conflict", currentDraftRevision: 1 },
         },
       },
-      {
-        overrides: {
-          idempotencyKey: "base-conflict",
-          expectedSessionRevision: 1,
-          expectedDraftRevision: 1,
-          expectedBaseRevisions: {
-            ...PRESENT_BASE,
-            "hotel_catalog.media": "media:3",
-          },
-        },
-        expected: {
-          ok: false,
-          error: {
-            code: "base_revision_conflict",
-            conflictingBaseRevisionKeys: ["hotel_catalog.media"],
-          },
-        },
-      },
     ] satisfies Array<{ overrides: CommandOverrides; expected: unknown }>;
 
     for (const { overrides, expected } of conflicts) {
@@ -529,7 +501,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
         expected,
       );
     }
-    const cachedConflict = conflicts[3]!;
+    const cachedConflict = conflicts[2]!;
     await expect(
       repository.saveStepDraft(command(fixture, cachedConflict.overrides)),
     ).resolves.toEqual(cachedConflict.expected);
@@ -539,7 +511,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
        WHERE property_id = $1::uuid`,
       [fixture.propertyId],
     );
-    expect(conflictAuditCount.rows).toEqual([{ count: 5 }]);
+    expect(conflictAuditCount.rows).toEqual([{ count: 4 }]);
 
     const stored = await client.query<{ payload: Record<string, unknown>; revision: number }>(
       `SELECT draft.payload, draft.revision
@@ -558,78 +530,53 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     ]);
   });
 
-  it("observes a canonical revision committed while the draft transaction waits", async () => {
+  it("stores a stale source manifest without reading canonical revision fields", async () => {
     const fixture = await createFixture(["hotel_operations"]);
-    const canonical = new pg.Client({ connectionString: TEST_DATABASE_URL });
-    let observedScopeQuery!: () => void;
-    const scopeQueryStarted = new Promise<void>((resolve) => {
-      observedScopeQuery = resolve;
-    });
+    await client.query(
+      `UPDATE hotel_catalog.properties
+       SET profile_revision = 8
+       WHERE id = $1::uuid`,
+      [fixture.propertyId],
+    );
+    const observedQueries: string[] = [];
     const observedPool = createInterceptingPool((text) => {
-      if (text.includes("FROM hotel_catalog.properties property")) observedScopeQuery();
+      observedQueries.push(text);
     });
-    const racingRepository = createPgPropertySetupDraftCommandRepository({
+    const manifestRepository = createPgPropertySetupDraftCommandRepository({
       connectionString: TEST_DATABASE_URL!,
       pool: observedPool,
-      lockCurrentBaseRevisions: lockTestBaseRevisions,
       now: () => new Date(occurredAt),
     });
 
-    await canonical.connect();
     try {
-      await canonical.query("BEGIN");
-      await canonical.query(
-        `UPDATE hotel_catalog.properties
-         SET profile_revision = 8
-         WHERE id = $1::uuid`,
-        [fixture.propertyId],
-      );
-      const save = racingRepository.saveStepDraft(
-        command(fixture, {
-          idempotencyKey: "canonical-race",
-          payload: { "profile.short_description": "Bound to the expected revision." },
-          dirtyFields: ["profile.short_description"],
-        }),
-      );
-      await scopeQueryStarted;
-      await canonical.query("COMMIT");
-
-      await expect(save).resolves.toEqual({
-        ok: false,
-        error: {
-          code: "base_revision_conflict",
-          conflictingBaseRevisionKeys: ["hotel_catalog.profile"],
-        },
+      await expect(
+        manifestRepository.saveStepDraft(
+          command(fixture, {
+            idempotencyKey: "canonical-drift-does-not-block-draft",
+            payload: { "profile.short_description": "Keep this work in progress." },
+            dirtyFields: ["profile.short_description"],
+          }),
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        receipt: { sessionRevision: 1, draftRevision: 1, replayed: false },
       });
     } finally {
-      await canonical.query("ROLLBACK");
-      await canonical.end();
-      await racingRepository.close();
+      await manifestRepository.close();
       await observedPool.end();
     }
-  });
+    expect(observedQueries.some((text) => text.includes("profile_revision"))).toBe(false);
 
-  it("does not cache a transient unavailable base-revision result", async () => {
-    const fixture = await createFixture(["hotel_operations"]);
-    const unavailable = command(fixture, {
-      idempotencyKey: "base-unavailable",
-      payload: { "profile.short_description": "Save after the owner recovers." },
-      dirtyFields: ["profile.short_description"],
-    });
-    unavailableBaseRevisionKeys.set(fixture.propertyId, new Set(["hotel_catalog.amenities"]));
-
-    await expect(repository.saveStepDraft(unavailable)).resolves.toEqual({
-      ok: false,
-      error: {
-        code: "base_revision_unavailable",
-        unavailableBaseRevisionKeys: ["hotel_catalog.amenities"],
-      },
-    });
-    unavailableBaseRevisionKeys.delete(fixture.propertyId);
-    await expect(repository.saveStepDraft(unavailable)).resolves.toMatchObject({
-      ok: true,
-      receipt: { sessionRevision: 1, draftRevision: 1, replayed: false },
-    });
+    const stored = await client.query<{ baseRevisions: Record<string, string> }>(
+      `SELECT draft.base_revisions AS "baseRevisions"
+       FROM hotel_catalog.property_setup_step_drafts draft
+       JOIN hotel_catalog.property_setup_sessions setup ON setup.id = draft.session_id
+       WHERE setup.organization_id = $1::uuid
+         AND setup.property_id = $2::uuid
+         AND draft.step_id = 'present_hotel'`,
+      [fixture.organizationId, fixture.propertyId],
+    );
+    expect(stored.rows).toEqual([{ baseRevisions: PRESENT_BASE }]);
   });
 
   it("rejects inactive steps and revoked access before replay", async () => {
@@ -829,7 +776,6 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     const lockingRepository = createPgPropertySetupDraftCommandRepository({
       connectionString: TEST_DATABASE_URL!,
       pool: lockingPool,
-      lockCurrentBaseRevisions: lockTestBaseRevisions,
       now: () => new Date(occurredAt),
     });
     await revoker.connect();
@@ -1100,27 +1046,6 @@ function createInterceptingPool(
     end: () => pool.end(),
   };
 }
-
-const lockTestBaseRevisions: PropertySetupBaseRevisionLock = async (client, input) => {
-  if (input.revisionKeys.length === 0) return {};
-  const profile = await client.query<{ profileRevision: string }>(
-    `SELECT profile_revision::text AS "profileRevision"
-     FROM hotel_catalog.properties
-     WHERE id = $1::uuid
-     FOR SHARE`,
-    [input.propertyId],
-  );
-  const revisions: Partial<Record<PropertySetupBaseRevisionKey, string>> = {
-    ...TEST_BASE_REVISIONS,
-    "hotel_catalog.profile": `profile:${profile.rows[0]?.profileRevision ?? ""}`,
-  };
-  const unavailable = unavailableBaseRevisionKeys.get(input.propertyId) ?? new Set();
-  return Object.fromEntries(
-    input.revisionKeys
-      .filter((key) => !unavailable.has(key) && revisions[key] !== undefined)
-      .map((key) => [key, revisions[key]]),
-  );
-};
 
 function assertSafeTestDatabase(url: string): void {
   const databaseName = new URL(url).pathname.replace(/^\//, "");

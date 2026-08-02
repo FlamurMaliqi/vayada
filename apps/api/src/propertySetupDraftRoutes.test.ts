@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 
 import type {
@@ -335,8 +336,7 @@ describe("property setup draft save route", () => {
   });
 
   it.each([
-    [{ code: "base_revision_conflict", conflictingBaseRevisionKeys: ["pms.room_types"] }, 409],
-    [{ code: "base_revision_unavailable", unavailableBaseRevisionKeys: ["pms.room_types"] }, 503],
+    [{ code: "session_revision_conflict", currentSessionRevision: 2 }, 409],
     [{ code: "setup_scope_unavailable" }, 404],
   ] as Array<[SavePropertySetupDraftError, number]>)("maps $0 safely", async (error, status) => {
     app = testApp(fakeRepository(error));
@@ -348,6 +348,16 @@ describe("property setup draft save route", () => {
   it("does not mount the route without an injected repository", async () => {
     app = buildApp({ logger: false });
     expect((await put(app)).statusCode).toBe(404);
+  });
+
+  it("injects the PostgreSQL repository from the production startup", () => {
+    const serverSource = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
+    expect(serverSource).toMatch(
+      /const propertySetupDraftCommandRepository = createPgPropertySetupDraftCommandRepository\(\{[\s\S]*?connectionString:\s*targetDatabaseUrl,[\s\S]*?\}\);/,
+    );
+    expect(serverSource).toMatch(
+      /const app = buildApp\(\{[\s\S]*\n  propertySetupDraftCommandRepository,/,
+    );
   });
 });
 

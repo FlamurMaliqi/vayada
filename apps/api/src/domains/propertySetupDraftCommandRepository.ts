@@ -8,7 +8,6 @@ import {
   PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
   PROPERTY_SETUP_STEP_DEFINITIONS,
   SETUP_TRACKS,
-  type PropertySetupBaseRevisionKey,
   type SavePropertySetupDraftError,
   type SavePropertySetupDraftReceipt,
   type SavePropertySetupDraftRequest,
@@ -40,25 +39,8 @@ export type PropertySetupDraftCommandPool = {
   end(): Promise<void>;
 };
 
-export type PropertySetupBaseRevisionLock = (
-  client: PropertySetupDraftCommandClient,
-  input: {
-    organizationId: string;
-    propertyId: string;
-    stepId: SavePropertySetupDraftRequest["stepId"];
-    revisionKeys: readonly PropertySetupBaseRevisionKey[];
-  },
-) => Promise<Partial<Record<PropertySetupBaseRevisionKey, string>>>;
-
 export type PropertySetupDraftCommandRepositoryConfig = {
   connectionString: string;
-  /**
-   * Reads owner-issued revision tokens on this transaction's client and locks
-   * their sources strongly enough to serialize concurrent canonical writes.
-   * Owner adapters implement this port; this repository never queries another
-   * domain's tables directly.
-   */
-  lockCurrentBaseRevisions: PropertySetupBaseRevisionLock;
   max?: number;
   pool?: PropertySetupDraftCommandPool;
   now?: () => Date;
@@ -191,26 +173,6 @@ export function createPgPropertySetupDraftCommandRepository(
           await finalizeConflict(client, command, idempotency, keyHash, trackConflict, savedAt);
           return trackConflict;
         }
-        const currentBaseRevisions = await config.lockCurrentBaseRevisions(client, {
-          organizationId: command.organizationId,
-          propertyId: command.propertyId,
-          stepId: command.request.stepId,
-          revisionKeys: definition.baseRevisionKeys,
-        });
-        const earlyConflict = validateBaseRevisions(command, currentBaseRevisions);
-        if (
-          earlyConflict &&
-          !earlyConflict.ok &&
-          earlyConflict.error.code === "base_revision_unavailable"
-        ) {
-          await rollbackQuietly(client);
-          return earlyConflict;
-        }
-        if (earlyConflict) {
-          await finalizeConflict(client, command, idempotency, keyHash, earlyConflict, savedAt);
-          return earlyConflict;
-        }
-
         let session = await lockSession(client, command);
         if (session && isExpired(session.retentionExpiresAt, savedAt)) {
           if (
@@ -389,32 +351,6 @@ function validateTrack(
     return failure({ code: "inactive_setup_step", currentTrackRevision: intent.revision });
   }
   return null;
-}
-
-function validateBaseRevisions(
-  command: PropertySetupDraftSaveCommand,
-  currentBaseRevisions: Partial<Record<PropertySetupBaseRevisionKey, string>>,
-): SavePropertySetupDraftResult | null {
-  const expected = command.request.expectedBaseRevisions as Record<string, string>;
-  const unavailable = Object.keys(expected).filter(
-    (key) =>
-      typeof currentBaseRevisions[key as PropertySetupBaseRevisionKey] !== "string" ||
-      currentBaseRevisions[key as PropertySetupBaseRevisionKey]!.length === 0,
-  ) as PropertySetupBaseRevisionKey[];
-  if (unavailable.length > 0) {
-    return failure({
-      code: "base_revision_unavailable",
-      unavailableBaseRevisionKeys: unavailable,
-    });
-  }
-  const conflicting = Object.entries(expected)
-    .filter(
-      ([key, revision]) => currentBaseRevisions[key as PropertySetupBaseRevisionKey] !== revision,
-    )
-    .map(([key]) => key as PropertySetupBaseRevisionKey);
-  return conflicting.length > 0
-    ? failure({ code: "base_revision_conflict", conflictingBaseRevisionKeys: conflicting })
-    : null;
 }
 
 async function lockSession(
@@ -957,12 +893,6 @@ function isSaveError(value: unknown): value is SavePropertySetupDraftError {
         hasExactKeys(value, ["code", "currentDraftRevision"]) &&
         isRevision(value["currentDraftRevision"])
       );
-    case "base_revision_conflict":
-      return (
-        hasExactKeys(value, ["code", "conflictingBaseRevisionKeys"]) &&
-        isBaseRevisionKeyList(value["conflictingBaseRevisionKeys"])
-      );
-    case "base_revision_unavailable":
     case "setup_scope_unavailable":
     case "idempotency_key_conflict":
     case "command_in_progress":
@@ -982,16 +912,6 @@ function isSelectedTracks(value: unknown[]): value is SetupTrack[] {
     ) &&
     new Set(value).size === value.length
   );
-}
-
-function isBaseRevisionKeyList(value: unknown): value is PropertySetupBaseRevisionKey[] {
-  if (!Array.isArray(value) || value.length === 0 || new Set(value).size !== value.length) {
-    return false;
-  }
-  const allowed = new Set<string>(
-    PROPERTY_SETUP_STEP_DEFINITIONS.flatMap(({ baseRevisionKeys }) => [...baseRevisionKeys]),
-  );
-  return value.every((key) => typeof key === "string" && allowed.has(key));
 }
 
 function isPositiveRevision(value: unknown): value is number {
