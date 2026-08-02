@@ -12,6 +12,7 @@ import {
 } from "@vayada/domain-pms";
 
 export * from "./onboardingPublication.js";
+export * from "./bookingLaunchEvidence.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;
