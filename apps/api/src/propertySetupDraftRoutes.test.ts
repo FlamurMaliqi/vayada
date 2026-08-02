@@ -352,10 +352,8 @@ describe("property setup draft save route", () => {
 
   it("injects the PostgreSQL repository from the production startup", () => {
     const serverSource = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
-    expect(serverSource).toContain(
-      `const propertySetupDraftCommandRepository = createPgPropertySetupDraftCommandRepository({
-  connectionString: targetDatabaseUrl,
-});`,
+    expect(serverSource).toMatch(
+      /const propertySetupDraftCommandRepository = createPgPropertySetupDraftCommandRepository\(\{[\s\S]*?connectionString:\s*targetDatabaseUrl,[\s\S]*?\}\);/,
     );
     expect(serverSource).toMatch(
       /const app = buildApp\(\{[\s\S]*\n  propertySetupDraftCommandRepository,/,
