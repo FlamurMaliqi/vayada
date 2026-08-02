@@ -114,8 +114,11 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft PostgreSQL repository"
     });
     await insertDraft({
       stepId: "present_hotel",
-      payload: { "profile.short_description": "A quiet hotel beside the old town." },
-      dirtyFields: ["profile.short_description"],
+      payload: {
+        "profile.default_locale": "de-DE",
+        "profile.short_description": "A quiet hotel beside the old town.",
+      },
+      dirtyFields: ["profile.default_locale", "profile.short_description"],
       baseRevisions: {
         "hotel_catalog.profile": "profile:7",
         "hotel_catalog.media": "media:2",
@@ -142,8 +145,11 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft PostgreSQL repository"
       drafts: [
         expect.objectContaining({
           stepId: "present_hotel",
-          payload: { "profile.short_description": "A quiet hotel beside the old town." },
-          dirtyFields: ["profile.short_description"],
+          payload: {
+            "profile.default_locale": "de-DE",
+            "profile.short_description": "A quiet hotel beside the old town.",
+          },
+          dirtyFields: ["profile.default_locale", "profile.short_description"],
           baseRevisions: {
             "hotel_catalog.profile": "profile:7",
             "hotel_catalog.media": "media:2",
@@ -184,6 +190,61 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft PostgreSQL repository"
           revision: 2,
         },
       ],
+    });
+  });
+
+  it("resumes a locale-only draft without inferring Step 1 completion or readiness", async () => {
+    await insertSession(["hotel_operations"], "2026-09-30T12:00:00.000Z");
+    await client.query(
+      `UPDATE hotel_catalog.property_setup_sessions
+       SET completed_step_ids = '{}'::text[]
+       WHERE id = $1::uuid`,
+      [sessionId],
+    );
+    await insertDraft({
+      stepId: "present_hotel",
+      payload: { "profile.default_locale": "de-DE" },
+      dirtyFields: ["profile.default_locale"],
+      baseRevisions: {
+        "hotel_catalog.profile": "profile:7",
+        "hotel_catalog.media": "media:2",
+        "hotel_catalog.amenities": "amenities:3",
+      },
+      revision: 1,
+    });
+
+    await expect(repository.getActiveSession(scope)).resolves.toMatchObject({
+      resumeStepId: "present_hotel",
+      completedStepIds: [],
+      drafts: [
+        {
+          stepId: "present_hotel",
+          payload: { "profile.default_locale": "de-DE" },
+          dirtyFields: ["profile.default_locale"],
+          revision: 1,
+        },
+      ],
+    });
+    await expect(
+      client.query<{
+        defaultLocale: string;
+        profileStatus: string;
+        profileCount: number;
+      }>(
+        `SELECT
+           property.default_locale AS "defaultLocale",
+           property.profile_status AS "profileStatus",
+           (
+             SELECT count(*)::integer
+             FROM hotel_catalog.property_profiles profile
+             WHERE profile.property_id = property.id
+           ) AS "profileCount"
+         FROM hotel_catalog.properties property
+         WHERE property.id = $1::uuid`,
+        [scope.propertyId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ defaultLocale: "en", profileStatus: "incomplete", profileCount: 0 }],
     });
   });
 

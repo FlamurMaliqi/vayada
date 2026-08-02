@@ -256,6 +256,86 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     });
   });
 
+  it("round-trips locale-only and locale-plus-summary drafts without canonical readiness writes", async () => {
+    const fixture = await createFixture(["hotel_operations"]);
+    const localeOnly = command(fixture, {
+      idempotencyKey: "present-hotel-locale-only",
+      payload: { "profile.default_locale": "de-DE" },
+      dirtyFields: ["profile.default_locale"],
+    });
+
+    const created = await repository.saveStepDraft(localeOnly);
+    expect(created).toMatchObject({
+      ok: true,
+      receipt: {
+        stepId: "present_hotel",
+        sessionRevision: 1,
+        draftRevision: 1,
+        replayed: false,
+      },
+    });
+    await expect(repository.saveStepDraft(localeOnly)).resolves.toMatchObject({
+      ok: true,
+      receipt: { replayed: true },
+    });
+
+    const canonicalBefore = await canonicalStep1State(fixture.propertyId);
+    expect(canonicalBefore).toEqual({
+      defaultLocale: "en",
+      profileStatus: "incomplete",
+      profileRevision: 7,
+      profileCount: 0,
+    });
+
+    const updated = await repository.saveStepDraft(
+      command(fixture, {
+        idempotencyKey: "present-hotel-locale-plus-summary",
+        payload: {
+          "profile.default_locale": "de-DE",
+          "profile.short_description": "A quiet hotel beside the old town.",
+        },
+        dirtyFields: ["profile.default_locale", "profile.short_description"],
+        expectedSessionRevision: 1,
+        expectedDraftRevision: 1,
+      }),
+    );
+    expect(updated).toMatchObject({
+      ok: true,
+      receipt: { sessionRevision: 2, draftRevision: 2, replayed: false },
+    });
+
+    const persisted = await client.query<{
+      payload: Record<string, unknown>;
+      dirtyFields: string[];
+      completedStepIds: string[];
+      resumeStepId: string | null;
+    }>(
+      `SELECT
+         draft.payload,
+         draft.dirty_fields AS "dirtyFields",
+         setup.completed_step_ids AS "completedStepIds",
+         setup.resume_step_id AS "resumeStepId"
+       FROM hotel_catalog.property_setup_step_drafts draft
+       JOIN hotel_catalog.property_setup_sessions setup ON setup.id = draft.session_id
+       WHERE setup.organization_id = $1::uuid
+         AND setup.property_id = $2::uuid
+         AND draft.step_id = 'present_hotel'`,
+      [fixture.organizationId, fixture.propertyId],
+    );
+    expect(persisted.rows).toEqual([
+      {
+        payload: {
+          "profile.default_locale": "de-DE",
+          "profile.short_description": "A quiet hotel beside the old town.",
+        },
+        dirtyFields: ["profile.default_locale", "profile.short_description"],
+        completedStepIds: [],
+        resumeStepId: "present_hotel",
+      },
+    ]);
+    await expect(canonicalStep1State(fixture.propertyId)).resolves.toEqual(canonicalBefore);
+  });
+
   it("reclaims an expired idempotency key as a new audited attempt", async () => {
     const fixture = await createFixture(["hotel_operations"]);
     const initial = command(fixture, {
@@ -985,6 +1065,29 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
       [fixture.organizationId, selectedTracks],
     );
     return fixture;
+  }
+
+  async function canonicalStep1State(propertyId: string) {
+    const result = await client.query<{
+      defaultLocale: string;
+      profileStatus: string;
+      profileRevision: number;
+      profileCount: number;
+    }>(
+      `SELECT
+         property.default_locale AS "defaultLocale",
+         property.profile_status AS "profileStatus",
+         property.profile_revision::integer AS "profileRevision",
+         (
+           SELECT count(*)::integer
+           FROM hotel_catalog.property_profiles profile
+           WHERE profile.property_id = property.id
+         ) AS "profileCount"
+       FROM hotel_catalog.properties property
+       WHERE property.id = $1::uuid`,
+      [propertyId],
+    );
+    return result.rows[0];
   }
 });
 
