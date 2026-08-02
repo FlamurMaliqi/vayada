@@ -1,6 +1,8 @@
 import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backend-auth";
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
+import type { BookingPublicationCommandPort } from "@vayada/domain-booking";
+import type { ReadinessProviderPort } from "@vayada/domain-hotels";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -139,6 +141,7 @@ import {
 } from "./routes/pmsModuleActivations.js";
 import { registerPmsReviewRoutes, type PmsReviewRepository } from "./routes/pmsReviews.js";
 import { registerPropertySetupDraftRoutes } from "./routes/propertySetupDrafts.js";
+import { registerBookingPublicationRoutes } from "./routes/bookingPublication.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
@@ -187,6 +190,10 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
+  bookingPublication?: {
+    repository: BookingPublicationCommandPort;
+    readinessProvider: ReadinessProviderPort;
+  };
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
   identityAdminUsersReadRepository?: IdentityAdminUsersReadRepository;
@@ -387,6 +394,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPropertySetupDraftRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.propertySetupDraftCommandRepository,
+    });
+  }
+  if (options.bookingPublication) {
+    app.register(registerBookingPublicationRoutes, {
+      prefix: "/api/hotel-setup",
+      ...options.bookingPublication,
     });
   }
   if (options.identityPrivacyRepository) {
