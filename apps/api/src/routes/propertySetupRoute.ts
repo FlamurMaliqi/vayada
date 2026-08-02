@@ -59,8 +59,10 @@ export type PropertySetupRouteStateReadPort = {
   /**
    * Returns only the requested actor's active, unexpired drafts for
    * authorizedDraftStepIds plus a complete, current owner-fact snapshot for the
-   * selected route. Provider failures and track races must be explicit rather
-   * than represented as missing facts.
+   * selected route. Owner facts describe setup progress/current revisions, not
+   * product launch readiness; Review completion comes from lifecycle state.
+   * Provider failures and track races must be explicit rather than represented
+   * as missing facts.
    */
   getPropertySetupRouteState(
     input: PropertySetupRouteStateReadInput,

@@ -1,5 +1,4 @@
 import {
-  getActivePropertySetupStepIds,
   type JsonValue,
   type PropertySetupSession,
   type PropertySetupStepDraft,
@@ -117,9 +116,11 @@ export function createPgPropertySetupDraftRepository(config: {
           return null;
         }
 
-        const visibleStepIds = getActivePropertySetupStepIds(row.selectedTracks).filter((stepId) =>
-          scope.authorizedStepIds.includes(stepId),
-        );
+        // The stored session tracks preserve historical state, but they are not
+        // the current route. The caller has already intersected the current
+        // selected tracks with actor permissions, so those IDs control what is
+        // visible now and allow retained drafts to reappear after restoration.
+        const visibleStepIds = [...new Set(scope.authorizedStepIds)];
         const drafts = await client.query<DraftRow>(
           `SELECT
              draft.step_id AS "stepId",

@@ -267,6 +267,26 @@ describe("property setup route", () => {
     expect(routeStateReadPort.getPropertySetupRouteState).not.toHaveBeenCalled();
   });
 
+  it("does not turn Finance access into a route-wide Hotel Operations requirement", async () => {
+    const routeStateReadPort = {
+      getPropertySetupRouteState: vi.fn(async () => ({ outcome: "not_found" as const })),
+    };
+    app = buildRouteApp({
+      selectedTracks: ["hotel_operations"],
+      permissions: allPermissions,
+      routeStateReadPort,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/hotel-setup/properties/${propertyId}/route`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(routeStateReadPort.getPropertySetupRouteState).toHaveBeenCalledOnce();
+  });
+
   it.each([
     {
       name: "creator-workspace organization",
