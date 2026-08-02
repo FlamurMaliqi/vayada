@@ -11,6 +11,8 @@ import {
   type PmsReservationSink,
 } from "@vayada/domain-pms";
 
+export * from "./onboardingPublication.js";
+
 export type BookingUtcDateTime = string;
 export type BookingDate = string;
 export type BookingMoney = PmsMoney;

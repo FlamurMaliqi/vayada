@@ -116,9 +116,47 @@ report `succeeded` only from durable local completion evidence or a confirmed,
 persisted provider result. A timeout, accepted provider request, missing job,
 or successful retry dispatch must never be presented as success.
 
+`booking.publication.request` is the concrete external-work reference. Booking
+persists the attempt and returns `pending` with a stable operation ID; the same
+transaction reserves and completes idempotency, records the audit and domain
+event, and inserts the required Distribution-projector outbox intent. The
+attempt stores the expected active public-content revision so the projector can
+compare-and-set the Distribution pointer instead of overwriting a newer
+publication. At most one `pending` or `unknown` attempt may exist per property.
+
+The request fingerprint is SHA-256 over this exact `JSON.stringify` field
+order. Readiness `evaluatedAt` is excluded because the readiness contract
+explicitly excludes it from identity; the two verified hashes bind the complete
+readiness groups and source manifest.
+
+```json
+{
+  "organizationId": "<authorized organization>",
+  "propertyId": "<authorized property>",
+  "expectedActiveContentRevisionId": null,
+  "readiness": {
+    "contractVersion": "onboarding-product-readiness.v1",
+    "product": "booking",
+    "propertyId": "<authorized property>",
+    "status": "ready",
+    "sourceManifest": "<complete onboarding-source-manifest.v1 object>",
+    "sourceManifestHash": "sha256:<64 lowercase hex>",
+    "readinessHash": "sha256:<64 lowercase hex>"
+  }
+}
+```
+
+The recovery read exposes only operation ID, property ID, persisted state,
+expected/result revision IDs, a safe failure code, and timestamps. It never
+returns source manifests, readiness details, unpublished content, raw provider
+errors, or another tenant's existence. `succeeded` requires a persisted public
+content revision; `pending` and `unknown` remain non-success outcomes.
+
 The fixture vocabulary in
 `engineering/fixtures/onboarding-command-safety/cases.json` covers exact retry,
 changed payload, changed revision, concurrent stale write, and injected audit
 rollback in `cases`, plus the authentication, permission, organization-scope,
 revoked-retry, and allowed-access matrix in `authorizationCases`, for reuse by
-later setup commands.
+later setup commands. `externalOperationCases` adds durable outbox rollback,
+operation recovery, and false-success boundaries for externally uncertain
+commands.
