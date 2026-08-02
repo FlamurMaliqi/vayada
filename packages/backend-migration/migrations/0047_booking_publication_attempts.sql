@@ -70,3 +70,30 @@ CREATE UNIQUE INDEX uq_booking_publication_attempts_open_property
 
 CREATE INDEX idx_booking_publication_attempts_status
   ON booking.booking_publication_attempts (status, updated_at);
+
+-- A persisted revision is not published until Distribution's active pointer
+-- references it. Keep this as a transition-time invariant rather than a
+-- permanent foreign key so a later publication may move the pointer safely.
+CREATE FUNCTION booking.validate_booking_publication_success()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.status = 'succeeded' AND NOT EXISTS (
+    SELECT 1
+    FROM distribution.active_public_booking_revision active
+    WHERE active.property_id = NEW.property_id
+      AND active.content_revision_id = NEW.result_content_revision_id
+  ) THEN
+    RAISE EXCEPTION 'succeeded Booking publication must identify the active public revision'
+      USING ERRCODE = '23514',
+            CONSTRAINT = 'chk_booking_publication_attempts_success_is_active';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_booking_publication_attempts_validate_success
+  BEFORE INSERT OR UPDATE OF status, result_content_revision_id
+  ON booking.booking_publication_attempts
+  FOR EACH ROW EXECUTE FUNCTION booking.validate_booking_publication_success();

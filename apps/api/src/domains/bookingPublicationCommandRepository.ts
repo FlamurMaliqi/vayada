@@ -5,6 +5,7 @@ import type {
   BookingPublicationRequestResult,
   RequestBookingPublicationCommand,
 } from "@vayada/domain-booking";
+import type { BookingContentLifecyclePort } from "@vayada/domain-hotels";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import {
@@ -41,10 +42,12 @@ type IdempotencyRow = {
   requestFingerprintHash: string;
   responseStatusCode: number | null;
   responseBodyHash: string | null;
+  responseResourceProduct: string | null;
+  responseResourceType: string | null;
+  responseResourceId: string | null;
   idempotencyMetadata: unknown;
 };
 
-type ActiveRevisionRow = { revisionId: string };
 type AuthorizedScopeInput = Pick<
   RequestBookingPublicationCommand,
   "organizationId" | "propertyId" | "actorUserId"
@@ -56,6 +59,7 @@ export function createPgBookingPublicationCommandRepository(config: {
   pool?: BookingPublicationCommandPool;
   now?: () => Date;
   randomId?: () => string;
+  activeContent: Pick<BookingContentLifecyclePort, "getActive">;
 }): BookingPublicationCommandPort {
   if (!config.connectionString.trim()) {
     throw new Error("Booking publication command repository connectionString must not be empty");
@@ -76,7 +80,12 @@ export function createPgBookingPublicationCommandRepository(config: {
         return bookingPublicationFailure({ code: "invalid_readiness_evidence" });
       }
       const requestedAt = now();
-      const keyHash = sha256(command.idempotencyKey);
+      const keyHash = sha256(
+        JSON.stringify({
+          organizationId: command.organizationId,
+          idempotencyKey: command.idempotencyKey,
+        }),
+      );
       const fingerprint = bookingPublicationRequestFingerprint(command);
       const client = await pool.connect();
       try {
@@ -104,7 +113,8 @@ export function createPgBookingPublicationCommandRepository(config: {
         }
 
         await lockPublicationScope(client, command.propertyId);
-        const activeRevisionId = await loadActiveRevision(client, command.propertyId);
+        const activeRevisionId =
+          (await config.activeContent.getActive(command.propertyId))?.revisionId ?? null;
         if (activeRevisionId !== command.expectedActiveContentRevisionId) {
           return finalizeConflict(
             client,
@@ -301,17 +311,6 @@ async function lockPublicationScope(client: CommandClient, propertyId: string): 
   );
 }
 
-async function loadActiveRevision(client: CommandClient, propertyId: string) {
-  const result = await client.query<ActiveRevisionRow>(
-    `SELECT content_revision_id::text AS "revisionId"
-     FROM distribution.active_public_booking_revision
-     WHERE property_id = $1::uuid
-     FOR UPDATE`,
-    [propertyId],
-  );
-  return result.rows[0]?.revisionId ?? null;
-}
-
 async function hasOpenAttempt(client: CommandClient, propertyId: string): Promise<boolean> {
   const result = await client.query(
     `SELECT id
@@ -336,6 +335,9 @@ async function findReplay(
             request_fingerprint_hash AS "requestFingerprintHash",
             response_status_code AS "responseStatusCode",
             response_body_hash AS "responseBodyHash",
+            response_resource_product AS "responseResourceProduct",
+            response_resource_type AS "responseResourceType",
+            response_resource_id AS "responseResourceId",
             idempotency_metadata AS "idempotencyMetadata"
      FROM platform.idempotency_keys
      WHERE operation_scope = 'booking'
@@ -355,9 +357,20 @@ async function findReplay(
   if (existing.status !== "completed") {
     return bookingPublicationFailure({ code: "command_in_progress" });
   }
-  const parsed = parseBookingPublicationIdempotencyMetadata(existing.idempotencyMetadata);
+  const parsed = parseBookingPublicationIdempotencyMetadata(existing.idempotencyMetadata, {
+    propertyId: command.propertyId,
+    operationId: existing.responseResourceId,
+  });
   if (!parsed) return bookingPublicationFailure({ code: "idempotency_key_conflict" });
+  const responseResourceMatches = parsed.ok
+    ? existing.responseResourceProduct === "booking" &&
+      existing.responseResourceType === "booking_publication_attempt" &&
+      existing.responseResourceId === parsed.operation.operationId
+    : existing.responseResourceProduct === null &&
+      existing.responseResourceType === null &&
+      existing.responseResourceId === null;
   if (
+    !responseResourceMatches ||
     existing.responseStatusCode !== bookingPublicationResponseStatus(parsed) ||
     existing.responseBodyHash !== sha256(JSON.stringify(bookingPublicationResponseBody(parsed)))
   ) {
@@ -477,7 +490,9 @@ async function insertOutbox(
 function publicationEventPayload(command: RequestBookingPublicationCommand, operationId: string) {
   return {
     operationId,
+    organizationId: command.organizationId,
     propertyId: command.propertyId,
+    requestedByUserId: command.actorUserId,
     expectedActiveContentRevisionId: command.expectedActiveContentRevisionId,
     readiness: {
       contractVersion: command.readiness.contractVersion,
@@ -571,7 +586,7 @@ async function recordAudit(
        $1, 'booking', $2, $3::timestamptz,
        'property', NULL, $4::uuid,
        'user', $5::uuid,
-       'booking', 'booking_publication_attempt', $4,
+       'booking', $12, $13,
        $6::uuid, $7::uuid, $8, $9,
        $10::jsonb, jsonb_build_object('source', $11::text)
      )`,
@@ -597,6 +612,8 @@ async function recordAudit(
           : { error: result.error },
       ),
       command.audit.source,
+      result.ok ? "booking_publication_attempt" : "booking_property",
+      result.ok ? result.operation.operationId : command.propertyId,
     ],
   );
 }

@@ -2,7 +2,6 @@ import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backen
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
 import type { BookingPublicationCommandPort } from "@vayada/domain-booking";
-import type { ReadinessProviderPort } from "@vayada/domain-hotels";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -142,6 +141,7 @@ import {
 import { registerPmsReviewRoutes, type PmsReviewRepository } from "./routes/pmsReviews.js";
 import { registerPropertySetupDraftRoutes } from "./routes/propertySetupDrafts.js";
 import { registerBookingPublicationRoutes } from "./routes/bookingPublication.js";
+import type { BookingPublicationRoutesOptions } from "./routes/bookingPublication.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
@@ -192,7 +192,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
   bookingPublication?: {
     repository: BookingPublicationCommandPort;
-    readinessProvider: ReadinessProviderPort;
+    readinessProvider: BookingPublicationRoutesOptions["readinessProvider"];
   };
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;

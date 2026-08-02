@@ -12,10 +12,11 @@ import type {
   BookingPublicationOperation,
   RequestBookingPublicationCommand,
 } from "@vayada/domain-booking";
-import { createProductReadinessResult, type ReadinessProviderPort } from "@vayada/domain-hotels";
+import { createProductReadinessResult } from "@vayada/domain-hotels";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import type { BookingPublicationReadinessProvider } from "./routes/bookingPublication.js";
 
 const propertyId = "85858585-8585-4585-8585-858585858501";
 const operationId = "85858585-8585-4585-8585-858585858502";
@@ -76,6 +77,7 @@ describe("Booking publication routes", () => {
     ["missing permission", "valid-token", { permissions: [] }],
     ["missing entitlement", "valid-token", { entitlements: [] }],
     ["suspended entitlement", "valid-token", { entitlements: [entitlement("suspended")] }],
+    ["expired entitlement", "valid-token", { entitlements: [entitlement("expired")] }],
     ["missing link", "valid-token", { links: [] }],
     ["disallowed relationship", "valid-token", { links: [link({ relationship: "front_desk" })] }],
   ] as Array<[string, string | null, AuthOptions]>)(
@@ -96,6 +98,33 @@ describe("Booking publication routes", () => {
       expect(response.statusCode).toBe(token === null || token === "invalid" ? 401 : 403);
       expect(provider.calls).toBe(0);
       expect(repository.requestCalls).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["missing authentication", null, {}],
+    ["invalid authentication", "invalid", {}],
+    ["wrong organization", "valid-token", { kind: "creator_workspace" }],
+    ["missing permission", "valid-token", { permissions: [] }],
+    ["missing entitlement", "valid-token", { entitlements: [] }],
+    ["suspended entitlement", "valid-token", { entitlements: [entitlement("suspended")] }],
+    ["expired entitlement", "valid-token", { entitlements: [entitlement("expired")] }],
+    ["missing link", "valid-token", { links: [] }],
+    ["disallowed relationship", "valid-token", { links: [link({ relationship: "front_desk" })] }],
+  ] as Array<[string, string | null, AuthOptions]>)(
+    "denies status GET for %s before repository access",
+    async (_name, token, options) => {
+      const repository = fakeRepository();
+      app = testApp(repository, readinessProvider(await readyEvidence()), options);
+      const headers: Record<string, string> = {};
+      if (token !== null) headers.authorization = `Bearer ${token}`;
+      const response = await injectJson(app, {
+        method: "GET",
+        url: `/api/hotel-setup/properties/${propertyId}/publications/booking/${operationId}`,
+        headers,
+      });
+      expect(response.statusCode).toBe(token === null || token === "invalid" ? 401 : 403);
+      expect(repository.statusCalls).toHaveLength(0);
     },
   );
 
@@ -205,10 +234,10 @@ function fakeRepository(
 
 function readinessProvider(
   result: Awaited<ReturnType<typeof readyEvidence>>,
-): ReadinessProviderPort & { calls: number } {
+): BookingPublicationReadinessProvider & { calls: number } {
   return {
     calls: 0,
-    async getProductReadiness() {
+    async getBookingReadiness() {
       this.calls += 1;
       return result;
     },
@@ -217,7 +246,7 @@ function readinessProvider(
 
 function testApp(
   repository: FakeRepository,
-  provider: ReadinessProviderPort,
+  provider: BookingPublicationReadinessProvider,
   options: AuthOptions = {},
 ) {
   const app = buildApp({

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   bookingPublicationRequestFingerprint,
   hasValidBookingReadinessEvidence,
+  parseBookingPublicationIdempotencyMetadata,
   parseStoredBookingPublicationResult,
 } from "./bookingPublicationCommandEnvelope.js";
 
@@ -43,6 +44,16 @@ describe("Booking publication command envelope", () => {
     ).resolves.toBe(false);
   });
 
+  it("keeps canonically equivalent source order out of retry identity", async () => {
+    const ordered = await command(false);
+    const reordered = await command(true);
+    expect(ordered.readiness.sourceManifestHash).toBe(reordered.readiness.sourceManifestHash);
+    expect(ordered.readiness.readinessHash).toBe(reordered.readiness.readinessHash);
+    expect(bookingPublicationRequestFingerprint(ordered)).toBe(
+      bookingPublicationRequestFingerprint(reordered),
+    );
+  });
+
   it("fails closed on malformed stored replay metadata", () => {
     expect(
       parseStoredBookingPublicationResult({ ok: true, operation: { status: "pending" } }),
@@ -53,11 +64,75 @@ describe("Booking publication command envelope", () => {
         error: { code: "idempotency_key_conflict", unexpected: "ignored" },
       }),
     ).toEqual({ ok: false, error: { code: "idempotency_key_conflict" } });
+    expect(
+      parseStoredBookingPublicationResult({
+        ok: true,
+        operation: {
+          operationId: "55555555-5555-4555-8555-555555555555",
+          propertyId: "22222222-2222-4222-8222-222222222222",
+          status: "succeeded",
+          expectedActiveContentRevisionId: null,
+          resultContentRevisionId: null,
+          failureCode: null,
+          requestedAt: "2026-08-02T12:00:00.000Z",
+          updatedAt: "2026-08-02T12:00:00.000Z",
+          completedAt: null,
+        },
+      }),
+    ).toBe(null);
+  });
+
+  it("binds accepted replay metadata to the stored operation and property", () => {
+    const operation = {
+      operationId: "55555555-5555-4555-8555-555555555555",
+      propertyId: "22222222-2222-4222-8222-222222222222",
+      status: "pending",
+      expectedActiveContentRevisionId: null,
+      resultContentRevisionId: null,
+      failureCode: null,
+      requestedAt: "2026-08-02T12:00:00.000Z",
+      updatedAt: "2026-08-02T12:00:00.000Z",
+      completedAt: null,
+    } as const;
+    const metadata = { result: { ok: true, operation } };
+    expect(
+      parseBookingPublicationIdempotencyMetadata(metadata, {
+        propertyId: operation.propertyId,
+        operationId: operation.operationId,
+      }),
+    ).toEqual({ ok: true, operation });
+    expect(
+      parseBookingPublicationIdempotencyMetadata(metadata, {
+        propertyId: "66666666-6666-4666-8666-666666666666",
+        operationId: operation.operationId,
+      }),
+    ).toBe(null);
+    expect(
+      parseBookingPublicationIdempotencyMetadata(metadata, {
+        propertyId: operation.propertyId,
+        operationId: null,
+      }),
+    ).toBe(null);
   });
 });
 
-async function command(): Promise<RequestBookingPublicationCommand> {
+async function command(reverseSources = false): Promise<RequestBookingPublicationCommand> {
   const propertyId = "22222222-2222-4222-8222-222222222222";
+  const sources = [
+    {
+      ownerDomain: "booking" as const,
+      entityType: "booking_settings",
+      entityId: propertyId,
+      revision: "booking-settings:4",
+    },
+    {
+      ownerDomain: "hotel_catalog" as const,
+      entityType: "property_profile",
+      entityId: propertyId,
+      revision: "property-profile:7",
+    },
+  ];
+  if (reverseSources) sources.reverse();
   const readiness = await createProductReadinessResult({
     contractVersion: "onboarding-product-readiness.v1",
     propertyId,
@@ -66,14 +141,7 @@ async function command(): Promise<RequestBookingPublicationCommand> {
     sourceManifest: {
       contractVersion: "onboarding-source-manifest.v1",
       propertyId,
-      sources: [
-        {
-          ownerDomain: "booking",
-          entityType: "booking_settings",
-          entityId: propertyId,
-          revision: "booking-settings:4",
-        },
-      ],
+      sources,
     },
     groups: [
       {
@@ -90,6 +158,16 @@ async function command(): Promise<RequestBookingPublicationCommand> {
                   entityType: "booking_settings",
                   entityId: propertyId,
                   revision: "booking-settings:4",
+                },
+                status: "ready",
+                blockers: [],
+              },
+              {
+                source: {
+                  ownerDomain: "hotel_catalog",
+                  entityType: "property_profile",
+                  entityId: propertyId,
+                  revision: "property-profile:7",
                 },
                 status: "ready",
                 blockers: [],

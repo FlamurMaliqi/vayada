@@ -3,7 +3,7 @@ import type {
   BookingPublicationCommandPort,
   ReadyBookingPublicationEvidence,
 } from "@vayada/domain-booking";
-import type { ReadinessProviderPort } from "@vayada/domain-hotels";
+import type { ProductReadinessResult, ReadinessProviderFailure } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { enforceRoutePolicy } from "./policy.js";
@@ -15,9 +15,16 @@ type PublicationRequestBody = {
   expectedSourceManifestHash: string;
   expectedReadinessHash: string;
 };
-type BookingPublicationRoutesOptions = {
+export interface BookingPublicationReadinessProvider {
+  getBookingReadiness(input: {
+    organizationId: string;
+    propertyId: string;
+  }): Promise<ProductReadinessResult | ReadinessProviderFailure>;
+}
+
+export type BookingPublicationRoutesOptions = {
   repository: BookingPublicationCommandPort;
-  readinessProvider: ReadinessProviderPort;
+  readinessProvider: BookingPublicationReadinessProvider;
 };
 type AuthorizedPublicationScope = {
   context: ReturnType<typeof enforceRoutePolicy>;
@@ -74,9 +81,9 @@ export async function registerBookingPublicationRoutes(
         );
       }
 
-      const readiness = await readinessProvider.getProductReadiness({
+      const readiness = await readinessProvider.getBookingReadiness({
+        organizationId: scope.context.selectedOrganization.organizationId,
         propertyId: scope.propertyId,
-        product: "booking",
       });
       if (
         readiness.outcome !== "evaluated" ||
