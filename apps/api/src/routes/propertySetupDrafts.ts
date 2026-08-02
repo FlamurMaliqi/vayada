@@ -164,11 +164,6 @@ function invalidRequest(reply: FastifyReply, message: string): FastifyReply {
 }
 
 function sendSaveError(reply: FastifyReply, error: SavePropertySetupDraftError): FastifyReply {
-  const status =
-    error.code === "setup_scope_unavailable"
-      ? 404
-      : error.code === "base_revision_unavailable"
-        ? 503
-        : 409;
+  const status = error.code === "setup_scope_unavailable" ? 404 : 409;
   return reply.status(status).send(error);
 }

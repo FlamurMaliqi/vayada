@@ -7,10 +7,8 @@ import {
   PROPERTY_SETUP_STEP_DEFINITIONS,
   buildPropertySetupDraftProgress,
   getActivePropertySetupStepIds,
-  type PropertySetupBaseRevisionKey,
   type PropertySetupBaseRevisions,
   type PropertySetupDraftPayload,
-  type SavePropertySetupDraftError,
   type SavePropertySetupDraftReceipt,
   type SavePropertySetupDraftResult,
 } from "./propertySetupDraft.js";
@@ -76,18 +74,6 @@ describe("property setup draft contract", () => {
     expectTypeOf<SavePropertySetupDraftResult>().toMatchTypeOf<
       { ok: true; receipt: SavePropertySetupDraftReceipt } | { ok: false; error: { code: string } }
     >();
-    expectTypeOf<
-      Extract<
-        SavePropertySetupDraftError,
-        { code: "base_revision_conflict" }
-      >["conflictingBaseRevisionKeys"]
-    >().toEqualTypeOf<PropertySetupBaseRevisionKey[]>();
-    expectTypeOf<
-      Extract<
-        SavePropertySetupDraftError,
-        { code: "base_revision_unavailable" }
-      >["unavailableBaseRevisionKeys"]
-    >().toEqualTypeOf<PropertySetupBaseRevisionKey[]>();
   });
 
   it.each([
