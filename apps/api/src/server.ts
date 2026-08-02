@@ -527,6 +527,7 @@ const app = buildApp({
   sharedHotelSetupStatusRepository,
   hotelSetupTrackCommandRepository,
   propertySetupDraftCommandRepository,
+  propertyMediaCommandRepository: platformMediaRuntime?.propertyMediaCommands,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
     ? createPgIdentityPrivacyRepository({
@@ -647,6 +648,7 @@ if (pmsInventoryPublicOfferProjector || publicBookabilityPublisher) {
 
 if (platformMediaRuntime) {
   let activeCleanup: Promise<void> | undefined;
+  let activePropertyMediaPublication: Promise<void> | undefined;
   const runCleanup = () => {
     if (activeCleanup) return;
     activeCleanup = runPlatformMediaCleanupJobs(platformMediaRuntime.cleanupStore)
@@ -669,9 +671,40 @@ if (platformMediaRuntime) {
   cleanupTimer?.unref();
   if (config.platformMediaCleanupEnabled) runCleanup();
 
+  const runPropertyMediaPublication = () => {
+    if (activePropertyMediaPublication) return;
+    activePropertyMediaPublication = platformMediaRuntime.propertyMediaCommands
+      .runPublicationBatch()
+      .then((result) => {
+        if (result.deadLettered > 0) {
+          app.log.warn(
+            { deadLettered: result.deadLettered },
+            "Property media publications exhausted retries",
+          );
+        } else if (result.deferred > 0) {
+          app.log.warn(
+            { deferred: result.deferred },
+            "Property media publication batch completed with deferred jobs",
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        app.log.warn({ err: error }, "Property media publication batch failed");
+      })
+      .finally(() => {
+        activePropertyMediaPublication = undefined;
+      });
+  };
+  const propertyMediaPublicationTimer = setInterval(runPropertyMediaPublication, 30_000);
+  propertyMediaPublicationTimer.unref();
+  runPropertyMediaPublication();
+
   app.addHook("onClose", async () => {
     if (cleanupTimer) clearInterval(cleanupTimer);
+    clearInterval(propertyMediaPublicationTimer);
     await activeCleanup;
+    await activePropertyMediaPublication;
+    await platformMediaRuntime.propertyMediaCommands.close();
     await platformMediaRuntime.cleanupStore.close();
   });
 }
