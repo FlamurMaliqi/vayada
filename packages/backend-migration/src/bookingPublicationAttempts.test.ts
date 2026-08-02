@@ -18,6 +18,9 @@ describe("Booking publication attempt target schema", () => {
   it("keeps uncertain work open and success evidence constrained", () => {
     expect(migration).toContain("'pending', 'succeeded', 'failed', 'unknown'");
     expect(migration).toContain("status = 'succeeded' AND result_content_revision_id IS NOT NULL");
+    expect(migration).toContain("chk_booking_publication_attempts_success_is_active");
+    expect(migration).toContain("trg_booking_publication_attempts_validate_success");
+    expect(migration).toContain("active.content_revision_id = NEW.result_content_revision_id");
     expect(migration).toContain("WHERE status IN ('pending', 'unknown')");
     expect(migration).toContain("'external_result_unconfirmed'");
     expect(migration).not.toContain("provider_error");

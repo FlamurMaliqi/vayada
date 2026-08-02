@@ -40,7 +40,6 @@ export function bookingPublicationRequestFingerprint(
         product: readiness.product,
         propertyId: readiness.propertyId,
         status: readiness.status,
-        sourceManifest: readiness.sourceManifest,
         sourceManifestHash: readiness.sourceManifestHash,
         readinessHash: readiness.readinessHash,
       },
@@ -102,8 +101,18 @@ export function parseStoredBookingPublicationResult(
 
 export function parseBookingPublicationIdempotencyMetadata(
   value: unknown,
+  expected: Readonly<{ propertyId: string; operationId: string | null }>,
 ): BookingPublicationRequestResult | null {
-  return isRecord(value) ? parseStoredBookingPublicationResult(value["result"]) : null;
+  if (!isRecord(value)) return null;
+  const result = parseStoredBookingPublicationResult(value["result"]);
+  if (!result) return null;
+  if (!result.ok) return expected.operationId === null ? result : null;
+  return expected.operationId !== null &&
+    result.operation.propertyId === expected.propertyId &&
+    result.operation.operationId === expected.operationId &&
+    result.operation.status === "pending"
+    ? result
+    : null;
 }
 
 export function bookingPublicationResponseBody(result: BookingPublicationRequestResult) {
@@ -128,20 +137,44 @@ export function sha256(value: string): string {
 
 function isOperation(value: unknown): value is BookingPublicationOperation {
   if (!isRecord(value)) return false;
-  return (
-    isUuid(value["operationId"]) &&
-    isUuid(value["propertyId"]) &&
-    ["pending", "succeeded", "failed", "unknown"].includes(String(value["status"])) &&
-    nullableUuid(value["expectedActiveContentRevisionId"]) &&
-    nullableUuid(value["resultContentRevisionId"]) &&
-    (value["failureCode"] === null ||
-      BOOKING_PUBLICATION_FAILURE_CODES.includes(
-        value["failureCode"] as BookingPublicationFailureCode,
-      )) &&
-    isIso(value["requestedAt"]) &&
-    isIso(value["updatedAt"]) &&
-    (value["completedAt"] === null || isIso(value["completedAt"]))
-  );
+  if (
+    !(
+      isUuid(value["operationId"]) &&
+      isUuid(value["propertyId"]) &&
+      ["pending", "succeeded", "failed", "unknown"].includes(String(value["status"])) &&
+      nullableUuid(value["expectedActiveContentRevisionId"]) &&
+      nullableUuid(value["resultContentRevisionId"]) &&
+      (value["failureCode"] === null ||
+        BOOKING_PUBLICATION_FAILURE_CODES.includes(
+          value["failureCode"] as BookingPublicationFailureCode,
+        )) &&
+      isIso(value["requestedAt"]) &&
+      isIso(value["updatedAt"]) &&
+      (value["completedAt"] === null || isIso(value["completedAt"]))
+    )
+  )
+    return false;
+
+  const status = value["status"];
+  const resultRevision = value["resultContentRevisionId"];
+  const failureCode = value["failureCode"];
+  const completedAt = value["completedAt"];
+  const requestedAt = Date.parse(value["requestedAt"] as string);
+  const updatedAt = Date.parse(value["updatedAt"] as string);
+  const completedTime = completedAt === null ? null : Date.parse(completedAt as string);
+  if (updatedAt < requestedAt || (completedTime !== null && completedTime < updatedAt)) {
+    return false;
+  }
+  if (status === "pending") {
+    return resultRevision === null && failureCode === null && completedAt === null;
+  }
+  if (status === "unknown") {
+    return resultRevision === null && failureCode !== null && completedAt === null;
+  }
+  if (status === "failed") {
+    return resultRevision === null && failureCode !== null && completedAt !== null;
+  }
+  return resultRevision !== null && failureCode === null && completedAt !== null;
 }
 
 function isError(value: unknown): value is BookingPublicationRequestError {
@@ -175,7 +208,9 @@ function iso(value: Date | string): string {
 }
 
 function isIso(value: unknown): value is string {
-  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 function nullableUuid(value: unknown): boolean {
