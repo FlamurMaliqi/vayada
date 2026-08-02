@@ -1,3 +1,4 @@
+export * from "./roomFacts.js";
 export * from "./roomMedia.js";
 
 export const PMS_RESERVATION_CONTRACT_VERSION = "pms-reservation.v1" as const;
