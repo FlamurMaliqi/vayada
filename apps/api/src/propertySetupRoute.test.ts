@@ -53,6 +53,7 @@ const allPermissions: PermissionKey[] = [
   "booking.settings.manage",
   "pms.operations.read",
   "pms.operations.manage",
+  "pms.finance.read",
 ];
 
 let app: FastifyInstance | undefined;
@@ -216,6 +217,12 @@ describe("property setup route", () => {
       linkedResources: productLinks(),
       entitlements: productEntitlements(),
       permissions: allPermissions.filter((permission) => permission !== "pms.operations.read"),
+    },
+    {
+      name: "Finance permission",
+      linkedResources: productLinks(),
+      entitlements: productEntitlements(),
+      permissions: allPermissions.filter((permission) => permission !== "pms.finance.read"),
     },
     {
       name: "suspended Marketplace entitlement",

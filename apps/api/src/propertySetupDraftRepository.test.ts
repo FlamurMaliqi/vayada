@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { PROPERTY_SETUP_STEP_DEFINITIONS } from "@vayada/domain-hotels";
+import {
+  PROPERTY_SETUP_STEP_DEFINITIONS,
+  getActivePropertySetupStepIds,
+} from "@vayada/domain-hotels";
 
 import {
   createPgPropertySetupDraftRepository,
@@ -96,7 +99,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft PostgreSQL repository"
     await client.end();
   });
 
-  it("returns authorized active-track drafts while retaining hidden-track drafts", async () => {
+  it("uses the current authorized route while retaining hidden-track drafts", async () => {
     await insertSession(["hotel_operations"], "2026-09-30T12:00:00.000Z");
     await insertDraft({
       stepId: "marketplace_preferences",
@@ -121,7 +124,12 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft PostgreSQL repository"
       revision: 3,
     });
 
-    await expect(repository.getActiveSession(scope)).resolves.toEqual({
+    await expect(
+      repository.getActiveSession({
+        ...scope,
+        authorizedStepIds: getActivePropertySetupStepIds(["hotel_operations"]),
+      }),
+    ).resolves.toEqual({
       contractVersion: "property-setup-draft.v1",
       sessionId,
       organizationId: scope.organizationId,
@@ -160,16 +168,11 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft PostgreSQL repository"
       ),
     ).resolves.toMatchObject({ rows: [{ count: "1" }] });
 
-    await client.query(
-      `UPDATE hotel_catalog.property_setup_sessions
-       SET selected_tracks = ARRAY['hotel_operations', 'creator_marketplace']::text[],
-           track_revision = 3
-       WHERE id = $1::uuid`,
-      [sessionId],
-    );
+    // Restoring Marketplace in the current route must reveal the retained
+    // draft even though the historical session still records Operations only.
     await expect(repository.getActiveSession(scope)).resolves.toMatchObject({
-      selectedTracks: ["hotel_operations", "creator_marketplace"],
-      trackRevision: 3,
+      selectedTracks: ["hotel_operations"],
+      trackRevision: 2,
       drafts: [
         { stepId: "present_hotel" },
         {
