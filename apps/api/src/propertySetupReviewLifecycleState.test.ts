@@ -80,7 +80,7 @@ describe("property setup Review lifecycle provider", () => {
     }
   });
 
-  it("returns structured Review-owned blockers without leaking owner error details", async () => {
+  it("returns structured Review-owned blockers", async () => {
     const provider = createPropertySetupReviewLifecycleStateProvider({
       marketplace: marketplacePort("changes_requested", "marketplace:submission-3:changes"),
       booking: bookingPort("publication_failed", "booking:attempt-8:failed"),
@@ -116,7 +116,6 @@ describe("property setup Review lifecycle provider", () => {
         },
       ],
     });
-    expect(JSON.stringify(result)).not.toContain("provider stack");
   });
 
   it("binds the Review revision to selected tracks and exact owner lifecycle revisions", async () => {
@@ -155,9 +154,11 @@ describe("property setup Review lifecycle provider", () => {
         }),
       },
     });
-    await expect(rejected.getOwnerState(request(["hotel_operations"]))).resolves.toEqual({
+    const rejectedResult = await rejected.getOwnerState(request(["hotel_operations"]));
+    expect(rejectedResult).toEqual({
       outcome: "provider_failure",
     });
+    expect(JSON.stringify(rejectedResult)).not.toContain("provider stack");
 
     const malformed = createPropertySetupReviewLifecycleStateProvider({
       booking: {
@@ -196,6 +197,7 @@ describe("property setup Review lifecycle provider", () => {
         ...request(["hotel_operations"]),
         selectedTracks: ["hotel_operations", "hotel_operations"] as const,
       },
+      request(["creator_marketplace", "hotel_operations"] as const),
       { ...request(["hotel_operations"]), expectedTrackRevision: -1 },
     ];
 

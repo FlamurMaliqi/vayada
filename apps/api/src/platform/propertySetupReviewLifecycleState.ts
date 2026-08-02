@@ -91,22 +91,18 @@ export function createPropertySetupReviewLifecycleStateProvider(
         });
         const statuses = await Promise.all(
           request.selectedTracks.map(async (track) => {
-            if (track === "creator_marketplace") {
-              if (!options.marketplace) throw new Error("Marketplace lifecycle provider missing");
-              return options.marketplace.getMarketplaceSetupLifecycleStatus(scope);
+            const expectedProduct = productForTrack(track);
+            const status =
+              expectedProduct === "marketplace"
+                ? await readMarketplaceLifecycle(options, scope)
+                : await readBookingLifecycle(options, scope);
+            assertLifecycleStatus(status, scope);
+            if (status.product !== expectedProduct) {
+              throw new TypeError("Review lifecycle provider returned another product");
             }
-            if (!options.booking) throw new Error("Booking lifecycle provider missing");
-            return options.booking.getBookingSetupLifecycleStatus(scope);
+            return status;
           }),
         );
-        statuses.forEach((status, index) => {
-          assertLifecycleStatus(status, scope);
-          const expectedProduct =
-            request.selectedTracks[index] === "creator_marketplace" ? "marketplace" : "booking";
-          if (status.product !== expectedProduct) {
-            throw new TypeError("Review lifecycle provider returned another product");
-          }
-        });
 
         const blockers = statuses.flatMap(lifecycleBlockers);
         const state = reviewState(statuses, blockers.length > 0);
@@ -135,6 +131,33 @@ export function createPropertySetupReviewLifecycleStateProvider(
 }
 
 type ReviewLifecycleStatus = MarketplaceSetupLifecycleStatus | BookingSetupLifecycleStatus;
+
+const PRODUCT_BY_TRACK = {
+  hotel_operations: "booking",
+  creator_marketplace: "marketplace",
+} as const satisfies Record<SetupTrack, "marketplace" | "booking">;
+
+function productForTrack(track: SetupTrack): "marketplace" | "booking" {
+  const product = PRODUCT_BY_TRACK[track];
+  if (!product) throw new TypeError("Review lifecycle track is unsupported");
+  return product;
+}
+
+function readMarketplaceLifecycle(
+  options: PropertySetupReviewLifecycleStateOptions,
+  scope: PropertySetupLifecycleScope,
+): Promise<MarketplaceSetupLifecycleStatus> {
+  if (!options.marketplace) throw new Error("Marketplace lifecycle provider missing");
+  return options.marketplace.getMarketplaceSetupLifecycleStatus(scope);
+}
+
+function readBookingLifecycle(
+  options: PropertySetupReviewLifecycleStateOptions,
+  scope: PropertySetupLifecycleScope,
+): Promise<BookingSetupLifecycleStatus> {
+  if (!options.booking) throw new Error("Booking lifecycle provider missing");
+  return options.booking.getBookingSetupLifecycleStatus(scope);
+}
 
 function validReviewRequest(request: PropertySetupOwnerStateRequest): boolean {
   return (
