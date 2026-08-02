@@ -68,6 +68,7 @@ export interface BookingPublicationCommandPort {
     organizationId: string;
     propertyId: string;
     operationId: string;
+    actorUserId: string;
   }): Promise<BookingPublicationOperation | null>;
   close?(): Promise<void>;
 }
