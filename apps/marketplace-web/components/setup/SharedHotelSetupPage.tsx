@@ -22,6 +22,7 @@ import {
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { AdaptiveHotelSetupController } from "./adaptive/AdaptiveHotelSetupController";
 import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
@@ -31,9 +32,11 @@ const BOOKING_ADMIN_URL =
 export function SharedHotelSetupPage({
   defaultEntryProduct,
   defaultReturnTo,
+  adaptiveShellEnabled = false,
 }: {
   defaultEntryProduct: SharedHotelSetupEntryProduct;
   defaultReturnTo: string;
+  adaptiveShellEnabled?: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -121,10 +124,22 @@ export function SharedHotelSetupPage({
     );
   };
 
+  const handleExit = () => {
+    if (returnProduct === "marketplace") {
+      router.replace(returnTo);
+      return;
+    }
+    window.location.replace(productReturnUrl(returnProduct, returnTo));
+  };
+
   if (checkingAuth || !authorized) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-950" />
+      <div
+        className="flex min-h-screen items-center justify-center bg-gray-50 px-6"
+        role="status"
+        aria-live="polite"
+      >
+        <p className="text-sm font-medium text-gray-600">Confirming your setup session…</p>
       </div>
     );
   }
@@ -167,6 +182,41 @@ export function SharedHotelSetupPage({
     );
   }
 
+  if (adaptiveShellEnabled) {
+    if (initialPropertyId) {
+      return (
+        <AdaptiveHotelSetupController
+          key={initialPropertyId}
+          propertyId={initialPropertyId}
+          requestedStepId={searchParams.get("step")}
+          onExit={handleExit}
+        />
+      );
+    }
+
+    return (
+      <main className="flex min-h-[100dvh] items-center justify-center bg-gray-50 px-6 py-12">
+        <div
+          className="w-full max-w-xl rounded-2xl border border-amber-200 bg-white px-6 py-8 text-center sm:px-10"
+          role="alert"
+        >
+          <h1 className="text-xl font-semibold text-gray-950">Choose a hotel to continue</h1>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-600">
+            This setup link does not identify a hotel. Return to your dashboard, select the hotel,
+            and open setup again.
+          </p>
+          <button
+            type="button"
+            onClick={handleExit}
+            className="mt-5 min-h-10 rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white outline-none hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+          >
+            Exit setup
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <SharedFirstRunPropertySetupWizard
       api={sharedHotelSetupApi}
@@ -177,13 +227,7 @@ export function SharedHotelSetupPage({
       onContinue={handleContinue}
       onPropertySelected={handlePropertySelected}
       renderTaskForm={(context: SharedSetupTaskFormContext) => <SetupTaskFormRouter {...context} />}
-      onExit={() => {
-        if (returnProduct === "marketplace") {
-          router.replace(returnTo);
-          return;
-        }
-        window.location.replace(productReturnUrl(returnProduct, returnTo));
-      }}
+      onExit={handleExit}
     />
   );
 }
