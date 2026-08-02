@@ -759,6 +759,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     expect(result.applied).toContain("0037");
     expect(result.applied).toContain("0038");
     expect(result.applied).toContain("0045");
+    expect(result.applied).toContain("0046");
 
     const verifyClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await verifyClient.connect();
@@ -1723,6 +1724,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "trips",
       ]);
 
+      await expect(
+        verifyClient.query(`TRUNCATE marketplace.hotel_submission_revisions CASCADE`),
+      ).rejects.toMatchObject({ code: "55000" });
+
       const { rows: marketplaceTripGrants } = await verifyClient.query<{
         key: string;
         organization_kind: string;
@@ -2540,6 +2545,39 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "public_hotel_bookability_profiles",
         "public_quote_read_models",
         "public_room_offer_snapshots",
+      ]);
+
+      await expect(
+        verifyClient.query(`TRUNCATE distribution.public_booking_content_revisions CASCADE`),
+      ).rejects.toMatchObject({ code: "55000" });
+
+      const { rows: lifecycleReadinessContractColumns } = await verifyClient.query<{
+        table_schema: string;
+        table_name: string;
+        column_name: string;
+      }>(
+        `SELECT table_schema, table_name, column_name
+         FROM information_schema.columns
+         WHERE column_name = 'readiness_contract_version'
+           AND (
+             (table_schema = 'marketplace' AND table_name = 'hotel_submission_revisions')
+             OR
+             (table_schema = 'distribution' AND table_name = 'public_booking_content_revisions')
+           )
+         ORDER BY table_schema, table_name`,
+      );
+
+      expect(lifecycleReadinessContractColumns).toEqual([
+        {
+          table_schema: "distribution",
+          table_name: "public_booking_content_revisions",
+          column_name: "readiness_contract_version",
+        },
+        {
+          table_schema: "marketplace",
+          table_name: "hotel_submission_revisions",
+          column_name: "readiness_contract_version",
+        },
       ]);
 
       const { rows: distributionIntegrityConstraints } = await verifyClient.query<{

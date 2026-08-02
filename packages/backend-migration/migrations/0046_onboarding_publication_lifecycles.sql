@@ -1,12 +1,17 @@
--- Migration: 0044_onboarding_publication_lifecycles
+-- Migration: 0046_onboarding_publication_lifecycles
 -- Owner: domain-marketplace, domain-distribution
 -- See: engineering/hotel-onboarding-information-inventory.md (ONB-02A)
+-- Readiness hashes are recomputed by createReadyProductReadinessEvidence before
+-- insert. PostgreSQL persists the complete evidence fields and enforces their
+-- version, product, status, hash shape, manifest shape, and property binding.
 
 CREATE TABLE marketplace.hotel_submission_revisions (
   id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   property_id          UUID        NOT NULL,
   organization_id      UUID        NOT NULL,
   revision_number      INTEGER     NOT NULL CHECK (revision_number > 0),
+  readiness_contract_version TEXT  NOT NULL
+                                    CHECK (readiness_contract_version = 'onboarding-product-readiness.v1'),
   source_manifest      JSONB       NOT NULL,
   source_manifest_hash TEXT        NOT NULL CHECK (source_manifest_hash ~ '^sha256:[0-9a-f]{64}$'),
   readiness_hash       TEXT        NOT NULL CHECK (readiness_hash ~ '^sha256:[0-9a-f]{64}$'),
@@ -21,6 +26,11 @@ CREATE TABLE marketplace.hotel_submission_revisions (
     jsonb_typeof(source_manifest) = 'object'
     AND source_manifest->>'contractVersion' = 'onboarding-source-manifest.v1'
     AND source_manifest->>'propertyId' = property_id::TEXT
+    AND CASE
+      WHEN jsonb_typeof(source_manifest->'sources') = 'array'
+      THEN jsonb_array_length(source_manifest->'sources') > 0
+      ELSE FALSE
+    END
   ),
   FOREIGN KEY (property_id, organization_id)
     REFERENCES marketplace.marketplace_hotel_profiles(property_id, organization_id)
@@ -30,6 +40,12 @@ CREATE TRIGGER trg_marketplace_hotel_submission_revisions_append_only
   BEFORE UPDATE OR DELETE ON marketplace.hotel_submission_revisions
   FOR EACH ROW EXECUTE FUNCTION platform.prevent_append_only_mutation();
 
+CREATE TRIGGER trg_marketplace_submission_revisions_no_truncate
+  BEFORE TRUNCATE ON marketplace.hotel_submission_revisions
+  FOR EACH STATEMENT EXECUTE FUNCTION platform.prevent_append_only_mutation();
+
+-- This is a private moderation snapshot. Public Marketplace reads must project
+-- explicitly approved public fields rather than exposing this document.
 CREATE TABLE marketplace.hotel_submission_moderation (
   submission_revision_id UUID        PRIMARY KEY,
   property_id            UUID        NOT NULL,
@@ -69,6 +85,8 @@ CREATE TABLE distribution.public_booking_content_revisions (
   id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   property_id          UUID        NOT NULL REFERENCES hotel_catalog.properties(id),
   revision_number      INTEGER     NOT NULL CHECK (revision_number > 0),
+  readiness_contract_version TEXT  NOT NULL
+                                    CHECK (readiness_contract_version = 'onboarding-product-readiness.v1'),
   source_manifest      JSONB       NOT NULL,
   source_manifest_hash TEXT        NOT NULL CHECK (source_manifest_hash ~ '^sha256:[0-9a-f]{64}$'),
   readiness_hash       TEXT        NOT NULL CHECK (readiness_hash ~ '^sha256:[0-9a-f]{64}$'),
@@ -83,6 +101,11 @@ CREATE TABLE distribution.public_booking_content_revisions (
     jsonb_typeof(source_manifest) = 'object'
     AND source_manifest->>'contractVersion' = 'onboarding-source-manifest.v1'
     AND source_manifest->>'propertyId' = property_id::TEXT
+    AND CASE
+      WHEN jsonb_typeof(source_manifest->'sources') = 'array'
+      THEN jsonb_array_length(source_manifest->'sources') > 0
+      ELSE FALSE
+    END
   ),
   CHECK (NOT distribution.jsonb_has_distribution_private_key(public_content))
 );
@@ -90,6 +113,10 @@ CREATE TABLE distribution.public_booking_content_revisions (
 CREATE TRIGGER trg_distribution_public_booking_content_revisions_append_only
   BEFORE UPDATE OR DELETE ON distribution.public_booking_content_revisions
   FOR EACH ROW EXECUTE FUNCTION platform.prevent_append_only_mutation();
+
+CREATE TRIGGER trg_distribution_booking_revisions_no_truncate
+  BEFORE TRUNCATE ON distribution.public_booking_content_revisions
+  FOR EACH STATEMENT EXECUTE FUNCTION platform.prevent_append_only_mutation();
 
 CREATE TABLE distribution.active_public_booking_revision (
   property_id         UUID        PRIMARY KEY REFERENCES hotel_catalog.properties(id),
@@ -103,6 +130,7 @@ CREATE TABLE distribution.active_public_booking_revision (
 CREATE TABLE distribution.live_ari_watermarks (
   property_id          UUID        PRIMARY KEY REFERENCES hotel_catalog.properties(id),
   watermark_revision   INTEGER     NOT NULL DEFAULT 1 CHECK (watermark_revision > 0),
+  -- Owner-defined opaque PMS/inventory revision; intentionally not a Booking content revision.
   source_revision      TEXT        NOT NULL CHECK (btrim(source_revision) <> ''),
   materialized_through DATE,
   observed_at          TIMESTAMPTZ NOT NULL,
