@@ -216,6 +216,14 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
     await expect(
       admin.query(
         `UPDATE booking.booking_publication_attempts
+         SET failure_code = 'raw_provider_error_with_secrets'
+         WHERE id = $1::uuid`,
+        [accepted.operation.operationId],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      admin.query(
+        `UPDATE booking.booking_publication_attempts
          SET status = 'succeeded', failure_code = NULL, completed_at = now()
          WHERE id = $1::uuid`,
         [accepted.operation.operationId],
