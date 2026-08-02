@@ -133,9 +133,9 @@ describe("target public bookability publication", () => {
     );
 
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain("candidate.public_approved = TRUE");
-    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
-      "DISTINCT ON (candidate.property_id, media_variant.public_cdn_url)",
-    );
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("DISTINCT ON");
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain("candidate.media_type");
+    expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain("'pms.room_type.media'");
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain(
       "candidate.source_system = 'platform'",
     );

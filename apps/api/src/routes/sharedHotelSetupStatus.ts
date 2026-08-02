@@ -47,6 +47,7 @@ export type SharedPublicPropertyProfile = PublicPropertyProfileResponse;
 export type UpdatePublicPropertyProfileResult =
   | { status: "updated"; profile: SharedPublicPropertyProfile }
   | { status: "conflict"; currentRevision: number }
+  | { status: "command_in_progress" }
   | { status: "invalid_media"; mediaObjectIds: string[] }
   | { status: "not_found" };
 
@@ -413,6 +414,12 @@ export async function registerSharedHotelSetupStatusRoutes(
         code: "profile_revision_conflict",
         detail: "The property profile changed while it was being updated. Reload and try again.",
         currentRevision: result.currentRevision,
+      });
+    }
+    if (result.status === "command_in_progress") {
+      return reply.status(409).send({
+        code: "command_in_progress",
+        detail: "A property media update is still being published. Retry shortly.",
       });
     }
     if (result.status === "invalid_media") {

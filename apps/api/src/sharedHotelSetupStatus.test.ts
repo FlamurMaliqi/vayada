@@ -1741,6 +1741,62 @@ describe("shared hotel setup status route", () => {
     ]);
   });
 
+  it("maps an in-progress canonical media publication to an HTTP conflict", async () => {
+    const updatePublicPropertyProfile = vi.fn(async () => ({
+      status: "command_in_progress" as const,
+    }));
+    app = buildSharedSetupApp({
+      permissions: [
+        "hotel_catalog.setup.read",
+        "hotel_catalog.setup.manage",
+        "marketplace.profile.manage",
+      ],
+      repository: {
+        ...unusedStatusMethods(),
+        ...unusedPropertyProfileMethods(),
+        updatePublicPropertyProfile,
+      },
+    });
+
+    const response = await injectJson<{ code: string; detail: string }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/public-profile`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        expectedProfileRevision: 8,
+        patch: {
+          media: [
+            {
+              mediaObjectId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+              altText: null,
+              sortOrder: 0,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({
+      code: "command_in_progress",
+      detail: "A property media update is still being published. Retry shortly.",
+    });
+    expect(updatePublicPropertyProfile).toHaveBeenCalledWith({
+      organizationId,
+      propertyId,
+      expectedProfileRevision: 8,
+      patch: {
+        media: [
+          {
+            mediaObjectId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            altText: null,
+            sortOrder: 0,
+          },
+        ],
+      },
+    });
+  });
+
   it("rejects legacy and unknown public profile patch fields", async () => {
     const updatePublicPropertyProfile = vi.fn();
     app = buildSharedSetupApp({
@@ -2459,6 +2515,74 @@ describe("shared hotel setup status route", () => {
     expect(sql).toContain("'property.gallery_image'");
     expect(sql).not.toContain("media_object.resource_product = 'hotel_catalog'");
     expect(query.mock.calls[0]![1]).toEqual([organizationId, propertyId]);
+  });
+
+  it("rejects a public media patch while a canonical property-media job is active", async () => {
+    const release = vi.fn();
+    const query = vi.fn(async (text: string, _values?: readonly unknown[]) => {
+      if (text === "BEGIN" || text === "ROLLBACK") return { rows: [] };
+      if (text.includes("FOR UPDATE OF property")) {
+        return { rows: [{ profileRevision: "4", locale: "en" }] };
+      }
+      if (text.includes("FROM platform.jobs job")) {
+        return { rows: [{ id: "99999999-9999-4999-8999-999999999999" }] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = createPgSharedHotelSetupStatusRepository({
+      connectionString: "postgresql://target-db",
+      pool: {
+        async query<T extends QueryResultRow = QueryResultRow>(
+          text: string,
+          values?: readonly unknown[],
+        ) {
+          const result = await query(text, values);
+          return { rows: result.rows as unknown as T[] };
+        },
+        connect: async () => ({
+          query: async <T extends QueryResultRow = QueryResultRow>(
+            text: string,
+            values?: readonly unknown[],
+          ) => {
+            const result = await query(text, values);
+            return { rows: result.rows as unknown as T[] };
+          },
+          release,
+        }),
+        end: vi.fn(async () => undefined),
+      },
+    });
+
+    await expect(
+      repository.updatePublicPropertyProfile({
+        organizationId,
+        propertyId,
+        expectedProfileRevision: 4,
+        patch: {
+          media: [
+            {
+              mediaObjectId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+              altText: null,
+              sortOrder: 0,
+            },
+          ],
+        },
+      }),
+    ).resolves.toEqual({ status: "command_in_progress" });
+
+    const publicationFenceCall = query.mock.calls.find(([text]) =>
+      text.includes("FROM platform.jobs job"),
+    );
+    expect(publicationFenceCall?.[0]).toContain("job.queue_name = 'hotel-catalog.property-media'");
+    expect(publicationFenceCall?.[0]).toContain(
+      "job.job_type = 'hotel-catalog.property-media.publish'",
+    );
+    expect(publicationFenceCall?.[0]).toContain("job.tenant_scope = 'property'");
+    expect(publicationFenceCall?.[0]).toContain("job.resource_type = 'property_media_assignment'");
+    expect(publicationFenceCall?.[0]).toContain("job.status IN ('pending', 'running')");
+    expect(publicationFenceCall?.[1]).toEqual([propertyId]);
+    expect(query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("uses the numeric profile revision as the optimistic concurrency token", async () => {
