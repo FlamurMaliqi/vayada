@@ -1,5 +1,8 @@
 export const PMS_PRICING_CONTRACT_VERSION = "pms-pricing.v1" as const;
 
+/** One lock namespace shared by the PMS currency owner and every dependency writer. */
+export const PMS_PRICING_CURRENCY_DEPENDENCY_LOCK_NAMESPACE = "pms-pricing-currency" as const;
+
 export const PMS_PRICING_AUTHORIZATION = Object.freeze({
   permission: "pms.operations.manage",
   entitlement: Object.freeze({ product: "pms", key: "property-management" }),
@@ -229,6 +232,18 @@ export type PmsPricingCurrencyValidationPort = {
   isSupportedPricingCurrency(currency: PmsPricingCurrency): Promise<boolean>;
 };
 
+/**
+ * Generic exclusive boundary for a writer that creates or changes state bound
+ * to the authoritative PMS pricing currency. The writer must read its PMS
+ * currency evidence and commit the accepted dependent write inside `guarded`.
+ */
+export type PmsPricingCurrencyDependencyGuardPort = {
+  runWithPricingCurrencyDependencyGuard<Result>(
+    input: { readonly propertyId: string },
+    guarded: () => Promise<Result>,
+  ): Promise<Result>;
+};
+
 export type PmsPricingCurrencyChangeGuardPort = {
   /**
    * Holds the shared exclusive property-pricing-currency dependency guard for
@@ -270,6 +285,13 @@ export type PmsPricingSourceChangedEvent = {
 export function parsePmsPricingCurrency(value: unknown): PmsPricingCurrency | null {
   return typeof value === "string" && CURRENCY_PATTERN.test(value)
     ? (value as PmsPricingCurrency)
+    : null;
+}
+
+/** Exact advisory-lock source key; SQL adapters hash this value with seed zero. */
+export function serializePmsPricingCurrencyDependencyLockKey(value: unknown): string | null {
+  return isUuid(value)
+    ? `${PMS_PRICING_CURRENCY_DEPENDENCY_LOCK_NAMESPACE}:${value.toLowerCase()}`
     : null;
 }
 
