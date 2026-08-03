@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.config import settings as app_settings
 from app.dependencies import require_hotel_admin
 from app.models.payment import (
     CancellationPolicy,
@@ -33,6 +34,55 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin-payments"])
 
 
+async def _reconcile_stripe_connect_status(
+    hotel_id: str, payment_settings: dict | None
+) -> dict | None:
+    """Refresh the legacy onboarding flag from Stripe when an account exists.
+
+    The original flow only updated this flag through ``account.updated``. The
+    production endpoint was not receiving connected-account events, so a
+    completed account could remain pending forever. Payment settings reads are
+    a natural, low-frequency repair point and also keep disabled accounts from
+    remaining incorrectly marked as ready.
+    """
+    if not payment_settings or not payment_settings.get("stripe_connect_account_id"):
+        return payment_settings
+
+    account_id = payment_settings["stripe_connect_account_id"]
+    try:
+        account = await stripe_service.retrieve_connect_account(account_id)
+        onboarded = bool(
+            account.get("details_submitted")
+            and account.get("charges_enabled")
+            and account.get("payouts_enabled")
+        )
+        if bool(payment_settings.get("stripe_connect_onboarded")) != onboarded:
+            await HotelPaymentSettingsRepository.upsert(
+                hotel_id,
+                {"stripe_connect_onboarded": onboarded},
+            )
+            payment_settings = {
+                **payment_settings,
+                "stripe_connect_onboarded": onboarded,
+            }
+            logger.info(
+                "Reconciled Stripe Connect onboarding status hotel=%s account=%s onboarded=%s",
+                hotel_id,
+                account_id,
+                onboarded,
+            )
+    except Exception as e:
+        # A transient Stripe failure must not make the entire settings page
+        # unavailable. Keep the last persisted value and try again next load.
+        logger.warning(
+            "Unable to reconcile Stripe Connect status account=%s: %s",
+            account_id,
+            e,
+        )
+
+    return payment_settings
+
+
 async def _get_booking_engine_currency(user_id: str) -> str:
     """Resolve the user's hotel-id (honoring X-Hotel-Id) then fetch the
     authoritative currency from booking_db."""
@@ -49,6 +99,7 @@ async def get_payment_settings(
 ):
     hotel_id = await get_hotel_id(user_id)
     settings = await HotelPaymentSettingsRepository.get_by_hotel_id(hotel_id)
+    settings = await _reconcile_stripe_connect_status(hotel_id, settings)
     policy = await CancellationPolicyRepository.get_by_hotel_id(hotel_id)
 
     # Currency is owned by the booking engine (booking_hotels.currency).
@@ -385,7 +436,12 @@ async def create_stripe_connect_account(
             )
         raise HTTPException(status_code=502, detail=f"Stripe error: {error_msg}")
     await HotelPaymentSettingsRepository.upsert(
-        hotel_id, {"stripe_connect_account_id": account["id"]}
+        hotel_id,
+        {
+            "stripe_connect_account_id": account["id"],
+            "stripe_connect_onboarded": False,
+            "payment_provider": "stripe",
+        },
     )
     return {"accountId": account["id"]}
 
@@ -395,14 +451,21 @@ async def get_stripe_onboarding_link(
     user_id: str = Depends(require_hotel_admin),
 ):
     hotel_id = await get_hotel_id(user_id)
-    settings = await HotelPaymentSettingsRepository.get_by_hotel_id(hotel_id)
-    if not settings or not settings.get("stripe_connect_account_id"):
+    payment_settings = await HotelPaymentSettingsRepository.get_by_hotel_id(hotel_id)
+    if not payment_settings or not payment_settings.get("stripe_connect_account_id"):
         raise HTTPException(status_code=400, detail="No Stripe Connect account found")
 
+    # Starting or resuming Stripe onboarding is an explicit provider choice.
+    # Persist it before leaving Vayada so returning to the settings page cannot
+    # fall back to the previously stored provider.
+    await HotelPaymentSettingsRepository.upsert(hotel_id, {"payment_provider": "stripe"})
+
+    booking_admin_settings_url = f"{app_settings.BOOKING_ADMIN_URL.rstrip('/')}/settings"
+
     url = await stripe_service.create_connect_account_link(
-        settings["stripe_connect_account_id"],
-        return_url="https://pms.vayada.com/settings?stripe=success",
-        refresh_url="https://pms.vayada.com/settings?stripe=refresh",
+        payment_settings["stripe_connect_account_id"],
+        return_url=f"{booking_admin_settings_url}?section=payments&stripe=success",
+        refresh_url=f"{booking_admin_settings_url}?section=payments&stripe=refresh",
     )
     return {"url": url}
 

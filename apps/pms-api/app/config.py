@@ -88,6 +88,7 @@ class Settings(BaseSettings):
 
     # Booking engine frontend URL (for Xendit redirect URLs)
     BOOKING_ENGINE_URL: str = "https://booking.vayada.com"
+    BOOKING_ADMIN_URL: str = "https://admin.booking.vayada.com"
 
     # Channex
     CHANNEX_API_BASE_URL: str = "https://staging.channex.io"

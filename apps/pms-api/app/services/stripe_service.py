@@ -101,6 +101,17 @@ async def create_connect_account_link(account_id: str, return_url: str, refresh_
     return link.url
 
 
+async def retrieve_connect_account(account_id: str) -> dict:
+    """Return the Connect capabilities needed by the legacy payment settings UI."""
+    account = stripe.Account.retrieve(account_id)
+    return {
+        "id": account.id,
+        "details_submitted": bool(account.get("details_submitted", False)),
+        "charges_enabled": bool(account.get("charges_enabled", False)),
+        "payouts_enabled": bool(account.get("payouts_enabled", False)),
+    }
+
+
 def construct_webhook_event(payload: bytes, signature: str) -> stripe.Event:
     """Verify and parse a Stripe webhook event."""
     return stripe.Webhook.construct_event(payload, signature, settings.STRIPE_WEBHOOK_SECRET)

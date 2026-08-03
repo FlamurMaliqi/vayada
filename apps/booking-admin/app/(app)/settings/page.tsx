@@ -222,6 +222,11 @@ export default function SettingsPage() {
   }, [t]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("section") === "payments" || params.has("stripe")) {
+      setActiveSection("payments");
+    }
+
     fetchSettings();
     customDomainService
       .getStatus()
@@ -260,7 +265,7 @@ export default function SettingsPage() {
       });
       setStripeAccountId(result.accountId);
       const link = await pmsClient.get<{ url: string }>("/admin/stripe/connect-onboarding-link");
-      window.open(link.url, "_blank");
+      window.location.assign(link.url);
     } catch (err: any) {
       const msg =
         err instanceof TypeError
@@ -275,7 +280,7 @@ export default function SettingsPage() {
   const handleOnboarding = async () => {
     try {
       const link = await pmsClient.get<{ url: string }>("/admin/stripe/connect-onboarding-link");
-      window.open(link.url, "_blank");
+      window.location.assign(link.url);
     } catch (err: any) {
       setPaymentError(err.message || t("settings.billing.errorOnboardingLink"));
     }
@@ -495,9 +500,10 @@ export default function SettingsPage() {
     if (propertyCoordinateLoaded || propertyCoordinateLoadingRef.current) return;
     propertyCoordinateLoadingRef.current = true;
     try {
-      const roomTypes = await pmsClient.get<
-        { latitude: number | null; longitude: number | null }[]
-      >("/admin/room-types");
+      const roomTypes =
+        await pmsClient.get<{ latitude: number | null; longitude: number | null }[]>(
+          "/admin/room-types",
+        );
       const withCoords = roomTypes.filter(
         (rt) =>
           rt.latitude != null &&
@@ -1091,16 +1097,15 @@ export default function SettingsPage() {
               <div className="lg:sticky lg:top-5 lg:self-start space-y-2">
                 {propertyCoordinateLoaded && !propertyCoordinate && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                    Set a location on your room types in{" "}
-                    <strong>Rooms &amp; Rates</strong> so the map knows where to center.
+                    Set a location on your room types in <strong>Rooms &amp; Rates</strong> so the
+                    map knows where to center.
                   </div>
                 )}
                 <LocationMapPreview
                   propertyName={settings.property_name}
                   property={propertyCoordinate}
                   pois={(settings.points_of_interest || []).filter(
-                    (poi) =>
-                      Number.isFinite(poi.latitude) && Number.isFinite(poi.longitude),
+                    (poi) => Number.isFinite(poi.latitude) && Number.isFinite(poi.longitude),
                   )}
                   selectedPoiId={selectedPoiId}
                   onPlacePoi={
