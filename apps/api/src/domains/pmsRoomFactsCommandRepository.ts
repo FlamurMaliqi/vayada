@@ -413,7 +413,8 @@ export function createPgPmsRoomFactsCommandRepository(
             command.roomTypeId,
             acceptedAt,
           );
-        } catch {
+        } catch (error) {
+          if (!isDatabaseOperationalError(error)) throw error;
           return rolledBack(
             safeDeleteFailure({
               code: "room_type_delete_blocked",
@@ -959,7 +960,11 @@ async function inspectDeleteReferences(
 
   // Safe delete is rare and correctness-sensitive. Locking all known reference
   // tables prevents a JSON-only or indirect reference from appearing between
-  // the scan and the tombstone transition.
+  // the scan and the tombstone transition. Bound both lock acquisition and the
+  // reference scan so contention fails closed instead of stalling shared
+  // Booking, Distribution, PMS, or platform writers.
+  await client.query("SET LOCAL lock_timeout = '2s'");
+  await client.query("SET LOCAL statement_timeout = '5s'");
   await client.query(
     `LOCK TABLE
        booking.booking_publication_attempts,
@@ -1384,6 +1389,16 @@ function databaseInteger(value: number | string): number {
 
 function isPgConstraint(error: unknown, code: string, constraint: string): boolean {
   return isRecord(error) && error["code"] === code && error["constraint"] === constraint;
+}
+
+function isDatabaseOperationalError(error: unknown): boolean {
+  if (!isRecord(error) || typeof error["code"] !== "string") return false;
+  return (
+    /^[0-9A-Z]{5}$/.test(error["code"]) ||
+    ["ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENOTFOUND", "EPIPE", "ETIMEDOUT"].includes(
+      error["code"],
+    )
+  );
 }
 
 function setsEqual(left: Set<string>, right: Set<string>): boolean {

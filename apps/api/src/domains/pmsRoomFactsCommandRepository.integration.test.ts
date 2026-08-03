@@ -241,7 +241,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
       updateCommand("concurrent-second", roomTypeId, 1, facts("Concurrent Second")),
     );
     try {
-      await waitForAdvisoryWaiters(2);
+      await waitForAdvisoryWaiters(propertyId, 2);
       await admin.query("COMMIT");
     } catch (error) {
       await admin.query("ROLLBACK");
@@ -386,6 +386,52 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
     }
 
     await expect(repository.safeDeleteRoomType(command)).resolves.toMatchObject({
+      ok: true,
+      response: { outcome: "deleted", deletedRevision: 2 },
+    });
+    await expect(auditCount("pms.room_facts.safe_delete")).resolves.toBe(1);
+    await expect(idempotencyRows("pms.room_facts.safe_delete")).resolves.toEqual([
+      { status: "completed", attempt: 1 },
+    ]);
+  });
+
+  it("fails closed within the bounded wait when a shared reference table is contended", async () => {
+    const created = await repository.createRoomTypeFacts(
+      createCommand("create-lock-timeout", "lock-timeout-draft", facts("Lock Timeout Room")),
+    );
+    if (!created.ok) throw new Error("Expected lock-timeout fixture room to be created");
+    const roomTypeId = created.response.roomType.roomTypeId;
+    const blocker = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    await blocker.connect();
+    await blocker.query("BEGIN");
+    await blocker.query("LOCK TABLE booking.guest_bookings IN ACCESS EXCLUSIVE MODE");
+    const startedAt = Date.now();
+    try {
+      await expect(
+        repository.safeDeleteRoomType(safeDeleteCommand("delete-lock-timeout", roomTypeId, 1)),
+      ).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "room_type_delete_blocked",
+          currentRevision: 1,
+          blockers: [{ code: "reference_check_unavailable" }],
+        },
+      });
+      expect(Date.now() - startedAt).toBeLessThan(8_000);
+      await expect(auditCount("pms.room_facts.safe_delete")).resolves.toBe(0);
+      await expect(idempotencyRows("pms.room_facts.safe_delete")).resolves.toEqual([]);
+      await expect(readRoomType(roomTypeId)).resolves.toMatchObject({
+        active: true,
+        roomFactsRevision: "1",
+      });
+    } finally {
+      await blocker.query("ROLLBACK");
+      await blocker.end();
+    }
+
+    await expect(
+      repository.safeDeleteRoomType(safeDeleteCommand("delete-lock-timeout", roomTypeId, 1)),
+    ).resolves.toMatchObject({
       ok: true,
       response: { outcome: "deleted", deletedRevision: 2 },
     });
@@ -776,12 +822,19 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
     );
   }
 
-  async function waitForAdvisoryWaiters(expected: number): Promise<void> {
+  async function waitForAdvisoryWaiters(lockedPropertyId: string, expected: number): Promise<void> {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const result = await admin.query<{ count: string }>(
         `SELECT count(*)::text AS count
          FROM pg_locks
-         WHERE locktype = 'advisory' AND granted = FALSE`,
+         WHERE locktype = 'advisory'
+           AND granted = FALSE
+           AND mode = 'ExclusiveLock'
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+           AND classid = hashtext('pms.room_facts')::oid
+           AND objid = hashtext($1::uuid::text)::oid
+           AND objsubid = 2`,
+        [lockedPropertyId],
       );
       if (Number(result.rows[0]?.count ?? 0) >= expected) return;
       await new Promise((resolve) => setTimeout(resolve, 20));

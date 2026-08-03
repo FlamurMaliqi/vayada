@@ -119,6 +119,31 @@ describe("PMS room facts command repository", () => {
     }
   });
 
+  it("recovers a completed replay or reports in-progress after losing the reservation race", async () => {
+    const command = createCommand();
+    const stored = nameConflictResult();
+    const recovered = fakeDatabase({
+      reservationAvailable: false,
+      idempotencyReads: [undefined, completedIdempotency(command, stored)],
+    });
+    const unresolved = fakeDatabase({
+      reservationAvailable: false,
+      idempotencyReads: [undefined, undefined],
+    });
+
+    await expect(createRepository(recovered).createRoomTypeFacts(command)).resolves.toEqual(stored);
+    await expect(createRepository(unresolved).createRoomTypeFacts(command)).resolves.toEqual({
+      ok: false,
+      error: { code: "command_in_progress" },
+    });
+    for (const target of [recovered, unresolved]) {
+      expect(target.sql()).toContain("INSERT INTO platform.idempotency_keys");
+      expect(target.sql()).not.toContain("INSERT INTO platform.product_audit_events");
+      expect(target.sql()).not.toContain("SET status = 'completed'");
+      expect(target.commands.at(-1)).toBe("ROLLBACK");
+    }
+  });
+
   it("gives a durable draft binding precedence over vocabulary validation and creation", async () => {
     const target = fakeDatabase({
       binding: { roomTypeId, currentRevision: "7" },
@@ -211,7 +236,7 @@ describe("PMS room facts command repository", () => {
     const insert = created.calls.find(({ text }) => text.includes("INSERT INTO pms.room_types"));
     expect(insert?.text).toContain("base_rate_amount");
     expect(insert?.text).toContain("currency");
-    expect(insert?.text).toContain("NULL,\n         NULL");
+    expect(normalizeSql(insert?.text ?? "")).toContain("$7::jsonb, NULL, NULL, TRUE");
     expect(insert?.text).not.toContain("pms.rooms");
     expect(insert?.text).not.toContain("rate_plans");
     expect(insert?.text).not.toContain("inventory_days");
@@ -308,6 +333,47 @@ describe("PMS room facts command repository", () => {
     expect(target.sql()).not.toContain("active = FALSE");
     expect(target.commands.at(-1)).toBe("ROLLBACK");
     expect(target.commands).not.toContain("COMMIT");
+  });
+
+  it("maps database reference-scan failures but surfaces invariant failures", async () => {
+    const databaseFailure = Object.assign(new Error("lock not available"), { code: "55P03" });
+    const unavailable = fakeDatabase({
+      lockedRoom: roomRow({ roomFactsRevision: 2 }),
+      deleteReferenceError: databaseFailure,
+    });
+
+    await expect(
+      createRepository(unavailable).safeDeleteRoomType(safeDeleteCommand({ expectedRevision: 2 })),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "room_type_delete_blocked",
+        currentRevision: 2,
+        blockers: [{ code: "reference_check_unavailable" }],
+      },
+    });
+    expect(unavailable.sql()).toContain("SET LOCAL lock_timeout = '2s'");
+    expect(unavailable.sql()).toContain("SET LOCAL statement_timeout = '5s'");
+    expect(unavailable.commands.at(-1)).toBe("ROLLBACK");
+
+    const invariant = fakeDatabase({
+      lockedRoom: roomRow({ roomFactsRevision: 2 }),
+      deleteReferenceCounts: {
+        publishedReferenceCount: "invalid",
+        bookingReferenceCount: 0,
+        assignedPhysicalUnitCount: 0,
+        verifiedPhysicalUnitCount: 0,
+        rateReferenceCount: 0,
+        calendarReferenceCount: 0,
+        roomBlockReferenceCount: 0,
+        channelReferenceCount: 0,
+        otherOperationalReferenceCount: 0,
+      },
+    });
+    await expect(
+      createRepository(invariant).safeDeleteRoomType(safeDeleteCommand({ expectedRevision: 2 })),
+    ).rejects.toThrow("database reference count is invalid");
+    expect(invariant.commands.at(-1)).toBe("ROLLBACK");
   });
 
   it("completes and audits deterministic delete blockers in canonical order", async () => {
@@ -417,6 +483,7 @@ type FakeOptions = {
   authorized?: boolean;
   entitlementRows?: readonly QueryResultRow[];
   idempotency?: IdempotencyRow;
+  idempotencyReads?: readonly (IdempotencyRow | undefined)[];
   reservationAvailable?: boolean;
   binding?: DraftBindingRow;
   nameConflict?: boolean;
@@ -425,11 +492,13 @@ type FakeOptions = {
   updateRow?: RoomRow;
   inboundForeignKeys?: readonly InboundForeignKeyRow[];
   deleteReferenceCounts?: DeleteReferenceCounts;
+  deleteReferenceError?: unknown;
 };
 
 class RecordingClient implements PmsRoomFactsCommandClient {
   readonly calls: RecordedQuery[] = [];
   readonly commands: string[] = [];
+  private idempotencyReadIndex = 0;
 
   constructor(private readonly options: FakeOptions) {}
 
@@ -457,7 +526,10 @@ class RecordingClient implements PmsRoomFactsCommandClient {
     }
     if (sql.includes("pg_advisory_xact_lock")) return result<T>();
     if (sql.includes("FROM platform.idempotency_keys") && sql.includes("FOR UPDATE")) {
-      return result<T>(this.options.idempotency ? [this.options.idempotency] : []);
+      const idempotency = this.options.idempotencyReads
+        ? this.options.idempotencyReads[this.idempotencyReadIndex++]
+        : this.options.idempotency;
+      return result<T>(idempotency ? [idempotency] : []);
     }
     if (sql.startsWith("INSERT INTO platform.idempotency_keys")) {
       return result<T>(
@@ -507,8 +579,10 @@ class RecordingClient implements PmsRoomFactsCommandClient {
     if (sql.includes("FROM pg_catalog.pg_constraint")) {
       return result<T>([...(this.options.inboundForeignKeys ?? expectedInboundForeignKeys())]);
     }
+    if (sql.startsWith("SET LOCAL ")) return result<T>();
     if (sql.startsWith("LOCK TABLE ")) return result<T>();
     if (sql.includes("public_room_offer_snapshots") && sql.includes("publishedReferenceCount")) {
+      if (this.options.deleteReferenceError) throw this.options.deleteReferenceError;
       return result<T>([
         this.options.deleteReferenceCounts ?? {
           publishedReferenceCount: 0,
@@ -762,7 +836,7 @@ function sortJson(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, entry]) => [key, sortJson(entry)]),
   );
 }
