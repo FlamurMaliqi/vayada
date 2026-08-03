@@ -40,12 +40,12 @@ export const PMS_OPERATING_CALENDAR_AUTHORIZATION = Object.freeze({
 
 declare const monthDayBrand: unique symbol;
 declare const canonicalTimeZoneBrand: unique symbol;
-export type PmsRecurringMonthDay = string & { readonly [monthDayBrand]: true };
+export type PmsOperatingCalendarMonthDay = string & { readonly [monthDayBrand]: true };
 export type PmsCanonicalIanaTimeZone = string & { readonly [canonicalTimeZoneBrand]: true };
 
 export type PmsRecurringOperatingPeriod = Readonly<{
-  startsOn: PmsRecurringMonthDay;
-  endsOn: PmsRecurringMonthDay;
+  startsOn: PmsOperatingCalendarMonthDay;
+  endsOn: PmsOperatingCalendarMonthDay;
 }>;
 
 export type PmsOperatingSchedule =
@@ -262,10 +262,12 @@ export function parsePmsCanonicalIanaTimeZone(
   }
 }
 
-export function parsePmsRecurringMonthDay(value: unknown): PmsRecurringMonthDay | null {
+export function parsePmsOperatingCalendarMonthDay(
+  value: unknown,
+): PmsOperatingCalendarMonthDay | null {
   if (typeof value !== "string" || !MONTH_DAY.test(value) || value === "02-29") return null;
   const [month, day] = value.split("-").map(Number);
-  return day <= MONTH_LENGTHS[month - 1]! ? (value as PmsRecurringMonthDay) : null;
+  return day <= MONTH_LENGTHS[month - 1]! ? (value as PmsOperatingCalendarMonthDay) : null;
 }
 
 /** Inclusive annual union: overlaps reject; adjacency merges; full-year aliases reject. */
@@ -286,8 +288,8 @@ export function parsePmsOperatingSchedule(value: unknown): PmsOperatingSchedule 
   const occupied = Array<boolean>(365).fill(false);
   for (const raw of value.periods) {
     if (!exactRecord(raw, ["startsOn", "endsOn"])) return null;
-    const startsOn = parsePmsRecurringMonthDay(raw.startsOn);
-    const endsOn = parsePmsRecurringMonthDay(raw.endsOn);
+    const startsOn = parsePmsOperatingCalendarMonthDay(raw.startsOn);
+    const endsOn = parsePmsOperatingCalendarMonthDay(raw.endsOn);
     if (!startsOn || !endsOn) return null;
     let day = monthDayIndex(startsOn);
     const end = monthDayIndex(endsOn);
@@ -792,16 +794,16 @@ function parseAudit(value: unknown): PmsOperatingCalendarCommandAudit | null {
   });
 }
 
-function monthDayIndex(value: PmsRecurringMonthDay): number {
+function monthDayIndex(value: PmsOperatingCalendarMonthDay): number {
   const [month, day] = value.split("-").map(Number);
   return MONTH_LENGTHS.slice(0, month - 1).reduce((sum, length) => sum + length, 0) + day - 1;
 }
 
-function indexMonthDay(index: number): PmsRecurringMonthDay {
+function indexMonthDay(index: number): PmsOperatingCalendarMonthDay {
   let remaining = index;
   let month = 0;
   while (remaining >= MONTH_LENGTHS[month]!) remaining -= MONTH_LENGTHS[month++]!;
-  return `${String(month + 1).padStart(2, "0")}-${String(remaining + 1).padStart(2, "0")}` as PmsRecurringMonthDay;
+  return `${String(month + 1).padStart(2, "0")}-${String(remaining + 1).padStart(2, "0")}` as PmsOperatingCalendarMonthDay;
 }
 
 function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

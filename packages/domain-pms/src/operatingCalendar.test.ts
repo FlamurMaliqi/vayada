@@ -16,7 +16,7 @@ import {
   parsePmsOperatingCalendarPropertyProfileEvidence,
   parsePmsOperatingCalendarSourceRevision,
   parsePmsOperatingSchedule,
-  parsePmsRecurringMonthDay,
+  parsePmsOperatingCalendarMonthDay,
   parseUpsertPmsOperatingCalendarCommand,
   serializePmsOperatingCalendarFingerprint,
   serializePmsOperatingCalendarSourceRevision,
@@ -202,8 +202,8 @@ describe("PMS operating calendar contract", () => {
   });
 
   it("rejects invalid boundaries and accepts periods spanning leap day", () => {
-    expect(parsePmsRecurringMonthDay("02-29")).toBeNull();
-    expect(parsePmsRecurringMonthDay("04-31")).toBeNull();
+    expect(parsePmsOperatingCalendarMonthDay("02-29")).toBeNull();
+    expect(parsePmsOperatingCalendarMonthDay("04-31")).toBeNull();
     expect(
       parsePmsOperatingSchedule({
         mode: "recurring",
