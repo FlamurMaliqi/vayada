@@ -431,6 +431,22 @@ describe("PMS room facts command repository", () => {
     expect(referenceScan?.text).toContain("quote.status = 'active'");
     expect(referenceScan?.text).toContain("quote.expires_at > $3::timestamptz");
     expect(referenceScan?.text).toContain("quote.status = 'converted'");
+    const lockTables = target.calls.find(({ text }) => /^LOCK TABLE\s/.test(text))?.text;
+    expect(lockTables).toBeDefined();
+    const lockSql = lockTables ?? "";
+    expect(lockSql).toContain("pms.recurring_pricing_source_room_values");
+    expect(lockSql).toContain("pms.non_refundable_rate_plan_source_rooms");
+    expect(lockSql).toContain("pms.recurring_pricing_materialized_rows");
+    expect(lockSql).toContain("IN SHARE ROW EXCLUSIVE MODE");
+    expect(lockSql.indexOf("pms.non_refundable_rate_plan_source_rooms")).toBeLessThan(
+      lockSql.indexOf("pms.recurring_pricing_materialized_rows"),
+    );
+    expect(lockSql.indexOf("pms.recurring_pricing_materialized_rows")).toBeLessThan(
+      lockSql.indexOf("pms.recurring_pricing_source_room_values"),
+    );
+    expect(referenceScan?.text).toContain("FROM pms.recurring_pricing_source_room_values");
+    expect(referenceScan?.text).toContain("FROM pms.non_refundable_rate_plan_source_rooms");
+    expect(referenceScan?.text).toContain("FROM pms.recurring_pricing_materialized_rows");
     expect(referenceScan?.values).toEqual([propertyId, roomTypeId, acceptedAt.toISOString()]);
     expect(target.sql()).not.toContain("active = FALSE");
     expect(target.commands.at(-1)).toBe("COMMIT");
@@ -776,6 +792,24 @@ function expectedInboundForeignKeys(): InboundForeignKeyRow[] {
     inbound("pms", "rooms", "fk_pms_rooms_room_type_property", "pms.room_types"),
     inbound("pms", "rate_plans", "fk_pms_rate_plans_room_type_property", "pms.room_types"),
     inbound("pms", "rate_rules", "fk_pms_rate_rules_room_type_property", "pms.room_types"),
+    inbound(
+      "pms",
+      "recurring_pricing_source_room_values",
+      "fk_pms_recurring_pricing_room_values_room_type",
+      "pms.room_types",
+    ),
+    inbound(
+      "pms",
+      "non_refundable_rate_plan_source_rooms",
+      "fk_pms_non_refundable_rate_plan_source_rooms_room_type",
+      "pms.room_types",
+    ),
+    inbound(
+      "pms",
+      "recurring_pricing_materialized_rows",
+      "fk_pms_recurring_pricing_materialized_rows_room_type",
+      "pms.room_types",
+    ),
     inbound("pms", "inventory_days", "fk_pms_inventory_days_room_type_property", "pms.room_types"),
     inbound("pms", "room_blocks", "fk_pms_room_blocks_room_type_property", "pms.room_types"),
     inbound(
