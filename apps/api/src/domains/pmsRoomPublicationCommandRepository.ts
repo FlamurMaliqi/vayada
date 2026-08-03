@@ -20,7 +20,9 @@ import {
   type ConfirmRoomTypeAmenitiesCommand,
   type ConfirmRoomTypeAmenitiesError,
   type ConfirmRoomTypeAmenitiesResult,
+  type PmsRoomAmenityKey,
   type RoomAmenitiesCommandPort,
+  type RoomAmenityVocabularyValidationResult,
   type RoomAmenityVocabularyValidationPort,
   type RoomMediaAssignmentCommandPort,
 } from "@vayada/domain-pms";
@@ -298,7 +300,13 @@ export function createPgPmsRoomPublicationCommandRepository(
           );
         }
 
-        const vocabulary = await config.amenityVocabulary.validateRoomAmenities(command.amenities);
+        const vocabulary = parseAmenityVocabularyValidationResult(
+          await config.amenityVocabulary.validateRoomAmenities(command.amenities),
+          command.amenities,
+        );
+        if (!vocabulary) {
+          throw new Error("PMS room amenity vocabulary returned an invalid result");
+        }
         if (!vocabulary.ok) return finalized(amenitiesFailure(vocabulary.error));
 
         const nextRevision = command.expectedRoomAmenitiesRevision + 1;
@@ -885,6 +893,44 @@ function positiveDatabaseInteger(value: number | string): number {
   return parsed;
 }
 
+function parseAmenityVocabularyValidationResult(
+  value: unknown,
+  requestedAmenities: readonly PmsRoomAmenityKey[],
+): RoomAmenityVocabularyValidationResult | null {
+  if (isExactDataRecord(value, ["ok"]) && value["ok"] === true) {
+    return Object.freeze({ ok: true });
+  }
+  if (
+    !isExactDataRecord(value, ["ok", "error"]) ||
+    value["ok"] !== false ||
+    !isExactDataRecord(value["error"], ["code", "unsupportedAmenityKeys"]) ||
+    value["error"]["code"] !== "unsupported_room_amenity_keys"
+  ) {
+    return null;
+  }
+  const unsupported = value["error"]["unsupportedAmenityKeys"];
+  if (!isDensePlainArray(unsupported) || unsupported.length === 0) return null;
+  const requested = new Set<string>(requestedAmenities);
+  const parsed: PmsRoomAmenityKey[] = [];
+  for (const item of unsupported) {
+    if (
+      typeof item !== "string" ||
+      !requested.has(item) ||
+      (parsed.length > 0 && parsed[parsed.length - 1]! >= item)
+    ) {
+      return null;
+    }
+    parsed.push(item as PmsRoomAmenityKey);
+  }
+  return Object.freeze({
+    ok: false,
+    error: Object.freeze({
+      code: "unsupported_room_amenity_keys",
+      unsupportedAmenityKeys: Object.freeze(parsed),
+    }),
+  });
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (isRecord(value)) {
@@ -902,6 +948,40 @@ function sha256(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDensePlainArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length !== value.length + 1) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) return false;
+  }
+  return ownKeys.every(
+    (key) =>
+      key === "length" || (/^(?:0|[1-9]\d*)$/.test(String(key)) && Number(key) < value.length),
+  );
+}
+
+function isExactDataRecord(
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  if (
+    ownKeys.length !== keys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key))
+  ) {
+    return false;
+  }
+  return keys.every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+  });
 }
 
 function validDate(value: Date): boolean {

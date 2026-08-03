@@ -278,6 +278,27 @@ describe("PMS room publication command repository", () => {
     expect(target.rollbacks).toBe(1);
   });
 
+  it("rolls back a truthy non-boolean vocabulary result without durable state", async () => {
+    const target = commandTarget({ roomAmenitiesRevision: 1 });
+    const malformedVocabulary = {
+      async validateRoomAmenities() {
+        return { ok: "yes" };
+      },
+    } as unknown as RoomAmenityVocabularyValidationPort;
+    const repository = createRepository(target, resolvingMediaPort([]), malformedVocabulary);
+
+    await expect(repository.confirmRoomTypeAmenities(amenitiesCommand())).rejects.toThrow(
+      "amenity vocabulary returned an invalid result",
+    );
+    expect(target.roomAmenitiesRevision).toBe(1);
+    expect(target.roomAmenitiesReviewedAt).toBeNull();
+    expect(target.idempotencyCount).toBe(0);
+    expect(target.events).toHaveLength(0);
+    expect(target.audits).toHaveLength(0);
+    expect(target.commits).toBe(0);
+    expect(target.rollbacks).toBe(1);
+  });
+
   it("denies missing caller scope before reserving idempotency or resolving media", async () => {
     const target = commandTarget({ authorized: false });
     const resolverCalls: unknown[] = [];

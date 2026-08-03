@@ -7,8 +7,10 @@ import {
   PMS_ROOM_AMENITIES_CONTRACT_VERSION,
   createRoomPublicationSnapshot,
   parseRoomAmenitiesSnapshot,
+  type PmsRoomAmenityKey,
   type RoomCapacityReadPort,
   type RoomFactsReadPort,
+  type RoomAmenityVocabularyValidationResult,
   type RoomAmenityVocabularyValidationPort,
   type RoomPublicationMediaSource,
   type RoomPublicationRoomSource,
@@ -223,9 +225,13 @@ export function createPgPmsRoomPublicationReadModel(
           }
           const roomAmenities = roomAmenitiesFromRow(stored, scope.propertyId, facts.roomTypeId);
           if (roomAmenities.reviewed) {
-            const vocabulary = await config.amenityVocabulary.validateRoomAmenities(
+            const vocabulary = parseAmenityVocabularyValidationResult(
+              await config.amenityVocabulary.validateRoomAmenities(roomAmenities.amenities),
               roomAmenities.amenities,
             );
+            if (!vocabulary) {
+              throw new Error("PMS room amenity vocabulary returned an invalid result");
+            }
             if (!vocabulary.ok) {
               throw new Error("PMS room amenities vocabulary failed publication validation");
             }
@@ -512,6 +518,44 @@ function isoDate(value: Date | string): string {
 
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function parseAmenityVocabularyValidationResult(
+  value: unknown,
+  requestedAmenities: readonly PmsRoomAmenityKey[],
+): RoomAmenityVocabularyValidationResult | null {
+  if (isExactDataRecord(value, ["ok"]) && value["ok"] === true) {
+    return Object.freeze({ ok: true });
+  }
+  if (
+    !isExactDataRecord(value, ["ok", "error"]) ||
+    value["ok"] !== false ||
+    !isExactDataRecord(value["error"], ["code", "unsupportedAmenityKeys"]) ||
+    value["error"]["code"] !== "unsupported_room_amenity_keys"
+  ) {
+    return null;
+  }
+  const unsupported = value["error"]["unsupportedAmenityKeys"];
+  if (!isDensePlainArray(unsupported) || unsupported.length === 0) return null;
+  const requested = new Set<string>(requestedAmenities);
+  const parsed: PmsRoomAmenityKey[] = [];
+  for (const item of unsupported) {
+    if (
+      typeof item !== "string" ||
+      !requested.has(item) ||
+      (parsed.length > 0 && parsed[parsed.length - 1]! >= item)
+    ) {
+      return null;
+    }
+    parsed.push(item as PmsRoomAmenityKey);
+  }
+  return Object.freeze({
+    ok: false,
+    error: Object.freeze({
+      code: "unsupported_room_amenity_keys",
+      unsupportedAmenityKeys: Object.freeze(parsed),
+    }),
+  });
 }
 
 function isDensePlainArray(value: unknown): value is unknown[] {

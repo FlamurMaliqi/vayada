@@ -194,6 +194,25 @@ describe("PMS room publication read model", () => {
     expect(resolverCalls).toHaveLength(0);
   });
 
+  it("fails closed on a truthy non-boolean vocabulary result before resolving media", async () => {
+    const target = readTarget();
+    const resolverCalls: unknown[] = [];
+    const malformedVocabulary = {
+      async validateRoomAmenities() {
+        return { ok: "yes" };
+      },
+    } as unknown as RoomAmenityVocabularyValidationPort;
+    const model = createModel(target, {
+      resolverCalls,
+      amenityVocabulary: malformedVocabulary,
+    });
+
+    await expect(model.getRoomPublicationSnapshot({ organizationId, propertyId })).rejects.toThrow(
+      "amenity vocabulary returned an invalid result",
+    );
+    expect(resolverCalls).toHaveLength(0);
+  });
+
   it("publishes only the current media revision when trusted resolution is unavailable", async () => {
     const target = readTarget();
     const resolverCalls: unknown[] = [];
