@@ -7,6 +7,7 @@ import {
   BOOKING_DESIGN_SNAPSHOT_CONTRACT_VERSION,
   parseBookingDesignCatalogCoverAssignmentEvidenceResult,
   parseBookingDesignCatalogProfileEvidenceResult,
+  parseBookingDesignCatalogSafeMediaEvidenceResult,
   type BookingDesignCatalogCoverAssignmentEvidence,
   type BookingDesignCatalogCoverAssignmentEvidencePort,
   type BookingDesignCatalogEvidenceFailure,
@@ -48,6 +49,22 @@ const coverEvidence = (cover: null | { mediaObjectId: string; altText: string | 
   propertyId,
   source: source("property_media_assignment", propertyId, "assignment:9"),
   cover,
+});
+const mediaEvidence = () => ({
+  outcome: "evidence",
+  evidencePort: "safe_media",
+  organizationId,
+  propertyId,
+  source: source("property_safe_media", mediaObjectId, "media:11"),
+  media: {
+    mediaObjectId,
+    ownerOrganizationId: organizationId,
+    propertyId,
+    purpose: "property.hero_image",
+    publicVariants: [
+      { variantName: "original_safe", publicUrl: "https://cdn.vayada.test/cover.webp" },
+    ],
+  },
 });
 describe("Booking design renderer evidence contract", () => {
   it("locks the renderer version and exact public no-cover fallback", () => {
@@ -175,5 +192,75 @@ describe("Booking design renderer evidence contract", () => {
     ]) {
       expect(parseBookingDesignCatalogCoverAssignmentEvidenceResult(malformed, scope)).toBeNull();
     }
+  });
+
+  it("snapshots only scoped, public, renderer-safe assigned media", () => {
+    const media = parseBookingDesignCatalogSafeMediaEvidenceResult(mediaEvidence(), {
+      ...scope,
+      mediaObjectId: mediaObjectId.toUpperCase(),
+    });
+    expect(media).toMatchObject({
+      outcome: "evidence",
+      source: { entityId: mediaObjectId, revision: "media:11" },
+      media: { mediaObjectId, ownerOrganizationId: organizationId, propertyId },
+    });
+    expect(Object.isFrozen(media?.outcome === "evidence" ? media.media : null)).toBe(true);
+    expect(Object.isFrozen(media?.outcome === "evidence" ? media.media.publicVariants : null)).toBe(
+      true,
+    );
+    expect(
+      parseBookingDesignCatalogSafeMediaEvidenceResult(
+        { outcome: "stale", evidencePort: "safe_media", code: "media_stale" },
+        { ...scope, mediaObjectId },
+      ),
+    ).toEqual({ outcome: "stale", evidencePort: "safe_media", code: "media_stale" });
+  });
+
+  it("rejects malformed, cross-scope, non-public, and raw safe-media evidence", () => {
+    const valid = mediaEvidence();
+    for (const malformed of [
+      { ...valid, organizationId: mediaObjectId },
+      { ...valid, source: { ...valid.source, entityId: propertyId } },
+      { ...valid, media: { ...valid.media, purpose: "pms.room_type.media" } },
+      { ...valid, media: { ...valid.media, publicVariants: [] } },
+      {
+        ...valid,
+        media: {
+          ...valid.media,
+          publicVariants: [
+            { variantName: "original_safe", publicUrl: "http://cdn.vayada.test/cover.webp" },
+          ],
+        },
+      },
+      { ...valid, media: { ...valid.media, rawUrl: "https://private.test/raw" } },
+    ]) {
+      expect(
+        parseBookingDesignCatalogSafeMediaEvidenceResult(malformed, { ...scope, mediaObjectId }),
+      ).toBeNull();
+    }
+    const accessor = mediaEvidence();
+    Object.defineProperty(accessor.media.publicVariants, "0", {
+      enumerable: true,
+      get: () => {
+        throw new Error("must not read accessors");
+      },
+    });
+    expect(
+      parseBookingDesignCatalogSafeMediaEvidenceResult(accessor, { ...scope, mediaObjectId }),
+    ).toBeNull();
+    const poisoned = mediaEvidence();
+    Object.setPrototypeOf(
+      poisoned.media.publicVariants,
+      Object.create(Array.prototype, {
+        map: {
+          get: () => {
+            throw new Error("must not use inherited array methods");
+          },
+        },
+      }),
+    );
+    expect(
+      parseBookingDesignCatalogSafeMediaEvidenceResult(poisoned, { ...scope, mediaObjectId }),
+    ).toBeNull();
   });
 });

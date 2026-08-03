@@ -7,6 +7,7 @@ import type {
 } from "@vayada/domain-hotels";
 import {
   HOTEL_CATALOG_STEP1_CONTRACT_VERSION,
+  parsePropertyMediaLibraryItem,
   parseSaveHotelCatalogStep1Request,
   PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH,
 } from "@vayada/domain-hotels";
@@ -203,6 +204,70 @@ export function parseBookingDesignCatalogCoverAssignmentEvidenceResult(
   });
 }
 
+export function parseBookingDesignCatalogSafeMediaEvidenceResult(
+  value: unknown,
+  expectedScope: BookingDesignCatalogEvidenceScope & Readonly<{ mediaObjectId: string }>,
+):
+  BookingDesignCatalogSafeMediaEvidence | BookingDesignCatalogEvidenceFailure<"safe_media"> | null {
+  const failure = parseFailure(value, "safe_media");
+  if (failure) return failure;
+  const scope = parseScope(expectedScope);
+  const mediaObjectId = normalizeUuid(expectedScope.mediaObjectId);
+  if (
+    !scope ||
+    !mediaObjectId ||
+    !exact(value, ["outcome", "evidencePort", "organizationId", "propertyId", "source", "media"]) ||
+    value["outcome"] !== "evidence" ||
+    value["evidencePort"] !== "safe_media" ||
+    !matchesScope(value, scope) ||
+    !exact(value["media"], [
+      "mediaObjectId",
+      "ownerOrganizationId",
+      "propertyId",
+      "purpose",
+      "publicVariants",
+    ]) ||
+    !dataArray(value["media"]["publicVariants"])
+  ) {
+    return null;
+  }
+  const parsedMedia = parsePropertyMediaLibraryItem({
+    mediaObjectId: value["media"]["mediaObjectId"],
+    purpose: value["media"]["purpose"],
+    status: "public_ready",
+    publicVariants: value["media"]["publicVariants"],
+  });
+  const ownerOrganizationId = normalizeUuid(value["media"]["ownerOrganizationId"]);
+  const propertyId = normalizeUuid(value["media"]["propertyId"]);
+  const source = parseSource(value["source"], mediaObjectId);
+  if (
+    !parsedMedia ||
+    parsedMedia.mediaObjectId !== mediaObjectId ||
+    ownerOrganizationId !== scope.organizationId ||
+    propertyId !== scope.propertyId ||
+    (parsedMedia.purpose !== "property.hero_image" &&
+      parsedMedia.purpose !== "property.gallery_image") ||
+    !parsedMedia.publicVariants.some(({ variantName }) => variantName === "original_safe") ||
+    !source
+  ) {
+    return null;
+  }
+  const media = Object.freeze({
+    mediaObjectId,
+    ownerOrganizationId,
+    propertyId,
+    purpose: parsedMedia.purpose,
+    publicVariants: parsedMedia.publicVariants,
+  }) as ResolvedPublicHotelMedia;
+  return Object.freeze({
+    outcome: "evidence",
+    evidencePort: "safe_media",
+    ...scope,
+    source,
+    media,
+  });
+}
+
 function parseFailure<Port extends BookingDesignCatalogEvidencePortKey>(
   value: unknown,
   evidencePort: Port,
@@ -280,6 +345,19 @@ function exact(value: unknown, keys: readonly string[]): value is Record<string,
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
     })
+  );
+}
+
+function dataArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  return (
+    ownKeys.length === value.length + 1 &&
+    ownKeys[value.length] === "length" &&
+    Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+    }).every(Boolean)
   );
 }
 
