@@ -1,0 +1,169 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  createHotelCatalogStep1MediaAssignments,
+  parseSaveHotelCatalogStep1Request,
+  parseSaveHotelCatalogStep1Response,
+} from "./hotelCatalogStep1.js";
+
+const coverId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const galleryId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const summary =
+  "A welcoming independent hotel with calm rooms, thoughtful service, and an easy walk to local highlights.";
+
+const savedResponse = {
+  contractVersion: "hotel-catalog-step1.v1",
+  propertyId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  displayName: "Hotel Alpenrose",
+  profileRevision: 4,
+  supportedLocales: ["de", "en"],
+  profile: {
+    locale: "de",
+    shortDescription: summary,
+    publicSlug: "hotel-alpenrose",
+    amenities: { reviewed: true, keys: ["parking", "wifi"] },
+    media: { coverMediaObjectId: coverId, galleryMediaObjectIds: [galleryId] },
+  },
+  baseRevisions: {
+    "hotel_catalog.profile": "profile:4",
+    "hotel_catalog.media": "profile:4",
+    "hotel_catalog.amenities": "profile:4",
+  },
+  outcome: "updated",
+} as const;
+
+describe("Hotel Catalog Step 1 contract", () => {
+  it("normalizes a complete request and preserves reviewed-empty amenities", () => {
+    expect(
+      parseSaveHotelCatalogStep1Request({
+        expectedProfileRevision: 3,
+        locale: "de",
+        shortDescription: `  ${summary}  `,
+        amenities: { reviewed: true, keys: [] },
+        media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
+      }),
+    ).toEqual({
+      expectedProfileRevision: 3,
+      locale: "de",
+      shortDescription: summary,
+      amenities: { reviewed: true, keys: [] },
+      media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
+    });
+  });
+
+  it("trims only boundaries and preserves authored whitespace within 50 characters", () => {
+    const authored = `${"A".repeat(24)}  ${"B".repeat(24)}`;
+    expect(authored).toHaveLength(50);
+    expect(
+      parseSaveHotelCatalogStep1Request({
+        expectedProfileRevision: 3,
+        locale: "en",
+        shortDescription: `  ${authored}  `,
+        amenities: { reviewed: true, keys: [] },
+        media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
+      }),
+    ).toMatchObject({ shortDescription: authored });
+  });
+
+  it("counts Unicode code points rather than UTF-16 storage units", () => {
+    const unicodeSummary = "🏨".repeat(500);
+    expect(
+      parseSaveHotelCatalogStep1Request({
+        expectedProfileRevision: 3,
+        locale: "en",
+        shortDescription: unicodeSummary,
+        amenities: { reviewed: true, keys: [] },
+        media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
+      }),
+    ).toMatchObject({ shortDescription: unicodeSummary });
+  });
+
+  it.each([
+    ["unsupported locale", { locale: "pt" }],
+    ["short summary", { shortDescription: "Too short" }],
+    ["unreviewed amenities", { amenities: { reviewed: false, keys: [] } }],
+    ["unknown amenity", { amenities: { reviewed: true, keys: ["private_address"] } }],
+    [
+      "duplicate media",
+      { media: { coverMediaObjectId: coverId, galleryMediaObjectIds: [galleryId, galleryId] } },
+    ],
+  ])("rejects %s", (_name, patch) => {
+    expect(
+      parseSaveHotelCatalogStep1Request({
+        expectedProfileRevision: 3,
+        locale: "en",
+        shortDescription: summary,
+        amenities: { reviewed: true, keys: ["wifi"] },
+        media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
+        ...patch,
+      }),
+    ).toBeNull();
+  });
+
+  it("generates deterministic typed media assignments without address input", () => {
+    expect(
+      createHotelCatalogStep1MediaAssignments(
+        { coverMediaObjectId: coverId, galleryMediaObjectIds: [galleryId] },
+        " Hotel Alpenrose\nMunich ",
+      ),
+    ).toEqual([
+      {
+        mediaObjectId: coverId,
+        role: "cover",
+        altText: "Cover photo of Hotel Alpenrose Munich",
+        sortOrder: 0,
+      },
+      {
+        mediaObjectId: galleryId,
+        role: "gallery",
+        altText: "Hotel Alpenrose Munich gallery photo 1",
+        sortOrder: 1,
+      },
+    ]);
+  });
+
+  it("allows one canonical object to serve distinct cover and gallery roles", () => {
+    expect(
+      parseSaveHotelCatalogStep1Request({
+        expectedProfileRevision: 3,
+        locale: "en",
+        shortDescription: summary,
+        amenities: { reviewed: true, keys: [] },
+        media: { coverMediaObjectId: coverId, galleryMediaObjectIds: [coverId] },
+      }),
+    ).not.toBeNull();
+  });
+
+  it("strictly reconstructs a stored successful response", () => {
+    expect(parseSaveHotelCatalogStep1Response(savedResponse)).toEqual(savedResponse);
+  });
+
+  it.each([
+    ["unsupported locale", { supportedLocales: ["de", "pt"] }],
+    ["unsorted locales", { supportedLocales: ["en", "de"] }],
+    ["null saved summary", { profile: { ...savedResponse.profile, shortDescription: null } }],
+    [
+      "unknown amenity",
+      { profile: { ...savedResponse.profile, amenities: { reviewed: true, keys: ["casino"] } } },
+    ],
+    [
+      "invalid media id",
+      {
+        profile: {
+          ...savedResponse.profile,
+          media: { coverMediaObjectId: "not-a-uuid", galleryMediaObjectIds: [] },
+        },
+      },
+    ],
+    [
+      "invalid public slug",
+      { profile: { ...savedResponse.profile, publicSlug: "Hotel Alpenrose" } },
+    ],
+    [
+      "mismatched revision tokens",
+      { baseRevisions: { ...savedResponse.baseRevisions, "hotel_catalog.media": "profile:3" } },
+    ],
+  ])("rejects stored success with %s", (_name, patch) => {
+    expect(parseSaveHotelCatalogStep1Response({ ...savedResponse, ...patch })).toBeNull();
+  });
+});
