@@ -106,9 +106,11 @@ test.describe("marketplace-web smoke", () => {
     await assertHealthy();
   });
 
-  test("hotel onboarding saves shared personal details before shared setup", async ({ page }) => {
+  test("hotel onboarding saves manager details with initials before shared setup", async ({
+    page,
+  }) => {
     await primeBrowserState(page);
-    await mockOnboardingAuth(page);
+    const onboarding = await mockOnboardingAuth(page);
     await mockSharedSetupStatus(page);
 
     await page.goto("/onboarding");
@@ -139,29 +141,21 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByLabel("Email address")).toHaveValue("owner@example.test");
     await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
     await expect(page.getByLabel("Phone number")).toHaveAttribute("required", "");
-    await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
+    await expect(page.getByLabel("Profile photo file")).toHaveCount(0);
+    await expect(page.getByRole("img", { name: "Manager initials: ?" })).toBeVisible();
     await expect(page.getByText("Optional", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByText("Enter your first name.")).toBeVisible();
     await expect(page.getByText("Enter your last name.")).toBeVisible();
-    await expect(page.getByText("Profile photo is required.")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Upload profile photo" })).toHaveAttribute(
-      "aria-invalid",
-      "true",
-    );
+    await expect(page.getByText("Profile photo is required.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Upload profile photo" })).toHaveCount(0);
     await page.getByLabel("First name").fill("Mary Jane");
     await page.getByLabel("Last name").fill("Watson");
     await page.getByLabel("Phone number").fill("sdfdsfsfsdfdsf");
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByText("Enter a valid phone number.")).toBeVisible();
     await page.getByLabel("Phone number").clear();
-    await page.getByLabel("Profile photo file").setInputFiles({
-      name: "ada.png",
-      mimeType: "image/png",
-      buffer: Buffer.from("profile-image"),
-    });
-    await expect(page.getByRole("img", { name: "Selected profile preview" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Remove photo" })).toHaveCount(0);
+    await expect(page.getByRole("img", { name: "Manager initials: MW" })).toBeVisible();
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByText("Enter your phone number.")).toBeVisible();
     await page.getByLabel("Phone number").fill("+49 89 123456");
@@ -169,6 +163,7 @@ test.describe("marketplace-web smoke", () => {
 
     await expect(page).toHaveURL(/\/onboarding$/);
     await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+    expect(onboarding.personalMediaRequestCount()).toBe(0);
     await expect(
       page.getByText("Your account details are saved. Next, let’s set up your first hotel."),
     ).toBeVisible();
@@ -215,7 +210,13 @@ test.describe("marketplace-web smoke", () => {
 
     await primeBrowserState(page);
     await mockCookieConsent(page);
-    await mockOnboardingAuth(page, "hotel", "Mary Jane", "+49 89 123456", inviteCode);
+    const onboarding = await mockOnboardingAuth(
+      page,
+      "hotel",
+      "Mary Jane",
+      "+49 89 123456",
+      inviteCode,
+    );
     await page.route(
       /\/api\/marketplace\/hotel-account-invites\/(lookup|redeem)$/,
       async (route) => {
@@ -288,11 +289,8 @@ test.describe("marketplace-web smoke", () => {
 
     await page.getByLabel("First name").fill("Mary Jane");
     await page.getByLabel("Last name").fill("Watson");
-    await page.getByLabel("Profile photo file").setInputFiles({
-      name: "ada.png",
-      mimeType: "image/png",
-      buffer: Buffer.from("profile-image"),
-    });
+    await expect(page.getByLabel("Profile photo file")).toHaveCount(0);
+    await expect(page.getByRole("img", { name: "Manager initials: MW" })).toBeVisible();
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
     await page.getByRole("button", { name: "Set up my first hotel" }).click();
@@ -313,6 +311,7 @@ test.describe("marketplace-web smoke", () => {
       authorization: "Bearer test-access-token",
     });
     expect(requestedUrls.some((url) => url.includes(inviteCode))).toBe(false);
+    expect(onboarding.personalMediaRequestCount()).toBe(0);
     await assertNoLegacyCalls();
     await assertHealthy();
   });
@@ -2014,6 +2013,7 @@ async function mockOnboardingAuth(
   expectedPhone = "+49 89 123456",
   expectedInviteCode?: string,
 ) {
+  let personalMediaRequests = 0;
   let onboarded = false;
   let accountName: string | null = null;
   let accountPhone: string | null = "+49 89 123456";
@@ -2107,10 +2107,15 @@ async function mockOnboardingAuth(
       lastName: "Watson",
       phone: expectedPhone,
     });
-    expect(payload).toMatchObject({
-      profilePictureUrl: "https://media.example/profile.png",
-      profilePictureMediaObjectId: "media-profile-e2e",
-    });
+    if (accountType === "creator") {
+      expect(payload).toMatchObject({
+        profilePictureUrl: "https://media.example/profile.png",
+        profilePictureMediaObjectId: "media-profile-e2e",
+      });
+    } else {
+      expect(payload).not.toHaveProperty("profilePictureUrl");
+      expect(payload).not.toHaveProperty("profilePictureMediaObjectId");
+    }
     accountName =
       payload.firstName && payload.lastName ? `${payload.firstName} ${payload.lastName}` : null;
     accountPhone = payload.phone?.trim() || null;
@@ -2123,6 +2128,7 @@ async function mockOnboardingAuth(
       await fulfillCorsPreflight(route);
       return;
     }
+    personalMediaRequests += 1;
     if (route.request().url().endsWith("/finalize")) {
       await route.fulfill({
         status: 200,
@@ -2170,6 +2176,7 @@ async function mockOnboardingAuth(
   await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
     connections: [],
   });
+  return { personalMediaRequestCount: () => personalMediaRequests };
 }
 
 async function mockInviteAuthenticatedHotel(page: Page, inviteCode: string) {
