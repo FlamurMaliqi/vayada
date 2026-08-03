@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
+import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import {
   PMS_OPERATIONS_CONTRACT_VERSION,
@@ -3959,6 +3960,12 @@ async function applyOperationalStatusCommandMutation(
   if (invalidSource) {
     return invalidStatusTransition(invalidSource.assignmentStatus, command.status);
   }
+  if (
+    command.status !== "checked_out" &&
+    !(await assignmentsHaveVerifiedOperationalIdentity(client, command.propertyId, sources))
+  ) {
+    return operationalIdentityRequired("status update");
+  }
 
   await updateAssignmentsOperationalStatus(client, command, sources, command.status);
   return { ok: true };
@@ -3983,6 +3990,9 @@ async function applyCheckInCommandMutation(
   );
   if (invalidSource) {
     return invalidStatusTransition(invalidSource.assignmentStatus, "checked_in");
+  }
+  if (!(await assignmentsHaveVerifiedOperationalIdentity(client, command.propertyId, sources))) {
+    return operationalIdentityRequired("check-in");
   }
   if (await hasExistingCheckInRecord(client, command)) {
     return invalidStatusTransition("checked_in", "checked_in");
@@ -4157,6 +4167,19 @@ async function applySwapAssignmentCommand(
     return assignmentConflict(
       "assignment_conflict",
       "Target assignment room type is incompatible.",
+    );
+  }
+  await lockRoomTypeRoomsForAssignment(client, command.propertyId, source.roomTypeId);
+  if (
+    !(await roomIdsHaveVerifiedOperationalIdentity(
+      client,
+      command.propertyId,
+      [source.roomId, target.roomId].filter((roomId): roomId is string => roomId !== null),
+    ))
+  ) {
+    return assignmentConflict(
+      "room_unavailable",
+      "Assigned rooms require verified operational labels.",
     );
   }
 
@@ -4388,10 +4411,47 @@ async function findAvailableRoomForAssignment(
      WHERE property_id = $1::uuid
        AND id = $2::uuid
        AND status = 'available'
+       AND operational_label_status = 'verified'
+       AND room_number IS NOT NULL
      LIMIT 1`,
     [propertyId, roomId],
   );
   return result.rows[0] ?? null;
+}
+
+async function assignmentsHaveVerifiedOperationalIdentity(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  assignments: PmsAssignmentRow[],
+): Promise<boolean> {
+  if (assignments.some(({ roomId }) => roomId === null)) return false;
+  return roomIdsHaveVerifiedOperationalIdentity(
+    client,
+    propertyId,
+    assignments.map(({ roomId }) => roomId as string),
+  );
+}
+
+async function roomIdsHaveVerifiedOperationalIdentity(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  roomIds: string[],
+): Promise<boolean> {
+  const uniqueRoomIds = [...new Set(roomIds)].sort();
+  if (uniqueRoomIds.length === 0) return false;
+  const result = await client.query(
+    `SELECT id
+     FROM pms.rooms
+     WHERE property_id = $1::uuid
+       AND id = ANY($2::uuid[])
+       AND status <> 'retired'
+       AND operational_label_status = 'verified'
+       AND room_number IS NOT NULL
+     ORDER BY id
+     FOR SHARE`,
+    [propertyId, uniqueRoomIds],
+  );
+  return (result.rowCount ?? result.rows.length) === uniqueRoomIds.length;
 }
 
 async function lockRoomTypeRoomsForAssignment(
@@ -4399,6 +4459,7 @@ async function lockRoomTypeRoomsForAssignment(
   propertyId: string,
   roomTypeId: string,
 ): Promise<void> {
+  await lockPmsPhysicalRoomUnitMutationScope(client, propertyId, roomTypeId);
   await client.query(
     `SELECT id
      FROM pms.rooms
@@ -4840,6 +4901,17 @@ function invalidStatusTransition(
     statusCode: 400,
     code: "invalid_status_transition",
     message: `Cannot transition PMS reservation from ${fromStatus} to ${toStatus}.`,
+  };
+}
+
+function operationalIdentityRequired(
+  workflow: string,
+): Exclude<PmsOperationalCommandResult, { ok: true }> {
+  return {
+    ok: false,
+    statusCode: 400,
+    code: "invalid_status_transition",
+    message: `PMS ${workflow} requires an active room with a verified operational label.`,
   };
 }
 
