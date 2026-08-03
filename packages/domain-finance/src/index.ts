@@ -25,6 +25,7 @@
 import { createHash } from "node:crypto";
 
 export * from "./paymentReadiness.js";
+export * from "./paymentReadinessSnapshot.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
