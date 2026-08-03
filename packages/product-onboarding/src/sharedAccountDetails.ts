@@ -29,14 +29,15 @@ export function isSharedAccountDetailsComplete(
 ): boolean {
   const { firstName, lastName } = splitSharedAccountName(profile?.name);
   const phone = profile?.phone?.trim() ?? "";
-  return Boolean(
-    firstName &&
-    lastName &&
-    phone &&
-    isValidSharedAccountPhone(phone) &&
-    profile?.profilePictureUrl?.trim() &&
-    profile.profilePictureMediaObjectId?.trim(),
-  );
+  return Boolean(firstName && lastName && phone && isValidSharedAccountPhone(phone));
+}
+
+export function sharedAccountInitials(firstName: string, lastName: string): string {
+  const parts = normalizeSharedAccountName(firstName, lastName).split(" ").filter(Boolean);
+  if (parts.length === 0) return "?";
+  return `${parts[0]?.charAt(0) ?? ""}${parts.at(-1)?.charAt(0) ?? ""}`
+    .slice(0, parts.length === 1 ? 1 : 2)
+    .toLocaleUpperCase();
 }
 
 export function normalizeSharedAccountName(firstName: string, lastName: string): string {

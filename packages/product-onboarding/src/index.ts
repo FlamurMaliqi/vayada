@@ -10,6 +10,7 @@ export {
   isSharedAccountDetailsComplete,
   isValidSharedAccountPhone,
   normalizeSharedAccountName,
+  sharedAccountInitials,
   splitSharedAccountName,
   type SharedAccountDetailsInput,
   type SharedAccountDetailsProfile,
@@ -19,6 +20,7 @@ export {
   sharedAccountProfileImageError,
   type SharedAccountProfileImageUpload,
 } from "./sharedAccountProfileImage";
+export { sharedPropertyLogoError, type PendingPropertyLogoAssignment } from "./sharedPropertyLogo";
 export {
   default as LastMinuteStep,
   DEFAULT_LAST_MINUTE_TIERS,

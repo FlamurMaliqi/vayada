@@ -82,6 +82,121 @@ describe("createSharedHotelSetupApi", () => {
 
     await expect(api.getPublicPropertyProfile("property-1")).resolves.toEqual(validPublicProfile());
   });
+
+  it("uploads privately, finalizes, and assigns one property logo with separate retry keys", async () => {
+    const mediaObjectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const calls: Array<{
+      method: "post" | "put";
+      endpoint: string;
+      data: unknown;
+      options?: RequestInit;
+    }> = [];
+    const postResponses = [
+      {
+        uploadSession: { sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        uploadTargets: [
+          {
+            uploadTargetId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            method: "PUT",
+            uploadUrl: "https://uploads.vayada.localhost/property-logo",
+            headers: { "Content-Type": "image/webp" },
+          },
+        ],
+      },
+      {
+        mediaObjects: [
+          {
+            mediaObjectId,
+            purpose: "property.logo",
+            status: "private_ready",
+            publicVariants: [],
+          },
+        ],
+      },
+    ];
+    const api = createSharedHotelSetupApi({
+      get: async <T>() => validStatus() as T,
+      post: async <T>(endpoint: string, data?: unknown, options?: RequestInit) => {
+        calls.push({ method: "post", endpoint, data, options });
+        return postResponses.shift() as T;
+      },
+      put: async <T>(endpoint: string, data?: unknown, options?: RequestInit) => {
+        calls.push({ method: "put", endpoint, data, options });
+        return {
+          outcome: "updated",
+          profileRevision: 4,
+          logoAssignment: { mediaObjectId, role: "logo", altText: "Alpenrose logo", sortOrder: 0 },
+          presentationAssignments: [],
+        } as T;
+      },
+    });
+
+    await expect(
+      api.uploadPropertyLogo(
+        "property-1",
+        new File(["logo"], "logo.webp", { type: "image/webp" }),
+        "upload-key-1",
+      ),
+    ).resolves.toBe(mediaObjectId);
+    await expect(
+      api.assignPropertyLogo(
+        "property-1",
+        { expectedProfileRevision: 3, mediaObjectId, altText: "Alpenrose logo" },
+        "assignment-key-1",
+      ),
+    ).resolves.toMatchObject({ profileRevision: 4 });
+
+    expect(calls[0]).toMatchObject({
+      endpoint: "/api/media/upload-sessions",
+      data: {
+        idempotencyKey: "upload-key-1",
+        purpose: "property.logo",
+        visibility: "private",
+        resource: {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: "property-1",
+        },
+      },
+    });
+    expect(calls[0]?.data).not.toHaveProperty("expectedProfileRevision");
+    expect(calls[1]?.endpoint).toBe(
+      "/api/media/upload-sessions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/finalize",
+    );
+    expect(calls[2]).toMatchObject({
+      method: "put",
+      endpoint: "/api/hotel-setup/properties/property-1/media/logo",
+      data: {
+        expectedProfileRevision: 3,
+        assignment: { mediaObjectId, role: "logo", sortOrder: 0 },
+      },
+      options: { headers: { "Idempotency-Key": "assignment-key-1" } },
+    });
+  });
+
+  it("replays a completed logo upload without exposing or reusing private upload targets", async () => {
+    const mediaObjectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const client = clientReturning({
+      uploadSession: { sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+      uploadTargets: [],
+      mediaObjects: [
+        {
+          mediaObjectId,
+          purpose: "property.logo",
+          status: "private_ready",
+          publicVariants: [],
+        },
+      ],
+    });
+
+    await expect(
+      createSharedHotelSetupApi(client).uploadPropertyLogo(
+        "property-1",
+        new File(["logo"], "logo.png", { type: "image/png" }),
+        "same-upload-key",
+      ),
+    ).resolves.toBe(mediaObjectId);
+  });
 });
 
 function clientReturning(value: unknown): SharedHotelSetupHttpClient {

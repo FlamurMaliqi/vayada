@@ -24,6 +24,7 @@ import {
   HomeModernIcon,
   KeyIcon,
   MapPinIcon,
+  PhotoIcon,
   PlusIcon,
   SparklesIcon,
   SunIcon,
@@ -35,6 +36,7 @@ import type {
   PropertyProfileContact,
   PropertyProfilePatch,
   PropertyProfileResponse,
+  PublicPropertyProfileResponse,
   SetupComponentProduct,
   SetupTask,
   SetupTaskId,
@@ -58,6 +60,13 @@ import {
   type SharedSetupProperty,
 } from "./sharedFirstRunSetupFlow";
 import type { SharedHotelSetupApi, SharedPropertyTypeOption } from "./sharedHotelSetupApi";
+import {
+  clearPendingPropertyLogo,
+  readPendingPropertyLogo,
+  sharedPropertyLogoError,
+  writePendingPropertyLogo,
+  type PendingPropertyLogoAssignment,
+} from "./sharedPropertyLogo";
 
 type ProductLabels = Record<SetupComponentProduct, string>;
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
@@ -106,6 +115,10 @@ type ProfileDraft = {
   website: string;
   contactEmail: string;
   phone: string;
+  localityPublic: boolean;
+  logoFile: File | null;
+  logoMediaObjectId: string | null;
+  logoPublicUrl: string;
 };
 
 type ManualAddressReset = {
@@ -248,7 +261,7 @@ export function blockInlineSetupUnload(
 }
 
 const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
-  ["displayName", "propertyType"],
+  ["displayName", "propertyType", "logo"],
   [
     "location.streetAddress",
     "location.postalCode",
@@ -311,6 +324,8 @@ export default function SharedFirstRunPropertySetupWizard({
   const profileHeading = useRef<HTMLHeadingElement>(null);
   const trackCommandKey = useRef<string | null>(null);
   const createPropertyCommandKey = useRef<string | null>(null);
+  const logoUploadKey = useRef<string | null>(null);
+  const logoAssignmentKey = useRef<string | null>(null);
 
   const view = useMemo(
     () =>
@@ -378,12 +393,38 @@ export default function SharedFirstRunPropertySetupWizard({
       propertyId
         ? api.getPropertyProfile(propertyId)
         : Promise.resolve<PropertyProfileResponse | null>(null),
+      propertyId
+        ? api.getPublicPropertyProfile(propertyId)
+        : Promise.resolve<PublicPropertyProfileResponse | null>(null),
     ])
-      .then(([catalog, nextProfile]) => {
+      .then(([catalog, nextProfile, publicProfile]) => {
         if (cancelled) return;
         setPropertyTypeOptions(propertyTypeOptionsFromCatalog(catalog.propertyTypes));
         setLoadedProfile(nextProfile);
-        setDraft(nextProfile ? draftFromProfile(nextProfile) : newPropertyDraft());
+        const pendingLogo =
+          propertyId && typeof window !== "undefined"
+            ? readPendingPropertyLogo(window.localStorage, propertyId)
+            : null;
+        const publicLogo = publicProfile?.publicProfile.media.find(
+          ({ mediaType }) => mediaType === "logo",
+        );
+        if (
+          propertyId &&
+          pendingLogo &&
+          publicLogo?.mediaObjectId === pendingLogo.mediaObjectId &&
+          typeof window !== "undefined"
+        ) {
+          clearPendingPropertyLogo(window.localStorage, propertyId);
+        }
+        const unconfirmedPendingLogo =
+          pendingLogo && publicLogo?.mediaObjectId !== pendingLogo.mediaObjectId
+            ? pendingLogo
+            : null;
+        setDraft(
+          nextProfile
+            ? draftFromProfile(nextProfile, publicProfile, unconfirmedPendingLogo)
+            : newPropertyDraft(),
+        );
       })
       .catch((err) => {
         if (cancelled) return;
@@ -437,13 +478,11 @@ export default function SharedFirstRunPropertySetupWizard({
       let saved: PropertyProfileResponse;
       if (view.profileMode === "update" && view.selectedPropertyId && loadedProfile) {
         const update = profileUpdateFromDraft(draft, loadedProfile);
-        if (!update) {
-          setForceCreateProperty(false);
-          setEditPropertyProfile(false);
-          await reloadStatus(view.selectedPropertyId);
-          return;
-        }
-        saved = await api.updatePropertyProfile(view.selectedPropertyId, update);
+        saved = update
+          ? await api.updatePropertyProfile(view.selectedPropertyId, update)
+          : loadedProfile;
+      } else if (loadedProfile) {
+        saved = loadedProfile;
       } else {
         saved = await api.createPropertyProfile(
           createProfileFromDraft(draft),
@@ -453,6 +492,14 @@ export default function SharedFirstRunPropertySetupWizard({
         );
       }
       setLoadedProfile(saved);
+      saved = await savePropertyLogo({
+        api,
+        draft,
+        profile: saved,
+        uploadKey: logoUploadKey,
+        assignmentKey: logoAssignmentKey,
+      });
+      setLoadedProfile(saved);
       setForceCreateProperty(false);
       setEditPropertyProfile(false);
       await reloadStatus(saved.propertyId);
@@ -460,6 +507,8 @@ export default function SharedFirstRunPropertySetupWizard({
         await onPropertySelected?.(saved.propertyId);
       }
       createPropertyCommandKey.current = null;
+      logoUploadKey.current = null;
+      logoAssignmentKey.current = null;
     } catch (err) {
       if (
         setupErrorCode(err) === "profile_revision_conflict" &&
@@ -635,6 +684,10 @@ export default function SharedFirstRunPropertySetupWizard({
           pageHeadingRef={profileHeading}
           onChange={(nextDraft) => {
             if (view.profileMode === "create") createPropertyCommandKey.current = null;
+            if (nextDraft.logoFile !== draft.logoFile) {
+              logoUploadKey.current = null;
+              logoAssignmentKey.current = null;
+            }
             setDraft(nextDraft);
           }}
           onFieldErrors={setFieldErrors}
@@ -983,6 +1036,7 @@ function ProfileForm({
       (mode === "update" && !(canConfirmLocation(draft) && hasMapCoordinates(draft))),
   );
   const [addressSearchUnavailable, setAddressSearchUnavailable] = useState(false);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState(draft.logoPublicUrl);
   const addressRevision = useRef(0);
   const addressFields = useRef<HTMLDivElement>(null);
   const addressFieldsId = useId();
@@ -1027,6 +1081,16 @@ function ProfileForm({
       focusFirstIncompleteAddressField(addressFields.current);
     }
   }, [showAddressFields]);
+
+  useEffect(() => {
+    if (!draft.logoFile) {
+      setLogoPreviewUrl(draft.logoPublicUrl);
+      return;
+    }
+    const previewUrl = URL.createObjectURL(draft.logoFile);
+    setLogoPreviewUrl(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [draft.logoFile, draft.logoPublicUrl]);
 
   if (loading) {
     return (
@@ -1210,6 +1274,26 @@ function ProfileForm({
               error={fieldErrors.propertyType?.[0]}
               options={visiblePropertyTypeOptions}
               onChange={(value) => setField("propertyType", value)}
+            />
+            <PropertyLogoField
+              previewUrl={logoPreviewUrl}
+              pending={Boolean(draft.logoMediaObjectId && !draft.logoPublicUrl && !draft.logoFile)}
+              error={fieldErrors.logo?.[0]}
+              onChange={(file) => {
+                const validationError = sharedPropertyLogoError(file);
+                if (validationError) {
+                  onFieldErrors({ ...fieldErrors, logo: [validationError] });
+                  return;
+                }
+                const { logo: _logoError, ...remainingErrors } = fieldErrors;
+                onFieldErrors(remainingErrors);
+                onChange({
+                  ...draft,
+                  logoFile: file,
+                  logoMediaObjectId: null,
+                  logoPublicUrl: "",
+                });
+              }}
             />
           </div>
         </div>
@@ -1439,6 +1523,24 @@ function ProfileForm({
                     </div>
                   </div>
                 )}
+                <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-left">
+                  <input
+                    type="checkbox"
+                    checked={draft.localityPublic}
+                    onChange={(event) =>
+                      onChange({ ...draft, localityPublic: event.target.checked })
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold text-gray-900">
+                      Show city and country publicly
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-gray-600">
+                      Street address, postal code, and map coordinates stay private.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div
@@ -2227,11 +2329,84 @@ export function idempotencyKeyForRetry(
   return current ?? create();
 }
 
+async function savePropertyLogo({
+  api,
+  draft,
+  profile,
+  uploadKey,
+  assignmentKey,
+}: {
+  api: SharedHotelSetupApi;
+  draft: ProfileDraft;
+  profile: PropertyProfileResponse;
+  uploadKey: { current: string | null };
+  assignmentKey: { current: string | null };
+}): Promise<PropertyProfileResponse> {
+  if (draft.logoPublicUrl && !draft.logoFile) return profile;
+  const storage = window.localStorage;
+  let pending = readPendingPropertyLogo(storage, profile.propertyId);
+
+  if (draft.logoFile) {
+    const mediaObjectId = await api.uploadPropertyLogo(
+      profile.propertyId,
+      draft.logoFile,
+      (uploadKey.current = idempotencyKeyForRetry(uploadKey.current)),
+    );
+    pending = {
+      mediaObjectId,
+      expectedProfileRevision: profile.profileRevision,
+      assignmentIdempotencyKey: (assignmentKey.current = idempotencyKeyForRetry(
+        assignmentKey.current,
+      )),
+    };
+    writePendingPropertyLogo(storage, profile.propertyId, pending);
+  }
+
+  if (!pending || (pending.mediaObjectId !== draft.logoMediaObjectId && !draft.logoFile)) {
+    throw new Error("Choose a hotel logo before continuing.");
+  }
+  let assigned: Awaited<ReturnType<SharedHotelSetupApi["assignPropertyLogo"]>>;
+  try {
+    assigned = await api.assignPropertyLogo(
+      profile.propertyId,
+      {
+        expectedProfileRevision: pending.expectedProfileRevision,
+        mediaObjectId: pending.mediaObjectId,
+        altText: null,
+      },
+      pending.assignmentIdempotencyKey,
+    );
+  } catch (error) {
+    if (setupErrorCode(error) === "profile_revision_conflict") {
+      const latest = await api.getPropertyProfile(profile.propertyId);
+      const retry = {
+        ...pending,
+        expectedProfileRevision: latest.profileRevision,
+        assignmentIdempotencyKey: idempotencyKeyForRetry(null),
+      };
+      assignmentKey.current = retry.assignmentIdempotencyKey;
+      writePendingPropertyLogo(storage, profile.propertyId, retry);
+      throw new Error(
+        "These hotel details changed in another session. Review them, then save the logo again.",
+      );
+    }
+    throw error;
+  }
+  if (assigned.logoAssignment?.mediaObjectId !== pending.mediaObjectId) {
+    throw new Error("The hotel logo assignment could not be confirmed.");
+  }
+  clearPendingPropertyLogo(storage, profile.propertyId);
+  return { ...profile, profileRevision: assigned.profileRevision };
+}
+
 export function validateProfileDraft(draft: ProfileDraft): Record<string, string[]> {
   const errors: Record<string, string[]> = {};
 
   if (!draft.displayName.trim()) errors.displayName = ["Hotel name is required."];
   if (!draft.propertyType) errors.propertyType = ["Property type is required."];
+  if (!draft.logoFile && !draft.logoMediaObjectId && !draft.logoPublicUrl) {
+    errors.logo = ["Hotel logo is required."];
+  }
   if (!draft.streetAddress.trim()) {
     errors["location.streetAddress"] = ["Street address is required."];
   }
@@ -2343,6 +2518,84 @@ function TextField({
           ))}
         </datalist>
       )}
+      {error && (
+        <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function PropertyLogoField({
+  previewUrl,
+  pending,
+  error,
+  onChange,
+}: {
+  previewUrl: string;
+  pending: boolean;
+  error?: string;
+  onChange: (file: File) => void;
+}) {
+  const inputId = `property-logo-${useId()}`;
+  const errorId = error ? `${inputId}-error` : undefined;
+
+  return (
+    <div>
+      <p className="text-sm font-medium text-gray-700">
+        Hotel logo
+        <span className="ml-1 text-red-500" aria-hidden="true">
+          *
+        </span>
+        <span className="sr-only"> (required)</span>
+      </p>
+      <label
+        htmlFor={inputId}
+        className={`mt-2 flex cursor-pointer items-center gap-4 rounded-xl border bg-white p-3 transition hover:border-primary-300 focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2 ${
+          error ? "border-red-300 bg-red-50" : "border-gray-200"
+        }`}
+      >
+        <span className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gray-100 text-gray-500">
+          {previewUrl ? (
+            <img
+              src={previewUrl}
+              alt="Hotel logo preview"
+              className="h-full w-full object-contain"
+            />
+          ) : pending ? (
+            <CheckIcon className="h-7 w-7 text-primary-700" aria-hidden="true" />
+          ) : (
+            <PhotoIcon className="h-7 w-7" aria-hidden="true" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-gray-900">
+            {previewUrl
+              ? "Change hotel logo"
+              : pending
+                ? "Logo ready to finish"
+                : "Choose hotel logo"}
+          </span>
+          <span className="mt-1 block text-xs leading-5 text-gray-500">
+            JPG, PNG, or WebP. Max 10 MB. The logo is published only after assignment.
+          </span>
+        </span>
+        <input
+          id={inputId}
+          type="file"
+          aria-label="Hotel logo file"
+          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+          aria-invalid={Boolean(error)}
+          aria-describedby={errorId}
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) onChange(file);
+            event.target.value = "";
+          }}
+        />
+      </label>
       {error && (
         <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
           {error}
@@ -2493,8 +2746,15 @@ function SelectField({
   );
 }
 
-function draftFromProfile(response: PropertyProfileResponse): ProfileDraft {
+function draftFromProfile(
+  response: PropertyProfileResponse,
+  publicResponse: PublicPropertyProfileResponse | null,
+  pendingLogo: PendingPropertyLogoAssignment | null,
+): ProfileDraft {
   const profile = response.profile;
+  const publicLogo = publicResponse?.publicProfile.media.find(
+    ({ mediaType }) => mediaType === "logo",
+  );
   return {
     displayName: profile.displayName,
     propertyType: profile.propertyType,
@@ -2508,6 +2768,10 @@ function draftFromProfile(response: PropertyProfileResponse): ProfileDraft {
     website: contactValue(profile.contacts, "website"),
     contactEmail: contactValue(profile.contacts, "email"),
     phone: contactValue(profile.contacts, "phone"),
+    localityPublic: profile.location.localityPublic,
+    logoFile: null,
+    logoMediaObjectId: pendingLogo?.mediaObjectId ?? publicLogo?.mediaObjectId ?? null,
+    logoPublicUrl: pendingLogo ? "" : (publicLogo?.url ?? ""),
   };
 }
 
@@ -2523,7 +2787,7 @@ export function createProfileFromDraft(draft: ProfileDraft): CreatePropertyProfi
       timezone: draft.timezone.trim(),
       latitude: draft.latitude,
       longitude: draft.longitude,
-      localityPublic: false,
+      localityPublic: draft.localityPublic,
       geoPublic: false,
       mapDisplayMode: "hidden",
     },
@@ -2550,6 +2814,9 @@ export function profileUpdateFromDraft(
     timezone: draft.timezone.trim(),
     latitude: draft.latitude,
     longitude: draft.longitude,
+    localityPublic: draft.localityPublic,
+    geoPublic: false,
+    mapDisplayMode: "hidden" as const,
   };
   const locationPatch = Object.fromEntries(
     Object.entries(location).filter(
@@ -2582,6 +2849,10 @@ function newPropertyDraft(timezone = ""): ProfileDraft {
     website: "",
     contactEmail: "",
     phone: "",
+    localityPublic: false,
+    logoFile: null,
+    logoMediaObjectId: null,
+    logoPublicUrl: "",
   };
 }
 

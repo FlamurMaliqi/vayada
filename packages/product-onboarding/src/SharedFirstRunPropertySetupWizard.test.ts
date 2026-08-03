@@ -44,6 +44,10 @@ describe("property profile requests", () => {
     website: "https://alpenrose.example",
     contactEmail: "hello@alpenrose.example",
     phone: "+49 89 123456",
+    localityPublic: false,
+    logoFile: null,
+    logoMediaObjectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    logoPublicUrl: "https://cdn.example.com/alpenrose-logo.webp",
   } as Parameters<typeof createProfileFromDraft>[0];
 
   it("creates private general contacts and private location defaults", () => {
@@ -82,12 +86,6 @@ describe("property profile requests", () => {
       profileRevision: 7,
       profile: {
         ...createProfileFromDraft(draft),
-        location: {
-          ...createProfileFromDraft(draft).location,
-          localityPublic: true,
-          geoPublic: true,
-          mapDisplayMode: "exact",
-        },
         contacts: [
           {
             channelType: "email",
@@ -176,6 +174,37 @@ describe("property profile requests", () => {
     expect(request).toEqual({
       expectedProfileRevision: 4,
       patch: { location: { city: "Berlin" } },
+    });
+  });
+
+  it("persists explicit public-locality consent while forcing private geo fields", () => {
+    expect(createProfileFromDraft({ ...draft, localityPublic: true }).location).toMatchObject({
+      localityPublic: true,
+      geoPublic: false,
+      mapDisplayMode: "hidden",
+    });
+
+    const existing = createProfileFromDraft(draft);
+    existing.location = {
+      ...existing.location,
+      localityPublic: false,
+      geoPublic: true,
+      mapDisplayMode: "exact",
+    };
+    expect(
+      profileUpdateFromDraft(
+        { ...draft, localityPublic: true },
+        { propertyId: "property-1", profileRevision: 9, profile: existing },
+      ),
+    ).toEqual({
+      expectedProfileRevision: 9,
+      patch: {
+        location: {
+          localityPublic: true,
+          geoPublic: false,
+          mapDisplayMode: "hidden",
+        },
+      },
     });
   });
 });
@@ -410,6 +439,33 @@ describe("canConfirmLocation", () => {
 });
 
 describe("validateProfileDraft", () => {
+  it("requires one property-owned logo", () => {
+    const draft = {
+      displayName: "Hotel Alpenrose",
+      propertyType: "hotel",
+      countryCode: "DE",
+      city: "Munich",
+      streetAddress: "Marienplatz 1",
+      postalCode: "80331",
+      timezone: "Europe/Berlin",
+      website: "",
+      contactEmail: "owner@alpenrose.example",
+      phone: "+49 89 123456",
+      localityPublic: false,
+      logoFile: null,
+      logoMediaObjectId: null,
+      logoPublicUrl: "",
+    } as Parameters<typeof validateProfileDraft>[0];
+
+    expect(validateProfileDraft(draft).logo).toEqual(["Hotel logo is required."]);
+    expect(
+      validateProfileDraft({
+        ...draft,
+        logoMediaObjectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }).logo,
+    ).toBeUndefined();
+  });
+
   it("rejects invalid time zones", () => {
     const draft = {
       displayName: "Hotel Alpenrose",
