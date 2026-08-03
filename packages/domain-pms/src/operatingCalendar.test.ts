@@ -498,13 +498,22 @@ describe("PMS operating calendar contract", () => {
           evidence: { source, timeZone: snapshot.sourceInputs.propertyTimeZone },
         },
         7,
+        timeZoneRegistry,
       ),
     ).toBeNull();
     expect(
-      resolvePmsOperatingCalendarPropertyProfileConflict({ status: "timezone_missing", source }, 7),
+      resolvePmsOperatingCalendarPropertyProfileConflict(
+        { status: "timezone_missing", source },
+        7,
+        timeZoneRegistry,
+      ),
     ).toEqual({ code: "property_timezone_missing" });
     expect(
-      resolvePmsOperatingCalendarPropertyProfileConflict({ status: "timezone_invalid", source }, 7),
+      resolvePmsOperatingCalendarPropertyProfileConflict(
+        { status: "timezone_invalid", source },
+        7,
+        timeZoneRegistry,
+      ),
     ).toEqual({ code: "property_timezone_invalid" });
 
     const changedSource = { ...source, revision: "profile:8" };
@@ -512,8 +521,27 @@ describe("PMS operating calendar contract", () => {
       resolvePmsOperatingCalendarPropertyProfileConflict(
         { status: "timezone_invalid", source: changedSource },
         7,
+        timeZoneRegistry,
       ),
     ).toEqual({ code: "property_profile_revision_conflict", currentRevision: 8 });
     expect(changedSource).not.toHaveProperty("timeZone");
+
+    expect(() =>
+      resolvePmsOperatingCalendarPropertyProfileConflict(
+        { status: "unexpected", source } as never,
+        7,
+        timeZoneRegistry,
+      ),
+    ).toThrow(TypeError);
+    expect(() =>
+      resolvePmsOperatingCalendarPropertyProfileConflict(
+        {
+          status: "available",
+          evidence: { source, timeZone: "US/Eastern" },
+        } as never,
+        7,
+        timeZoneRegistry,
+      ),
+    ).toThrow(TypeError);
   });
 });

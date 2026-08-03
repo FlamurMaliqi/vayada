@@ -431,11 +431,39 @@ export function parsePmsOperatingCalendarPropertyProfileEvidence(
 export function resolvePmsOperatingCalendarPropertyProfileConflict(
   result: PmsOperatingCalendarPropertyProfileEvidenceResult,
   expectedProfileRevision: number,
+  registry: PmsOperatingCalendarCanonicalTimeZoneRegistry,
 ): PmsOperatingCalendarSourceConflict | null {
   if (!integer(expectedProfileRevision, 1, 2_147_483_647)) {
     throw new TypeError("PMS operating calendar expected profile revision is invalid");
   }
-  const source = result.status === "available" ? result.evidence.source : result.source;
+  let source: PmsOperatingCalendarPropertyProfileSource;
+  switch (result.status) {
+    case "available": {
+      if (!exactRecord(result, ["status", "evidence"])) {
+        throw new TypeError("PMS operating calendar profile evidence result is invalid");
+      }
+      const evidence = parsePmsOperatingCalendarPropertyProfileEvidence(result.evidence, registry);
+      if (!evidence) {
+        throw new TypeError("PMS operating calendar available profile evidence is invalid");
+      }
+      source = evidence.source;
+      break;
+    }
+    case "timezone_missing":
+    case "timezone_invalid": {
+      if (!exactRecord(result, ["status", "source"])) {
+        throw new TypeError("PMS operating calendar profile evidence result is invalid");
+      }
+      const parsedSource = parsePropertyProfileSource(result.source);
+      if (!parsedSource) {
+        throw new TypeError("PMS operating calendar profile evidence source is invalid");
+      }
+      source = parsedSource;
+      break;
+    }
+    default:
+      throw new TypeError("PMS operating calendar profile evidence status is invalid");
+  }
   const currentRevision = profileRevision(source);
   if (currentRevision === null) {
     throw new TypeError("PMS operating calendar profile evidence source is invalid");
