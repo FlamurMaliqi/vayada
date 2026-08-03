@@ -9,6 +9,8 @@
  * VAY-653: Replace Marketplace-to-PMS affiliate provisioning cross-DB write.
  */
 
+export * from "./hotelCollaborationPreferences.js";
+
 // ---------------------------------------------------------------------------
 // Shared scalar types
 // ---------------------------------------------------------------------------
