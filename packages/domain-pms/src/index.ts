@@ -7,6 +7,7 @@ export * from "./pricing.js";
 export * from "./recurringPricing.js";
 export * from "./operatingCalendar.js";
 export * from "./inventoryMaterialization.js";
+export * from "./inventoryMaterializationPlanner.js";
 
 export const PMS_RESERVATION_CONTRACT_VERSION = "pms-reservation.v1" as const;
 export const PMS_INVENTORY_RESERVATION_MARKER_VERSION = "pms.inventory-reservation.v1" as const;
