@@ -10,6 +10,7 @@
  */
 
 export * from "./hotelCollaborationPreferences.js";
+export * from "./hotelCollaborationPreferenceCommands.js";
 
 // ---------------------------------------------------------------------------
 // Shared scalar types
