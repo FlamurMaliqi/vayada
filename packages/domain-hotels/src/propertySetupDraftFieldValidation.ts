@@ -63,6 +63,7 @@ const opaqueId = text(128, OPAQUE_ID_PATTERN);
 const token = text(80, TOKEN_PATTERN);
 
 const FIELD_VALIDATORS = {
+  "profile.default_locale": nullable(text(35, LANGUAGE_TAG_PATTERN)),
   "profile.short_description": nullable(text(2_000)),
   "profile.hero_image": nullable(opaqueId),
   "profile.gallery_images": nullable(list(opaqueId, 50, true)),

@@ -202,6 +202,47 @@ describe("property setup draft save route", () => {
   );
 
   it.each([
+    ["locale-only", { "profile.default_locale": "de-DE" }, ["profile.default_locale"]],
+    [
+      "locale-plus-summary",
+      {
+        "profile.short_description": "A calm hotel.",
+        "profile.default_locale": "de-DE",
+      },
+      ["profile.short_description", "profile.default_locale"],
+    ],
+  ] as const)(
+    "saves a %s Back/Exit draft without completing Step 1 or calling another command",
+    async (_name, payload, dirtyFields) => {
+      const repository = fakeRepository();
+      app = testApp(repository, {
+        permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      });
+      const response = await put(app, {
+        step: "present_hotel",
+        body: {
+          ...draft("present_hotel"),
+          payload,
+          dirtyFields,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toHaveProperty("completedStepIds");
+      expect(response.body).not.toHaveProperty("profileStatus");
+      expect(repository.calls).toHaveLength(1);
+      expect(repository.calls[0]?.request).toMatchObject({
+        stepId: "present_hotel",
+        payload,
+        dirtyFields:
+          "profile.short_description" in payload
+            ? ["profile.default_locale", "profile.short_description"]
+            : ["profile.default_locale"],
+      });
+    },
+  );
+
+  it.each([
     ["missing authentication", null, {}],
     ["invalid authentication", "bad-token", {}],
     ["non-hotel organization", "valid-token", { kind: "creator_workspace" }],

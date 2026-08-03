@@ -9,6 +9,7 @@ import { isPropertySetupDraftFieldValue } from "./propertySetupDraftFieldValidat
 const MEDIA_ID = "media_01K4M6R9Q3X2Y7Z8";
 
 const VALID_VALUES = {
+  "profile.default_locale": "de-DE",
   "profile.short_description": "A calm city hotel.",
   "profile.hero_image": MEDIA_ID,
   "profile.gallery_images": [MEDIA_ID],
@@ -113,6 +114,7 @@ describe("property setup draft field validation", () => {
   });
 
   it.each([
+    ["profile.default_locale", "not a language"],
     ["profile.short_description", "x".repeat(2_001)],
     ["profile.gallery_images", ["https://signed.example/hotel.jpg"]],
     ["profile.amenities", ["wifi", "wifi"]],

@@ -17,6 +17,7 @@ export const PROPERTY_SETUP_STEP_DEFINITIONS = [
     permission: "hotel_catalog.setup.manage",
     baseRevisionKeys: ["hotel_catalog.profile", "hotel_catalog.media", "hotel_catalog.amenities"],
     fields: [
+      "profile.default_locale",
       "profile.short_description",
       "profile.hero_image",
       "profile.gallery_images",

@@ -25,6 +25,35 @@ function validRequest() {
 }
 
 describe("property setup draft request parsing", () => {
+  it.each([
+    ["locale-only", { "profile.default_locale": "de-DE" }, ["profile.default_locale"]],
+    [
+      "locale-plus-summary",
+      {
+        "profile.short_description": "A calm hotel.",
+        "profile.default_locale": "de-DE",
+      },
+      ["profile.short_description", "profile.default_locale"],
+    ],
+  ] as const)("accepts and normalizes a %s Step 1 draft", (_name, payload, dirtyFields) => {
+    const result = parseSavePropertySetupDraftRequest({
+      ...validRequest(),
+      payload,
+      dirtyFields,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        payload,
+        dirtyFields:
+          "profile.short_description" in payload
+            ? ["profile.default_locale", "profile.short_description"]
+            : ["profile.default_locale"],
+      },
+    });
+  });
+
   it("accepts and normalizes an incomplete draft", () => {
     const request = {
       ...validRequest(),
@@ -104,6 +133,16 @@ describe("property setup draft request parsing", () => {
     { ...validRequest(), expectedSessionRevision: 1.5 },
     { ...validRequest(), expectedDraftRevision: 2_147_483_647 },
     { ...validRequest(), payload: { "profile.hero_image": "https://example.com/image.jpg" } },
+    {
+      ...validRequest(),
+      payload: { "profile.default_locale": "not a language" },
+      dirtyFields: ["profile.default_locale"],
+    },
+    {
+      ...validRequest(),
+      payload: { "user.interface_locale": "de-DE" },
+      dirtyFields: ["user.interface_locale"],
+    },
     {
       ...validRequest(),
       stepId: "review",
