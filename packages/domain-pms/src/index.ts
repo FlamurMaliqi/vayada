@@ -2,6 +2,7 @@ export * from "./roomFacts.js";
 export * from "./roomAmenities.js";
 export * from "./roomMedia.js";
 export * from "./roomPublication.js";
+export * from "./physicalRoomUnits.js";
 
 export const PMS_RESERVATION_CONTRACT_VERSION = "pms-reservation.v1" as const;
 export const PMS_INVENTORY_RESERVATION_MARKER_VERSION = "pms.inventory-reservation.v1" as const;
