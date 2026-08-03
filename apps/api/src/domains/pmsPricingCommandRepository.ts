@@ -785,8 +785,11 @@ async function inspectLocalCurrencyBlockers(
        (SELECT count(*) FROM pms.rate_plans
         WHERE property_id = $1::uuid AND pricing_contract_version IS NULL)::bigint
          AS "legacyRatePlanCount",
-       (SELECT count(*) FROM pms.rate_rules
-        WHERE property_id = $1::uuid)::bigint AS "rateRuleCount"`,
+       ((SELECT count(*) FROM pms.rate_rules
+         WHERE property_id = $1::uuid)
+        +
+        (SELECT count(*) FROM pms.recurring_pricing_sources
+         WHERE property_id = $1::uuid))::bigint AS "rateRuleCount"`,
     [propertyId],
   );
   const row = result.rows[0];
