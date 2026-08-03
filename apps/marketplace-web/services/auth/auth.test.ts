@@ -688,6 +688,43 @@ describe("authService", () => {
     expect(getAuthCsrfToken()).toBe("creator-csrf-token");
   });
 
+  it("sends only the opaque invitation code for invite-bound hotel onboarding", async () => {
+    setAuthKitSession({
+      accessToken: "signup-workos-access-token",
+      csrfToken: "signup-csrf-token",
+      user: { id: "user_owner", email: "owner@example.test", status: "active" },
+    });
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        accessToken: "hotel-workos-access-token",
+        csrfToken: "hotel-csrf-token",
+        organizationId: "org_hotel",
+        organizationKind: "hotel_group",
+        user: {
+          id: "user_owner",
+          email: "owner@example.test",
+          status: "active",
+          workosUserId: "user_workos_owner",
+        },
+      }),
+    );
+
+    await authService.completeOnboarding("hotel", {
+      inviteCode: "VAY-0123456789abcdef",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.localhost/auth/onboarding",
+      expect.objectContaining({
+        body: JSON.stringify({
+          type: "hotel",
+          surface: "marketplace-web",
+          inviteCode: "VAY-0123456789abcdef",
+        }),
+      }),
+    );
+  });
+
   it("falls back when pending verification storage is blocked", () => {
     mockBrowserStorage();
     vi.mocked(window.sessionStorage.setItem).mockImplementation(() => {

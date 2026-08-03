@@ -14,6 +14,10 @@ import { OnboardingShell } from "@/components/onboarding/OnboardingShell";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 import { creatorService } from "@/services/api/creators";
+import {
+  hasPendingHotelAccountInvite,
+  pendingHotelAccountInviteCode,
+} from "@/services/api/hotelAccountInvites";
 import { sharedAccountProfileImageUploader } from "@/services/api/sharedHotelSetupClient";
 import {
   hasRequiredCreatorAccountDetails,
@@ -47,6 +51,7 @@ export default function OnboardingPage() {
   const router = useRouter();
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [selectedType, setSelectedType] = useState<AccountType | null>(null);
+  const [pendingHotelInvite, setPendingHotelInvite] = useState(false);
   const [provisionedType, setProvisionedType] = useState<AccountType | null>(null);
   const [setupHandoffType, setSetupHandoffType] = useState<AccountType | null>(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +62,12 @@ export default function OnboardingPage() {
   const [accountDetailsLoadError, setAccountDetailsLoadError] = useState("");
   const [sessionConfirmed, setSessionConfirmed] = useState(false);
   const [sessionAttempt, setSessionAttempt] = useState(0);
+
+  useEffect(() => {
+    const pending = hasPendingHotelAccountInvite();
+    setPendingHotelInvite(pending);
+    if (pending) setSelectedType("hotel");
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +91,13 @@ export default function OnboardingPage() {
           return;
         }
         setSessionConfirmed(true);
+        const invitePending = hasPendingHotelAccountInvite();
+        if (invitePending) {
+          setPendingHotelInvite(true);
+          setSelectedType("hotel");
+          setLoading(false);
+          return;
+        }
         const userType = authService.getUserType();
         if (userType === "creator" || userType === "hotel") {
           setProvisionedType(userType);
@@ -130,7 +148,8 @@ export default function OnboardingPage() {
     setError("");
     setSubmitting(true);
     try {
-      await authService.completeOnboarding(selectedType);
+      const inviteCode = selectedType === "hotel" ? pendingHotelAccountInviteCode() : null;
+      await authService.completeOnboarding(selectedType, inviteCode ? { inviteCode } : undefined);
       const canonicalType = authService.getUserType();
       if (canonicalType !== "creator" && canonicalType !== "hotel") {
         throw new Error("Your account role could not be confirmed. Please sign in again.");
@@ -226,7 +245,13 @@ export default function OnboardingPage() {
       >
         <SignupCompleteMoment
           type={setupHandoffType}
-          onContinue={() => router.push(nextPathForType(setupHandoffType))}
+          onContinue={() =>
+            router.push(
+              pendingHotelInvite && setupHandoffType === "hotel"
+                ? "/invite"
+                : nextPathForType(setupHandoffType),
+            )
+          }
         />
       </OnboardingShell>
     );
@@ -312,9 +337,19 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell
       currentStep={1}
-      title={loading ? "Getting things ready" : "Welcome to Vayada — what brings you here?"}
+      title={
+        loading
+          ? "Getting things ready"
+          : pendingHotelInvite
+            ? "Create your invited hotel account"
+            : "Welcome to Vayada — what brings you here?"
+      }
       description={
-        loading ? "Loading your account details." : "Choose your role so we can tailor your setup."
+        loading
+          ? "Loading your account details."
+          : pendingHotelInvite
+            ? "Your invitation already selected the hotel path."
+            : "Choose your role so we can tailor your setup."
       }
       showProgress={false}
     >
@@ -332,6 +367,7 @@ export default function OnboardingPage() {
 
             <PathChoice
               selectedType={selectedType}
+              hotelInvite={pendingHotelInvite}
               optionRefs={optionRefs}
               onSelect={(type) => {
                 setError("");
@@ -364,11 +400,13 @@ export default function OnboardingPage() {
 
 function PathChoice({
   selectedType,
+  hotelInvite,
   optionRefs,
   onSelect,
   onKeyDown,
 }: {
   selectedType: AccountType | null;
+  hotelInvite: boolean;
   optionRefs: MutableRefObject<Array<HTMLButtonElement | null>>;
   onSelect: (type: AccountType) => void;
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, index: number) => void;
@@ -380,6 +418,7 @@ function PathChoice({
       className="grid gap-4 sm:grid-cols-2"
     >
       {options.map((option, index) => {
+        if (hotelInvite && option.type !== "hotel") return null;
         const selected = selectedType === option.type;
         const isHotel = option.type === "hotel";
         const tiltClass = selected ? "sm:rotate-0" : isHotel ? "sm:-rotate-2" : "sm:rotate-2";

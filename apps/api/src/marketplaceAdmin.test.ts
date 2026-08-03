@@ -19,6 +19,7 @@ import type {
   MarketplaceAdminCreateOfferRequest,
   MarketplaceAdminDeleteOfferResponse,
   MarketplaceAdminHotelReviewResponse,
+  MarketplaceAdminHotelAccountInviteCreateRequest,
   MarketplaceAdminOffer,
   MarketplaceAdminInviteCode,
   MarketplaceAdminRepository,
@@ -208,19 +209,52 @@ describe("marketplace admin routes", () => {
     });
 
     expect(list.statusCode).toBe(200);
-    expect(list.body[0]).toMatchObject({ code: "VAY-INVITE" });
-
-    const created = await injectJson<MarketplaceAdminInviteCode>(app, {
-      method: "POST",
-      url: "/api/marketplace/admin/invite-codes",
-      headers: { authorization: "Bearer platform-token" },
-      payload: { data: { property: { property_name: "Hotel Alpenrose" } } },
+    expect(list.body[0]).toMatchObject({
+      contractVersion: "hotel-account-invite.v1",
+      code: "VAY-INVITE",
+      handoffPath: "/setup",
     });
 
-    expect(created.statusCode).toBe(201);
-    expect(repository.calls.createInviteCode[0]).toMatchObject({
+    const routeCases: Array<{
+      label: string;
+      selectedTracks: MarketplaceAdminHotelAccountInviteCreateRequest["selectedTracks"];
+    }> = [
+      { label: "Marketplace", selectedTracks: ["creator_marketplace"] },
+      { label: "Hotel Operations", selectedTracks: ["hotel_operations"] },
+      {
+        label: "combined",
+        selectedTracks: ["hotel_operations", "creator_marketplace"],
+      },
+    ];
+
+    for (const routeCase of routeCases) {
+      const payload = hotelInviteRequest(routeCase.selectedTracks);
+      const created = await injectJson<MarketplaceAdminInviteCode>(app, {
+        method: "POST",
+        url: "/api/marketplace/admin/invite-codes",
+        headers: { authorization: "Bearer platform-token" },
+        payload,
+      });
+
+      expect(created.statusCode, routeCase.label).toBe(201);
+      expect(created.body, routeCase.label).toMatchObject({
+        contractVersion: "hotel-account-invite.v1",
+        identity: { email: "owner@example.test" },
+        organization: { displayName: "Alpenrose Hospitality" },
+        property: { displayName: "Hotel Alpenrose" },
+        selectedTracks: routeCase.selectedTracks,
+        handoffPath: "/setup",
+      });
+    }
+
+    expect(repository.calls.createInviteCode).toHaveLength(3);
+    expect(repository.calls.createInviteCode[2]).toMatchObject({
       createdByUserId: "user_platform",
-      payload: { property: { property_name: "Hotel Alpenrose" } },
+      invite: {
+        contractVersion: "hotel-account-invite.v1",
+        selectedTracks: ["hotel_operations", "creator_marketplace"],
+        handoffPath: "/setup",
+      },
     });
 
     const deleted = await app.inject({
@@ -231,6 +265,103 @@ describe("marketplace admin routes", () => {
 
     expect(deleted.statusCode).toBe(204);
     expect(repository.calls.revokeInviteCode).toEqual(["invite_801"]);
+  });
+
+  it("rejects retired setup payloads and invalid setup tracks", async () => {
+    const repository = createMemoryMarketplaceAdminRepository();
+    app = buildMarketplaceAdminApp(repository);
+
+    const retiredPayload = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/admin/invite-codes",
+      headers: { authorization: "Bearer platform-token" },
+      payload: {
+        ...hotelInviteRequest(["hotel_operations"]),
+        policies: { payout_iban: "must-not-be-stored" },
+      },
+    });
+    expect(retiredPayload.statusCode).toBe(422);
+    expect(retiredPayload.body).toMatchObject({ code: "unsupported_invite_field" });
+
+    const invalidTrack = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/admin/invite-codes",
+      headers: { authorization: "Bearer platform-token" },
+      payload: {
+        ...hotelInviteRequest(["hotel_operations"]),
+        selectedTracks: ["booking"],
+      },
+    });
+    expect(invalidTrack.statusCode).toBe(422);
+    expect(invalidTrack.body).toMatchObject({ code: "invalid_selected_tracks" });
+    expect(repository.calls.createInviteCode).toHaveLength(0);
+  });
+
+  it("requires platform authorization before creating a hotel invite", async () => {
+    const repository = createMemoryMarketplaceAdminRepository();
+    app = buildMarketplaceAdminApp(repository);
+    const payload = hotelInviteRequest(["creator_marketplace"]);
+
+    const unauthenticated = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/admin/invite-codes",
+      payload,
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const unauthorized = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/admin/invite-codes",
+      headers: { authorization: "Bearer creator-token" },
+      payload,
+    });
+    expect(unauthorized.statusCode).toBe(403);
+    expect(repository.calls.createInviteCode).toHaveLength(0);
+  });
+
+  it("scopes invite list and revoke queries to the hotel account contract", async () => {
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql, { revokeInviteExists: true }) as never,
+    });
+
+    await expect(repository.listInviteCodes()).resolves.toEqual([]);
+    await expect(repository.revokeInviteCode("invite_legacy_or_non_hotel")).resolves.toBe(true);
+
+    expect(sql[0]).toContain("invite.invite_type = 'hotel'");
+    expect(sql[0]).toContain("invite.payload ->> 'contractVersion' = $1");
+    const lockedInvite = sql.find((statement) => statement.includes("FOR UPDATE"));
+    const redemptionGuard = sql.find((statement) =>
+      statement.includes("FROM platform.idempotency_keys redemption"),
+    );
+    expect(lockedInvite).toContain("invite_type = 'hotel'");
+    expect(lockedInvite).toContain("payload ->> 'contractVersion' = $2");
+    expect(redemptionGuard).toContain("redemption.operation = 'hotel_setup.tracks.update'");
+    expect(redemptionGuard).toContain("JOIN identity.organizations organization");
+    expect(redemptionGuard).toContain("redemption.correlation_id = $1");
+    expect(redemptionGuard).toContain("organization.workos_external_id = $2");
+    expect(redemptionGuard).toContain("redemption.response_status_code = 200");
+    expect(sql).toContain("COMMIT");
+  });
+
+  it("refuses revocation after canonical invite intent commits but before finalization recovers", async () => {
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql, {
+        revokeInviteExists: true,
+        successfulInviteRedemption: true,
+      }) as never,
+    });
+
+    await expect(repository.revokeInviteCode("invite_pending_recovery")).resolves.toBe(false);
+
+    expect(sql.some((statement) => statement.includes("FOR UPDATE"))).toBe(true);
+    expect(sql.some((statement) => statement.includes("SET status = 'revoked'"))).toBe(false);
+    expect(sql).toContain("ROLLBACK");
   });
 
   it("creates, updates, and archives hotel offers for a hotel user through marketplace admin routes", async () => {
@@ -727,6 +858,8 @@ function createAdminPgPool(
     projectionModes?: string[];
     hasEligibleMedia?: boolean;
     profileComplete?: boolean;
+    revokeInviteExists?: boolean;
+    successfulInviteRedemption?: boolean;
   } = {},
 ) {
   const offerId = "f8015000-0000-0000-0000-000000000001";
@@ -742,10 +875,20 @@ function createAdminPgPool(
       options.projectionModes?.push(String(_values?.[1]));
     }
     let rows: unknown[] = [];
-    if (text.includes("FROM platform.idempotency_keys")) {
+    if (text.includes("SELECT EXISTS (") && text.includes("FROM platform.idempotency_keys")) {
+      rows = [{ exists: options.successfulInviteRedemption ?? false }];
+    } else if (text.includes("FROM platform.idempotency_keys")) {
       rows = [];
     } else if (text.includes("INSERT INTO platform.idempotency_keys")) {
       rows = [{ id: "idempotency_801" }];
+    } else if (
+      options.revokeInviteExists &&
+      text.includes("FROM marketplace.invite_codes") &&
+      text.includes("FOR UPDATE")
+    ) {
+      rows = [{ id: "invite_legacy_or_non_hotel" }];
+    } else if (text.includes("SET status = 'revoked'")) {
+      rows = [{ id: "invite_legacy_or_non_hotel" }];
     } else if (text.includes("UPDATE marketplace.collaborations AS collaboration")) {
       rows = [{ id: "f8016000-0000-0000-0000-000000000001" }];
     } else if (
@@ -1001,7 +1144,7 @@ function createMemoryMarketplaceAdminRepository(
     },
     async createInviteCode(input) {
       calls.createInviteCode.push(input);
-      return inviteCodeResponse("invite_created", "VAY-CREATED", input.payload);
+      return inviteCodeResponse("invite_created", "VAY-CREATED", input.invite);
     },
     async revokeInviteCode(inviteCodeId) {
       calls.revokeInviteCode.push(inviteCodeId);
@@ -1081,17 +1224,34 @@ function profileUpdateResponse(
 function inviteCodeResponse(
   id = "invite_801",
   code = "VAY-INVITE",
-  setupData: unknown = {},
+  invite: MarketplaceAdminHotelAccountInviteCreateRequest = hotelInviteRequest([
+    "creator_marketplace",
+  ]),
 ): MarketplaceAdminInviteCode {
   return {
+    contractVersion: "hotel-account-invite.v1",
     id,
     code,
     status: "pending",
-    created_at: "2026-06-13T10:00:00.000Z",
-    expires_at: "2026-07-13T10:00:00.000Z",
-    hotel_name: null,
-    redeemed_at: null,
-    setup_data: setupData,
+    createdAt: "2026-06-13T10:00:00.000Z",
+    expiresAt: "2026-07-13T10:00:00.000Z",
+    identity: invite.identity,
+    organization: invite.organization,
+    property: invite.property,
+    selectedTracks: invite.selectedTracks,
+    handoffPath: "/setup",
+    redeemedAt: null,
+  };
+}
+
+function hotelInviteRequest(
+  selectedTracks: MarketplaceAdminHotelAccountInviteCreateRequest["selectedTracks"],
+): MarketplaceAdminHotelAccountInviteCreateRequest {
+  return {
+    identity: { email: "owner@example.test" },
+    organization: { displayName: "Alpenrose Hospitality" },
+    property: { displayName: "Hotel Alpenrose" },
+    selectedTracks,
   };
 }
 

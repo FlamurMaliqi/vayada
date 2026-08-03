@@ -20,6 +20,10 @@ import {
   resolveApprovedPublicProfileImage,
   type ApprovedPublicProfileImageRepository,
 } from "./platformMedia.js";
+import type {
+  HotelAccountInviteOnboardingResolution,
+  HotelAccountInviteRepository,
+} from "./hotelAccountInvites.js";
 
 export type AuthKitUser = {
   id: string;
@@ -155,6 +159,7 @@ export type AuthSessionRouteOptions = {
   cookieDomain?: string;
   legacyMarketplaceJwtSecret?: string;
   profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
+  hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
 };
 
 const SESSION_COOKIE = "vayada_workos_session";
@@ -1060,7 +1065,35 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     persistRefreshedSessionCookie(reply, sealedSession, baseResolution.session, options);
 
-    if (baseResolution.organizationKind) {
+    let inviteResolution: HotelAccountInviteOnboardingResolution | null = null;
+    if (parsed.inviteCode !== undefined) {
+      if (!options.hotelAccountInviteOnboarding) {
+        return reply.code(503).send({
+          state: "auth_failed",
+          message: "Hotel account invitation onboarding is temporarily unavailable.",
+        });
+      }
+      try {
+        inviteResolution = await options.hotelAccountInviteOnboarding.resolveForOnboarding({
+          code: parsed.inviteCode,
+          now: new Date(),
+          actorEmail: baseResolution.user.email,
+        });
+      } catch {
+        return reply.code(503).send({
+          state: "auth_failed",
+          message: "Hotel account invitation onboarding is temporarily unavailable.",
+        });
+      }
+      if (!inviteResolution) {
+        return reply.code(403).send({
+          state: "auth_failed",
+          message: "This hotel account invitation is invalid or no longer available.",
+        });
+      }
+    }
+
+    if (baseResolution.organizationKind && !inviteResolution) {
       return reply.send(
         toSessionResponse(
           baseResolution.session,
@@ -1081,6 +1114,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         parsed.intent,
         session.user.email,
         session.user.id,
+        inviteResolution?.organizationName,
+        inviteResolution?.organizationExternalId,
       );
       const membership = await options.authKitClient.ensureSignupOrganizationMembership({
         workosUserId: session.user.id,
@@ -1090,7 +1125,9 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       await options.lifecycleCommandBus.execute({
         commandType: "identity.access.grant",
         commandId: randomUUID(),
-        idempotencyKey: `workos-onboarding:${baseResolution.user.userId}:${parsed.intent}`,
+        idempotencyKey: inviteResolution
+          ? `workos-onboarding:${baseResolution.user.userId}:hotel:invite:${inviteResolution.inviteId}`
+          : `workos-onboarding:${baseResolution.user.userId}:${parsed.intent}`,
         audit: {
           actor: { kind: "user", userId: baseResolution.user.userId },
           source: "web",
@@ -1112,7 +1149,13 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
             roleKey: signupOrganization.roleKey,
             permissionKeys:
               signupOrganization.kind === "hotel_group"
-                ? ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"]
+                ? inviteResolution
+                  ? [
+                      "hotel_catalog.setup.read",
+                      "hotel_catalog.setup.manage",
+                      "hotel_catalog.products.manage",
+                    ]
+                  : ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"]
                 : undefined,
             workosMembershipId: membership.membershipId,
             workosRoleSlugs: membership.roleSlugs,
@@ -1675,7 +1718,7 @@ function parsePasswordSignupBody(body: unknown):
 function parseOnboardingBody(
   body: unknown,
 ):
-  | { ok: true; surface: AuthSurface; intent: AuthSignupIntent }
+  | { ok: true; surface: AuthSurface; intent: AuthSignupIntent; inviteCode?: string }
   | { ok: false; error: { state: "auth_failed"; message: string } } {
   if (!body || typeof body !== "object") {
     return {
@@ -1683,7 +1726,12 @@ function parseOnboardingBody(
       error: { state: "auth_failed", message: "Onboarding account type is required." },
     };
   }
-  const input = body as { surface?: unknown; type?: unknown; intent?: unknown };
+  const input = body as {
+    surface?: unknown;
+    type?: unknown;
+    intent?: unknown;
+    inviteCode?: unknown;
+  };
   try {
     const surface = parseSurface(
       typeof input.surface === "string" ? input.surface : "marketplace-web",
@@ -1695,7 +1743,18 @@ function parseOnboardingBody(
         error: { state: "auth_failed", message: "Choose creator or hotel to continue." },
       };
     }
-    return { ok: true, surface, intent: parseSignupIntent(surface, rawIntent) };
+    const intent = parseSignupIntent(surface, rawIntent);
+    const hasInviteCode = Object.prototype.hasOwnProperty.call(input, "inviteCode");
+    if (!hasInviteCode) return { ok: true, surface, intent };
+    if (
+      surface !== "marketplace-web" ||
+      intent !== "hotel" ||
+      typeof input.inviteCode !== "string" ||
+      Object.keys(input).some((key) => !["surface", "type", "intent", "inviteCode"].includes(key))
+    ) {
+      return { ok: false, error: { state: "auth_failed", message: "Unsupported onboarding." } };
+    }
+    return { ok: true, surface, intent, inviteCode: input.inviteCode };
   } catch {
     return { ok: false, error: { state: "auth_failed", message: "Unsupported onboarding." } };
   }
@@ -2010,12 +2069,14 @@ async function createSignupOrganizationContext(
   loginHint: string | undefined,
   externalIdSuffix: string,
   organizationName?: string,
+  organizationExternalId?: string,
 ): Promise<AuthSignupOrganizationContext> {
   const template = signupOrganizationTemplate(surface, signupIntent, loginHint, externalIdSuffix);
   const name = organizationName ?? template.name;
+  const externalId = organizationExternalId ?? template.externalId;
   const organization = await authKitClient.createSignupOrganization({
     name,
-    externalId: template.externalId,
+    externalId,
     metadata: {
       auth_flow: "signup",
       surface,
@@ -2026,7 +2087,7 @@ async function createSignupOrganizationContext(
   });
   return {
     workosOrganizationId: organization.organizationId,
-    workosExternalId: template.externalId,
+    workosExternalId: externalId,
     name,
     kind: template.kind,
     roleKey: template.roleKey,
