@@ -22,7 +22,7 @@ import {
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
-import { AdaptiveHotelSetupController } from "./adaptive/AdaptiveHotelSetupController";
+import { AdaptiveRoomAuthoringSetupController } from "./adaptive/rooms/AdaptiveRoomAuthoringSetupController";
 import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
@@ -185,7 +185,7 @@ export function SharedHotelSetupPage({
   if (adaptiveShellEnabled) {
     if (initialPropertyId) {
       return (
-        <AdaptiveHotelSetupController
+        <AdaptiveRoomAuthoringSetupController
           key={initialPropertyId}
           propertyId={initialPropertyId}
           requestedStepId={searchParams.get("step")}
