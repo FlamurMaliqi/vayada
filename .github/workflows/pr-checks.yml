@@ -82,10 +82,11 @@ jobs:
         env:
           TARGET_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 
-      - name: Run PMS room-facts PostgreSQL integration
+      - name: Run PMS TypeScript PostgreSQL integration
         run: >-
           npm --workspace vayada-api run test --
           src/domains/pmsRoomFactsCommandRepository.integration.test.ts
+          src/domains/pmsPhysicalRoomUnitReconcileRepository.integration.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 
