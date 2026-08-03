@@ -289,6 +289,70 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking design repository", () =
     });
   });
 
+  it("accepts duplicate owner/operator authorization evidence", async () => {
+    await admin.query(
+      `INSERT INTO identity.organization_resource_links
+         (organization_id, product, resource_type, resource_id, relationship, status)
+       VALUES ($1::uuid, 'booking', 'booking_hotel', $2::uuid::text, 'operator', 'active')`,
+      [organizationId, propertyId],
+    );
+
+    await expect(
+      repository.upsertDesign(command("dual-relationship", 0, "#4F46E5", "high-end-serif")),
+    ).resolves.toMatchObject({ ok: true, outcome: "created" });
+  });
+
+  it("bounds peer lock waits as command in progress without durable work", async () => {
+    const blocker = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await blocker.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        `SELECT pg_advisory_xact_lock(hashtext('booking.design'), hashtext($1::uuid::text))`,
+        [propertyId],
+      );
+      await expect(
+        repository.upsertDesign(command("locked", 0, "#4F46E5", "high-end-serif")),
+      ).resolves.toEqual({ ok: false, error: { code: "command_in_progress" } });
+      await expect(counts()).resolves.toEqual({
+        audits: "0",
+        domainEvents: "0",
+        idempotencyKeys: "0",
+        outboxEvents: "0",
+        revisions: "0",
+      });
+    } finally {
+      await blocker.query("ROLLBACK");
+      await blocker.end();
+    }
+  });
+
+  it("replays revisions created with future-version UUIDs", async () => {
+    const ids = [
+      "a1000000-0000-7000-8000-000000000011",
+      "a1000000-0000-7000-8000-000000000012",
+      "a1000000-0000-7000-8000-000000000013",
+    ];
+    const versioned = createPgBookingDesignRepository({
+      connectionString: TEST_DATABASE_URL!,
+      now: () => new Date(acceptedAt),
+      randomId: () => ids.shift()!,
+    });
+    try {
+      const request = command("uuid-v7", 0, "#4F46E5", "high-end-serif");
+      await expect(versioned.upsertDesign(request)).resolves.toMatchObject({
+        ok: true,
+        outcome: "created",
+      });
+      await expect(versioned.upsertDesign(request)).resolves.toMatchObject({
+        ok: true,
+        outcome: "idempotent_replay",
+      });
+    } finally {
+      await versioned.close();
+    }
+  });
+
   it("rolls back idempotency, event, revision, pointer, and audit if outbox is unavailable", async () => {
     const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
     const failing = createPgBookingDesignRepository({
@@ -529,7 +593,10 @@ function failOutboxPool(pool: pg.Pool): BookingDesignRepositoryPool {
 
 function assertSafeTestDatabase(url: string): void {
   const parsed = new URL(url);
-  if (!/test/i.test(parsed.pathname) || !["localhost", "127.0.0.1"].includes(parsed.hostname)) {
+  if (
+    !/test/i.test(parsed.pathname) ||
+    !["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname)
+  ) {
     throw new Error("Refusing to run Booking design integration tests against a non-test database");
   }
 }

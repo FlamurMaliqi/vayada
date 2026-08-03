@@ -73,6 +73,7 @@ export function createPgBookingDesignRepository(config: {
     config.pool ??
     (new pg.Pool({
       connectionString: config.connectionString,
+      connectionTimeoutMillis: 5_000,
       max: config.max,
     }) as BookingDesignRepositoryPool);
   const now = config.now ?? (() => new Date());
@@ -95,6 +96,8 @@ export function createPgBookingDesignRepository(config: {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        await client.query("SET LOCAL lock_timeout = '2s'");
+        await client.query("SET LOCAL statement_timeout = '5s'");
         if (!(await lockAuthorizedScope(client, command, acceptedAt))) {
           await rollback(client);
           return failure("setup_scope_unavailable");
@@ -207,6 +210,7 @@ export function createPgBookingDesignRepository(config: {
         return result;
       } catch (error) {
         await rollback(client);
+        if (isPgLockTimeout(error)) return failure("command_in_progress");
         throw error;
       } finally {
         client.release();
@@ -280,7 +284,7 @@ async function lockAuthorizedScope(
      FOR KEY SHARE OF permission_grant`,
     [command.organizationId, command.propertyId, command.actorUserId, PERMISSION],
   );
-  if (scope.rowCount !== 1) return false;
+  if ((scope.rowCount ?? 0) < 1) return false;
   const entitlements = await client.query<{
     status: "active" | "suspended" | "expired";
     resourceProduct: string | null;
@@ -356,7 +360,7 @@ async function findReplay(
   if (
     !resourceMatches ||
     existing.responseStatusCode !== responseStatus(stored.result) ||
-    existing.responseBodyHash !== sha256(JSON.stringify(stored.result))
+    existing.responseBodyHash !== sha256(stableJson(stored.result))
   ) {
     return failure("idempotency_key_conflict");
   }
@@ -681,7 +685,7 @@ async function completeIdempotency(
     [
       input.idempotencyId,
       responseStatus(input.result),
-      sha256(JSON.stringify(input.result)),
+      sha256(stableJson(input.result)),
       input.result.ok ? "booking" : null,
       input.result.ok ? "booking_design_revision" : null,
       input.revisionId,
@@ -776,6 +780,20 @@ function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => [key, sortJsonValue(entry)]),
+  );
+}
+
 function iso(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error("Stored Booking design date is invalid");
@@ -805,8 +823,12 @@ function revision(value: unknown, zero: boolean): value is number {
 function uuid(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
+}
+
+function isPgLockTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "55P03";
 }
 
 async function rollback(client: RepositoryClient): Promise<void> {
