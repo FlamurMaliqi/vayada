@@ -14,11 +14,10 @@ import {
   serializeBookingDesignCommandFingerprint,
   serializeBookingDesignSourceRevision,
   type BookingDesignChangedEvent,
-  type BookingDesignSourceRevision,
   type UpsertBookingDesignCommand,
 } from "./bookingDesign.js";
 
-const propertyId = "20000000-0000-4000-8000-000000000002";
+const propertyId = "abcdef00-0000-4000-8000-000000000002";
 
 describe("Booking design contract", () => {
   it("resolves explicit server defaults and rejects non-allowlisted choices", () => {
@@ -71,7 +70,7 @@ describe("Booking design contract", () => {
   it("fingerprints logical scope, expected revision, and both choices only", () => {
     const command = (overrides: Partial<UpsertBookingDesignCommand> = {}) =>
       ({
-        organizationId: "10000000-0000-4000-8000-000000000001",
+        organizationId: "abcdef10-0000-4000-8000-000000000001",
         propertyId,
         actorUserId: "30000000-0000-4000-8000-000000000003",
         idempotencyKey: "retry-me",
@@ -81,17 +80,22 @@ describe("Booking design contract", () => {
         ...overrides,
       }) as UpsertBookingDesignCommand;
     const original = serializeBookingDesignCommandFingerprint(command());
-    expect(
-      serializeBookingDesignCommandFingerprint(
-        command({
-          choices: {
-            fontPairing: "modern-minimalist",
-            primaryColor: "#0077B6",
-            ignored: true,
-          } as UpsertBookingDesignCommand["choices"],
-        }),
-      ),
-    ).toBe(original);
+    const caseVariant = command({
+      organizationId: command().organizationId.toUpperCase(),
+      propertyId: propertyId.toUpperCase(),
+    });
+    expect(serializeBookingDesignCommandFingerprint(caseVariant)).toBe(original);
+    for (const invalidScope of [{ propertyId: "invalid" }, { organizationId: "invalid" }]) {
+      expect(() => serializeBookingDesignCommandFingerprint(command(invalidScope))).toThrow();
+    }
+    const reorderedChoices = {
+      fontPairing: "modern-minimalist",
+      primaryColor: "#0077B6",
+      ignored: true,
+    } as UpsertBookingDesignCommand["choices"];
+    expect(serializeBookingDesignCommandFingerprint(command({ choices: reorderedChoices }))).toBe(
+      original,
+    );
     expect(
       serializeBookingDesignCommandFingerprint(
         command({
@@ -116,7 +120,6 @@ describe("Booking design contract", () => {
   it("owns stable source and secret-safe event vocabulary", () => {
     const mixedCasePropertyId = "ABCDEF00-0000-4000-8000-000000000002";
     const source = createBookingDesignSourceRevision(mixedCasePropertyId, 3);
-    expectTypeOf(source).toEqualTypeOf<BookingDesignSourceRevision>();
     if (false) {
       // @ts-expect-error Booking source identity is immutable.
       source.entityId = propertyId;

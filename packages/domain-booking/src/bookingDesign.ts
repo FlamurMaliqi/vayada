@@ -160,9 +160,12 @@ export function parseBookingDesignRevision(value: unknown): BookingDesignRevisio
 export function serializeBookingDesignCommandFingerprint(
   command: UpsertBookingDesignCommand,
 ): string {
+  if (!uuid(command.organizationId) || !uuid(command.propertyId)) {
+    throw new Error("Booking design command scope is invalid");
+  }
   return JSON.stringify({
-    organizationId: command.organizationId,
-    propertyId: command.propertyId,
+    organizationId: command.organizationId.toLowerCase(),
+    propertyId: command.propertyId.toLowerCase(),
     expectedRevision: command.expectedRevision,
     choices: {
       primaryColor: command.choices.primaryColor,
