@@ -19,6 +19,7 @@ export * from "./bookingDesignSnapshot.js";
 export * from "./bookingDesignReadiness.js";
 export * from "./bookingPricingEvidence.js";
 export * from "./bookingPriceCalculation.js";
+export * from "./bookingPriceSnapshotInput.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;
