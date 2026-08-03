@@ -38,6 +38,11 @@ const failedPublicationDomainEventId = "16800000-0000-4000-8000-000000000022";
 const failedPublicationOutboxEventId = "16800000-0000-4000-8000-000000000023";
 const expiredQuoteSessionId = "16800000-0000-4000-8000-000000000024";
 const unavailableQuoteSessionId = "16800000-0000-4000-8000-000000000025";
+const activeRecurringSourceId = "16800000-0000-4000-8000-000000000026";
+const disabledRecurringSourceId = "16800000-0000-4000-8000-000000000027";
+const invalidRecurringSourceId = "16800000-0000-4000-8000-000000000028";
+const nonRefundableRecurringSourceId = "16800000-0000-4000-8000-000000000029";
+const recurringMaterializationReceiptId = "16800000-0000-4000-8000-000000000030";
 const acceptedAt = "2026-08-03T13:00:00.000Z";
 const roleKey = "vay1068_room_facts_integration";
 const unexpectedReferenceTable = "pms.vay1068_unexpected_room_reference";
@@ -307,6 +312,96 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
     ]);
   });
 
+  it("aggregates every recurring pricing room reference and allows deletion after removal", async () => {
+    const created = await repository.createRoomTypeFacts(
+      createCommand("create-recurring-references", "recurring-draft", facts("Recurring Room")),
+    );
+    if (!created.ok) throw new Error("Expected recurring-reference fixture room to be created");
+    const roomTypeId = created.response.roomType.roomTypeId;
+    await seedRecurringPricingDeleteReferences(roomTypeId);
+
+    const lifecycleCounts = await admin.query<{ lifecycle: string; count: string }>(
+      `SELECT source.lifecycle, count(*)::text AS count
+       FROM pms.recurring_pricing_source_room_values binding
+       JOIN pms.recurring_pricing_sources source
+         ON source.id = binding.source_id
+        AND source.property_id = binding.property_id
+        AND source.source_kind = binding.source_kind
+       WHERE binding.property_id = $1::uuid AND binding.room_type_id = $2::uuid
+       GROUP BY source.lifecycle
+       ORDER BY CASE source.lifecycle
+         WHEN 'active' THEN 1 WHEN 'disabled' THEN 2 WHEN 'invalid' THEN 3 ELSE 4 END`,
+      [propertyId, roomTypeId],
+    );
+    expect(lifecycleCounts.rows).toEqual([
+      { lifecycle: "active", count: "1" },
+      { lifecycle: "disabled", count: "1" },
+      { lifecycle: "invalid", count: "1" },
+    ]);
+
+    await expect(
+      repository.safeDeleteRoomType(
+        safeDeleteCommand("delete-recurring-references-blocked", roomTypeId, 1),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "room_type_delete_blocked",
+        currentRevision: 1,
+        blockers: [{ code: "rate_plan_or_rule", affectedCount: 6 }],
+      },
+    });
+    await expect(readRoomType(roomTypeId)).resolves.toMatchObject({
+      active: true,
+      roomFactsRevision: "1",
+    });
+
+    await admin.query(
+      `DELETE FROM pms.recurring_pricing_materialized_rows
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeId],
+    );
+    await admin.query(
+      `DELETE FROM pms.non_refundable_rate_plan_source_rooms
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeId],
+    );
+    await admin.query(
+      `DELETE FROM pms.recurring_pricing_source_room_values
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeId],
+    );
+    await admin.query(
+      `DELETE FROM pms.rate_plans
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeId],
+    );
+    const retainedEvidence = await admin.query<{
+      sources: string;
+      receipts: string;
+      sourceReceipts: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM pms.recurring_pricing_sources
+          WHERE property_id = $1::uuid) AS sources,
+         (SELECT count(*)::text FROM pms.recurring_pricing_materialization_receipts
+          WHERE property_id = $1::uuid) AS receipts,
+         (SELECT count(*)::text FROM pms.recurring_pricing_materialization_source_receipts
+          WHERE property_id = $1::uuid) AS "sourceReceipts"`,
+      [propertyId],
+    );
+    expect(retainedEvidence.rows).toEqual([{ sources: "4", receipts: "1", sourceReceipts: "1" }]);
+
+    await expect(
+      repository.safeDeleteRoomType(
+        safeDeleteCommand("delete-recurring-references-eligible", roomTypeId, 1),
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      response: { outcome: "deleted", roomTypeId, deletedRevision: 2, lifecycle: "inactive" },
+    });
+  });
+
   it("ignores unactivated failed publication history and non-actionable quotes", async () => {
     const created = await repository.createRoomTypeFacts(
       createCommand("create-non-actionable", "non-actionable-draft", facts("Removable Room")),
@@ -520,6 +615,149 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
          property_id, room_type_id, platform_media_object_id, alt_text, sort_order
        ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'Garden suite', 0)`,
       [propertyId, roomTypeId, mediaObjectId],
+    );
+  }
+
+  async function seedRecurringPricingDeleteReferences(roomTypeId: string): Promise<void> {
+    await admin.query(
+      `INSERT INTO pms.property_pricing_settings (
+         property_id, currency, pricing_currency_revision, optional_pricing_aggregate_revision
+       ) VALUES ($1::uuid, 'EUR', 1, 0)`,
+      [propertyId],
+    );
+    await admin.query(
+      `INSERT INTO pms.rate_plans (
+         id, property_id, room_type_id, code, name, rate_type, meal_plan,
+         payment_policy, deposit_policy, cancellation_policy_snapshot,
+         base_rate_amount, currency, active, pricing_contract_version,
+         flexible_rate_plan_revision, source_room_facts_revision,
+         source_pricing_currency_revision
+       ) VALUES (
+         $1::uuid, $2::uuid, $3::uuid, 'ONB16-FLEX', 'Flexible', 'flexible', NULL,
+         '{}'::jsonb, '{}'::jsonb,
+         '{"type":"free_until_days_before_arrival","freeCancellationDeadlineDays":7,
+           "afterDeadlinePenalty":"full_booking_amount","noShowPenalty":"full_booking_amount"}'::jsonb,
+         100.00, 'EUR', TRUE, 'pms-pricing.v1', 1, 1, 1
+       )`,
+      [ratePlanId, propertyId, roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO pms.recurring_pricing_sources (
+         id, property_id, source_kind, source_revision, configured_state,
+         validation_state, validation_revision, validated_at, invalid_reasons,
+         materialization_revision, currency, source_pricing_currency_revision,
+         season_name, season_start_month, season_start_day, season_end_month, season_end_day,
+         weekend_days, discount_percent, cancellation_terms_type,
+         refund_policy, no_show_penalty, payment_timing
+       ) VALUES
+         (
+           $1::uuid, $5::uuid, 'season', 1, 'active', 'valid', 1, $6::timestamptz,
+           '[]'::jsonb, 1, 'EUR', 1, 'Winter', 1, 1, 1, 31,
+           NULL, NULL, NULL, NULL, NULL, NULL
+         ),
+         (
+           $2::uuid, $5::uuid, 'additional_guest', 1, 'disabled', 'valid', 1,
+           $6::timestamptz, '[]'::jsonb, 0, 'EUR', 1,
+           NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+         ),
+         (
+           $3::uuid, $5::uuid, 'weekend_surcharge', 1, 'active', 'invalid', 1,
+           $6::timestamptz, '[{"code":"dependency_unavailable"}]'::jsonb,
+           0, 'EUR', 1, NULL, NULL, NULL, NULL, NULL,
+           ARRAY['friday', 'saturday']::text[], NULL, NULL, NULL, NULL, NULL
+         ),
+         (
+           $4::uuid, $5::uuid, 'non_refundable', 1, 'active', 'valid', 1,
+           $6::timestamptz, '[]'::jsonb, 0, 'EUR', 1,
+           NULL, NULL, NULL, NULL, NULL, NULL, 10, 'non_refundable',
+           'no_refund', 'full_booking_amount', 'prepay_full'
+         )`,
+      [
+        activeRecurringSourceId,
+        disabledRecurringSourceId,
+        invalidRecurringSourceId,
+        nonRefundableRecurringSourceId,
+        propertyId,
+        acceptedAt,
+      ],
+    );
+    await admin.query(
+      `INSERT INTO pms.recurring_pricing_source_room_values (
+         source_id, property_id, source_kind, room_type_id, source_room_facts_revision,
+         flexible_rate_plan_id, flexible_pricing_contract_version,
+         source_flexible_plan_revision, currency, source_pricing_currency_revision,
+         seasonal_nightly_amount, weekend_surcharge_amount, maximum_adult_guests,
+         included_guest_count, additional_guest_amount
+       ) VALUES
+         (
+           $1::uuid, $4::uuid, 'season', $5::uuid, 1, $6::uuid,
+           'pms-pricing.v1', 1, 'EUR', 1, 150.00, NULL, NULL, NULL, NULL
+         ),
+         (
+           $2::uuid, $4::uuid, 'additional_guest', $5::uuid, 1, $6::uuid,
+           'pms-pricing.v1', 1, 'EUR', 1, NULL, NULL, 2, 1, 25.00
+         ),
+         (
+           $3::uuid, $4::uuid, 'weekend_surcharge', $5::uuid, 1, $6::uuid,
+           'pms-pricing.v1', 1, 'EUR', 1, NULL, 15.00, NULL, NULL, NULL
+         )`,
+      [
+        activeRecurringSourceId,
+        disabledRecurringSourceId,
+        invalidRecurringSourceId,
+        propertyId,
+        roomTypeId,
+        ratePlanId,
+      ],
+    );
+    await admin.query(
+      `INSERT INTO pms.non_refundable_rate_plan_source_rooms (
+         source_id, property_id, source_kind, room_type_id, flexible_rate_plan_id,
+         flexible_pricing_contract_version, source_flexible_plan_revision,
+         source_room_facts_revision, currency, source_pricing_currency_revision
+       ) VALUES (
+         $1::uuid, $2::uuid, 'non_refundable', $3::uuid, $4::uuid,
+         'pms-pricing.v1', 1, 1, 'EUR', 1
+       )`,
+      [nonRefundableRecurringSourceId, propertyId, roomTypeId, ratePlanId],
+    );
+    await admin.query(
+      `INSERT INTO pms.recurring_pricing_materialization_receipts (
+         id, property_id, horizon_start, horizon_end,
+         optional_pricing_aggregate_revision, accepted_at
+       ) VALUES (
+         $1::uuid, $2::uuid, DATE '2026-01-01', DATE '2026-01-01', 0, $3::timestamptz
+       )`,
+      [recurringMaterializationReceiptId, propertyId, acceptedAt],
+    );
+    await admin.query(
+      `INSERT INTO pms.recurring_pricing_materialization_source_receipts (
+         receipt_id, property_id, horizon_start, horizon_end,
+         optional_pricing_aggregate_revision, source_id, source_kind, source_revision,
+         configured_state, validation_state, validation_revision, validated_at,
+         invalid_reasons, source_lifecycle, materialization_revision,
+         currency, source_pricing_currency_revision, result, materialized_row_count,
+         materialized_rows_sha256
+       ) VALUES (
+         $1::uuid, $2::uuid, DATE '2026-01-01', DATE '2026-01-01', 0,
+         $3::uuid, 'season', 1, 'active', 'valid', 1, $4::timestamptz,
+         '[]'::jsonb, 'active', 1, 'EUR', 1, 'materialized', 1, repeat('a', 64)
+       )`,
+      [recurringMaterializationReceiptId, propertyId, activeRecurringSourceId, acceptedAt],
+    );
+    await admin.query(
+      `INSERT INTO pms.recurring_pricing_materialized_rows (
+         receipt_id, property_id, horizon_start, horizon_end,
+         optional_pricing_aggregate_revision, source_id, source_kind, source_revision,
+         source_lifecycle, materialization_revision, currency,
+         source_pricing_currency_revision, room_type_id, stay_date,
+         seasonal_nightly_amount
+       ) VALUES (
+         $1::uuid, $2::uuid, DATE '2026-01-01', DATE '2026-01-01', 0,
+         $3::uuid, 'season', 1, 'active', 1, 'EUR', 1,
+         $4::uuid, DATE '2026-01-01', 150.00
+       )`,
+      [recurringMaterializationReceiptId, propertyId, activeRecurringSourceId, roomTypeId],
     );
   }
 
@@ -879,6 +1117,27 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
     try {
       await admin.query("SET LOCAL session_replication_role = replica");
       const deletes: Array<[string, string[]]> = [
+        [
+          "DELETE FROM pms.recurring_pricing_materialized_rows WHERE property_id = $1::uuid",
+          [propertyId],
+        ],
+        [
+          "DELETE FROM pms.recurring_pricing_materialization_source_receipts WHERE property_id = $1::uuid",
+          [propertyId],
+        ],
+        [
+          "DELETE FROM pms.recurring_pricing_materialization_receipts WHERE property_id = $1::uuid",
+          [propertyId],
+        ],
+        [
+          "DELETE FROM pms.non_refundable_rate_plan_source_rooms WHERE property_id = $1::uuid",
+          [propertyId],
+        ],
+        [
+          "DELETE FROM pms.recurring_pricing_source_room_values WHERE property_id = $1::uuid",
+          [propertyId],
+        ],
+        ["DELETE FROM pms.recurring_pricing_sources WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.channel_room_type_mappings WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.channel_rate_plan_mappings WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.channel_connections WHERE property_id = $1::uuid", [propertyId]],
@@ -890,6 +1149,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
         ["DELETE FROM pms.inventory_days WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.rate_rules WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.rate_plans WHERE property_id = $1::uuid", [propertyId]],
+        ["DELETE FROM pms.property_pricing_settings WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.room_type_media WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.rooms WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.room_types WHERE property_id = $1::uuid", [propertyId]],

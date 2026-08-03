@@ -124,6 +124,9 @@ const EXPECTED_INBOUND_FOREIGN_KEYS = new Set([
   "pms.rooms:fk_pms_rooms_room_type_property:pms.room_types",
   "pms.rate_plans:fk_pms_rate_plans_room_type_property:pms.room_types",
   "pms.rate_rules:fk_pms_rate_rules_room_type_property:pms.room_types",
+  "pms.recurring_pricing_source_room_values:fk_pms_recurring_pricing_room_values_room_type:pms.room_types",
+  "pms.non_refundable_rate_plan_source_rooms:fk_pms_non_refundable_rate_plan_source_rooms_room_type:pms.room_types",
+  "pms.recurring_pricing_materialized_rows:fk_pms_recurring_pricing_materialized_rows_room_type:pms.room_types",
   "pms.inventory_days:fk_pms_inventory_days_room_type_property:pms.room_types",
   "pms.room_blocks:fk_pms_room_blocks_room_type_property:pms.room_types",
   "pms.operational_booking_assignments:fk_pms_operational_assignments_room_type_property:pms.room_types",
@@ -964,9 +967,12 @@ async function inspectDeleteReferences(
        pms.channel_rate_plan_mappings,
        pms.channel_room_type_mappings,
        pms.inventory_days,
+       pms.non_refundable_rate_plan_source_rooms,
        pms.operational_booking_assignments,
        pms.rate_plans,
        pms.rate_rules,
+       pms.recurring_pricing_materialized_rows,
+       pms.recurring_pricing_source_room_values,
        pms.room_blocks,
        pms.room_type_media,
        pms.rooms,
@@ -1072,6 +1078,18 @@ async function inspectDeleteReferences(
          +
          (SELECT count(*) FROM pms.rate_rules rate_rule
           WHERE rate_rule.property_id = $1::uuid AND rate_rule.room_type_id = $2::uuid)
+         +
+         (SELECT count(*) FROM pms.recurring_pricing_source_room_values source_room_value
+          WHERE source_room_value.property_id = $1::uuid
+            AND source_room_value.room_type_id = $2::uuid)
+         +
+         (SELECT count(*) FROM pms.non_refundable_rate_plan_source_rooms source_room
+          WHERE source_room.property_id = $1::uuid
+            AND source_room.room_type_id = $2::uuid)
+         +
+         (SELECT count(*) FROM pms.recurring_pricing_materialized_rows materialized_row
+          WHERE materialized_row.property_id = $1::uuid
+            AND materialized_row.room_type_id = $2::uuid)
        )::bigint AS "rateReferenceCount",
        (SELECT count(*) FROM pms.inventory_days inventory
         WHERE inventory.property_id = $1::uuid AND inventory.room_type_id = $2::uuid)::bigint
