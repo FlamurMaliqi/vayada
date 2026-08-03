@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   PMS_PRICING_AUTHORIZATION,
   PMS_PRICING_CONTRACT_VERSION,
+  PMS_PRICING_CURRENCY_DEPENDENCY_LOCK_NAMESPACE,
   type PmsPricingCommandPort,
   type PmsPricingCurrencyChangeGuardPort,
+  type PmsPricingCurrencyDependencyGuardPort,
   type PmsPricingCurrencyValidationPort,
   type PmsPricingReadPort,
   parseFlexibleCancellationTerms,
@@ -18,6 +20,7 @@ import {
   parseUpsertFlexibleRatePlanCommand,
   parseUpsertPropertyPricingCurrencyCommand,
   serializeFlexibleRatePlanFingerprint,
+  serializePmsPricingCurrencyDependencyLockKey,
   serializePropertyPricingCurrencyFingerprint,
 } from "./pricing.js";
 
@@ -450,11 +453,41 @@ describe("PMS pricing source reads", () => {
     const reads = {} as PmsPricingReadPort;
     const currencies = {} as PmsPricingCurrencyValidationPort;
     const guard = {} as PmsPricingCurrencyChangeGuardPort;
+    const dependencyGuard = {} as PmsPricingCurrencyDependencyGuardPort;
 
     expect(commands).toBeDefined();
     expect(reads).toBeDefined();
     expect(currencies).toBeDefined();
     expect(guard).toBeDefined();
+    expect(dependencyGuard).toBeDefined();
+  });
+
+  it("publishes one exact normalized lock key and dependency-writer critical section", async () => {
+    expect(PMS_PRICING_CURRENCY_DEPENDENCY_LOCK_NAMESPACE).toBe("pms-pricing-currency");
+    expect(serializePmsPricingCurrencyDependencyLockKey(propertyId.toUpperCase())).toBe(
+      `pms-pricing-currency:${propertyId}`,
+    );
+    expect(serializePmsPricingCurrencyDependencyLockKey("not-a-property-id")).toBeNull();
+
+    const calls: string[] = [];
+    const guard: PmsPricingCurrencyDependencyGuardPort = {
+      async runWithPricingCurrencyDependencyGuard(input, guarded) {
+        const lockKey = serializePmsPricingCurrencyDependencyLockKey(input.propertyId);
+        if (!lockKey) throw new Error("invalid dependency scope");
+        calls.push(`lock:${lockKey}`);
+        const result = await guarded();
+        calls.push(`unlock:${lockKey}`);
+        return result;
+      },
+    };
+    await guard.runWithPricingCurrencyDependencyGuard({ propertyId }, async () => {
+      calls.push("read-evidence-and-write");
+    });
+    expect(calls).toEqual([
+      `lock:pms-pricing-currency:${propertyId}`,
+      "read-evidence-and-write",
+      `unlock:pms-pricing-currency:${propertyId}`,
+    ]);
   });
 
   it("requires currency dependency checks to enclose the guarded compare-and-set", async () => {
