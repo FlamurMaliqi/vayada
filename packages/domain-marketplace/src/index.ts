@@ -11,6 +11,7 @@
 
 export * from "./hotelCollaborationPreferences.js";
 export * from "./hotelCollaborationPreferenceCommands.js";
+export * from "./legacyHotelCollaborationPreferenceDraft.js";
 
 // ---------------------------------------------------------------------------
 // Shared scalar types
