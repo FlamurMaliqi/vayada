@@ -61,6 +61,7 @@ import { createPgPmsReviewRepository } from "./routes/pmsReviews.js";
 import { createPgMarketplaceCollaborationReadRepository } from "./routes/marketplaceCollaborations.js";
 import { createPgMarketplaceTripRepository } from "./routes/marketplaceTrips.js";
 import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js";
+import { createPgHotelAccountInviteRepository } from "./routes/hotelAccountInvites.js";
 import { createPgMarketplaceHotelProfileStatusRepository } from "./routes/marketplaceHotelProfileStatus.js";
 import { createPgMarketplaceHotelSelfServiceRepository } from "./routes/marketplaceHotelSelfService.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
@@ -269,6 +270,9 @@ const sharedHotelSetupStatusRepository = createPgSharedHotelSetupStatusRepositor
   connectionString: targetDatabaseUrl,
 });
 const hotelSetupTrackCommandRepository = createPgHotelSetupTrackCommandRepository({
+  connectionString: targetDatabaseUrl,
+});
+const hotelAccountInviteRepository = createPgHotelAccountInviteRepository({
   connectionString: targetDatabaseUrl,
 });
 const propertySetupDraftCommandRepository = createPgPropertySetupDraftCommandRepository({
@@ -515,6 +519,7 @@ const app = buildApp({
       : undefined,
   marketplaceAdminLegacySuperadminFallbackEnabled:
     config.marketplaceAdminLegacySuperadminFallbackEnabled,
+  hotelAccountInvites: { repository: hotelAccountInviteRepository },
   marketplaceHotelProfileStatusRepository: createPgMarketplaceHotelProfileStatusRepository({
     connectionString: targetDatabaseUrl,
   }),

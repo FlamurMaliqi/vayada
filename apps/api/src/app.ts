@@ -65,6 +65,10 @@ import {
   type MarketplaceAdminRoutesOptions,
 } from "./routes/marketplaceAdmin.js";
 import {
+  registerHotelAccountInviteRoutes,
+  type HotelAccountInviteRoutesOptions,
+} from "./routes/hotelAccountInvites.js";
+import {
   registerMarketplaceHotelProfileStatusRoutes,
   type MarketplaceHotelProfileStatusRepository,
 } from "./routes/marketplaceHotelProfileStatus.js";
@@ -182,6 +186,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceTripRepository?: MarketplaceTripReadRepository;
   marketplaceAdminRepository?: MarketplaceAdminRepository;
   marketplaceAdminLegacySuperadminFallbackEnabled?: MarketplaceAdminRoutesOptions["legacySuperadminFallbackEnabled"];
+  hotelAccountInvites?: Omit<HotelAccountInviteRoutesOptions, "trackCommandRepository">;
   marketplaceHotelProfileStatusRepository?: MarketplaceHotelProfileStatusRepository;
   marketplaceHotelSelfServiceRepository?: MarketplaceHotelSelfServiceRepository;
   marketplaceCreatorSelfServiceRepository?: MarketplaceCreatorSelfServiceRepository;
@@ -263,6 +268,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       profileImageMediaRepository:
         options.authSession.profileImageMediaRepository ??
         options.marketplaceCreatorProfileMediaRepository,
+      hotelAccountInviteOnboarding:
+        options.hotelAccountInvites?.repository ?? options.authSession.hotelAccountInviteOnboarding,
     });
   }
   if (options.workosWebhooks) {
@@ -342,6 +349,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/marketplace",
       repository: options.marketplaceAdminRepository,
       legacySuperadminFallbackEnabled: options.marketplaceAdminLegacySuperadminFallbackEnabled,
+    });
+  }
+  if (options.hotelAccountInvites) {
+    if (!options.hotelSetupTrackCommandRepository) {
+      throw new Error("hotelSetupTrackCommandRepository is required with hotelAccountInvites");
+    }
+    app.register(registerHotelAccountInviteRoutes, {
+      prefix: "/api/marketplace",
+      ...options.hotelAccountInvites,
+      trackCommandRepository: options.hotelSetupTrackCommandRepository,
     });
   }
   if (options.marketplaceHotelProfileStatusRepository) {

@@ -203,6 +203,294 @@ test.describe("marketplace-web smoke", () => {
     await expect(page.getByText("Which systems do you want to use?")).toHaveCount(0);
   });
 
+  test("hotel invitation survives first-run signup and hands off only after redemption", async ({
+    page,
+  }, testInfo) => {
+    const inviteCode = "VAY-browser-invite-1050";
+    const inviteRequests: Array<{ path: string; body: unknown; authorization?: string }> = [];
+    const requestedUrls: string[] = [];
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "marketplace-web-hotel-invites");
+    page.on("request", (request) => requestedUrls.push(request.url()));
+
+    await primeBrowserState(page);
+    await mockCookieConsent(page);
+    await mockOnboardingAuth(page, "hotel", "Mary Jane", "+49 89 123456", inviteCode);
+    await page.route(
+      /\/api\/marketplace\/hotel-account-invites\/(lookup|redeem)$/,
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        const url = new URL(route.request().url());
+        const body = route.request().postDataJSON();
+        inviteRequests.push({
+          path: url.pathname,
+          body,
+          authorization: route.request().headers().authorization,
+        });
+        expect(body).toEqual({ code: inviteCode });
+        if (url.pathname.endsWith("/lookup")) {
+          await route.fulfill({
+            status: 200,
+            headers: corsHeaders(route),
+            json: {
+              contractVersion: "hotel-account-invite.v1",
+              identity: { emailHint: "o****@example.test" },
+              organization: { displayName: "Alpenrose Hospitality" },
+              property: { displayName: "Hotel Alpenrose" },
+              selectedTracks: ["creator_marketplace"],
+              handoffPath: "/setup",
+              expiresAt: "2026-08-20T12:00:00.000Z",
+            },
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            contractVersion: "hotel-account-invite.v1",
+            status: "redeemed",
+            selectedTracks: ["creator_marketplace"],
+            handoffPath: "/setup",
+          },
+        });
+      },
+    );
+    await routeJson(page, /\/api\/hotel-setup\/property-types/, {
+      contractVersion: "adaptive-hotel-property-types.v1",
+      propertyTypes: [{ value: "hotel", label: "Hotel" }],
+    });
+    await routeJson(
+      page,
+      /\/api\/hotel-setup\/status/,
+      createAdaptiveHotelSetupStatusMock({
+        entryProduct: "marketplace",
+        organizationId: "11111111-1111-4111-8111-111111111111",
+        organizationDisplayName: "Alpenrose Hospitality",
+        selectedTracks: ["creator_marketplace"],
+        trackRevision: 1,
+        propertyId: null,
+        updatedAt: "2026-08-02T12:00:00.000Z",
+      }),
+    );
+
+    await page.goto(`/invite#code=${inviteCode}`);
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(
+      page.getByRole("heading", { name: "Create your invited hotel account" }),
+    ).toBeVisible();
+    await expect(page.getByRole("radio", { name: /i manage a hotel/i })).toBeChecked();
+    await expect(page.getByRole("radio", { name: /i’m a creator/i })).toHaveCount(0);
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+
+    await page.getByLabel("First name").fill("Mary Jane");
+    await page.getByLabel("Last name").fill("Watson");
+    await page.getByLabel("Profile photo file").setInputFiles({
+      name: "ada.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("profile-image"),
+    });
+    await page.getByRole("button", { name: "Continue to hotel setup" }).click();
+    await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+    await page.getByRole("button", { name: "Set up my first hotel" }).click();
+
+    await expect(page).toHaveURL(/\/invite$/);
+    await expect(page.getByRole("heading", { name: "Hotel Alpenrose" })).toBeVisible();
+    await expect(page.getByText("Creator Marketplace", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Accept and continue to setup" }).click();
+
+    await expect(page).toHaveURL(/\/setup\?entryProduct=marketplace&returnProduct=marketplace$/);
+    const lookups = inviteRequests.filter((request) => request.path.endsWith("/lookup"));
+    expect(lookups).toHaveLength(2);
+    expect(lookups.every((request) => request.authorization === undefined)).toBe(true);
+    const redemption = inviteRequests.find((request) => request.path.endsWith("/redeem"));
+    expect(redemption).toEqual({
+      path: "/api/marketplace/hotel-account-invites/redeem",
+      body: { code: inviteCode },
+      authorization: "Bearer test-access-token",
+    });
+    expect(requestedUrls.some((url) => url.includes(inviteCode))).toBe(false);
+    await assertNoLegacyCalls();
+    await assertHealthy();
+  });
+
+  for (const scenario of [
+    {
+      label: "Hotel Operations",
+      selectedTracks: ["hotel_operations"],
+      entryProduct: "pms",
+    },
+    {
+      label: "combined",
+      selectedTracks: ["hotel_operations", "creator_marketplace"],
+      entryProduct: "marketplace",
+    },
+  ] as const) {
+    test(`hotel invitation preserves the ${scenario.label} route intent`, async ({ page }) => {
+      const inviteCode = `VAY-browser-${scenario.entryProduct}-invite`;
+      await primeBrowserState(page);
+      await mockInviteAuthenticatedHotel(page, inviteCode);
+      await page.route(
+        /\/api\/marketplace\/hotel-account-invites\/(lookup|redeem)$/,
+        async (route) => {
+          if (route.request().method() === "OPTIONS") {
+            await fulfillCorsPreflight(route);
+            return;
+          }
+          const url = new URL(route.request().url());
+          const response = {
+            contractVersion: "hotel-account-invite.v1",
+            selectedTracks: [...scenario.selectedTracks],
+            handoffPath: "/setup",
+          };
+          await route.fulfill({
+            status: 200,
+            headers: corsHeaders(route),
+            json: url.pathname.endsWith("/lookup")
+              ? {
+                  ...response,
+                  identity: { emailHint: "o****@example.test" },
+                  organization: { displayName: "Alpenrose Hospitality" },
+                  property: { displayName: "Hotel Alpenrose" },
+                  expiresAt: "2026-08-20T12:00:00.000Z",
+                }
+              : { ...response, status: "redeemed" },
+          });
+        },
+      );
+      await routeJson(page, /\/api\/hotel-setup\/property-types/, {
+        contractVersion: "adaptive-hotel-property-types.v1",
+        propertyTypes: [{ value: "hotel", label: "Hotel" }],
+      });
+      await routeJson(
+        page,
+        /\/api\/hotel-setup\/status/,
+        createAdaptiveHotelSetupStatusMock({
+          entryProduct: scenario.entryProduct,
+          organizationId: "11111111-1111-4111-8111-111111111111",
+          organizationDisplayName: "Alpenrose Hospitality",
+          selectedTracks: [...scenario.selectedTracks],
+          trackRevision: 1,
+          propertyId: null,
+          updatedAt: "2026-08-02T12:00:00.000Z",
+        }),
+      );
+
+      await page.goto(`/invite#code=${inviteCode}`);
+      await page.getByRole("button", { name: "Accept and continue to setup" }).click();
+
+      await expect(page).toHaveURL(
+        new RegExp(
+          `/setup\\?entryProduct=${scenario.entryProduct}&returnProduct=${scenario.entryProduct}$`,
+        ),
+      );
+      await expect(
+        page.getByRole("heading", { name: "Let’s get to know your hotel" }),
+      ).toBeVisible();
+    });
+  }
+
+  test("hotel invitation resumes an authenticated replay after a lost redemption response", async ({
+    page,
+  }) => {
+    const inviteCode = "VAY-browser-lost-response";
+    const requestedUrls: string[] = [];
+    let lookupCalls = 0;
+    let redemptionCalls = 0;
+    let canonicalRedemptionCommitted = false;
+    page.on("request", (request) => requestedUrls.push(request.url()));
+
+    await primeBrowserState(page);
+    await mockInviteAuthenticatedHotel(page, inviteCode);
+    await page.route(
+      /\/api\/marketplace\/hotel-account-invites\/(lookup|redeem)$/,
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        const url = new URL(route.request().url());
+        expect(route.request().postDataJSON()).toEqual({ code: inviteCode });
+        if (url.pathname.endsWith("/lookup")) {
+          expect(route.request().headers().authorization).toBeUndefined();
+          lookupCalls += 1;
+          await route.fulfill({
+            status: canonicalRedemptionCommitted ? 404 : 200,
+            headers: corsHeaders(route),
+            json: canonicalRedemptionCommitted
+              ? {
+                  code: "invite_not_available",
+                  detail: "This hotel account invitation is invalid or no longer available.",
+                }
+              : {
+                  contractVersion: "hotel-account-invite.v1",
+                  identity: { emailHint: "o****@example.test" },
+                  organization: { displayName: "Alpenrose Hospitality" },
+                  property: { displayName: "Hotel Alpenrose" },
+                  selectedTracks: ["creator_marketplace"],
+                  handoffPath: "/setup",
+                  expiresAt: "2026-08-20T12:00:00.000Z",
+                },
+          });
+          return;
+        }
+        redemptionCalls += 1;
+        if (!canonicalRedemptionCommitted) {
+          canonicalRedemptionCommitted = true;
+          await route.fulfill({
+            status: 502,
+            headers: corsHeaders(route),
+            json: { code: "upstream_response_lost" },
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            contractVersion: "hotel-account-invite.v1",
+            status: "already_redeemed",
+            selectedTracks: ["creator_marketplace"],
+            handoffPath: "/setup",
+          },
+        });
+      },
+    );
+    await routeJson(page, /\/api\/hotel-setup\/property-types/, {
+      contractVersion: "adaptive-hotel-property-types.v1",
+      propertyTypes: [{ value: "hotel", label: "Hotel" }],
+    });
+    await routeJson(
+      page,
+      /\/api\/hotel-setup\/status/,
+      createAdaptiveHotelSetupStatusMock({
+        entryProduct: "marketplace",
+        organizationId: "11111111-1111-4111-8111-111111111111",
+        organizationDisplayName: "Alpenrose Hospitality",
+        selectedTracks: ["creator_marketplace"],
+        trackRevision: 1,
+        propertyId: null,
+        updatedAt: "2026-08-02T12:00:00.000Z",
+      }),
+    );
+
+    await page.goto(`/invite#code=${inviteCode}`);
+    await page.getByRole("button", { name: "Accept and continue to setup" }).click();
+    await expect(
+      page.getByText("The invitation could not be accepted.", { exact: false }),
+    ).toBeVisible();
+
+    await page.reload();
+
+    await expect(page).toHaveURL(/\/setup\?entryProduct=marketplace&returnProduct=marketplace$/);
+    expect(lookupCalls).toBe(2);
+    expect(redemptionCalls).toBe(2);
+    expect(requestedUrls.some((url) => url.includes(inviteCode))).toBe(false);
+  });
+
   test("restored profile-ready sessions still show the onboarding handoff", async ({ page }) => {
     await primeBrowserState(page);
     await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
@@ -1724,6 +2012,7 @@ async function mockOnboardingAuth(
   accountType: "hotel" | "creator" = "hotel",
   expectedFirstName = "Mary Jane",
   expectedPhone = "+49 89 123456",
+  expectedInviteCode?: string,
 ) {
   let onboarded = false;
   let accountName: string | null = null;
@@ -1789,6 +2078,7 @@ async function mockOnboardingAuth(
     expect(route.request().postDataJSON()).toEqual({
       type: accountType,
       surface: "marketplace-web",
+      ...(expectedInviteCode ? { inviteCode: expectedInviteCode } : {}),
     });
     onboarded = true;
     await route.fulfill({
@@ -1879,6 +2169,33 @@ async function mockOnboardingAuth(
   });
   await routeJson(page, /\/api\/marketplace\/creators\/me\/platform-connections(?:\?|$)/, {
     connections: [],
+  });
+}
+
+async function mockInviteAuthenticatedHotel(page: Page, inviteCode: string) {
+  const session = {
+    accessToken: "invite-hotel-access-token",
+    csrfToken: "invite-hotel-csrf-token",
+    organizationId: "11111111-1111-4111-8111-111111111111",
+    organizationKind: "hotel_group",
+    user: {
+      id: "user-invited-owner",
+      email: "owner@example.test",
+      name: "Invited Owner",
+      phone: "+49 89 123456",
+      profilePictureUrl: "https://media.example/invited-owner.png",
+      profilePictureMediaObjectId: "media-invited-owner",
+      status: "active",
+    },
+  };
+  await routeJson(page, /\/auth\/session(?:\?|$)/, session);
+  await page.route(/\/auth\/onboarding$/, async (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      type: "hotel",
+      surface: "marketplace-web",
+      inviteCode,
+    });
+    await route.fulfill({ status: 200, headers: corsHeaders(route), json: session });
   });
 }
 

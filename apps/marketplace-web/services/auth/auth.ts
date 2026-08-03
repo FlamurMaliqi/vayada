@@ -442,7 +442,10 @@ export const authService = {
     }
   },
 
-  completeOnboarding: async (type: OnboardingAccountType): Promise<AuthSessionResponse> => {
+  completeOnboarding: async (
+    type: OnboardingAccountType,
+    options: { inviteCode?: string } = {},
+  ): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
     if (!csrfToken) {
       throw new Error("Your session has expired. Please sign in again.");
@@ -450,7 +453,11 @@ export const authService = {
     const response = await authFetch<AuthSessionResponse>("/auth/onboarding", {
       method: "POST",
       headers: { "x-vayada-csrf": csrfToken },
-      body: JSON.stringify({ type, surface: AUTH_SURFACE }),
+      body: JSON.stringify({
+        type,
+        surface: AUTH_SURFACE,
+        ...(options.inviteCode ? { inviteCode: options.inviteCode } : {}),
+      }),
     });
     if (isAuthOrganizationSelectionResponse(response)) {
       setPendingOrganizationSelection(response);
