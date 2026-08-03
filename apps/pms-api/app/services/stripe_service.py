@@ -106,9 +106,9 @@ async def retrieve_connect_account(account_id: str) -> dict:
     account = stripe.Account.retrieve(account_id)
     return {
         "id": account.id,
-        "details_submitted": bool(account.get("details_submitted", False)),
-        "charges_enabled": bool(account.get("charges_enabled", False)),
-        "payouts_enabled": bool(account.get("payouts_enabled", False)),
+        "details_submitted": bool(getattr(account, "details_submitted", False)),
+        "charges_enabled": bool(getattr(account, "charges_enabled", False)),
+        "payouts_enabled": bool(getattr(account, "payouts_enabled", False)),
     }
 
 

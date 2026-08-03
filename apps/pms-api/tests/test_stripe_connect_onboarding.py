@@ -7,17 +7,16 @@ from app.routers import admin_payments
 
 @pytest.mark.asyncio
 async def test_retrieve_connect_account_returns_readiness_flags(monkeypatch):
-    class FakeStripeAccount(dict):
+    class FakeStripeAccount:
         id = "acct_ready"
+        details_submitted = True
+        charges_enabled = True
+        payouts_enabled = True
 
     monkeypatch.setattr(
         admin_payments.stripe_service.stripe.Account,
         "retrieve",
-        lambda account_id: FakeStripeAccount(
-            details_submitted=True,
-            charges_enabled=True,
-            payouts_enabled=True,
-        ),
+        lambda account_id: FakeStripeAccount(),
     )
 
     result = await admin_payments.stripe_service.retrieve_connect_account("acct_ready")
