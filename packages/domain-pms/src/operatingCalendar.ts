@@ -100,6 +100,20 @@ export type PmsOperatingCalendarPropertyProfileEvidence = Readonly<{
   timeZone: PmsCanonicalIanaTimeZone;
 }>;
 
+export type PmsOperatingCalendarPropertyProfileEvidenceResult =
+  | Readonly<{
+      status: "available";
+      evidence: PmsOperatingCalendarPropertyProfileEvidence;
+    }>
+  | Readonly<{
+      status: "timezone_missing";
+      source: PmsOperatingCalendarPropertyProfileSource;
+    }>
+  | Readonly<{
+      status: "timezone_invalid";
+      source: PmsOperatingCalendarPropertyProfileSource;
+    }>;
+
 export type PmsOperatingCalendarSourceInputs = Readonly<{
   propertyProfile: PmsOperatingCalendarPropertyProfileSource;
   propertyTimeZone: PmsCanonicalIanaTimeZone;
@@ -207,7 +221,7 @@ export type PmsOperatingCalendarCurrentReadResult =
 export type PmsOperatingCalendarPropertyProfileEvidencePort = {
   runWithPropertyProfileEvidence<Result>(
     input: Readonly<{ propertyId: string; expectedProfileRevision: number }>,
-    guarded: (evidence: PmsOperatingCalendarPropertyProfileEvidence | null) => Promise<Result>,
+    guarded: (evidence: PmsOperatingCalendarPropertyProfileEvidenceResult) => Promise<Result>,
   ): Promise<Result>;
 } & PmsOperatingCalendarCanonicalTimeZoneRegistry;
 
@@ -412,6 +426,31 @@ export function parsePmsOperatingCalendarPropertyProfileEvidence(
   const source = parsePropertyProfileSource(value.source);
   const timeZone = parsePmsCanonicalIanaTimeZone(value.timeZone, registry);
   return source && timeZone ? Object.freeze({ source, timeZone }) : null;
+}
+
+export function resolvePmsOperatingCalendarPropertyProfileConflict(
+  result: PmsOperatingCalendarPropertyProfileEvidenceResult,
+  expectedProfileRevision: number,
+): PmsOperatingCalendarSourceConflict | null {
+  if (!integer(expectedProfileRevision, 1, 2_147_483_647)) {
+    throw new TypeError("PMS operating calendar expected profile revision is invalid");
+  }
+  const source = result.status === "available" ? result.evidence.source : result.source;
+  const currentRevision = profileRevision(source);
+  if (currentRevision === null) {
+    throw new TypeError("PMS operating calendar profile evidence source is invalid");
+  }
+  if (currentRevision !== expectedProfileRevision) {
+    return Object.freeze({ code: "property_profile_revision_conflict", currentRevision });
+  }
+  switch (result.status) {
+    case "timezone_missing":
+      return Object.freeze({ code: "property_timezone_missing" });
+    case "timezone_invalid":
+      return Object.freeze({ code: "property_timezone_invalid" });
+    case "available":
+      return null;
+  }
 }
 
 export function parsePmsOperatingCalendarConfigurationSnapshot(

@@ -18,6 +18,7 @@ import {
   parsePmsOperatingSchedule,
   parsePmsOperatingCalendarMonthDay,
   parseUpsertPmsOperatingCalendarCommand,
+  resolvePmsOperatingCalendarPropertyProfileConflict,
   serializePmsOperatingCalendarFingerprint,
   serializePmsOperatingCalendarSourceRevision,
   sortPmsOperatingCalendarStaleSourceConflicts,
@@ -467,8 +468,11 @@ describe("PMS operating calendar contract", () => {
       async runWithPropertyProfileEvidence(input, guarded) {
         calls.push(`lock:${input.propertyId}`);
         const result = await guarded({
-          source: snapshot.sourceInputs.propertyProfile,
-          timeZone: snapshot.sourceInputs.propertyTimeZone,
+          status: "available",
+          evidence: {
+            source: snapshot.sourceInputs.propertyProfile,
+            timeZone: snapshot.sourceInputs.propertyTimeZone,
+          },
         });
         calls.push(`unlock:${input.propertyId}`);
         return result;
@@ -477,10 +481,39 @@ describe("PMS operating calendar contract", () => {
     const roomEvidence = {} as PmsOperatingCalendarRoomEvidencePorts;
     const result = await profileEvidence.runWithPropertyProfileEvidence(
       { propertyId: PROPERTY_ID, expectedProfileRevision: 7 },
-      async (evidence) => evidence?.source.revision,
+      async (result) =>
+        result.status === "available" ? result.evidence.source.revision : result.source.revision,
     );
     expect(result).toBe("profile:7");
     expect(calls).toEqual([`lock:${PROPERTY_ID}`, `unlock:${PROPERTY_ID}`]);
     expect(roomEvidence).toBeDefined();
+  });
+
+  it("distinguishes timezone evidence after exact profile revision precedence", () => {
+    const source = snapshot.sourceInputs.propertyProfile;
+    expect(
+      resolvePmsOperatingCalendarPropertyProfileConflict(
+        {
+          status: "available",
+          evidence: { source, timeZone: snapshot.sourceInputs.propertyTimeZone },
+        },
+        7,
+      ),
+    ).toBeNull();
+    expect(
+      resolvePmsOperatingCalendarPropertyProfileConflict({ status: "timezone_missing", source }, 7),
+    ).toEqual({ code: "property_timezone_missing" });
+    expect(
+      resolvePmsOperatingCalendarPropertyProfileConflict({ status: "timezone_invalid", source }, 7),
+    ).toEqual({ code: "property_timezone_invalid" });
+
+    const changedSource = { ...source, revision: "profile:8" };
+    expect(
+      resolvePmsOperatingCalendarPropertyProfileConflict(
+        { status: "timezone_invalid", source: changedSource },
+        7,
+      ),
+    ).toEqual({ code: "property_profile_revision_conflict", currentRevision: 8 });
+    expect(changedSource).not.toHaveProperty("timeZone");
   });
 });
