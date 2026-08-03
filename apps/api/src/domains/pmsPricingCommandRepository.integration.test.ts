@@ -207,6 +207,100 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
     await expect(eventCount()).resolves.toBe(2);
   });
 
+  it("blocks currency changes for active, disabled, and invalid recurring sources under the existing rate-rule code", async () => {
+    await repository.upsertPropertyPricingCurrency(currencyCommand("currency-eur", 0, "EUR"));
+    await seedRoomType(roomTypeId, "Recurring-source blocker suite");
+    await admin.query(
+      `INSERT INTO pms.rate_rules (
+         property_id, room_type_id, rule_type, starts_on, ends_on
+       ) VALUES ($1::uuid, $2::uuid, 'daily_rate', DATE '2026-08-03', DATE '2026-08-03')`,
+      [propertyId, roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO pms.recurring_pricing_sources (
+         id, property_id, source_kind, source_revision, configured_state,
+         validation_state, validation_revision, validated_at, invalid_reasons,
+         currency, source_pricing_currency_revision,
+         season_name, season_start_month, season_start_day,
+         season_end_month, season_end_day, weekend_days,
+         discount_percent, cancellation_terms_type, refund_policy,
+         no_show_penalty, payment_timing
+       ) VALUES
+       ('16900000-0000-4000-8000-000000000101', $1::uuid, 'season', 1, 'active',
+        'valid', 1, $2::timestamptz, '[]'::jsonb, 'EUR', 1,
+        'Summer', 6, 1, 9, 30, NULL, NULL, NULL, NULL, NULL, NULL),
+       ('16900000-0000-4000-8000-000000000102', $1::uuid, 'weekend_surcharge', 1,
+        'disabled', 'valid', 1, $2::timestamptz, '[]'::jsonb, 'EUR', 1,
+        NULL, NULL, NULL, NULL, NULL, ARRAY['saturday'], NULL, NULL, NULL, NULL, NULL),
+       ('16900000-0000-4000-8000-000000000103', $1::uuid, 'additional_guest', 1,
+        'active', 'invalid', 1, $2::timestamptz,
+        '[{"code":"dependency_unavailable"}]'::jsonb, 'EUR', 1,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+       ('16900000-0000-4000-8000-000000000104', $1::uuid, 'non_refundable', 1,
+        'active', 'valid', 1, $2::timestamptz, '[]'::jsonb, 'EUR', 1,
+        NULL, NULL, NULL, NULL, NULL, NULL,
+        10, 'non_refundable', 'no_refund', 'full_booking_amount', 'prepay_full')`,
+      [propertyId, acceptedAt],
+    );
+
+    await expect(
+      repository.upsertPropertyPricingCurrency(currencyCommand("currency-usd", 1, "USD")),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "pricing_currency_change_blocked",
+        currentRevision: 1,
+        blockers: [{ code: "rate_rule", affectedCount: 5 }],
+      },
+    });
+    await expect(readCurrency()).resolves.toEqual({ currency: "EUR", revision: "1" });
+  });
+
+  it("serializes a recurring-source write ahead of a currency change and returns a typed blocker", async () => {
+    await repository.upsertPropertyPricingCurrency(currencyCommand("currency-eur", 0, "EUR"));
+    await admin.query("BEGIN");
+    await admin.query(
+      `SELECT pg_advisory_xact_lock(
+         hashtextextended(concat('pms-pricing-currency:', $1::uuid::text), 0)
+       )`,
+      [propertyId],
+    );
+    const currencyChange = repository.upsertPropertyPricingCurrency(
+      currencyCommand("currency-usd-racing-source", 1, "USD"),
+    );
+    try {
+      await waitForAdvisoryWaiters(1);
+      await admin.query(
+        `INSERT INTO pms.recurring_pricing_sources (
+           id, property_id, source_kind, source_revision, configured_state,
+           validation_state, validation_revision, validated_at, invalid_reasons,
+           currency, source_pricing_currency_revision, discount_percent,
+           cancellation_terms_type, refund_policy, no_show_penalty, payment_timing
+         ) VALUES (
+           '16900000-0000-4000-8000-000000000105', $1::uuid, 'non_refundable', 1,
+           'active', 'valid', 1, $2::timestamptz, '[]'::jsonb, 'EUR', 1,
+           10, 'non_refundable', 'no_refund', 'full_booking_amount', 'prepay_full'
+         )`,
+        [propertyId, acceptedAt],
+      );
+      await admin.query("COMMIT");
+    } catch (error) {
+      await admin.query("ROLLBACK");
+      await Promise.allSettled([currencyChange]);
+      throw error;
+    }
+
+    await expect(currencyChange).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "pricing_currency_change_blocked",
+        currentRevision: 1,
+        blockers: [{ code: "rate_rule", affectedCount: 1 }],
+      },
+    });
+    await expect(readCurrency()).resolves.toEqual({ currency: "EUR", revision: "1" });
+  });
+
   it("creates a distinct canonical plan without mutating arbitrary legacy flexible rows", async () => {
     await repository.upsertPropertyPricingCurrency(currencyCommand("currency-create", 0, "EUR"));
     await seedRoomType(roomTypeId, "Legacy Suite");
@@ -424,6 +518,12 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
     try {
       await admin.query("SET LOCAL session_replication_role = replica");
       for (const statement of [
+        "DELETE FROM pms.recurring_pricing_materialized_rows WHERE property_id = $1::uuid",
+        "DELETE FROM pms.recurring_pricing_materialization_source_receipts WHERE property_id = $1::uuid",
+        "DELETE FROM pms.recurring_pricing_materialization_receipts WHERE property_id = $1::uuid",
+        "DELETE FROM pms.non_refundable_rate_plan_source_rooms WHERE property_id = $1::uuid",
+        "DELETE FROM pms.recurring_pricing_source_room_values WHERE property_id = $1::uuid",
+        "DELETE FROM pms.recurring_pricing_sources WHERE property_id = $1::uuid",
         "DELETE FROM pms.rate_rules WHERE property_id = $1::uuid",
         "DELETE FROM pms.rate_plans WHERE property_id = $1::uuid",
         "DELETE FROM pms.room_types WHERE property_id = $1::uuid",
