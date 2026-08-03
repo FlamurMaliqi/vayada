@@ -28,8 +28,6 @@ const mediaObjectId = "16100000-0000-4000-8000-000000000004";
 const roomUnitId = "16100000-0000-4000-8000-000000000005";
 const acceptedAt = "2026-08-03T14:00:00.000Z";
 const roleKey = "vay1061_room_publication_integration";
-const auditFailureFunction = "platform.vay1061_fail_room_publication_audit";
-const auditFailureTrigger = "trg_vay1061_fail_room_publication_audit";
 const serving = {
   bucketName: "vayada-media-test",
   cdnBaseUrl: "https://cdn.example.test",
@@ -290,11 +288,22 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-publication adapters", 
   it("rolls the room write, idempotency, event, and audit back as one unit", async () => {
     const roomTypeId = await createFactsRoom("atomic", "Atomic Suite");
     const command = amenitiesCommand("amenities-atomic", roomTypeId, 1, ["wifi"]);
-    await installAuditFailureTrigger();
+    const failingRepository = createPgPmsRoomPublicationCommandRepository({
+      connectionString: TEST_DATABASE_URL!,
+      mediaResolver,
+      amenityVocabulary,
+      max: 2,
+      now: () => new Date(acceptedAt),
+      randomId: () => "not-a-valid-event-uuid",
+    });
 
-    await expect(repository.confirmRoomTypeAmenities(command)).rejects.toThrow(
-      "injected VAY-1061 audit failure",
-    );
+    try {
+      await expect(failingRepository.confirmRoomTypeAmenities(command)).rejects.toThrow(
+        "event ID generator returned an invalid UUID",
+      );
+    } finally {
+      await failingRepository.close();
+    }
     await expect(readPublicationState(roomTypeId)).resolves.toMatchObject({
       roomAmenitiesRevision: "1",
       roomAmenitiesReviewedAt: null,
@@ -304,7 +313,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-publication adapters", 
     await expect(publicationAuditCount()).resolves.toBe(0);
     await expect(publicationIdempotencyCount()).resolves.toBe(0);
 
-    await removeAuditFailureTrigger();
     await expect(repository.confirmRoomTypeAmenities(command)).resolves.toMatchObject({
       ok: true,
       response: { roomAmenities: { roomAmenitiesRevision: 2 } },
@@ -518,38 +526,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-publication adapters", 
     throw new Error("Concurrent room-publication commands did not reach the advisory lock");
   }
 
-  async function installAuditFailureTrigger(): Promise<void> {
-    await removeAuditFailureTrigger();
-    await admin.query(
-      `CREATE FUNCTION ${auditFailureFunction}()
-       RETURNS trigger
-       LANGUAGE plpgsql
-       AS $function$
-       BEGIN
-         IF NEW.property_id = '${propertyId}'::uuid
-            AND NEW.action = 'pms.room_amenities.confirm.accepted' THEN
-           RAISE EXCEPTION 'injected VAY-1061 audit failure';
-         END IF;
-         RETURN NEW;
-       END;
-       $function$`,
-    );
-    await admin.query(
-      `CREATE TRIGGER ${auditFailureTrigger}
-       BEFORE INSERT ON platform.product_audit_events
-       FOR EACH ROW EXECUTE FUNCTION ${auditFailureFunction}()`,
-    );
-  }
-
-  async function removeAuditFailureTrigger(): Promise<void> {
-    await admin.query(
-      `DROP TRIGGER IF EXISTS ${auditFailureTrigger} ON platform.product_audit_events`,
-    );
-    await admin.query(`DROP FUNCTION IF EXISTS ${auditFailureFunction}()`);
-  }
-
   async function cleanup(): Promise<void> {
-    await removeAuditFailureTrigger();
     await admin.query("BEGIN");
     try {
       await admin.query("SET LOCAL session_replication_role = replica");
