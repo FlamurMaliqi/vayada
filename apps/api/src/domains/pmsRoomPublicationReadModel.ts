@@ -243,6 +243,11 @@ export function createPgPmsRoomPublicationReadModel(
 
       // A target revoked by the media resolver must never degrade into a cross-tenant snapshot.
       await requireAuthorizedScope(pool, scope);
+      await requireStablePublicationSources(config, pool, scope.propertyId, {
+        roomFacts,
+        capacities,
+        storedRows,
+      });
 
       return createRoomPublicationSnapshot({
         organizationId: scope.organizationId,
@@ -258,6 +263,89 @@ export function createPgPmsRoomPublicationReadModel(
       closed = true;
     },
   };
+}
+
+async function requireStablePublicationSources(
+  config: Pick<PmsRoomPublicationReadModelConfig, "roomFacts" | "roomCapacity">,
+  pool: PmsRoomPublicationReadPool,
+  propertyId: string,
+  initial: {
+    roomFacts: Awaited<ReturnType<RoomFactsReadPort["listRoomTypeFacts"]>>;
+    capacities: readonly NonNullable<
+      Awaited<ReturnType<RoomCapacityReadPort["getRoomTypeCapacity"]>>
+    >[];
+    storedRows: readonly RoomPublicationSourceRow[];
+  },
+): Promise<void> {
+  const currentFacts = (await config.roomFacts.listRoomTypeFacts(propertyId)).filter(
+    ({ lifecycle }) => lifecycle === "active",
+  );
+  const roomTypeIds = currentFacts.map(({ roomTypeId }) => roomTypeId);
+  const currentCapacities = await Promise.all(
+    currentFacts.map(async ({ roomTypeId }) => {
+      const capacity = await config.roomCapacity.getRoomTypeCapacity(propertyId, roomTypeId);
+      if (!capacity || capacity.propertyId !== propertyId || capacity.roomTypeId !== roomTypeId) {
+        throw new Error("PMS room publication capacity escaped its requested scope");
+      }
+      return capacity;
+    }),
+  );
+  const currentStoredRows = await loadPublicationSourceRows(pool, propertyId, roomTypeIds);
+  if (
+    publicationSourcesToken(propertyId, initial) !==
+    publicationSourcesToken(propertyId, {
+      roomFacts: currentFacts,
+      capacities: currentCapacities,
+      storedRows: currentStoredRows,
+    })
+  ) {
+    throw new Error("PMS room publication sources changed while the snapshot was being built");
+  }
+}
+
+function publicationSourcesToken(
+  propertyId: string,
+  input: {
+    roomFacts: Awaited<ReturnType<RoomFactsReadPort["listRoomTypeFacts"]>>;
+    capacities: readonly NonNullable<
+      Awaited<ReturnType<RoomCapacityReadPort["getRoomTypeCapacity"]>>
+    >[];
+    storedRows: readonly RoomPublicationSourceRow[];
+  },
+): string {
+  const facts = [...input.roomFacts]
+    .map((snapshot) => {
+      if (snapshot.propertyId !== propertyId || snapshot.lifecycle !== "active") {
+        throw new Error("PMS room publication facts escaped their requested scope");
+      }
+      return [snapshot.roomTypeId, snapshot.roomFactsRevision, snapshot.facts] as const;
+    })
+    .sort(([left], [right]) => compareCodeUnits(left, right));
+  const capacities = [...input.capacities]
+    .map((snapshot) => {
+      if (snapshot.propertyId !== propertyId) {
+        throw new Error("PMS room publication capacity escaped its requested scope");
+      }
+      return [snapshot.roomTypeId, snapshot.roomUnitsRevision, snapshot.activeUnitCount] as const;
+    })
+    .sort(([left], [right]) => compareCodeUnits(left, right));
+  const stored = [...input.storedRows]
+    .map((row) => {
+      if (row.propertyId !== propertyId) {
+        throw new Error("PMS room publication storage escaped its requested scope");
+      }
+      const amenities = roomAmenitiesFromRow(row, propertyId, row.roomTypeId);
+      return [
+        row.roomTypeId,
+        positiveRevision(row.roomMediaRevision),
+        amenities.roomAmenitiesRevision,
+        amenities.reviewedAt,
+        amenities.amenities,
+        snapshotMediaAssignments(row.assignments),
+      ] as const;
+    })
+    .sort(([left], [right]) => compareCodeUnits(left, right));
+  return JSON.stringify([facts, capacities, stored]);
 }
 
 async function requireAuthorizedScope(
@@ -420,6 +508,10 @@ function isoDate(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error("PMS room publication date is invalid");
   return date.toISOString();
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isDensePlainArray(value: unknown): value is unknown[] {

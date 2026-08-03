@@ -112,8 +112,11 @@ describe("PMS room publication read model", () => {
         ],
       },
     ]);
-    expect(factsCalls).toEqual([propertyId]);
-    expect(capacityCalls).toEqual([[propertyId, roomTypeId]]);
+    expect(factsCalls).toEqual([propertyId, propertyId]);
+    expect(capacityCalls).toEqual([
+      [propertyId, roomTypeId],
+      [propertyId, roomTypeId],
+    ]);
     expect(target.scopeChecks).toEqual([
       [organizationId, propertyId],
       [organizationId, propertyId],
@@ -220,6 +223,28 @@ describe("PMS room publication read model", () => {
       [organizationId, propertyId],
       [organizationId, propertyId],
     ]);
+  });
+
+  it("fails closed when a versioned source changes while the snapshot is being built", async () => {
+    const target = readTarget();
+    let factsRead = 0;
+    const model = createModel(target, {
+      facts: {
+        async getRoomTypeFacts() {
+          return null;
+        },
+        async listRoomTypeFacts() {
+          factsRead += 1;
+          return factsRead === 1
+            ? [activeFacts]
+            : [{ ...activeFacts, roomFactsRevision: activeFacts.roomFactsRevision + 1 }];
+        },
+      },
+    });
+
+    await expect(model.getRoomPublicationSnapshot({ organizationId, propertyId })).rejects.toThrow(
+      "sources changed while the snapshot was being built",
+    );
   });
 
   it("fails closed on malformed amenity storage and cross-property supplemental rows", async () => {
