@@ -458,10 +458,11 @@ function compare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function deepFreeze<Value>(value: Value): Value {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const nested of Object.values(value)) deepFreeze(nested);
+function deepFreeze<Value>(value: Value, seen = new Set<object>()): Value {
+  if (value && typeof value === "object" && !seen.has(value)) {
+    seen.add(value);
+    if (!Object.isFrozen(value)) Object.freeze(value);
+    for (const nested of Object.values(value)) deepFreeze(nested, seen);
   }
   return value;
 }

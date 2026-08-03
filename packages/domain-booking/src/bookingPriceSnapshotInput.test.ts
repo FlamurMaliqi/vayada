@@ -313,6 +313,8 @@ describe("Booking price snapshot input", () => {
     });
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.calculation.nights)).toBe(true);
+    expect(Object.isFrozen(snapshot.pmsSourceBindings.recurringSources[0])).toBe(true);
+    expect(Object.isFrozen(snapshot.pmsSourceBindings.recurringSources[0]!.source)).toBe(true);
     expect(input.calculationInput.nights[0]!.stayDate).toBe("2026-08-08");
   });
 
