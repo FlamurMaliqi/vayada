@@ -332,11 +332,27 @@ function parseBaseRevisions(
 function normalizeSummary(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
+  if (hasInvalidSummaryCharacter(normalized)) return null;
   const characterCount = Array.from(normalized).length;
   return characterCount >= HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH &&
     characterCount <= HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH
     ? normalized
     : null;
+}
+
+function hasInvalidSummaryCharacter(value: string): boolean {
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value)) return true;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (!(nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff)) return true;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function publicDisplayName(value: string): string {

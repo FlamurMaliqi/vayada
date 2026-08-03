@@ -81,6 +81,12 @@ describe("Hotel Catalog Step 1 contract", () => {
   it.each([
     ["unsupported locale", { locale: "pt" }],
     ["short summary", { shortDescription: "Too short" }],
+    ["NUL in summary", { shortDescription: `${"A".repeat(49)}\u0000` }],
+    ["non-public control in summary", { shortDescription: `${"A".repeat(49)}\u0001` }],
+    [
+      "unpaired surrogate in summary",
+      { shortDescription: `${"A".repeat(49)}${String.fromCharCode(0xd800)}` },
+    ],
     ["unreviewed amenities", { amenities: { reviewed: false, keys: [] } }],
     ["unknown amenity", { amenities: { reviewed: true, keys: ["private_address"] } }],
     [

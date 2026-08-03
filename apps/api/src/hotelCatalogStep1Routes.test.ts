@@ -305,6 +305,25 @@ describe("Hotel Catalog canonical Step 1 routes", () => {
     expect(repository.prepare).not.toHaveBeenCalled();
   });
 
+  it("rejects a database-unsafe summary before reserving intent or calling media", async () => {
+    const repository = fakeRepository();
+    const replacePresentation = vi.fn();
+    app = testApp(repository, {}, replacePresentation);
+
+    const response = await put(app, {
+      ...request(),
+      shortDescription: `${"A".repeat(49)}\u0000`,
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toEqual({
+      code: "invalid_hotel_catalog_step1_request",
+      message: "A complete canonical Step 1 profile is required.",
+    });
+    expect(repository.prepare).not.toHaveBeenCalled();
+    expect(replacePresentation).not.toHaveBeenCalled();
+  });
+
   it("maps typed media failures without attempting the content transaction", async () => {
     const repository = fakeRepository({ state: state({ assignments: [] }) });
     const replacePresentation = vi.fn(async () => ({
