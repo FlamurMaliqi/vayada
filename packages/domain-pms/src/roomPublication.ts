@@ -150,7 +150,10 @@ export type RoomPublicationSnapshot = {
 };
 
 export type RoomPublicationSnapshotPort = {
-  getRoomPublicationSnapshot(propertyId: string): Promise<RoomPublicationSnapshot>;
+  getRoomPublicationSnapshot(input: {
+    readonly organizationId: string;
+    readonly propertyId: string;
+  }): Promise<RoomPublicationSnapshot>;
 };
 
 export function parseAssignRoomTypeMediaCommand(value: unknown): AssignRoomTypeMediaCommand | null {

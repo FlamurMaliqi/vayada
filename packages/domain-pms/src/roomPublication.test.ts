@@ -21,6 +21,7 @@ import {
   type RoomPublicationMediaSource,
   type RoomPublicationRoomSource,
   type RoomPublicationSnapshotInput,
+  type RoomPublicationSnapshotPort,
 } from "./roomPublication.js";
 
 const organizationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -192,6 +193,16 @@ function publicationInput(
 }
 
 describe("room publication contract", () => {
+  it("requires authenticated organization scope at the snapshot port", () => {
+    type SnapshotRequest = Parameters<RoomPublicationSnapshotPort["getRoomPublicationSnapshot"]>[0];
+    const request: SnapshotRequest = { organizationId, propertyId };
+    expect(request).toEqual({ organizationId, propertyId });
+
+    // @ts-expect-error Property scope alone cannot authorize opaque media resolution.
+    const propertyOnlyRequest: SnapshotRequest = { propertyId };
+    void propertyOnlyRequest;
+  });
+
   it("parses the expected-versioned media command and stable fingerprint", () => {
     const parsed = parseAssignRoomTypeMediaCommand(mediaCommand());
     expect(parsed).not.toBeNull();
