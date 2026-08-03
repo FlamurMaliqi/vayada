@@ -14,6 +14,7 @@ import {
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
+import type { HotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
@@ -90,6 +91,7 @@ import {
   type SharedHotelSetupStatusRepository,
 } from "./routes/sharedHotelSetupStatus.js";
 import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
+import { registerHotelCatalogStep1Routes } from "./routes/hotelCatalogStep1.js";
 import {
   registerPropertySetupRouteRoutes,
   type PropertySetupRouteStateReadPort,
@@ -198,6 +200,10 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
+  hotelCatalogStep1?: {
+    repository: HotelCatalogStep1Repository;
+    mediaCommands: Pick<PropertyMediaCommandRepository, "replacePresentation">;
+  };
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
   propertySetupRouteStateReadPort?: PropertySetupRouteStateReadPort;
   bookingPublication?: {
@@ -422,6 +428,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPropertyMediaRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.propertyMediaCommandRepository,
+    });
+  }
+  if (options.hotelCatalogStep1) {
+    app.register(registerHotelCatalogStep1Routes, {
+      prefix: "/api/hotel-setup",
+      ...options.hotelCatalogStep1,
     });
   }
   if (options.propertySetupDraftCommandRepository) {
