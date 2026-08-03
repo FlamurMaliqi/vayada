@@ -25,6 +25,7 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { pmsRoomFactsSnapshotFromRow, type PmsRoomFactsRow } from "./pmsRoomFactsReadModel.js";
+import { lockPmsRoomFactsMutationScope } from "./pmsRoomFactsMutationLock.js";
 
 export type PmsRoomFactsCommandClient = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -207,7 +208,7 @@ export function createPgPmsRoomFactsCommandRepository(
         await rollbackQuietly(client);
         return spec.scopeFailure();
       }
-      await lockPropertyCommandScope(client, command.propertyId);
+      await lockPmsRoomFactsMutationScope(client, command.propertyId);
 
       const replay = await findReplay(client, command, spec, keyHash, fingerprint, acceptedAt);
       if (replay) {
@@ -583,19 +584,6 @@ async function lockAuthorizedScope(
   return (
     !applicable.some(({ status }) => status === "suspended") &&
     applicable.some(({ status }) => status === "active")
-  );
-}
-
-async function lockPropertyCommandScope(
-  client: PmsRoomFactsCommandClient,
-  propertyId: string,
-): Promise<void> {
-  await client.query(
-    `SELECT pg_advisory_xact_lock(
-       hashtext('pms.room_facts'),
-       hashtext($1::uuid::text)
-     )`,
-    [propertyId],
   );
 }
 
