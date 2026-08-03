@@ -225,12 +225,15 @@ export type PmsInventoryReservationLifecyclePort = {
    * the one shared property inventory lock. They recheck the exact current
    * configuration/materialized/watermark evidence and validate every requested
    * day is materialized, current, open, invariant-safe, and sufficiently
-   * available. Only an all-day success increments assignedCount plus the
-   * booking-owned source and inventory revisions on every day and recomputes
-   * availability as effectiveSellableLimitCount - assignedCount - blockedCount
-   * without clamping. Day writes, immutable receipt, idempotency result, audit,
-   * revision 1 reserved status, and refresh outbox intent commit atomically; one
-   * failed date writes nothing. No database transaction crosses this port.
+   * available before incrementing. Only an all-day success increments
+   * assignedCount plus the booking-owned source and inventory revisions on
+   * every day while preserving unrelated owner values and revisions. Physical
+   * capacity is the hard safety ceiling. Availability is zero while closed;
+   * otherwise it is recomputed as max(0, effectiveSellableLimitCount -
+   * assignedCount - blockedCount), exactly matching inventory materialization.
+   * Day writes, immutable receipt, idempotency result, audit, revision 1
+   * reserved status, and refresh outbox intent commit atomically; one failed
+   * date writes nothing. No database transaction crosses this port.
    */
   reserveInventory(
     command: PmsInventoryReservationReserveCommand,
@@ -241,13 +244,16 @@ export type PmsInventoryReservationLifecyclePort = {
    * only from the exact receipt, and lock that receipt plus the same property
    * inventory scope. `reserved` releases once: every original day decrements
    * assignedCount by the original roomCount, advances booking/inventory
-   * revisions, and recomputes availability from current operating status,
-   * effective sellable limit, assigned, and blocked state without clamping.
-   * Every original-day write, revision 2 released status, release idempotency
-   * result, audit, and refresh outbox intent commit in one transaction; any day
-   * or invariant failure writes nothing. Callers supply no dates or counts.
-   * Replays never decrement again; `handed_off` returns `already_handed_off` and
-   * performs zero capacity or outbox changes.
+   * revisions, and preserves unrelated owner values and revisions. Physical
+   * capacity remains the hard safety ceiling. Release remains legal after a
+   * generated, channel, or manual limit is lowered below existing consumption:
+   * availability is zero while closed; otherwise it is recomputed as max(0,
+   * effective sellable limit - assigned - blocked). Every original-day write,
+   * revision 2 released status, release idempotency result, audit, and refresh
+   * outbox intent commit in one transaction; any day or invariant failure writes
+   * nothing. Callers supply no dates or counts. Replays never decrement again;
+   * `handed_off` returns `already_handed_off` and performs zero capacity or
+   * outbox changes.
    */
   releaseInventory(
     command: PmsInventoryReservationReleaseCommand,
