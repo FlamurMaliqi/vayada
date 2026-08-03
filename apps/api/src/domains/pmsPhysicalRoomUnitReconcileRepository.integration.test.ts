@@ -61,15 +61,13 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
     if (!first.ok) throw new Error("Expected physical units to be added");
     expect(first.response.addedUnits).toHaveLength(3);
     expect(new Set(first.response.addedUnits.map(({ roomUnitId }) => roomUnitId)).size).toBe(3);
-    expect(first.response.addedUnits).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          lifecycle: "active",
-          operationalLabel: null,
-          operationalLabelStatus: "unverified",
-        }),
-      ]),
-    );
+    for (const unit of first.response.addedUnits) {
+      expect(unit).toMatchObject({
+        lifecycle: "active",
+        operationalLabel: null,
+        operationalLabelStatus: "unverified",
+      });
+    }
 
     await expect(repository.reconcilePhysicalRoomUnits(command)).resolves.toEqual(first);
     await expect(
@@ -203,6 +201,10 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
     const second = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     await Promise.all([first.connect(), second.connect()]);
     try {
+      const [firstProcessId, secondProcessId] = await Promise.all([
+        backendProcessId(first),
+        backendProcessId(second),
+      ]);
       await Promise.all([first.query("BEGIN"), second.query("BEGIN")]);
       await lockPmsPhysicalRoomUnitMutationScope(first, lowerPropertyId, lowerRoomTypeId);
       const pending = lockPmsPhysicalRoomUnitMutationScope(
@@ -210,7 +212,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
         lowerPropertyId.toUpperCase(),
         lowerRoomTypeId.toUpperCase(),
       );
-      await waitForLockWaiter();
+      void pending.catch(() => {});
+      await waitForLockWaiter({
+        blockedProcessId: secondProcessId,
+        blockingProcessId: firstProcessId,
+      });
       await first.query("COMMIT");
       await pending;
       await second.query("COMMIT");
@@ -239,6 +245,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
 
     const assignmentWriter = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     await assignmentWriter.connect();
+    const assignmentWriterProcessId = await backendProcessId(assignmentWriter);
     try {
       await assignmentWriter.query("BEGIN");
       await lockPmsPhysicalRoomUnitMutationScope(assignmentWriter, propertyId, roomTypeId);
@@ -256,7 +263,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
       const pending = repository.reconcilePhysicalRoomUnits(
         reconcileCommand("assignment-race", 2, 1),
       );
-      await waitForLockWaiter();
+      void pending.catch(() => {});
+      await waitForLockWaiter({ blockingProcessId: assignmentWriterProcessId });
       await assignmentWriter.query("COMMIT");
 
       await expect(pending).resolves.toMatchObject({
@@ -338,10 +346,12 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
     });
     const referenceWriter = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     await referenceWriter.connect();
+    const referenceWriterProcessId = await backendProcessId(referenceWriter);
     try {
       const pendingReconcile = gatedRepository.reconcilePhysicalRoomUnits(
         reconcileCommand("reconcile-wins-race", 2, 1),
       );
+      void pendingReconcile.catch(() => {});
       await reconcileHasAdvisory;
 
       await referenceWriter.query("BEGIN");
@@ -350,7 +360,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
         propertyId,
         roomTypeId,
       );
-      await waitForLockWaiter();
+      void pendingReferenceLock.catch(() => {});
+      await waitForLockWaiter({ blockedProcessId: referenceWriterProcessId });
       releaseReconcile();
 
       await expect(pendingReconcile).resolves.toMatchObject({
@@ -368,7 +379,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
          FOR SHARE`,
         [propertyId, roomTypeId, retirementCandidateId],
       );
-      expect(eligibility.rowCount).toBe(0);
       if ((eligibility.rowCount ?? 0) > 0) {
         await referenceWriter.query(
           `INSERT INTO pms.room_blocks (
@@ -380,6 +390,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
           [propertyId, roomTypeId, retirementCandidateId],
         );
       }
+      expect(eligibility.rowCount).toBe(0);
       await referenceWriter.query("COMMIT");
     } catch (error) {
       releaseReconcile();
@@ -405,6 +416,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
   it("observes a concurrent entitlement revocation before mutating capacity", async () => {
     const revoker = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     await revoker.connect();
+    const revokerProcessId = await backendProcessId(revoker);
     try {
       await revoker.query("BEGIN");
       await revoker.query(
@@ -419,7 +431,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
       const pending = repository.reconcilePhysicalRoomUnits(
         reconcileCommand("revocation-wins", 1, 2),
       );
-      await waitForLockWaiter();
+      void pending.catch(() => {});
+      await waitForLockWaiter({ blockingProcessId: revokerProcessId });
       await revoker.query("COMMIT");
 
       await expect(pending).resolves.toEqual({
@@ -443,15 +456,39 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
     });
   });
 
-  async function waitForLockWaiter(): Promise<void> {
+  async function waitForLockWaiter(options: {
+    blockedProcessId?: number;
+    blockingProcessId?: number;
+  }): Promise<void> {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const result = await admin.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM pg_locks WHERE granted = FALSE",
+        `SELECT count(DISTINCT waiting.pid)::text AS count
+         FROM pg_locks AS waiting
+         JOIN pg_stat_activity AS activity ON activity.pid = waiting.pid
+         WHERE waiting.granted = FALSE
+           AND activity.datid = (
+             SELECT oid FROM pg_database WHERE datname = current_database()
+           )
+           AND ($1::integer IS NULL OR waiting.pid = $1::integer)
+           AND (
+             $2::integer IS NULL
+             OR $2::integer = ANY(pg_blocking_pids(waiting.pid))
+           )`,
+        [options.blockedProcessId ?? null, options.blockingProcessId ?? null],
       );
       if (Number(result.rows[0]?.count ?? 0) > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    throw new Error("Physical-unit reconcile did not wait for the assignment room lock");
+    throw new Error("No expected physical-unit lock waiter appeared within the timeout");
+  }
+
+  async function backendProcessId(client: pg.Client): Promise<number> {
+    const result = await client.query<{ pid: number }>("SELECT pg_backend_pid()::integer AS pid");
+    const processId = result.rows[0]?.pid;
+    if (processId === undefined || !Number.isInteger(processId)) {
+      throw new Error("PostgreSQL test client did not expose a backend process id");
+    }
+    return processId;
   }
 
   async function activeUnitCount(): Promise<number> {
