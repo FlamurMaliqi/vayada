@@ -34,6 +34,21 @@ describe("hotelPresentationClient", () => {
     ).resolves.toMatchObject({ profileRevision: 8, outcome: "updated" });
   });
 
+  it("loads the exact nullable first-visit Step 1 model", async () => {
+    const firstVisit = {
+      ...readModel(),
+      profile: {
+        ...readModel().profile,
+        shortDescription: null,
+        publicSlug: null,
+        amenities: { reviewed: false, keys: [] },
+      },
+    };
+    calls.get.mockResolvedValue(firstVisit);
+
+    await expect(client.load(propertyId)).resolves.toEqual(firstVisit);
+  });
+
   it("uses the target media v2 upload flow and returns only property gallery media", async () => {
     calls.post
       .mockResolvedValueOnce({

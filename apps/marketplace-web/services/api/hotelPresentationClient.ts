@@ -1,4 +1,5 @@
 import {
+  parseHotelCatalogStep1ReadModel,
   parsePropertyMediaLibraryItem,
   parseSaveHotelCatalogStep1Request,
   parseSaveHotelCatalogStep1Response,
@@ -33,7 +34,7 @@ export function createHotelPresentationClient(
   return {
     async load(propertyId: string, options?: RequestInit): Promise<HotelCatalogStep1ReadModel> {
       const value = await http.get<unknown>(path(propertyId), options);
-      const parsed = parseReadModel(value);
+      const parsed = parseHotelCatalogStep1ReadModel(value);
       if (!parsed || parsed.propertyId !== propertyId.toLowerCase()) throw invalid("profile read");
       return parsed;
     },
@@ -141,21 +142,6 @@ export const hotelPresentationClient = createHotelPresentationClient(targetApiCl
 
 function path(propertyId: string): string {
   return `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/steps/present-hotel`;
-}
-
-function parseReadModel(value: unknown): HotelCatalogStep1ReadModel | null {
-  if (!record(value) || Object.hasOwn(value, "outcome")) return null;
-  const parsed = parseSaveHotelCatalogStep1Response({ ...value, outcome: "updated" });
-  if (!parsed) return null;
-  return {
-    contractVersion: parsed.contractVersion,
-    propertyId: parsed.propertyId,
-    displayName: parsed.displayName,
-    profileRevision: parsed.profileRevision,
-    supportedLocales: parsed.supportedLocales,
-    profile: parsed.profile,
-    baseRevisions: parsed.baseRevisions,
-  };
 }
 
 type UploadSession = {
