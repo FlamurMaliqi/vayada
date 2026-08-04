@@ -18,6 +18,7 @@ export * from "./bookingDesign.js";
 export * from "./bookingDesignSnapshot.js";
 export * from "./bookingDesignReadiness.js";
 export * from "./bookingPricingEvidence.js";
+export * from "./bookingMandatoryChargeConfirmationEvidenceAdapter.js";
 export * from "./bookingPriceCalculation.js";
 export * from "./bookingPriceSnapshotInput.js";
 
