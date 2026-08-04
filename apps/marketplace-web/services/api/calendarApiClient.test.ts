@@ -14,7 +14,6 @@ import {
 } from "@/components/setup/adaptive/calendar/calendarState";
 import { ApiErrorResponse } from "./client";
 import {
-  CalendarOwnerError,
   createCalendarApiClient,
   type CalendarHttpClient,
   type CalendarPropertyProfileReader,
@@ -121,9 +120,9 @@ describe("calendarApiClient", () => {
       if (endpoint.endsWith("/room-types")) return { ...roomList(), items: [] };
       throw new Error(`Unexpected GET ${endpoint}`);
     });
-    await expect(
-      createCalendarApiClient(http, profiles).loadWorkspace(propertyId),
-    ).rejects.toBeInstanceOf(CalendarOwnerError);
+    await expect(createCalendarApiClient(http, profiles).loadWorkspace(propertyId)).rejects.toThrow(
+      "Add at least one complete room type before opening the calendar.",
+    );
   });
 
   it.each(["Etc/UTC", "Europe/Kyiv", "Asia/Kolkata", "America/Nuuk"])(

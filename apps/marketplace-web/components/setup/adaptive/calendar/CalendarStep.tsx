@@ -16,7 +16,7 @@ import { calendarApi } from "@/services/api/calendarApiClient";
 import type { AdaptiveSetupStepRenderContext } from "../AdaptiveHotelSetupController";
 import {
   CALENDAR_MAX_PERIODS,
-  CalendarDraftManifestUnavailableError,
+  CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
   buildCalendarDraftRequest,
   calendarDraftRevisionContext,
   hydrateCalendarDraft,
@@ -105,7 +105,9 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     if (saveInFlightRef.current) await saveInFlightRef.current;
     const current = draftRef.current;
     if (!current?.dirty) return;
-    if (manifestMissing || scopeInvalid) throw new CalendarDraftManifestUnavailableError();
+    if (manifestMissing || scopeInvalid) {
+      throw new Error(CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
+    }
     const save = (async () => {
       setSaving(true);
       setSaveError(null);
@@ -814,7 +816,6 @@ function isStaleDraftError(error: unknown): boolean {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof CalendarDraftManifestUnavailableError) return error.message;
   if (error instanceof ApiErrorResponse && isRecord(error.data)) {
     const detail = error.data.detail;
     if (typeof detail === "string" && detail.trim()) return detail;

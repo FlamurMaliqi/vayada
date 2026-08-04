@@ -40,18 +40,6 @@ export type CalendarApiClient = {
   ): Promise<SavePropertySetupDraftReceipt>;
 };
 
-export class CalendarOwnerError extends Error {
-  constructor(
-    message: string,
-    readonly code: string,
-    readonly details: unknown,
-    readonly requiresRefresh: boolean,
-  ) {
-    super(message);
-    this.name = "CalendarOwnerError";
-  }
-}
-
 const canonicalTimeZones = new Set(availableTimezones());
 const timeZoneRegistry: PmsOperatingCalendarCanonicalTimeZoneRegistry = {
   ownerDomain: "hotel_catalog",
@@ -85,12 +73,7 @@ export function createCalendarApiClient(
     if (!facts) throw invalidOwnerContract("room facts list");
     const activeFacts = facts.filter(({ lifecycle }) => lifecycle === "active");
     if (activeFacts.length === 0) {
-      throw new CalendarOwnerError(
-        "Add at least one complete room type before opening the calendar.",
-        "active_room_type_set_empty",
-        { code: "active_room_type_set_empty" },
-        false,
-      );
+      throw new Error("Add at least one complete room type before opening the calendar.");
     }
     const rooms = await Promise.all(
       activeFacts.map(async (snapshot): Promise<CalendarWorkspaceRoom> => {

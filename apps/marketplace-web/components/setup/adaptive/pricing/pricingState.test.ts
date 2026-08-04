@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  PricingDraftManifestUnavailableError,
+  PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
   buildPricingDraftRequest,
   discountedDecimal,
   hydratePricingDraft,
@@ -108,7 +108,7 @@ describe("pricing state", () => {
         },
         "de-DE",
       ),
-    ).toThrow(PricingDraftManifestUnavailableError);
+    ).toThrow(PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
   });
 
   it("treats an explicit empty season draft as authoritative", () => {

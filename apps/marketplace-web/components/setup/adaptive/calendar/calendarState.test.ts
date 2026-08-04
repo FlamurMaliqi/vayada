@@ -7,7 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
-  CalendarDraftManifestUnavailableError,
+  CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
   buildCalendarDraftRequest,
   calendarDraftRevisionContext,
   hydrateCalendarDraft,
@@ -160,7 +160,7 @@ describe("calendarState", () => {
         ...context,
         baseRevisions: null,
       }),
-    ).toThrow(CalendarDraftManifestUnavailableError);
+    ).toThrow(CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
   });
 });
 

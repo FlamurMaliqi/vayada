@@ -64,14 +64,8 @@ export type CalendarDraftRevisionContext = {
 
 export type CalendarValidationErrors = Record<string, string>;
 
-export class CalendarDraftManifestUnavailableError extends Error {
-  constructor() {
-    super(
-      "This calendar draft is missing its server revision manifest. Refresh setup and try again.",
-    );
-    this.name = "CalendarDraftManifestUnavailableError";
-  }
-}
+export const CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE =
+  "This calendar draft is missing its server revision manifest. Refresh setup and try again.";
 
 export function calendarDraftRevisionContext(
   route: PropertySetupRouteReadModel,
@@ -105,9 +99,9 @@ export function hydrateCalendarDraft(
   const savedBindings = new Map(
     current?.sourceInputs.roomBindings.map((binding) => [binding.roomTypeId, binding]) ?? [],
   );
-  const hasOperatingPeriodsDraft = hasOwn(payload, "rate.operating_periods");
-  const hasMinimumStayDraft = hasOwn(payload, "rate.minimum_stay");
-  const hasInitialAvailabilityDraft = hasOwn(payload, "rate.initial_availability");
+  const hasOperatingPeriodsDraft = Object.hasOwn(payload, "rate.operating_periods");
+  const hasMinimumStayDraft = Object.hasOwn(payload, "rate.minimum_stay");
+  const hasInitialAvailabilityDraft = Object.hasOwn(payload, "rate.initial_availability");
   const operatingPeriods = record(payload["rate.operating_periods"]);
   const initialAvailability = record(payload["rate.initial_availability"]);
   const draftLimits = record(initialAvailability?.limits);
@@ -227,7 +221,7 @@ export function buildCalendarDraftRequest(
   revision: CalendarDraftRevisionContext,
 ): Extract<SavePropertySetupDraftRequest, { stepId: "calendar" }> {
   if (!revision.sessionId || revision.sessionRevision === null || revision.baseRevisions === null) {
-    throw new CalendarDraftManifestUnavailableError();
+    throw new Error(CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
   }
   return {
     stepId: "calendar",
@@ -272,8 +266,4 @@ function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
-}
-
-function hasOwn(value: object, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
 }

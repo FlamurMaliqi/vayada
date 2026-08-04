@@ -19,7 +19,7 @@ import {
 import type { AdaptiveSetupStepRenderContext } from "../AdaptiveHotelSetupController";
 import {
   PRICING_WEEKDAYS,
-  PricingDraftManifestUnavailableError,
+  PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
   buildPricingDraftRequest,
   discountedDecimal,
   formatDecimal,
@@ -205,7 +205,7 @@ export function PricingStep({
       return;
     }
     if (manifestMissing) {
-      setSaveError(new PricingDraftManifestUnavailableError().message);
+      setSaveError(PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
       return;
     }
     if (manifestStale) {
@@ -284,7 +284,7 @@ export function PricingStep({
   const saveDraftOnly = useCallback(async () => {
     if (saving || !draftRef.current?.dirty) return;
     if (manifestMissing) {
-      setSaveError(new PricingDraftManifestUnavailableError().message);
+      setSaveError(PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
       return;
     }
     setSaving(true);

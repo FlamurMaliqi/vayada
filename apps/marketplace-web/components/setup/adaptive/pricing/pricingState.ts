@@ -384,7 +384,7 @@ export function buildPricingDraftRequest(
   locale: string,
 ): Extract<SavePropertySetupDraftRequest, { stepId: "pricing" }> {
   if (!revision.sessionId || revision.sessionRevision === null || revision.baseRevisions === null) {
-    throw new PricingDraftManifestUnavailableError();
+    throw new Error(PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
   }
   const amount = (input: string, allowZero = false) =>
     normalizeMoneyInput(input, locale, allowZero);
@@ -528,14 +528,8 @@ export function formatDecimal(amountDecimal: string, locale: string): string {
   return `${grouped}${symbols.decimal}${fraction.padEnd(2, "0")}`;
 }
 
-export class PricingDraftManifestUnavailableError extends Error {
-  constructor() {
-    super(
-      "This pricing draft is missing its server revision manifest. Refresh setup and try again.",
-    );
-    this.name = "PricingDraftManifestUnavailableError";
-  }
-}
+export const PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE =
+  "This pricing draft is missing its server revision manifest. Refresh setup and try again.";
 
 /** VAY-1049 route-v2 compatibility seam: historical draft manifests are never rebased. */
 export function pricingDraftManifestIsCurrent(
@@ -557,17 +551,14 @@ export function pricingDraftManifestIsCurrent(
   );
 }
 
-function commonCancellationDeadline(plans: readonly FlexibleRatePlanSnapshot[]): number | null {
-  if (plans.length === 0) return null;
-  const deadline = plans[0]!.cancellationTerms.freeCancellationDeadlineDays;
-  return plans.every((plan) => plan.cancellationTerms.freeCancellationDeadlineDays === deadline)
-    ? deadline
-    : null;
-}
-
 function cancellationDeadlineInput(plans: readonly FlexibleRatePlanSnapshot[]): string {
   if (plans.length === 0) return "7";
-  return numberText(commonCancellationDeadline(plans));
+  const deadline = plans[0]!.cancellationTerms.freeCancellationDeadlineDays;
+  return numberText(
+    plans.every((plan) => plan.cancellationTerms.freeCancellationDeadlineDays === deadline)
+      ? deadline
+      : null,
+  );
 }
 
 function assertUnambiguousSources(sources: readonly PmsRecurringPricingSourceSnapshot[]): void {
