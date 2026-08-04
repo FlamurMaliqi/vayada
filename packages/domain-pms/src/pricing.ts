@@ -316,7 +316,11 @@ export function parsePmsPricingCurrencyCapabilities(
   ) {
     return null;
   }
-  const supportedCurrencies = value["supportedCurrencies"].map((candidate) => {
+  const rawSupportedCurrencies = value["supportedCurrencies"];
+  for (let index = 0; index < rawSupportedCurrencies.length; index += 1) {
+    if (!Object.hasOwn(rawSupportedCurrencies, index)) return null;
+  }
+  const supportedCurrencies = rawSupportedCurrencies.map((candidate) => {
     if (!isExactRecord(candidate, ["code", "scale"]) || candidate["scale"] !== 2) return null;
     const code = parsePmsPricingCurrency(candidate["code"]);
     return code ? Object.freeze({ code, scale: 2 as const }) : null;

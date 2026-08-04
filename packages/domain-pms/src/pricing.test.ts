@@ -197,6 +197,8 @@ describe("PMS pricing command contract", () => {
   });
 
   it("strictly parses immutable code-unit-sorted scale-2 currency capabilities", () => {
+    const sparseSupportedCurrencies: unknown[] = [];
+    sparseSupportedCurrencies.length = 1;
     const parsed = parsePmsPricingCurrencyCapabilities({
       contractVersion: PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
       supportedCurrencies: [
@@ -217,6 +219,7 @@ describe("PMS pricing command contract", () => {
 
     for (const supportedCurrencies of [
       [],
+      sparseSupportedCurrencies,
       [{ code: "EUR", scale: 0 }],
       [{ code: "eur", scale: 2 }],
       [{ code: "EUR", scale: 2, label: "Euro" }],

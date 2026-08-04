@@ -146,7 +146,7 @@ export async function registerPmsPricingRoutes(
       requireAuthorizedScope(authorized, request);
       try {
         const value = await options.currencyCapabilitiesReadPort.getPricingCurrencyCapabilities();
-        if (!value) {
+        if (value === null) {
           return reply.status(503).send({ code: "pms_pricing_currency_capabilities_unavailable" });
         }
         const capabilities = parsePmsPricingCurrencyCapabilities(value);

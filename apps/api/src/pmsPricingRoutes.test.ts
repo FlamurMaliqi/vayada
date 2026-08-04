@@ -422,6 +422,16 @@ describe("PMS pricing routes", () => {
         code: "pms_pricing_currency_capabilities_unavailable",
       },
       {
+        name: "undefined",
+        port: {
+          async getPricingCurrencyCapabilities() {
+            return undefined as never;
+          },
+        },
+        status: 500,
+        code: "pms_pricing_currency_capabilities_port_contract_violation",
+      },
+      {
         name: "malformed",
         port: {
           async getPricingCurrencyCapabilities() {
