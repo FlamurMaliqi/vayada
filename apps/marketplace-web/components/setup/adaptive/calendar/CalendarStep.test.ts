@@ -13,9 +13,17 @@ import type { CalendarWorkspace } from "./calendarState";
 const mocks = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
   saveDraft: vi.fn(),
+  previewImpact: vi.fn(),
+  applyCalendar: vi.fn(),
 }));
 
-vi.mock("@/services/api/calendarApiClient", () => ({ calendarApi: mocks }));
+vi.mock("@/services/api/calendarApiClient", () => ({
+  CalendarOwnerError: class CalendarOwnerError extends Error {
+    requiresPreview = false;
+    requiresRefresh = false;
+  },
+  calendarApi: mocks,
+}));
 
 import { CalendarStep } from "./CalendarStep";
 
@@ -28,6 +36,8 @@ describe("CalendarStep", () => {
     vi.clearAllMocks();
     mocks.loadWorkspace.mockResolvedValue(workspace());
     mocks.saveDraft.mockResolvedValue(draftReceipt());
+    mocks.previewImpact.mockResolvedValue(impactPreview());
+    mocks.applyCalendar.mockResolvedValue(workspace());
   });
 
   afterEach(() => vi.unstubAllGlobals());
@@ -72,7 +82,7 @@ describe("CalendarStep", () => {
     expect(modes.every((node) => node.props.checked === false)).toBe(true);
     expect(button(renderer!.root, "Save and continue").props.disabled).toBe(true);
     expect(JSON.stringify(renderer!.toJSON())).toContain(
-      "Calendar impact confirmation is not available yet",
+      "run an impact review to unlock final confirmation",
     );
     expect(JSON.stringify(renderer!.toJSON())).toContain("Available Garden Suite rooms");
 
@@ -203,7 +213,60 @@ describe("CalendarStep", () => {
     expect(periodFieldset).toBeDefined();
     expect(periodFieldset!.children[0]).toMatchObject({ type: "legend" });
     expect(renderer!.root.findByProps({ id: "calendar-add-period" }).props.disabled).toBe(false);
-    expect(renderer!.root.findByProps({ id: "calendar-confirmation" }).props.type).toBe("checkbox");
+    expect(renderer!.root.findAllByProps({ id: "calendar-confirmation" })).toHaveLength(0);
+    renderer?.unmount();
+  });
+
+  it("previews only aggregate impact, confirms the exact proposal, and applies it", async () => {
+    const route = calendarRoute(emptyCalendarDraft());
+    const controller = controllerContext(route);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(CalendarStep, controller.props));
+    });
+    await act(async () =>
+      renderer!.root.findByProps({ id: "calendar-mode-year-round" }).props.onChange(),
+    );
+    await act(async () => {
+      button(renderer!.root, "Review impact").props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.previewImpact).toHaveBeenCalledWith(propertyId, {
+      expectedCalendarRevision: 0,
+      expectedPropertyProfileRevision: 3,
+      schedule: { mode: "year_round", periods: [] },
+      defaultMinimumStayNights: 1,
+      roomTypeLimits: [
+        {
+          roomTypeId,
+          expectedRoomFactsRevision: 2,
+          expectedRoomUnitsRevision: 3,
+          startingSellableLimitCount: 4,
+        },
+      ],
+    });
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Current impact");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("accepted booking");
+    const confirmation = input(renderer!.root, "calendar-confirmation");
+    await act(async () => confirmation.props.onChange({ target: { checked: true } }));
+    expect(button(renderer!.root, "Save and continue").props.disabled).toBe(false);
+
+    await act(async () => {
+      button(renderer!.root, "Save and continue").props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.applyCalendar).toHaveBeenCalledWith(
+      propertyId,
+      mocks.previewImpact.mock.calls[0]?.[1],
+      impactPreview().confirmation,
+    );
+    expect(controller.refreshRoute).toHaveBeenCalledOnce();
+    expect(controller.saveAndContinue).toHaveBeenCalledOnce();
     renderer?.unmount();
   });
 });
@@ -300,6 +363,83 @@ function workspace(): CalendarWorkspace {
       },
     ],
     current: null,
+  };
+}
+
+function impactPreview() {
+  const proposalFingerprint = "a".repeat(64);
+  const sourceFingerprint = "b".repeat(64);
+  return {
+    contractVersion: "pms-operating-calendar-impact.v1" as const,
+    propertyId,
+    proposalFingerprint,
+    sourceFingerprint,
+    sourceRevisions: {
+      calendarRevision: 0,
+      propertyProfile: { revision: 3, timeZone: "Europe/Berlin" },
+      roomTypes: [
+        {
+          roomTypeId,
+          roomFactsRevision: 2,
+          roomUnitsRevision: 3,
+          physicalCapacityCount: 4,
+        },
+      ],
+      inventory: {
+        materializedRevision: null,
+        coverageFrom: null,
+        coverageThrough: null,
+        dayCount: 0,
+        inventoryFingerprint: "c".repeat(64),
+        bookingFingerprint: "d".repeat(64),
+        blockFingerprint: "e".repeat(64),
+        overrideFingerprint: "f".repeat(64),
+        activeReservationCount: 1,
+      },
+    },
+    impact: {
+      categories: ["accepted_bookings_on_closing_dates"] as const,
+      summary: {
+        closingDateCount: 1,
+        openingDateCount: 0,
+        availableRoomNightsRemoved: 2,
+        availableRoomNightsAdded: 0,
+        acceptedBookingCount: 1,
+        acceptedBookedRoomNights: 2,
+        blockedRoomNights: 0,
+        ownerOverrideDateCount: 0,
+        defaultMinimumStayChanged: false,
+      },
+      affectedDates: [
+        {
+          stayDate: "2026-12-24",
+          statusChange: "open_to_closed" as const,
+          availableCountBefore: 4,
+          availableCountAfter: 2,
+          assignedCount: 2,
+          blockedCount: 0,
+          acceptedBookingCount: 1,
+          ownerOverridePresent: false,
+        },
+      ],
+      roomTypeChanges: [
+        {
+          roomTypeId,
+          previousStartingSellableLimitCount: null,
+          proposedStartingSellableLimitCount: 4,
+          availableRoomNightsDelta: -2,
+        },
+      ],
+    },
+    confirmation: {
+      contractVersion: "pms-operating-calendar-impact.v1" as const,
+      proposalFingerprint,
+      sourceFingerprint,
+      token: "signed-impact-token",
+      issuedAt: "2099-08-04T12:00:00.000Z",
+      expiresAt: "2099-08-04T12:15:00.000Z",
+    },
+    generatedAt: "2099-08-04T12:00:00.000Z",
   };
 }
 

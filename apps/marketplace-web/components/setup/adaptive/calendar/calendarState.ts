@@ -1,7 +1,9 @@
 import {
+  parsePmsOperatingCalendarImpactPreviewRequest,
   parsePmsOperatingCalendarMonthDay,
   parsePmsOperatingSchedule,
   type PmsOperatingCalendarCurrentReadResult,
+  type PmsOperatingCalendarImpactPreviewRequest,
 } from "@vayada/domain-pms";
 import type {
   PropertySetupRouteReadModel,
@@ -162,13 +164,17 @@ export function hydrateCalendarDraft(
     periods,
     defaultMinimumStayNights,
     rooms,
-    confirmed:
-      initialAvailability?.confirmed === true && workspace.current?.sourceStatus !== "stale",
+    // The server impact token is intentionally not stored in a resumable setup draft.
+    // Every mount requires a fresh impact review before final confirmation.
+    confirmed: false,
     dirty: false,
   };
 }
 
-export function validateCalendarDraft(draft: CalendarDraft): CalendarValidationErrors {
+export function validateCalendarDraft(
+  draft: CalendarDraft,
+  options: Readonly<{ requireConfirmation?: boolean }> = {},
+): CalendarValidationErrors {
   const errors: CalendarValidationErrors = {};
   if (!draft.mode) {
     errors.mode = "Choose when your hotel is open for stays.";
@@ -210,10 +216,38 @@ export function validateCalendarDraft(draft: CalendarDraft): CalendarValidationE
         `Enter a whole number from 1 to ${room.physicalCapacityCount}.`;
     }
   }
-  if (!draft.confirmed) {
+  if (options.requireConfirmation !== false && !draft.confirmed) {
     errors.confirmed = "Confirm the starting calendar settings before continuing.";
   }
   return errors;
+}
+
+export function buildCalendarProposal(
+  draft: CalendarDraft,
+  workspace: CalendarWorkspace,
+): PmsOperatingCalendarImpactPreviewRequest {
+  const proposal = parsePmsOperatingCalendarImpactPreviewRequest({
+    expectedCalendarRevision: workspace.current?.configuration.calendarRevision ?? 0,
+    expectedPropertyProfileRevision: workspace.propertyProfileRevision,
+    schedule:
+      draft.mode === "recurring"
+        ? {
+            mode: "recurring",
+            periods: draft.periods.map(({ startsOn, endsOn }) => ({ startsOn, endsOn })),
+          }
+        : { mode: "year_round", periods: [] },
+    defaultMinimumStayNights: Number(draft.defaultMinimumStayNights),
+    roomTypeLimits: draft.rooms.map((room) => ({
+      roomTypeId: room.roomTypeId,
+      expectedRoomFactsRevision: room.roomFactsRevision,
+      expectedRoomUnitsRevision: room.roomUnitsRevision,
+      startingSellableLimitCount: Number(room.startingSellableLimit),
+    })),
+  });
+  if (!proposal) {
+    throw new Error("The calendar proposal is invalid. Review every calendar field and try again.");
+  }
+  return proposal;
 }
 
 export function buildCalendarDraftRequest(

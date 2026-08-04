@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
   buildCalendarDraftRequest,
+  buildCalendarProposal,
   calendarDraftRevisionContext,
   hydrateCalendarDraft,
   validateCalendarDraft,
@@ -161,6 +162,38 @@ describe("calendarState", () => {
         baseRevisions: null,
       }),
     ).toThrow(CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
+  });
+
+  it("builds the exact browser-safe impact proposal without scope or audit fields", () => {
+    const draft = completeDraft({ confirmed: false });
+    expect(validateCalendarDraft(draft, { requireConfirmation: false })).toEqual({});
+
+    const proposal = buildCalendarProposal(draft, workspace(currentWorkspace()));
+
+    expect(proposal).toEqual({
+      expectedCalendarRevision: 1,
+      expectedPropertyProfileRevision: 7,
+      schedule: { mode: "year_round", periods: [] },
+      defaultMinimumStayNights: 1,
+      roomTypeLimits: [
+        {
+          roomTypeId: roomA,
+          expectedRoomFactsRevision: 3,
+          expectedRoomUnitsRevision: 5,
+          startingSellableLimitCount: 4,
+        },
+        {
+          roomTypeId: roomB,
+          expectedRoomFactsRevision: 2,
+          expectedRoomUnitsRevision: 4,
+          startingSellableLimitCount: 2,
+        },
+      ],
+    });
+    expect(proposal).not.toHaveProperty("organizationId");
+    expect(proposal).not.toHaveProperty("propertyId");
+    expect(proposal).not.toHaveProperty("audit");
+    expect(proposal).not.toHaveProperty("impactConfirmation");
   });
 });
 

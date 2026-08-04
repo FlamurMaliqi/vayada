@@ -1,10 +1,22 @@
 import {
   PMS_ROOM_FACTS_CONTRACT_VERSION,
   parsePmsCanonicalIanaTimeZone,
+  parsePmsOperatingCalendarCommandResult,
   parsePmsOperatingCalendarCurrentReadResult,
+  parsePmsOperatingCalendarImpactPreview,
+  parsePmsOperatingCalendarImpactPreviewError,
+  parsePmsOperatingCalendarImpactPreviewRequest,
+  parsePmsOperatingCalendarUpsertRequest,
   parseRoomTypeCapacitySnapshot,
   parseRoomTypeFactsSnapshot,
   type PmsOperatingCalendarCanonicalTimeZoneRegistry,
+  type PmsOperatingCalendarCommandError,
+  type PmsOperatingCalendarCommandResponse,
+  type PmsOperatingCalendarImpactConfirmation,
+  type PmsOperatingCalendarImpactPreview,
+  type PmsOperatingCalendarImpactPreviewError,
+  type PmsOperatingCalendarImpactPreviewRequest,
+  type PmsOperatingCalendarUpsertRequest,
 } from "@vayada/domain-pms";
 import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
@@ -26,6 +38,7 @@ import { targetApiClient } from "./targetClient";
 export type CalendarHttpClient = {
   get<T>(endpoint: string, options?: RequestInit): Promise<T>;
   put<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T>;
+  post<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T>;
 };
 
 export type CalendarPropertyProfileReader = {
@@ -38,7 +51,29 @@ export type CalendarApiClient = {
     propertyId: string,
     request: Extract<SavePropertySetupDraftRequest, { stepId: "calendar" }>,
   ): Promise<SavePropertySetupDraftReceipt>;
+  previewImpact(
+    propertyId: string,
+    proposal: PmsOperatingCalendarImpactPreviewRequest,
+  ): Promise<PmsOperatingCalendarImpactPreview>;
+  applyCalendar(
+    propertyId: string,
+    proposal: PmsOperatingCalendarImpactPreviewRequest,
+    confirmation: PmsOperatingCalendarImpactConfirmation,
+  ): Promise<CalendarWorkspace>;
 };
+
+export class CalendarOwnerError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly details: unknown,
+    readonly requiresRefresh: boolean,
+    readonly requiresPreview: boolean,
+  ) {
+    super(message);
+    this.name = "CalendarOwnerError";
+  }
+}
 
 const canonicalTimeZones = new Set(availableTimezones());
 const timeZoneRegistry: PmsOperatingCalendarCanonicalTimeZoneRegistry = {
@@ -130,7 +165,81 @@ export function createCalendarApiClient(
     return receipt;
   };
 
-  return { loadWorkspace, saveDraft };
+  const previewImpact = async (
+    propertyId: string,
+    proposal: PmsOperatingCalendarImpactPreviewRequest,
+  ): Promise<PmsOperatingCalendarImpactPreview> => {
+    const request = parsePmsOperatingCalendarImpactPreviewRequest(proposal);
+    if (!request) throw invalidClientContract("operating calendar impact proposal");
+    let value: unknown;
+    try {
+      value = await http.post<unknown>(
+        `/api/pms/properties/${encoded(propertyId)}/operating-calendar/impact-preview`,
+        request,
+      );
+    } catch (error) {
+      throw previewOwnerError(error);
+    }
+    const preview = parsePmsOperatingCalendarImpactPreview(value);
+    if (!preview || preview.propertyId !== propertyId.toLowerCase()) {
+      throw invalidOwnerContract("operating calendar impact preview");
+    }
+    return preview;
+  };
+
+  const applyCalendar = async (
+    propertyId: string,
+    proposal: PmsOperatingCalendarImpactPreviewRequest,
+    confirmation: PmsOperatingCalendarImpactConfirmation,
+  ): Promise<CalendarWorkspace> => {
+    const request = parsePmsOperatingCalendarUpsertRequest({
+      ...proposal,
+      impactConfirmation: confirmation,
+    });
+    if (!request) throw invalidClientContract("operating calendar command");
+    const idempotencyKey = await sha256Key("operating-calendar", propertyId.toLowerCase(), request);
+    let value: unknown;
+    try {
+      value = await http.put<unknown>(
+        `/api/pms/properties/${encoded(propertyId)}/operating-calendar`,
+        request,
+        { headers: { "Idempotency-Key": idempotencyKey } },
+      );
+    } catch (error) {
+      throw commandOwnerError(error);
+    }
+    const result = parsePmsOperatingCalendarCommandResult(
+      { ok: true, response: value },
+      timeZoneRegistry,
+    );
+    if (!result?.ok || !configurationMatchesRequest(propertyId, result.response, request)) {
+      throw invalidOwnerContract("operating calendar command receipt");
+    }
+    const workspace = await loadWorkspace(propertyId, { cache: "no-store" });
+    const currentRead = workspace.current;
+    const current = currentRead?.configuration;
+    if (
+      !current ||
+      currentRead.sourceStatus !== "current" ||
+      current.calendarRevision !== result.response.configuration.calendarRevision ||
+      JSON.stringify(current) !== JSON.stringify(result.response.configuration)
+    ) {
+      throw new CalendarOwnerError(
+        "The calendar changed before the accepted revision could be verified. Reload the latest calendar.",
+        "calendar_refetch_conflict",
+        {
+          acceptedRevision: result.response.configuration.calendarRevision,
+          currentRevision: current?.calendarRevision ?? null,
+          sourceStatus: currentRead?.sourceStatus ?? null,
+        },
+        true,
+        true,
+      );
+    }
+    return workspace;
+  };
+
+  return { loadWorkspace, saveDraft, previewImpact, applyCalendar };
 }
 
 export const calendarApi = createCalendarApiClient(targetApiClient, sharedHotelSetupApi);
@@ -225,6 +334,132 @@ function parseDraftReceipt(
   return value as SavePropertySetupDraftReceipt;
 }
 
+function configurationMatchesRequest(
+  propertyId: string,
+  response: PmsOperatingCalendarCommandResponse,
+  request: PmsOperatingCalendarUpsertRequest,
+): boolean {
+  const configuration = response.configuration;
+  return (
+    response.outcome === (request.expectedCalendarRevision === 0 ? "created" : "updated") &&
+    configuration.propertyId === propertyId.toLowerCase() &&
+    configuration.calendarRevision === request.expectedCalendarRevision + 1 &&
+    configuration.sourceInputs.propertyProfile.entityId === propertyId.toLowerCase() &&
+    configuration.sourceInputs.propertyProfile.revision ===
+      `profile:${request.expectedPropertyProfileRevision}` &&
+    configuration.defaultMinimumStayNights === request.defaultMinimumStayNights &&
+    JSON.stringify(configuration.schedule) === JSON.stringify(request.schedule) &&
+    configuration.sourceInputs.roomBindings.length === request.roomTypeLimits.length &&
+    configuration.sourceInputs.roomBindings.every((binding, index) => {
+      const expected = request.roomTypeLimits[index];
+      return (
+        expected !== undefined &&
+        binding.roomTypeId === expected.roomTypeId &&
+        binding.sourceRoomFactsRevision === expected.expectedRoomFactsRevision &&
+        binding.sourceRoomUnitsRevision === expected.expectedRoomUnitsRevision &&
+        binding.startingSellableLimitCount === expected.startingSellableLimitCount
+      );
+    })
+  );
+}
+
+function previewOwnerError(error: unknown): Error {
+  if (!(error instanceof ApiErrorResponse))
+    return asError(error, "Calendar impact could not be previewed.");
+  const parsed = parsePmsOperatingCalendarImpactPreviewError(error.data as unknown);
+  return parsed
+    ? calendarOwnerError(parsed)
+    : invalidOwnerContract("operating calendar impact error");
+}
+
+function commandOwnerError(error: unknown): Error {
+  if (!(error instanceof ApiErrorResponse)) return asError(error, "Calendar could not be applied.");
+  const result = parsePmsOperatingCalendarCommandResult(
+    { ok: false, error: error.data },
+    timeZoneRegistry,
+  );
+  return result && !result.ok
+    ? calendarOwnerError(result.error)
+    : invalidOwnerContract("operating calendar command error");
+}
+
+function calendarOwnerError(
+  error: PmsOperatingCalendarImpactPreviewError | PmsOperatingCalendarCommandError,
+): CalendarOwnerError {
+  const messages: Partial<Record<typeof error.code, string>> = {
+    setup_scope_unavailable: "Calendar access is no longer available for this hotel.",
+    materialization_not_current:
+      "Calendar availability is still being prepared. Reload the latest calendar and try again.",
+    calendar_revision_conflict: "The operating calendar changed in another session.",
+    property_timezone_missing: "Add a property timezone before configuring the calendar.",
+    property_timezone_invalid: "The saved property timezone is not supported.",
+    property_profile_revision_conflict: "The property timezone changed in another session.",
+    active_room_type_set_empty: "Add at least one complete room type before opening the calendar.",
+    room_type_set_conflict: "The active room types changed in another session.",
+    room_facts_revision_conflict: "A room changed in another session.",
+    room_units_revision_conflict: "Room capacity changed in another session.",
+    room_capacity_unavailable: "Current room capacity is unavailable.",
+    starting_sellable_limit_exceeds_capacity:
+      "Starting availability is higher than the current room capacity.",
+    operating_calendar_unchanged: "These settings already match the current operating calendar.",
+    impact_confirmation_invalid: "The calendar impact confirmation is invalid. Preview it again.",
+    impact_confirmation_expired: "The calendar impact confirmation expired. Preview it again.",
+    impact_confirmation_configuration_mismatch:
+      "Calendar settings changed after the impact preview. Preview them again.",
+    impact_confirmation_stale:
+      "Calendar source data changed after the impact preview. Reload and preview it again.",
+    idempotency_key_conflict:
+      "This calendar save key was reused for different settings. Reload the latest calendar.",
+    command_in_progress: "This calendar save is still processing. Retry in a moment.",
+  };
+  const refreshCodes = new Set([
+    "setup_scope_unavailable",
+    "materialization_not_current",
+    "calendar_revision_conflict",
+    "property_timezone_missing",
+    "property_timezone_invalid",
+    "property_profile_revision_conflict",
+    "active_room_type_set_empty",
+    "room_type_set_conflict",
+    "room_facts_revision_conflict",
+    "room_units_revision_conflict",
+    "room_capacity_unavailable",
+    "starting_sellable_limit_exceeds_capacity",
+    "operating_calendar_unchanged",
+    "impact_confirmation_stale",
+    "idempotency_key_conflict",
+  ]);
+  const confirmationCodes = new Set([
+    "setup_scope_unavailable",
+    "calendar_revision_conflict",
+    "property_timezone_missing",
+    "property_timezone_invalid",
+    "property_profile_revision_conflict",
+    "active_room_type_set_empty",
+    "room_type_set_conflict",
+    "room_facts_revision_conflict",
+    "room_units_revision_conflict",
+    "room_capacity_unavailable",
+    "starting_sellable_limit_exceeds_capacity",
+    "impact_confirmation_invalid",
+    "impact_confirmation_expired",
+    "impact_confirmation_configuration_mismatch",
+    "impact_confirmation_stale",
+    "idempotency_key_conflict",
+  ]);
+  return new CalendarOwnerError(
+    messages[error.code] ?? "Calendar could not be saved. Try again.",
+    error.code,
+    error,
+    refreshCodes.has(error.code),
+    confirmationCodes.has(error.code),
+  );
+}
+
+function asError(error: unknown, fallback: string): Error {
+  return error instanceof Error ? error : new Error(fallback);
+}
+
 async function sha256Key(label: string, propertyId: string, value: unknown): Promise<string> {
   const source = JSON.stringify(value);
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
@@ -236,6 +471,10 @@ async function sha256Key(label: string, propertyId: string, value: unknown): Pro
 
 function invalidOwnerContract(label: string): Error {
   return new Error(`The protected ${label} adapter returned invalid data.`);
+}
+
+function invalidClientContract(label: string): TypeError {
+  return new TypeError(`The ${label} is invalid.`);
 }
 
 function encoded(value: string): string {

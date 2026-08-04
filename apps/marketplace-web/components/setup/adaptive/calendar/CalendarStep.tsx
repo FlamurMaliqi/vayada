@@ -10,16 +10,22 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import type {
+  PmsOperatingCalendarImpactPreview,
+  PmsOperatingCalendarImpactPreviewRequest,
+} from "@vayada/domain-pms";
 
 import { ApiErrorResponse } from "@/services/api/client";
-import { calendarApi } from "@/services/api/calendarApiClient";
+import { CalendarOwnerError, calendarApi } from "@/services/api/calendarApiClient";
 import type { AdaptiveSetupStepRenderContext } from "../AdaptiveHotelSetupController";
 import {
   CALENDAR_MAX_PERIODS,
   CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
   buildCalendarDraftRequest,
+  buildCalendarProposal,
   calendarDraftRevisionContext,
   hydrateCalendarDraft,
+  validateCalendarDraft,
   type CalendarDraft,
   type CalendarDraftRevisionContext,
   type CalendarValidationErrors,
@@ -32,6 +38,11 @@ export type AdaptiveSetupStepComponentProps = AdaptiveSetupStepRenderContext & {
 };
 
 type WorkspaceState = "loading" | "ready" | "error";
+
+type CalendarImpactReview = Readonly<{
+  proposal: PmsOperatingCalendarImpactPreviewRequest;
+  preview: PmsOperatingCalendarImpactPreview;
+}>;
 
 const STALE_DRAFT_CODES = new Set([
   "track_revision_conflict",
@@ -50,6 +61,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     reportRevisionConflict,
     refreshRoute,
     route,
+    saveAndContinue,
     step,
     interfaceLocale,
   } = props;
@@ -60,7 +72,9 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   );
   const saveInFlightRef = useRef<Promise<void> | null>(null);
   const draftRef = useRef<CalendarDraft | null>(null);
+  const impactReviewRef = useRef<CalendarImpactReview | null>(null);
   const [draft, setDraft] = useState<CalendarDraft | null>(null);
+  const [impactReview, setImpactReview] = useState<CalendarImpactReview | null>(null);
   const [workspace, setWorkspace] = useState<CalendarWorkspace | null>(null);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState>("loading");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -68,6 +82,8 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   const [errors, setErrors] = useState<CalendarValidationErrors>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const mounted = useRef(true);
   const manifestMissing =
@@ -99,6 +115,11 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   const commitDraft = useCallback((next: CalendarDraft) => {
     draftRef.current = next;
     if (mounted.current) setDraft(next);
+  }, []);
+
+  const commitImpactReview = useCallback((next: CalendarImpactReview | null) => {
+    impactReviewRef.current = next;
+    if (mounted.current) setImpactReview(next);
   }, []);
 
   const persistDraft = useCallback(async () => {
@@ -168,6 +189,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
         const next = hydrateCalendarDraft(loaded, step.draft);
         setWorkspace(loaded);
         commitDraft(next);
+        commitImpactReview(null);
         setErrors({});
         setSaveError(null);
         setWorkspaceState("ready");
@@ -180,6 +202,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     return () => controller.abort();
   }, [
     commitDraft,
+    commitImpactReview,
     manifestMissing,
     propertyId,
     scopeInvalid,
@@ -202,10 +225,11 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
         confirmed: options?.preserveConfirmation ? next.confirmed : false,
         dirty: true,
       });
+      if (!options?.preserveConfirmation) commitImpactReview(null);
       setSaveError(null);
       if (confirmationCleared) setAnnouncement("Calendar confirmation cleared after a change.");
     },
-    [commitDraft],
+    [commitDraft, commitImpactReview],
   );
 
   const chooseMode = (mode: "year_round" | "recurring") => {
@@ -251,18 +275,114 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     }
   };
 
-  const reloadLatest = async () => {
-    setWorkspaceState("loading");
-    setSaveError(null);
-    setErrors({});
-    draftRef.current = null;
-    setDraft(null);
+  const reportCalendarError = (error: unknown) => {
+    if (error instanceof CalendarOwnerError) {
+      if (error.requiresPreview) {
+        commitImpactReview(null);
+        const current = draftRef.current;
+        if (current?.confirmed) commitDraft({ ...current, confirmed: false, dirty: true });
+        setAnnouncement("Calendar impact confirmation cleared. Review the current impact again.");
+      }
+      if (error.requiresRefresh) reportRevisionConflict(error.message);
+    }
+    if (mounted.current) setSaveError(errorMessage(error));
+  };
+
+  const reviewImpact = async () => {
+    const current = draftRef.current;
+    if (!current || !workspace || saving || previewing || applying) return;
+    const nextErrors = validateCalendarDraft(current, { requireConfirmation: false });
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      focusFirstCalendarError();
+      return;
+    }
+    let proposal: PmsOperatingCalendarImpactPreviewRequest;
     try {
-      await refreshRoute();
-      setWorkspaceReload((value) => value + 1);
+      proposal = buildCalendarProposal(current, workspace);
     } catch (error) {
-      setWorkspaceState("error");
-      setWorkspaceError(errorMessage(error));
+      setSaveError(errorMessage(error));
+      return;
+    }
+    setPreviewing(true);
+    setSaveError(null);
+    commitImpactReview(null);
+    try {
+      await persistDraft();
+      const afterDraftSave = draftRef.current;
+      if (
+        !afterDraftSave ||
+        !sameProposal(proposal, buildCalendarProposal(afterDraftSave, workspace))
+      ) {
+        setAnnouncement("Your latest calendar edits are saved. Review their impact when ready.");
+        return;
+      }
+      const preview = await calendarApi.previewImpact(propertyId, proposal);
+      const latest = draftRef.current;
+      if (!latest || !sameProposal(proposal, buildCalendarProposal(latest, workspace))) {
+        setAnnouncement("Calendar settings changed during review. Review the latest impact again.");
+        return;
+      }
+      commitImpactReview({ proposal, preview });
+      if (latest.confirmed) commitDraft({ ...latest, confirmed: false, dirty: true });
+      setAnnouncement("Calendar impact is ready to review.");
+    } catch (error) {
+      reportCalendarError(error);
+    } finally {
+      if (mounted.current) setPreviewing(false);
+    }
+  };
+
+  const applyCalendar = async () => {
+    const current = draftRef.current;
+    const review = impactReviewRef.current;
+    if (!current || !workspace || !review || saving || previewing || applying) return;
+    const nextErrors = validateCalendarDraft(current);
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      focusFirstCalendarError();
+      return;
+    }
+    if (!sameProposal(review.proposal, buildCalendarProposal(current, workspace))) {
+      commitImpactReview(null);
+      setSaveError("Calendar settings changed after the impact review. Review the impact again.");
+      return;
+    }
+    if (Date.parse(review.preview.confirmation.expiresAt) <= Date.now()) {
+      commitImpactReview(null);
+      commitDraft({ ...current, confirmed: false, dirty: true });
+      setSaveError("The calendar impact review expired. Review the current impact again.");
+      return;
+    }
+    setApplying(true);
+    setSaveError(null);
+    try {
+      await persistDraft();
+      const latest = draftRef.current;
+      if (
+        impactReviewRef.current !== review ||
+        !latest ||
+        !sameProposal(review.proposal, buildCalendarProposal(latest, workspace))
+      ) {
+        setAnnouncement("Your latest edits remain saved as a draft. Review their impact again.");
+        return;
+      }
+      const saved = await calendarApi.applyCalendar(
+        propertyId,
+        review.proposal,
+        review.preview.confirmation,
+      );
+      if (!mounted.current) return;
+      setWorkspace(saved);
+      commitDraft(hydrateCalendarDraft(saved, null));
+      commitImpactReview(null);
+      setAnnouncement("Starting calendar saved.");
+      await refreshRoute();
+      await saveAndContinue();
+    } catch (error) {
+      reportCalendarError(error);
+    } finally {
+      if (mounted.current) setApplying(false);
     }
   };
 
@@ -313,15 +433,9 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
                 Room or property details changed
               </p>
               <p className="mt-1 text-sm leading-6 text-amber-900">
-                Review the current room capacities and calendar settings. Confirmation was cleared.
+                Review the current room capacities and run a fresh impact review before saving. Your
+                protected draft remains available while you decide.
               </p>
-              <button
-                type="button"
-                className={`${secondaryButtonClass} mt-3`}
-                onClick={() => void reloadLatest()}
-              >
-                Reload latest calendar
-              </button>
             </div>
           </div>
         </div>
@@ -504,62 +618,250 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
         </div>
       </section>
 
-      <section className="border-t border-gray-200 pt-9">
-        <fieldset aria-describedby={errors.confirmed ? "calendar-confirmation-error" : undefined}>
-          <legend className="sr-only">Starting calendar confirmation</legend>
-          <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-800 focus-within:ring-2 focus-within:ring-primary-600 focus-within:ring-offset-2">
-            <input
-              id="calendar-confirmation"
-              type="checkbox"
-              checked={draft.confirmed}
-              onChange={(event) => {
-                updateDraft((current) => ({ ...current, confirmed: event.target.checked }), {
-                  preserveConfirmation: true,
-                });
-                clearErrors(setErrors, ["confirmed"]);
-              }}
-              className="mt-0.5 h-5 w-5 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
+      <section aria-labelledby="calendar-impact-heading" className="border-t border-gray-200 pt-9">
+        <h2 id="calendar-impact-heading" className="text-lg font-semibold text-gray-950">
+          Review the impact before saving
+        </h2>
+        <p className="mt-1 max-w-2xl text-sm leading-6 text-gray-600">
+          We compare these settings with current inventory, accepted bookings, room blocks, and
+          owner overrides. The review contains totals only, never guest details.
+        </p>
+
+        {impactReview ? (
+          <div className="mt-5 space-y-5">
+            <CalendarImpactPanel
+              review={impactReview}
+              rooms={draft.rooms}
+              locale={interfaceLocale}
             />
-            <span>
-              <span className="font-semibold text-gray-950">
-                Create my starting calendar with these settings.
-              </span>
-              <span className="mt-1 block leading-6 text-gray-600">
-                This records your review intent. A server impact confirmation is still required
-                before the calendar can be applied.
-              </span>
-            </span>
-          </label>
-          <FieldError id="calendar-confirmation-error" message={errors.confirmed} />
-        </fieldset>
+            <fieldset
+              aria-describedby={errors.confirmed ? "calendar-confirmation-error" : undefined}
+            >
+              <legend className="sr-only">Starting calendar confirmation</legend>
+              <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-800 focus-within:ring-2 focus-within:ring-primary-600 focus-within:ring-offset-2">
+                <input
+                  id="calendar-confirmation"
+                  type="checkbox"
+                  checked={draft.confirmed}
+                  aria-invalid={Boolean(errors.confirmed)}
+                  onChange={(event) => {
+                    updateDraft((current) => ({ ...current, confirmed: event.target.checked }), {
+                      preserveConfirmation: true,
+                    });
+                    clearErrors(setErrors, ["confirmed"]);
+                  }}
+                  className="mt-0.5 h-5 w-5 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
+                />
+                <span>
+                  <span className="font-semibold text-gray-950">
+                    I reviewed this impact and want to create the starting calendar.
+                  </span>
+                  <span className="mt-1 block leading-6 text-gray-600">
+                    This confirmation applies only to the exact settings and source revisions shown
+                    above. It expires at{" "}
+                    {formatDateTime(impactReview.preview.confirmation.expiresAt, interfaceLocale)}.
+                  </span>
+                </span>
+              </label>
+              <FieldError id="calendar-confirmation-error" message={errors.confirmed} />
+            </fieldset>
+          </div>
+        ) : (
+          <div className="mt-5 rounded-xl border border-gray-200 bg-gray-50 px-4 py-4 text-sm leading-6 text-gray-700">
+            Save the protected draft and run an impact review to unlock final confirmation.
+          </div>
+        )}
       </section>
 
       <div className="border-t border-gray-200 pt-6">
-        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
+        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
           <button
             type="button"
             className={`${secondaryButtonClass} justify-center`}
-            disabled={saving || !draft.dirty}
+            disabled={saving || previewing || applying || !draft.dirty}
             onClick={() => void saveDraftNow()}
           >
             {saving ? "Saving..." : "Save draft"}
           </button>
           <button
             type="button"
-            className={`${primaryButtonClass} justify-center`}
-            disabled
-            aria-describedby="calendar-apply-unavailable"
+            className={`${secondaryButtonClass} justify-center`}
+            disabled={saving || previewing || applying}
+            onClick={() => void reviewImpact()}
           >
-            Save and continue
+            {previewing
+              ? "Reviewing impact..."
+              : impactReview
+                ? "Review impact again"
+                : "Review impact"}
+          </button>
+          <button
+            type="button"
+            className={`${primaryButtonClass} justify-center`}
+            disabled={saving || previewing || applying || !impactReview || !draft.confirmed}
+            onClick={() => void applyCalendar()}
+          >
+            {applying ? "Saving calendar..." : "Save and continue"}
           </button>
         </div>
-        <p
-          id="calendar-apply-unavailable"
-          className="mt-3 text-right text-sm leading-6 text-gray-600"
-        >
-          Calendar impact confirmation is not available yet. Your draft can still be saved safely.
+      </div>
+    </div>
+  );
+}
+
+function CalendarImpactPanel({
+  review,
+  rooms,
+  locale,
+}: {
+  review: CalendarImpactReview;
+  rooms: readonly Readonly<{ roomTypeId: string; name: string }>[];
+  locale: string;
+}) {
+  const { impact } = review.preview;
+  const { summary } = impact;
+  const number = new Intl.NumberFormat(locale);
+  const roomNames = new Map(rooms.map(({ roomTypeId, name }) => [roomTypeId, name]));
+  return (
+    <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white">
+      <div className="border-b border-gray-200 px-4 py-4 sm:px-5">
+        <p className="text-sm font-semibold text-gray-950">Current impact</p>
+        <p className="mt-1 text-sm leading-6 text-gray-600">
+          Generated {formatDateTime(review.preview.generatedAt, locale)} from the exact current
+          calendar, room, profile, and inventory revisions.
         </p>
       </div>
+      <dl className="grid grid-cols-2 gap-px bg-gray-200 sm:grid-cols-4">
+        <ImpactMetric label="Dates closing" value={summary.closingDateCount} number={number} />
+        <ImpactMetric label="Dates opening" value={summary.openingDateCount} number={number} />
+        <ImpactMetric
+          label="Room nights removed"
+          value={summary.availableRoomNightsRemoved}
+          number={number}
+        />
+        <ImpactMetric
+          label="Room nights added"
+          value={summary.availableRoomNightsAdded}
+          number={number}
+        />
+      </dl>
+
+      {(summary.acceptedBookingCount > 0 ||
+        summary.blockedRoomNights > 0 ||
+        summary.ownerOverrideDateCount > 0) && (
+        <div className="border-t border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-950 sm:px-5">
+          <p className="font-semibold">Existing activity needs your attention</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            {summary.acceptedBookingCount > 0 && (
+              <li>
+                {number.format(summary.acceptedBookingCount)} accepted{" "}
+                {summary.acceptedBookingCount === 1 ? "booking" : "bookings"} across{" "}
+                {number.format(summary.acceptedBookedRoomNights)} room nights
+              </li>
+            )}
+            {summary.blockedRoomNights > 0 && (
+              <li>{number.format(summary.blockedRoomNights)} blocked room nights</li>
+            )}
+            {summary.ownerOverrideDateCount > 0 && (
+              <li>{number.format(summary.ownerOverrideDateCount)} dates with owner overrides</li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {impact.roomTypeChanges.length > 0 && (
+        <div className="border-t border-gray-200 px-4 py-4 sm:px-5">
+          <p className="text-sm font-semibold text-gray-950">Starting availability by room</p>
+          <ul className="mt-3 divide-y divide-gray-100 text-sm">
+            {impact.roomTypeChanges.map((change) => (
+              <li
+                key={change.roomTypeId}
+                className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <span className="font-medium text-gray-900">
+                  {roomNames.get(change.roomTypeId) ?? "Room type"}
+                </span>
+                <span className="text-gray-600">
+                  {change.previousStartingSellableLimitCount === null
+                    ? "Not configured"
+                    : number.format(change.previousStartingSellableLimitCount)}{" "}
+                  → {number.format(change.proposedStartingSellableLimitCount)} rooms;{" "}
+                  {signedNumber(change.availableRoomNightsDelta, number)} room nights
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {impact.affectedDates.length > 0 && (
+        <details className="border-t border-gray-200 px-4 py-4 sm:px-5">
+          <summary className="cursor-pointer text-sm font-semibold text-gray-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2">
+            Review {number.format(impact.affectedDates.length)} affected{" "}
+            {impact.affectedDates.length === 1 ? "date" : "dates"}
+          </summary>
+          <div className="mt-4 max-h-80 overflow-auto rounded-xl border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-left text-sm">
+              <caption className="sr-only">Affected calendar dates and availability</caption>
+              <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-600">
+                <tr>
+                  <th scope="col" className="px-3 py-2">
+                    Date
+                  </th>
+                  <th scope="col" className="px-3 py-2">
+                    Change
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right">
+                    Availability
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right">
+                    Bookings
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 bg-white text-gray-700">
+                {impact.affectedDates.map((date) => (
+                  <tr key={date.stayDate}>
+                    <th
+                      scope="row"
+                      className="whitespace-nowrap px-3 py-2 font-medium text-gray-950"
+                    >
+                      {formatStayDate(date.stayDate, locale)}
+                    </th>
+                    <td className="whitespace-nowrap px-3 py-2">
+                      {impactStatusLabel(date.statusChange)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-right">
+                      {number.format(date.availableCountBefore)} →{" "}
+                      {number.format(date.availableCountAfter)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-right">
+                      {number.format(date.acceptedBookingCount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function ImpactMetric({
+  label,
+  value,
+  number,
+}: {
+  label: string;
+  value: number;
+  number: Intl.NumberFormat;
+}) {
+  return (
+    <div className="bg-white px-4 py-4">
+      <dt className="text-xs font-medium text-gray-600">{label}</dt>
+      <dd className="mt-1 text-xl font-semibold text-gray-950">{number.format(value)}</dd>
     </div>
   );
 }
@@ -826,6 +1128,54 @@ function errorMessage(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sameProposal(
+  left: PmsOperatingCalendarImpactPreviewRequest,
+  right: PmsOperatingCalendarImpactPreviewRequest,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function focusFirstCalendarError(): void {
+  requestAnimationFrame(() => {
+    document
+      .querySelector<HTMLElement>(
+        '[aria-invalid="true"], #calendar-confirmation, #calendar-mode-year-round',
+      )
+      ?.focus();
+  });
+}
+
+function formatDateTime(value: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function formatStayDate(value: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(value + "T00:00:00.000Z"));
+}
+
+function impactStatusLabel(value: string): string {
+  switch (value) {
+    case "open_to_closed":
+      return "Closes";
+    case "closed_to_open":
+      return "Opens";
+    default:
+      return "Availability changes";
+  }
+}
+
+function signedNumber(value: number, number: Intl.NumberFormat): string {
+  return value > 0 ? "+" + number.format(value) : number.format(value);
 }
 
 function daysInMonth(month: number): number {
