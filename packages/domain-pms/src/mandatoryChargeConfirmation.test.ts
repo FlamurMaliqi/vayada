@@ -9,17 +9,24 @@ import {
   PMS_MANDATORY_CHARGE_CONFIRMATION_AUTHORIZATION,
   PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION,
   PMS_MANDATORY_CHARGE_CONFIRMATION_IDEMPOTENCY,
+  PMS_MANDATORY_CHARGE_CONFIRMATION_OUTBOX_DESTINATION,
+  PMS_MANDATORY_CHARGE_CONFIRMATION_OUTBOX_METADATA,
   PMS_MANDATORY_CHARGE_PRICING_SOURCE_FINGERPRINT_ALGORITHM,
   PMS_MANDATORY_CHARGE_PRICING_SOURCE_PAYLOAD_VERSION,
   PMS_MANDATORY_CHARGE_CONFIRMATION_RESOURCE_TYPE,
+  PMS_MANDATORY_CHARGES_CONFIRMED_EVENT_TYPE,
   createPmsMandatoryChargePricingSourceSnapshot,
   parseConfirmMandatoryChargesIncludedCommand,
   parseConfirmMandatoryChargesIncludedResult,
   parsePmsMandatoryChargeConfirmationEvidence,
+  parsePmsMandatoryChargeConfirmationReadRequest,
+  parsePmsMandatoryChargeConfirmationReadResult,
   parsePmsMandatoryChargePricingSourceFingerprint,
+  parsePmsMandatoryChargesConfirmedEvent,
   serializeConfirmMandatoryChargesIncludedFingerprint,
   serializePmsMandatoryChargePricingSourcePayload,
   type PmsMandatoryChargeConfirmationCommandPort,
+  type PmsMandatoryChargeConfirmationReadPort,
   type PmsMandatoryChargePricingSourceInput,
 } from "./mandatoryChargeConfirmation.js";
 
@@ -515,5 +522,133 @@ describe("PMS mandatory-charge confirmation contract", () => {
         error: { code: "pricing_source_conflict", pricing: "secret" },
       }),
     ).toBeNull();
+  });
+
+  it("keeps every read outcome explicitly scoped to organization and property", async () => {
+    const request = parsePmsMandatoryChargeConfirmationReadRequest({
+      organizationId: organizationId.toUpperCase(),
+      propertyId: propertyId.toUpperCase(),
+    });
+    expect(request).toEqual({ organizationId, propertyId });
+
+    const available = parsePmsMandatoryChargeConfirmationReadResult({
+      outcome: "available",
+      organizationId: organizationId.toUpperCase(),
+      propertyId: propertyId.toUpperCase(),
+      evidence: confirmationEvidence(),
+    });
+    expect(available).toEqual({
+      outcome: "available",
+      organizationId,
+      propertyId,
+      evidence: confirmationEvidence(),
+    });
+
+    for (const outcome of ["missing", "malformed"] as const) {
+      expect(
+        parsePmsMandatoryChargeConfirmationReadResult({
+          outcome,
+          organizationId,
+          propertyId,
+        }),
+      ).toEqual({ outcome, organizationId, propertyId });
+    }
+    expect(
+      parsePmsMandatoryChargeConfirmationReadResult({
+        outcome: "unavailable",
+        organizationId,
+        propertyId,
+        errorSource: "provider",
+      }),
+    ).toEqual({ outcome: "unavailable", organizationId, propertyId, errorSource: "provider" });
+
+    const readPort: PmsMandatoryChargeConfirmationReadPort = {
+      async getMandatoryChargeConfirmation(scope) {
+        return { ...scope, outcome: "missing" };
+      },
+    };
+    await expect(readPort.getMandatoryChargeConfirmation(request!)).resolves.toEqual({
+      outcome: "missing",
+      organizationId,
+      propertyId,
+    });
+
+    expect(
+      parsePmsMandatoryChargeConfirmationReadResult({
+        outcome: "available",
+        organizationId: userId,
+        propertyId,
+        evidence: confirmationEvidence(),
+      }),
+    ).toBeNull();
+    expect(parsePmsMandatoryChargeConfirmationReadResult({ outcome: "missing" })).toBeNull();
+    expect(
+      parsePmsMandatoryChargeConfirmationReadResult({
+        outcome: "missing",
+        organizationId,
+        propertyId,
+        pricingSourceFingerprint: digest(sourceInput()),
+      }),
+    ).toBeNull();
+    expect(
+      parsePmsMandatoryChargeConfirmationReadRequest({ organizationId, propertyId: "bad" }),
+    ).toBeNull();
+  });
+
+  it("parses only the accepted secret-safe event and outbox vocabulary", () => {
+    expect(PMS_MANDATORY_CHARGES_CONFIRMED_EVENT_TYPE).toBe("pms.mandatory_charges.confirmed");
+    expect(PMS_MANDATORY_CHARGE_CONFIRMATION_OUTBOX_DESTINATION).toBe("booking.pricing-source");
+    expect(PMS_MANDATORY_CHARGE_CONFIRMATION_OUTBOX_METADATA).toEqual({
+      sourceReadRequired: true,
+    });
+
+    const event = parsePmsMandatoryChargesConfirmedEvent({
+      contractVersion: PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION,
+      eventType: PMS_MANDATORY_CHARGES_CONFIRMED_EVENT_TYPE,
+      organizationId: organizationId.toUpperCase(),
+      propertyId: propertyId.toUpperCase(),
+      confirmationRevision: 6,
+      pricingCurrencyRevision: 2,
+      optionalPricingAggregateRevision: 5,
+      outcome: "confirmed",
+    });
+    expect(event).toEqual({
+      contractVersion: "pms-mandatory-charge-confirmation.v1",
+      eventType: "pms.mandatory_charges.confirmed",
+      organizationId,
+      propertyId,
+      confirmationRevision: 6,
+      pricingCurrencyRevision: 2,
+      optionalPricingAggregateRevision: 5,
+      outcome: "confirmed",
+    });
+    const serialized = JSON.stringify(event);
+    expect(serialized).not.toContain(digest(sourceInput()));
+    expect(serialized).not.toContain("req-confirm-1");
+    expect(serialized).not.toContain("sourceReadRequired");
+
+    for (const extra of [
+      { pricingSourceFingerprint: digest(sourceInput()) },
+      { requestId: "req-confirm-1" },
+      { sourceReadRequired: true },
+      { destination: "booking.pricing-source" },
+    ]) {
+      expect(parsePmsMandatoryChargesConfirmedEvent({ ...event, ...extra })).toBeNull();
+    }
+    expect(
+      parsePmsMandatoryChargesConfirmedEvent({ ...event, pricingCurrencyRevision: 0 }),
+    ).toBeNull();
+    expect(
+      parsePmsMandatoryChargesConfirmedEvent({
+        ...event,
+        optionalPricingAggregateRevision: -1,
+      }),
+    ).toBeNull();
+    expect(
+      parsePmsMandatoryChargesConfirmedEvent({
+        ...event,
+        optionalPricingAggregateRevision: 0,
+      }),
+    ).toMatchObject({ optionalPricingAggregateRevision: 0 });
   });
 });
