@@ -170,7 +170,7 @@ function parseCanonicalRoom(value: unknown): CanonicalRoom | null {
   }
   const { maxGuests, maxAdults, maxChildren } = value.occupancy;
   if (
-    !isIntegerInRange(maxGuests, 1, 10_000) ||
+    !isIntegerInRange(maxGuests, 1, 100) ||
     !isIntegerInRange(maxAdults, 1, maxGuests) ||
     !isIntegerInRange(maxChildren, 0, maxGuests) ||
     maxAdults + maxChildren < maxGuests
@@ -405,9 +405,8 @@ function isDenseArray(value: unknown): value is unknown[] {
   const ownKeys = Reflect.ownKeys(value);
   return (
     ownKeys.length === value.length + 1 &&
-    ownKeys.includes("length") &&
-    Array.from({ length: value.length }, (_, index) => String(index)).every((key) =>
-      ownKeys.includes(key),
+    Array.from({ length: value.length }, (_, index) => index).every((index) =>
+      Object.hasOwn(value, index),
     )
   );
 }

@@ -304,6 +304,9 @@ describe("PMS mandatory-charge pricing source", () => {
         const source = copy.recurringPricing.sources[3]!;
         if (source.sourceKind === "non_refundable") Object.assign(source, { discountPercent: 11 });
       },
+      (copy) => void (copy.rooms as unknown[]).pop(),
+      (copy) => void (copy.pricing.flexibleRatePlans as unknown[]).pop(),
+      (copy) => void (copy.recurringPricing.sources as unknown[]).pop(),
     ];
     for (const mutate of mutations) {
       const changed = structuredClone(sourceInput()) as PmsMandatoryChargePricingSourceInput;
@@ -316,6 +319,15 @@ describe("PMS mandatory-charge pricing source", () => {
     ) as PmsMandatoryChargePricingSourceInput;
     Object.assign(roomWithExtraField.rooms[0]!, { lifecycle: "active" });
     expect(() => digest(roomWithExtraField)).toThrow(TypeError);
+    const impossibleOccupancy = structuredClone(
+      sourceInput(),
+    ) as PmsMandatoryChargePricingSourceInput;
+    Object.assign(impossibleOccupancy.rooms[0]!.occupancy, {
+      maxGuests: 101,
+      maxAdults: 101,
+      maxChildren: 0,
+    });
+    expect(() => digest(impossibleOccupancy)).toThrow(TypeError);
     expect(parsePmsMandatoryChargePricingSourceFingerprint(baseline)).toBe(baseline);
     expect(parsePmsMandatoryChargePricingSourceFingerprint(baseline.toUpperCase())).toBeNull();
     expect(parsePmsMandatoryChargePricingSourceFingerprint(baseline.slice(1))).toBeNull();
