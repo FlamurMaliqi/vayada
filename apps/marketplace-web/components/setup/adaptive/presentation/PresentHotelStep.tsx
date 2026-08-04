@@ -79,6 +79,7 @@ const PRESENTATION_FIELDS = [
   "profile.gallery_images",
   "profile.amenities",
 ] as const;
+type PresentationField = (typeof PRESENTATION_FIELDS)[number];
 
 export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
   const {
@@ -103,6 +104,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
   const [amenitySearch, setAmenitySearch] = useState("");
   const [reload, setReload] = useState(0);
   const dirtyRef = useRef(false);
+  const dirtyFieldsRef = useRef<Set<PresentationField>>(new Set());
   const revisionRef = useRef(adaptiveStepDraftRevision(route, step, "present_hotel"));
   const summaryRef = useRef<HTMLTextAreaElement>(null);
   const localeRef = useRef<HTMLSelectElement>(null);
@@ -136,6 +138,11 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
         formRef.current = next;
         setOwner(read);
         setForm(next);
+        dirtyFieldsRef.current = new Set(
+          step.draft?.stepId === "present_hotel"
+            ? (step.draft.dirtyFields as PresentationField[])
+            : [],
+        );
         dirtyRef.current = false;
       })
       .catch((error) => {
@@ -150,14 +157,18 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propertyId, reload]);
 
-  const update = useCallback((change: Partial<PresentationForm>) => {
-    const current = formRef.current;
-    if (!current) return;
-    const next = { ...current, ...change };
-    formRef.current = next;
-    dirtyRef.current = true;
-    setForm(next);
-  }, []);
+  const update = useCallback(
+    (change: Partial<PresentationForm>, dirtyFields: readonly PresentationField[] = []) => {
+      for (const field of dirtyFields) dirtyFieldsRef.current.add(field);
+      const current = formRef.current;
+      if (!current) return;
+      const next = { ...current, ...change };
+      formRef.current = next;
+      dirtyRef.current = true;
+      setForm(next);
+    },
+    [],
+  );
 
   const persistDraft = useCallback(async () => {
     const current = formRef.current;
@@ -175,7 +186,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
           ),
           "profile.amenities": current.amenities,
         },
-        dirtyFields: [...PRESENTATION_FIELDS],
+        dirtyFields: Array.from(dirtyFieldsRef.current),
       }),
     );
     revisionRef.current = withDraftReceipt(revisionRef.current, receipt);
@@ -217,13 +228,17 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
       file,
       status: "uploading",
     }));
-    update({ photos: [...formRef.current.photos, ...placeholders] });
+    update({ photos: [...formRef.current.photos, ...placeholders] }, [
+      "profile.hero_image",
+      "profile.gallery_images",
+    ]);
     await Promise.all(
       files.map(async (file, index) => {
         const placeholder = placeholders[index]!;
         await uploadPhoto(placeholder, file);
       }),
     );
+    ensureCover();
     try {
       await persistDraft();
     } catch (error) {
@@ -257,11 +272,27 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
     const current = formRef.current;
     if (!current) return;
     const photos = current.photos.map((item) => (item.key === key ? photo : item));
-    const coverMediaObjectId =
-      current.coverMediaObjectId ??
-      photos.find(({ mediaObjectId }) => mediaObjectId)?.mediaObjectId ??
-      null;
-    update({ photos, coverMediaObjectId });
+    update({ photos }, ["profile.hero_image", "profile.gallery_images"]);
+  };
+
+  const ensureCover = () => {
+    const current = formRef.current;
+    if (!current || current.coverMediaObjectId) return;
+    const coverMediaObjectId = current.photos.find(
+      ({ status, mediaObjectId }) => status === "ready" && mediaObjectId,
+    )?.mediaObjectId;
+    if (coverMediaObjectId) update({ coverMediaObjectId }, ["profile.hero_image"]);
+  };
+
+  const retryPhoto = async (photo: PhotoDraft) => {
+    if (!photo.file) return;
+    await uploadPhoto(photo, photo.file);
+    ensureCover();
+    try {
+      await persistDraft();
+    } catch (error) {
+      setSaveError(adaptiveStepErrorMessage(error));
+    }
   };
 
   const removePhoto = (key: string) => {
@@ -275,7 +306,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
     )
       ? current.coverMediaObjectId
       : (photos.find(({ mediaObjectId }) => mediaObjectId)?.mediaObjectId ?? null);
-    update({ photos, coverMediaObjectId });
+    update({ photos, coverMediaObjectId }, ["profile.hero_image", "profile.gallery_images"]);
   };
 
   const movePhoto = (index: number, direction: -1 | 1) => {
@@ -285,7 +316,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
     if (target < 0 || target >= current.photos.length) return;
     const photos = current.photos.slice();
     [photos[index], photos[target]] = [photos[target]!, photos[index]!];
-    update({ photos });
+    update({ photos }, ["profile.gallery_images"]);
   };
 
   const validate = (current: PresentationForm): Errors => {
@@ -392,7 +423,9 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
               ref={localeRef}
               value={form.locale}
               onChange={(event) => {
-                update({ locale: event.target.value as HotelCatalogContentLocale });
+                update({ locale: event.target.value as HotelCatalogContentLocale }, [
+                  "profile.default_locale",
+                ]);
                 setErrors((value) => ({ ...value, locale: undefined }));
               }}
               aria-invalid={!!errors.locale}
@@ -422,7 +455,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
             maxLength={HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH}
             value={form.summary}
             onChange={(event) => {
-              update({ summary: event.target.value });
+              update({ summary: event.target.value }, ["profile.short_description"]);
               setErrors((value) => ({ ...value, summary: undefined }));
             }}
             aria-invalid={!!errors.summary}
@@ -509,7 +542,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
                       {photo.status === "failed" && photo.file && (
                         <button
                           type="button"
-                          onClick={() => void uploadPhoto(photo, photo.file!)}
+                          onClick={() => void retryPhoto(photo)}
                           className="rounded px-2 py-1 text-xs font-semibold text-primary-700 outline-none hover:bg-primary-50 focus-visible:ring-2 focus-visible:ring-primary-600"
                         >
                           Retry
@@ -518,7 +551,11 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
                       {photo.mediaObjectId && photo.mediaObjectId !== form.coverMediaObjectId && (
                         <button
                           type="button"
-                          onClick={() => update({ coverMediaObjectId: photo.mediaObjectId })}
+                          onClick={() =>
+                            update({ coverMediaObjectId: photo.mediaObjectId }, [
+                              "profile.hero_image",
+                            ])
+                          }
                           className="rounded px-2 py-1 text-xs font-semibold text-primary-700 outline-none hover:bg-primary-50 focus-visible:ring-2 focus-visible:ring-primary-600"
                         >
                           Make cover
@@ -606,11 +643,14 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
                         type="checkbox"
                         checked={checked}
                         onChange={() =>
-                          update({
-                            amenities: checked
-                              ? form.amenities.filter((item) => item !== key)
-                              : [...form.amenities, key],
-                          })
+                          update(
+                            {
+                              amenities: checked
+                                ? form.amenities.filter((item) => item !== key)
+                                : [...form.amenities, key],
+                            },
+                            ["profile.amenities"],
+                          )
                         }
                         className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
                       />
@@ -655,10 +695,6 @@ function hydrate(
     typeof payload["profile.short_description"] === "string"
       ? payload["profile.short_description"]
       : (owner.profile.shortDescription ?? "");
-  const ownerIds = [
-    owner.profile.media.coverMediaObjectId,
-    ...owner.profile.media.galleryMediaObjectIds,
-  ].filter((value): value is string => !!value);
   const cover =
     dirty.has("profile.hero_image") &&
     (typeof payload["profile.hero_image"] === "string" || payload["profile.hero_image"] === null)
@@ -678,7 +714,7 @@ function hydrate(
     summary,
     coverMediaObjectId: cover,
     amenities,
-    photos: (ids.length ? ids : ownerIds).map((mediaObjectId, index) => ({
+    photos: ids.map((mediaObjectId, index) => ({
       key: mediaObjectId,
       mediaObjectId,
       previewUrl: null,

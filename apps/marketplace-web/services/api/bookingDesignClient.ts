@@ -1,6 +1,8 @@
 import {
+  parseBookingDesignReadinessResult,
   parseBookingDesignRevision,
   parseUpsertBookingDesignRequest,
+  type BookingDesignReadinessResult,
   type BookingDesignRevision,
   type UpsertBookingDesignRequest,
 } from "@vayada/domain-booking";
@@ -26,6 +28,22 @@ export function createBookingDesignClient(http: HttpClient) {
         if (error instanceof ApiErrorResponse && error.status === 404) return null;
         throw error;
       }
+    },
+
+    async loadReadiness(
+      scope: Readonly<{ organizationId: string; propertyId: string }>,
+      options?: RequestInit,
+    ): Promise<BookingDesignReadinessResult> {
+      let value: unknown;
+      try {
+        value = await http.get<unknown>(readinessPath(scope.propertyId), options);
+      } catch (error) {
+        if (!(error instanceof ApiErrorResponse) || error.status !== 503) throw error;
+        value = error.data;
+      }
+      const parsed = parseBookingDesignReadinessResult(value, scope);
+      if (!parsed) throw invalid("readiness");
+      return parsed;
     },
 
     async save(
@@ -74,6 +92,10 @@ export const bookingDesignClient = createBookingDesignClient(targetApiClient);
 
 function path(propertyId: string): string {
   return `/api/booking/properties/${encodeURIComponent(propertyId)}/booking-design`;
+}
+
+function readinessPath(propertyId: string): string {
+  return `${path(propertyId)}/readiness`;
 }
 
 async function key(propertyId: string, request: UpsertBookingDesignRequest): Promise<string> {

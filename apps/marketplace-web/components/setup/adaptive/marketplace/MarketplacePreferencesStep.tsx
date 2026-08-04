@@ -89,6 +89,7 @@ const DRAFT_FIELDS = [
   "marketplace.preferences.content_types",
   "marketplace.preferences.availability",
 ] as const;
+type PreferenceField = (typeof DRAFT_FIELDS)[number];
 
 export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProps) {
   const {
@@ -105,6 +106,7 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
   const ownerRef = useRef<MarketplaceHotelCollaborationPreferencesReadModel | null>(null);
   const revisionRef = useRef(adaptiveStepDraftRevision(route, step, "marketplace_preferences"));
   const dirtyRef = useRef(false);
+  const dirtyFieldsRef = useRef<Set<PreferenceField>>(new Set());
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -135,6 +137,11 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
         ownerRef.current = read;
         formRef.current = next;
         setForm(next);
+        dirtyFieldsRef.current = new Set(
+          step.draft?.stepId === "marketplace_preferences"
+            ? (step.draft.dirtyFields as PreferenceField[])
+            : [],
+        );
         dirtyRef.current = false;
       })
       .catch((error) => {
@@ -148,9 +155,10 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propertyId, reload]);
 
-  const update = useCallback((change: Partial<PreferenceForm>) => {
+  const update = useCallback((change: Partial<PreferenceForm>, field: PreferenceField) => {
     const current = formRef.current;
     if (!current) return;
+    dirtyFieldsRef.current.add(field);
     const next = { ...current, ...change };
     formRef.current = next;
     dirtyRef.current = true;
@@ -172,7 +180,7 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
             ? { mode: current.availabilityMode, selectedMonths: current.selectedMonths }
             : null,
         },
-        dirtyFields: [...DRAFT_FIELDS],
+        dirtyFields: Array.from(dirtyFieldsRef.current),
       }),
     );
     revisionRef.current = withDraftReceipt(revisionRef.current, receipt);
@@ -281,7 +289,10 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
                   errors.compensationTypes ? "preferences-compensation-error" : undefined
                 }
                 onChange={() => {
-                  update({ compensationTypes: toggle(form.compensationTypes, value) });
+                  update(
+                    { compensationTypes: toggle(form.compensationTypes, value) },
+                    "marketplace.preferences.compensation_types",
+                  );
                   setErrors((current) => ({ ...current, compensationTypes: undefined }));
                 }}
               />
@@ -304,7 +315,10 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
                 checked={form.contentPlatforms.includes(value)}
                 describedBy={errors.contentPlatforms ? "preferences-platform-error" : undefined}
                 onChange={() => {
-                  update({ contentPlatforms: toggle(form.contentPlatforms, value) });
+                  update(
+                    { contentPlatforms: toggle(form.contentPlatforms, value) },
+                    "marketplace.preferences.content_platforms",
+                  );
                   setErrors((current) => ({ ...current, contentPlatforms: undefined }));
                 }}
               />
@@ -327,7 +341,10 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
                 checked={form.contentTypes.includes(value)}
                 describedBy={errors.contentTypes ? "preferences-content-error" : undefined}
                 onChange={() => {
-                  update({ contentTypes: toggle(form.contentTypes, value) });
+                  update(
+                    { contentTypes: toggle(form.contentTypes, value) },
+                    "marketplace.preferences.content_types",
+                  );
                   setErrors((current) => ({ ...current, contentTypes: undefined }));
                 }}
               />
@@ -357,10 +374,13 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
                     errors.availability ? "preferences-availability-error" : undefined
                   }
                   onChange={() => {
-                    update({
-                      availabilityMode: mode,
-                      selectedMonths: mode === "year_round" ? [] : form.selectedMonths,
-                    });
+                    update(
+                      {
+                        availabilityMode: mode,
+                        selectedMonths: mode === "year_round" ? [] : form.selectedMonths,
+                      },
+                      "marketplace.preferences.availability",
+                    );
                     setErrors((current) => ({ ...current, availability: undefined }));
                   }}
                   className="h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-600"
@@ -383,9 +403,14 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
                       checked={form.selectedMonths.includes(month)}
                       describedBy={errors.months ? "preferences-months-error" : undefined}
                       onChange={() => {
-                        update({
-                          selectedMonths: toggle(form.selectedMonths, month).sort((a, b) => a - b),
-                        });
+                        update(
+                          {
+                            selectedMonths: toggle(form.selectedMonths, month).sort(
+                              (a, b) => a - b,
+                            ),
+                          },
+                          "marketplace.preferences.availability",
+                        );
                         setErrors((current) => ({ ...current, months: undefined }));
                       }}
                     />

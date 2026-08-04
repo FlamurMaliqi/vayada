@@ -9,6 +9,7 @@ import {
   createBookingDesignButtonColors,
   type BookingDesignFontPairing,
   type BookingDesignPrimaryColor,
+  type BookingDesignReadinessResult,
   type BookingDesignRendererSnapshot,
   type BookingDesignRevision,
 } from "@vayada/domain-booking";
@@ -54,6 +55,7 @@ const FONT_LABELS: Record<BookingDesignFontPairing, string> = {
   "italiana-serif": "Italiana Serif",
 };
 const DRAFT_FIELDS = ["booking.primary_color", "booking.font_pairing"] as const;
+type BookingDesignField = (typeof DRAFT_FIELDS)[number];
 
 export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
   const {
@@ -68,8 +70,11 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
   const [form, setForm] = useState<BookingDesignForm | null>(null);
   const formRef = useRef<BookingDesignForm | null>(null);
   const designRef = useRef<BookingDesignRevision | null>(null);
+  const readinessRef = useRef<BookingDesignReadinessResult | null>(null);
+  const savedThisSessionRef = useRef<BookingDesignRevision | null>(null);
   const revisionRef = useRef(adaptiveStepDraftRevision(route, step, "booking_design"));
   const dirtyRef = useRef(false);
+  const dirtyFieldsRef = useRef<Set<BookingDesignField>>(new Set());
   const [snapshot, setSnapshot] = useState<BookingDesignRendererSnapshot | null>(null);
   const [previewMessage, setPreviewMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -90,17 +95,38 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
       setLoading(true);
       setLoadError(null);
       try {
-        const design = await bookingDesignClient.load(propertyId, {
-          signal,
-          cache: "no-store",
-        });
+        const [design, readiness] = await Promise.all([
+          bookingDesignClient.load(propertyId, { signal, cache: "no-store" }),
+          bookingDesignClient.loadReadiness(route.scope, { signal, cache: "no-store" }),
+        ]);
         if (signal?.aborted) return;
+        if (
+          readiness.outcome === "ready" &&
+          (!design || readiness.designSource.revision !== `design:${design.revision}`)
+        ) {
+          throw new Error("The private Booking preview did not match the saved design.");
+        }
         const next = hydrate(design, step.draft);
         designRef.current = design;
+        readinessRef.current = readiness;
+        savedThisSessionRef.current = null;
         formRef.current = next;
         setForm(next);
-        setSnapshot(null);
-        setPreviewMessage("The private preview is waiting for its protected renderer snapshot.");
+        dirtyFieldsRef.current = new Set(
+          step.draft?.stepId === "booking_design"
+            ? (step.draft.dirtyFields as BookingDesignField[])
+            : [],
+        );
+        setSnapshot(readiness.outcome === "ready" ? readiness.snapshot : null);
+        setPreviewMessage(readinessMessage(readiness));
+        if (
+          readiness.outcome === "ready" &&
+          !snapshotMatchesManifest(readiness.snapshot, revisionRef.current.baseRevisions)
+        ) {
+          reportRevisionConflict(
+            "This design draft is based on older hotel content. Refresh before continuing.",
+          );
+        }
         dirtyRef.current = false;
       } catch (error) {
         if (!signal?.aborted) setLoadError(adaptiveStepErrorMessage(error));
@@ -110,7 +136,7 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
     },
     // Explicit reload only; route refreshes must not overwrite local choices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [propertyId],
+    [propertyId, reportRevisionConflict],
   );
 
   useEffect(() => {
@@ -119,12 +145,14 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
     return () => controller.abort();
   }, [load, reload]);
 
-  const update = useCallback((change: Partial<BookingDesignForm>) => {
+  const update = useCallback((change: Partial<BookingDesignForm>, field: BookingDesignField) => {
     const current = formRef.current;
     if (!current) return;
+    dirtyFieldsRef.current.add(field);
     const next = { ...current, ...change };
     formRef.current = next;
     dirtyRef.current = true;
+    savedThisSessionRef.current = null;
     setForm(next);
   }, []);
 
@@ -139,7 +167,7 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
           "booking.primary_color": current.primaryColor,
           "booking.font_pairing": current.fontPairing,
         },
-        dirtyFields: [...DRAFT_FIELDS],
+        dirtyFields: Array.from(dirtyFieldsRef.current),
       }),
     );
     revisionRef.current = withDraftReceipt(revisionRef.current, receipt);
@@ -168,18 +196,51 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
     setSaveError(null);
     try {
       // Valid defaults are a deliberate first-visit answer.
+      for (const field of DRAFT_FIELDS) dirtyFieldsRef.current.add(field);
       dirtyRef.current = true;
       await persistDraft();
       const source = revisionRef.current.baseRevisions?.["booking.design"];
       const expectedRevision = source ? exactSourceRevision(source, "design") : null;
-      if (expectedRevision === null || source !== `design:${designRef.current?.revision ?? 0}`) {
+      const baseRevisions = revisionRef.current.baseRevisions;
+      const priorReadiness = readinessRef.current;
+      if (
+        expectedRevision === null ||
+        !baseRevisions ||
+        (priorReadiness?.outcome === "ready" &&
+          !snapshotMatchesManifest(priorReadiness.snapshot, baseRevisions))
+      ) {
         throw new RevisionMismatchError();
       }
-      const saved = await bookingDesignClient.save(propertyId, {
-        expectedRevision,
-        choices: current,
-      });
+      let saved = savedThisSessionRef.current;
+      if (!saved || !sameChoices(saved.choices, current)) {
+        if (source !== `design:${designRef.current?.revision ?? 0}`) {
+          throw new RevisionMismatchError();
+        }
+        saved = await bookingDesignClient.save(propertyId, {
+          expectedRevision,
+          choices: current,
+        });
+        savedThisSessionRef.current = saved;
+      }
       designRef.current = saved;
+      const readiness = await bookingDesignClient.loadReadiness(route.scope, { cache: "no-store" });
+      readinessRef.current = readiness;
+      setPreviewMessage(readinessMessage(readiness));
+      if (readiness.outcome !== "ready") {
+        setSnapshot(null);
+        throw new Error("The private Booking preview is not ready yet. Retry in a moment.");
+      }
+      const expectedManifest = {
+        ...baseRevisions,
+        "booking.design": `design:${saved.revision}`,
+      };
+      if (
+        !sameChoices(readiness.snapshot.appearance, current) ||
+        !snapshotMatchesManifest(readiness.snapshot, expectedManifest)
+      ) {
+        throw new RevisionMismatchError();
+      }
+      setSnapshot(readiness.snapshot);
       await saveAndContinue();
     } catch (error) {
       if (error instanceof RevisionMismatchError || isAdaptiveRevisionConflict(error))
@@ -232,7 +293,7 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
                       name="booking-color"
                       value={color}
                       checked={checked}
-                      onChange={() => update({ primaryColor: color })}
+                      onChange={() => update({ primaryColor: color }, "booking.primary_color")}
                       className="sr-only"
                       aria-label={COLOR_LABELS[color]}
                     />
@@ -269,7 +330,7 @@ export function BookingDesignStep(props: AdaptiveSetupStepComponentProps) {
                         name="booking-font"
                         value={fontPairing}
                         checked={checked}
-                        onChange={() => update({ fontPairing })}
+                        onChange={() => update({ fontPairing }, "booking.font_pairing")}
                         className="h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-600"
                       />
                       <span
@@ -450,3 +511,38 @@ function hydrate(
   return form;
 }
 class RevisionMismatchError extends Error {}
+
+function readinessMessage(readiness: BookingDesignReadinessResult): string | null {
+  if (readiness.outcome === "ready") return null;
+  if (readiness.outcome === "provider_failure") {
+    return "The private preview is temporarily unavailable. Retry this step.";
+  }
+  return readiness.blocker.evidencePort === "design"
+    ? "Save these choices to prepare the private preview."
+    : "The private preview is waiting for verified hotel content.";
+}
+
+function snapshotMatchesManifest(
+  snapshot: BookingDesignRendererSnapshot,
+  manifest: Readonly<Record<string, string>> | null,
+): boolean {
+  if (!manifest) return false;
+  const sources = new Map(
+    snapshot.sourceBindings.map((source) => [
+      `${source.ownerDomain}:${source.entityType}`,
+      source.revision,
+    ]),
+  );
+  return (
+    sources.get("booking:design_revision") === manifest["booking.design"] &&
+    sources.get("hotel_catalog:property_profile") === manifest["hotel_catalog.profile"] &&
+    sources.get("hotel_catalog:property_media_assignment") === manifest["hotel_catalog.media"]
+  );
+}
+
+function sameChoices(
+  left: Readonly<{ primaryColor: string; fontPairing: string }>,
+  right: BookingDesignForm,
+): boolean {
+  return left.primaryColor === right.primaryColor && left.fontPairing === right.fontPairing;
+}

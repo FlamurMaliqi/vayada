@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   loadPreferences: vi.fn(),
   savePreferences: vi.fn(),
   loadDesign: vi.fn(),
+  loadDesignReadiness: vi.fn(),
   saveDesign: vi.fn(),
 }));
 
@@ -30,7 +31,11 @@ vi.mock("@/services/api/marketplacePreferencesClient", () => ({
   marketplacePreferencesClient: { load: mocks.loadPreferences, save: mocks.savePreferences },
 }));
 vi.mock("@/services/api/bookingDesignClient", () => ({
-  bookingDesignClient: { load: mocks.loadDesign, save: mocks.saveDesign },
+  bookingDesignClient: {
+    load: mocks.loadDesign,
+    loadReadiness: mocks.loadDesignReadiness,
+    save: mocks.saveDesign,
+  },
 }));
 
 import { BookingDesignStep } from "./booking/BookingDesignStep";
@@ -49,6 +54,7 @@ describe("adaptive presentation and design steps", () => {
     mocks.loadPresentation.mockResolvedValue(presentationRead());
     mocks.loadPreferences.mockResolvedValue(preferencesRead());
     mocks.loadDesign.mockResolvedValue(null);
+    mocks.loadDesignReadiness.mockResolvedValue(designBlocked());
     mocks.saveDesign.mockResolvedValue(designRead());
   });
 
@@ -75,6 +81,10 @@ describe("adaptive presentation and design steps", () => {
 
     await expect(act(async () => registration.callback!())).rejects.toThrow("Network unavailable");
     expect(renderer!.root.findByType("textarea").props.value).toContain("network-safe local edit");
+    expect(mocks.saveDraft).toHaveBeenCalledWith(
+      propertyId,
+      expect.objectContaining({ dirtyFields: ["profile.short_description"] }),
+    );
     expect(mocks.savePresentation).not.toHaveBeenCalled();
     expect(props.refreshRoute).not.toHaveBeenCalled();
     renderer?.unmount();
@@ -99,6 +109,10 @@ describe("adaptive presentation and design steps", () => {
       propertyId,
       expect.objectContaining({
         stepId: "marketplace_preferences",
+        dirtyFields: [
+          "marketplace.preferences.compensation_types",
+          "marketplace.preferences.content_platforms",
+        ],
         payload: expect.objectContaining({
           "marketplace.preferences.content_platforms": ["instagram"],
         }),
@@ -111,6 +125,9 @@ describe("adaptive presentation and design steps", () => {
 
   it("treats valid Step 3 defaults as an explicit answer, persists them, and saves private design", async () => {
     mocks.saveDraft.mockResolvedValue(receipt("booking_design"));
+    mocks.loadDesignReadiness
+      .mockResolvedValueOnce(designBlocked())
+      .mockResolvedValueOnce(designReadiness());
     const registration = captureRegistration();
     const props = stepProps("booking_design", bookingDraft(), registration.register);
     let renderer: ReactTestRenderer | undefined;
@@ -137,7 +154,30 @@ describe("adaptive presentation and design steps", () => {
       expectedRevision: 0,
       choices: { primaryColor: "#4F46E5", fontPairing: "high-end-serif" },
     });
+    expect(mocks.loadDesignReadiness).toHaveBeenLastCalledWith(
+      { organizationId, propertyId },
+      { cache: "no-store" },
+    );
     expect(props.saveAndContinue).toHaveBeenCalledOnce();
+    renderer?.unmount();
+  });
+
+  it("flags a stale Step 3 Catalog manifest while retaining the draft choices", async () => {
+    mocks.loadDesign.mockResolvedValue(designRead());
+    mocks.loadDesignReadiness.mockResolvedValue(designReadiness({ profileRevision: "profile:8" }));
+    const registration = captureRegistration();
+    const props = stepProps("booking_design", bookingDraft(), registration.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(BookingDesignStep, props));
+    });
+    await flush();
+
+    expect(props.reportRevisionConflict).toHaveBeenCalledWith(
+      expect.stringMatching(/older hotel content/i),
+    );
+    expect(renderer!.root.findByProps({ "aria-label": "Vayada indigo" }).props.checked).toBe(true);
+    expect(mocks.saveDesign).not.toHaveBeenCalled();
     renderer?.unmount();
   });
 });
@@ -305,6 +345,66 @@ function designRead() {
     choices: { primaryColor: "#4F46E5", fontPairing: "high-end-serif" },
     createdAt: now,
   };
+}
+function designBlocked() {
+  return {
+    outcome: "blocked",
+    organizationId,
+    propertyId,
+    blocker: { code: "booking_design_missing", evidencePort: "design" },
+  } as const;
+}
+function designReadiness({ profileRevision = "profile:7" } = {}) {
+  const designSource = {
+    ownerDomain: "booking",
+    entityType: "design_revision",
+    entityId: propertyId,
+    revision: "design:1",
+  } as const;
+  return {
+    outcome: "ready",
+    organizationId,
+    propertyId,
+    designSource,
+    snapshot: {
+      contractVersion: "booking-design-renderer.v1",
+      organizationId,
+      propertyId,
+      sourceBindings: [
+        designSource,
+        {
+          ownerDomain: "hotel_catalog",
+          entityType: "property_media_assignment",
+          entityId: propertyId,
+          revision: profileRevision,
+        },
+        {
+          ownerDomain: "hotel_catalog",
+          entityType: "property_profile",
+          entityId: propertyId,
+          revision: profileRevision,
+        },
+      ],
+      appearance: {
+        primaryColor: "#4F46E5",
+        fontPairing: "high-end-serif",
+        headingFontFamily: "'Playfair Display', serif",
+        bodyFontFamily: "'Source Sans Pro', sans-serif",
+        button: {
+          backgroundColor: "#463FCA",
+          hoverBackgroundColor: "#3932A5",
+          foregroundColor: "#FFFFFF",
+        },
+      },
+      profile: {
+        displayName: "Canal House",
+        contentLocale: "en",
+        shortDescription:
+          "A canonical description that is long enough for the private Booking preview.",
+      },
+      cover: { kind: "fallback", path: "/vayada-logo.png" },
+    },
+  } as const;
 }
 async function flush() {
   await act(async () => {
