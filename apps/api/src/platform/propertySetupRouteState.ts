@@ -2,6 +2,7 @@ import {
   PROPERTY_SETUP_ROUTE_STEP_STATES,
   SETUP_TRACKS,
   getActivePropertySetupStepIds,
+  isPropertySetupBaseRevisionManifest,
   type PropertySetupOwnerDomain,
   type PropertySetupStepId,
   type SetupTrack,
@@ -325,7 +326,11 @@ function validateOwnerFact(
   if (fact.product !== provenance.product || fact.ownerDomain !== provenance.ownerDomain) {
     throw new TypeError("Property setup owner fact has invalid provenance");
   }
-  if (!OWNER_STATES.has(fact.state) || !nonEmpty(fact.sourceRevision)) {
+  if (
+    !OWNER_STATES.has(fact.state) ||
+    !nonEmpty(fact.sourceRevision) ||
+    !isPropertySetupBaseRevisionManifest(fact.stepId, fact.currentBaseRevisions)
+  ) {
     throw new TypeError("Property setup owner fact has invalid progress or revision");
   }
   if (!Array.isArray(fact.blockers) || (fact.state === "blocked") !== fact.blockers.length > 0) {

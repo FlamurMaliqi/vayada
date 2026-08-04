@@ -93,6 +93,18 @@ import {
 import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
 import { registerHotelCatalogStep1Routes } from "./routes/hotelCatalogStep1.js";
 import {
+  registerMarketplaceHotelCollaborationPreferencesRoutes,
+  type MarketplaceHotelCollaborationPreferencesRoutesOptions,
+} from "./routes/marketplaceHotelCollaborationPreferences.js";
+import {
+  registerBookingDesignRoutes,
+  type BookingDesignRoutesOptions,
+} from "./routes/bookingDesign.js";
+import {
+  registerBookingDesignReadinessRoutes,
+  type BookingDesignReadinessRoutesOptions,
+} from "./routes/bookingDesignReadiness.js";
+import {
   registerPropertySetupRouteRoutes,
   type PropertySetupRouteStateReadPort,
 } from "./routes/propertySetupRoute.js";
@@ -204,6 +216,9 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
     repository: HotelCatalogStep1Repository;
     mediaCommands: Pick<PropertyMediaCommandRepository, "replacePresentation">;
   };
+  marketplaceHotelCollaborationPreferences?: MarketplaceHotelCollaborationPreferencesRoutesOptions;
+  bookingDesign?: BookingDesignRoutesOptions;
+  bookingDesignReadiness?: BookingDesignReadinessRoutesOptions;
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
   propertySetupRouteStateReadPort?: PropertySetupRouteStateReadPort;
   bookingPublication?: {
@@ -434,6 +449,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerHotelCatalogStep1Routes, {
       prefix: "/api/hotel-setup",
       ...options.hotelCatalogStep1,
+    });
+  }
+  if (options.marketplaceHotelCollaborationPreferences) {
+    app.register(registerMarketplaceHotelCollaborationPreferencesRoutes, {
+      prefix: "/api/marketplace",
+      ...options.marketplaceHotelCollaborationPreferences,
+    });
+  }
+  if (options.bookingDesign) {
+    app.register(registerBookingDesignRoutes, {
+      prefix: "/api/booking",
+      ...options.bookingDesign,
+    });
+  }
+  if (options.bookingDesignReadiness) {
+    app.register(registerBookingDesignReadinessRoutes, {
+      prefix: "/api/booking",
+      ...options.bookingDesignReadiness,
     });
   }
   if (options.propertySetupDraftCommandRepository) {

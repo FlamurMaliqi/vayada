@@ -153,6 +153,9 @@ type BaseRevisionKeyFor<TStepId extends PropertySetupStepId> =
   DefinitionFor<TStepId>["baseRevisionKeys"][number];
 export type PropertySetupFieldId = PropertySetupStepDefinition["fields"][number];
 export type PropertySetupBaseRevisionKey = PropertySetupStepDefinition["baseRevisionKeys"][number];
+export type PropertySetupBaseRevisionManifest = Readonly<
+  Partial<Record<PropertySetupBaseRevisionKey, string>>
+>;
 export type PropertySetupDraftPayload<TStepId extends PropertySetupStepId> = [
   FieldFor<TStepId>,
 ] extends [never]
@@ -246,6 +249,26 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
+const PROPERTY_SETUP_BASE_REVISION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+export function isPropertySetupBaseRevisionManifest(
+  stepId: PropertySetupStepId,
+  value: unknown,
+): value is PropertySetupBaseRevisionManifest {
+  const definition = PROPERTY_SETUP_STEP_DEFINITIONS.find((step) => step.stepId === stepId);
+  if (!definition || !isPlainRecord(value)) return false;
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === definition.baseRevisionKeys.length &&
+    keys.every((key) => typeof key === "string") &&
+    definition.baseRevisionKeys.every((key) => Object.hasOwn(value, key)) &&
+    Object.values(value).every(
+      (revision) =>
+        typeof revision === "string" && PROPERTY_SETUP_BASE_REVISION_PATTERN.test(revision),
+    )
+  );
+}
+
 export function getActivePropertySetupStepIds(
   selectedTracks: readonly SetupTrack[],
 ): PropertySetupStepId[] {
@@ -253,4 +276,17 @@ export function getActivePropertySetupStepIds(
   return PROPERTY_SETUP_STEP_DEFINITIONS.filter(({ track }) =>
     track === "shared" ? selected.size > 0 : selected.has(track),
   ).map(({ stepId }) => stepId);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Reflect.ownKeys(value).every((key) => {
+      if (typeof key !== "string") return false;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+    })
+  );
 }

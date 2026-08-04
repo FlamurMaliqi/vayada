@@ -1,4 +1,9 @@
-import { buildPropertySetupRoute, type PropertySetupRouteReadModel } from "@vayada/domain-hotels";
+import {
+  PROPERTY_SETUP_STEP_DEFINITIONS,
+  buildPropertySetupRoute,
+  getActivePropertySetupStepIds,
+  type PropertySetupRouteReadModel,
+} from "@vayada/domain-hotels";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -50,7 +55,7 @@ describe("createPropertySetupRouteClient", () => {
   });
 
   it("rejects malformed route data and cross-property responses", async () => {
-    const malformed = { ...routeWire(), contractVersion: "property-setup-route.v2" };
+    const malformed = { ...routeWire(), contractVersion: "property-setup-route.v1" };
     const otherProperty = routeWire("33333333-3333-4333-8333-333333333333");
 
     await expect(
@@ -90,6 +95,32 @@ describe("parsePropertySetupRouteReadModel", () => {
       }),
     ).toBeNull();
   });
+
+  it("requires each exact current manifest without rebasing persisted draft history", () => {
+    const route = routeWire();
+    const step = route.steps[0]!;
+    expect(
+      parsePropertySetupRouteReadModel({
+        ...route,
+        steps: [
+          { ...step, currentBaseRevisions: { "hotel_catalog.profile": "profile:1" } },
+          ...route.steps.slice(1),
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      parsePropertySetupRouteReadModel({
+        ...route,
+        steps: [
+          {
+            ...step,
+            currentBaseRevisions: { ...step.currentBaseRevisions, extra: "revision:1" },
+          },
+          ...route.steps.slice(1),
+        ],
+      }),
+    ).toBeNull();
+  });
 });
 
 function clientReturning(value: unknown): PropertySetupRouteHttpClient {
@@ -106,6 +137,18 @@ function routeWire(
     selectedTracks,
     trackRevision: 1,
     session: null,
-    ownerFacts: [],
+    ownerFacts: getActivePropertySetupStepIds(selectedTracks).map((stepId) => ({
+      organizationId,
+      propertyId: routePropertyId,
+      stepId,
+      state: "not_started" as const,
+      sourceRevision: `${stepId}:0`,
+      currentBaseRevisions: Object.fromEntries(
+        PROPERTY_SETUP_STEP_DEFINITIONS.find(
+          (definition) => definition.stepId === stepId,
+        )!.baseRevisionKeys.map((key) => [key, "revision:0"]),
+      ),
+      blockers: [],
+    })),
   });
 }

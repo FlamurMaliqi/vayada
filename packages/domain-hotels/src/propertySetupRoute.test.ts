@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
   PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
+  PROPERTY_SETUP_STEP_DEFINITIONS,
+  getActivePropertySetupStepIds,
   type PropertySetupSession,
   type PropertySetupStepDraft,
   type PropertySetupStepId,
@@ -130,7 +132,17 @@ describe("property setup route", () => {
         draft("pricing", ["rate.currency"]),
       ],
     });
-    const ownerFacts = [{ ...fact("booking_design", "blocked"), blockers: [blocker] }];
+    const ownerFacts = [
+      {
+        ...fact("booking_design", "blocked"),
+        currentBaseRevisions: {
+          "booking.design": "revision:2",
+          "hotel_catalog.profile": "revision:2",
+          "hotel_catalog.media": "revision:2",
+        },
+        blockers: [blocker],
+      },
+    ];
     const retainedInput = structuredClone({ session, ownerFacts });
 
     const marketplace = project({
@@ -160,12 +172,17 @@ describe("property setup route", () => {
         stepId: "booking_design",
         payload: { "booking.font_pairing": "draft-value" },
         dirtyFields: ["booking.font_pairing"],
-        baseRevisions: {},
+        baseRevisions: currentBaseRevisions("booking_design"),
         revision: 3,
       },
       blockers: [{ ...blocker, owningStepPosition: 3 }],
+      currentBaseRevisions: {
+        "booking.design": "revision:2",
+        "hotel_catalog.profile": "revision:2",
+        "hotel_catalog.media": "revision:2",
+      },
     });
-    expect(combined.steps.find(({ stepId }) => stepId === "rooms")?.state).toBe("complete");
+    expect(combined.steps.find(({ stepId }) => stepId === "rooms")?.state).toBe("not_started");
     expect(combined.steps.find(({ stepId }) => stepId === "pricing")?.state).toBe("draft");
 
     const returnedDraft = combined.steps.find(({ stepId }) => stepId === "booking_design")?.draft;
@@ -237,7 +254,19 @@ describe("property setup route", () => {
       /non-negative safe integer/,
     );
     expect(() =>
-      project({ ownerFacts: [fact("unknown_step" as PropertySetupStepId, "saved")] }),
+      project({
+        ownerFacts: [
+          {
+            organizationId,
+            propertyId,
+            stepId: "unknown_step" as PropertySetupStepId,
+            state: "saved",
+            sourceRevision: "unknown-r1",
+            currentBaseRevisions: {},
+            blockers: [],
+          },
+        ],
+      }),
     ).toThrow(/Unknown property setup step fact/);
     expect(() =>
       project({
@@ -263,14 +292,22 @@ describe("property setup route", () => {
 });
 
 function project(overrides: Partial<BuildPropertySetupRouteInput> = {}) {
+  const selectedTracks = overrides.selectedTracks ?? ["creator_marketplace"];
+  const providedFacts = overrides.ownerFacts ?? [];
+  const providedStepIds = new Set(providedFacts.map(({ stepId }) => stepId));
   return buildPropertySetupRoute({
     organizationId,
     propertyId,
-    selectedTracks: ["creator_marketplace"],
     trackRevision: 7,
     session: null,
-    ownerFacts: [],
     ...overrides,
+    selectedTracks,
+    ownerFacts: [
+      ...providedFacts,
+      ...getActivePropertySetupStepIds(selectedTracks)
+        .filter((stepId) => !providedStepIds.has(stepId))
+        .map((stepId) => fact(stepId, "not_started")),
+    ],
   });
 }
 
@@ -284,6 +321,7 @@ function fact(
     stepId,
     state,
     sourceRevision: `${stepId}-r1`,
+    currentBaseRevisions: currentBaseRevisions(stepId),
     blockers: [],
   };
 }
@@ -293,12 +331,17 @@ function draft(stepId: PropertySetupStepId, dirtyFields: string[]): PropertySetu
     stepId,
     payload: Object.fromEntries(dirtyFields.map((field) => [field, "draft-value"])),
     dirtyFields,
-    baseRevisions: {},
+    baseRevisions: currentBaseRevisions(stepId),
     piiClassification: PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
     retentionExpiresAt: "2026-10-30T00:00:00.000Z",
     revision: 3,
     updatedAt: "2026-07-30T00:00:00.000Z",
   } as PropertySetupStepDraft;
+}
+
+function currentBaseRevisions(stepId: PropertySetupStepId) {
+  const definition = PROPERTY_SETUP_STEP_DEFINITIONS.find((step) => step.stepId === stepId)!;
+  return Object.fromEntries(definition.baseRevisionKeys.map((key) => [key, "revision:1"]));
 }
 
 function makeSession(overrides: Partial<PropertySetupSession> = {}): PropertySetupSession {

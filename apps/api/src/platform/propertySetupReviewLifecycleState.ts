@@ -119,6 +119,7 @@ export function createPropertySetupReviewLifecycleStateProvider(
               ownerDomain: "hotel_catalog",
               state,
               sourceRevision,
+              currentBaseRevisions: Object.freeze({}),
               blockers: blockers.map((blocker) => ({ ...blocker })),
             }),
           ],

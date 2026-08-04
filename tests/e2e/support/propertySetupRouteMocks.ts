@@ -5,6 +5,7 @@ import type {
   PropertySetupStepId,
   SetupTrack,
 } from "@vayada/domain-hotels";
+import { PROPERTY_SETUP_STEP_DEFINITIONS } from "@vayada/domain-hotels";
 import { corsHeaders, fulfillCorsPreflight } from "../marketplace-web/utils/cors";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
@@ -36,8 +37,12 @@ export function createPropertySetupRouteMock(
       stepId,
       position: index + 1,
       state,
-      sourceRevision:
-        state === "saved" || state === "complete" || state === "blocked" ? `${stepId}:e2e:1` : null,
+      sourceRevision: `${stepId}:e2e:1`,
+      currentBaseRevisions: Object.fromEntries(
+        PROPERTY_SETUP_STEP_DEFINITIONS.find(
+          (definition) => definition.stepId === stepId,
+        )!.baseRevisionKeys.map((key) => [key, `${stepId}:e2e:1`]),
+      ),
       draft: null,
       blockers:
         state === "blocked"
@@ -57,7 +62,7 @@ export function createPropertySetupRouteMock(
     };
   });
   return {
-    contractVersion: "property-setup-route.v1" as const,
+    contractVersion: "property-setup-route.v2" as const,
     scope: { organizationId, propertyId: input.propertyId },
     selectedTracks: input.selectedTracks,
     trackRevision: input.trackRevision ?? 3,

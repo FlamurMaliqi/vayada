@@ -3,13 +3,23 @@ import type {
   ReadinessErrorSource,
   SourceEntityRevision,
 } from "@vayada/domain-hotels";
+import {
+  HOTEL_CATALOG_CONTENT_LOCALES,
+  HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH,
+  HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH,
+  PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH,
+  parsePropertyMediaLibraryItem,
+} from "@vayada/domain-hotels";
 
 import {
   BOOKING_DESIGN_FONT_PAIRINGS,
+  BOOKING_DESIGN_PRIMARY_COLORS,
   createBookingDesignButtonColors,
   createBookingDesignSourceRevision,
   parseBookingDesignRevision,
   type BookingDesignReadPort,
+  type BookingDesignFontPairing,
+  type BookingDesignPrimaryColor,
   type BookingDesignSourceRevision,
 } from "./bookingDesign.js";
 import {
@@ -140,6 +150,80 @@ export interface BookingDesignReadinessPort {
     organizationId: string;
     propertyId: string;
   }): Promise<BookingDesignReadinessResult>;
+}
+
+/** Strict wire/port parser for the protected renderer-readiness result. */
+export function parseBookingDesignReadinessResult(
+  value: unknown,
+  expectedScope: Readonly<{ organizationId: string; propertyId: string }>,
+): BookingDesignReadinessResult | null {
+  const scope = parseSafely(() => parseScope(expectedScope));
+  if (!scope) return null;
+  if (
+    exact(value, ["outcome", "organizationId", "propertyId", "blocker"]) &&
+    value["outcome"] === "blocked" &&
+    matchesScope(value, scope) &&
+    exact(value["blocker"], ["code", "evidencePort"]) &&
+    BOOKING_DESIGN_READINESS_BLOCKER_CODES.includes(
+      value["blocker"]["code"] as BookingDesignReadinessBlockerCode,
+    ) &&
+    readinessEvidencePort(value["blocker"]["evidencePort"])
+  ) {
+    return Object.freeze({
+      outcome: "blocked",
+      ...scope,
+      blocker: Object.freeze({
+        code: value["blocker"]["code"] as BookingDesignReadinessBlockerCode,
+        evidencePort: value["blocker"]["evidencePort"],
+      }),
+    });
+  }
+  if (
+    exact(value, ["outcome", "organizationId", "propertyId", "error"]) &&
+    value["outcome"] === "provider_failure" &&
+    matchesScope(value, scope) &&
+    exact(value["error"], ["code", "evidencePort", "errorSource"]) &&
+    BOOKING_DESIGN_PROVIDER_FAILURE_CODES.includes(
+      value["error"]["code"] as BookingDesignProviderFailureCode,
+    ) &&
+    readinessEvidencePort(value["error"]["evidencePort"]) &&
+    (value["error"]["errorSource"] === "provider" || value["error"]["errorSource"] === "system")
+  ) {
+    return Object.freeze({
+      outcome: "provider_failure",
+      ...scope,
+      error: Object.freeze({
+        code: value["error"]["code"] as BookingDesignProviderFailureCode,
+        evidencePort: value["error"]["evidencePort"],
+        errorSource: value["error"]["errorSource"],
+      }),
+    });
+  }
+  if (
+    !exact(value, ["outcome", "organizationId", "propertyId", "designSource", "snapshot"]) ||
+    value["outcome"] !== "ready" ||
+    !matchesScope(value, scope)
+  ) {
+    return null;
+  }
+  const designSource = parseRendererSource(value["designSource"]);
+  const snapshot = parseRendererSnapshot(value["snapshot"], scope, designSource);
+  if (
+    !designSource ||
+    designSource.ownerDomain !== "booking" ||
+    designSource.entityType !== "design_revision" ||
+    designSource.entityId !== scope.propertyId ||
+    !/^design:[1-9][0-9]*$/.test(designSource.revision) ||
+    !snapshot
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    outcome: "ready",
+    ...scope,
+    designSource: designSource as BookingDesignSourceRevision,
+    snapshot,
+  });
 }
 
 export function createBookingDesignReadinessProvider(config: {
@@ -339,6 +423,252 @@ function parseScope(input: { organizationId: string; propertyId: string }) {
     organizationId: organizationId.toLowerCase(),
     propertyId: propertyId.toLowerCase(),
   });
+}
+
+function parseRendererSnapshot(
+  value: unknown,
+  scope: Readonly<{ organizationId: string; propertyId: string }>,
+  designSource: SourceEntityRevision | null,
+): BookingDesignRendererSnapshot | null {
+  if (
+    !designSource ||
+    !exact(value, [
+      "contractVersion",
+      "organizationId",
+      "propertyId",
+      "sourceBindings",
+      "appearance",
+      "profile",
+      "cover",
+    ]) ||
+    value["contractVersion"] !== BOOKING_DESIGN_SNAPSHOT_CONTRACT_VERSION ||
+    !matchesScope(value, scope) ||
+    !dataArray(value["sourceBindings"])
+  ) {
+    return null;
+  }
+  const appearance = parseRendererAppearance(value["appearance"]);
+  const profile = parseRendererProfile(value["profile"]);
+  const cover = parseRendererCover(value["cover"]);
+  const sources = value["sourceBindings"].map(parseRendererSource);
+  if (!appearance || !profile || !cover || sources.some((source) => !source)) return null;
+  const sourceBindings = sources as SourceEntityRevision[];
+  const safeMediaId = cover.kind === "safe_media" ? cover.mediaObjectId : null;
+  const expectedIdentities = [
+    "booking:design_revision:" + scope.propertyId,
+    "hotel_catalog:property_profile:" + scope.propertyId,
+    "hotel_catalog:property_media_assignment:" + scope.propertyId,
+    ...(safeMediaId ? [`hotel_catalog:property_safe_media:${safeMediaId}`] : []),
+  ];
+  const actualIdentities = sourceBindings.map(sourceIdentity);
+  const sorted = sourceBindings
+    .slice()
+    .sort((left, right) => compareText(sourceKey(left), sourceKey(right)));
+  if (
+    actualIdentities.length !== expectedIdentities.length ||
+    new Set(actualIdentities).size !== actualIdentities.length ||
+    !expectedIdentities.every((identity) => actualIdentities.includes(identity)) ||
+    !sourceBindings.every(
+      (source, index) =>
+        source === sorted[index] || sourceKey(source) === sourceKey(sorted[index]!),
+    ) ||
+    !sameSource(
+      sourceBindings.find((source) => sourceIdentity(source) === expectedIdentities[0]),
+      designSource,
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    contractVersion: BOOKING_DESIGN_SNAPSHOT_CONTRACT_VERSION,
+    ...scope,
+    sourceBindings: Object.freeze(sourceBindings),
+    appearance,
+    profile,
+    cover,
+  });
+}
+
+function parseRendererAppearance(
+  value: unknown,
+): BookingDesignRendererSnapshot["appearance"] | null {
+  if (
+    !exact(value, [
+      "primaryColor",
+      "fontPairing",
+      "headingFontFamily",
+      "bodyFontFamily",
+      "button",
+    ]) ||
+    !BOOKING_DESIGN_PRIMARY_COLORS.includes(value["primaryColor"] as BookingDesignPrimaryColor) ||
+    !Object.hasOwn(BOOKING_DESIGN_FONT_PAIRINGS, value["fontPairing"] as PropertyKey)
+  ) {
+    return null;
+  }
+  const primaryColor = value["primaryColor"] as BookingDesignPrimaryColor;
+  const fontPairing = value["fontPairing"] as BookingDesignFontPairing;
+  const pairing = BOOKING_DESIGN_FONT_PAIRINGS[fontPairing];
+  const button = createBookingDesignButtonColors(primaryColor);
+  if (
+    value["headingFontFamily"] !== pairing.headingFamily ||
+    value["bodyFontFamily"] !== pairing.bodyFamily ||
+    !exact(value["button"], ["backgroundColor", "hoverBackgroundColor", "foregroundColor"]) ||
+    value["button"]["backgroundColor"] !== button.backgroundColor ||
+    value["button"]["hoverBackgroundColor"] !== button.hoverBackgroundColor ||
+    value["button"]["foregroundColor"] !== button.foregroundColor
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    primaryColor,
+    fontPairing,
+    headingFontFamily: pairing.headingFamily,
+    bodyFontFamily: pairing.bodyFamily,
+    button,
+  });
+}
+
+function parseRendererProfile(value: unknown): BookingDesignRendererSnapshot["profile"] | null {
+  if (
+    !exact(value, ["displayName", "contentLocale", "shortDescription"]) ||
+    typeof value["displayName"] !== "string" ||
+    value["displayName"].trim().length === 0 ||
+    value["displayName"].trim() !== value["displayName"] ||
+    !HOTEL_CATALOG_CONTENT_LOCALES.includes(value["contentLocale"] as never) ||
+    typeof value["shortDescription"] !== "string" ||
+    value["shortDescription"].length < HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH ||
+    value["shortDescription"].length > HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH ||
+    value["shortDescription"].trim() !== value["shortDescription"]
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    displayName: value["displayName"],
+    contentLocale: value["contentLocale"] as string,
+    shortDescription: value["shortDescription"],
+  });
+}
+
+function parseRendererCover(value: unknown): BookingDesignRendererSnapshot["cover"] | null {
+  if (
+    exact(value, ["kind", "path"]) &&
+    value["kind"] === "fallback" &&
+    value["path"] === BOOKING_DESIGN_COVER_FALLBACK_PATH
+  ) {
+    return Object.freeze({ kind: "fallback", path: BOOKING_DESIGN_COVER_FALLBACK_PATH });
+  }
+  if (
+    !exact(value, ["kind", "mediaObjectId", "altText", "publicVariants"]) ||
+    value["kind"] !== "safe_media" ||
+    !uuid(value["mediaObjectId"]) ||
+    !(
+      value["altText"] === null ||
+      (typeof value["altText"] === "string" &&
+        value["altText"].length <= PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH)
+    )
+  ) {
+    return null;
+  }
+  const media = parsePropertyMediaLibraryItem({
+    mediaObjectId: value["mediaObjectId"],
+    purpose: "property.hero_image",
+    status: "public_ready",
+    publicVariants: value["publicVariants"],
+  });
+  if (
+    !media ||
+    !media.publicVariants.some(({ variantName }) => variantName === "original_safe") ||
+    media.publicVariants.some(
+      (variant, index) =>
+        index > 0 &&
+        compareText(media.publicVariants[index - 1]!.variantName, variant.variantName) > 0,
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    kind: "safe_media",
+    mediaObjectId: media.mediaObjectId,
+    altText: value["altText"] as string | null,
+    publicVariants: media.publicVariants,
+  });
+}
+
+function parseRendererSource(value: unknown): SourceEntityRevision | null {
+  if (
+    !exact(value, ["ownerDomain", "entityType", "entityId", "revision"]) ||
+    !sourceOwnerDomain(value["ownerDomain"]) ||
+    !token(value["entityType"]) ||
+    !uuid(value["entityId"]) ||
+    !token(value["revision"])
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    ownerDomain: value["ownerDomain"],
+    entityType: value["entityType"],
+    entityId: value["entityId"].toLowerCase(),
+    revision: value["revision"],
+  });
+}
+
+function sourceOwnerDomain(value: unknown): value is SourceEntityRevision["ownerDomain"] {
+  return (
+    value === "booking" ||
+    value === "hotel_catalog" ||
+    value === "marketplace" ||
+    value === "pms" ||
+    value === "finance"
+  );
+}
+
+function sourceIdentity(source: SourceEntityRevision): string {
+  return `${source.ownerDomain}:${source.entityType}:${source.entityId}`;
+}
+
+function sameSource(left: SourceEntityRevision | undefined, right: SourceEntityRevision): boolean {
+  return Boolean(
+    left &&
+    left.ownerDomain === right.ownerDomain &&
+    left.entityType === right.entityType &&
+    left.entityId === right.entityId &&
+    left.revision === right.revision,
+  );
+}
+
+function matchesScope(
+  value: Record<string, unknown>,
+  scope: Readonly<{ organizationId: string; propertyId: string }>,
+): boolean {
+  return (
+    typeof value["organizationId"] === "string" &&
+    typeof value["propertyId"] === "string" &&
+    value["organizationId"].toLowerCase() === scope.organizationId &&
+    value["propertyId"].toLowerCase() === scope.propertyId
+  );
+}
+
+function readinessEvidencePort(value: unknown): value is BookingDesignReadinessEvidencePort {
+  return (
+    value === "design" ||
+    value === "profile" ||
+    value === "cover_assignment" ||
+    value === "safe_media"
+  );
+}
+
+function dataArray(value: unknown): value is unknown[] {
+  return Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
+}
+
+function token(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 200 &&
+    value.trim() === value &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
 }
 
 function sourceKey(source: SourceEntityRevision): string {

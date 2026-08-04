@@ -1,5 +1,6 @@
 import {
   PROPERTY_SETUP_STEP_DEFINITIONS,
+  isPropertySetupBaseRevisionManifest,
   type PropertySetupFieldId,
   type SavePropertySetupDraftRequest,
 } from "./propertySetupDraft.js";
@@ -14,7 +15,6 @@ export type PropertySetupDraftRequestResult =
   | { ok: false; error: PropertySetupDraftRequestError };
 
 const MAX_REVISION = 2_147_483_646;
-const BASE_REVISION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_KEYS = [
   "stepId",
   "payload",
@@ -124,8 +124,7 @@ export function parseSavePropertySetupDraftRequest(
         typeof field === "string" && allowedFields.has(field) && Object.hasOwn(payload, field),
     ) ||
     new Set(dirtyFields).size !== dirtyFields.length ||
-    !hasExactKeys(baseRevisions, definition.baseRevisionKeys) ||
-    !Object.values(baseRevisions).every(isBaseRevision) ||
+    !isPropertySetupBaseRevisionManifest(definition.stepId, baseRevisions) ||
     !isRevision(snapshot["expectedTrackRevision"]) ||
     !isRevision(snapshot["expectedSessionRevision"]) ||
     !isRevision(snapshot["expectedDraftRevision"])
@@ -177,10 +176,6 @@ function containsForbiddenFieldKey(
 function isForbiddenKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
   return FORBIDDEN_KEY_PARTS.some((forbidden) => normalized.includes(forbidden));
-}
-
-function isBaseRevision(value: unknown): boolean {
-  return typeof value === "string" && BASE_REVISION_PATTERN.test(value);
 }
 
 function isRevision(value: unknown): boolean {

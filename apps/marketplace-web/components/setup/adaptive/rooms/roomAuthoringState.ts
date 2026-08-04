@@ -135,7 +135,7 @@ export type CanonicalRoomAuthoringState = {
 export type RoomDraftRevisionContext = {
   sessionId: string | null;
   trackRevision: number;
-  sessionRevision: number | null;
+  sessionRevision: number;
   draftRevision: number;
   baseRevisions: {
     "pms.room_types": string;
@@ -203,19 +203,30 @@ export function roomDraftRevisionContext(
   step: PropertySetupRouteReadModel["steps"][number],
 ): RoomDraftRevisionContext {
   const draft = step.stepId === "rooms" ? step.draft : null;
-  const base = draft?.stepId === "rooms" ? draft.baseRevisions : null;
+  const base =
+    draft?.stepId === "rooms"
+      ? draft.baseRevisions
+      : step.stepId === "rooms"
+        ? step.currentBaseRevisions
+        : null;
+  const roomTypesRevision = base?.["pms.room_types"];
+  const roomUnitsRevision = base?.["pms.room_units"];
+  const roomMediaRevision = base?.["pms.room_media"];
   return {
     sessionId: route.sessionId,
     trackRevision: route.trackRevision,
-    sessionRevision: route.sessionRevision,
+    sessionRevision: route.sessionRevision ?? 0,
     draftRevision: draft?.stepId === "rooms" ? draft.revision : 0,
-    baseRevisions: base
-      ? {
-          "pms.room_types": base["pms.room_types"],
-          "pms.room_units": base["pms.room_units"],
-          "pms.room_media": base["pms.room_media"],
-        }
-      : null,
+    baseRevisions:
+      typeof roomTypesRevision === "string" &&
+      typeof roomUnitsRevision === "string" &&
+      typeof roomMediaRevision === "string"
+        ? {
+            "pms.room_types": roomTypesRevision,
+            "pms.room_units": roomUnitsRevision,
+            "pms.room_media": roomMediaRevision,
+          }
+        : null,
   };
 }
 
@@ -457,7 +468,7 @@ export function buildRoomsDraftRequest(
   rooms: readonly RoomAuthoringDraft[],
   revision: RoomDraftRevisionContext,
 ): SavePropertySetupDraftRequest {
-  if (!revision.sessionId || revision.sessionRevision === null || revision.baseRevisions === null) {
+  if (revision.baseRevisions === null) {
     throw new RoomDraftManifestUnavailableError();
   }
   const persisted = rooms.filter((room) => room.roomTypeId !== null || roomHasInput(room));

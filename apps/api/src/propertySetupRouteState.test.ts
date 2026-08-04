@@ -1,5 +1,6 @@
 import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
+  PROPERTY_SETUP_STEP_DEFINITIONS,
   buildPropertySetupRoute,
   getActivePropertySetupStepIds,
   type PropertySetupSession,
@@ -309,6 +310,11 @@ function ownerFact(
     ...provenance,
     state,
     sourceRevision: `${stepId}-r1`,
+    currentBaseRevisions: Object.fromEntries(
+      PROPERTY_SETUP_STEP_DEFINITIONS.find(
+        (definition) => definition.stepId === stepId,
+      )!.baseRevisionKeys.map((key) => [key, "revision:1"]),
+    ),
     blockers:
       state === "blocked"
         ? [

@@ -104,10 +104,7 @@ export function RoomAuthoringStep({
   const mediaButtonRef = useRef<HTMLButtonElement>(null);
   const amenitiesButtonRef = useRef<HTMLButtonElement>(null);
   const failedUploads = useRef(new Map<string, File>());
-  const draftManifestMissing =
-    !routeRevision.sessionId ||
-    routeRevision.sessionRevision === null ||
-    routeRevision.baseRevisions === null;
+  const draftManifestMissing = routeRevision.baseRevisions === null;
 
   if (sessionStore.propertyId !== propertyId) {
     sessionStore.propertyId = propertyId;
@@ -136,7 +133,7 @@ export function RoomAuthoringStep({
     if (
       next.baseRevisions ||
       next.draftRevision > revisionRef.current.draftRevision ||
-      next.sessionRevision !== null
+      next.sessionRevision > revisionRef.current.sessionRevision
     ) {
       revisionRef.current = next;
       sessionStore.revision = next;

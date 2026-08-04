@@ -67,7 +67,7 @@ describe("RoomAuthoringStep first-visit recovery", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("keeps draft:null edits local, makes no write, then saves the exact values after a refreshed manifest", async () => {
+  it("saves draft:null first-visit edits with the exact current owner manifest", async () => {
     const store: RoomAuthoringSessionStore = {};
     const initial = routeWithRoomsDraft(null);
     let renderer: ReactTestRenderer | undefined;
@@ -81,8 +81,8 @@ describe("RoomAuthoringStep first-visit recovery", () => {
       );
     });
 
-    expect(JSON.stringify(renderer?.toJSON())).toContain("Setup data is still unavailable");
-    expect(mocks.loadWorkspace).not.toHaveBeenCalled();
+    expect(JSON.stringify(renderer?.toJSON())).not.toContain("Setup data is still unavailable");
+    expect(mocks.loadWorkspace).toHaveBeenCalledOnce();
     const nameInput = renderer!.root.find(
       (node) =>
         node.type === "input" &&
@@ -96,27 +96,12 @@ describe("RoomAuthoringStep first-visit recovery", () => {
     });
 
     expect(store.rooms?.[0]?.name).toBe("Locally edited Garden Suite");
-    await expect(store.beforeLeave?.()).rejects.toThrow(/missing its server revision manifest/i);
-    expect(mocks.saveDraft).not.toHaveBeenCalled();
-    expect(mocks.ensureRoomTarget).not.toHaveBeenCalled();
-    expect(mocks.uploadRoomPhotos).not.toHaveBeenCalled();
-    expect(store.rooms?.[0]?.name).toBe("Locally edited Garden Suite");
-
-    const refreshed = routeWithRoomsDraft(emptyRoomsDraft());
-    await act(async () => {
-      renderer?.update(
-        createElement(RoomAuthoringStep, {
-          ...context(refreshed),
-          sessionStore: store,
-        }),
-      );
-    });
-    expect(mocks.loadWorkspace).toHaveBeenCalledOnce();
     await act(async () => {
       await store.beforeLeave?.();
     });
-
     expect(mocks.saveDraft).toHaveBeenCalledOnce();
+    expect(mocks.ensureRoomTarget).not.toHaveBeenCalled();
+    expect(mocks.uploadRoomPhotos).not.toHaveBeenCalled();
     expect(mocks.saveDraft).toHaveBeenCalledWith(
       propertyId,
       expect.objectContaining({
@@ -465,12 +450,12 @@ function context(route: PropertySetupRouteReadModel) {
 
 function routeWithRoomsDraft(draft: PropertySetupStepDraft | null): PropertySetupRouteReadModel {
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations"],
     trackRevision: 3,
-    sessionId: "33333333-3333-4333-8333-333333333333",
-    sessionRevision: 7,
+    sessionId: draft ? "33333333-3333-4333-8333-333333333333" : null,
+    sessionRevision: draft ? 7 : null,
     resumeStepId: "rooms",
     progress: { complete: 0, total: 1 },
     steps: [
@@ -478,7 +463,12 @@ function routeWithRoomsDraft(draft: PropertySetupStepDraft | null): PropertySetu
         stepId: "rooms",
         position: 1,
         state: draft ? "draft" : "not_started",
-        sourceRevision: null,
+        sourceRevision: "rooms:0",
+        currentBaseRevisions: {
+          "pms.room_types": "types:1",
+          "pms.room_units": "units:1",
+          "pms.room_media": "media:1",
+        },
         draft,
         blockers: [],
       },

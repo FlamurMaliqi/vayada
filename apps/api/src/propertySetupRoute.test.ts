@@ -8,6 +8,7 @@ import {
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
 import {
+  PROPERTY_SETUP_STEP_DEFINITIONS,
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
   getActivePropertySetupStepIds,
   type PropertySetupRouteReadModel,
@@ -53,6 +54,7 @@ const allPermissions: PermissionKey[] = [
   "booking.settings.manage",
   "pms.operations.read",
   "pms.operations.manage",
+  "pms.finance.manage",
 ];
 
 let app: FastifyInstance | undefined;
@@ -85,6 +87,7 @@ describe("property setup route", () => {
                   ownerDomain: "hotel_catalog",
                   state: "blocked",
                   sourceRevision: "readiness-r5",
+                  currentBaseRevisions: {},
                   blockers: [
                     {
                       code: "booking_design_incomplete",
@@ -556,6 +559,7 @@ describe("property setup route", () => {
                   ownerDomain: "hotel_catalog",
                   state: "blocked",
                   sourceRevision: "review-r2",
+                  currentBaseRevisions: {},
                   blockers: [
                     {
                       code: "booking_not_ready",
@@ -807,18 +811,24 @@ function makeOwnerFacts(
   overrides: readonly PropertySetupRouteOwnerStepFact[] = [],
 ): PropertySetupRouteOwnerStepFact[] {
   const overridesByStep = new Map(overrides.map((fact) => [fact.stepId, fact]));
-  return getActivePropertySetupStepIds(selectedTracks).map(
-    (stepId) =>
-      overridesByStep.get(stepId) ?? {
-        organizationId,
-        propertyId,
-        stepId,
-        ...ownerFactProvenance(stepId),
-        state: "not_started",
-        sourceRevision: `${stepId}-r1`,
-        blockers: [],
-      },
-  );
+  return getActivePropertySetupStepIds(selectedTracks).map((stepId) => {
+    const override = overridesByStep.get(stepId);
+    return {
+      organizationId,
+      propertyId,
+      stepId,
+      ...ownerFactProvenance(stepId),
+      state: "not_started",
+      sourceRevision: `${stepId}-r1`,
+      currentBaseRevisions: Object.fromEntries(
+        PROPERTY_SETUP_STEP_DEFINITIONS.find(
+          (definition) => definition.stepId === stepId,
+        )!.baseRevisionKeys.map((key) => [key, `${key}:r1`]),
+      ),
+      blockers: [],
+      ...override,
+    };
+  });
 }
 
 function ownerFactProvenance(
