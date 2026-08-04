@@ -90,6 +90,45 @@ describe("adaptive presentation and design steps", () => {
     renderer?.unmount();
   });
 
+  it("keeps the first selected Step 1 photo as cover when parallel uploads finish out of order", async () => {
+    const registration = captureRegistration();
+    const props = stepProps("present_hotel", presentationDraft(), registration.register);
+    const uploads = new Map<string, (value: unknown) => void>();
+    mocks.uploadPresentation.mockImplementation(
+      (_propertyId: string, files: File[]) =>
+        new Promise((resolve) => uploads.set(files[0]!.name, resolve)),
+    );
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    const input = renderer!.root
+      .findAllByType("input")
+      .find((candidate) => candidate.props.type === "file")!;
+    const first = new File([new Uint8Array([1])], "first.jpg", { type: "image/jpeg" });
+    const second = new File([new Uint8Array([2])], "second.jpg", { type: "image/jpeg" });
+    await act(async () => {
+      input.props.onChange({ target: { files: [first, second], value: "selected" } });
+    });
+    await flush();
+    uploads.get("second.jpg")?.([{ mediaObjectId: "55555555-5555-4555-8555-555555555552" }]);
+    await flush();
+    uploads.get("first.jpg")?.([{ mediaObjectId: "55555555-5555-4555-8555-555555555551" }]);
+    await flush();
+
+    expect(mocks.saveDraft).toHaveBeenLastCalledWith(
+      propertyId,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          "profile.hero_image": "55555555-5555-4555-8555-555555555551",
+          "profile.gallery_images": ["55555555-5555-4555-8555-555555555552"],
+        }),
+      }),
+    );
+    renderer?.unmount();
+  });
+
   it("saves an incomplete Step 2 selection only as a resumable draft on Exit", async () => {
     mocks.saveDraft.mockResolvedValue(receipt("marketplace_preferences"));
     const registration = captureRegistration();
