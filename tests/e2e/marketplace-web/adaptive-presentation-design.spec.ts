@@ -208,11 +208,15 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
         sessionRevision,
         steps: base.steps.map((step) => ({
           ...step,
-          currentBaseRevisions: currentManifest(step.stepId, {
-            profileRevision,
-            preferencesRevision,
-            designRevision,
-          }),
+          currentBaseRevisions: currentManifest(
+            step.stepId,
+            {
+              profileRevision,
+              preferencesRevision,
+              designRevision,
+            },
+            step.currentBaseRevisions,
+          ),
           state: drafts.has(step.stepId) ? "draft" : step.state,
           draft: drafts.get(step.stepId) ?? null,
         })),
@@ -462,6 +466,7 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
 function currentManifest(
   stepId: PropertySetupStepId,
   revisions: { profileRevision: number; preferencesRevision: number; designRevision: number },
+  fallback: Record<string, string>,
 ): Record<string, string> {
   switch (stepId) {
     case "present_hotel":
@@ -481,19 +486,7 @@ function currentManifest(
         "hotel_catalog.media": `profile:${revisions.profileRevision}`,
       };
     default:
-      return Object.fromEntries(
-        createPropertySetupRouteMock({
-          propertyId,
-          selectedTracks: ["hotel_operations", "creator_marketplace"],
-        }).steps.find((step) => step.stepId === stepId)?.currentBaseRevisions
-          ? Object.entries(
-              createPropertySetupRouteMock({
-                propertyId,
-                selectedTracks: ["hotel_operations", "creator_marketplace"],
-              }).steps.find((step) => step.stepId === stepId)!.currentBaseRevisions,
-            )
-          : [],
-      );
+      return { ...fallback };
   }
 }
 
