@@ -1253,7 +1253,8 @@ async function findReleaseReplay(
   ) {
     return releaseFailure("idempotency_key_conflict");
   }
-  return sameReservationIdentity(current, parsed.status) &&
+  return current.state !== "reserved" &&
+    sameReservationIdentity(current, parsed.status) &&
     current.receipt.receiptId === command.receipt.receiptId
     ? releaseTerminalResult(current)
     : releaseFailure("idempotency_key_conflict");
@@ -1720,40 +1721,28 @@ function sameReservationIdentity(
 }
 
 function safelyParseReserveCommand(value: unknown): PmsInventoryReservationReserveCommand | null {
-  try {
-    return parsePmsInventoryReservationReserveCommand(value);
-  } catch {
-    return null;
-  }
+  return safelyParse(parsePmsInventoryReservationReserveCommand, value);
 }
 
 function safelyParseReleaseCommand(value: unknown): PmsInventoryReservationReleaseCommand | null {
-  try {
-    return parsePmsInventoryReservationReleaseCommand(value);
-  } catch {
-    return null;
-  }
+  return safelyParse(parsePmsInventoryReservationReleaseCommand, value);
 }
 
 function safelyParseStatusRequest(value: unknown): PmsInventoryReservationStatusRequest | null {
-  try {
-    return parsePmsInventoryReservationStatusRequest(value);
-  } catch {
-    return null;
-  }
+  return safelyParse(parsePmsInventoryReservationStatusRequest, value);
 }
 
 function safelyParseReserveResult(value: unknown): PmsInventoryReservationReserveResult | null {
-  try {
-    return parsePmsInventoryReservationReserveResult(value);
-  } catch {
-    return null;
-  }
+  return safelyParse(parsePmsInventoryReservationReserveResult, value);
 }
 
 function safelyParseReleaseResult(value: unknown): PmsInventoryReservationReleaseResult | null {
+  return safelyParse(parsePmsInventoryReservationReleaseResult, value);
+}
+
+function safelyParse<T>(parser: (value: unknown) => T | null, value: unknown): T | null {
   try {
-    return parsePmsInventoryReservationReleaseResult(value);
+    return parser(value);
   } catch {
     return null;
   }

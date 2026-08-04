@@ -738,7 +738,7 @@ async function createFixture(
   };
   const materialization = createPgPmsInventoryMaterializationRepository({
     connectionString: TEST_DATABASE_URL!,
-    max: 4,
+    max: 2,
     now: () => ACCEPTED_AT,
     authorization: {
       async authorizeInventoryMaterialization() {
@@ -756,7 +756,7 @@ async function createFixture(
   let clock = ACCEPTED_AT;
   const reservation = createPgPmsInventoryReservationLifecycleRepository({
     connectionString: TEST_DATABASE_URL!,
-    max: 8,
+    max: 2,
     now: () => {
       const value = clock;
       clock = new Date(clock.getTime() + 60_000);
