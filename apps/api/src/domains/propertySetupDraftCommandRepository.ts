@@ -6,8 +6,13 @@ import {
   PROPERTY_SETUP_ACTIVE_RETENTION_DAYS,
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
   PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
+  PROPERTY_SETUP_DRAFT_RESET_CONTRACT_VERSION,
   PROPERTY_SETUP_STEP_DEFINITIONS,
   SETUP_TRACKS,
+  type ResetPropertySetupDraftError,
+  type ResetPropertySetupDraftReceipt,
+  type ResetPropertySetupDraftRequest,
+  type ResetPropertySetupDraftResult,
   type SavePropertySetupDraftError,
   type SavePropertySetupDraftReceipt,
   type SavePropertySetupDraftRequest,
@@ -24,6 +29,16 @@ export type PropertySetupDraftSaveCommand = {
   audit: RequestAuditMetadata;
   /** Must be the normalized output of parseSavePropertySetupDraftRequest. */
   request: SavePropertySetupDraftRequest;
+};
+
+export type PropertySetupDraftResetCommand = {
+  organizationId: string;
+  propertyId: string;
+  actorUserId: string;
+  idempotencyKey: string;
+  audit: RequestAuditMetadata;
+  /** Must be the normalized output of parseResetPropertySetupDraftRequest. */
+  request: ResetPropertySetupDraftRequest;
 };
 
 export type PropertySetupDraftCommandClient = {
@@ -59,6 +74,7 @@ type SessionRow = {
 
 type DraftRow = {
   revision: number;
+  baseRevisions: Record<string, string>;
   retentionExpiresAt: Date | string;
 };
 
@@ -85,7 +101,8 @@ type IdempotencyReservation = {
   attempt: number;
 };
 
-const OPERATION = "hotel_setup.property_draft.save";
+const SAVE_OPERATION = "hotel_setup.property_draft.save";
+const RESET_OPERATION = "hotel_setup.property_draft.reset";
 
 /**
  * Draft writes require a route adapter to enforce the step permission and
@@ -252,6 +269,202 @@ export function createPgPropertySetupDraftCommandRepository(
       }
     },
 
+    async resetStepDraft(
+      command: PropertySetupDraftResetCommand,
+    ): Promise<ResetPropertySetupDraftResult> {
+      const definition = PROPERTY_SETUP_STEP_DEFINITIONS.find(
+        ({ stepId }) => stepId === command.request.stepId,
+      );
+      if (!definition)
+        return resetFailure({ code: "inactive_setup_step", currentTrackRevision: 0 });
+      const resetAt = now();
+      const keyHash = sha256(
+        stableJson({
+          organizationId: command.organizationId,
+          propertyId: command.propertyId,
+          idempotencyKey: command.idempotencyKey,
+        }),
+      );
+      const fingerprint = sha256(
+        stableJson({
+          organizationId: command.organizationId,
+          propertyId: command.propertyId,
+          request: command.request,
+        }),
+      );
+      const client = await pool.connect();
+
+      try {
+        await client.query("BEGIN");
+        if (!(await lockOrganization(client, command.organizationId))) {
+          await rollbackQuietly(client);
+          return resetFailure({ code: "setup_scope_unavailable" });
+        }
+        if (!(await lockAuthorizedScope(client, command, definition.permission))) {
+          await rollbackQuietly(client);
+          return resetFailure({ code: "setup_scope_unavailable" });
+        }
+        await lockDraftScope(client, command.organizationId, command.propertyId);
+        const replay = await findResetReplay(client, command, keyHash, fingerprint, resetAt);
+        if (replay) {
+          await rollbackQuietly(client);
+          return replay;
+        }
+        const idempotency = await reserveIdempotency(
+          client,
+          command,
+          keyHash,
+          fingerprint,
+          resetAt,
+          RESET_OPERATION,
+        );
+        if (!idempotency) {
+          const concurrentReplay = await findResetReplay(
+            client,
+            command,
+            keyHash,
+            fingerprint,
+            resetAt,
+          );
+          await rollbackQuietly(client);
+          return concurrentReplay ?? resetFailure({ code: "command_in_progress" });
+        }
+
+        const intent = await lockTrackIntent(client, command.organizationId);
+        if (!intent) {
+          await rollbackQuietly(client);
+          return resetFailure({ code: "setup_scope_unavailable" });
+        }
+        if (command.request.expectedTrackRevision !== intent.revision) {
+          const result = resetFailure({
+            code: "track_revision_conflict",
+            currentTrackRevision: intent.revision,
+          });
+          await finalizeResetConflict(client, command, idempotency, keyHash, result, resetAt);
+          return result;
+        }
+        if (
+          !getActivePropertySetupStepIds(intent.selectedTracks).includes(command.request.stepId)
+        ) {
+          const result = resetFailure({
+            code: "inactive_setup_step",
+            currentTrackRevision: intent.revision,
+          });
+          await finalizeResetConflict(client, command, idempotency, keyHash, result, resetAt);
+          return result;
+        }
+        const session = await lockResetSession(client, command);
+        if (!session) {
+          await rollbackQuietly(client);
+          return resetFailure({ code: "setup_scope_unavailable" });
+        }
+        if (isExpired(session.retentionExpiresAt, resetAt)) {
+          const result = resetFailure({
+            code: "setup_session_expired",
+            currentSessionRevision: session.revision,
+          });
+          await finalizeResetConflict(client, command, idempotency, keyHash, result, resetAt);
+          return result;
+        }
+        const sessionConflict = resetRevisionConflict(
+          "session_revision_conflict",
+          command.request.expectedSessionRevision,
+          session.revision,
+        );
+        if (sessionConflict) {
+          await finalizeResetConflict(
+            client,
+            command,
+            idempotency,
+            keyHash,
+            sessionConflict,
+            resetAt,
+          );
+          return sessionConflict;
+        }
+
+        const draft = await lockDraft(client, session.sessionId, command.request.stepId);
+        const draftConflict = resetRevisionConflict(
+          "draft_revision_conflict",
+          command.request.expectedDraftRevision,
+          draft?.revision ?? 0,
+        );
+        if (draftConflict) {
+          await finalizeResetConflict(
+            client,
+            command,
+            idempotency,
+            keyHash,
+            draftConflict,
+            resetAt,
+          );
+          return draftConflict;
+        }
+        if (draft && isExpired(draft.retentionExpiresAt, resetAt)) {
+          const result = resetFailure({
+            code: "setup_draft_expired",
+            currentDraftRevision: draft.revision,
+          });
+          await finalizeResetConflict(client, command, idempotency, keyHash, result, resetAt);
+          return result;
+        }
+        if (
+          stableJson(draft!.baseRevisions) !== stableJson(command.request.expectedBaseRevisions)
+        ) {
+          const result = resetFailure({ code: "draft_base_revision_conflict" });
+          await finalizeResetConflict(client, command, idempotency, keyHash, result, resetAt);
+          return result;
+        }
+
+        const deleted = await client.query(
+          `DELETE FROM hotel_catalog.property_setup_step_drafts
+           WHERE session_id = $1::uuid
+             AND step_id = $2
+             AND revision = $3`,
+          [session.sessionId, command.request.stepId, draft!.revision],
+        );
+        if (deleted.rowCount !== 1) throw new Error("Property setup step draft reset failed");
+        const updated = await client.query<{ revision: number }>(
+          `UPDATE hotel_catalog.property_setup_sessions
+           SET revision = revision + 1,
+               updated_at = $2::timestamptz
+           WHERE id = $1::uuid
+             AND revision = $3
+           RETURNING revision`,
+          [session.sessionId, resetAt.toISOString(), session.revision],
+        );
+        const sessionRevision = updated.rows[0]?.revision;
+        if (!sessionRevision) throw new Error("Property setup session reset revision failed");
+
+        const result: ResetPropertySetupDraftResult = {
+          ok: true,
+          receipt: {
+            contractVersion: PROPERTY_SETUP_DRAFT_RESET_CONTRACT_VERSION,
+            operation: "reset_step_draft",
+            sessionId: session.sessionId,
+            stepId: command.request.stepId,
+            trackRevision: intent.revision,
+            sessionRevision,
+            discardedDraftRevision: draft!.revision,
+            resetAt: resetAt.toISOString(),
+            nextRead: {
+              method: "GET",
+              href: `/api/hotel-setup/properties/${command.propertyId}/route`,
+            },
+          },
+        };
+        await recordResetAudit(client, command, idempotency, keyHash, result, resetAt);
+        await completeResetIdempotency(client, idempotency.id, result, resetAt);
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
     async close() {
       if (ownsPool) await pool.end();
     },
@@ -280,7 +493,7 @@ async function lockOrganization(
 
 async function lockAuthorizedScope(
   client: PropertySetupDraftCommandClient,
-  command: PropertySetupDraftSaveCommand,
+  command: PropertySetupDraftSaveCommand | PropertySetupDraftResetCommand,
   permission: string,
 ): Promise<boolean> {
   const result = await client.query(
@@ -372,13 +585,36 @@ async function lockSession(
   return result.rows[0] ?? null;
 }
 
+async function lockResetSession(
+  client: PropertySetupDraftCommandClient,
+  command: PropertySetupDraftResetCommand,
+): Promise<SessionRow | null> {
+  const result = await client.query<SessionRow>(
+    `SELECT
+       id::text AS "sessionId",
+       revision,
+       retention_expires_at AS "retentionExpiresAt"
+     FROM hotel_catalog.property_setup_sessions
+     WHERE id = $1::uuid
+       AND organization_id = $2::uuid
+       AND property_id = $3::uuid
+       AND status = 'active'
+     FOR UPDATE`,
+    [command.request.sessionId, command.organizationId, command.propertyId],
+  );
+  return result.rows[0] ?? null;
+}
+
 async function lockDraft(
   client: PropertySetupDraftCommandClient,
   sessionId: string,
   stepId: string,
 ): Promise<DraftRow | null> {
   const result = await client.query<DraftRow>(
-    `SELECT revision, retention_expires_at AS "retentionExpiresAt"
+    `SELECT
+       revision,
+       base_revisions AS "baseRevisions",
+       retention_expires_at AS "retentionExpiresAt"
      FROM hotel_catalog.property_setup_step_drafts
      WHERE session_id = $1::uuid
        AND step_id = $2
@@ -580,7 +816,7 @@ async function findReplay(
        AND organization_id IS NULL
        AND property_id = $3::uuid
      FOR UPDATE`,
-    [OPERATION, keyHash, command.propertyId],
+    [SAVE_OPERATION, keyHash, command.propertyId],
   );
   const existing = result.rows[0];
   if (!existing) return null;
@@ -602,12 +838,58 @@ async function findReplay(
   return stored.ok ? { ok: true, receipt: { ...stored.receipt, replayed: true } } : stored;
 }
 
+async function findResetReplay(
+  client: PropertySetupDraftCommandClient,
+  command: PropertySetupDraftResetCommand,
+  keyHash: string,
+  fingerprint: string,
+  resetAt: Date,
+): Promise<ResetPropertySetupDraftResult | null> {
+  const result = await client.query<IdempotencyRow>(
+    `SELECT
+       id::text AS id,
+       status,
+       request_fingerprint_hash AS "requestFingerprintHash",
+       response_status_code AS "responseStatusCode",
+       response_body_hash AS "responseBodyHash",
+       idempotency_metadata AS "idempotencyMetadata",
+       expires_at AS "expiresAt"
+     FROM platform.idempotency_keys
+     WHERE operation_scope = 'hotel_catalog'
+       AND operation = $1
+       AND key_hash = $2
+       AND tenant_scope = 'property'
+       AND organization_id IS NULL
+       AND property_id = $3::uuid
+     FOR UPDATE`,
+    [RESET_OPERATION, keyHash, command.propertyId],
+  );
+  const existing = result.rows[0];
+  if (!existing || isExpired(existing.expiresAt, resetAt)) return null;
+  if (existing.requestFingerprintHash !== fingerprint) {
+    return resetFailure({ code: "idempotency_key_conflict" });
+  }
+  if (existing.status !== "completed") return resetFailure({ code: "command_in_progress" });
+  const stored = isRecord(existing.idempotencyMetadata)
+    ? existing.idempotencyMetadata["result"]
+    : undefined;
+  if (!isResetResult(stored)) return resetFailure({ code: "idempotency_key_conflict" });
+  if (
+    existing.responseStatusCode !== resetResponseStatus(stored) ||
+    existing.responseBodyHash !== sha256(stableJson(resetResponseBody(stored)))
+  ) {
+    return resetFailure({ code: "idempotency_key_conflict" });
+  }
+  return stored;
+}
+
 async function reserveIdempotency(
   client: PropertySetupDraftCommandClient,
-  command: PropertySetupDraftSaveCommand,
+  command: PropertySetupDraftSaveCommand | PropertySetupDraftResetCommand,
   keyHash: string,
   fingerprint: string,
   savedAt: Date,
+  operation = SAVE_OPERATION,
 ): Promise<IdempotencyReservation | null> {
   const result = await client.query<IdempotencyReservation>(
     `INSERT INTO platform.idempotency_keys (
@@ -662,7 +944,7 @@ async function reserveIdempotency(
        id::text AS id,
        (idempotency_metadata ->> 'attempt')::integer AS attempt`,
     [
-      OPERATION,
+      operation,
       keyHash,
       fingerprint,
       command.propertyId,
@@ -703,6 +985,36 @@ async function completeIdempotency(
   }
 }
 
+async function completeResetIdempotency(
+  client: PropertySetupDraftCommandClient,
+  id: string,
+  result: ResetPropertySetupDraftResult,
+  resetAt: Date,
+): Promise<void> {
+  const completed = await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed',
+         response_status_code = $2,
+         response_body_hash = $3,
+         completed_at = $4::timestamptz,
+         last_seen_at = $4::timestamptz,
+         idempotency_metadata =
+           idempotency_metadata || jsonb_build_object('result', $5::jsonb)
+     WHERE id = $1::uuid
+       AND status = 'in_progress'`,
+    [
+      id,
+      resetResponseStatus(result),
+      sha256(stableJson(resetResponseBody(result))),
+      resetAt.toISOString(),
+      JSON.stringify(result),
+    ],
+  );
+  if (completed.rowCount !== 1) {
+    throw new Error("Property setup draft reset idempotency completion failed");
+  }
+}
+
 function idempotencyResponseBody(
   result: SavePropertySetupDraftResult,
 ): SavePropertySetupDraftReceipt | SavePropertySetupDraftError {
@@ -710,6 +1022,16 @@ function idempotencyResponseBody(
 }
 
 function idempotencyResponseStatus(result: SavePropertySetupDraftResult): 200 | 409 {
+  return result.ok ? 200 : 409;
+}
+
+function resetResponseBody(
+  result: ResetPropertySetupDraftResult,
+): ResetPropertySetupDraftReceipt | ResetPropertySetupDraftError {
+  return result.ok ? result.receipt : result.error;
+}
+
+function resetResponseStatus(result: ResetPropertySetupDraftResult): 200 | 409 {
   return result.ok ? 200 : 409;
 }
 
@@ -801,6 +1123,91 @@ async function recordAudit(
   );
 }
 
+async function recordResetAudit(
+  client: PropertySetupDraftCommandClient,
+  command: PropertySetupDraftResetCommand,
+  idempotency: IdempotencyReservation,
+  keyHash: string,
+  result: ResetPropertySetupDraftResult,
+  resetAt: Date,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key,
+       product,
+       action,
+       occurred_at,
+       tenant_scope,
+       organization_id,
+       property_id,
+       actor_type,
+       actor_user_id,
+       target_resource_product,
+       target_resource_type,
+       target_resource_id,
+       idempotency_key_id,
+       correlation_id,
+       causation_id,
+       redacted_payload,
+       private_payload,
+       audit_metadata,
+       privacy_scope
+     )
+     VALUES (
+       $1,
+       'hotel_catalog',
+       'hotel_setup.property_draft.reset',
+       $2::timestamptz,
+       'property',
+       NULL,
+       $3::uuid,
+       'user',
+       $4::uuid,
+       'hotel_catalog',
+       'property_setup_step_draft',
+       $5,
+       $6::uuid,
+       $7,
+       $8,
+       $9::jsonb,
+       '{}'::jsonb,
+       $10::jsonb,
+       'confidential'
+     )`,
+    [
+      `hotel_setup.property_draft.reset.property.${command.propertyId}.key.${keyHash}.attempt.${idempotency.attempt}.v1`,
+      resetAt.toISOString(),
+      command.propertyId,
+      command.actorUserId,
+      `${command.request.sessionId}:${command.request.stepId}`,
+      idempotency.id,
+      command.audit.correlationId ?? command.audit.requestId,
+      command.audit.requestId,
+      JSON.stringify({
+        operation: "reset_step_draft",
+        sessionId: command.request.sessionId,
+        stepId: command.request.stepId,
+        expectedTrackRevision: command.request.expectedTrackRevision,
+        expectedSessionRevision: command.request.expectedSessionRevision,
+        expectedDraftRevision: command.request.expectedDraftRevision,
+        outcome: result.ok
+          ? {
+              code: "draft_discarded",
+              trackRevision: result.receipt.trackRevision,
+              sessionRevision: result.receipt.sessionRevision,
+              discardedDraftRevision: result.receipt.discardedDraftRevision,
+            }
+          : result.error,
+      }),
+      JSON.stringify({
+        source: command.audit.source,
+        requestId: command.audit.requestId,
+        actorOrganizationId: command.organizationId,
+      }),
+    ],
+  );
+}
+
 async function finalizeConflict(
   client: PropertySetupDraftCommandClient,
   command: PropertySetupDraftSaveCommand,
@@ -811,6 +1218,19 @@ async function finalizeConflict(
 ): Promise<void> {
   await recordAudit(client, command, idempotency, keyHash, result, savedAt);
   await completeIdempotency(client, idempotency.id, result, savedAt);
+  await client.query("COMMIT");
+}
+
+async function finalizeResetConflict(
+  client: PropertySetupDraftCommandClient,
+  command: PropertySetupDraftResetCommand,
+  idempotency: IdempotencyReservation,
+  keyHash: string,
+  result: ResetPropertySetupDraftResult,
+  resetAt: Date,
+): Promise<void> {
+  await recordResetAudit(client, command, idempotency, keyHash, result, resetAt);
+  await completeResetIdempotency(client, idempotency.id, result, resetAt);
   await client.query("COMMIT");
 }
 
@@ -825,7 +1245,22 @@ function revisionConflict(
     : failure({ code, currentDraftRevision: current });
 }
 
+function resetRevisionConflict(
+  code: "session_revision_conflict" | "draft_revision_conflict",
+  expected: number,
+  current: number,
+): ResetPropertySetupDraftResult | null {
+  if (expected === current) return null;
+  return code === "session_revision_conflict"
+    ? resetFailure({ code, currentSessionRevision: current })
+    : resetFailure({ code, currentDraftRevision: current });
+}
+
 function failure(error: SavePropertySetupDraftError): SavePropertySetupDraftResult {
+  return { ok: false, error };
+}
+
+function resetFailure(error: ResetPropertySetupDraftError): ResetPropertySetupDraftResult {
   return { ok: false, error };
 }
 
@@ -898,6 +1333,71 @@ function isSaveError(value: unknown): value is SavePropertySetupDraftError {
     case "command_in_progress":
       // These results are deliberately never completed into idempotency storage.
       return false;
+    default:
+      return false;
+  }
+}
+
+function isResetResult(value: unknown): value is ResetPropertySetupDraftResult {
+  if (!isRecord(value) || typeof value["ok"] !== "boolean") return false;
+  if (value["ok"] === false) {
+    return hasExactKeys(value, ["ok", "error"]) && isResetError(value["error"]);
+  }
+  const receipt = value["receipt"];
+  const nextRead = isRecord(receipt) ? receipt["nextRead"] : null;
+  return (
+    hasExactKeys(value, ["ok", "receipt"]) &&
+    isRecord(receipt) &&
+    hasExactKeys(receipt, [
+      "contractVersion",
+      "operation",
+      "sessionId",
+      "stepId",
+      "trackRevision",
+      "sessionRevision",
+      "discardedDraftRevision",
+      "resetAt",
+      "nextRead",
+    ]) &&
+    receipt["contractVersion"] === PROPERTY_SETUP_DRAFT_RESET_CONTRACT_VERSION &&
+    receipt["operation"] === "reset_step_draft" &&
+    typeof receipt["sessionId"] === "string" &&
+    PROPERTY_SETUP_STEP_DEFINITIONS.some(({ stepId }) => stepId === receipt["stepId"]) &&
+    isPositiveRevision(receipt["trackRevision"]) &&
+    isPositiveRevision(receipt["sessionRevision"]) &&
+    isPositiveRevision(receipt["discardedDraftRevision"]) &&
+    isIsoDate(receipt["resetAt"]) &&
+    isRecord(nextRead) &&
+    hasExactKeys(nextRead, ["method", "href"]) &&
+    nextRead["method"] === "GET" &&
+    typeof nextRead["href"] === "string" &&
+    /^\/api\/hotel-setup\/properties\/[0-9a-f-]+\/route$/i.test(nextRead["href"])
+  );
+}
+
+function isResetError(value: unknown): value is ResetPropertySetupDraftError {
+  if (!isRecord(value) || typeof value["code"] !== "string") return false;
+  switch (value["code"]) {
+    case "inactive_setup_step":
+    case "track_revision_conflict":
+      return (
+        hasExactKeys(value, ["code", "currentTrackRevision"]) &&
+        isRevision(value["currentTrackRevision"])
+      );
+    case "session_revision_conflict":
+    case "setup_session_expired":
+      return (
+        hasExactKeys(value, ["code", "currentSessionRevision"]) &&
+        isRevision(value["currentSessionRevision"])
+      );
+    case "draft_revision_conflict":
+    case "setup_draft_expired":
+      return (
+        hasExactKeys(value, ["code", "currentDraftRevision"]) &&
+        isRevision(value["currentDraftRevision"])
+      );
+    case "draft_base_revision_conflict":
+      return hasExactKeys(value, ["code"]);
     default:
       return false;
   }
