@@ -53,6 +53,15 @@ export type BookingGuestPolicyCatalogProfileEvidence = Readonly<{
   timeZone: string;
 }>;
 
+export type BookingGuestPolicyCatalogProfileEvidenceResult =
+  | Readonly<{ outcome: "available"; evidence: BookingGuestPolicyCatalogProfileEvidence }>
+  | Readonly<{
+      outcome: "timezone_missing" | "timezone_invalid";
+      source: BookingGuestPolicyCatalogProfileEvidence["source"];
+    }>
+  | Readonly<{ outcome: "unavailable"; errorSource: "provider" | "system" }>
+  | Readonly<{ outcome: "malformed" }>;
+
 export type BookingGuestPolicyRecurringSourceBinding = Readonly<{
   source: PmsPricingSourceEntityRevision;
   validationRevision: number;
@@ -106,6 +115,9 @@ export type BookingGuestPolicyCompositionBlocker = Readonly<{
     | "pricing_currency_mismatch"
     | "property_timezone_missing"
     | "property_timezone_invalid"
+    | "property_profile_unavailable"
+    | "property_profile_malformed"
+    | "room_capacity_missing"
     | "room_capacity_invalid"
     | "child_policy_capacity_incompatible"
     | "mandatory_charge_confirmation_missing"
