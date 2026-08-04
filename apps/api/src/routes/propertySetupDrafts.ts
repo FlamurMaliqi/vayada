@@ -5,9 +5,11 @@ import {
   type ResourceRequirement,
 } from "@vayada/backend-authorization";
 import {
+  parseResetPropertySetupDraftRequest,
   parseSavePropertySetupDraftRequest,
   PROPERTY_SETUP_STEP_DEFINITIONS,
   type PropertySetupStepPermission,
+  type ResetPropertySetupDraftError,
   type SavePropertySetupDraftError,
 } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -53,57 +55,12 @@ export async function registerPropertySetupDraftRoutes(
   app.put<{ Params: DraftParams; Body: unknown }>(
     "/properties/:propertyId/setup-drafts/:stepId",
     async (request, reply) => {
-      const baseContext = enforceRoutePolicy(request, {
-        permission: "hotel_catalog.setup.read",
-      });
-      const { propertyId: rawPropertyId, stepId } = request.params;
-      const definition = PROPERTY_SETUP_STEP_DEFINITIONS.find((step) => step.stepId === stepId);
-      if (!UUID_PATTERN.test(rawPropertyId) || !definition) {
-        return invalidRequest(reply, "The property or setup step is invalid.");
-      }
-      const propertyId = rawPropertyId.toLowerCase();
-      if (baseContext.selectedOrganization.kind !== "hotel_group") {
-        return forbidden(reply);
-      }
-      const catalogResource = {
-        product: "hotel_catalog",
-        resourceType: "property",
-        resourceId: propertyId,
-        allowedRelationships: ["owner", "operator"],
-      } as const;
-      enforceRoutePolicy(request, {
-        permission: "hotel_catalog.setup.read",
-        resource: catalogResource,
-      });
-
-      const productAccess = PRODUCT_ACCESS_BY_PERMISSION[definition.permission];
-      if (productAccess) {
-        const requirements = productRequirements(productAccess, propertyId);
-        enforceRoutePolicy(request, {
-          permission: definition.permission,
-          ...requirements,
-        });
-      } else {
-        enforceRoutePolicy(request, {
-          permission: definition.permission,
-          resource: catalogResource,
-        });
-        if (
-          !SHARED_STEP_PRODUCT_ACCESS.some((access) => {
-            const requirements = productRequirements(access, propertyId);
-            return (
-              hasActiveEntitlement(baseContext, requirements.entitlement) &&
-              hasActiveLinkedResource(baseContext, requirements.resource)
-            );
-          })
-        ) {
-          return forbidden(reply);
-        }
-      }
+      const scope = authorizeDraftMutation(request, reply);
+      if (!scope) return reply;
 
       const parsed = parseSavePropertySetupDraftRequest(request.body);
       if (!parsed.ok) return reply.status(400).send(parsed.error);
-      if (parsed.value.stepId !== definition.stepId) {
+      if (parsed.value.stepId !== scope.definition.stepId) {
         return invalidRequest(reply, "The body stepId must match the route stepId.");
       }
       const idempotencyKey = readIdempotencyKey(request);
@@ -115,16 +72,104 @@ export async function registerPropertySetupDraftRoutes(
       }
 
       const result = await repository.saveStepDraft({
-        organizationId: baseContext.selectedOrganization.organizationId,
-        propertyId,
-        actorUserId: baseContext.actor.internalUserId,
+        organizationId: scope.context.selectedOrganization.organizationId,
+        propertyId: scope.propertyId,
+        actorUserId: scope.context.actor.internalUserId,
         idempotencyKey,
-        audit: baseContext.audit,
+        audit: scope.context.audit,
         request: parsed.value,
       });
       return result.ok ? result.receipt : sendSaveError(reply, result.error);
     },
   );
+
+  app.post<{ Params: DraftParams; Body: unknown }>(
+    "/properties/:propertyId/setup-drafts/:stepId/reset",
+    async (request, reply) => {
+      const scope = authorizeDraftMutation(request, reply);
+      if (!scope) return reply;
+
+      const parsed = parseResetPropertySetupDraftRequest(request.body);
+      if (!parsed.ok) return reply.status(400).send(parsed.error);
+      if (parsed.value.stepId !== scope.definition.stepId) {
+        return invalidRequest(reply, "The body stepId must match the route stepId.");
+      }
+      const idempotencyKey = readIdempotencyKey(request);
+      if (!idempotencyKey) {
+        return invalidRequest(
+          reply,
+          "Idempotency-Key must be provided exactly once and contain 1 to 200 characters.",
+        );
+      }
+
+      const result = await repository.resetStepDraft({
+        organizationId: scope.context.selectedOrganization.organizationId,
+        propertyId: scope.propertyId,
+        actorUserId: scope.context.actor.internalUserId,
+        idempotencyKey,
+        audit: scope.context.audit,
+        request: parsed.value,
+      });
+      return result.ok ? result.receipt : sendResetError(reply, result.error);
+    },
+  );
+}
+
+function authorizeDraftMutation(
+  request: FastifyRequest<{ Params: DraftParams }>,
+  reply: FastifyReply,
+) {
+  const context = enforceRoutePolicy(request, {
+    permission: "hotel_catalog.setup.read",
+  });
+  const { propertyId: rawPropertyId, stepId } = request.params;
+  const definition = PROPERTY_SETUP_STEP_DEFINITIONS.find((step) => step.stepId === stepId);
+  if (!UUID_PATTERN.test(rawPropertyId) || !definition) {
+    invalidRequest(reply, "The property or setup step is invalid.");
+    return null;
+  }
+  const propertyId = rawPropertyId.toLowerCase();
+  if (context.selectedOrganization.kind !== "hotel_group") {
+    forbidden(reply);
+    return null;
+  }
+  const catalogResource = {
+    product: "hotel_catalog",
+    resourceType: "property",
+    resourceId: propertyId,
+    allowedRelationships: ["owner", "operator"],
+  } as const;
+  enforceRoutePolicy(request, {
+    permission: "hotel_catalog.setup.read",
+    resource: catalogResource,
+  });
+
+  const productAccess = PRODUCT_ACCESS_BY_PERMISSION[definition.permission];
+  if (productAccess) {
+    const requirements = productRequirements(productAccess, propertyId);
+    enforceRoutePolicy(request, {
+      permission: definition.permission,
+      ...requirements,
+    });
+  } else {
+    enforceRoutePolicy(request, {
+      permission: definition.permission,
+      resource: catalogResource,
+    });
+    if (
+      !SHARED_STEP_PRODUCT_ACCESS.some((access) => {
+        const requirements = productRequirements(access, propertyId);
+        return (
+          hasActiveEntitlement(context, requirements.entitlement) &&
+          hasActiveLinkedResource(context, requirements.resource)
+        );
+      })
+    ) {
+      forbidden(reply);
+      return null;
+    }
+  }
+  return { context, propertyId, definition };
 }
 
 function productRequirements(access: ProductAccess, propertyId: string) {
@@ -164,6 +209,11 @@ function invalidRequest(reply: FastifyReply, message: string): FastifyReply {
 }
 
 function sendSaveError(reply: FastifyReply, error: SavePropertySetupDraftError): FastifyReply {
+  const status = error.code === "setup_scope_unavailable" ? 404 : 409;
+  return reply.status(status).send(error);
+}
+
+function sendResetError(reply: FastifyReply, error: ResetPropertySetupDraftError): FastifyReply {
   const status = error.code === "setup_scope_unavailable" ? 404 : 409;
   return reply.status(status).send(error);
 }

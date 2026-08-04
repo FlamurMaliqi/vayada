@@ -11,6 +11,7 @@ import { injectJson } from "@vayada/backend-test";
 import {
   PROPERTY_SETUP_STEP_DEFINITIONS,
   type PropertySetupStepId,
+  type ResetPropertySetupDraftError,
   type SavePropertySetupDraftError,
 } from "@vayada/domain-hotels";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,6 +19,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
 import type {
   PropertySetupDraftCommandRepository,
+  PropertySetupDraftResetCommand,
   PropertySetupDraftSaveCommand,
 } from "./domains/propertySetupDraftCommandRepository.js";
 
@@ -34,6 +36,7 @@ type Options = {
 };
 type FakeRepository = PropertySetupDraftCommandRepository & {
   calls: PropertySetupDraftSaveCommand[];
+  resetCalls: PropertySetupDraftResetCommand[];
 };
 const ACCESS_BY_PRODUCT = {
   marketplace: {
@@ -62,6 +65,20 @@ function draft(stepId: PropertySetupStepId = "rooms"): Record<string, unknown> {
     expectedTrackRevision: 1,
     expectedSessionRevision: 0,
     expectedDraftRevision: 0,
+  };
+}
+
+function resetRequest(stepId: PropertySetupStepId = "rooms"): Record<string, unknown> {
+  const step = PROPERTY_SETUP_STEP_DEFINITIONS.find((item) => item.stepId === stepId)!;
+  return {
+    sessionId: "33333333-3333-4333-8333-333333333333",
+    stepId,
+    expectedTrackRevision: 1,
+    expectedSessionRevision: 2,
+    expectedDraftRevision: 1,
+    expectedBaseRevisions: Object.fromEntries(
+      step.baseRevisionKeys.map((key) => [key, `${key}:1`]),
+    ),
   };
 }
 
@@ -95,10 +112,15 @@ function link(
   };
 }
 
-function fakeRepository(error?: SavePropertySetupDraftError): FakeRepository {
+function fakeRepository(
+  error?: SavePropertySetupDraftError,
+  resetError?: ResetPropertySetupDraftError,
+): FakeRepository {
   const calls: PropertySetupDraftSaveCommand[] = [];
+  const resetCalls: PropertySetupDraftResetCommand[] = [];
   return {
     calls,
+    resetCalls,
     async saveStepDraft(command) {
       calls.push(command);
       if (error) return { ok: false, error };
@@ -118,8 +140,26 @@ function fakeRepository(error?: SavePropertySetupDraftError): FakeRepository {
         },
       };
     },
-    async resetStepDraft() {
-      return { ok: false, error: { code: "setup_scope_unavailable" } };
+    async resetStepDraft(command) {
+      resetCalls.push(command);
+      if (resetError) return { ok: false, error: resetError };
+      return {
+        ok: true,
+        receipt: {
+          contractVersion: "property-setup-draft-reset.v1",
+          operation: "reset_step_draft",
+          sessionId: command.request.sessionId,
+          stepId: command.request.stepId,
+          trackRevision: command.request.expectedTrackRevision,
+          sessionRevision: command.request.expectedSessionRevision + 1,
+          discardedDraftRevision: command.request.expectedDraftRevision,
+          resetAt: "2026-07-30T10:00:00.000Z",
+          nextRead: {
+            method: "GET",
+            href: `/api/hotel-setup/properties/${command.propertyId}/route`,
+          },
+        },
+      };
     },
     async close() {},
   };
@@ -163,6 +203,28 @@ async function put(
     url: `/api/hotel-setup/properties/${options.property ?? propertyId}/setup-drafts/${step}`,
     headers,
     payload: options.body ?? draft(step),
+  });
+}
+
+async function reset(
+  app: ReturnType<typeof buildApp>,
+  options: {
+    step?: PropertySetupStepId;
+    body?: Record<string, unknown>;
+    token?: string | null;
+    key?: string | null;
+    property?: string;
+  } = {},
+) {
+  const step = options.step ?? "rooms";
+  const headers: Record<string, string> = {};
+  if (options.token !== null) headers.authorization = `Bearer ${options.token ?? "valid-token"}`;
+  if (options.key !== null) headers["idempotency-key"] = options.key ?? "reset-key";
+  return injectJson<Record<string, unknown>>(app, {
+    method: "POST",
+    url: `/api/hotel-setup/properties/${options.property ?? propertyId}/setup-drafts/${step}/reset`,
+    headers,
+    payload: options.body ?? resetRequest(step),
   });
 }
 
@@ -402,6 +464,99 @@ describe("property setup draft save route", () => {
     expect(serverSource).toMatch(
       /const app = buildApp\(\{[\s\S]*\n  propertySetupDraftCommandRepository,/,
     );
+  });
+
+  it("delegates the exact single-step reset scope and returns the protected reload target", async () => {
+    const repository = fakeRepository();
+    app = testApp(repository);
+    const response = await reset(app, {
+      key: "  stable-reset-key  ",
+      property: propertyId.toUpperCase(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      contractVersion: "property-setup-draft-reset.v1",
+      operation: "reset_step_draft",
+      stepId: "rooms",
+      nextRead: {
+        method: "GET",
+        href: `/api/hotel-setup/properties/${propertyId}/route`,
+      },
+    });
+    expect(repository.resetCalls).toHaveLength(1);
+    expect(repository.resetCalls[0]).toMatchObject({
+      organizationId,
+      propertyId,
+      actorUserId,
+      idempotencyKey: "stable-reset-key",
+      request: {
+        sessionId: "33333333-3333-4333-8333-333333333333",
+        stepId: "rooms",
+        expectedSessionRevision: 2,
+        expectedDraftRevision: 1,
+      },
+    });
+  });
+
+  it.each([
+    ["missing authentication", null, {}],
+    ["invalid authentication", "bad-token", {}],
+    ["non-hotel organization", "valid-token", { kind: "creator_workspace" }],
+    ["missing step permission", "valid-token", { permissions: ["hotel_catalog.setup.read"] }],
+    ["missing entitlement", "valid-token", { entitlements: [] }],
+    ["inactive entitlement", "valid-token", { entitlements: [entitlement("pms", "suspended")] }],
+    ["missing catalog link", "valid-token", { links: [link("pms")] }],
+    ["missing product link", "valid-token", { links: [link()] }],
+    [
+      "disallowed relationship",
+      "valid-token",
+      { links: [link(), link("pms", { relationship: "front_desk" })] },
+    ],
+    ["suspended product", "valid-token", { links: [link(), link("pms", { status: "suspended" })] }],
+  ] as Array<[string, string | null, Options]>)(
+    "denies reset with %s before persistence or replay",
+    async (_name, token, options) => {
+      const repository = fakeRepository();
+      app = testApp(repository, options);
+      const response = await reset(app, { token });
+      expect(response.statusCode).toBe(token === null || token === "bad-token" ? 401 : 403);
+      expect(repository.resetCalls).toHaveLength(0);
+    },
+  );
+
+  it("authenticates reset before rejecting malformed scope or CAS evidence", async () => {
+    const repository = fakeRepository();
+    app = testApp(repository);
+    const unauthenticated = await injectJson(app, {
+      method: "POST",
+      url: "/api/hotel-setup/properties/not-a-uuid/setup-drafts/not-a-step/reset",
+      payload: {},
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(repository.resetCalls).toHaveLength(0);
+
+    const malformed = await reset(app, {
+      body: { ...resetRequest(), expectedBaseRevisions: {} },
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(repository.resetCalls).toHaveLength(0);
+  });
+
+  it("keeps GET read-only and maps typed reset conflicts", async () => {
+    const repository = fakeRepository(undefined, { code: "draft_base_revision_conflict" });
+    app = testApp(repository);
+    const get = await injectJson(app, {
+      method: "GET",
+      url: `/api/hotel-setup/properties/${propertyId}/setup-drafts/rooms/reset`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(get.statusCode).toBe(404);
+    expect(repository.resetCalls).toHaveLength(0);
+
+    const conflict = await reset(app);
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.body.code).toBe("draft_base_revision_conflict");
   });
 });
 
