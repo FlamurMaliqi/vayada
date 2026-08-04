@@ -62,6 +62,48 @@ describe("Hotel Catalog canonical Step 1 routes", () => {
     expect(repository.getState).toHaveBeenCalledWith({ organizationId, propertyId, actorUserId });
   });
 
+  it("serves the strict nullable first-visit model and rejects malformed repository output", async () => {
+    const initial = {
+      ...readModel(),
+      profile: {
+        ...readModel().profile,
+        shortDescription: null,
+        publicSlug: null,
+        amenities: { reviewed: false, keys: [] },
+      },
+    };
+    app = testApp(fakeRepository({ state: { ...state(), readModel: initial } }));
+
+    const firstVisit = await injectJson<HotelCatalogStep1ReadModel>(app, {
+      method: "GET",
+      url: stepUrl(),
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(firstVisit.statusCode).toBe(200);
+    expect(firstVisit.body).toEqual(initial);
+    await app.close();
+
+    app = testApp(
+      fakeRepository({
+        state: {
+          ...state(),
+          readModel: { ...readModel(), unexpected: true } as HotelCatalogStep1ReadModel,
+        },
+      }),
+    );
+    const malformed = await injectJson<{ code: string }>(app, {
+      method: "GET",
+      url: stepUrl(),
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(malformed).toMatchObject({
+      statusCode: 500,
+      body: { code: "hotel_catalog_step1_read_contract_violation" },
+    });
+  });
+
   it("derives public-safe assignments and chains the exact VAY-1047 revision", async () => {
     const repository = fakeRepository({
       state: state({ assignments: [] }),

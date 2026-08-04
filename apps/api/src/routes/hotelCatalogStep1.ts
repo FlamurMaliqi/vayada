@@ -11,6 +11,7 @@ import {
 import {
   PROPERTY_MEDIA_AUTHORIZATION,
   createHotelCatalogStep1MediaAssignments,
+  parseHotelCatalogStep1ReadModel,
   parseSaveHotelCatalogStep1Request,
   type PropertyMediaAssignment,
   type SaveHotelCatalogStep1Error,
@@ -57,7 +58,11 @@ export async function registerHotelCatalogStep1Routes(
   app.get("/properties/:propertyId/steps/present-hotel", { onRequest }, async (request, reply) => {
     const access = requireAuthorized(authorized, request);
     const state = await options.repository.getState(scope(access));
-    return state ? state.readModel : reply.status(404).send({ code: "property_not_found" });
+    if (!state) return reply.status(404).send({ code: "property_not_found" });
+    const readModel = parseHotelCatalogStep1ReadModel(state.readModel);
+    return readModel?.propertyId === access.propertyId
+      ? reply.send(readModel)
+      : reply.status(500).send({ code: "hotel_catalog_step1_read_contract_violation" });
   });
 
   app.put("/properties/:propertyId/steps/present-hotel", { onRequest }, async (request, reply) => {
