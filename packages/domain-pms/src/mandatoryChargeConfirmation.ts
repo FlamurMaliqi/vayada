@@ -8,11 +8,39 @@ import {
   type PmsRecurringPricingSourceSnapshot,
   type RecurringPricingRoomEvidence,
 } from "./recurringPricing.js";
-import { parsePmsPricingSourceSnapshot, type PmsPricingSourceSnapshot } from "./pricing.js";
+import {
+  parsePmsPricingSourceSnapshot,
+  type PmsPricingCommandAudit,
+  type PmsPricingSourceSnapshot,
+} from "./pricing.js";
 
 export const PMS_MANDATORY_CHARGE_PRICING_SOURCE_PAYLOAD_VERSION =
   "pms-mandatory-charge-pricing-source.v1" as const;
 export const PMS_MANDATORY_CHARGE_PRICING_SOURCE_FINGERPRINT_ALGORITHM = "sha256" as const;
+export const PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION =
+  "pms-mandatory-charge-confirmation.v1" as const;
+export const PMS_CONFIRM_MANDATORY_CHARGES_INCLUDED_OPERATION =
+  "pms.confirmMandatoryChargesIncluded" as const;
+export const PMS_MANDATORY_CHARGE_CONFIRMATION_RESOURCE_TYPE =
+  "mandatory_charge_confirmation" as const;
+export const PMS_MANDATORY_CHARGE_CONFIRMATION_AUTHORIZATION = Object.freeze({
+  permission: "pms.operations.manage",
+  entitlement: Object.freeze({ product: "pms", key: "property-management" }),
+  resource: Object.freeze({
+    product: "pms",
+    resourceType: "pms_property",
+    allowedRelationships: Object.freeze(["owner", "operator"] as const),
+  }),
+} as const);
+export const PMS_MANDATORY_CHARGE_CONFIRMATION_IDEMPOTENCY = Object.freeze({
+  operationScope: "pms",
+  operation: PMS_CONFIRM_MANDATORY_CHARGES_INCLUDED_OPERATION,
+  keyScope: "property",
+  exactReplay: "original_response",
+  replaySideEffects: "none",
+  changedFingerprint: "idempotency_key_conflict",
+  inProgress: "command_in_progress",
+} as const);
 const SHA_256_PATTERN = /^[0-9a-f]{64}$/;
 
 declare const pmsMandatoryChargePricingSourceFingerprintBrand: unique symbol;
@@ -65,6 +93,66 @@ export type PmsMandatoryChargePricingSourceSnapshot = Readonly<{
   serializedPayload: string;
 }>;
 
+export type ConfirmMandatoryChargesIncludedCommand = Readonly<{
+  organizationId: string;
+  propertyId: string;
+  expectedConfirmationRevision: number;
+  claimedPricingSourceFingerprint: PmsMandatoryChargePricingSourceFingerprint;
+  expectedPricingSourceRevisions: PmsMandatoryChargePricingSourceRevisionManifest;
+  idempotencyKey: string;
+  audit: PmsPricingCommandAudit;
+}>;
+
+export type PmsMandatoryChargeConfirmationEvidence = Readonly<{
+  organizationId: string;
+  propertyId: string;
+  pricingSourceFingerprint: PmsMandatoryChargePricingSourceFingerprint;
+  confirmationRevision: number;
+  confirmedAt: string;
+}>;
+
+export type PmsMandatoryChargeConfirmationCommandError =
+  | Readonly<{
+      code:
+        | "setup_scope_unavailable"
+        | "pricing_source_not_configured"
+        | "pricing_source_conflict"
+        | "idempotency_key_conflict"
+        | "command_in_progress";
+    }>
+  | Readonly<{ code: "confirmation_revision_conflict"; currentRevision: number }>;
+
+export type ConfirmMandatoryChargesIncludedResponse = Readonly<{
+  contractVersion: typeof PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION;
+  outcome: "confirmed";
+  evidence: PmsMandatoryChargeConfirmationEvidence;
+  acceptedAt: string;
+}>;
+
+export type ConfirmMandatoryChargesIncludedResult =
+  | Readonly<{ ok: true; response: ConfirmMandatoryChargesIncludedResponse }>
+  | Readonly<{ ok: false; error: PmsMandatoryChargeConfirmationCommandError }>;
+
+export type PmsMandatoryChargeConfirmationCommandPort = {
+  /**
+   * Every attempt is authorized before idempotency lookup or replay. Exact
+   * retries replay the stored serialized response byte-for-byte without
+   * advancing revisions or writing another audit, event, or outbox row;
+   * changed fingerprints conflict.
+   *
+   * For a new write, implementations enter the shared pricing guard, acquire
+   * the room-facts property lock, and use one database client/transaction to
+   * reread the complete active-room, pricing, and retained-recurring state.
+   * They compare its canonical manifest and digest before the confirmation CAS.
+   * Independent read transactions cannot be used as evidence protected by
+   * these locks. The evidence, completed idempotency result, redacted audit,
+   * secret-safe event, and source-read-required outbox intent commit atomically.
+   */
+  confirmMandatoryChargesIncluded(
+    command: ConfirmMandatoryChargesIncludedCommand,
+  ): Promise<ConfirmMandatoryChargesIncludedResult>;
+};
+
 /**
  * PMS owns these canonical bytes. Callers apply lower-hex SHA-256 outside this
  * browser-safe package, then parse the digest through the exported parser.
@@ -98,6 +186,124 @@ export function parsePmsMandatoryChargePricingSourceFingerprint(
   return typeof value === "string" && SHA_256_PATTERN.test(value)
     ? (value as PmsMandatoryChargePricingSourceFingerprint)
     : null;
+}
+
+export function parseConfirmMandatoryChargesIncludedCommand(
+  value: unknown,
+): ConfirmMandatoryChargesIncludedCommand | null {
+  if (
+    !isExactRecord(value, [
+      "organizationId",
+      "propertyId",
+      "expectedConfirmationRevision",
+      "claimedPricingSourceFingerprint",
+      "expectedPricingSourceRevisions",
+      "idempotencyKey",
+      "audit",
+    ]) ||
+    !isUuid(value.organizationId) ||
+    !isUuid(value.propertyId) ||
+    !isIntegerInRange(value.expectedConfirmationRevision, 0, 2_147_483_647) ||
+    !isTrimmedText(value.idempotencyKey, 1, 200)
+  ) {
+    return null;
+  }
+  const claimedPricingSourceFingerprint = parsePmsMandatoryChargePricingSourceFingerprint(
+    value.claimedPricingSourceFingerprint,
+  );
+  const expectedPricingSourceRevisions = parseRevisionManifest(
+    value.expectedPricingSourceRevisions,
+  );
+  const audit = parseCommandAudit(value.audit);
+  return claimedPricingSourceFingerprint && expectedPricingSourceRevisions && audit
+    ? deepFreeze({
+        organizationId: value.organizationId.toLowerCase(),
+        propertyId: value.propertyId.toLowerCase(),
+        expectedConfirmationRevision: value.expectedConfirmationRevision,
+        claimedPricingSourceFingerprint,
+        expectedPricingSourceRevisions,
+        idempotencyKey: value.idempotencyKey,
+        audit,
+      })
+    : null;
+}
+
+export function serializeConfirmMandatoryChargesIncludedFingerprint(
+  command: ConfirmMandatoryChargesIncludedCommand,
+): string {
+  return JSON.stringify({
+    organizationId: command.organizationId,
+    propertyId: command.propertyId,
+    expectedConfirmationRevision: command.expectedConfirmationRevision,
+    claimedPricingSourceFingerprint: command.claimedPricingSourceFingerprint,
+    expectedPricingSourceRevisions: command.expectedPricingSourceRevisions,
+  });
+}
+
+export function parsePmsMandatoryChargeConfirmationEvidence(
+  value: unknown,
+): PmsMandatoryChargeConfirmationEvidence | null {
+  if (
+    !isExactRecord(value, [
+      "organizationId",
+      "propertyId",
+      "pricingSourceFingerprint",
+      "confirmationRevision",
+      "confirmedAt",
+    ]) ||
+    !isUuid(value.organizationId) ||
+    !isUuid(value.propertyId) ||
+    !isRevision(value.confirmationRevision) ||
+    !isCanonicalIsoDateTime(value.confirmedAt)
+  ) {
+    return null;
+  }
+  const pricingSourceFingerprint = parsePmsMandatoryChargePricingSourceFingerprint(
+    value.pricingSourceFingerprint,
+  );
+  return pricingSourceFingerprint
+    ? Object.freeze({
+        organizationId: value.organizationId.toLowerCase(),
+        propertyId: value.propertyId.toLowerCase(),
+        pricingSourceFingerprint,
+        confirmationRevision: value.confirmationRevision,
+        confirmedAt: value.confirmedAt,
+      })
+    : null;
+}
+
+export function parseConfirmMandatoryChargesIncludedResult(
+  value: unknown,
+): ConfirmMandatoryChargesIncludedResult | null {
+  if (!isRecord(value)) return null;
+  if (value.ok === true && isExactRecord(value, ["ok", "response"])) {
+    const response = value.response;
+    if (
+      !isExactRecord(response, ["contractVersion", "outcome", "evidence", "acceptedAt"]) ||
+      response.contractVersion !== PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION ||
+      response.outcome !== "confirmed" ||
+      !isCanonicalIsoDateTime(response.acceptedAt)
+    ) {
+      return null;
+    }
+    const evidence = parsePmsMandatoryChargeConfirmationEvidence(response.evidence);
+    return evidence && evidence.confirmedAt === response.acceptedAt
+      ? deepFreeze({
+          ok: true as const,
+          response: {
+            contractVersion: PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION,
+            outcome: "confirmed" as const,
+            evidence,
+            acceptedAt: response.acceptedAt,
+          },
+        })
+      : null;
+  }
+  if (value.ok === false && isExactRecord(value, ["ok", "error"])) {
+    const error = parseCommandError(value.error);
+    return error ? deepFreeze({ ok: false as const, error }) : null;
+  }
+  return null;
 }
 
 type CanonicalRoom = Readonly<{
@@ -386,6 +592,179 @@ function compareInvalidReasons(
   return leftPosition - rightPosition || compareCodeUnits(leftId, rightId);
 }
 
+function parseRevisionManifest(
+  value: unknown,
+): PmsMandatoryChargePricingSourceRevisionManifest | null {
+  if (
+    !isExactRecord(value, [
+      "pricingCurrencyRevision",
+      "rooms",
+      "flexibleRatePlans",
+      "optionalPricingAggregateRevision",
+      "recurringSources",
+    ]) ||
+    !isRevision(value.pricingCurrencyRevision) ||
+    !isDenseArray(value.rooms) ||
+    !isDenseArray(value.flexibleRatePlans) ||
+    !isIntegerInRange(value.optionalPricingAggregateRevision, 0, 2_147_483_647) ||
+    !isDenseArray(value.recurringSources)
+  ) {
+    return null;
+  }
+  const rooms = value.rooms.map(parseManifestRoom);
+  const plans = value.flexibleRatePlans.map(parseManifestPlan);
+  const recurring = value.recurringSources.map(parseManifestRecurringSource);
+  if (rooms.some(isNull) || plans.some(isNull) || recurring.some(isNull)) return null;
+  const parsedRooms = rooms as PmsMandatoryChargePricingSourceRevisionManifest["rooms"][number][];
+  const parsedPlans =
+    plans as PmsMandatoryChargePricingSourceRevisionManifest["flexibleRatePlans"][number][];
+  const parsedRecurring =
+    recurring as PmsMandatoryChargePricingSourceRevisionManifest["recurringSources"][number][];
+  if (
+    hasDuplicate(parsedRooms, ({ roomTypeId }) => roomTypeId) ||
+    hasDuplicate(parsedPlans, ({ roomTypeId }) => roomTypeId) ||
+    hasDuplicate(parsedPlans, ({ flexibleRatePlanId }) => flexibleRatePlanId) ||
+    hasDuplicate(parsedRecurring, ({ sourceId }) => sourceId) ||
+    (value.optionalPricingAggregateRevision === 0) !== (parsedRecurring.length === 0)
+  ) {
+    return null;
+  }
+  parsedRooms.sort((left, right) => compareCodeUnits(left.roomTypeId, right.roomTypeId));
+  parsedPlans.sort((left, right) => compareCodeUnits(left.roomTypeId, right.roomTypeId));
+  parsedRecurring.sort(compareManifestRecurringSources);
+  return deepFreeze({
+    pricingCurrencyRevision: value.pricingCurrencyRevision,
+    rooms: parsedRooms,
+    flexibleRatePlans: parsedPlans,
+    optionalPricingAggregateRevision: value.optionalPricingAggregateRevision,
+    recurringSources: parsedRecurring,
+  });
+}
+
+function parseManifestRoom(
+  value: unknown,
+): PmsMandatoryChargePricingSourceRevisionManifest["rooms"][number] | null {
+  return isExactRecord(value, ["roomTypeId", "roomFactsRevision"]) &&
+    isUuid(value.roomTypeId) &&
+    isRevision(value.roomFactsRevision)
+    ? Object.freeze({
+        roomTypeId: value.roomTypeId.toLowerCase(),
+        roomFactsRevision: value.roomFactsRevision,
+      })
+    : null;
+}
+
+function parseManifestPlan(
+  value: unknown,
+): PmsMandatoryChargePricingSourceRevisionManifest["flexibleRatePlans"][number] | null {
+  return isExactRecord(value, [
+    "roomTypeId",
+    "flexibleRatePlanId",
+    "flexibleRatePlanRevision",
+    "sourceRoomFactsRevision",
+  ]) &&
+    isUuid(value.roomTypeId) &&
+    isUuid(value.flexibleRatePlanId) &&
+    isRevision(value.flexibleRatePlanRevision) &&
+    isRevision(value.sourceRoomFactsRevision)
+    ? Object.freeze({
+        roomTypeId: value.roomTypeId.toLowerCase(),
+        flexibleRatePlanId: value.flexibleRatePlanId.toLowerCase(),
+        flexibleRatePlanRevision: value.flexibleRatePlanRevision,
+        sourceRoomFactsRevision: value.sourceRoomFactsRevision,
+      })
+    : null;
+}
+
+function parseManifestRecurringSource(
+  value: unknown,
+): PmsMandatoryChargePricingSourceRevisionManifest["recurringSources"][number] | null {
+  return isExactRecord(value, [
+    "sourceKind",
+    "sourceId",
+    "sourceRevision",
+    "validationRevision",
+    "materializationRevision",
+  ]) &&
+    isOneOf(value.sourceKind, PMS_RECURRING_PRICING_SOURCE_KINDS) &&
+    isUuid(value.sourceId) &&
+    isRevision(value.sourceRevision) &&
+    isRevision(value.validationRevision) &&
+    isIntegerInRange(value.materializationRevision, 0, 2_147_483_647)
+    ? Object.freeze({
+        sourceKind: value.sourceKind,
+        sourceId: value.sourceId.toLowerCase(),
+        sourceRevision: value.sourceRevision,
+        validationRevision: value.validationRevision,
+        materializationRevision: value.materializationRevision,
+      })
+    : null;
+}
+
+function compareManifestRecurringSources(
+  left: PmsMandatoryChargePricingSourceRevisionManifest["recurringSources"][number],
+  right: PmsMandatoryChargePricingSourceRevisionManifest["recurringSources"][number],
+): number {
+  return (
+    PMS_RECURRING_PRICING_SOURCE_KINDS.indexOf(left.sourceKind) -
+      PMS_RECURRING_PRICING_SOURCE_KINDS.indexOf(right.sourceKind) ||
+    compareCodeUnits(left.sourceId, right.sourceId)
+  );
+}
+
+function parseCommandAudit(value: unknown): PmsPricingCommandAudit | null {
+  if (
+    !isExactRecord(value, ["actor", "requestId", "correlationId", "requestedAt"]) ||
+    !isTrimmedText(value.requestId, 1, 200) ||
+    !(value.correlationId === null || isTrimmedText(value.correlationId, 1, 200)) ||
+    !isCanonicalIsoDateTime(value.requestedAt)
+  ) {
+    return null;
+  }
+  const actor = parseCommandActor(value.actor);
+  return actor
+    ? deepFreeze({
+        actor,
+        requestId: value.requestId,
+        correlationId: value.correlationId,
+        requestedAt: value.requestedAt,
+      })
+    : null;
+}
+
+function parseCommandActor(value: unknown): PmsPricingCommandAudit["actor"] | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "user" && isExactRecord(value, ["kind", "userId"]) && isUuid(value.userId)) {
+    return Object.freeze({ kind: "user", userId: value.userId.toLowerCase() });
+  }
+  return value.kind === "system" &&
+    isExactRecord(value, ["kind", "service"]) &&
+    isTrimmedText(value.service, 1, 200)
+    ? Object.freeze({ kind: "system", service: value.service })
+    : null;
+}
+
+function parseCommandError(value: unknown): PmsMandatoryChargeConfirmationCommandError | null {
+  if (!isRecord(value)) return null;
+  if (
+    isExactRecord(value, ["code"]) &&
+    isOneOf(value.code, [
+      "setup_scope_unavailable",
+      "pricing_source_not_configured",
+      "pricing_source_conflict",
+      "idempotency_key_conflict",
+      "command_in_progress",
+    ] as const)
+  ) {
+    return Object.freeze({ code: value.code });
+  }
+  return isExactRecord(value, ["code", "currentRevision"]) &&
+    value.code === "confirmation_revision_conflict" &&
+    isIntegerInRange(value.currentRevision, 0, 2_147_483_647)
+    ? Object.freeze({ code: value.code, currentRevision: value.currentRevision })
+    : null;
+}
+
 function isExactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
   const ownKeys = Reflect.ownKeys(value);
@@ -432,6 +811,28 @@ function isRevision(value: unknown): value is number {
 
 function isIntegerInRange(value: unknown, minimum: number, maximum: number): value is number {
   return Number.isInteger(value) && Number(value) >= minimum && Number(value) <= maximum;
+}
+
+function isOneOf<const Values extends readonly unknown[]>(
+  value: unknown,
+  values: Values,
+): value is Values[number] {
+  return values.includes(value);
+}
+
+function isTrimmedText(value: unknown, minimum: number, maximum: number): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.trim() &&
+    value.length >= minimum &&
+    value.length <= maximum
+  );
+}
+
+function isCanonicalIsoDateTime(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 function compareCodeUnits(left: string, right: string): number {

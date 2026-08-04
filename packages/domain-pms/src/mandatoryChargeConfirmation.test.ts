@@ -5,14 +5,25 @@ import { describe, expect, it } from "vitest";
 import { parsePmsPricingSourceSnapshot } from "./pricing.js";
 import { parsePmsRecurringPricingBookingEvidence } from "./recurringPricing.js";
 import {
+  PMS_CONFIRM_MANDATORY_CHARGES_INCLUDED_OPERATION,
+  PMS_MANDATORY_CHARGE_CONFIRMATION_AUTHORIZATION,
+  PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION,
+  PMS_MANDATORY_CHARGE_CONFIRMATION_IDEMPOTENCY,
   PMS_MANDATORY_CHARGE_PRICING_SOURCE_FINGERPRINT_ALGORITHM,
   PMS_MANDATORY_CHARGE_PRICING_SOURCE_PAYLOAD_VERSION,
+  PMS_MANDATORY_CHARGE_CONFIRMATION_RESOURCE_TYPE,
   createPmsMandatoryChargePricingSourceSnapshot,
+  parseConfirmMandatoryChargesIncludedCommand,
+  parseConfirmMandatoryChargesIncludedResult,
+  parsePmsMandatoryChargeConfirmationEvidence,
   parsePmsMandatoryChargePricingSourceFingerprint,
+  serializeConfirmMandatoryChargesIncludedFingerprint,
   serializePmsMandatoryChargePricingSourcePayload,
+  type PmsMandatoryChargeConfirmationCommandPort,
   type PmsMandatoryChargePricingSourceInput,
 } from "./mandatoryChargeConfirmation.js";
 
+const organizationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const propertyId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const roomTypeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const secondRoomTypeId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -22,6 +33,7 @@ const seasonId = "11111111-1111-4111-8111-111111111111";
 const weekendId = "22222222-2222-4222-8222-222222222222";
 const additionalGuestId = "33333333-3333-4333-8333-333333333333";
 const nonRefundableId = "44444444-4444-4444-8444-444444444444";
+const userId = "55555555-5555-4555-8555-555555555555";
 const now = "2026-08-03T14:30:00.000Z";
 
 function room(
@@ -196,6 +208,16 @@ function digest(input: PmsMandatoryChargePricingSourceInput): string {
     .digest("hex");
 }
 
+function confirmationEvidence(fingerprint = digest(sourceInput())) {
+  return {
+    organizationId,
+    propertyId,
+    pricingSourceFingerprint: fingerprint,
+    confirmationRevision: 6,
+    confirmedAt: now,
+  };
+}
+
 describe("PMS mandatory-charge pricing source", () => {
   it("owns stable canonical bytes for active room facts and every retained pricing source", () => {
     const input = sourceInput();
@@ -331,5 +353,167 @@ describe("PMS mandatory-charge pricing source", () => {
     expect(parsePmsMandatoryChargePricingSourceFingerprint(baseline)).toBe(baseline);
     expect(parsePmsMandatoryChargePricingSourceFingerprint(baseline.toUpperCase())).toBeNull();
     expect(parsePmsMandatoryChargePricingSourceFingerprint(baseline.slice(1))).toBeNull();
+  });
+});
+
+describe("PMS mandatory-charge confirmation contract", () => {
+  it("declares the accepted authorization, idempotency, operation, and resource vocabulary", async () => {
+    expect(PMS_CONFIRM_MANDATORY_CHARGES_INCLUDED_OPERATION).toBe(
+      "pms.confirmMandatoryChargesIncluded",
+    );
+    expect(PMS_MANDATORY_CHARGE_CONFIRMATION_RESOURCE_TYPE).toBe("mandatory_charge_confirmation");
+    expect(PMS_MANDATORY_CHARGE_CONFIRMATION_AUTHORIZATION).toEqual({
+      permission: "pms.operations.manage",
+      entitlement: { product: "pms", key: "property-management" },
+      resource: {
+        product: "pms",
+        resourceType: "pms_property",
+        allowedRelationships: ["owner", "operator"],
+      },
+    });
+    expect(PMS_MANDATORY_CHARGE_CONFIRMATION_IDEMPOTENCY).toEqual({
+      operationScope: "pms",
+      operation: "pms.confirmMandatoryChargesIncluded",
+      keyScope: "property",
+      exactReplay: "original_response",
+      replaySideEffects: "none",
+      changedFingerprint: "idempotency_key_conflict",
+      inProgress: "command_in_progress",
+    });
+
+    const commandPort: PmsMandatoryChargeConfirmationCommandPort = {
+      async confirmMandatoryChargesIncluded() {
+        return { ok: false, error: { code: "pricing_source_conflict" } };
+      },
+    };
+    await expect(commandPort.confirmMandatoryChargesIncluded({} as never)).resolves.toEqual({
+      ok: false,
+      error: { code: "pricing_source_conflict" },
+    });
+  });
+
+  it("accepts only a claimed fingerprint plus complete canonical CAS coordinates", () => {
+    const snapshot = createPmsMandatoryChargePricingSourceSnapshot(sourceInput());
+    const fingerprint = digest(sourceInput());
+    const command = parseConfirmMandatoryChargesIncludedCommand({
+      organizationId: organizationId.toUpperCase(),
+      propertyId: propertyId.toUpperCase(),
+      expectedConfirmationRevision: 5,
+      claimedPricingSourceFingerprint: fingerprint,
+      expectedPricingSourceRevisions: {
+        ...snapshot.sourceRevisions,
+        rooms: [...snapshot.sourceRevisions.rooms].reverse(),
+        flexibleRatePlans: [...snapshot.sourceRevisions.flexibleRatePlans].reverse(),
+        recurringSources: [...snapshot.sourceRevisions.recurringSources].reverse(),
+      },
+      idempotencyKey: "mandatory-charge-confirmation-1",
+      audit: {
+        actor: { kind: "user", userId: userId.toUpperCase() },
+        requestId: "req-confirm-1",
+        correlationId: null,
+        requestedAt: now,
+      },
+    });
+
+    expect(command).toMatchObject({
+      organizationId,
+      propertyId,
+      expectedConfirmationRevision: 5,
+      claimedPricingSourceFingerprint: fingerprint,
+      expectedPricingSourceRevisions: snapshot.sourceRevisions,
+    });
+    expect(command?.audit.actor).toEqual({ kind: "user", userId });
+    const serialized = serializeConfirmMandatoryChargesIncludedFingerprint(command!);
+    expect(serialized).toBe(
+      '{"organizationId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",' +
+        '"propertyId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",' +
+        '"expectedConfirmationRevision":5,' +
+        '"claimedPricingSourceFingerprint":"6169ef53c2f84dcab9a23edabdaa9f8360e45c9cae1202135320bcc0c2db5e86",' +
+        '"expectedPricingSourceRevisions":{"pricingCurrencyRevision":2,' +
+        '"rooms":[{"roomTypeId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","roomFactsRevision":4},' +
+        '{"roomTypeId":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","roomFactsRevision":5}],' +
+        '"flexibleRatePlans":[{"roomTypeId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc",' +
+        '"flexibleRatePlanId":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",' +
+        '"flexibleRatePlanRevision":3,"sourceRoomFactsRevision":4},' +
+        '{"roomTypeId":"dddddddd-dddd-4ddd-8ddd-dddddddddddd",' +
+        '"flexibleRatePlanId":"ffffffff-ffff-4fff-8fff-ffffffffffff",' +
+        '"flexibleRatePlanRevision":4,"sourceRoomFactsRevision":5}],' +
+        '"optionalPricingAggregateRevision":5,' +
+        '"recurringSources":[{"sourceKind":"season",' +
+        '"sourceId":"11111111-1111-4111-8111-111111111111","sourceRevision":3,' +
+        '"validationRevision":2,"materializationRevision":1},' +
+        '{"sourceKind":"weekend_surcharge",' +
+        '"sourceId":"22222222-2222-4222-8222-222222222222","sourceRevision":3,' +
+        '"validationRevision":2,"materializationRevision":1},' +
+        '{"sourceKind":"additional_guest",' +
+        '"sourceId":"33333333-3333-4333-8333-333333333333","sourceRevision":3,' +
+        '"validationRevision":2,"materializationRevision":1},' +
+        '{"sourceKind":"non_refundable",' +
+        '"sourceId":"44444444-4444-4444-8444-444444444444","sourceRevision":3,' +
+        '"validationRevision":2,"materializationRevision":1}]}}',
+    );
+    expect(serialized).not.toContain("160.00");
+    expect(serialized).not.toContain("mandatory-charge-confirmation-1");
+    expect(serialized).not.toContain("req-confirm-1");
+    expect(
+      parseConfirmMandatoryChargesIncludedCommand({ ...command, pricing: sourceInput().pricing }),
+    ).toBeNull();
+    expect(
+      parseConfirmMandatoryChargesIncludedCommand({
+        ...command,
+        claimedPricingSourceFingerprint: fingerprint.toUpperCase(),
+      }),
+    ).toBeNull();
+    expect(
+      parseConfirmMandatoryChargesIncludedCommand({
+        ...command,
+        expectedPricingSourceRevisions: {
+          ...snapshot.sourceRevisions,
+          rooms: [...snapshot.sourceRevisions.rooms, snapshot.sourceRevisions.rooms[0]],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseConfirmMandatoryChargesIncludedCommand({
+        ...command,
+        expectedPricingSourceRevisions: {
+          ...snapshot.sourceRevisions,
+          optionalPricingAggregateRevision: 0,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("strictly parses immutable evidence, success, and typed conflicts", () => {
+    const evidence = confirmationEvidence();
+    expect(parsePmsMandatoryChargeConfirmationEvidence(evidence)).toEqual(evidence);
+    const success = {
+      ok: true,
+      response: {
+        contractVersion: PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION,
+        outcome: "confirmed",
+        evidence,
+        acceptedAt: now,
+      },
+    } as const;
+    expect(parseConfirmMandatoryChargesIncludedResult(success)).toEqual(success);
+    expect(
+      parseConfirmMandatoryChargesIncludedResult({
+        ok: false,
+        error: { code: "confirmation_revision_conflict", currentRevision: 6 },
+      }),
+    ).toEqual({
+      ok: false,
+      error: { code: "confirmation_revision_conflict", currentRevision: 6 },
+    });
+    expect(
+      parseConfirmMandatoryChargesIncludedResult({ ...success, pricing: "secret" }),
+    ).toBeNull();
+    expect(
+      parseConfirmMandatoryChargesIncludedResult({
+        ok: false,
+        error: { code: "pricing_source_conflict", pricing: "secret" },
+      }),
+    ).toBeNull();
   });
 });
