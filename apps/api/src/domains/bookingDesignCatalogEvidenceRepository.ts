@@ -54,7 +54,14 @@ export function createPgBookingDesignCatalogEvidenceRepository(config: {
     throw new Error("Booking design Catalog evidence connectionString must not be empty");
   }
   const ownsPool = !config.pool;
-  const pool = config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: 4 });
+  const pool =
+    config.pool ??
+    new pg.Pool({
+      connectionString: config.connectionString,
+      connectionTimeoutMillis: 5_000,
+      statement_timeout: 5_000,
+      max: 4,
+    });
 
   return {
     profile: {
