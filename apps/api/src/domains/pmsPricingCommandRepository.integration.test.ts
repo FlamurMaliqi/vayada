@@ -8,6 +8,7 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createPgPmsPricingCommandRepository } from "./pmsPricingCommandRepository.js";
+import { PMS_SUPPORTED_PRICING_CURRENCY_CODES_V1 } from "./pmsPricingCurrencyCapabilities.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const actorUserId = "16900000-0000-4000-8000-000000000001";
@@ -26,7 +27,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
   const admin = new pg.Client({
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
   });
-  let supportedCurrencies = new Set(["EUR", "USD", "CHF"]);
   let guardBlockers: readonly PmsPricingCurrencyChangeBlocker[] = [];
   let guardThrows = false;
   const guardCalls: Array<{ currentCurrency: string; requestedCurrency: string }> = [];
@@ -35,11 +35,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
     max: 6,
     now: () => new Date(acceptedAt),
     randomId: () => planId,
-    currencyValidator: {
-      async isSupportedPricingCurrency(currency) {
-        return supportedCurrencies.has(currency);
-      },
-    },
     currencyChangeGuard: {
       async runWithCurrencyChangeGuard(input, guarded) {
         guardCalls.push(input);
@@ -57,7 +52,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
   beforeEach(async () => {
     await cleanup();
     await seedAuthorizedProperty();
-    supportedCurrencies = new Set(["EUR", "USD", "CHF"]);
     guardBlockers = [];
     guardThrows = false;
     guardCalls.length = 0;
@@ -382,7 +376,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
   });
 
   it("stores unsupported currency as a typed conflict without authoritative mutation", async () => {
-    supportedCurrencies = new Set(["EUR"]);
     await expect(
       repository.upsertPropertyPricingCurrency(currencyCommand("currency-unsupported", 0, "ZZZ")),
     ).resolves.toEqual({ ok: false, error: { code: "unsupported_pricing_currency" } });
@@ -391,6 +384,25 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
     await expect(idempotencyCount("pms.pricing_currency.upsert")).resolves.toBe(1);
     await expect(eventCount()).resolves.toBe(0);
     await expect(outboxCount()).resolves.toBe(0);
+  });
+
+  it("accepts every advertised pricing currency when other command inputs are valid", async () => {
+    for (const currency of PMS_SUPPORTED_PRICING_CURRENCY_CODES_V1) {
+      await expect(
+        repository.upsertPropertyPricingCurrency(
+          currencyCommand(`currency-supported-${currency}`, 0, currency),
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        response: {
+          outcome: "created",
+          pricingCurrency: { currency, pricingCurrencyRevision: 1 },
+        },
+      });
+      await admin.query("DELETE FROM pms.property_pricing_settings WHERE property_id = $1::uuid", [
+        propertyId,
+      ]);
+    }
   });
 
   it("rolls back pricing, event, outbox, audit, and idempotency when audit fails", async () => {

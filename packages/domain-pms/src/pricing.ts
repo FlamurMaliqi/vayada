@@ -1,4 +1,6 @@
 export const PMS_PRICING_CONTRACT_VERSION = "pms-pricing.v1" as const;
+export const PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION =
+  "pms-pricing-currency-capabilities.v1" as const;
 
 /** One lock namespace shared by the PMS currency owner and every dependency writer. */
 export const PMS_PRICING_CURRENCY_DEPENDENCY_LOCK_NAMESPACE = "pms-pricing-currency" as const;
@@ -36,6 +38,14 @@ export type PmsPricingCurrency = string & { readonly [pmsPricingCurrencyBrand]: 
 export type PmsDecimalAmount = string & { readonly [pmsDecimalAmountBrand]: true };
 export type PmsPricingCurrencyChangeBlockerCode =
   (typeof PMS_PRICING_CURRENCY_CHANGE_BLOCKER_CODES)[number];
+
+export type PmsPricingCurrencyCapabilities = {
+  readonly contractVersion: typeof PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION;
+  readonly supportedCurrencies: readonly {
+    readonly code: PmsPricingCurrency;
+    readonly scale: 2;
+  }[];
+};
 
 export type PmsPricingCommandAudit = {
   readonly actor:
@@ -232,6 +242,13 @@ export type PmsPricingCurrencyValidationPort = {
   isSupportedPricingCurrency(currency: PmsPricingCurrency): Promise<boolean>;
 };
 
+export type PmsPricingCurrencyCapabilitiesReadPort = {
+  getPricingCurrencyCapabilities(): Promise<PmsPricingCurrencyCapabilities | null>;
+};
+
+export type PmsPricingCurrencyCapabilitiesPort = PmsPricingCurrencyValidationPort &
+  PmsPricingCurrencyCapabilitiesReadPort;
+
 /**
  * Generic exclusive boundary for a writer that creates or changes state bound
  * to the authoritative PMS pricing currency. The writer must read its PMS
@@ -286,6 +303,33 @@ export function parsePmsPricingCurrency(value: unknown): PmsPricingCurrency | nu
   return typeof value === "string" && CURRENCY_PATTERN.test(value)
     ? (value as PmsPricingCurrency)
     : null;
+}
+
+export function parsePmsPricingCurrencyCapabilities(
+  value: unknown,
+): PmsPricingCurrencyCapabilities | null {
+  if (
+    !isExactRecord(value, ["contractVersion", "supportedCurrencies"]) ||
+    value["contractVersion"] !== PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION ||
+    !Array.isArray(value["supportedCurrencies"]) ||
+    value["supportedCurrencies"].length === 0
+  ) {
+    return null;
+  }
+  const supportedCurrencies = value["supportedCurrencies"].map((candidate) => {
+    if (!isExactRecord(candidate, ["code", "scale"]) || candidate["scale"] !== 2) return null;
+    const code = parsePmsPricingCurrency(candidate["code"]);
+    return code ? Object.freeze({ code, scale: 2 as const }) : null;
+  });
+  if (supportedCurrencies.some((currency) => !currency)) return null;
+  const parsed = supportedCurrencies as { readonly code: PmsPricingCurrency; readonly scale: 2 }[];
+  if (parsed.some(({ code }, index) => index > 0 && parsed[index - 1]!.code >= code)) {
+    return null;
+  }
+  return Object.freeze({
+    contractVersion: PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
+    supportedCurrencies: Object.freeze(parsed),
+  });
 }
 
 /** Exact advisory-lock source key; SQL adapters hash this value with seed zero. */

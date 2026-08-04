@@ -13,7 +13,6 @@ import {
   type PmsPricingCurrency,
   type PmsPricingCurrencyChangeBlocker,
   type PmsPricingCurrencyChangeGuardPort,
-  type PmsPricingCurrencyValidationPort,
   type PmsPricingSourceChangedEvent,
   type PropertyPricingCurrencyCommandError,
   type PropertyPricingCurrencyCommandResult,
@@ -28,6 +27,7 @@ import {
   type PmsFlexibleRatePlanRow,
   type PmsPricingCurrencyRow,
 } from "./pmsPricingReadModel.js";
+import { PMS_PRICING_CURRENCY_CAPABILITIES_PORT } from "./pmsPricingCurrencyCapabilities.js";
 
 export type PmsPricingCommandClient = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -44,7 +44,6 @@ export type PmsPricingCommandPool = {
 
 export type PmsPricingCommandRepositoryConfig = {
   connectionString: string;
-  currencyValidator: PmsPricingCurrencyValidationPort;
   currencyChangeGuard: PmsPricingCurrencyChangeGuardPort;
   max?: number;
   pool?: PmsPricingCommandPool;
@@ -143,9 +142,6 @@ export function createPgPmsPricingCommandRepository(
 ): PmsPricingCommandRepository {
   if (!config.connectionString.trim()) {
     throw new Error("PMS pricing command repository connectionString must not be empty");
-  }
-  if (!config.currencyValidator) {
-    throw new Error("PMS pricing command repository requires a currency validator");
   }
   if (!config.currencyChangeGuard) {
     throw new Error("PMS pricing command repository requires a currency-change guard");
@@ -283,7 +279,9 @@ export function createPgPmsPricingCommandRepository(
       const prepared = await prepareCurrencyCommand(command);
       if (prepared.kind === "result") return prepared.result;
 
-      const supported = await config.currencyValidator.isSupportedPricingCurrency(command.currency);
+      const supported = await PMS_PRICING_CURRENCY_CAPABILITIES_PORT.isSupportedPricingCurrency(
+        command.currency,
+      );
       const execute = (
         guardHeld: boolean,
         guardBlockers: readonly PmsPricingCurrencyChangeBlocker[],
