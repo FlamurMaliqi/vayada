@@ -83,13 +83,11 @@ const MONTHS = [
   "November",
   "December",
 ] as const;
-const DRAFT_FIELDS = [
-  "marketplace.preferences.compensation_types",
-  "marketplace.preferences.content_platforms",
-  "marketplace.preferences.content_types",
-  "marketplace.preferences.availability",
-] as const;
-type PreferenceField = (typeof DRAFT_FIELDS)[number];
+type PreferenceField =
+  | "marketplace.preferences.compensation_types"
+  | "marketplace.preferences.content_platforms"
+  | "marketplace.preferences.content_types"
+  | "marketplace.preferences.availability";
 
 export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProps) {
   const {

@@ -72,14 +72,12 @@ const LOCALE_LABELS: Record<HotelCatalogContentLocale, string> = {
   zh: "Chinese",
 };
 const AMENITY_KEYS = Object.keys(HOTEL_CATALOG_AMENITIES) as HotelCatalogAmenityKey[];
-const PRESENTATION_FIELDS = [
-  "profile.default_locale",
-  "profile.short_description",
-  "profile.hero_image",
-  "profile.gallery_images",
-  "profile.amenities",
-] as const;
-type PresentationField = (typeof PRESENTATION_FIELDS)[number];
+type PresentationField =
+  | "profile.default_locale"
+  | "profile.short_description"
+  | "profile.hero_image"
+  | "profile.gallery_images"
+  | "profile.amenities";
 
 export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
   const {
