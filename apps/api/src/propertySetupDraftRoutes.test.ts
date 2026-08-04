@@ -118,6 +118,9 @@ function fakeRepository(error?: SavePropertySetupDraftError): FakeRepository {
         },
       };
     },
+    async resetStepDraft() {
+      return { ok: false, error: { code: "setup_scope_unavailable" } };
+    },
     async close() {},
   };
 }

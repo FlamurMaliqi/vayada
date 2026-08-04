@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   PROPERTY_SETUP_ACTIVE_RETENTION_DAYS,
+  type ResetPropertySetupDraftRequest,
   type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
 import pg from "pg";
@@ -11,6 +12,7 @@ import {
   createPgPropertySetupDraftCommandRepository,
   type PropertySetupDraftCommandPool,
   type PropertySetupDraftCommandRepository,
+  type PropertySetupDraftResetCommand,
   type PropertySetupDraftSaveCommand,
 } from "./domains/propertySetupDraftCommandRepository.js";
 
@@ -23,6 +25,11 @@ const PRESENT_BASE = {
   "hotel_catalog.profile": "profile:7",
   "hotel_catalog.media": "media:4",
   "hotel_catalog.amenities": "amenities:2",
+};
+const ROOM_BASE = {
+  "pms.room_types": "room-types:9",
+  "pms.room_units": "room-units:6",
+  "pms.room_media": "room-media:4",
 };
 
 describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () => {
@@ -1019,6 +1026,300 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     ]);
   });
 
+  it("resets only the CAS-matched draft and exactly replays without rebasing history", async () => {
+    const fixture = await createFixture(["hotel_operations", "creator_marketplace"]);
+    const canonicalBefore = await canonicalStep1State(fixture.propertyId);
+    const present = await repository.saveStepDraft(
+      command(fixture, {
+        idempotencyKey: "reset-preserve-present",
+        payload: { "profile.short_description": "Preserve this draft." },
+        dirtyFields: ["profile.short_description"],
+      }),
+    );
+    expect(present.ok).toBe(true);
+    const sessionId = present.ok ? present.receipt.sessionId : "";
+    expect(
+      (
+        await repository.saveStepDraft(
+          command(fixture, {
+            idempotencyKey: "reset-preserve-marketplace",
+            stepId: "marketplace_preferences",
+            expectedBaseRevisions: {
+              "marketplace.collaboration_preferences": "preferences:3",
+            },
+            expectedSessionRevision: 1,
+          }),
+        )
+      ).ok,
+    ).toBe(true);
+    expect(
+      (
+        await repository.saveStepDraft(
+          command(fixture, {
+            idempotencyKey: "reset-target-rooms",
+            stepId: "rooms",
+            expectedBaseRevisions: ROOM_BASE,
+            expectedSessionRevision: 2,
+          }),
+        )
+      ).ok,
+    ).toBe(true);
+    await client.query(
+      `UPDATE hotel_catalog.organization_setup_track_intents
+       SET selected_tracks = ARRAY['hotel_operations']::text[], revision = 2
+       WHERE organization_id = $1::uuid`,
+      [fixture.organizationId],
+    );
+
+    const reset = resetCommand(fixture, {
+      idempotencyKey: "rooms-reload-latest",
+      sessionId,
+      stepId: "rooms",
+      expectedTrackRevision: 2,
+      expectedSessionRevision: 3,
+      expectedDraftRevision: 1,
+      expectedBaseRevisions: ROOM_BASE,
+    });
+    await expect(
+      repository.resetStepDraft({
+        ...reset,
+        idempotencyKey: "rooms-stale-history",
+        request: {
+          ...reset.request,
+          expectedBaseRevisions: { ...ROOM_BASE, "pms.room_media": "room-media:5" },
+        } as ResetPropertySetupDraftRequest,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: "draft_base_revision_conflict" } });
+    const discarded = await repository.resetStepDraft(reset);
+    expect(discarded).toEqual({
+      ok: true,
+      receipt: {
+        contractVersion: "property-setup-draft-reset.v1",
+        operation: "reset_step_draft",
+        sessionId,
+        stepId: "rooms",
+        trackRevision: 2,
+        sessionRevision: 4,
+        discardedDraftRevision: 1,
+        resetAt: occurredAt,
+        nextRead: {
+          method: "GET",
+          href: `/api/hotel-setup/properties/${fixture.propertyId}/route`,
+        },
+      },
+    });
+    await client.query(
+      `UPDATE hotel_catalog.organization_setup_track_intents
+       SET selected_tracks = ARRAY['creator_marketplace']::text[], revision = 3
+       WHERE organization_id = $1::uuid`,
+      [fixture.organizationId],
+    );
+    await expect(repository.resetStepDraft(reset)).resolves.toEqual(discarded);
+    await client.query(
+      `UPDATE identity.organization_memberships
+       SET status = 'suspended'
+       WHERE organization_id = $1::uuid AND user_id = $2::uuid`,
+      [fixture.organizationId, fixture.actorUserId],
+    );
+    await expect(repository.resetStepDraft(reset)).resolves.toEqual({
+      ok: false,
+      error: { code: "setup_scope_unavailable" },
+    });
+    await client.query(
+      `UPDATE identity.organization_memberships
+       SET status = 'active'
+       WHERE organization_id = $1::uuid AND user_id = $2::uuid`,
+      [fixture.organizationId, fixture.actorUserId],
+    );
+    await expect(repository.resetStepDraft(reset)).resolves.toEqual(discarded);
+    await expect(
+      repository.resetStepDraft({
+        ...reset,
+        request: {
+          ...reset.request,
+          expectedBaseRevisions: { ...ROOM_BASE, "pms.room_media": "room-media:5" },
+        } as ResetPropertySetupDraftRequest,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: "idempotency_key_conflict" } });
+
+    const state = await client.query<{
+      revision: number;
+      selectedTracks: string[];
+      trackRevision: number;
+      resumeStepId: string | null;
+      completedStepIds: string[];
+      stepIds: string[];
+    }>(
+      `SELECT
+         setup.revision,
+         setup.selected_tracks AS "selectedTracks",
+         setup.track_revision AS "trackRevision",
+         setup.resume_step_id AS "resumeStepId",
+         setup.completed_step_ids AS "completedStepIds",
+         COALESCE(array_agg(draft.step_id ORDER BY draft.step_id)
+           FILTER (WHERE draft.step_id IS NOT NULL), '{}'::text[]) AS "stepIds"
+       FROM hotel_catalog.property_setup_sessions setup
+       LEFT JOIN hotel_catalog.property_setup_step_drafts draft ON draft.session_id = setup.id
+       WHERE setup.id = $1::uuid
+       GROUP BY setup.id`,
+      [sessionId],
+    );
+    expect(state.rows).toEqual([
+      {
+        revision: 4,
+        selectedTracks: ["hotel_operations", "creator_marketplace"],
+        trackRevision: 1,
+        resumeStepId: "rooms",
+        completedStepIds: [],
+        stepIds: ["marketplace_preferences", "present_hotel"],
+      },
+    ]);
+    await expect(
+      client.query(
+        `SELECT selected_tracks AS "selectedTracks", revision
+         FROM hotel_catalog.organization_setup_track_intents
+         WHERE organization_id = $1::uuid`,
+        [fixture.organizationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ selectedTracks: ["creator_marketplace"], revision: 3 }],
+    });
+    await expect(canonicalStep1State(fixture.propertyId)).resolves.toEqual(canonicalBefore);
+
+    const audits = await client.query<{
+      redactedPayload: Record<string, unknown>;
+      privatePayload: Record<string, unknown>;
+      auditMetadata: Record<string, unknown>;
+    }>(
+      `SELECT
+         redacted_payload AS "redactedPayload",
+         private_payload AS "privatePayload",
+         audit_metadata AS "auditMetadata"
+       FROM platform.product_audit_events
+       WHERE property_id = $1::uuid
+         AND action = 'hotel_setup.property_draft.reset'`,
+      [fixture.propertyId],
+    );
+    expect(audits.rows).toHaveLength(2);
+    const recorded = JSON.stringify(audits.rows);
+    expect(recorded).not.toContain("room-types:9");
+    expect(recorded).not.toContain("pms.room_types");
+    expect(
+      audits.rows.every(({ privatePayload }) => Object.keys(privatePayload).length === 0),
+    ).toBe(true);
+  });
+
+  it("serializes a reset race with a newer edit so exactly one CAS command wins", async () => {
+    const fixture = await createFixture(["hotel_operations"]);
+    const created = await repository.saveStepDraft(
+      command(fixture, {
+        idempotencyKey: "reset-race-seed",
+        payload: { "profile.short_description": "Original draft." },
+        dirtyFields: ["profile.short_description"],
+      }),
+    );
+    expect(created.ok).toBe(true);
+    const sessionId = created.ok ? created.receipt.sessionId : "";
+
+    const [resetResult, saveResult] = await Promise.all([
+      repository.resetStepDraft(
+        resetCommand(fixture, {
+          idempotencyKey: "reset-race-discard",
+          sessionId,
+          expectedSessionRevision: 1,
+          expectedDraftRevision: 1,
+          expectedBaseRevisions: PRESENT_BASE,
+        }),
+      ),
+      repository.saveStepDraft(
+        command(fixture, {
+          idempotencyKey: "reset-race-newer-edit",
+          payload: { "profile.short_description": "Newer draft edit." },
+          dirtyFields: ["profile.short_description"],
+          expectedSessionRevision: 1,
+          expectedDraftRevision: 1,
+        }),
+      ),
+    ]);
+
+    expect([resetResult, saveResult].filter(({ ok }) => ok)).toHaveLength(1);
+    expect([resetResult, saveResult].filter(({ ok }) => !ok)).toEqual([
+      { ok: false, error: { code: "session_revision_conflict", currentSessionRevision: 2 } },
+    ]);
+    const stored = await client.query<{ revision: number; payload: Record<string, unknown> }>(
+      `SELECT draft.revision, draft.payload
+       FROM hotel_catalog.property_setup_step_drafts draft
+       WHERE draft.session_id = $1::uuid AND draft.step_id = 'present_hotel'`,
+      [sessionId],
+    );
+    expect(stored.rows).toEqual(
+      resetResult.ok
+        ? []
+        : [{ revision: 2, payload: { "profile.short_description": "Newer draft edit." } }],
+    );
+  });
+
+  it("rolls back the draft deletion, session revision, idempotency, and audit together", async () => {
+    const fixture = await createFixture(["hotel_operations"]);
+    const created = await repository.saveStepDraft(
+      command(fixture, { idempotencyKey: "reset-rollback-seed" }),
+    );
+    expect(created.ok).toBe(true);
+    const sessionId = created.ok ? created.receipt.sessionId : "";
+    const failingPool = createInterceptingPool((text) => {
+      if (text.includes("INSERT INTO platform.product_audit_events")) {
+        throw new Error("forced reset audit failure");
+      }
+    });
+    const failingRepository = createPgPropertySetupDraftCommandRepository({
+      connectionString: TEST_DATABASE_URL!,
+      pool: failingPool,
+      now: () => new Date(occurredAt),
+    });
+
+    try {
+      await expect(
+        failingRepository.resetStepDraft(
+          resetCommand(fixture, {
+            idempotencyKey: "reset-rollback",
+            sessionId,
+            expectedSessionRevision: 1,
+            expectedDraftRevision: 1,
+            expectedBaseRevisions: PRESENT_BASE,
+          }),
+        ),
+      ).rejects.toThrow("forced reset audit failure");
+    } finally {
+      await failingRepository.close();
+      await failingPool.end();
+    }
+
+    const persisted = await client.query<{
+      revision: number;
+      drafts: number;
+      resetKeys: number;
+      resetAudits: number;
+    }>(
+      `SELECT
+         setup.revision,
+         (SELECT count(*)::integer
+          FROM hotel_catalog.property_setup_step_drafts draft
+          WHERE draft.session_id = setup.id) AS drafts,
+         (SELECT count(*)::integer
+          FROM platform.idempotency_keys key
+          WHERE key.property_id = setup.property_id
+            AND key.operation = 'hotel_setup.property_draft.reset') AS "resetKeys",
+         (SELECT count(*)::integer
+          FROM platform.product_audit_events audit
+          WHERE audit.property_id = setup.property_id
+            AND audit.action = 'hotel_setup.property_draft.reset') AS "resetAudits"
+       FROM hotel_catalog.property_setup_sessions setup
+       WHERE setup.id = $1::uuid`,
+      [sessionId],
+    );
+    expect(persisted.rows).toEqual([{ revision: 1, drafts: 1, resetKeys: 0, resetAudits: 0 }]);
+  });
+
   async function createFixture(selectedTracks: string[]) {
     const fixture = {
       actorUserId: randomUUID(),
@@ -1102,6 +1403,12 @@ type CommandOverrides = Partial<Omit<SavePropertySetupDraftRequest, "stepId">> &
   stepId?: SavePropertySetupDraftRequest["stepId"];
 };
 
+type ResetCommandOverrides = Partial<Omit<ResetPropertySetupDraftRequest, "stepId">> & {
+  idempotencyKey: string;
+  sessionId: string;
+  stepId?: ResetPropertySetupDraftRequest["stepId"];
+};
+
 function command(fixture: Fixture, overrides: CommandOverrides): PropertySetupDraftSaveCommand {
   const expectedBaseRevisions = overrides.expectedBaseRevisions ?? PRESENT_BASE;
   return {
@@ -1124,6 +1431,32 @@ function command(fixture: Fixture, overrides: CommandOverrides): PropertySetupDr
       expectedSessionRevision: overrides.expectedSessionRevision ?? 0,
       expectedDraftRevision: overrides.expectedDraftRevision ?? 0,
     } as SavePropertySetupDraftRequest,
+  };
+}
+
+function resetCommand(
+  fixture: Fixture,
+  overrides: ResetCommandOverrides,
+): PropertySetupDraftResetCommand {
+  return {
+    organizationId: fixture.organizationId,
+    propertyId: fixture.propertyId,
+    actorUserId: fixture.actorUserId,
+    idempotencyKey: overrides.idempotencyKey,
+    audit: {
+      requestId: randomUUID(),
+      correlationId: randomUUID(),
+      source: "web",
+      receivedAt: occurredAt,
+    },
+    request: {
+      sessionId: overrides.sessionId,
+      stepId: overrides.stepId ?? "present_hotel",
+      expectedTrackRevision: overrides.expectedTrackRevision ?? 1,
+      expectedSessionRevision: overrides.expectedSessionRevision ?? 1,
+      expectedDraftRevision: overrides.expectedDraftRevision ?? 1,
+      expectedBaseRevisions: overrides.expectedBaseRevisions ?? PRESENT_BASE,
+    } as ResetPropertySetupDraftRequest,
   };
 }
 
