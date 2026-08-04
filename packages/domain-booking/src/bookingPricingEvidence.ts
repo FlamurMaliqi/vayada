@@ -8,11 +8,15 @@ import {
   type FinancePaymentReadinessSnapshot,
 } from "@vayada/domain-finance";
 import {
+  PMS_MANDATORY_CHARGE_PRICING_SOURCE_FINGERPRINT_ALGORITHM,
   PMS_RECURRING_PRICING_INVALID_REASON_CODES,
   PMS_RECURRING_PRICING_SOURCE_KINDS,
   PMS_RECURRING_PRICING_WEEKDAYS,
+  parsePmsMandatoryChargePricingSourceFingerprint,
   parsePmsPricingSourceSnapshot,
   parsePmsRecurringPricingBookingEvidence,
+  serializePmsMandatoryChargePricingSourcePayload,
+  type PmsMandatoryChargePricingSourceInput,
   type PmsPricingReadPort,
   type PmsPricingSourceSnapshot,
   type PmsRecurringPricingBookingEvidence,
@@ -27,7 +31,8 @@ import {
 export const BOOKING_PRICING_EVIDENCE_CONTRACT_VERSION = "booking-pricing-evidence.v1" as const;
 export const BOOKING_PRICING_SCALE = 2 as const;
 export const BOOKING_PRICING_ROUNDING_MODE = "decimal_round_half_up" as const;
-export const BOOKING_PRICING_FINGERPRINT_ALGORITHM = "sha256" as const;
+export const BOOKING_PRICING_FINGERPRINT_ALGORITHM =
+  PMS_MANDATORY_CHARGE_PRICING_SOURCE_FINGERPRINT_ALGORITHM;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const UUID_INPUT_PATTERN =
@@ -220,9 +225,7 @@ export function createBookingPricingSourceFingerprint(
 ): BookingPricingSourceFingerprint {
   const request = requireRequest(requestValue);
   const sources = snapshotOwnerEvidence(request, input);
-  return createHash(BOOKING_PRICING_FINGERPRINT_ALGORITHM)
-    .update(JSON.stringify(canonicalFingerprintPayload(sources)))
-    .digest("hex") as BookingPricingSourceFingerprint;
+  return createSourceFingerprint(sources);
 }
 
 export function composeBookingPricingReadiness(
@@ -233,9 +236,7 @@ export function composeBookingPricingReadiness(
 ): BookingPricingReadiness {
   const request = requireRequest(requestValue);
   const sources = snapshotOwnerEvidence(request, input);
-  const sourceFingerprint = createHash(BOOKING_PRICING_FINGERPRINT_ALGORITHM)
-    .update(JSON.stringify(canonicalFingerprintPayload(sources)))
-    .digest("hex") as BookingPricingSourceFingerprint;
+  const sourceFingerprint = createSourceFingerprint(sources);
   const blockers: BookingPricingReadinessBlocker[] = [];
   const finance = parseFinanceReadiness(request, financeValue);
   const financePaymentReadiness = finance
@@ -487,105 +488,33 @@ function canonicalizeRecurringSource(
   }
 }
 
-function canonicalFingerprintPayload(sources: ReturnType<typeof snapshotOwnerEvidence>): unknown {
-  return [
-    BOOKING_PRICING_EVIDENCE_CONTRACT_VERSION,
-    sources.pricing.propertyId,
-    [
-      "currency",
-      sources.pricing.pricingCurrency.currency,
-      sources.pricing.pricingCurrency.pricingCurrencyRevision,
-    ],
-    [
-      "rooms",
-      sources.rooms.map((room) => [
-        room.roomTypeId,
-        room.roomFactsRevision,
-        room.maxGuests,
-        room.maxAdults,
-        room.maxChildren,
-      ]),
-    ],
-    [
-      "flexible",
-      sources.pricing.flexibleRatePlans.map((plan) => [
-        plan.roomTypeId,
-        plan.flexibleRatePlanId,
-        plan.flexibleRatePlanRevision,
-        plan.sourceRoomFactsRevision,
-        plan.baseAmount.amountDecimal,
-        plan.baseAmount.currency,
-        plan.cancellationTerms.type,
-        plan.cancellationTerms.freeCancellationDeadlineDays,
-        plan.cancellationTerms.afterDeadlinePenalty,
-        plan.cancellationTerms.noShowPenalty,
-      ]),
-    ],
-    [
-      "recurring",
-      sources.recurringPricing.optionalPricingAggregateRevision,
-      sources.recurringPricing.sources.map(canonicalRecurringPayload),
-    ],
-  ];
-}
-
-function canonicalRecurringPayload(source: PmsRecurringPricingSourceSnapshot): unknown {
-  const common = [
-    source.sourceKind,
-    source.sourceId,
-    source.sourceRevision,
-    source.pricingCurrencyRevision,
-    source.currency,
-    source.configuredState,
-    source.validation.state,
-    source.validation.validationRevision,
-    source.validation.state === "invalid" ? source.validation.reasons : [],
-    source.lifecycle,
-    source.materializationRevision,
-  ];
-  switch (source.sourceKind) {
-    case "season":
-      return [
-        ...common,
-        source.name,
-        source.startMonthDay,
-        source.endMonthDay,
-        source.roomPrices.map((room) => [...roomEvidencePayload(room), room.amountDecimal]),
-      ];
-    case "weekend_surcharge":
-      return [
-        ...common,
-        source.weekdays,
-        source.roomSurcharges.map((room) => [...roomEvidencePayload(room), room.amountDecimal]),
-      ];
-    case "additional_guest":
-      return [
-        ...common,
-        ...roomEvidencePayload(source),
-        source.maximumAdultGuests,
-        source.includedGuests,
-        source.amountDecimal,
-      ];
-    case "non_refundable":
-      return [
-        ...common,
-        source.discountPercent,
-        source.roomPlans.map(roomEvidencePayload),
-        source.paymentTiming,
-        source.cancellationTerms.type,
-        source.cancellationTerms.refundPolicy,
-        source.cancellationTerms.noShowPenalty,
-      ];
+function createSourceFingerprint(
+  sources: ReturnType<typeof snapshotOwnerEvidence>,
+): BookingPricingSourceFingerprint {
+  const input: PmsMandatoryChargePricingSourceInput = {
+    rooms: sources.rooms.map((room) => ({
+      roomTypeId: room.roomTypeId,
+      roomFactsRevision: room.roomFactsRevision,
+      occupancy: {
+        maxGuests: room.maxGuests,
+        maxAdults: room.maxAdults,
+        maxChildren: room.maxChildren,
+      },
+    })),
+    pricing: sources.pricing,
+    recurringPricing: sources.recurringPricing,
+  };
+  try {
+    const digest = createHash(PMS_MANDATORY_CHARGE_PRICING_SOURCE_FINGERPRINT_ALGORITHM)
+      .update(serializePmsMandatoryChargePricingSourcePayload(input))
+      .digest("hex");
+    const ownerParsed = parsePmsMandatoryChargePricingSourceFingerprint(digest);
+    const bookingParsed = parseBookingPricingSourceFingerprint(ownerParsed);
+    if (!bookingParsed) throw new TypeError();
+    return bookingParsed;
+  } catch {
+    throw new TypeError("Booking pricing owner evidence is invalid or outside request scope");
   }
-}
-
-function roomEvidencePayload(room: RecurringPricingRoomEvidence) {
-  return [
-    room.roomTypeId,
-    room.roomFactsRevision,
-    room.flexibleRatePlanId,
-    room.flexibleRatePlanRevision,
-  ];
 }
 
 function parseFinanceReadiness(

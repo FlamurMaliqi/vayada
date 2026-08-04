@@ -9,6 +9,7 @@ import {
 
 import {
   BOOKING_PRICING_EVIDENCE_CONTRACT_VERSION,
+  BOOKING_PRICING_FINGERPRINT_ALGORITHM,
   composeBookingPricingReadiness,
   createBookingPricingSourceFingerprint,
   parseBookingMandatoryChargeConfirmationEvidenceResult,
@@ -321,7 +322,9 @@ describe("Booking pricing evidence boundaries", () => {
       if (source.sourceKind === "non_refundable") (source.roomPlans as unknown[]).reverse();
     }
 
-    expect(fingerprint).toBe("a68651bf34c4bfe405b3c29c26dcef8a60a88d265dc2ceee8cc834e8d0476860");
+    expect(fingerprint).toBe("6169ef53c2f84dcab9a23edabdaa9f8360e45c9cae1202135320bcc0c2db5e86");
+    expect(BOOKING_PRICING_FINGERPRINT_ALGORITHM).toBe("sha256");
+    expect(parseBookingPricingSourceFingerprint(fingerprint)).toBe(fingerprint);
     expect(createBookingPricingSourceFingerprint(request, reordered)).toBe(fingerprint);
     expect(JSON.stringify(evidence)).toBe(original);
 
