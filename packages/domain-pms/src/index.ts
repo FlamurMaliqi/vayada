@@ -5,6 +5,7 @@ export * from "./roomPublication.js";
 export * from "./physicalRoomUnits.js";
 export * from "./pricing.js";
 export * from "./recurringPricing.js";
+export * from "./mandatoryChargeConfirmation.js";
 export * from "./operatingCalendar.js";
 export * from "./inventoryMaterialization.js";
 export * from "./inventoryMaterializationPlanner.js";
