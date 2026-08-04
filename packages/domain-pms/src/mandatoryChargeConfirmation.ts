@@ -23,6 +23,13 @@ export const PMS_CONFIRM_MANDATORY_CHARGES_INCLUDED_OPERATION =
   "pms.confirmMandatoryChargesIncluded" as const;
 export const PMS_MANDATORY_CHARGE_CONFIRMATION_RESOURCE_TYPE =
   "mandatory_charge_confirmation" as const;
+export const PMS_MANDATORY_CHARGES_CONFIRMED_EVENT_TYPE =
+  "pms.mandatory_charges.confirmed" as const;
+export const PMS_MANDATORY_CHARGE_CONFIRMATION_OUTBOX_DESTINATION =
+  "booking.pricing-source" as const;
+export const PMS_MANDATORY_CHARGE_CONFIRMATION_OUTBOX_METADATA = Object.freeze({
+  sourceReadRequired: true,
+} as const);
 export const PMS_MANDATORY_CHARGE_CONFIRMATION_AUTHORIZATION = Object.freeze({
   permission: "pms.operations.manage",
   entitlement: Object.freeze({ product: "pms", key: "property-management" }),
@@ -111,6 +118,25 @@ export type PmsMandatoryChargeConfirmationEvidence = Readonly<{
   confirmedAt: string;
 }>;
 
+export type PmsMandatoryChargeConfirmationReadRequest = Readonly<{
+  organizationId: string;
+  propertyId: string;
+}>;
+
+export type PmsMandatoryChargeConfirmationReadResult =
+  | (PmsMandatoryChargeConfirmationReadRequest &
+      Readonly<{
+        outcome: "available";
+        evidence: PmsMandatoryChargeConfirmationEvidence;
+      }>)
+  | (PmsMandatoryChargeConfirmationReadRequest & Readonly<{ outcome: "missing" }>)
+  | (PmsMandatoryChargeConfirmationReadRequest & Readonly<{ outcome: "malformed" }>)
+  | (PmsMandatoryChargeConfirmationReadRequest &
+      Readonly<{
+        outcome: "unavailable";
+        errorSource: "provider" | "system";
+      }>);
+
 export type PmsMandatoryChargeConfirmationCommandError =
   | Readonly<{
       code:
@@ -152,6 +178,29 @@ export type PmsMandatoryChargeConfirmationCommandPort = {
     command: ConfirmMandatoryChargesIncludedCommand,
   ): Promise<ConfirmMandatoryChargesIncludedResult>;
 };
+
+export type PmsMandatoryChargeConfirmationReadPort = {
+  /**
+   * Every outcome repeats the exact requested scope. Corrupt evidence is
+   * malformed, read failures are unavailable, and only consumers determine
+   * staleness by comparing the available fingerprint with current source bytes.
+   */
+  getMandatoryChargeConfirmation(
+    request: PmsMandatoryChargeConfirmationReadRequest,
+  ): Promise<PmsMandatoryChargeConfirmationReadResult>;
+};
+
+/** Secret-safe notification. Consumers obtain evidence through the read port. */
+export type PmsMandatoryChargesConfirmedEvent = Readonly<{
+  contractVersion: typeof PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION;
+  eventType: typeof PMS_MANDATORY_CHARGES_CONFIRMED_EVENT_TYPE;
+  organizationId: string;
+  propertyId: string;
+  confirmationRevision: number;
+  pricingCurrencyRevision: number;
+  optionalPricingAggregateRevision: number;
+  outcome: "confirmed";
+}>;
 
 /**
  * PMS owns these canonical bytes. Callers apply lower-hex SHA-256 outside this
@@ -270,6 +319,92 @@ export function parsePmsMandatoryChargeConfirmationEvidence(
         confirmedAt: value.confirmedAt,
       })
     : null;
+}
+
+export function parsePmsMandatoryChargeConfirmationReadRequest(
+  value: unknown,
+): PmsMandatoryChargeConfirmationReadRequest | null {
+  return isExactRecord(value, ["organizationId", "propertyId"]) &&
+    isUuid(value.organizationId) &&
+    isUuid(value.propertyId)
+    ? Object.freeze({
+        organizationId: value.organizationId.toLowerCase(),
+        propertyId: value.propertyId.toLowerCase(),
+      })
+    : null;
+}
+
+export function parsePmsMandatoryChargeConfirmationReadResult(
+  value: unknown,
+): PmsMandatoryChargeConfirmationReadResult | null {
+  if (!isRecord(value)) return null;
+  const scope = parsePmsMandatoryChargeConfirmationReadRequest({
+    organizationId: value.organizationId,
+    propertyId: value.propertyId,
+  });
+  if (!scope) return null;
+  if (
+    value.outcome === "available" &&
+    isExactRecord(value, ["outcome", "organizationId", "propertyId", "evidence"])
+  ) {
+    const evidence = parsePmsMandatoryChargeConfirmationEvidence(value.evidence);
+    return evidence &&
+      evidence.organizationId === scope.organizationId &&
+      evidence.propertyId === scope.propertyId
+      ? deepFreeze({ ...scope, outcome: "available" as const, evidence })
+      : null;
+  }
+  if (
+    (value.outcome === "missing" || value.outcome === "malformed") &&
+    isExactRecord(value, ["outcome", "organizationId", "propertyId"])
+  ) {
+    return Object.freeze({ ...scope, outcome: value.outcome });
+  }
+  if (
+    value.outcome === "unavailable" &&
+    isExactRecord(value, ["outcome", "organizationId", "propertyId", "errorSource"]) &&
+    (value.errorSource === "provider" || value.errorSource === "system")
+  ) {
+    return Object.freeze({ ...scope, outcome: "unavailable", errorSource: value.errorSource });
+  }
+  return null;
+}
+
+export function parsePmsMandatoryChargesConfirmedEvent(
+  value: unknown,
+): PmsMandatoryChargesConfirmedEvent | null {
+  if (
+    !isExactRecord(value, [
+      "contractVersion",
+      "eventType",
+      "organizationId",
+      "propertyId",
+      "confirmationRevision",
+      "pricingCurrencyRevision",
+      "optionalPricingAggregateRevision",
+      "outcome",
+    ]) ||
+    value.contractVersion !== PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION ||
+    value.eventType !== PMS_MANDATORY_CHARGES_CONFIRMED_EVENT_TYPE ||
+    !isUuid(value.organizationId) ||
+    !isUuid(value.propertyId) ||
+    !isRevision(value.confirmationRevision) ||
+    !isRevision(value.pricingCurrencyRevision) ||
+    !isIntegerInRange(value.optionalPricingAggregateRevision, 0, 2_147_483_647) ||
+    value.outcome !== "confirmed"
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    contractVersion: PMS_MANDATORY_CHARGE_CONFIRMATION_CONTRACT_VERSION,
+    eventType: PMS_MANDATORY_CHARGES_CONFIRMED_EVENT_TYPE,
+    organizationId: value.organizationId.toLowerCase(),
+    propertyId: value.propertyId.toLowerCase(),
+    confirmationRevision: value.confirmationRevision,
+    pricingCurrencyRevision: value.pricingCurrencyRevision,
+    optionalPricingAggregateRevision: value.optionalPricingAggregateRevision,
+    outcome: "confirmed",
+  });
 }
 
 export function parseConfirmMandatoryChargesIncludedResult(
