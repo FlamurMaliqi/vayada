@@ -380,18 +380,55 @@ CREATE TRIGGER trg_pms_inventory_coverage_no_truncate
   BEFORE TRUNCATE ON pms.inventory_materialization_coverage
   FOR EACH STATEMENT EXECUTE FUNCTION platform.prevent_append_only_mutation();
 
-CREATE FUNCTION pms.validate_inventory_materialization_coverage_manifest()
+CREATE TABLE pms.inventory_coverage_validation_queue (
+  transaction_id BIGINT NOT NULL,
+  property_id     UUID   NOT NULL,
+  PRIMARY KEY (transaction_id, property_id)
+);
+REVOKE ALL ON pms.inventory_coverage_validation_queue FROM PUBLIC;
+
+CREATE FUNCTION pms.queue_inventory_coverage_validation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
 AS $$
 DECLARE
   checked_property_id UUID := COALESCE(NEW.property_id, OLD.property_id);
+BEGIN
+  INSERT INTO pms.inventory_coverage_validation_queue (transaction_id, property_id)
+  VALUES (txid_current(), checked_property_id)
+  ON CONFLICT DO NOTHING;
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION pms.validate_inventory_materialization_coverage_manifest()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  checked_property_id UUID := COALESCE(NEW.property_id, OLD.property_id);
+  queued_property_id UUID;
   coverage pms.inventory_materialization_coverage%ROWTYPE;
   actual_room_count BIGINT;
   expected_rows BIGINT;
   present_rows BIGINT;
   all_rows_current BOOLEAN;
 BEGIN
+  DELETE FROM pms.inventory_coverage_validation_queue
+  WHERE transaction_id = txid_current()
+    AND property_id = checked_property_id
+  RETURNING property_id INTO queued_property_id;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+
   SELECT * INTO coverage
   FROM pms.inventory_materialization_coverage
   WHERE property_id = checked_property_id;
@@ -438,14 +475,22 @@ BEGIN
 END;
 $$;
 
+CREATE TRIGGER trg_pms_inventory_coverage_manifest_queue
+  BEFORE INSERT OR UPDATE ON pms.inventory_materialization_coverage
+  FOR EACH ROW EXECUTE FUNCTION pms.queue_inventory_coverage_validation();
 CREATE CONSTRAINT TRIGGER trg_pms_inventory_coverage_manifest
   AFTER INSERT OR UPDATE ON pms.inventory_materialization_coverage
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION pms.validate_inventory_materialization_coverage_manifest();
+CREATE TRIGGER trg_pms_inventory_days_coverage_manifest_queue
+  BEFORE INSERT OR UPDATE OR DELETE ON pms.inventory_days
+  FOR EACH ROW EXECUTE FUNCTION pms.queue_inventory_coverage_validation();
 CREATE CONSTRAINT TRIGGER trg_pms_inventory_days_coverage_manifest
   AFTER INSERT OR UPDATE OR DELETE ON pms.inventory_days
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION pms.validate_inventory_materialization_coverage_manifest();
+REVOKE ALL ON FUNCTION pms.queue_inventory_coverage_validation() FROM PUBLIC;
+REVOKE ALL ON FUNCTION pms.validate_inventory_materialization_coverage_manifest() FROM PUBLIC;
 
 CREATE TABLE pms.inventory_reservation_receipts (
   receipt_id            UUID        PRIMARY KEY,
@@ -604,6 +649,9 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   receipt_reserved_at TIMESTAMPTZ;
+  receipt_reserve_idempotency_key_id UUID;
+  receipt_reserve_domain_event_id UUID;
+  receipt_reserve_outbox_event_id UUID;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'inventory reservation status cannot be deleted'
@@ -629,11 +677,31 @@ BEGIN
             CONSTRAINT = 'chk_pms_inventory_reservation_status_transition';
   END IF;
 
-  SELECT reserved_at INTO receipt_reserved_at
+  SELECT
+    reserved_at,
+    reserve_idempotency_key_id,
+    reserve_domain_event_id,
+    reserve_outbox_event_id
+  INTO
+    receipt_reserved_at,
+    receipt_reserve_idempotency_key_id,
+    receipt_reserve_domain_event_id,
+    receipt_reserve_outbox_event_id
   FROM pms.inventory_reservation_receipts
   WHERE receipt_id = NEW.receipt_id
     AND organization_id = NEW.organization_id
     AND property_id = NEW.property_id;
+  IF NEW.lifecycle_state = 'released'
+    AND (
+      NEW.release_idempotency_key_id = receipt_reserve_idempotency_key_id
+      OR NEW.release_domain_event_id = receipt_reserve_domain_event_id
+      OR NEW.release_outbox_event_id = receipt_reserve_outbox_event_id
+    )
+  THEN
+    RAISE EXCEPTION 'inventory reservation release cannot reuse reserve evidence'
+      USING ERRCODE = '23514',
+            CONSTRAINT = 'chk_pms_inventory_reservation_status_transition';
+  END IF;
   IF (NEW.lifecycle_state = 'released' AND NEW.released_at < receipt_reserved_at)
     OR (NEW.lifecycle_state = 'handed_off' AND NEW.handed_off_at < receipt_reserved_at)
   THEN

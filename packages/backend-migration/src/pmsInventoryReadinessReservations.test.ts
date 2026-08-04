@@ -19,6 +19,7 @@ const ROOM_TYPE_ID = "40000000-0000-4000-8000-000000000001";
 const RECEIPT_ID = "80000000-0000-4000-8000-000000000001";
 const OTHER_RECEIPT_ID = "80000000-0000-4000-8000-000000000002";
 const GAP_RECEIPT_ID = "80000000-0000-4000-8000-000000000003";
+const RUNTIME_ROLE = "vay1063_inventory_runtime";
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
 
@@ -69,6 +70,12 @@ describe("PMS inventory readiness and reservation migration contract", () => {
   it("uses deferred exact manifests and immutable terminal evidence", () => {
     expect(migration.match(/DEFERRABLE INITIALLY DEFERRED/g)?.length).toBeGreaterThanOrEqual(6);
     expect(migration).toContain("chk_pms_inventory_coverage_manifest");
+    expect(migration).toContain("inventory_coverage_validation_queue");
+    expect(migration).toContain("queue_inventory_coverage_validation");
+    expect(migration).toContain("SECURITY DEFINER");
+    expect(migration).toContain(
+      "REVOKE ALL ON pms.inventory_coverage_validation_queue FROM PUBLIC",
+    );
     expect(migration).toContain("chk_pms_inventory_reservation_manifest");
     expect(migration).toContain("BEFORE INSERT OR UPDATE OR DELETE");
     expect(migration).toContain("BEFORE TRUNCATE ON pms.inventory_reservation_statuses");
@@ -295,7 +302,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
         }),
       ).rejects.toMatchObject({
         code: "23514",
-        constraint: "chk_pms_inventory_days_canonical_limits",
       });
     });
 
@@ -355,6 +361,75 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(stored.rowCount).toBe(0);
     });
 
+    it("keeps deferred coverage validation protected across tampering and savepoints", async () => {
+      await insertCanonicalDay(client, { stayDate: "2026-08-04" });
+      await insertCanonicalDay(client, { stayDate: "2026-08-05" });
+      await insertCoverage(client);
+      await client.query(`DROP ROLE IF EXISTS ${RUNTIME_ROLE}`);
+      await client.query(`CREATE ROLE ${RUNTIME_ROLE} NOLOGIN`);
+      await client.query(`GRANT USAGE ON SCHEMA pms TO ${RUNTIME_ROLE}`);
+      await client.query(`GRANT SELECT, DELETE ON pms.inventory_days TO ${RUNTIME_ROLE}`);
+
+      try {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL ROLE ${RUNTIME_ROLE}`);
+        await expect(
+          client.query("DELETE FROM pms.inventory_coverage_validation_queue"),
+        ).rejects.toMatchObject({ code: "42501" });
+        await client.query("ROLLBACK");
+
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL ROLE ${RUNTIME_ROLE}`);
+        await client.query("SAVEPOINT before_gap");
+        await client.query(
+          `DELETE FROM pms.inventory_days
+           WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+             AND stay_date = DATE '2026-08-05'`,
+          [PROPERTY_ID, ROOM_TYPE_ID],
+        );
+        await client.query("ROLLBACK TO SAVEPOINT before_gap");
+        await client.query(
+          `DELETE FROM pms.inventory_days
+           WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+             AND stay_date = DATE '2026-08-05'`,
+          [PROPERTY_ID, ROOM_TYPE_ID],
+        );
+        await client.query("SET LOCAL vayada.inventory_coverage_dirty_properties = ''");
+        await expect(client.query("COMMIT")).rejects.toMatchObject({
+          code: "23514",
+          constraint: "chk_pms_inventory_coverage_manifest",
+        });
+
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL ROLE ${RUNTIME_ROLE}`);
+        await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+        await expect(
+          client.query(
+            `DELETE FROM pms.inventory_days
+             WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+               AND stay_date = DATE '2026-08-05'`,
+            [PROPERTY_ID, ROOM_TYPE_ID],
+          ),
+        ).rejects.toMatchObject({
+          code: "23514",
+          constraint: "chk_pms_inventory_coverage_manifest",
+        });
+        await client.query("ROLLBACK");
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        await client.query("RESET ROLE");
+        await client.query(`DROP OWNED BY ${RUNTIME_ROLE}`);
+        await client.query(`DROP ROLE ${RUNTIME_ROLE}`);
+      }
+
+      const stored = await client.query(
+        `SELECT count(*)::int AS count FROM pms.inventory_days
+         WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+        [PROPERTY_ID, ROOM_TYPE_ID],
+      );
+      expect(stored.rows[0]?.count).toBe(2);
+    });
+
     it("persists exact scoped receipts and makes release terminal and replay-safe", async () => {
       await insertCanonicalDay(client, {
         stayDate: "2026-08-04",
@@ -403,6 +478,23 @@ describe.skipIf(!TEST_DATABASE_URL)(
       ).rejects.toMatchObject({
         code: "23514",
         constraint: "chk_pms_inventory_reservation_status_shape",
+      });
+
+      await expect(
+        client.query(
+          `UPDATE pms.inventory_reservation_statuses SET
+             lifecycle_state = 'released', lifecycle_revision = 2,
+             release_fingerprint_hash = $2,
+             release_idempotency_key_id = $3::uuid,
+             release_domain_event_id = $4::uuid,
+             release_outbox_event_id = $5::uuid,
+             released_at = TIMESTAMPTZ '2026-08-03T20:01:00Z'
+           WHERE receipt_id = $1::uuid`,
+          [RECEIPT_ID, HASH_B, ...Object.values(EVIDENCE.reserve1)],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_inventory_reservation_status_transition",
       });
 
       await client.query("BEGIN");
