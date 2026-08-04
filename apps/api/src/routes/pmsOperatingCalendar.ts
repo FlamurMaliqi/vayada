@@ -6,16 +6,24 @@ import {
   parsePmsOperatingCalendarCommandResult,
   parsePmsOperatingCalendarConfigurationSnapshot,
   parsePmsOperatingCalendarCurrentReadResult,
+  parsePmsOperatingCalendarImpactPreviewRequest,
+  parsePmsOperatingCalendarImpactPreviewResult,
+  parsePmsOperatingCalendarUpsertRequest,
+  parsePreviewPmsOperatingCalendarImpactCommand,
   parseUpsertPmsOperatingCalendarCommand,
+  serializePmsOperatingCalendarProposalFingerprint,
   type PmsOperatingCalendarCanonicalTimeZoneRegistry,
   type PmsOperatingCalendarCommandAudit,
   type PmsOperatingCalendarCommandError,
   type PmsOperatingCalendarCommandPort,
   type PmsOperatingCalendarCommandResponse,
+  type PmsOperatingCalendarImpactPreviewError,
+  type PmsOperatingCalendarImpactPreviewPort,
   type PmsOperatingCalendarReadPort,
   type UpsertPmsOperatingCalendarCommand,
 } from "@vayada/domain-pms";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { createHash } from "node:crypto";
 
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -28,6 +36,7 @@ type AuthorizedScope = {
 
 export type PmsOperatingCalendarRoutesOptions = {
   commandPort: PmsOperatingCalendarCommandPort;
+  impactPreviewPort: PmsOperatingCalendarImpactPreviewPort;
   readPort: PmsOperatingCalendarReadPort;
   timeZoneRegistry: PmsOperatingCalendarCanonicalTimeZoneRegistry;
 };
@@ -35,15 +44,7 @@ export type PmsOperatingCalendarRoutesOptions = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REVISION_PATTERN = /^[1-9][0-9]*$/;
 const MAX_REVISION = 2_147_483_647;
-const COMMAND_BODY_KEYS = [
-  "expectedCalendarRevision",
-  "expectedPropertyProfileRevision",
-  "schedule",
-  "defaultMinimumStayNights",
-  "roomTypeLimits",
-] as const;
-
-/** Unmounted ONB-19 owner adapter. PMS API composition remains separately coordinated. */
+/** Unmounted ONB-21 owner adapter. PMS API composition remains separately coordinated. */
 export async function registerPmsOperatingCalendarRoutes(
   app: FastifyInstance,
   options: PmsOperatingCalendarRoutesOptions,
@@ -54,6 +55,44 @@ export async function registerPmsOperatingCalendarRoutes(
     if (scope) authorized.set(request, scope);
   };
 
+  app.post<{ Params: PropertyParams; Body: unknown }>(
+    "/properties/:propertyId/operating-calendar/impact-preview",
+    { onRequest: authorize },
+    async (request, reply) => {
+      const scope = requireAuthorizedScope(authorized, request);
+      const body = parsePmsOperatingCalendarImpactPreviewRequest(request.body);
+      if (!body) {
+        return invalidRequest(reply, "The operating calendar impact preview body is invalid.");
+      }
+      const command = parsePreviewPmsOperatingCalendarImpactCommand({
+        ...body,
+        organizationId: scope.context.selectedOrganization.organizationId,
+        propertyId: scope.propertyId,
+        audit: commandAudit(scope.context),
+      });
+      if (!command) {
+        return invalidRequest(reply, "The operating calendar impact preview body is invalid.");
+      }
+      const result = parsePmsOperatingCalendarImpactPreviewResult(
+        await options.impactPreviewPort.previewOperatingCalendarImpact(command),
+      );
+      const expectedFingerprint = createHash("sha256")
+        .update(serializePmsOperatingCalendarProposalFingerprint(command), "utf8")
+        .digest("hex");
+      if (
+        !result ||
+        (result.ok &&
+          (result.preview.propertyId !== scope.propertyId ||
+            result.preview.proposalFingerprint !== expectedFingerprint))
+      ) {
+        return invalidPortResult(reply);
+      }
+      return result.ok
+        ? reply.status(200).send(result.preview)
+        : sendImpactPreviewError(reply, result.error);
+    },
+  );
+
   app.put<{ Params: PropertyParams; Body: unknown }>(
     "/properties/:propertyId/operating-calendar",
     { onRequest: authorize },
@@ -61,11 +100,12 @@ export async function registerPmsOperatingCalendarRoutes(
       const scope = requireAuthorizedScope(authorized, request);
       const idempotencyKey = readIdempotencyKey(request);
       if (!idempotencyKey) return invalidRequest(reply, "A single Idempotency-Key is required.");
-      if (!isExactObject(request.body, COMMAND_BODY_KEYS)) {
+      const body = parsePmsOperatingCalendarUpsertRequest(request.body);
+      if (!body) {
         return invalidRequest(reply, "The operating calendar body is invalid.");
       }
       const command = parseUpsertPmsOperatingCalendarCommand({
-        ...request.body,
+        ...body,
         organizationId: scope.context.selectedOrganization.organizationId,
         propertyId: scope.propertyId,
         idempotencyKey,
@@ -232,19 +272,26 @@ function readCalendarRevision(value: string): number | null {
   return Number.isSafeInteger(revision) && revision <= MAX_REVISION ? revision : null;
 }
 
-function isExactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const ownKeys = Reflect.ownKeys(value);
-  return (
-    ownKeys.length === keys.length &&
-    ownKeys.every((key) => typeof key === "string") &&
-    keys.every((key) => Object.hasOwn(value, key))
-  );
-}
-
 function sendCommandError(
   reply: FastifyReply,
   error: PmsOperatingCalendarCommandError,
+): FastifyReply {
+  if (error.code === "setup_scope_unavailable") return reply.status(404).send(error);
+  if (
+    error.code === "property_timezone_missing" ||
+    error.code === "property_timezone_invalid" ||
+    error.code === "active_room_type_set_empty" ||
+    error.code === "room_capacity_unavailable" ||
+    error.code === "starting_sellable_limit_exceeds_capacity"
+  ) {
+    return reply.status(422).send(error);
+  }
+  return reply.status(409).send(error);
+}
+
+function sendImpactPreviewError(
+  reply: FastifyReply,
+  error: PmsOperatingCalendarImpactPreviewError,
 ): FastifyReply {
   if (error.code === "setup_scope_unavailable") return reply.status(404).send(error);
   if (

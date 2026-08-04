@@ -3,6 +3,9 @@ import type { SourceEntityRevision } from "@vayada/domain-hotels";
 import type { RoomCapacityReadPort, RoomFactsReadPort } from "./roomFacts.js";
 
 export const PMS_OPERATING_CALENDAR_CONTRACT_VERSION = "pms-operating-calendar.v1" as const;
+export const PMS_OPERATING_CALENDAR_IMPACT_CONTRACT_VERSION =
+  "pms-operating-calendar-impact.v1" as const;
+export const PMS_OPERATING_CALENDAR_IMPACT_CONFIRMATION_TTL_SECONDS = 15 * 60;
 export const PMS_OPERATING_CALENDAR_SOURCE_OWNER_DOMAIN = "pms" as const;
 export const PMS_OPERATING_CALENDAR_SOURCE_ENTITY_TYPE = "pms_operating_calendar.v1" as const;
 export const PMS_OPERATING_CALENDAR_OUTBOX_DESTINATION = "pms.inventory-source" as const;
@@ -66,17 +69,38 @@ export type PmsStartingSellableLimitInput = Readonly<{
   startingSellableLimitCount: number;
 }>;
 
-export type UpsertPmsOperatingCalendarCommand = Readonly<{
-  organizationId: string;
-  propertyId: string;
+export type PmsOperatingCalendarProposalRequest = Readonly<{
   expectedCalendarRevision: number;
   expectedPropertyProfileRevision: number;
   schedule: PmsOperatingSchedule;
   defaultMinimumStayNights: number;
   roomTypeLimits: readonly PmsStartingSellableLimitInput[];
-  idempotencyKey: string;
-  audit: PmsOperatingCalendarCommandAudit;
 }>;
+
+export type PmsOperatingCalendarProposal = PmsOperatingCalendarProposalRequest &
+  Readonly<{
+    organizationId: string;
+    propertyId: string;
+  }>;
+
+export type PmsOperatingCalendarImpactConfirmation = Readonly<{
+  contractVersion: typeof PMS_OPERATING_CALENDAR_IMPACT_CONTRACT_VERSION;
+  proposalFingerprint: string;
+  sourceFingerprint: string;
+  token: string;
+  issuedAt: string;
+  expiresAt: string;
+}>;
+
+export type PmsOperatingCalendarUpsertRequest = PmsOperatingCalendarProposalRequest &
+  Readonly<{ impactConfirmation: PmsOperatingCalendarImpactConfirmation }>;
+
+export type UpsertPmsOperatingCalendarCommand = PmsOperatingCalendarProposal &
+  Readonly<{
+    impactConfirmation: PmsOperatingCalendarImpactConfirmation;
+    idempotencyKey: string;
+    audit: PmsOperatingCalendarCommandAudit;
+  }>;
 
 export type PmsOperatingCalendarRoomBinding = Readonly<{
   roomTypeId: string;
@@ -161,6 +185,13 @@ export type PmsOperatingCalendarCommandError =
   | (Readonly<{ code: "calendar_revision_conflict" }> & RevisionConflict)
   | PmsOperatingCalendarSourceConflict
   | Readonly<{ code: "operating_calendar_unchanged" }>
+  | Readonly<{
+      code:
+        | "impact_confirmation_invalid"
+        | "impact_confirmation_expired"
+        | "impact_confirmation_configuration_mismatch"
+        | "impact_confirmation_stale";
+    }>
   | Readonly<{ code: "idempotency_key_conflict" | "command_in_progress" }>;
 
 export type PmsOperatingCalendarStaleSourceConflict = Exclude<
@@ -255,6 +286,13 @@ const PROFILE_REVISION = /^profile:([1-9][0-9]*)$/;
 const CALENDAR_REVISION = /^calendar:([1-9][0-9]*)$/;
 const IANA_TIME_ZONE = /^[A-Za-z_]+\/[A-Za-z0-9_+./-]+$/;
 const MONTH_LENGTHS = Object.freeze([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]);
+const PROPOSAL_REQUEST_KEYS = [
+  "expectedCalendarRevision",
+  "expectedPropertyProfileRevision",
+  "schedule",
+  "defaultMinimumStayNights",
+  "roomTypeLimits",
+] as const;
 
 export function parsePmsCanonicalIanaTimeZone(
   value: unknown,
@@ -345,11 +383,70 @@ export function parseUpsertPmsOperatingCalendarCommand(
       "schedule",
       "defaultMinimumStayNights",
       "roomTypeLimits",
+      "impactConfirmation",
       "idempotencyKey",
       "audit",
     ]) ||
+    !trimmed(value.idempotencyKey, 1, 200)
+  ) {
+    return null;
+  }
+  const request = parsePmsOperatingCalendarUpsertRequest(
+    Object.fromEntries(
+      [...PROPOSAL_REQUEST_KEYS, "impactConfirmation"].map((key) => [key, value[key]]),
+    ),
+  );
+  if (!request) return null;
+  const { impactConfirmation, ...proposalRequest } = request;
+  const proposal = parsePmsOperatingCalendarProposal({
+    organizationId: value.organizationId,
+    propertyId: value.propertyId,
+    ...proposalRequest,
+  });
+  const audit = parseAudit(value.audit);
+  if (!proposal || !audit) return null;
+  return Object.freeze({
+    ...proposal,
+    impactConfirmation,
+    idempotencyKey: value.idempotencyKey,
+    audit,
+  });
+}
+
+export function parsePmsOperatingCalendarProposal(
+  value: unknown,
+): PmsOperatingCalendarProposal | null {
+  if (
+    !exactRecord(value, [
+      "organizationId",
+      "propertyId",
+      "expectedCalendarRevision",
+      "expectedPropertyProfileRevision",
+      "schedule",
+      "defaultMinimumStayNights",
+      "roomTypeLimits",
+    ]) ||
     !uuid(value.organizationId) ||
-    !uuid(value.propertyId) ||
+    !uuid(value.propertyId)
+  ) {
+    return null;
+  }
+  const request = parsePmsOperatingCalendarProposalRequest(
+    Object.fromEntries(PROPOSAL_REQUEST_KEYS.map((key) => [key, value[key]])),
+  );
+  if (!request) return null;
+  return Object.freeze({
+    organizationId: value.organizationId.toLowerCase(),
+    propertyId: value.propertyId.toLowerCase(),
+    ...request,
+  });
+}
+
+export function parsePmsOperatingCalendarProposalRequest(
+  value: unknown,
+): PmsOperatingCalendarProposalRequest | null {
+  if (
+    !exactRecord(value, PROPOSAL_REQUEST_KEYS) ||
     !integer(value.expectedCalendarRevision, 0, 2_147_483_647) ||
     !integer(value.expectedPropertyProfileRevision, 1, 2_147_483_647) ||
     !integer(
@@ -358,42 +455,93 @@ export function parseUpsertPmsOperatingCalendarCommand(
       PMS_OPERATING_CALENDAR_MINIMUM_STAY_BOUNDS.maximumNights,
     ) ||
     !Array.isArray(value.roomTypeLimits) ||
-    value.roomTypeLimits.length < 1 ||
-    !trimmed(value.idempotencyKey, 1, 200)
+    value.roomTypeLimits.length < 1
   ) {
     return null;
   }
   const schedule = parsePmsOperatingSchedule(value.schedule);
-  const audit = parseAudit(value.audit);
   const roomTypeLimits = value.roomTypeLimits.map(parseLimitInput);
-  if (!schedule || !audit || roomTypeLimits.some((limit) => !limit)) return null;
+  if (!schedule || roomTypeLimits.some((limit) => !limit)) return null;
   const limits = roomTypeLimits as PmsStartingSellableLimitInput[];
   if (new Set(limits.map(({ roomTypeId }) => roomTypeId)).size !== limits.length) return null;
   limits.sort((left, right) => compareCodeUnits(left.roomTypeId, right.roomTypeId));
   return Object.freeze({
-    organizationId: value.organizationId.toLowerCase(),
-    propertyId: value.propertyId.toLowerCase(),
     expectedCalendarRevision: value.expectedCalendarRevision,
     expectedPropertyProfileRevision: value.expectedPropertyProfileRevision,
     schedule,
     defaultMinimumStayNights: value.defaultMinimumStayNights,
     roomTypeLimits: Object.freeze(limits),
-    idempotencyKey: value.idempotencyKey,
-    audit,
   });
+}
+
+export function parsePmsOperatingCalendarUpsertRequest(
+  value: unknown,
+): PmsOperatingCalendarUpsertRequest | null {
+  if (!exactRecord(value, [...PROPOSAL_REQUEST_KEYS, "impactConfirmation"])) return null;
+  const proposal = parsePmsOperatingCalendarProposalRequest(
+    Object.fromEntries(PROPOSAL_REQUEST_KEYS.map((key) => [key, value[key]])),
+  );
+  const impactConfirmation = parsePmsOperatingCalendarImpactConfirmation(value.impactConfirmation);
+  return proposal && impactConfirmation ? Object.freeze({ ...proposal, impactConfirmation }) : null;
+}
+
+export function parsePmsOperatingCalendarImpactConfirmation(
+  value: unknown,
+): PmsOperatingCalendarImpactConfirmation | null {
+  if (
+    !exactRecord(value, [
+      "contractVersion",
+      "proposalFingerprint",
+      "sourceFingerprint",
+      "token",
+      "issuedAt",
+      "expiresAt",
+    ]) ||
+    value.contractVersion !== PMS_OPERATING_CALENDAR_IMPACT_CONTRACT_VERSION ||
+    !sha256(value.proposalFingerprint) ||
+    !sha256(value.sourceFingerprint) ||
+    !trimmed(value.token, 1, 2048) ||
+    !isoDate(value.issuedAt) ||
+    !isoDate(value.expiresAt) ||
+    Date.parse(value.expiresAt) - Date.parse(value.issuedAt) !==
+      PMS_OPERATING_CALENDAR_IMPACT_CONFIRMATION_TTL_SECONDS * 1_000
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    contractVersion: PMS_OPERATING_CALENDAR_IMPACT_CONTRACT_VERSION,
+    proposalFingerprint: value.proposalFingerprint,
+    sourceFingerprint: value.sourceFingerprint,
+    token: value.token,
+    issuedAt: value.issuedAt,
+    expiresAt: value.expiresAt,
+  });
+}
+
+export function serializePmsOperatingCalendarProposalFingerprint(
+  proposal: PmsOperatingCalendarProposal,
+): string {
+  return JSON.stringify(proposalFingerprintPayload(proposal));
+}
+
+function proposalFingerprintPayload(proposal: PmsOperatingCalendarProposal) {
+  return {
+    organizationId: proposal.organizationId,
+    propertyId: proposal.propertyId,
+    expectedCalendarRevision: proposal.expectedCalendarRevision,
+    expectedPropertyProfileRevision: proposal.expectedPropertyProfileRevision,
+    schedule: proposal.schedule,
+    defaultMinimumStayNights: proposal.defaultMinimumStayNights,
+    roomTypeLimits: proposal.roomTypeLimits,
+  };
 }
 
 export function serializePmsOperatingCalendarFingerprint(
   command: UpsertPmsOperatingCalendarCommand,
 ): string {
   return JSON.stringify({
-    organizationId: command.organizationId,
-    propertyId: command.propertyId,
-    expectedCalendarRevision: command.expectedCalendarRevision,
-    expectedPropertyProfileRevision: command.expectedPropertyProfileRevision,
-    schedule: command.schedule,
-    defaultMinimumStayNights: command.defaultMinimumStayNights,
-    roomTypeLimits: command.roomTypeLimits,
+    proposal: proposalFingerprintPayload(command),
+    impactConfirmation: command.impactConfirmation,
   });
 }
 
@@ -634,6 +782,10 @@ function parseCommandError(value: unknown): PmsOperatingCalendarCommandError | n
       "property_timezone_invalid",
       "active_room_type_set_empty",
       "operating_calendar_unchanged",
+      "impact_confirmation_invalid",
+      "impact_confirmation_expired",
+      "impact_confirmation_configuration_mismatch",
+      "impact_confirmation_stale",
       "idempotency_key_conflict",
       "command_in_progress",
     ].includes(value.code) &&
@@ -896,6 +1048,9 @@ function trimmed(value: unknown, min: number, max: number): value is string {
     value.length >= min &&
     value.length <= max
   );
+}
+function sha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 function isoDate(value: unknown): value is string {
   if (typeof value !== "string") return false;

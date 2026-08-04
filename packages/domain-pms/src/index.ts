@@ -7,6 +7,7 @@ export * from "./pricing.js";
 export * from "./recurringPricing.js";
 export * from "./mandatoryChargeConfirmation.js";
 export * from "./operatingCalendar.js";
+export * from "./operatingCalendarImpact.js";
 export * from "./inventoryMaterialization.js";
 export * from "./inventoryMaterializationPlanner.js";
 export * from "./inventoryReservationLifecycle.js";

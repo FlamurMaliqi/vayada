@@ -43,13 +43,17 @@ jobs:
         run: npm run build
 
   api_postgres:
-    name: TypeScript API PostgreSQL Integration
+    name: TypeScript API PostgreSQL Integration (PG${{ matrix.postgres }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [16, 17]
 
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:${{ matrix.postgres }}-alpine
         env:
           POSTGRES_USER: vayada_test
           POSTGRES_PASSWORD: vayada_test
@@ -89,6 +93,8 @@ jobs:
           src/domains/pmsRoomFactsCommandRepository.integration.test.ts
           src/domains/pmsPhysicalRoomUnitReconcileRepository.integration.test.ts
           src/domains/pmsRoomPublicationCommandRepository.integration.test.ts
+          src/domains/pmsOperatingCalendarCommandRepository.integration.test.ts
+          src/domains/pmsOperatingCalendarImpact.integration.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 

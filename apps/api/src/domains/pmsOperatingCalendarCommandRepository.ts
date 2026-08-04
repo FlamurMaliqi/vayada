@@ -29,6 +29,8 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { loadPmsOperatingCalendarConfigurationByRevision } from "./pmsOperatingCalendarReadModel.js";
+import type { PmsOperatingCalendarImpactConfirmationVerifier } from "./pmsOperatingCalendarImpact.js";
+import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import { lockPmsRoomFactsMutationScope } from "./pmsRoomFactsMutationLock.js";
 
@@ -51,6 +53,7 @@ export type PmsOperatingCalendarCommandRepositoryConfig = {
   pool?: PmsOperatingCalendarCommandPool;
   propertyProfileEvidence: PmsOperatingCalendarPropertyProfileEvidencePort;
   roomEvidence: PmsOperatingCalendarRoomEvidencePorts;
+  impactConfirmation: PmsOperatingCalendarImpactConfirmationVerifier;
   now?: () => Date;
 };
 
@@ -104,22 +107,15 @@ export function createPgPmsOperatingCalendarCommandRepository(
         config.propertyProfileEvidence,
       );
       if (preflight) return preflight;
-      return config.propertyProfileEvidence.runWithPropertyProfileEvidence(
-        {
-          propertyId: command.propertyId,
-          expectedProfileRevision: command.expectedPropertyProfileRevision,
-        },
-        (profileEvidence) =>
-          runGuardedCommand(
-            pool,
-            command,
-            profileEvidence,
-            config.propertyProfileEvidence,
-            config.roomEvidence,
-            acceptedAt,
-            keyHash,
-            fingerprint,
-          ),
+      return runGuardedCommand(
+        pool,
+        command,
+        config.propertyProfileEvidence,
+        config.roomEvidence,
+        config.impactConfirmation,
+        acceptedAt,
+        keyHash,
+        fingerprint,
       );
     },
 
@@ -160,9 +156,9 @@ async function preflightCommand(
 async function runGuardedCommand(
   pool: PmsOperatingCalendarCommandPool,
   command: UpsertPmsOperatingCalendarCommand,
-  profileEvidence: PmsOperatingCalendarPropertyProfileEvidenceResult,
-  registry: PmsOperatingCalendarPropertyProfileEvidencePort,
+  profileEvidencePort: PmsOperatingCalendarPropertyProfileEvidencePort,
   roomEvidence: PmsOperatingCalendarRoomEvidencePorts,
+  impactConfirmation: PmsOperatingCalendarImpactConfirmationVerifier,
   acceptedAt: Date,
   keyHash: string,
   fingerprint: string,
@@ -174,7 +170,14 @@ async function runGuardedCommand(
       await rollbackQuietly(client);
       return failure({ code: "setup_scope_unavailable" });
     }
-    const replay = await findReplay(client, command, keyHash, fingerprint, acceptedAt, registry);
+    const replay = await findReplay(
+      client,
+      command,
+      keyHash,
+      fingerprint,
+      acceptedAt,
+      profileEvidencePort,
+    );
     if (replay) {
       await rollbackQuietly(client);
       return replay;
@@ -187,22 +190,31 @@ async function runGuardedCommand(
         keyHash,
         fingerprint,
         acceptedAt,
-        registry,
+        profileEvidencePort,
       );
       await rollbackQuietly(client);
       return concurrent ?? failure({ code: "command_in_progress" });
     }
-    const worked = await applyCommand(
-      client,
-      command,
-      profileEvidence,
-      registry,
-      roomEvidence,
-      reservation,
-      keyHash,
-      acceptedAt,
+    await lockPmsInventoryMutationScope(client, command.propertyId);
+    const worked = await profileEvidencePort.runWithPropertyProfileEvidence(
+      {
+        propertyId: command.propertyId,
+        expectedProfileRevision: command.expectedPropertyProfileRevision,
+      },
+      (profileEvidence) =>
+        applyCommand(
+          client,
+          command,
+          profileEvidence,
+          profileEvidencePort,
+          roomEvidence,
+          impactConfirmation,
+          reservation,
+          keyHash,
+          acceptedAt,
+        ),
     );
-    const result = parsePmsOperatingCalendarCommandResult(worked.result, registry);
+    const result = parsePmsOperatingCalendarCommandResult(worked.result, profileEvidencePort);
     if (!result) throw new Error("PMS operating-calendar command result is invalid");
     if (result.ok !== Boolean(worked.notification)) {
       throw new Error("PMS operating-calendar change notification invariant failed");
@@ -233,6 +245,7 @@ async function applyCommand(
   profileResult: PmsOperatingCalendarPropertyProfileEvidenceResult,
   registry: PmsOperatingCalendarPropertyProfileEvidencePort,
   roomEvidence: PmsOperatingCalendarRoomEvidencePorts,
+  impactConfirmation: PmsOperatingCalendarImpactConfirmationVerifier,
   reservation: IdempotencyReservation,
   keyHash: string,
   acceptedAt: Date,
@@ -282,6 +295,29 @@ async function applyCommand(
   const bindings = await validateRoomBindings(roomEvidence, command, activeFacts);
   if ("code" in bindings) return { result: failure(bindings) };
 
+  const currentConfiguration =
+    currentRevision === 0
+      ? null
+      : await loadPmsOperatingCalendarConfigurationByRevision(
+          client,
+          command.propertyId,
+          currentRevision,
+          registry,
+        );
+  if (currentRevision > 0 && !currentConfiguration) {
+    throw new Error("PMS operating-calendar current revision disappeared");
+  }
+  const confirmationError = await impactConfirmation.verifyLockedImpactConfirmation({
+    client,
+    proposal: command,
+    command,
+    acceptedAt,
+    profile: profileResult.evidence,
+    roomBindings: bindings,
+    currentConfiguration,
+  });
+  if (confirmationError) return { result: failure(confirmationError) };
+
   const configuration = buildConfiguration(
     command,
     profileResult.evidence,
@@ -290,15 +326,8 @@ async function applyCommand(
     acceptedAt,
     registry,
   );
-  if (currentRevision > 0) {
-    const current = await loadPmsOperatingCalendarConfigurationByRevision(
-      client,
-      command.propertyId,
-      currentRevision,
-      registry,
-    );
-    if (!current) throw new Error("PMS operating-calendar current revision disappeared");
-    if (sameConfiguration(current, configuration)) {
+  if (currentConfiguration) {
+    if (sameConfiguration(currentConfiguration, configuration)) {
       return { result: failure({ code: "operating_calendar_unchanged" }) };
     }
   }

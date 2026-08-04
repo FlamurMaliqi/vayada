@@ -68,6 +68,14 @@ const command = {
       startingSellableLimitCount: 8,
     },
   ],
+  impactConfirmation: {
+    contractVersion: "pms-operating-calendar-impact.v1",
+    proposalFingerprint: "a".repeat(64),
+    sourceFingerprint: "b".repeat(64),
+    token: "signed-impact-token",
+    issuedAt: NOW,
+    expiresAt: "2026-08-03T12:15:00.000Z",
+  },
   idempotencyKey: "calendar-create-1",
   audit: {
     actor: { kind: "user", userId: USER_ID },
