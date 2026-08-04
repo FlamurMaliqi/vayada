@@ -3,9 +3,16 @@ import {
   createPgEntitlementRepository,
   createPgRolePermissionRepository,
 } from "@vayada/backend-authorization";
+import { createBookingDesignReadinessProvider } from "@vayada/domain-booking";
+import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 
 import { buildApp, type ApiAuthOptions } from "./app.js";
 import { type ApiConfig, loadConfig } from "./config.js";
+import { createPgBookingDesignCatalogEvidenceRepository } from "./domains/bookingDesignCatalogEvidenceRepository.js";
+import { createPgBookingDesignRepository } from "./domains/bookingDesignRepository.js";
+import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
+import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
+import { createPgHotelMediaResolutionPort } from "./platform/hotelMediaResolver.js";
 import { createPgAskAuditRepository } from "./platform/askAuditRepository.js";
 import { createOpenAIAskModel } from "./platform/askIntelligence.js";
 import { createTargetAskEvidenceRepository } from "./platform/askEvidenceRepository.js";
@@ -318,6 +325,37 @@ const bookingWebAffiliateHotelResolver =
       })
     : undefined;
 
+const hotelCatalogStep1Repository = createPgHotelCatalogStep1Repository({
+  connectionString: targetDatabaseUrl,
+});
+const marketplaceHotelCollaborationPreferencesRepository =
+  createPgMarketplaceHotelCollaborationPreferencesRepository({
+    connectionString: targetDatabaseUrl,
+  });
+const bookingDesignRepository = createPgBookingDesignRepository({
+  connectionString: targetDatabaseUrl,
+});
+const bookingDesignMediaAdapter = config.platformMediaServing
+  ? createPgHotelMediaResolutionPort({
+      connectionString: targetDatabaseUrl,
+      serving: config.platformMediaServing,
+    })
+  : undefined;
+const bookingDesignCatalogEvidenceRepository = bookingDesignMediaAdapter
+  ? createPgBookingDesignCatalogEvidenceRepository({
+      connectionString: targetDatabaseUrl,
+      mediaResolver: createHotelMediaResolutionPort(bookingDesignMediaAdapter),
+    })
+  : undefined;
+const bookingDesignReadinessProvider = bookingDesignCatalogEvidenceRepository
+  ? createBookingDesignReadinessProvider({
+      design: bookingDesignRepository,
+      profile: bookingDesignCatalogEvidenceRepository.profile,
+      coverAssignment: bookingDesignCatalogEvidenceRepository.coverAssignment,
+      safeMedia: bookingDesignCatalogEvidenceRepository.safeMedia,
+    })
+  : undefined;
+
 const platformMediaRuntime = composePlatformMediaRuntime({
   auth: config.auth,
   targetDatabaseUrl,
@@ -533,6 +571,23 @@ const app = buildApp({
   hotelSetupTrackCommandRepository,
   propertySetupDraftCommandRepository,
   propertyMediaCommandRepository: platformMediaRuntime?.propertyMediaCommands,
+  hotelCatalogStep1: platformMediaRuntime
+    ? {
+        repository: hotelCatalogStep1Repository,
+        mediaCommands: platformMediaRuntime.propertyMediaCommands,
+      }
+    : undefined,
+  marketplaceHotelCollaborationPreferences: {
+    commandPort: marketplaceHotelCollaborationPreferencesRepository,
+    readPort: marketplaceHotelCollaborationPreferencesRepository,
+  },
+  bookingDesign: {
+    commandPort: bookingDesignRepository,
+    readPort: bookingDesignRepository,
+  },
+  bookingDesignReadiness: bookingDesignReadinessProvider
+    ? { readinessPort: bookingDesignReadinessProvider }
+    : undefined,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
     ? createPgIdentityPrivacyRepository({
@@ -570,6 +625,16 @@ const app = buildApp({
   bookingWebAffiliateHotelResolver,
   bookingWebAffiliateRepository,
   platformMedia: platformMediaRuntime?.routes,
+});
+
+app.addHook("onClose", async () => {
+  await Promise.all([
+    marketplaceHotelCollaborationPreferencesRepository.close(),
+    bookingDesignRepository.close(),
+    bookingDesignCatalogEvidenceRepository?.close(),
+    bookingDesignMediaAdapter?.close?.(),
+    ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
+  ]);
 });
 
 let activeChannexReviewBatch: Promise<void> | undefined;

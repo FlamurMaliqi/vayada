@@ -1,6 +1,10 @@
 import { createElement, type ReactNode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { buildPropertySetupRoute } from "@vayada/domain-hotels";
+import {
+  PROPERTY_SETUP_STEP_DEFINITIONS,
+  buildPropertySetupRoute,
+  getActivePropertySetupStepIds,
+} from "@vayada/domain-hotels";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiErrorResponse } from "@/services/api/client";
@@ -301,7 +305,19 @@ function operationsRoute(resumeStepId: "pricing") {
       selectedTracks: ["hotel_operations"],
       trackRevision: 1,
       session: null,
-      ownerFacts: [],
+      ownerFacts: getActivePropertySetupStepIds(["hotel_operations"]).map((stepId) => ({
+        organizationId,
+        propertyId,
+        stepId,
+        state: "not_started" as const,
+        sourceRevision: `${stepId}:1`,
+        currentBaseRevisions: Object.fromEntries(
+          PROPERTY_SETUP_STEP_DEFINITIONS.find(
+            (definition) => definition.stepId === stepId,
+          )!.baseRevisionKeys.map((key) => [key, `${key}:1`]),
+        ),
+        blockers: [],
+      })),
     }),
     resumeStepId,
   };

@@ -122,7 +122,7 @@ export function parseSaveHotelCatalogStep1Request(
     return null;
   }
 
-  const shortDescription = normalizeSummary(value["shortDescription"]);
+  const shortDescription = normalizeHotelCatalogStep1Summary(value["shortDescription"]);
   const amenities = parseAmenities(value["amenities"]);
   const media = parseMedia(value["media"]);
   if (!shortDescription || !amenities || !media) return null;
@@ -134,6 +134,25 @@ export function parseSaveHotelCatalogStep1Request(
     amenities,
     media,
   });
+}
+
+/** Strict parser for both complete and first-visit Catalog Step 1 reads. */
+export function parseHotelCatalogStep1ReadModel(value: unknown): HotelCatalogStep1ReadModel | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "contractVersion",
+      "propertyId",
+      "displayName",
+      "profileRevision",
+      "supportedLocales",
+      "profile",
+      "baseRevisions",
+    ])
+  ) {
+    return null;
+  }
+  return parseHotelCatalogStep1ReadModelFields(value);
 }
 
 export function parseSaveHotelCatalogStep1Response(
@@ -151,28 +170,21 @@ export function parseSaveHotelCatalogStep1Response(
       "baseRevisions",
       "outcome",
     ]) ||
-    value["contractVersion"] !== HOTEL_CATALOG_STEP1_CONTRACT_VERSION ||
-    !isUuid(value["propertyId"]) ||
-    typeof value["displayName"] !== "string" ||
-    value["displayName"].trim().length === 0 ||
-    !isPositiveRevision(value["profileRevision"]) ||
     (value["outcome"] !== "updated" && value["outcome"] !== "idempotent_replay")
   ) {
     return null;
   }
-  const supportedLocales = parseSupportedLocales(value["supportedLocales"]);
-  const profile = parseSavedProfile(value["profile"], supportedLocales);
-  const revision = value["profileRevision"] as number;
-  const baseRevisions = parseBaseRevisions(value["baseRevisions"], revision);
-  if (!supportedLocales || !profile || !baseRevisions) return null;
+  const readModel = parseHotelCatalogStep1ReadModelFields(value);
+  if (
+    !readModel ||
+    readModel.profile.shortDescription === null ||
+    readModel.profile.publicSlug === null ||
+    readModel.profile.amenities.reviewed !== true
+  ) {
+    return null;
+  }
   return {
-    contractVersion: HOTEL_CATALOG_STEP1_CONTRACT_VERSION,
-    propertyId: (value["propertyId"] as string).toLowerCase(),
-    displayName: value["displayName"],
-    profileRevision: revision,
-    supportedLocales,
-    profile,
-    baseRevisions,
+    ...readModel,
     outcome: value["outcome"] as SaveHotelCatalogStep1Response["outcome"],
   };
 }
@@ -207,26 +219,10 @@ export function hotelCatalogAmenityLabel(key: HotelCatalogAmenityKey): string {
 }
 
 function parseAmenities(value: unknown): SaveHotelCatalogStep1Request["amenities"] | null {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ["reviewed", "keys"]) ||
-    value["reviewed"] !== true ||
-    !Array.isArray(value["keys"])
-  ) {
-    return null;
-  }
-  const keys = value["keys"];
-  if (
-    keys.length > Object.keys(HOTEL_CATALOG_AMENITIES).length ||
-    keys.some((key) => typeof key !== "string" || !Object.hasOwn(HOTEL_CATALOG_AMENITIES, key)) ||
-    new Set(keys).size !== keys.length
-  ) {
-    return null;
-  }
-  return Object.freeze({ reviewed: true, keys: Object.freeze([...keys].sort()) }) as {
-    reviewed: true;
-    keys: HotelCatalogAmenityKey[];
-  };
+  const amenities = parseReadAmenities(value);
+  return amenities?.reviewed === true
+    ? (amenities as SaveHotelCatalogStep1Request["amenities"])
+    : null;
 }
 
 function parseMedia(value: unknown): HotelCatalogStep1MediaSelection | null {
@@ -234,7 +230,7 @@ function parseMedia(value: unknown): HotelCatalogStep1MediaSelection | null {
     !isRecord(value) ||
     !hasExactKeys(value, ["coverMediaObjectId", "galleryMediaObjectIds"]) ||
     (value["coverMediaObjectId"] !== null && !isUuid(value["coverMediaObjectId"])) ||
-    !Array.isArray(value["galleryMediaObjectIds"]) ||
+    !isDenseDataArray(value["galleryMediaObjectIds"]) ||
     value["galleryMediaObjectIds"].length > 25 ||
     value["galleryMediaObjectIds"].some((id) => !isUuid(id))
   ) {
@@ -254,7 +250,7 @@ function parseMedia(value: unknown): HotelCatalogStep1MediaSelection | null {
 
 function parseSupportedLocales(value: unknown): HotelCatalogContentLocale[] | null {
   if (
-    !Array.isArray(value) ||
+    !isDenseDataArray(value) ||
     value.length === 0 ||
     value.some(
       (locale) =>
@@ -271,7 +267,35 @@ function parseSupportedLocales(value: unknown): HotelCatalogContentLocale[] | nu
     : null;
 }
 
-function parseSavedProfile(
+function parseHotelCatalogStep1ReadModelFields(
+  value: Record<string, unknown>,
+): HotelCatalogStep1ReadModel | null {
+  if (
+    value["contractVersion"] !== HOTEL_CATALOG_STEP1_CONTRACT_VERSION ||
+    !isUuid(value["propertyId"]) ||
+    typeof value["displayName"] !== "string" ||
+    value["displayName"].trim().length === 0 ||
+    !isPositiveRevision(value["profileRevision"])
+  ) {
+    return null;
+  }
+  const supportedLocales = parseSupportedLocales(value["supportedLocales"]);
+  const profile = parseReadProfile(value["profile"], supportedLocales);
+  const revision = value["profileRevision"] as number;
+  const baseRevisions = parseBaseRevisions(value["baseRevisions"], revision);
+  if (!supportedLocales || !profile || !baseRevisions) return null;
+  return {
+    contractVersion: HOTEL_CATALOG_STEP1_CONTRACT_VERSION,
+    propertyId: (value["propertyId"] as string).toLowerCase(),
+    displayName: value["displayName"],
+    profileRevision: revision,
+    supportedLocales,
+    profile,
+    baseRevisions,
+  };
+}
+
+function parseReadProfile(
   value: unknown,
   supportedLocales: readonly HotelCatalogContentLocale[] | null,
 ): HotelCatalogStep1ReadModel["profile"] | null {
@@ -280,24 +304,52 @@ function parseSavedProfile(
     !isRecord(value) ||
     !hasExactKeys(value, ["locale", "shortDescription", "publicSlug", "amenities", "media"]) ||
     !supportedLocales.includes(value["locale"] as HotelCatalogContentLocale) ||
-    typeof value["shortDescription"] !== "string" ||
-    normalizeSummary(value["shortDescription"]) !== value["shortDescription"] ||
-    typeof value["publicSlug"] !== "string" ||
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value["publicSlug"]) ||
-    value["publicSlug"].length > 63
+    (value["shortDescription"] !== null &&
+      (typeof value["shortDescription"] !== "string" ||
+        normalizeHotelCatalogStep1Summary(value["shortDescription"]) !==
+          value["shortDescription"])) ||
+    (value["publicSlug"] !== null &&
+      (typeof value["publicSlug"] !== "string" ||
+        !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value["publicSlug"]) ||
+        value["publicSlug"].length > 63))
   ) {
     return null;
   }
-  const amenities = parseAmenities(value["amenities"]);
+  const amenities = parseReadAmenities(value["amenities"]);
   const media = parseMedia(value["media"]);
   if (!amenities || !media) return null;
   return {
     locale: value["locale"] as HotelCatalogContentLocale,
-    shortDescription: value["shortDescription"] as string,
-    publicSlug: value["publicSlug"],
+    shortDescription: value["shortDescription"] as string | null,
+    publicSlug: value["publicSlug"] as string | null,
     amenities,
     media,
   };
+}
+
+function parseReadAmenities(
+  value: unknown,
+): HotelCatalogStep1ReadModel["profile"]["amenities"] | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["reviewed", "keys"]) ||
+    typeof value["reviewed"] !== "boolean" ||
+    !isDenseDataArray(value["keys"])
+  ) {
+    return null;
+  }
+  const keys = value["keys"];
+  if (
+    keys.length > Object.keys(HOTEL_CATALOG_AMENITIES).length ||
+    keys.some((key) => typeof key !== "string" || !Object.hasOwn(HOTEL_CATALOG_AMENITIES, key)) ||
+    new Set(keys).size !== keys.length
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    reviewed: value["reviewed"],
+    keys: Object.freeze([...keys].sort()),
+  }) as HotelCatalogStep1ReadModel["profile"]["amenities"];
 }
 
 function parseBaseRevisions(
@@ -329,7 +381,7 @@ function parseBaseRevisions(
   };
 }
 
-function normalizeSummary(value: unknown): string | null {
+export function normalizeHotelCatalogStep1Summary(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   if (hasInvalidSummaryCharacter(normalized)) return null;
@@ -372,8 +424,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === expected.length &&
+    keys.every((key) => typeof key === "string") &&
+    expected.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+    })
+  );
+}
+
+function isDenseDataArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== value.length + 1 || keys.some((key) => typeof key !== "string")) {
+      return false;
+    }
+    const length = Object.getOwnPropertyDescriptor(value, "length");
+    if (!length || !Object.hasOwn(length, "value") || length.value !== value.length) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isPositiveRevision(value: unknown): value is number {

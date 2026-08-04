@@ -2,12 +2,14 @@ import { SETUP_TRACKS, type SetupTrack } from "./adaptiveHotelSetup.js";
 import {
   PROPERTY_SETUP_STEP_DEFINITIONS,
   getActivePropertySetupStepIds,
+  isPropertySetupBaseRevisionManifest,
+  type PropertySetupBaseRevisionManifest,
   type PropertySetupSession,
   type PropertySetupStepDraft,
   type PropertySetupStepId,
 } from "./propertySetupDraft.js";
 
-export const PROPERTY_SETUP_ROUTE_CONTRACT_VERSION = "property-setup-route.v1" as const;
+export const PROPERTY_SETUP_ROUTE_CONTRACT_VERSION = "property-setup-route.v2" as const;
 export const PROPERTY_SETUP_ROUTE_STEP_STATES = [
   "not_started",
   "draft",
@@ -20,7 +22,12 @@ export type PropertySetupRouteStepState = (typeof PROPERTY_SETUP_ROUTE_STEP_STAT
 export type PropertySetupOwnerStepState = Exclude<PropertySetupRouteStepState, "draft">;
 export type PropertySetupBlockerKind = "user_fixable" | "external_pending" | "system_error";
 export type PropertySetupOwnerDomain =
-  "hotel_catalog" | "marketplace" | "booking" | "pms" | "finance" | "distribution";
+  | "hotel_catalog"
+  | "marketplace"
+  | "booking"
+  | "pms"
+  | "finance"
+  | "distribution";
 
 export type PropertySetupOwnerStepBlocker = {
   code: string;
@@ -44,6 +51,8 @@ export type PropertySetupOwnerStepFact = {
   stepId: PropertySetupStepId;
   state: PropertySetupOwnerStepState;
   sourceRevision: string;
+  /** Exact current owner revisions for the step's draft dependency keys. */
+  currentBaseRevisions: PropertySetupBaseRevisionManifest;
   blockers: PropertySetupOwnerStepBlocker[];
 };
 
@@ -69,7 +78,9 @@ export type PropertySetupRouteReadModel = {
     stepId: PropertySetupStepId;
     position: number;
     state: PropertySetupRouteStepState;
-    sourceRevision: string | null;
+    sourceRevision: string;
+    /** Current owner manifest for a first save; never replaces persisted draft history. */
+    currentBaseRevisions: PropertySetupBaseRevisionManifest;
     /**
      * Rehydration data for this active step. Callers must supply a session
      * already filtered to the actor's authorized draft step IDs.
@@ -106,8 +117,11 @@ export function buildPropertySetupRoute(
 
   const steps = activeStepIds.map((stepId, index) => {
     const fact = facts.get(stepId);
+    if (!fact) {
+      throw new TypeError(`Missing property setup owner fact for active step "${stepId}".`);
+    }
     const draft = drafts.get(stepId);
-    const blockers = (fact?.blockers ?? []).map((blocker) => {
+    const blockers = fact.blockers.map((blocker) => {
       const owningStepPosition = activePositions.get(blocker.owningStepId);
       if (owningStepPosition === undefined) {
         // Exposed blockers must always navigate to an active owning step.
@@ -120,13 +134,14 @@ export function buildPropertySetupRoute(
         owningStepPosition,
       };
     });
-    const state = mergeStepState(fact?.state, completed.has(stepId), draft !== undefined);
+    const state = mergeStepState(fact.state, completed.has(stepId), draft !== undefined);
 
     return {
       stepId,
       position: index + 1,
       state,
-      sourceRevision: fact?.sourceRevision ?? null,
+      sourceRevision: fact.sourceRevision,
+      currentBaseRevisions: structuredClone(fact.currentBaseRevisions),
       draft: draft ? structuredClone(draft) : null,
       blockers,
     };
@@ -193,6 +208,11 @@ function indexOwnerFacts(
     if ((fact.state === "blocked") !== fact.blockers.length > 0) {
       throw new TypeError(
         `Property setup owner fact "${fact.stepId}" must pair blocked state with blockers.`,
+      );
+    }
+    if (!isPropertySetupBaseRevisionManifest(fact.stepId, fact.currentBaseRevisions)) {
+      throw new TypeError(
+        `Property setup owner fact "${fact.stepId}" has an invalid current base-revision manifest.`,
       );
     }
     const unknownBlocker = fact.blockers.find(({ owningStepId }) => !STEP_IDS.has(owningStepId));

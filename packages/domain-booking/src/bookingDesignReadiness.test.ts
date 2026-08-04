@@ -8,6 +8,7 @@ import {
   BOOKING_DESIGN_PROVIDER_FAILURE_CODES,
   BOOKING_DESIGN_READINESS_BLOCKER_CODES,
   createBookingDesignReadinessProvider,
+  parseBookingDesignReadinessResult,
 } from "./bookingDesignReadiness.js";
 
 const organizationId = "abcdef10-0000-4000-8000-000000000001";
@@ -87,6 +88,67 @@ function provider(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Booking design renderer readiness", () => {
+  it("strictly parses ready, blocked, and provider-failure wire results", async () => {
+    const ready = await provider().result.getBookingDesignReadiness(scope);
+    expect(parseBookingDesignReadinessResult(ready, scope)).toEqual(ready);
+    expect(
+      parseBookingDesignReadinessResult(
+        {
+          outcome: "blocked",
+          ...scope,
+          blocker: { code: "booking_design_missing", evidencePort: "design" },
+        },
+        scope,
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      ...scope,
+      blocker: { code: "booking_design_missing", evidencePort: "design" },
+    });
+    expect(
+      parseBookingDesignReadinessResult(
+        {
+          outcome: "provider_failure",
+          ...scope,
+          error: {
+            code: "booking_design_profile_unavailable",
+            evidencePort: "profile",
+            errorSource: "system",
+          },
+        },
+        scope,
+      ),
+    ).toMatchObject({ outcome: "provider_failure" });
+    expect(
+      parseBookingDesignReadinessResult(
+        ready.outcome === "ready" ? { ...ready, extra: true } : ready,
+        scope,
+      ),
+    ).toBeNull();
+    expect(
+      parseBookingDesignReadinessResult(ready, { ...scope, propertyId: mediaObjectId }),
+    ).toBeNull();
+  });
+
+  it("accepts the Catalog summary limit in Unicode code points", async () => {
+    const ready = await provider().result.getBookingDesignReadiness(scope);
+    if (ready.outcome !== "ready") throw new Error("Expected ready design");
+    const shortDescription = "🏨".repeat(500);
+
+    expect(
+      parseBookingDesignReadinessResult(
+        {
+          ...ready,
+          snapshot: {
+            ...ready.snapshot,
+            profile: { ...ready.snapshot.profile, shortDescription },
+          },
+        },
+        scope,
+      ),
+    ).toMatchObject({ outcome: "ready", snapshot: { profile: { shortDescription } } });
+  });
+
   it("creates a complete frozen default-cover snapshot without calling safe media", async () => {
     const { result, safeMedia } = provider();
     const readiness = await result.getBookingDesignReadiness({

@@ -5,6 +5,7 @@ import {
   PROPERTY_SETUP_STEP_DEFINITIONS,
   SETUP_TRACKS,
   getActivePropertySetupStepIds,
+  isPropertySetupBaseRevisionManifest,
   isPropertySetupDraftFieldValue,
   type PropertySetupBlockerKind,
   type PropertySetupFieldId,
@@ -52,7 +53,15 @@ const ROUTE_KEYS = [
   "progress",
   "steps",
 ] as const;
-const STEP_KEYS = ["stepId", "position", "state", "sourceRevision", "draft", "blockers"] as const;
+const STEP_KEYS = [
+  "stepId",
+  "position",
+  "state",
+  "sourceRevision",
+  "currentBaseRevisions",
+  "draft",
+  "blockers",
+] as const;
 const DRAFT_KEYS = [
   "stepId",
   "payload",
@@ -93,7 +102,7 @@ export function createPropertySetupRouteClient(
   };
 }
 
-/** Validates the protected v1 wire response before UI code trusts it. */
+/** Validates the protected v2 wire response before UI code trusts it. */
 export function parsePropertySetupRouteReadModel(
   value: unknown,
 ): PropertySetupRouteReadModel | null {
@@ -155,7 +164,8 @@ function isRouteStep(
     value.stepId !== expectedStepId ||
     value.position !== index + 1 ||
     !isOneOf(state, PROPERTY_SETUP_ROUTE_STEP_STATES) ||
-    !isNullableSourceRevision(value.sourceRevision) ||
+    !isSourceRevision(value.sourceRevision) ||
+    !isPropertySetupBaseRevisionManifest(expectedStepId, value.currentBaseRevisions) ||
     !Array.isArray(blockers) ||
     !blockers.every((blocker) => isRouteBlocker(blocker, expectedStepIds))
   ) {
@@ -164,7 +174,6 @@ function isRouteStep(
 
   if (
     (state === "blocked") !== blockers.length > 0 ||
-    ((state === "saved" || state === "blocked") && value.sourceRevision === null) ||
     (state === "draft" && draft === null) ||
     (state === "not_started" && draft !== null)
   ) {
@@ -296,10 +305,6 @@ function isBaseRevision(value: unknown): value is string {
 
 function isSourceRevision(value: unknown): value is string {
   return isBoundedNonEmptyString(value, MAX_SOURCE_REVISION_LENGTH);
-}
-
-function isNullableSourceRevision(value: unknown): value is string | null {
-  return value === null || isSourceRevision(value);
 }
 
 function isIsoTimestamp(value: unknown): value is string {

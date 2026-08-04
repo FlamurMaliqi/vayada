@@ -145,7 +145,7 @@ function stepContext(stepId: "rooms" | "pricing"): AdaptiveSetupStepRenderContex
 
 function setupRoute(): PropertySetupRouteReadModel {
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations"],
     trackRevision: 3,
@@ -158,7 +158,12 @@ function setupRoute(): PropertySetupRouteReadModel {
         stepId: "rooms",
         position: 1,
         state: "not_started",
-        sourceRevision: null,
+        sourceRevision: "rooms:0",
+        currentBaseRevisions: {
+          "pms.room_types": "types:1",
+          "pms.room_units": "units:1",
+          "pms.room_media": "media:1",
+        },
         draft: null,
         blockers: [],
       },
@@ -166,7 +171,12 @@ function setupRoute(): PropertySetupRouteReadModel {
         stepId: "pricing",
         position: 2,
         state: "not_started",
-        sourceRevision: null,
+        sourceRevision: "pricing:0",
+        currentBaseRevisions: {
+          "pms.pricing_settings": "pricing:0",
+          "pms.rate_plans": "plans:0",
+          "pms.rate_rules": "rules:0",
+        },
         draft: null,
         blockers: [],
       },

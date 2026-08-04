@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createHotelCatalogStep1MediaAssignments,
+  parseHotelCatalogStep1ReadModel,
   parseSaveHotelCatalogStep1Request,
   parseSaveHotelCatalogStep1Response,
 } from "./hotelCatalogStep1.js";
@@ -142,6 +143,71 @@ describe("Hotel Catalog Step 1 contract", () => {
 
   it("strictly reconstructs a stored successful response", () => {
     expect(parseSaveHotelCatalogStep1Response(savedResponse)).toEqual(savedResponse);
+  });
+
+  it("strictly parses the nullable first-visit read model without a save outcome", () => {
+    const { outcome: _outcome, ...completeReadModel } = savedResponse;
+    const firstVisit = {
+      ...completeReadModel,
+      profile: {
+        ...completeReadModel.profile,
+        shortDescription: null,
+        publicSlug: null,
+        amenities: { reviewed: false, keys: [] },
+      },
+    };
+
+    expect(parseHotelCatalogStep1ReadModel(firstVisit)).toEqual(firstVisit);
+    expect(parseSaveHotelCatalogStep1Response(firstVisit)).toBeNull();
+    expect(parseHotelCatalogStep1ReadModel({ ...firstVisit, outcome: "updated" })).toBeNull();
+  });
+
+  it("rejects accessors and symbol keys at the read-model boundary", () => {
+    const { outcome: _outcome, ...readModel } = savedResponse;
+    const accessor = { ...readModel };
+    Object.defineProperty(accessor, "displayName", {
+      enumerable: true,
+      get: () => "Hotel Alpenrose",
+    });
+    const symbolKey = { ...readModel, [Symbol("unexpected")]: true };
+
+    expect(parseHotelCatalogStep1ReadModel(accessor)).toBeNull();
+    expect(parseHotelCatalogStep1ReadModel(symbolKey)).toBeNull();
+  });
+
+  it("rejects sparse, accessor-backed, and symbol-bearing nested arrays", () => {
+    const { outcome: _outcome, ...readModel } = savedResponse;
+    const sparseLocales = Array(1);
+    const amenityKeys = ["wifi"];
+    Object.defineProperty(amenityKeys, "0", { enumerable: true, get: () => "wifi" });
+    const galleryIds = [galleryId];
+    Object.defineProperty(galleryIds, Symbol("unexpected"), { value: true });
+
+    expect(
+      parseHotelCatalogStep1ReadModel({
+        ...readModel,
+        supportedLocales: sparseLocales,
+        profile: { ...readModel.profile, locale: undefined },
+      }),
+    ).toBeNull();
+    expect(
+      parseHotelCatalogStep1ReadModel({
+        ...readModel,
+        profile: {
+          ...readModel.profile,
+          amenities: { reviewed: true, keys: amenityKeys },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseHotelCatalogStep1ReadModel({
+        ...readModel,
+        profile: {
+          ...readModel.profile,
+          media: { coverMediaObjectId: coverId, galleryMediaObjectIds: galleryIds },
+        },
+      }),
+    ).toBeNull();
   });
 
   it.each([
