@@ -6,6 +6,7 @@ import {
   parsePmsRecurringMonthDay,
   type FlexibleRatePlanSnapshot,
   type PmsMandatoryChargeConfirmationEvidence,
+  type PmsPricingCurrencyCapabilities,
   type PmsPricingSourceSnapshot,
   type PmsRecurringPricingBookingEvidence,
   type PmsRecurringPricingSourceSnapshot,
@@ -39,6 +40,7 @@ export const PRICING_WEEKDAYS = [
 export type PricingWeekday = (typeof PRICING_WEEKDAYS)[number];
 
 export type PricingCanonicalWorkspace = {
+  currencyCapabilities: PmsPricingCurrencyCapabilities;
   rooms: RoomTypeFactsSnapshot[];
   pricing: PmsPricingSourceSnapshot | null;
   recurringPricing: PmsRecurringPricingBookingEvidence | null;

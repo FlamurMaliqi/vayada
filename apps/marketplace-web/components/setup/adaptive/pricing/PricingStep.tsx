@@ -64,6 +64,7 @@ export function PricingStep({
   const [moreOpen, setMoreOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reload, setReload] = useState(0);
+  const [pendingCurrency, setPendingCurrency] = useState<string | null>(null);
   const draftRef = useRef<PricingDraftState | null>(null);
   const revisionRef = useRef<PricingDraftRevisionContext>(pricingDraftRevisionContext(route, step));
   const routeIdentity = `${route.scope.organizationId}:${route.scope.propertyId}:${route.sessionId ?? "new"}:${step.stepId}`;
@@ -126,6 +127,13 @@ export function PricingStep({
         draftRef.current = nextDraft;
         setWorkspace(nextWorkspace);
         setDraft(nextDraft);
+        setPendingCurrency(
+          nextWorkspace.pricing &&
+            nextDraft.currencyInput !== "" &&
+            nextDraft.currencyInput !== nextWorkspace.pricing.pricingCurrency.currency
+            ? nextDraft.currencyInput
+            : null,
+        );
         if (
           nextDraft.seasons.length > 0 ||
           nextDraft.weekendEnabled ||
@@ -215,12 +223,12 @@ export function PricingStep({
       return;
     }
     if (
-      !workspace.pricing ||
-      current.currencyInput !== workspace.pricing.pricingCurrency.currency
+      pendingCurrency ||
+      !workspace.currencyCapabilities.supportedCurrencies.some(
+        ({ code }) => code === current.currencyInput,
+      )
     ) {
-      setSaveError(
-        "Supported currency choices are not available from the server yet. Your draft is retained, but canonical pricing cannot be saved.",
-      );
+      setSaveError("Choose and confirm a supported pricing currency before continuing.");
       return;
     }
     setSaving(true);
@@ -271,6 +279,7 @@ export function PricingStep({
     locale,
     manifestMissing,
     manifestStale,
+    pendingCurrency,
     persistDraft,
     propertyId,
     refreshRoute,
@@ -328,9 +337,32 @@ export function PricingStep({
     );
   }
 
-  const currency = workspace.pricing?.pricingCurrency.currency ?? null;
+  const canonicalCurrency = workspace.pricing?.pricingCurrency.currency ?? null;
+  const currency = draft.currencyInput || canonicalCurrency;
+  const supportedCurrencies = workspace.currencyCapabilities.supportedCurrencies;
   const currencyUnavailable =
-    currency === null || (draft.currencyInput !== "" && draft.currencyInput !== currency);
+    pendingCurrency !== null ||
+    currency === null ||
+    !supportedCurrencies.some(({ code }) => code === currency);
+  const chooseCurrency = (nextCurrency: string) => {
+    if (canonicalCurrency && nextCurrency !== canonicalCurrency) {
+      setPendingCurrency(nextCurrency);
+      return;
+    }
+    setPendingCurrency(null);
+    change((current) => ({ ...current, currencyInput: nextCurrency }));
+    setErrors({});
+  };
+  const confirmCurrencyChange = () => {
+    if (!pendingCurrency) return;
+    const nextCurrency = pendingCurrency;
+    change((current) => clearMonetaryInputs({ ...current, currencyInput: nextCurrency }));
+    setPendingCurrency(null);
+    setErrors({});
+    setNotice(
+      `Currency changed to ${nextCurrency}. Enter every monetary amount again; values were not converted.`,
+    );
+  };
   const eligibleAdditionalRooms = draft.rooms.filter(
     ({ maximumAdults, additionalGuestEnabled }) => maximumAdults > 1 || additionalGuestEnabled,
   );
@@ -355,7 +387,7 @@ export function PricingStep({
         />
       )}
 
-      {currencyUnavailable && (
+      {pendingCurrency && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-4" role="alert">
           <div className="flex gap-3">
             <ExclamationTriangleIcon
@@ -364,12 +396,29 @@ export function PricingStep({
             />
             <div>
               <h2 className="text-sm font-semibold text-amber-950">
-                Currency setup is unavailable
+                Change currency and clear every amount?
               </h2>
               <p className="mt-1 text-sm leading-6 text-amber-900">
-                Vayada has not supplied the server-owned supported currency choices. Existing input
-                is retained, but no currency or price will be written.
+                Prices cannot be converted safely. Changing from {canonicalCurrency} to{" "}
+                {pendingCurrency}
+                clears base, seasonal, weekend, and additional-guest amounts.
               </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="min-h-11 rounded-full bg-amber-900 px-4 text-sm font-semibold text-white outline-none focus-visible:ring-2 focus-visible:ring-amber-900 focus-visible:ring-offset-2"
+                  onClick={confirmCurrencyChange}
+                >
+                  Change and clear prices
+                </button>
+                <button
+                  type="button"
+                  className="min-h-11 rounded-full border border-amber-500 bg-white px-4 text-sm font-semibold text-amber-950 outline-none focus-visible:ring-2 focus-visible:ring-amber-900 focus-visible:ring-offset-2"
+                  onClick={() => chooseCurrency(canonicalCurrency!)}
+                >
+                  Keep {canonicalCurrency}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -419,12 +468,27 @@ export function PricingStep({
           description="Use one currency for every room and payment method."
         />
         <div className="mt-4 max-w-sm">
-          <label className="block text-sm font-semibold text-gray-900">
+          <label htmlFor="pricing-currency" className="block text-sm font-semibold text-gray-900">
             Hotel pricing currency
           </label>
-          <div className="mt-2 min-h-11 rounded-lg border border-gray-300 bg-gray-100 px-3 py-2.5 text-sm font-semibold text-gray-800">
-            {currency ?? "Waiting for supported currency choices"}
-          </div>
+          <select
+            id="pricing-currency"
+            value={pendingCurrency ?? draft.currencyInput}
+            onChange={(event) => chooseCurrency(event.target.value)}
+            aria-invalid={Boolean(errors.currency)}
+            aria-describedby={errors.currency ? "pricing-currency-error" : undefined}
+            className={inputClass(Boolean(errors.currency))}
+          >
+            <option value="" disabled>
+              Choose currency
+            </option>
+            {supportedCurrencies.map(({ code }) => (
+              <option key={code} value={code}>
+                {code}
+              </option>
+            ))}
+          </select>
+          <FieldError id="pricing-currency-error">{errors.currency}</FieldError>
         </div>
       </section>
 
@@ -1280,6 +1344,24 @@ function mergeLocalInput(
         ? local.nonRefundableSourceId
         : canonical.nonRefundableSourceId,
     nonRefundableSourceRevision: canonical.nonRefundableSourceRevision,
+  };
+}
+
+function clearMonetaryInputs(state: PricingDraftState): PricingDraftState {
+  return {
+    ...state,
+    rooms: state.rooms.map((room) => ({
+      ...room,
+      baseAmountInput: "",
+      additionalGuestAmountInput: "",
+    })),
+    seasons: state.seasons.map((season) => ({
+      ...season,
+      roomPrices: Object.fromEntries(Object.keys(season.roomPrices).map((roomId) => [roomId, ""])),
+    })),
+    weekendSurcharges: Object.fromEntries(
+      Object.keys(state.weekendSurcharges).map((roomId) => [roomId, ""]),
+    ),
   };
 }
 

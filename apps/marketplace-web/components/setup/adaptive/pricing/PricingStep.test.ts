@@ -55,7 +55,7 @@ describe("PricingStep", () => {
     renderer?.unmount();
   });
 
-  it("keeps canonical pricing fail-closed without currency capabilities but saves incomplete draft input", async () => {
+  it("requires a server-supported currency on first visit and saves incomplete draft input", async () => {
     mocks.loadWorkspace.mockResolvedValue(workspace(false));
     const route = pricingRoute(emptyPricingDraft());
     const controller = controllerContext(route);
@@ -64,10 +64,12 @@ describe("PricingStep", () => {
     await act(async () => {
       renderer = create(createElement(PricingStep, controller.props));
     });
-    expect(JSON.stringify(renderer?.toJSON())).toContain("Currency setup is unavailable");
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Choose currency");
+    expect(JSON.stringify(renderer?.toJSON())).toContain("USD");
     expect(button(renderer!.root, "Save and continue").props.disabled).toBe(true);
 
     await act(async () => {
+      control(renderer!.root, "pricing-currency").props.onChange({ target: { value: "EUR" } });
       input(renderer!.root, `base-${roomTypeId}`).props.onChange({ target: { value: "125.50" } });
     });
     await act(async () => {
@@ -89,6 +91,32 @@ describe("PricingStep", () => {
     expect(controller.beforeLeave).toBeTypeOf("function");
     await act(async () => renderer?.unmount());
     expect(controller.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("requires explicit confirmation and clears every monetary input when currency changes", async () => {
+    const route = pricingRoute(emptyPricingDraft());
+    const controller = controllerContext(route);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(PricingStep, controller.props));
+    });
+    await act(async () => {
+      control(renderer!.root, "pricing-currency").props.onChange({ target: { value: "USD" } });
+    });
+
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Change currency and clear every amount?");
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("160.00");
+    expect(button(renderer!.root, "Save and continue").props.disabled).toBe(true);
+
+    await act(async () => {
+      button(renderer!.root, "Change and clear prices").props.onClick();
+    });
+
+    expect(control(renderer!.root, "pricing-currency").props.value).toBe("USD");
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("");
+    expect(JSON.stringify(renderer?.toJSON())).toContain("values were not converted");
+    renderer?.unmount();
   });
 
   it("serializes saves, retains mid-save edits, and advances receipt revisions", async () => {
@@ -371,6 +399,13 @@ function emptyPricingDraft(): Extract<PropertySetupStepDraft, { stepId: "pricing
 
 function workspace(withCurrency = true): PricingCanonicalWorkspace {
   return {
+    currencyCapabilities: {
+      contractVersion: "pms-pricing-currency-capabilities.v1",
+      supportedCurrencies: [
+        { code: "EUR", scale: 2 },
+        { code: "USD", scale: 2 },
+      ],
+    } as never,
     rooms: [
       {
         roomTypeId,
@@ -425,6 +460,12 @@ function button(root: ReactTestInstance, label: string): ReactTestInstance {
 
 function input(root: ReactTestInstance, id: string): ReactTestInstance {
   return root.find((node) => node.type === "input" && node.props.id === id);
+}
+
+function control(root: ReactTestInstance, id: string): ReactTestInstance {
+  return root.find(
+    (node) => (node.type === "input" || node.type === "select") && node.props.id === id,
+  );
 }
 
 function deferred<T>() {

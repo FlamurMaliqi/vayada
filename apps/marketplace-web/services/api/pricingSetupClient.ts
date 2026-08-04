@@ -5,10 +5,12 @@ import {
   parseFlexibleRatePlanCommandResult,
   parsePmsMandatoryChargeConfirmationReadResult,
   parsePmsMandatoryChargePricingSourceFingerprint,
+  parsePmsPricingCurrencyCapabilities,
   parsePmsPricingSourceSnapshot,
   parsePmsRecurringPricingBookingEvidence,
   parsePmsRecurringPricingCommandResult,
   parseRoomTypeFactsSnapshot,
+  parsePropertyPricingCurrencyCommandResult,
   type FlexibleRatePlanSnapshot,
   type PmsRecurringPricingSourceSnapshot,
   type RoomTypeFactsSnapshot,
@@ -71,27 +73,34 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
     propertyId: string,
     options?: RequestInit,
   ): Promise<PricingCanonicalWorkspace> => {
-    const [roomValue, pricingValue, recurringValue, confirmationValue] = await Promise.all([
-      http.get<unknown>(`/api/pms/properties/${encoded(propertyId)}/room-types`, options),
-      optionalGet(
-        http,
-        `/api/pms/properties/${encoded(propertyId)}/pricing-source`,
-        "pricing_currency_not_configured",
-        options,
-      ),
-      optionalGet(
-        http,
-        `/api/pms/properties/${encoded(propertyId)}/pricing-source/recurring-booking-evidence`,
-        "pricing_currency_not_configured",
-        options,
-      ),
-      confirmationGet(http, organizationId, propertyId, options),
-    ]);
+    const [capabilitiesValue, roomValue, pricingValue, recurringValue, confirmationValue] =
+      await Promise.all([
+        http.get<unknown>(
+          `/api/pms/properties/${encoded(propertyId)}/pricing-source/currency-capabilities`,
+          options,
+        ),
+        http.get<unknown>(`/api/pms/properties/${encoded(propertyId)}/room-types`, options),
+        optionalGet(
+          http,
+          `/api/pms/properties/${encoded(propertyId)}/pricing-source`,
+          "pricing_currency_not_configured",
+          options,
+        ),
+        optionalGet(
+          http,
+          `/api/pms/properties/${encoded(propertyId)}/pricing-source/recurring-booking-evidence`,
+          "pricing_currency_not_configured",
+          options,
+        ),
+        confirmationGet(http, organizationId, propertyId, options),
+      ]);
+    const currencyCapabilities = parsePmsPricingCurrencyCapabilities(capabilitiesValue);
     const rooms = parseRoomList(roomValue, propertyId);
     const pricing = pricingValue === null ? null : parsePmsPricingSourceSnapshot(pricingValue);
     const recurringPricing =
       recurringValue === null ? null : parsePmsRecurringPricingBookingEvidence(recurringValue);
     if (
+      !currencyCapabilities ||
       !rooms ||
       (pricingValue !== null && (!pricing || pricing.propertyId !== propertyId.toLowerCase())) ||
       (recurringValue !== null &&
@@ -125,7 +134,14 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
       );
       if (confirmation.pricingSourceFingerprint !== currentFingerprint) confirmation = null;
     }
-    return { rooms, pricing, recurringPricing, confirmation, confirmationRevision };
+    return {
+      currencyCapabilities,
+      rooms,
+      pricing,
+      recurringPricing,
+      confirmation,
+      confirmationRevision,
+    };
   };
 
   return {
@@ -142,19 +158,50 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
       return receipt;
     },
     async saveCanonical(organizationId, propertyId, state, workspace, locale) {
-      const pricing = workspace.pricing;
+      let activeWorkspace = workspace;
+      let pricing = activeWorkspace.pricing;
       const requestedCurrency = state.currencyInput.toUpperCase();
       if (
-        !pricing ||
-        !workspace.recurringPricing ||
-        pricing.pricingCurrency.currency !== requestedCurrency
+        !activeWorkspace.currencyCapabilities.supportedCurrencies.some(
+          ({ code }) => code === requestedCurrency,
+        )
       ) {
         throw new PricingOwnerError(
-          "Supported currency choices are not available from the server yet. Your pricing draft is retained, but canonical pricing cannot be saved.",
-          "currency_capabilities_unavailable",
+          "That currency is not supported end to end yet.",
+          "unsupported_pricing_currency",
           null,
           false,
         );
+      }
+      if (!pricing || pricing.pricingCurrency.currency !== requestedCurrency) {
+        const body = {
+          expectedPricingCurrencyRevision:
+            pricing?.pricingCurrency.pricingCurrencyRevision ?? state.pricingCurrencyRevision,
+          currency: requestedCurrency,
+        };
+        const value = await ownerPut(
+          http,
+          `/api/pms/properties/${encoded(propertyId)}/pricing-source/currency`,
+          body,
+          await commandKey("pricing-currency", propertyId, body),
+        );
+        const result = parsePropertyPricingCurrencyCommandResult({ ok: true, response: value });
+        if (
+          !result?.ok ||
+          result.response.pricingCurrency.propertyId !== propertyId.toLowerCase() ||
+          result.response.pricingCurrency.currency !== requestedCurrency
+        ) {
+          throw invalidOwnerContract("pricing currency receipt");
+        }
+        activeWorkspace = await loadWorkspace(organizationId, propertyId, { cache: "no-store" });
+        pricing = activeWorkspace.pricing;
+      }
+      if (
+        !pricing ||
+        !activeWorkspace.recurringPricing ||
+        pricing.pricingCurrency.currency !== requestedCurrency
+      ) {
+        throw refreshRequiredConflict();
       }
       const currencyRevision = pricing.pricingCurrency.pricingCurrencyRevision;
       const plans = new Map(pricing.flexibleRatePlans.map((plan) => [plan.roomTypeId, plan]));
@@ -223,9 +270,10 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
       const desiredBodies = new Map<string, Record<string, unknown>>();
       const expectedSources = new Map<string, PmsRecurringPricingSourceSnapshot>();
       const existingSources = new Map(
-        workspace.recurringPricing.sources.map((source) => [source.sourceId, source]),
+        activeWorkspace.recurringPricing.sources.map((source) => [source.sourceId, source]),
       );
-      let expectedAggregateRevision = workspace.recurringPricing.optionalPricingAggregateRevision;
+      let expectedAggregateRevision =
+        activeWorkspace.recurringPricing.optionalPricingAggregateRevision;
       for (const season of state.seasons) {
         desiredIds.add(season.sourceId);
         const body = {
@@ -328,7 +376,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
         }
       }
 
-      for (const source of workspace.recurringPricing.sources) {
+      for (const source of activeWorkspace.recurringPricing.sources) {
         if (source.configuredState === "active" && !desiredIds.has(source.sourceId)) {
           const result = await disableRecurring(http, propertyId, source);
           expectedSources.set(source.sourceId, result.source);

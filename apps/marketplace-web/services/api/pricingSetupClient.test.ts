@@ -28,7 +28,10 @@ const calls = vi.hoisted(() => ({
   post: vi.fn<(endpoint: string, data?: unknown, options?: RequestInit) => Promise<unknown>>(),
 }));
 const http: PricingSetupHttpClient = {
-  get: calls.get as PricingSetupHttpClient["get"],
+  get: ((endpoint: string, options?: RequestInit) =>
+    endpoint.endsWith("/pricing-source/currency-capabilities")
+      ? Promise.resolve(currencyCapabilities())
+      : calls.get(endpoint, options)) as PricingSetupHttpClient["get"],
   put: calls.put as PricingSetupHttpClient["put"],
   post: calls.post as PricingSetupHttpClient["post"],
 };
@@ -50,6 +53,28 @@ describe("pricingSetupClient", () => {
       recurringPricing: null,
       confirmation: null,
     });
+  });
+
+  it("fails closed when the currency capability owner returns malformed data", async () => {
+    calls.get.mockImplementation(async (endpoint) => {
+      if (endpoint.endsWith("/room-types")) return roomList();
+      if (endpoint.endsWith("/mandatory-charge-confirmation")) throw missingConfirmation();
+      throw new ApiErrorResponse(404, { code: "pricing_currency_not_configured" });
+    });
+    const invalidCapabilityHttp: PricingSetupHttpClient = {
+      ...http,
+      get: ((endpoint: string, options?: RequestInit) =>
+        endpoint.endsWith("/pricing-source/currency-capabilities")
+          ? Promise.resolve({
+              contractVersion: "pms-pricing-currency-capabilities.v1",
+              supportedCurrencies: [{ code: "EUR", scale: 0 }],
+            })
+          : calls.get(endpoint, options)) as PricingSetupHttpClient["get"],
+    };
+
+    await expect(
+      createPricingSetupClient(invalidCapabilityHttp).loadWorkspace(organizationId, propertyId),
+    ).rejects.toMatchObject({ code: "owner_contract_violation", requiresRefresh: true });
   });
 
   it("does not reinterpret an unrelated pricing 404 as first-visit absence", async () => {
@@ -196,13 +221,13 @@ describe("pricingSetupClient", () => {
     });
   });
 
-  it("saves scale-2 flexible pricing, computes an exact confirmation manifest, and refetches", async () => {
+  it("creates a supported first-visit currency before scale-2 prices and confirmation", async () => {
     let confirmed = false;
-    let savedPlan = planSnapshot();
+    let savedPlan: ReturnType<typeof planSnapshot> | null = null;
     calls.get.mockImplementation(async (endpoint) => {
       if (endpoint.endsWith("/room-types")) return roomList();
-      if (endpoint.endsWith("/pricing-source")) return pricingSnapshot(savedPlan);
-      if (endpoint.endsWith("/recurring-booking-evidence")) return recurringEvidence();
+      if (endpoint.endsWith("/pricing-source")) return firstVisitPricingSnapshot(savedPlan);
+      if (endpoint.endsWith("/recurring-booking-evidence")) return recurringEvidence([], 0, 1);
       if (endpoint.endsWith("/mandatory-charge-confirmation")) {
         if (!confirmed) throw missingConfirmation();
         return confirmationRead("a".repeat(64), 1);
@@ -210,11 +235,20 @@ describe("pricingSetupClient", () => {
       throw new Error(`Unexpected GET ${endpoint}`);
     });
     calls.put.mockImplementation(async (endpoint, data) => {
+      if (endpoint.endsWith("/pricing-source/currency")) {
+        expect(data).toEqual({ expectedPricingCurrencyRevision: 0, currency: "EUR" });
+        return {
+          contractVersion: PMS_PRICING_CONTRACT_VERSION,
+          outcome: "created",
+          pricingCurrency: firstVisitPricingSnapshot(null).pricingCurrency,
+          acceptedAt: now,
+        };
+      }
       if (endpoint.endsWith("/flexible-rate-plan")) {
         const body = data as Record<string, unknown>;
         savedPlan = {
           ...planSnapshot(),
-          flexibleRatePlanRevision: 5,
+          flexibleRatePlanRevision: 1,
           baseAmount: { amountDecimal: body.baseAmountDecimal as string, currency: "EUR" },
         };
         return {
@@ -230,8 +264,10 @@ describe("pricingSetupClient", () => {
         const fingerprint = body.claimedPricingSourceFingerprint as string;
         calls.get.mockImplementation(async (getEndpoint) => {
           if (getEndpoint.endsWith("/room-types")) return roomList();
-          if (getEndpoint.endsWith("/pricing-source")) return pricingSnapshot(savedPlan);
-          if (getEndpoint.endsWith("/recurring-booking-evidence")) return recurringEvidence();
+          if (getEndpoint.endsWith("/pricing-source")) return firstVisitPricingSnapshot(savedPlan);
+          if (getEndpoint.endsWith("/recurring-booking-evidence")) {
+            return recurringEvidence([], 0, 1);
+          }
           if (getEndpoint.endsWith("/mandatory-charge-confirmation")) {
             return confirmationRead(fingerprint, 1);
           }
@@ -248,15 +284,20 @@ describe("pricingSetupClient", () => {
     });
     const client = createPricingSetupClient(http);
     const workspace = {
+      currencyCapabilities: currencyCapabilities() as never,
       rooms: roomList().items as never,
-      pricing: pricingSnapshot() as never,
-      recurringPricing: recurringEvidence() as never,
+      pricing: null,
+      recurringPricing: null,
       confirmation: null,
       confirmationRevision: 0,
     };
+    const intended = state();
+    intended.pricingCurrencyRevision = 0;
+    intended.rooms[0]!.flexibleRatePlanId = null;
+    intended.rooms[0]!.flexibleRatePlanRevision = 0;
 
     await expect(
-      client.saveCanonical(organizationId, propertyId, state(), workspace, "de-DE"),
+      client.saveCanonical(organizationId, propertyId, intended, workspace, "de-DE"),
     ).resolves.toMatchObject({ confirmation: { confirmationRevision: 1 } });
 
     const planCall = calls.put.mock.calls.find(([endpoint]) =>
@@ -264,8 +305,8 @@ describe("pricingSetupClient", () => {
     );
     expect(planCall?.[1]).toMatchObject({
       expectedRoomFactsRevision: 3,
-      expectedPricingCurrencyRevision: 2,
-      expectedFlexibleRatePlanRevision: 4,
+      expectedPricingCurrencyRevision: 1,
+      expectedFlexibleRatePlanRevision: 0,
       baseAmountDecimal: "160.50",
     });
     const confirmationCall = calls.put.mock.calls.find(([endpoint]) =>
@@ -274,7 +315,7 @@ describe("pricingSetupClient", () => {
     expect(confirmationCall?.[1]).toMatchObject({
       expectedConfirmationRevision: 0,
       expectedPricingSourceRevisions: {
-        pricingCurrencyRevision: 2,
+        pricingCurrencyRevision: 1,
         optionalPricingAggregateRevision: 0,
         rooms: [{ roomTypeId, roomFactsRevision: 3 }],
       },
@@ -438,6 +479,7 @@ describe("pricingSetupClient", () => {
         propertyId,
         state(),
         {
+          currencyCapabilities: currencyCapabilities() as never,
           rooms: roomList().items as never,
           pricing: pricingSnapshot() as never,
           recurringPricing: recurringEvidence() as never,
@@ -553,6 +595,17 @@ function pricingSnapshot(plan = planSnapshot()) {
   };
 }
 
+function firstVisitPricingSnapshot(plan: ReturnType<typeof planSnapshot> | null) {
+  return {
+    ...pricingSnapshot(),
+    pricingCurrency: {
+      ...pricingSnapshot().pricingCurrency,
+      pricingCurrencyRevision: 1,
+    },
+    flexibleRatePlans: plan ? [plan] : [],
+  };
+}
+
 function flexiblePlanReceipt(plan: ReturnType<typeof planSnapshot>) {
   return {
     contractVersion: PMS_PRICING_CONTRACT_VERSION,
@@ -564,11 +617,22 @@ function flexiblePlanReceipt(plan: ReturnType<typeof planSnapshot>) {
 
 function workspace() {
   return {
+    currencyCapabilities: currencyCapabilities() as never,
     rooms: roomList().items as never,
     pricing: pricingSnapshot() as never,
     recurringPricing: recurringEvidence() as never,
     confirmation: null,
     confirmationRevision: 0,
+  };
+}
+
+function currencyCapabilities() {
+  return {
+    contractVersion: "pms-pricing-currency-capabilities.v1",
+    supportedCurrencies: [
+      { code: "EUR", scale: 2 },
+      { code: "USD", scale: 2 },
+    ],
   };
 }
 
@@ -603,11 +667,15 @@ function draftReceipt() {
   };
 }
 
-function recurringEvidence(sources: unknown[] = [], optionalPricingAggregateRevision = 0) {
+function recurringEvidence(
+  sources: unknown[] = [],
+  optionalPricingAggregateRevision = 0,
+  pricingCurrencyRevision = 2,
+) {
   return {
     contractVersion: PMS_RECURRING_PRICING_CONTRACT_VERSION,
     propertyId,
-    pricingCurrencyRevision: 2,
+    pricingCurrencyRevision,
     optionalPricingAggregateRevision,
     currency: "EUR",
     sources,

@@ -11,6 +11,10 @@ import {
 } from "./pricingState";
 
 const roomTypeId = "22222222-2222-4222-8222-222222222222";
+const currencyCapabilities = {
+  contractVersion: "pms-pricing-currency-capabilities.v1",
+  supportedCurrencies: [{ code: "EUR", scale: 2 }],
+} as never;
 
 describe("pricing state", () => {
   it("normalizes locale-aware money without floating-point conversion", () => {
@@ -118,6 +122,7 @@ describe("pricing state", () => {
         payload: { "rate.seasons": [] },
       } as never,
       {
+        currencyCapabilities,
         rooms: [roomSnapshot(roomTypeId, 2)] as never,
         pricing: pricingSnapshot([planSnapshot(roomTypeId, 7)]) as never,
         recurringPricing: {
@@ -148,6 +153,7 @@ describe("pricing state", () => {
     const hydrated = hydratePricingDraft(
       null,
       {
+        currencyCapabilities,
         rooms: [roomSnapshot(roomTypeId, 2), roomSnapshot(secondRoomId, 2)] as never,
         pricing: pricingSnapshot([
           planSnapshot(roomTypeId, 7),
@@ -180,6 +186,7 @@ describe("pricing state", () => {
         },
       } as never,
       {
+        currencyCapabilities,
         rooms: [roomSnapshot(roomTypeId, 2)] as never,
         pricing: pricingSnapshot([planSnapshot(roomTypeId, 7)]) as never,
         recurringPricing: {
@@ -234,6 +241,7 @@ describe("pricing state", () => {
         payload: { "rate.mandatory_charges_acknowledged": true },
       } as never,
       {
+        currencyCapabilities,
         rooms: [roomSnapshot(roomTypeId, 2)] as never,
         pricing: pricingSnapshot([planSnapshot(roomTypeId, 7)]) as never,
         recurringPricing: { sources: [] } as never,
