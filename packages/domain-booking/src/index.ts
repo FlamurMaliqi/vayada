@@ -21,6 +21,7 @@ export * from "./bookingPricingEvidence.js";
 export * from "./bookingMandatoryChargeConfirmationEvidenceAdapter.js";
 export * from "./bookingPriceCalculation.js";
 export * from "./bookingPriceSnapshotInput.js";
+export * from "./bookingGuestPolicy.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;
