@@ -130,6 +130,25 @@ describe("Booking design renderer readiness", () => {
     ).toBeNull();
   });
 
+  it("accepts the Catalog summary limit in Unicode code points", async () => {
+    const ready = await provider().result.getBookingDesignReadiness(scope);
+    if (ready.outcome !== "ready") throw new Error("Expected ready design");
+    const shortDescription = "🏨".repeat(500);
+
+    expect(
+      parseBookingDesignReadinessResult(
+        {
+          ...ready,
+          snapshot: {
+            ...ready.snapshot,
+            profile: { ...ready.snapshot.profile, shortDescription },
+          },
+        },
+        scope,
+      ),
+    ).toMatchObject({ outcome: "ready", snapshot: { profile: { shortDescription } } });
+  });
+
   it("creates a complete frozen default-cover snapshot without calling safe media", async () => {
     const { result, safeMedia } = provider();
     const readiness = await result.getBookingDesignReadiness({

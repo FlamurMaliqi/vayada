@@ -122,7 +122,7 @@ export function parseSaveHotelCatalogStep1Request(
     return null;
   }
 
-  const shortDescription = normalizeSummary(value["shortDescription"]);
+  const shortDescription = normalizeHotelCatalogStep1Summary(value["shortDescription"]);
   const amenities = parseAmenities(value["amenities"]);
   const media = parseMedia(value["media"]);
   if (!shortDescription || !amenities || !media) return null;
@@ -306,7 +306,8 @@ function parseReadProfile(
     !supportedLocales.includes(value["locale"] as HotelCatalogContentLocale) ||
     (value["shortDescription"] !== null &&
       (typeof value["shortDescription"] !== "string" ||
-        normalizeSummary(value["shortDescription"]) !== value["shortDescription"])) ||
+        normalizeHotelCatalogStep1Summary(value["shortDescription"]) !==
+          value["shortDescription"])) ||
     (value["publicSlug"] !== null &&
       (typeof value["publicSlug"] !== "string" ||
         !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value["publicSlug"]) ||
@@ -380,7 +381,7 @@ function parseBaseRevisions(
   };
 }
 
-function normalizeSummary(value: unknown): string | null {
+export function normalizeHotelCatalogStep1Summary(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   if (hasInvalidSummaryCharacter(normalized)) return null;

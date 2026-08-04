@@ -5,9 +5,8 @@ import type {
 } from "@vayada/domain-hotels";
 import {
   HOTEL_CATALOG_CONTENT_LOCALES,
-  HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH,
-  HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH,
   PROPERTY_MEDIA_MAX_ALT_TEXT_LENGTH,
+  normalizeHotelCatalogStep1Summary,
   parsePropertyMediaLibraryItem,
 } from "@vayada/domain-hotels";
 
@@ -536,9 +535,7 @@ function parseRendererProfile(value: unknown): BookingDesignRendererSnapshot["pr
     value["displayName"].trim() !== value["displayName"] ||
     !HOTEL_CATALOG_CONTENT_LOCALES.includes(value["contentLocale"] as never) ||
     typeof value["shortDescription"] !== "string" ||
-    value["shortDescription"].length < HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH ||
-    value["shortDescription"].length > HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH ||
-    value["shortDescription"].trim() !== value["shortDescription"]
+    normalizeHotelCatalogStep1Summary(value["shortDescription"]) !== value["shortDescription"]
   ) {
     return null;
   }
