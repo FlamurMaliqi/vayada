@@ -9,13 +9,17 @@ import {
   PMS_OPERATING_CALENDAR_CONTRACT_VERSION,
   createPmsOperatingCalendarSourceRevision,
   parsePmsCanonicalIanaTimeZone,
+  serializePmsOperatingCalendarProposalFingerprint,
   type PmsOperatingCalendarCommandResult,
   type PmsOperatingCalendarConfigurationSnapshot,
   type PmsOperatingCalendarCurrentReadResult,
+  type PmsOperatingCalendarImpactPreviewResult,
   type PmsOperatingCalendarSourceRevision,
+  type PreviewPmsOperatingCalendarImpactCommand,
   type UpsertPmsOperatingCalendarCommand,
 } from "@vayada/domain-pms";
 import Fastify from "fastify";
+import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -47,6 +51,7 @@ type AuthOptions = {
 
 type FakePorts = PmsOperatingCalendarRoutesOptions & {
   commandCalls: UpsertPmsOperatingCalendarCommand[];
+  previewCalls: PreviewPmsOperatingCalendarImpactCommand[];
   currentCalls: string[];
   sourceCalls: PmsOperatingCalendarSourceRevision[];
 };
@@ -89,6 +94,77 @@ describe("PMS operating-calendar routes", () => {
     expect(response.body).toMatchObject({ outcome: "created", configuration: { propertyId } });
   });
 
+  it("previews the exact proposal without accepting client scope, audit, or confirmation", async () => {
+    const ports = fakePorts();
+    app = await testApp(ports);
+    const response = await postPreview(app, {
+      body: previewBody({
+        roomTypeLimits: [roomLimit(roomTypeB, 3, 4, 2), roomLimit(roomTypeA, 1, 2, 1)],
+      }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.confirmation.expiresAt).toBe("2026-08-04T10:45:00.000Z");
+    expect(ports.previewCalls).toEqual([
+      expect.objectContaining({
+        organizationId,
+        propertyId,
+        roomTypeLimits: [roomLimit(roomTypeA, 1, 2, 1), roomLimit(roomTypeB, 3, 4, 2)],
+        audit: {
+          actor: { kind: "user", userId: actorUserId },
+          requestId: "request-1",
+          correlationId: "correlation-1",
+          requestedAt: now,
+        },
+      }),
+    ]);
+    expect(
+      (
+        await postPreview(app, {
+          body: { ...previewBody(), organizationId },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it.each([
+    ["missing authentication", {}, null],
+    ["non-hotel organization", { kind: "creator_workspace" }, "valid-token"],
+    ["missing manage permission", { permissions: ["pms.operations.read"] }, "valid-token"],
+    ["missing entitlement", { entitlements: [] }, "valid-token"],
+    ["missing property link", { links: [] }, "valid-token"],
+    ["front desk relationship", { links: [link("front_desk")] }, "valid-token"],
+  ] as const)("denies impact previews for %s", async (_label, auth, token) => {
+    const ports = fakePorts();
+    app = await testApp(ports, auth as AuthOptions);
+    const response = await postPreview(app, { token });
+    expect([401, 403]).toContain(response.statusCode);
+    expect(ports.previewCalls).toHaveLength(0);
+  });
+
+  it.each([
+    [{ code: "setup_scope_unavailable" }, 404],
+    [{ code: "property_timezone_missing" }, 422],
+    [{ code: "materialization_not_current" }, 409],
+    [{ code: "calendar_revision_conflict", currentRevision: 2 }, 409],
+    [
+      {
+        code: "room_facts_revision_conflict",
+        roomTypeId: roomTypeA,
+        currentRevision: 2,
+      },
+      409,
+    ],
+  ] as const)("maps impact-preview error %# without widening it", async (error, status) => {
+    const ports = fakePorts({
+      previewResult: { ok: false, error } as PmsOperatingCalendarImpactPreviewResult,
+    });
+    app = await testApp(ports);
+    const response = await postPreview(app);
+    expect(response.statusCode).toBe(status);
+    expect(response.body).toEqual(error);
+  });
+
   it("returns 200 for an expected-versioned update", async () => {
     const ports = fakePorts();
     app = await testApp(ports);
@@ -104,6 +180,15 @@ describe("PMS operating-calendar routes", () => {
     app = await testApp(ports);
     expect(
       (await putCalendar(app, { body: { ...commandBody(), organizationId } })).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await putCalendar(app, {
+          body: commandBody({
+            impactConfirmation: { ...impactConfirmation(), token: "" },
+          }),
+        })
+      ).statusCode,
     ).toBe(400);
     expect((await putCalendar(app, { key: null })).statusCode).toBe(400);
     expect(ports.commandCalls).toHaveLength(0);
@@ -206,7 +291,12 @@ describe("PMS operating-calendar routes", () => {
     ],
     [{ code: "calendar_revision_conflict", currentRevision: 2 }, 409],
     [{ code: "operating_calendar_unchanged" }, 409],
+    [{ code: "impact_confirmation_invalid" }, 409],
+    [{ code: "impact_confirmation_expired" }, 409],
+    [{ code: "impact_confirmation_configuration_mismatch" }, 409],
+    [{ code: "impact_confirmation_stale" }, 409],
     [{ code: "idempotency_key_conflict" }, 409],
+    [{ code: "command_in_progress" }, 409],
   ] as const)("maps command error %# without widening it", async (error, status) => {
     const ports = fakePorts({
       commandResult: { ok: false, error } as PmsOperatingCalendarCommandResult,
@@ -243,15 +333,18 @@ describe("PMS operating-calendar routes", () => {
 function fakePorts(
   options: {
     commandResult?: PmsOperatingCalendarCommandResult;
+    previewResult?: PmsOperatingCalendarImpactPreviewResult;
     currentResult?: PmsOperatingCalendarCurrentReadResult | null;
     sourceResult?: PmsOperatingCalendarConfigurationSnapshot | null;
   } = {},
 ): FakePorts {
   const commandCalls: UpsertPmsOperatingCalendarCommand[] = [];
+  const previewCalls: PreviewPmsOperatingCalendarImpactCommand[] = [];
   const currentCalls: string[] = [];
   const sourceCalls: PmsOperatingCalendarSourceRevision[] = [];
   return {
     commandCalls,
+    previewCalls,
     currentCalls,
     sourceCalls,
     timeZoneRegistry: registry,
@@ -259,6 +352,12 @@ function fakePorts(
       async upsertOperatingCalendar(command) {
         commandCalls.push(command);
         return options.commandResult ?? success(command);
+      },
+    },
+    impactPreviewPort: {
+      async previewOperatingCalendarImpact(command) {
+        previewCalls.push(command);
+        return options.previewResult ?? previewSuccess(command);
       },
     },
     readPort: {
@@ -379,7 +478,91 @@ function commandBody(overrides: Record<string, unknown> = {}) {
     schedule: { mode: "year_round", periods: [] },
     defaultMinimumStayNights: 2,
     roomTypeLimits: [roomLimit(roomTypeA, 1, 2, 1)],
+    impactConfirmation: impactConfirmation(),
     ...overrides,
+  };
+}
+
+function previewBody(overrides: Record<string, unknown> = {}) {
+  const { impactConfirmation: _confirmation, ...body } = commandBody();
+  return { ...body, ...overrides };
+}
+
+function impactConfirmation() {
+  return {
+    contractVersion: "pms-operating-calendar-impact.v1",
+    proposalFingerprint: "a".repeat(64),
+    sourceFingerprint: "b".repeat(64),
+    token: "route-test-token",
+    issuedAt: now,
+    expiresAt: "2026-08-04T10:45:00.000Z",
+  } as const;
+}
+
+function previewSuccess(command: PreviewPmsOperatingCalendarImpactCommand) {
+  const proposalFingerprint = createHash("sha256")
+    .update(serializePmsOperatingCalendarProposalFingerprint(command), "utf8")
+    .digest("hex");
+  const sourceFingerprint = "b".repeat(64);
+  return {
+    ok: true as const,
+    preview: {
+      contractVersion: "pms-operating-calendar-impact.v1" as const,
+      propertyId: command.propertyId,
+      proposalFingerprint,
+      sourceFingerprint,
+      sourceRevisions: {
+        calendarRevision: command.expectedCalendarRevision,
+        propertyProfile: {
+          revision: command.expectedPropertyProfileRevision,
+          timeZone: "Europe/Berlin",
+        },
+        roomTypes: command.roomTypeLimits.map((room) => ({
+          roomTypeId: room.roomTypeId,
+          roomFactsRevision: room.expectedRoomFactsRevision,
+          roomUnitsRevision: room.expectedRoomUnitsRevision,
+          physicalCapacityCount: 10,
+        })),
+        inventory: {
+          materializedRevision: null,
+          coverageFrom: null,
+          coverageThrough: null,
+          dayCount: 0,
+          inventoryFingerprint: "c".repeat(64),
+          bookingFingerprint: "d".repeat(64),
+          blockFingerprint: "e".repeat(64),
+          overrideFingerprint: "f".repeat(64),
+          activeReservationCount: 0,
+        },
+      },
+      impact: {
+        categories: [],
+        summary: {
+          closingDateCount: 0,
+          openingDateCount: 0,
+          availableRoomNightsRemoved: 0,
+          availableRoomNightsAdded: 0,
+          acceptedBookingCount: 0,
+          acceptedBookedRoomNights: 0,
+          blockedRoomNights: 0,
+          ownerOverrideDateCount: 0,
+          defaultMinimumStayChanged: false,
+        },
+        affectedDates: [],
+        roomTypeChanges: command.roomTypeLimits.map((room) => ({
+          roomTypeId: room.roomTypeId,
+          previousStartingSellableLimitCount: null,
+          proposedStartingSellableLimitCount: room.startingSellableLimitCount,
+          availableRoomNightsDelta: 0,
+        })),
+      },
+      confirmation: {
+        ...impactConfirmation(),
+        proposalFingerprint,
+        sourceFingerprint,
+      },
+      generatedAt: now,
+    },
   };
 }
 
@@ -422,6 +605,19 @@ async function putCalendar(
     url: `/properties/${propertyId}/operating-calendar`,
     headers,
     payload: options.body ?? commandBody(),
+  });
+}
+
+function postPreview(
+  app: Awaited<ReturnType<typeof testApp>>,
+  options: { body?: unknown; token?: string | null } = {},
+) {
+  return injectJson<Record<string, any>>(app, {
+    method: "POST",
+    url: `/properties/${propertyId}/operating-calendar/impact-preview`,
+    headers:
+      options.token === null ? {} : { authorization: `Bearer ${options.token ?? "valid-token"}` },
+    payload: options.body ?? previewBody(),
   });
 }
 

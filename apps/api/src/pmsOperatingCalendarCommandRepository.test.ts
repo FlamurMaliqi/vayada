@@ -5,6 +5,7 @@ import {
   PMS_ROOM_FACTS_CONTRACT_VERSION,
   parseRoomTypeFactsSnapshot,
   parseUpsertPmsOperatingCalendarCommand,
+  serializePmsOperatingCalendarFingerprint,
   type PmsOperatingCalendarCommandResult,
   type PmsOperatingCalendarPropertyProfileEvidenceResult,
   type PmsOperatingCalendarRoomEvidencePorts,
@@ -271,6 +272,7 @@ describe("PMS operating-calendar command repository", () => {
       createPgPmsOperatingCalendarCommandRepository({
         propertyProfileEvidence: fixture.profileEvidence,
         roomEvidence: fixture.roomEvidence,
+        impactConfirmation: fixture.impactConfirmation,
       }),
     ).toThrow("connectionString must not be empty");
   });
@@ -388,13 +390,28 @@ function repositoryFixture(options: FixtureOptions = {}) {
       },
     },
   };
+  const impactConfirmation = {
+    async verifyLockedImpactConfirmation() {
+      return null;
+    },
+  };
   const repository = createPgPmsOperatingCalendarCommandRepository({
     pool,
     propertyProfileEvidence: profileEvidence,
     roomEvidence,
+    impactConfirmation,
     now: () => new Date(acceptedAt),
   });
-  return { repository, calls, events, release, end, profileEvidence, roomEvidence };
+  return {
+    repository,
+    calls,
+    events,
+    release,
+    end,
+    profileEvidence,
+    roomEvidence,
+    impactConfirmation,
+  };
 }
 
 function command(
@@ -421,6 +438,14 @@ function command(
         startingSellableLimitCount: 2,
       },
     ],
+    impactConfirmation: {
+      contractVersion: "pms-operating-calendar-impact.v1",
+      proposalFingerprint: "a".repeat(64),
+      sourceFingerprint: "b".repeat(64),
+      token: "unit-test-token",
+      issuedAt: acceptedAt,
+      expiresAt: "2026-08-04T09:45:00.000Z",
+    },
     idempotencyKey: "vay1071-command-unit",
     audit: {
       actor: { kind: "user", userId: actorUserId },
@@ -547,16 +572,7 @@ function currentRows() {
 }
 
 function fingerprintFor(input: UpsertPmsOperatingCalendarCommand): string {
-  const canonical = JSON.stringify({
-    organizationId: input.organizationId,
-    propertyId: input.propertyId,
-    expectedCalendarRevision: input.expectedCalendarRevision,
-    expectedPropertyProfileRevision: input.expectedPropertyProfileRevision,
-    schedule: input.schedule,
-    defaultMinimumStayNights: input.defaultMinimumStayNights,
-    roomTypeLimits: input.roomTypeLimits,
-  });
-  return cryptoHash(canonical);
+  return cryptoHash(serializePmsOperatingCalendarFingerprint(input));
 }
 
 function cryptoHash(value: string): string {

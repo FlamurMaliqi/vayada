@@ -22,6 +22,11 @@ const roomTypeB = "a5300000-0000-4000-8000-000000000005";
 const roomTypeC = "a5300000-0000-4000-8000-000000000006";
 const acceptedAt = "2026-08-04T10:00:00.000Z";
 const roleKey = "vay1071_operating_calendar_integration";
+const impactConfirmation = {
+  async verifyLockedImpactConfirmation() {
+    return null;
+  },
+};
 
 describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS operating-calendar command repository", () => {
   const connectionString = TEST_DATABASE_URL ?? "postgresql://integration-test-disabled";
@@ -40,6 +45,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS operating-calendar command r
     max: 4,
     propertyProfileEvidence: profileEvidence,
     roomEvidence: { roomFacts: roomEvidence, roomCapacity: roomEvidence },
+    impactConfirmation,
     now: () => new Date(acceptedAt),
   });
   const readModel = createPgPmsOperatingCalendarReadModel({
@@ -238,6 +244,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS operating-calendar command r
       max: 4,
       propertyProfileEvidence: profileEvidence,
       roomEvidence: gatedRoomEvidence,
+      impactConfirmation,
       now: () => new Date(acceptedAt),
     });
     const factsWriter = new pg.Client({ connectionString });
@@ -597,6 +604,14 @@ function command(
         startingSellableLimitCount: 2,
       },
     ],
+    impactConfirmation: {
+      contractVersion: "pms-operating-calendar-impact.v1",
+      proposalFingerprint: "a".repeat(64),
+      sourceFingerprint: "b".repeat(64),
+      token: "integration-test-token",
+      issuedAt: acceptedAt,
+      expiresAt: "2026-08-04T10:15:00.000Z",
+    },
     idempotencyKey: `vay1071-command-${suffix}`,
     audit: {
       actor: { kind: "user", userId: actorUserId },
