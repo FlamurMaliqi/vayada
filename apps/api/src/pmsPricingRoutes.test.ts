@@ -9,6 +9,7 @@ import {
   PMS_PRICING_CONTRACT_VERSION,
   parsePmsDecimalAmount,
   parsePmsPricingCurrency,
+  type PmsPricingCurrencyCapabilitiesReadPort,
   type UpsertFlexibleRatePlanCommand,
   type UpsertPropertyPricingCurrencyCommand,
 } from "@vayada/domain-pms";
@@ -16,6 +17,10 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { registerPmsPricingRoutes, type PmsPricingRoutesOptions } from "./routes/pmsPricing.js";
+import {
+  PMS_PRICING_CURRENCY_CAPABILITIES_PORT,
+  PMS_PRICING_CURRENCY_CAPABILITIES_V1,
+} from "./domains/pmsPricingCurrencyCapabilities.js";
 
 const propertyId = "69000000-0000-4000-8000-000000000001";
 const otherPropertyId = "69000000-0000-4000-8000-000000000002";
@@ -37,6 +42,7 @@ type FakePorts = PmsPricingRoutesOptions & {
   currencyCalls: UpsertPropertyPricingCurrencyCommand[];
   planCalls: UpsertFlexibleRatePlanCommand[];
   reads: Array<readonly unknown[]>;
+  capabilityReads: string[];
 };
 
 function currencySnapshot(requestPropertyId = propertyId, revision = 1) {
@@ -70,15 +76,23 @@ function planSnapshot(requestPropertyId = propertyId, requestedRoomTypeId = room
   } as const;
 }
 
-function fakePorts(overrides: { responsePropertyId?: string; missing?: boolean } = {}): FakePorts {
+function fakePorts(
+  overrides: {
+    responsePropertyId?: string;
+    missing?: boolean;
+    capabilitiesReadPort?: PmsPricingCurrencyCapabilitiesReadPort;
+  } = {},
+): FakePorts {
   const currencyCalls: UpsertPropertyPricingCurrencyCommand[] = [];
   const planCalls: UpsertFlexibleRatePlanCommand[] = [];
   const reads: Array<readonly unknown[]> = [];
+  const capabilityReads: string[] = [];
   const responsePropertyId = overrides.responsePropertyId ?? propertyId;
   return {
     currencyCalls,
     planCalls,
     reads,
+    capabilityReads,
     commandPort: {
       async upsertPropertyPricingCurrency(command) {
         currencyCalls.push(command);
@@ -140,14 +154,23 @@ function fakePorts(overrides: { responsePropertyId?: string; missing?: boolean }
             };
       },
     },
+    currencyCapabilitiesReadPort: overrides.capabilitiesReadPort ?? {
+      async getPricingCurrencyCapabilities() {
+        capabilityReads.push("capabilities");
+        return PMS_PRICING_CURRENCY_CAPABILITIES_PORT.getPricingCurrencyCapabilities();
+      },
+    },
   };
 }
 
-function entitlement(resourceId = propertyId): ProductEntitlement {
+function entitlement(
+  status: ProductEntitlement["status"] = "active",
+  resourceId = propertyId,
+): ProductEntitlement {
   return {
     product: "pms",
     key: "property-management",
-    status: "active",
+    status,
     resource: { product: "pms", resourceType: "pms_property", resourceId },
   };
 }
@@ -301,6 +324,142 @@ describe("PMS pricing routes", () => {
     });
     expect(invalid.statusCode).toBe(500);
     expect(invalid.body).toEqual({ code: "pms_pricing_port_contract_violation" });
+  });
+
+  it("serves the strict immutable pricing-currency capability contract", async () => {
+    const ports = fakePorts();
+    app = await testApp(ports);
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/properties/${propertyId}/pricing-source/currency-capabilities`,
+      headers: headers(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual(PMS_PRICING_CURRENCY_CAPABILITIES_V1);
+    expect(ports.capabilityReads).toEqual(["capabilities"]);
+  });
+
+  it("denies the full protected capability-route matrix before the read port", async () => {
+    const cases: readonly {
+      name: string;
+      requestHeaders: Record<string, string>;
+      auth: AuthOptions;
+      status: number;
+    }[] = [
+      { name: "missing auth", requestHeaders: {}, auth: {}, status: 401 },
+      {
+        name: "invalid auth",
+        requestHeaders: { authorization: "Bearer invalid-token" },
+        auth: {},
+        status: 401,
+      },
+      {
+        name: "missing permission",
+        requestHeaders: headers(),
+        auth: { permissions: [] },
+        status: 403,
+      },
+      {
+        name: "missing entitlement",
+        requestHeaders: headers(),
+        auth: { entitlements: [] },
+        status: 403,
+      },
+      {
+        name: "inactive entitlement",
+        requestHeaders: headers(),
+        auth: { entitlements: [entitlement("suspended")] },
+        status: 403,
+      },
+      {
+        name: "missing linked resource",
+        requestHeaders: headers(),
+        auth: { links: [] },
+        status: 403,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const ports = fakePorts();
+      const candidate = await testApp(ports, testCase.auth);
+      const response = await injectJson(candidate, {
+        method: "GET",
+        url: `/properties/${propertyId}/pricing-source/currency-capabilities`,
+        headers: testCase.requestHeaders,
+      });
+      await candidate.close();
+      expect(response.statusCode, testCase.name).toBe(testCase.status);
+      expect(ports.capabilityReads, testCase.name).toEqual([]);
+    }
+  });
+
+  it("distinguishes unavailable and malformed capability providers", async () => {
+    const cases: readonly {
+      name: string;
+      port: PmsPricingCurrencyCapabilitiesReadPort;
+      status: number;
+      code: string;
+    }[] = [
+      {
+        name: "missing",
+        port: {
+          async getPricingCurrencyCapabilities() {
+            return null;
+          },
+        },
+        status: 503,
+        code: "pms_pricing_currency_capabilities_unavailable",
+      },
+      {
+        name: "failed",
+        port: {
+          async getPricingCurrencyCapabilities() {
+            throw new Error("unavailable");
+          },
+        },
+        status: 503,
+        code: "pms_pricing_currency_capabilities_unavailable",
+      },
+      {
+        name: "undefined",
+        port: {
+          async getPricingCurrencyCapabilities() {
+            return undefined as never;
+          },
+        },
+        status: 500,
+        code: "pms_pricing_currency_capabilities_port_contract_violation",
+      },
+      {
+        name: "malformed",
+        port: {
+          async getPricingCurrencyCapabilities() {
+            return {
+              contractVersion: "pms-pricing-currency-capabilities.v1",
+              supportedCurrencies: [
+                { code: "EUR", scale: 2 },
+                { code: "CHF", scale: 2 },
+              ],
+            } as never;
+          },
+        },
+        status: 500,
+        code: "pms_pricing_currency_capabilities_port_contract_violation",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const candidate = await testApp(fakePorts({ capabilitiesReadPort: testCase.port }));
+      const response = await injectJson(candidate, {
+        method: "GET",
+        url: `/properties/${propertyId}/pricing-source/currency-capabilities`,
+        headers: headers(),
+      });
+      await candidate.close();
+      expect(response.statusCode, testCase.name).toBe(testCase.status);
+      expect(response.body, testCase.name).toEqual({ code: testCase.code });
+    }
   });
 
   it("excludes front-desk links before any pricing port call", async () => {

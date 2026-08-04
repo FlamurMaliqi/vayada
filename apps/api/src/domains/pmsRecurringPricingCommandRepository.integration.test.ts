@@ -53,11 +53,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS recurring pricing repositori
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
     max: 4,
     now: () => new Date(acceptedAt),
-    currencyValidator: {
-      async isSupportedPricingCurrency() {
-        return true;
-      },
-    },
     currencyChangeGuard: {
       async runWithCurrencyChangeGuard(_input, guarded) {
         return guarded([]);

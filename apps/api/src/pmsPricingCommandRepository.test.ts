@@ -53,36 +53,18 @@ function currencyChangeCommand() {
 }
 
 describe("PMS pricing command repository", () => {
-  it("requires both supported-currency and guarded-change dependencies", () => {
+  it("requires the guarded-change dependency", () => {
     const pool = { connect: vi.fn(), end: vi.fn() } as unknown as PmsPricingCommandPool;
     expect(() =>
       createPgPmsPricingCommandRepository({
         connectionString: "test",
         pool,
-        currencyValidator: undefined!,
-        currencyChangeGuard: {
-          async runWithCurrencyChangeGuard(_input, guarded) {
-            return guarded([]);
-          },
-        },
-      }),
-    ).toThrow("requires a currency validator");
-    expect(() =>
-      createPgPmsPricingCommandRepository({
-        connectionString: "test",
-        pool,
-        currencyValidator: {
-          async isSupportedPricingCurrency() {
-            return true;
-          },
-        },
         currencyChangeGuard: undefined!,
       }),
     ).toThrow("requires a currency-change guard");
   });
 
   it("rechecks committed owner/operator scope before validation, guard, or replay", async () => {
-    const validator = vi.fn(async () => true);
     let guardCallCount = 0;
     const guard: PmsPricingCurrencyChangeGuardPort = {
       async runWithCurrencyChangeGuard(_input, guarded) {
@@ -109,7 +91,6 @@ describe("PMS pricing command repository", () => {
       connectionString: "test",
       pool,
       now: () => new Date(acceptedAt),
-      currencyValidator: { isSupportedPricingCurrency: validator },
       currencyChangeGuard: guard,
     });
 
@@ -117,7 +98,6 @@ describe("PMS pricing command repository", () => {
       ok: false,
       error: { code: "setup_scope_unavailable" },
     });
-    expect(validator).not.toHaveBeenCalled();
     expect(guardCallCount).toBe(0);
     expect(queries.findIndex((sql) => sql.includes("pg_advisory_xact_lock"))).toBeLessThan(
       queries.findIndex((sql) => sql.includes("FROM hotel_catalog.properties")),
@@ -188,11 +168,6 @@ describe("PMS pricing command repository", () => {
       connectionString: "test",
       pool,
       now: () => new Date(acceptedAt),
-      currencyValidator: {
-        async isSupportedPricingCurrency() {
-          return true;
-        },
-      },
       currencyChangeGuard: {
         async runWithCurrencyChangeGuard(_input, guarded) {
           return guarded([]);

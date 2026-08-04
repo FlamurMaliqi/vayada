@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   PMS_PRICING_AUTHORIZATION,
   PMS_PRICING_CONTRACT_VERSION,
+  PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
   PMS_PRICING_CURRENCY_DEPENDENCY_LOCK_NAMESPACE,
   type PmsPricingCommandPort,
   type PmsPricingCurrencyChangeGuardPort,
@@ -14,6 +15,7 @@ import {
   parseFlexibleRatePlanSnapshot,
   parsePmsDecimalAmount,
   parsePmsPricingCurrency,
+  parsePmsPricingCurrencyCapabilities,
   parsePmsPricingSourceSnapshot,
   parsePropertyPricingCurrencyCommandResult,
   parsePropertyPricingCurrencySnapshot,
@@ -192,6 +194,58 @@ describe("PMS pricing command contract", () => {
     }
     expect(parsePmsPricingCurrency("CHF")).toBe("CHF");
     expect(parsePmsPricingCurrency("chf")).toBeNull();
+  });
+
+  it("strictly parses immutable code-unit-sorted scale-2 currency capabilities", () => {
+    const sparseSupportedCurrencies: unknown[] = [];
+    sparseSupportedCurrencies.length = 1;
+    const parsed = parsePmsPricingCurrencyCapabilities({
+      contractVersion: PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
+      supportedCurrencies: [
+        { code: "CHF", scale: 2 },
+        { code: "EUR", scale: 2 },
+      ],
+    });
+    expect(parsed).toEqual({
+      contractVersion: "pms-pricing-currency-capabilities.v1",
+      supportedCurrencies: [
+        { code: "CHF", scale: 2 },
+        { code: "EUR", scale: 2 },
+      ],
+    });
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed?.supportedCurrencies)).toBe(true);
+    expect(parsed?.supportedCurrencies.every(Object.isFrozen)).toBe(true);
+
+    for (const supportedCurrencies of [
+      [],
+      sparseSupportedCurrencies,
+      [{ code: "EUR", scale: 0 }],
+      [{ code: "eur", scale: 2 }],
+      [{ code: "EUR", scale: 2, label: "Euro" }],
+      [
+        { code: "EUR", scale: 2 },
+        { code: "CHF", scale: 2 },
+      ],
+      [
+        { code: "EUR", scale: 2 },
+        { code: "EUR", scale: 2 },
+      ],
+    ]) {
+      expect(
+        parsePmsPricingCurrencyCapabilities({
+          contractVersion: PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
+          supportedCurrencies,
+        }),
+      ).toBeNull();
+    }
+    expect(
+      parsePmsPricingCurrencyCapabilities({
+        contractVersion: PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
+        supportedCurrencies: [{ code: "EUR", scale: 2 }],
+        inferredLocale: "en",
+      }),
+    ).toBeNull();
   });
 
   it("requires the complete structured V1 cancellation snapshot", () => {

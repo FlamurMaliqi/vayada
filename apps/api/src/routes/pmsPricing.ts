@@ -4,12 +4,14 @@ import {
   parseFlexibleRatePlanCommandResult,
   parseFlexibleRatePlanSnapshot,
   parsePmsPricingSourceSnapshot,
+  parsePmsPricingCurrencyCapabilities,
   parsePropertyPricingCurrencyCommandResult,
   parseUpsertFlexibleRatePlanCommand,
   parseUpsertPropertyPricingCurrencyCommand,
   type FlexibleRatePlanCommandError,
   type PmsPricingCommandAudit,
   type PmsPricingCommandPort,
+  type PmsPricingCurrencyCapabilitiesReadPort,
   type PmsPricingReadPort,
   type PropertyPricingCurrencyCommandError,
 } from "@vayada/domain-pms";
@@ -27,6 +29,7 @@ type AuthorizedScope = {
 export type PmsPricingRoutesOptions = {
   commandPort: PmsPricingCommandPort;
   readPort: PmsPricingReadPort;
+  currencyCapabilitiesReadPort: PmsPricingCurrencyCapabilitiesReadPort;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -133,6 +136,28 @@ export async function registerPmsPricingRoutes(
       return result.ok
         ? reply.status(result.response.outcome === "created" ? 201 : 200).send(result.response)
         : sendPlanError(reply, result.error);
+    },
+  );
+
+  app.get<{ Params: PropertyParams }>(
+    "/properties/:propertyId/pricing-source/currency-capabilities",
+    { onRequest: authorize },
+    async (request, reply) => {
+      requireAuthorizedScope(authorized, request);
+      try {
+        const value = await options.currencyCapabilitiesReadPort.getPricingCurrencyCapabilities();
+        if (value === null) {
+          return reply.status(503).send({ code: "pms_pricing_currency_capabilities_unavailable" });
+        }
+        const capabilities = parsePmsPricingCurrencyCapabilities(value);
+        return capabilities
+          ? reply.status(200).send(capabilities)
+          : reply
+              .status(500)
+              .send({ code: "pms_pricing_currency_capabilities_port_contract_violation" });
+      } catch {
+        return reply.status(503).send({ code: "pms_pricing_currency_capabilities_unavailable" });
+      }
     },
   );
 
