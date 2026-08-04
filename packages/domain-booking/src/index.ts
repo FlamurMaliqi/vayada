@@ -23,6 +23,7 @@ export * from "./bookingPriceCalculation.js";
 export * from "./bookingPriceSnapshotInput.js";
 export * from "./bookingGuestPolicy.js";
 export * from "./bookingGuestPolicyComposer.js";
+export * from "./bookingGuestPolicyAggregate.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;
