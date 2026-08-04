@@ -259,7 +259,7 @@ function setupRoute(
   draft: PropertySetupStepDraft,
 ): PropertySetupRouteReadModel {
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations", "creator_marketplace"],
     trackRevision: 2,
@@ -267,7 +267,22 @@ function setupRoute(
     sessionRevision: 5,
     resumeStepId: stepId,
     progress: { complete: 0, total: 1 },
-    steps: [{ stepId, position: 1, state: "draft", sourceRevision: null, draft, blockers: [] }],
+    steps: [
+      {
+        stepId,
+        position: 1,
+        state: "draft",
+        sourceRevision:
+          stepId === "present_hotel"
+            ? "profile:7"
+            : stepId === "marketplace_preferences"
+              ? "preferences:0"
+              : "design:0",
+        currentBaseRevisions: draft.baseRevisions,
+        draft,
+        blockers: [],
+      },
+    ],
   };
 }
 

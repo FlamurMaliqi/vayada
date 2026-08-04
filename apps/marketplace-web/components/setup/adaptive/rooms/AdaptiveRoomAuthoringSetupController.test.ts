@@ -234,7 +234,12 @@ function setupRoute(): PropertySetupRouteReadModel {
         stepId: "pricing",
         position: 3,
         state: "not_started",
-        sourceRevision: null,
+        sourceRevision: "pricing:0",
+        currentBaseRevisions: {
+          "pms.pricing_settings": "pricing:0",
+          "pms.rate_plans": "plans:0",
+          "pms.rate_rules": "rules:0",
+        },
         draft: null,
         blockers: [],
       },

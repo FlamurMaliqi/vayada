@@ -48,7 +48,8 @@ export function adaptiveStepDraftRevision<TStepId extends PropertySetupStepId>(
     // Persisted drafts always retain their historical manifest. VAY-1049 adds
     // the truthful current manifest used when no draft exists.
     baseRevisions:
-      (draft?.baseRevisions as PropertySetupBaseRevisions<TStepId> | undefined) ?? null,
+      (draft?.baseRevisions as PropertySetupBaseRevisions<TStepId> | undefined) ??
+      (step.currentBaseRevisions as PropertySetupBaseRevisions<TStepId>),
   };
 }
 

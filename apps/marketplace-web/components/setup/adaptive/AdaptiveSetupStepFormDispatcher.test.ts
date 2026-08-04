@@ -92,7 +92,7 @@ function context(
 
 function setupRoute(): PropertySetupRouteReadModel {
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations", "creator_marketplace"],
     trackRevision: 2,
@@ -105,7 +105,34 @@ function setupRoute(): PropertySetupRouteReadModel {
         stepId: stepId as PropertySetupRouteReadModel["steps"][number]["stepId"],
         position: index + 1,
         state: "not_started",
-        sourceRevision: null,
+        sourceRevision:
+          stepId === "present_hotel"
+            ? "profile:7"
+            : stepId === "marketplace_preferences"
+              ? "preferences:0"
+              : stepId === "booking_design"
+                ? "design:0"
+                : "pricing:0",
+        currentBaseRevisions:
+          stepId === "present_hotel"
+            ? {
+                "hotel_catalog.profile": "profile:7",
+                "hotel_catalog.media": "profile:7",
+                "hotel_catalog.amenities": "profile:7",
+              }
+            : stepId === "marketplace_preferences"
+              ? { "marketplace.collaboration_preferences": "preferences:0" }
+              : stepId === "booking_design"
+                ? {
+                    "booking.design": "design:0",
+                    "hotel_catalog.profile": "profile:7",
+                    "hotel_catalog.media": "profile:7",
+                  }
+                : {
+                    "pms.pricing_settings": "pricing-settings:1",
+                    "pms.rate_plans": "rate-plans:1",
+                    "pms.rate_rules": "rate-rules:1",
+                  },
         draft: null,
         blockers: [],
       }),

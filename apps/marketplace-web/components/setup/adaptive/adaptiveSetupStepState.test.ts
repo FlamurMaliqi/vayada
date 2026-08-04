@@ -43,15 +43,40 @@ describe("adaptiveSetupStepState", () => {
     });
   });
 
-  it("fails closed without a truthful current or historical manifest", () => {
+  it("uses the current manifest for the first draft save", () => {
     const route = setupRoute(false);
     const revision = adaptiveStepDraftRevision(route, route.steps[0]!, "present_hotel");
-    expect(() =>
+    expect(
       draftRequest(revision, {
         stepId: "present_hotel",
         payload: { "profile.short_description": "local text stays local" },
         dirtyFields: ["profile.short_description"],
       }),
+    ).toMatchObject({
+      expectedDraftRevision: 0,
+      expectedBaseRevisions: {
+        "hotel_catalog.profile": "profile:11",
+        "hotel_catalog.media": "profile:11",
+        "hotel_catalog.amenities": "profile:11",
+      },
+    });
+  });
+
+  it("fails closed when no validated manifest is available", () => {
+    expect(() =>
+      draftRequest(
+        {
+          trackRevision: 4,
+          sessionRevision: 8,
+          draftRevision: 3,
+          baseRevisions: null,
+        },
+        {
+          stepId: "present_hotel",
+          payload: { "profile.short_description": "local text stays local" },
+          dirtyFields: ["profile.short_description"],
+        },
+      ),
     ).toThrow(AdaptiveStepManifestUnavailableError);
   });
 
@@ -84,7 +109,7 @@ describe("adaptiveSetupStepState", () => {
 
 function setupRoute(withDraft: boolean): PropertySetupRouteReadModel {
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations"],
     trackRevision: 4,
@@ -98,6 +123,11 @@ function setupRoute(withDraft: boolean): PropertySetupRouteReadModel {
         position: 1,
         state: withDraft ? "draft" : "not_started",
         sourceRevision: "profile:7",
+        currentBaseRevisions: {
+          "hotel_catalog.profile": "profile:11",
+          "hotel_catalog.media": "profile:11",
+          "hotel_catalog.amenities": "profile:11",
+        },
         draft: withDraft
           ? {
               stepId: "present_hotel",
