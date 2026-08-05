@@ -453,12 +453,21 @@ describe("finance route contracts", () => {
     app = buildFinanceApp({ permissions: financeManagePermissions() });
     const prefix = `/api/finance/properties/${propertyId}`;
     const requests = [
-      injectJson(app, { method: "GET", url: `${prefix}/summary` }),
-      injectJson(app, { method: "GET", url: `${prefix}/invoices` }),
-      injectJson(app, { method: "GET", url: `${prefix}/invoices/export.csv` }),
-      injectJson(app, { method: "GET", url: `${prefix}/invoices/inv_2026_abcd` }),
-      injectJson(app, { method: "POST", url: `${prefix}/invoices/inv_2026_abcd/payments` }),
-      injectJson(app, { method: "GET", url: `${prefix}/payments` }),
+      injectJson<Record<string, unknown>>(app, { method: "GET", url: `${prefix}/summary` }),
+      injectJson<Record<string, unknown>>(app, { method: "GET", url: `${prefix}/invoices` }),
+      injectJson<Record<string, unknown>>(app, {
+        method: "GET",
+        url: `${prefix}/invoices/export.csv`,
+      }),
+      injectJson<Record<string, unknown>>(app, {
+        method: "GET",
+        url: `${prefix}/invoices/inv_2026_abcd`,
+      }),
+      injectJson<Record<string, unknown>>(app, {
+        method: "POST",
+        url: `${prefix}/invoices/inv_2026_abcd/payments`,
+      }),
+      injectJson<Record<string, unknown>>(app, { method: "GET", url: `${prefix}/payments` }),
     ];
 
     for (const response of await Promise.all(requests)) {
