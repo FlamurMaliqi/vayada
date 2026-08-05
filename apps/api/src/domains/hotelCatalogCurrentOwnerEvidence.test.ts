@@ -11,12 +11,13 @@ const scope = { organizationId, propertyId };
 
 describe("PostgreSQL Hotel Catalog current-owner evidence", () => {
   it("reads independently scoped location and policy source identities", async () => {
-    const query = vi.fn(async (text: string, _values?: readonly unknown[]) =>
-      result({
-        propertyId,
-        ownerPropertyId: propertyId,
-        revision: text.includes("'hotel_catalog.location'") ? "7" : "9",
-      }),
+    const query = vi.fn(
+      async ({ text }: { text: string; values: unknown[]; query_timeout: number }) =>
+        result({
+          propertyId,
+          ownerPropertyId: propertyId,
+          revision: text.includes("'hotel_catalog.location'") ? "7" : "9",
+        }),
     );
     const ports = createPgHotelCatalogCurrentOwnerEvidencePorts({ pool: pool(query) });
 
@@ -41,11 +42,12 @@ describe("PostgreSQL Hotel Catalog current-owner evidence", () => {
       },
     });
     expect(query).toHaveBeenCalledTimes(2);
-    for (const [sql, values] of query.mock.calls) {
-      expect(sql).toContain("organization.kind = 'hotel_group'");
-      expect(sql).toContain("resource.product = 'hotel_catalog'");
-      expect(sql).toContain("resource.relationship IN ('owner', 'operator')");
-      expect(values).toEqual([organizationId, propertyId]);
+    for (const [request] of query.mock.calls) {
+      expect(request.text).toContain("organization.kind = 'hotel_group'");
+      expect(request.text).toContain("resource.product = 'hotel_catalog'");
+      expect(request.text).toContain("resource.relationship IN ('owner', 'operator')");
+      expect(request.values).toEqual([organizationId, propertyId]);
+      expect(request.query_timeout).toBe(5_000);
     }
   });
 

@@ -10,8 +10,7 @@ import type { QueryResult, QueryResultRow } from "pg";
 
 export type HotelCatalogCurrentOwnerEvidencePool = {
   query<Row extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values?: readonly unknown[],
+    config: Readonly<{ text: string; values: unknown[]; query_timeout: number }>,
   ): Promise<QueryResult<Row>>;
 };
 
@@ -25,6 +24,8 @@ type OwnerRow = QueryResultRow & {
   ownerPropertyId: string | null;
   revision: string | null;
 };
+
+const OWNER_READ_TIMEOUT_MS = 5_000;
 
 export function createPgHotelCatalogCurrentOwnerEvidencePorts(options: {
   pool: HotelCatalogCurrentOwnerEvidencePool;
@@ -51,10 +52,11 @@ async function readOwner<Key extends HotelCatalogCurrentOwnerKey>(
   const scope = parseHotelCatalogCurrentOwnerEvidenceScope(input);
   if (!scope) return Object.freeze({ outcome: "malformed" as const });
   try {
-    const result = await pool.query<OwnerRow>(ownerSql(ownerKey), [
-      scope.organizationId,
-      scope.propertyId,
-    ]);
+    const result = await pool.query<OwnerRow>({
+      text: ownerSql(ownerKey),
+      values: [scope.organizationId, scope.propertyId],
+      query_timeout: OWNER_READ_TIMEOUT_MS,
+    });
     const row = result.rows[0];
     if (!row)
       return Object.freeze({ outcome: "missing" as const, reason: "property_scope" as const });
