@@ -10,6 +10,25 @@ const propertyId = "30000000-0000-4000-8000-000000000001";
 const scope = { organizationId, propertyId };
 
 describe("PostgreSQL Hotel Catalog current-owner evidence", () => {
+  it.each([0, 5_001, Number.POSITIVE_INFINITY])(
+    "rejects an unbounded pool checkout timeout (%s)",
+    (connectionTimeoutMillis) => {
+      expect(() =>
+        createPgHotelCatalogCurrentOwnerEvidencePorts({
+          pool: pool(vi.fn(), connectionTimeoutMillis),
+        }),
+      ).toThrow("Hotel Catalog current-owner evidence pool requires a bounded checkout");
+    },
+  );
+
+  it("rejects a pool without a checkout timeout", () => {
+    expect(() =>
+      createPgHotelCatalogCurrentOwnerEvidencePorts({
+        pool: { options: {}, query: vi.fn() } as HotelCatalogCurrentOwnerEvidencePool,
+      }),
+    ).toThrow("Hotel Catalog current-owner evidence pool requires a bounded checkout");
+  });
+
   it("reads independently scoped location and policy source identities", async () => {
     const query = vi.fn(
       async ({ text }: { text: string; values: unknown[]; query_timeout: number }) =>
@@ -89,8 +108,11 @@ describe("PostgreSQL Hotel Catalog current-owner evidence", () => {
   });
 });
 
-function pool(query: ReturnType<typeof vi.fn>): HotelCatalogCurrentOwnerEvidencePool {
-  return { query } as HotelCatalogCurrentOwnerEvidencePool;
+function pool(
+  query: ReturnType<typeof vi.fn>,
+  connectionTimeoutMillis: number | undefined = 5_000,
+): HotelCatalogCurrentOwnerEvidencePool {
+  return { options: { connectionTimeoutMillis }, query } as HotelCatalogCurrentOwnerEvidencePool;
 }
 
 function result(row?: Record<string, unknown>) {

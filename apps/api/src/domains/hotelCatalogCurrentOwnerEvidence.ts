@@ -9,6 +9,7 @@ import {
 import type { QueryResult, QueryResultRow } from "pg";
 
 export type HotelCatalogCurrentOwnerEvidencePool = {
+  readonly options: Readonly<{ connectionTimeoutMillis?: number }>;
   query<Row extends QueryResultRow = QueryResultRow>(
     config: Readonly<{ text: string; values: unknown[]; query_timeout: number }>,
   ): Promise<QueryResult<Row>>;
@@ -30,6 +31,15 @@ const OWNER_READ_TIMEOUT_MS = 5_000;
 export function createPgHotelCatalogCurrentOwnerEvidencePorts(options: {
   pool: HotelCatalogCurrentOwnerEvidencePool;
 }): HotelCatalogCurrentOwnerEvidencePorts {
+  const connectionTimeoutMillis = options.pool.options.connectionTimeoutMillis;
+  if (
+    typeof connectionTimeoutMillis !== "number" ||
+    !Number.isFinite(connectionTimeoutMillis) ||
+    connectionTimeoutMillis <= 0 ||
+    connectionTimeoutMillis > OWNER_READ_TIMEOUT_MS
+  ) {
+    throw new Error("Hotel Catalog current-owner evidence pool requires a bounded checkout");
+  }
   return Object.freeze({
     location: Object.freeze({
       ownerKey: "hotel_catalog.location" as const,

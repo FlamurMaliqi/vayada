@@ -16,6 +16,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Catalog current-owner evidence p
   });
   const pool = new pg.Pool({
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
+    connectionTimeoutMillis: 5_000,
     max: 2,
   });
   const ports = createPgHotelCatalogCurrentOwnerEvidencePorts({ pool });
