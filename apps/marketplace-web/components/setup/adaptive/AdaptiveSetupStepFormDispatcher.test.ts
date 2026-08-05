@@ -9,6 +9,8 @@ const calls = vi.hoisted(() => ({
   presentation: vi.fn(),
   marketplace: vi.fn(),
   booking: vi.fn(),
+  pricing: vi.fn(),
+  calendar: vi.fn(),
 }));
 
 vi.mock("./presentation/PresentHotelStep", () => ({
@@ -29,6 +31,18 @@ vi.mock("./booking/BookingDesignStep", () => ({
     return null;
   },
 }));
+vi.mock("./pricing/PricingStep", () => ({
+  PricingStep: (props: unknown) => {
+    calls.pricing(props);
+    return null;
+  },
+}));
+vi.mock("./calendar/CalendarStep", () => ({
+  CalendarStep: (props: unknown) => {
+    calls.calendar(props);
+    return null;
+  },
+}));
 
 import { AdaptiveSetupStepFormDispatcher } from "./AdaptiveSetupStepFormDispatcher";
 
@@ -42,6 +56,8 @@ describe("AdaptiveSetupStepFormDispatcher", () => {
     ["present_hotel", "presentation"],
     ["marketplace_preferences", "marketplace"],
     ["booking_design", "booking"],
+    ["pricing", "pricing"],
+    ["calendar", "calendar"],
   ] as const)("dispatches %s with the stable shared component contract", async (stepId, target) => {
     let renderer: ReactTestRenderer | undefined;
     const registerBeforeLeave = vi.fn(() => vi.fn());
@@ -51,33 +67,37 @@ describe("AdaptiveSetupStepFormDispatcher", () => {
     });
 
     expect(calls[target]).toHaveBeenCalledWith(expect.objectContaining(props));
-    expect(calls.presentation).toHaveBeenCalledTimes(target === "presentation" ? 1 : 0);
-    expect(calls.marketplace).toHaveBeenCalledTimes(target === "marketplace" ? 1 : 0);
-    expect(calls.booking).toHaveBeenCalledTimes(target === "booking" ? 1 : 0);
+    Object.entries(calls).forEach(([name, call]) => {
+      expect(call).toHaveBeenCalledTimes(name === target ? 1 : 0);
+    });
     renderer?.unmount();
   });
 
-  it("returns null for room and future step-owned dispatchers", async () => {
+  it("returns null for the separately composed room step", async () => {
     let renderer: ReactTestRenderer | undefined;
     await act(async () => {
       renderer = create(
         createElement(AdaptiveSetupStepFormDispatcher, {
-          ...context("pricing"),
+          ...context("rooms"),
           propertyId,
           registerBeforeLeave: vi.fn(() => vi.fn()),
         }),
       );
     });
     expect(renderer?.toJSON()).toBeNull();
-    expect(calls.presentation).not.toHaveBeenCalled();
-    expect(calls.marketplace).not.toHaveBeenCalled();
-    expect(calls.booking).not.toHaveBeenCalled();
+    Object.values(calls).forEach((call) => expect(call).not.toHaveBeenCalled());
     renderer?.unmount();
   });
 });
 
 function context(
-  stepId: "present_hotel" | "marketplace_preferences" | "booking_design" | "pricing",
+  stepId:
+    | "present_hotel"
+    | "marketplace_preferences"
+    | "booking_design"
+    | "rooms"
+    | "pricing"
+    | "calendar",
 ): AdaptiveSetupStepRenderContext {
   const route = setupRoute();
   return {
@@ -99,43 +119,65 @@ function setupRoute(): PropertySetupRouteReadModel {
     sessionId: null,
     sessionRevision: null,
     resumeStepId: null,
-    progress: { complete: 0, total: 4 },
-    steps: ["present_hotel", "marketplace_preferences", "booking_design", "pricing"].map(
-      (stepId, index) => ({
-        stepId: stepId as PropertySetupRouteReadModel["steps"][number]["stepId"],
-        position: index + 1,
-        state: "not_started",
-        sourceRevision:
-          stepId === "present_hotel"
-            ? "profile:7"
-            : stepId === "marketplace_preferences"
-              ? "preferences:0"
-              : stepId === "booking_design"
-                ? "design:0"
-                : "pricing:0",
-        currentBaseRevisions:
-          stepId === "present_hotel"
-            ? {
-                "hotel_catalog.profile": "profile:7",
-                "hotel_catalog.media": "profile:7",
-                "hotel_catalog.amenities": "profile:7",
-              }
-            : stepId === "marketplace_preferences"
-              ? { "marketplace.collaboration_preferences": "preferences:0" }
-              : stepId === "booking_design"
+    progress: { complete: 0, total: 6 },
+    steps: [
+      "present_hotel",
+      "marketplace_preferences",
+      "booking_design",
+      "rooms",
+      "pricing",
+      "calendar",
+    ].map((stepId, index) => ({
+      stepId: stepId as PropertySetupRouteReadModel["steps"][number]["stepId"],
+      position: index + 1,
+      state: "not_started",
+      sourceRevision:
+        stepId === "present_hotel"
+          ? "profile:7"
+          : stepId === "marketplace_preferences"
+            ? "preferences:0"
+            : stepId === "booking_design"
+              ? "design:0"
+              : stepId === "rooms"
+                ? "rooms:0"
+                : stepId === "pricing"
+                  ? "pricing:0"
+                  : "calendar:0",
+      currentBaseRevisions:
+        stepId === "present_hotel"
+          ? {
+              "hotel_catalog.profile": "profile:7",
+              "hotel_catalog.media": "profile:7",
+              "hotel_catalog.amenities": "profile:7",
+            }
+          : stepId === "marketplace_preferences"
+            ? { "marketplace.collaboration_preferences": "preferences:0" }
+            : stepId === "booking_design"
+              ? {
+                  "booking.design": "design:0",
+                  "hotel_catalog.profile": "profile:7",
+                  "hotel_catalog.media": "profile:7",
+                }
+              : stepId === "rooms"
                 ? {
-                    "booking.design": "design:0",
-                    "hotel_catalog.profile": "profile:7",
-                    "hotel_catalog.media": "profile:7",
+                    "pms.room_types": "room-types:1",
+                    "pms.room_units": "room-units:1",
+                    "pms.room_media": "room-media:1",
                   }
-                : {
-                    "pms.pricing_settings": "pricing-settings:1",
-                    "pms.rate_plans": "rate-plans:1",
-                    "pms.rate_rules": "rate-rules:1",
-                  },
-        draft: null,
-        blockers: [],
-      }),
-    ),
+                : stepId === "pricing"
+                  ? {
+                      "pms.pricing_settings": "pricing-settings:1",
+                      "pms.rate_plans": "rate-plans:1",
+                      "pms.rate_rules": "rate-rules:1",
+                    }
+                  : {
+                      "pms.operating_calendar": "calendar:1",
+                      "pms.inventory": "inventory:1",
+                      "pms.room_types": "room-types:1",
+                      "hotel_catalog.location": "location:1",
+                    },
+      draft: null,
+      blockers: [],
+    })),
   };
 }
