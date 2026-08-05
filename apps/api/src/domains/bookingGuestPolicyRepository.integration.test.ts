@@ -157,9 +157,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking guest-policy repository"
     });
     await expect(
       repository.getGuestPolicyPublicProjection({
+        organizationId,
         propertyId,
         revisionId: result.revision.revisionId,
         guestPolicyRevision: 1,
+        outboxEventId: result.revision.outboxEventId,
       }),
     ).resolves.toMatchObject({
       propertyId,
@@ -172,6 +174,15 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking guest-policy repository"
         propertyTimeZone: "Europe/Berlin",
       },
     });
+    await expect(
+      repository.getGuestPolicyPublicProjection({
+        organizationId,
+        propertyId,
+        revisionId: result.revision.revisionId,
+        guestPolicyRevision: 1,
+        outboxEventId: "80000000-0000-4000-8000-000000000018",
+      }),
+    ).resolves.toBeNull();
 
     const durable = await admin.query<{
       eventPayload: unknown;

@@ -134,10 +134,13 @@ export function evaluateBookingGuestPolicyReadiness(input: {
     const receipt = current.projectionReceipt;
     if (!receipt) {
       blockers.push(blocker("catalog_projection_pending", "external_pending", "hotel_catalog"));
-    } else if (receipt.outcome === "source_revision_conflict") {
+    } else if (
+      receipt.outcome === "source_revision_conflict" &&
+      receipt.projectedGuestPolicyRevision === current.revision
+    ) {
       blockers.push(blocker("catalog_projection_conflict", "external_pending", "hotel_catalog"));
     } else if (
-      receipt.projectedGuestPolicyRevision !== current.revision ||
+      receipt.outcome === "source_revision_conflict" ||
       !currentBaseRevisions ||
       !catalogPolicyRevisionMatches(
         currentBaseRevisions["hotel_catalog.policy"],

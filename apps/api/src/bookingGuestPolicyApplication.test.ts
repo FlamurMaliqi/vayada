@@ -99,13 +99,54 @@ describe("Booking guest-policy application", () => {
     });
   });
 
-  it("keeps readiness pending when an applied receipt belongs to an older guest-policy revision", async () => {
+  it("keeps optional-only updates ready with a compatible inherited applied receipt", async () => {
+    const previous = revisionFixture();
     const current = parseBookingGuestPolicyRevision({
-      ...revisionFixture(),
+      ...previous,
       revision: 2,
+      bundle: {
+        ...previous.bundle,
+        choices: { ...previous.bundle.choices, phoneRequired: false },
+      },
       projectionReceipt: appliedReceipt(),
     });
-    if (!current) throw new Error("Expected valid stale-receipt fixture");
+    if (!current) throw new Error("Expected valid optional-only fixture");
+
+    await expect(
+      applicationHarness({ current }).application.getGuestPolicyReadiness({
+        organizationId,
+        propertyId,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      guestPolicySourceRevision: "guest-policy:2",
+      blockers: [],
+    });
+  });
+
+  it("does not carry a source conflict across a later Booking revision", async () => {
+    const previous = revisionFixture();
+    const receipt = appliedReceipt();
+    const current = parseBookingGuestPolicyRevision({
+      ...previous,
+      revision: 2,
+      bundle: {
+        ...previous.bundle,
+        choices: { ...previous.bundle.choices, phoneRequired: false },
+      },
+      projectionReceipt: {
+        outcome: "source_revision_conflict",
+        receiptId: receipt.receiptId,
+        sourceOutboxEventId: receipt.sourceOutboxEventId,
+        projectedGuestPolicyRevision: receipt.projectedGuestPolicyRevision,
+        projectedBundleHash: receipt.projectedBundleHash,
+        projectedSourceFingerprint: receipt.projectedSourceFingerprint,
+        catalogProfileSourceRevision: receipt.catalogProfileSourceRevision,
+        observedCatalogProfileRevision: "profile:9",
+        recordedAt: receipt.recordedAt,
+      },
+    });
+    if (!current) throw new Error("Expected valid prior-conflict fixture");
 
     await expect(
       applicationHarness({ current }).application.getGuestPolicyReadiness({
@@ -114,7 +155,6 @@ describe("Booking guest-policy application", () => {
       }),
     ).resolves.toMatchObject({
       status: "pending",
-      guestPolicySourceRevision: "guest-policy:2",
       blockers: [
         { code: "catalog_projection_stale", kind: "external_pending", owner: "hotel_catalog" },
       ],
