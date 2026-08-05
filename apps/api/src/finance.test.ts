@@ -449,33 +449,22 @@ describe("finance route contracts", () => {
     }
   });
 
-  it("passes F1c invoice and payment ledger fixture cases in target mode", async () => {
-    app = buildFinanceApp();
+  it("leaves obsolete PMS Financials routes unregistered", async () => {
+    app = buildFinanceApp({ permissions: financeManagePermissions() });
+    const prefix = `/api/finance/properties/${propertyId}`;
+    const requests = [
+      injectJson(app, { method: "GET", url: `${prefix}/summary` }),
+      injectJson(app, { method: "GET", url: `${prefix}/invoices` }),
+      injectJson(app, { method: "GET", url: `${prefix}/invoices/export.csv` }),
+      injectJson(app, { method: "GET", url: `${prefix}/invoices/inv_2026_abcd` }),
+      injectJson(app, { method: "POST", url: `${prefix}/invoices/inv_2026_abcd/payments` }),
+      injectJson(app, { method: "GET", url: `${prefix}/payments` }),
+    ];
 
-    for (const caseId of ["invoice-list-read", "invoice-detail-read", "payment-ledger-read"]) {
-      const contractCase = financeContractCases.cases.find(
-        (candidate) => candidate.caseId === caseId,
-      );
-      expect(contractCase, caseId).toBeDefined();
-
-      const response = await injectJson<Record<string, unknown>>(app, {
-        method: "GET",
-        url: contractCase!.request.path,
-        query: queryStrings(contractCase!.request.query),
-        headers: { authorization: "Bearer valid-token" },
-      });
-
-      expect(response.statusCode, caseId).toBe(contractCase!.expected.status);
-      if (contractCase!.expected.itemCount !== undefined) {
-        const list =
-          caseId === "payment-ledger-read" ? response.body.payments : response.body.invoices;
-        expect(list, caseId).toHaveLength(contractCase!.expected.itemCount);
-      }
-      assertIncludes(response.body, contractCase!.expected.mustInclude ?? [], caseId);
-      assertExcludes(response.body, contractCase!.expected.mustExclude ?? [], caseId);
-      expect(JSON.stringify(response.body), caseId).not.toMatch(
-        /providerPayloadRaw|providerPaymentIntentSecret|cardFingerprint|processorFeeBreakdown|guestBirthDate|privatePmsNotes|providerPaymentIntentId|booking_guests/,
-      );
+    for (const response of await Promise.all(requests)) {
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toMatchObject({ statusCode: 404, error: "Not Found" });
+      expect(response.body.message).toMatch(/^Route (GET|POST):\/api\/finance\/.+ not found$/);
     }
   });
 
@@ -1082,114 +1071,6 @@ describe("finance route contracts", () => {
     expect(repository.writeCount).toBe(0);
   });
 
-  it("passes the F1d manual payment record fixture in target mode", async () => {
-    const repository = manualPaymentRepository();
-    app = buildFinanceApp({
-      repository,
-      permissions: financeManagePermissions(),
-    });
-    const contractCase = financeContractCases.cases.find(
-      (candidate) => candidate.caseId === "manual-payment-record-command",
-    );
-    expect(contractCase).toBeDefined();
-
-    const response = await injectJson<Record<string, unknown>>(app, {
-      method: "POST",
-      url: contractCase!.request.path,
-      payload: contractCase!.request.body,
-      headers: { authorization: "Bearer valid-token" },
-    });
-
-    expect(response.statusCode).toBe(contractCase!.expected.status);
-    assertIncludes(response.body, contractCase!.expected.mustInclude ?? [], contractCase!.caseId);
-    expect(response.body.commandMeta).toMatchObject({
-      idempotencyKey: "finance-manual-payment-inv-2026-abcd-001",
-      sideEffects: ["audit_event", "booking_projection_refresh", "pms_projection_refresh"],
-      jobs: [
-        {
-          jobType: "booking.projection-refresh",
-          status: "queued",
-        },
-        {
-          jobType: "pms.projection-refresh",
-          status: "queued",
-        },
-      ],
-    });
-    expect(repository.writeCount).toBe(1);
-    expect(repository.outboxEnqueueCount).toBe(2);
-    expect(JSON.stringify(response.body)).not.toMatch(/Stripe API|Xendit API|Channex API/);
-  });
-
-  it("replays the F1d manual payment idempotency key without duplicate side effects", async () => {
-    const repository = manualPaymentRepository();
-    app = buildFinanceApp({
-      repository,
-      permissions: financeManagePermissions(),
-    });
-    const contractCase = financeContractCases.cases.find(
-      (candidate) => candidate.caseId === "manual-payment-record-command-idempotency-replay",
-    );
-    expect(contractCase).toBeDefined();
-
-    const first = await injectJson<Record<string, unknown>>(app, {
-      method: "POST",
-      url: contractCase!.request.path,
-      payload: contractCase!.request.body,
-      headers: { authorization: "Bearer valid-token" },
-    });
-    const replay = await injectJson<Record<string, unknown>>(app, {
-      method: "POST",
-      url: contractCase!.request.path,
-      payload: contractCase!.request.body,
-      headers: { authorization: "Bearer valid-token" },
-    });
-
-    expect(first.statusCode).toBe(201);
-    expect(replay.statusCode).toBe(contractCase!.expected.status);
-    expect(readContractPath(first.body, "invoice.payments[0].paymentId")).toBe(
-      readContractPath(replay.body, "invoice.payments[0].paymentId"),
-    );
-    expect(readContractPath(replay.body, "commandMeta.jobs[0].status")).toBe("idempotent_replay");
-    expect(repository.writeCount).toBe(1);
-    expect(repository.outboxEnqueueCount).toBe(2);
-  });
-
-  it("passes the F1d manual payment validation rejection fixtures", async () => {
-    const repository = manualPaymentRepository();
-    app = buildFinanceApp({
-      repository,
-      permissions: financeManagePermissions(),
-    });
-
-    for (const caseId of [
-      "manual-payment-record-command-currency-mismatch",
-      "manual-payment-record-command-overpayment",
-      "manual-payment-record-command-no-balance",
-      "manual-payment-record-command-paid-invoice",
-      "manual-payment-record-command-voided-invoice",
-      "manual-payment-record-command-amount-out-of-range",
-    ]) {
-      const contractCase = financeContractCases.cases.find(
-        (candidate) => candidate.caseId === caseId,
-      );
-      expect(contractCase, caseId).toBeDefined();
-
-      const response = await injectJson<Record<string, unknown>>(app, {
-        method: "POST",
-        url: contractCase!.request.path,
-        payload: contractCase!.request.body,
-        headers: { authorization: "Bearer valid-token" },
-      });
-
-      expect(response.statusCode, caseId).toBe(contractCase!.expected.status);
-      expect(response.body.code, caseId).toBe(contractCase!.expected.errorCode);
-    }
-
-    expect(repository.writeCount).toBe(0);
-    expect(repository.outboxEnqueueCount).toBe(0);
-  });
-
   it("rejects invalid target manual payment commands before insert side effects", async () => {
     const cases: Array<{
       name: string;
@@ -1408,90 +1289,10 @@ describe("finance route contracts", () => {
     ).toBe(false);
   });
 
-  it("returns financial summary with source freshness from the Finance read model", async () => {
-    app = buildFinanceApp();
-
-    const response = await injectJson(app, {
-      method: "GET",
-      url: `/api/finance/properties/${propertyId}/summary`,
-      headers: { authorization: "Bearer valid-token" },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({
-      contractVersion: "finance-route-contracts.v1",
-      propertyId,
-      summary: {
-        currency: "EUR",
-        grossPaymentAmount: "1700.00",
-        outstandingBalanceAmount: "1150.00",
-        invoiceCounts: { partial: 2 },
-        paymentCounts: { paid: 2 },
-      },
-      sourceFreshness,
-    });
-  });
-
-  it("returns a CSV export disposition instead of streaming a legacy export", async () => {
-    app = buildFinanceApp();
-
-    const response = await injectJson(app, {
-      method: "GET",
-      url: `/api/finance/properties/${propertyId}/invoices/export.csv`,
-      headers: { authorization: "Bearer valid-token" },
-    });
-
-    expect(response.statusCode).toBe(202);
-    expect(response.body).toMatchObject({
-      contractVersion: "finance-route-contracts.v1",
-      propertyId,
-      export: {
-        status: "queued",
-        disposition: "durable_export_job",
-        filename: `finance-invoices-${propertyId}.csv`,
-        contentType: "text/csv",
-      },
-    });
-  });
-
-  it("supports invoice search, sort, and pagination over the target read model", async () => {
-    app = buildFinanceApp();
-
-    const response = await injectJson<Record<string, unknown>>(app, {
-      method: "GET",
-      url: `/api/finance/properties/${propertyId}/invoices`,
-      query: { search: "ledger", sort: "guest", limit: "1", offset: "0" },
-      headers: { authorization: "Bearer valid-token" },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({
-      total: 1,
-      limit: 1,
-      offset: 0,
-      invoices: [{ invoiceId: "inv_2026_wxyz", guest: { displayName: "Ana Ledger" } }],
-    });
-  });
-
-  it("returns empty states for finance ledger reads without treating setup as an error", async () => {
+  it("preserves empty payout and reconciliation reads", async () => {
     app = buildFinanceApp({ repository: emptyFinanceRepository });
 
-    const [summary, invoices, payments, payouts, reconciliation] = await Promise.all([
-      injectJson(app, {
-        method: "GET",
-        url: `/api/finance/properties/${propertyId}/summary`,
-        headers: { authorization: "Bearer valid-token" },
-      }),
-      injectJson(app, {
-        method: "GET",
-        url: `/api/finance/properties/${propertyId}/invoices`,
-        headers: { authorization: "Bearer valid-token" },
-      }),
-      injectJson(app, {
-        method: "GET",
-        url: `/api/finance/properties/${propertyId}/payments`,
-        headers: { authorization: "Bearer valid-token" },
-      }),
+    const [payouts, reconciliation] = await Promise.all([
       injectJson(app, {
         method: "GET",
         url: `/api/finance/properties/${propertyId}/payouts`,
@@ -1504,11 +1305,6 @@ describe("finance route contracts", () => {
       }),
     ]);
 
-    expect(summary.body).toMatchObject({
-      summary: { grossPaymentAmount: "0.00", invoiceCounts: { partial: 0 } },
-    });
-    expect(invoices.body).toMatchObject({ invoices: [], total: 0, counts: { partial: 0 } });
-    expect(payments.body).toMatchObject({ payments: [], total: 0, counts: { paid: 0 } });
     expect(payouts.body).toMatchObject({
       payouts: [],
       total: 0,

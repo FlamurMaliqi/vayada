@@ -887,7 +887,7 @@
       "caseId": "authorization-denial-matrix-missing-permission",
       "description": "Finance property reads deny authenticated users without pms.finance.read.",
       "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices",
+        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/payment-settings",
         "query": {},
         "auth": {
           "permissions": ["pms.operations.read"],
@@ -904,7 +904,7 @@
       "caseId": "authorization-denial-matrix-missing-resource",
       "description": "Finance property reads deny users with finance permission but no linked property resource.",
       "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices",
+        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/payment-settings",
         "query": {},
         "auth": {
           "permissions": ["pms.finance.read"],
