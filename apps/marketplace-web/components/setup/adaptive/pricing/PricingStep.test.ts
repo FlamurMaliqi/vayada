@@ -67,6 +67,8 @@ describe("PricingStep", () => {
   it("requires a server-supported currency on first visit and saves incomplete draft input", async () => {
     mocks.loadWorkspace.mockResolvedValue(workspace(false));
     const route = pricingRoute(null);
+    route.sessionId = null;
+    route.sessionRevision = null;
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -90,6 +92,8 @@ describe("PricingStep", () => {
       propertyId,
       expect.objectContaining({
         stepId: "pricing",
+        expectedSessionRevision: 0,
+        expectedDraftRevision: 0,
         expectedBaseRevisions: exactManifest,
         payload: expect.objectContaining({
           "rate.base_nightly_rate": { [roomTypeId]: "125.50" },

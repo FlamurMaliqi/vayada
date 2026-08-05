@@ -34,6 +34,12 @@ const timeZone = parsePmsCanonicalIanaTimeZone("Europe/Berlin", registry)!;
 
 describe("calendarState", () => {
   it("hydrates a first visit only after owner reads and prefills explicit safe defaults", () => {
+    const route = setupRoute(calendarDraft({}));
+    route.sessionId = null;
+    route.sessionRevision = null;
+    route.steps[0]!.draft = null;
+    route.steps[0]!.state = "not_started";
+    const revision = calendarDraftRevisionContext(route, route.steps[0]!);
     const draft = hydrateCalendarDraft(workspace(null), null);
 
     expect(draft).toMatchObject({
@@ -45,6 +51,15 @@ describe("calendarState", () => {
         { roomTypeId: roomA, startingSellableLimit: "4" },
         { roomTypeId: roomB, startingSellableLimit: "2" },
       ],
+    });
+    expect(revision).toMatchObject({
+      sessionId: null,
+      sessionRevision: 0,
+      draftRevision: 0,
+    });
+    expect(buildCalendarDraftRequest(draft, revision)).toMatchObject({
+      expectedSessionRevision: 0,
+      expectedDraftRevision: 0,
     });
     expect(validateCalendarDraft(draft)).toMatchObject({ mode: expect.any(String) });
   });

@@ -98,7 +98,7 @@ export type PricingDraftState = {
 export type PricingDraftRevisionContext = {
   sessionId: string | null;
   trackRevision: number;
-  sessionRevision: number | null;
+  sessionRevision: number;
   draftRevision: number;
   baseRevisions: {
     "pms.pricing_settings": string;
@@ -119,7 +119,7 @@ export function pricingDraftRevisionContext(
   return {
     sessionId: route.sessionId,
     trackRevision: route.trackRevision,
-    sessionRevision: route.sessionRevision,
+    sessionRevision: route.sessionRevision ?? 0,
     draftRevision: draft?.stepId === "pricing" ? draft.revision : 0,
     baseRevisions: base
       ? {
@@ -388,7 +388,7 @@ export function buildPricingDraftRequest(
   revision: PricingDraftRevisionContext,
   locale: string,
 ): Extract<SavePropertySetupDraftRequest, { stepId: "pricing" }> {
-  if (!revision.sessionId || revision.sessionRevision === null || revision.baseRevisions === null) {
+  if (revision.baseRevisions === null) {
     throw new Error(PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
   }
   const amount = (input: string, allowZero = false) =>

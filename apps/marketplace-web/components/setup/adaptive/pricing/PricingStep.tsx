@@ -81,10 +81,7 @@ export function PricingStep({
   const errorSummaryRef = useRef<HTMLDivElement>(null);
   const locale = interfaceLocale;
   const routeRevision = useMemo(() => pricingDraftRevisionContext(route, step), [route, step]);
-  const manifestMissing =
-    routeRevision.sessionId === null ||
-    routeRevision.sessionRevision === null ||
-    routeRevision.baseRevisions === null;
+  const manifestMissing = routeRevision.baseRevisions === null;
   const manifestStale = !pricingDraftManifestIsCurrent(step);
   const propertyMismatch = propertyId.toLowerCase() !== route.scope.propertyId;
 
@@ -98,9 +95,7 @@ export function PricingStep({
   useEffect(() => {
     const current = revisionRef.current;
     const identityChanged = revisionIdentityRef.current !== routeIdentity;
-    const sessionRevisionNewer =
-      routeRevision.sessionRevision !== null &&
-      (current.sessionRevision === null || routeRevision.sessionRevision > current.sessionRevision);
+    const sessionRevisionNewer = routeRevision.sessionRevision > current.sessionRevision;
     const draftRevisionNewer = routeRevision.draftRevision > current.draftRevision;
     if (identityChanged || sessionRevisionNewer || draftRevisionNewer) {
       revisionIdentityRef.current = routeIdentity;

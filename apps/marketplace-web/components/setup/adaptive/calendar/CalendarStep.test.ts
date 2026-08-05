@@ -73,6 +73,8 @@ describe("CalendarStep", () => {
 
   it("renders an explicit first visit and saves bounded incomplete draft input only", async () => {
     const route = calendarRoute(null);
+    route.sessionId = null;
+    route.sessionRevision = null;
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -107,6 +109,8 @@ describe("CalendarStep", () => {
       propertyId,
       expect.objectContaining({
         stepId: "calendar",
+        expectedSessionRevision: 0,
+        expectedDraftRevision: 0,
         expectedBaseRevisions: exactManifest,
         payload: expect.objectContaining({
           "rate.minimum_stay": null,

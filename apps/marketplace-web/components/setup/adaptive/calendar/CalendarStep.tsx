@@ -95,10 +95,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   const [resetting, setResetting] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const mounted = useRef(true);
-  const manifestMissing =
-    !routeRevision.sessionId ||
-    routeRevision.sessionRevision === null ||
-    routeRevision.baseRevisions === null;
+  const manifestMissing = routeRevision.baseRevisions === null;
   const manifestStale = !calendarDraftManifestIsCurrent(step);
   const scopeInvalid = propertyId.toLowerCase() !== route.scope.propertyId;
 
@@ -107,7 +104,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     const current = revisionRef.current;
     const routeIsNewer =
       routeRevision.trackRevision > current.trackRevision ||
-      (routeRevision.sessionRevision ?? -1) > (current.sessionRevision ?? -1) ||
+      routeRevision.sessionRevision > current.sessionRevision ||
       routeRevision.draftRevision > current.draftRevision;
     if (identity !== revisionIdentityRef.current || routeIsNewer) {
       revisionIdentityRef.current = identity;

@@ -56,7 +56,7 @@ export type CalendarDraft = {
 export type CalendarDraftRevisionContext = {
   sessionId: string | null;
   trackRevision: number;
-  sessionRevision: number | null;
+  sessionRevision: number;
   draftRevision: number;
   baseRevisions: {
     "pms.operating_calendar": string;
@@ -81,7 +81,7 @@ export function calendarDraftRevisionContext(
   return {
     sessionId: route.sessionId,
     trackRevision: route.trackRevision,
-    sessionRevision: route.sessionRevision,
+    sessionRevision: route.sessionRevision ?? 0,
     draftRevision: draft?.stepId === "calendar" ? draft.revision : 0,
     baseRevisions: base
       ? {
@@ -327,7 +327,7 @@ export function buildCalendarDraftRequest(
   draft: CalendarDraft,
   revision: CalendarDraftRevisionContext,
 ): Extract<SavePropertySetupDraftRequest, { stepId: "calendar" }> {
-  if (!revision.sessionId || revision.sessionRevision === null || revision.baseRevisions === null) {
+  if (revision.baseRevisions === null) {
     throw new Error(CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
   }
   return {

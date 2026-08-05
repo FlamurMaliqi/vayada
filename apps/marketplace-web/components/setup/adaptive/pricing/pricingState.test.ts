@@ -106,7 +106,7 @@ describe("pricing state", () => {
         {
           sessionId: null,
           trackRevision: 0,
-          sessionRevision: null,
+          sessionRevision: 0,
           draftRevision: 0,
           baseRevisions: null,
         },
