@@ -240,6 +240,7 @@ Owner package: `domain-finance`.
 | `property_invoice_sequences`                         | Finance                            | New per-property monotonic invoice-number counters.                                                         | Numbers are reserved on draft creation and never reset or reused.                                                                                |
 | `invoices`                                           | Finance                            | New persisted invoice headers with optional Booking references and normalized totals.                       | Stored lifecycle is draft, issued or voided; sent, partial, paid and overdue are derived later.                                                  |
 | `invoice_lines`                                      | Finance                            | New normalized decimal invoice line items.                                                                  | Line totals are generated; deferred transaction checks keep the header total exact.                                                              |
+| `invoice_payment_allocations`                        | Finance                            | New append-only links from issued invoices to existing payment facts.                                       | Database-managed totals serialize concurrent allocation and prevent invoice or payment over-allocation.                                          |
 
 ### Distribution and Public Bookability
 
