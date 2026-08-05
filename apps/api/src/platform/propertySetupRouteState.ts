@@ -1,9 +1,14 @@
 import {
+  PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
+  PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION,
   PROPERTY_SETUP_ROUTE_STEP_STATES,
+  PROPERTY_SETUP_STEP_DEFINITIONS,
   SETUP_TRACKS,
   getActivePropertySetupStepIds,
   isPropertySetupBaseRevisionManifest,
+  parseSavePropertySetupDraftRequest,
   type PropertySetupOwnerDomain,
+  type PropertySetupSession,
   type PropertySetupStepId,
   type SetupTrack,
 } from "@vayada/domain-hotels";
@@ -188,20 +193,24 @@ const PROVENANCE_BY_STEP = {
 
 const OWNER_STATES = new Set(PROPERTY_SETUP_ROUTE_STEP_STATES.filter((state) => state !== "draft"));
 const BLOCKER_KINDS = new Set(["user_fixable", "external_pending", "system_error"]);
+const STEP_IDS = new Set(PROPERTY_SETUP_STEP_DEFINITIONS.map(({ stepId }) => stepId));
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 async function readDraft(
   options: PropertySetupRouteStateOptions,
   input: Parameters<PropertySetupRouteStateReadPort["getPropertySetupRouteState"]>[0],
 ): Promise<DraftReadResult> {
   try {
+    const session = await options.draftRepository.getActiveSession({
+      organizationId: input.organizationId,
+      propertyId: input.propertyId,
+      actorUserId: input.actorUserId,
+      authorizedStepIds: input.authorizedDraftStepIds,
+    });
+    validateSession(session, input);
     return {
       outcome: "found",
-      session: await options.draftRepository.getActiveSession({
-        organizationId: input.organizationId,
-        propertyId: input.propertyId,
-        actorUserId: input.actorUserId,
-        authorizedStepIds: input.authorizedDraftStepIds,
-      }),
+      session,
     };
   } catch {
     return { outcome: "provider_failure" };
@@ -302,7 +311,98 @@ function validateOwnerResults(input: {
   ) {
     throw new TypeError("Property setup owner snapshots are incomplete for the active route");
   }
-  return input.activeStepIds.map((stepId) => byStep.get(stepId)!);
+  const facts = input.activeStepIds.map((stepId) => byStep.get(stepId)!);
+  validateSharedBaseRevisions(facts);
+  return facts;
+}
+
+function validateSession(
+  session: PropertySetupSession | null,
+  input: Parameters<PropertySetupRouteStateReadPort["getPropertySetupRouteState"]>[0],
+): void {
+  if (session === null) return;
+  if (
+    !exactRecord(session, [
+      "contractVersion",
+      "sessionId",
+      "organizationId",
+      "propertyId",
+      "selectedTracks",
+      "trackRevision",
+      "revision",
+      "resumeStepId",
+      "completedStepIds",
+      "drafts",
+      "retentionExpiresAt",
+    ]) ||
+    session.contractVersion !== PROPERTY_SETUP_DRAFT_CONTRACT_VERSION ||
+    !canonicalUuid(session.sessionId) ||
+    session.organizationId !== input.organizationId ||
+    session.propertyId !== input.propertyId ||
+    !Array.isArray(session.selectedTracks) ||
+    session.selectedTracks.length === 0 ||
+    !sameTracks(
+      session.selectedTracks,
+      SETUP_TRACKS.filter((track) => session.selectedTracks.includes(track)),
+    ) ||
+    !positiveRevision(session.trackRevision) ||
+    !positiveRevision(session.revision) ||
+    (session.resumeStepId !== null && !STEP_IDS.has(session.resumeStepId)) ||
+    !validStepIds(session.completedStepIds) ||
+    !canonicalIso(session.retentionExpiresAt) ||
+    !Array.isArray(session.drafts)
+  ) {
+    throw new TypeError("Property setup session is malformed");
+  }
+  const authorized = new Set(input.authorizedDraftStepIds);
+  const seen = new Set<PropertySetupStepId>();
+  for (const draft of session.drafts) {
+    if (
+      !exactRecord(draft, [
+        "stepId",
+        "payload",
+        "dirtyFields",
+        "baseRevisions",
+        "piiClassification",
+        "retentionExpiresAt",
+        "revision",
+        "updatedAt",
+      ]) ||
+      !STEP_IDS.has(draft.stepId) ||
+      !authorized.has(draft.stepId) ||
+      seen.has(draft.stepId) ||
+      draft.piiClassification !== PROPERTY_SETUP_DRAFT_PII_CLASSIFICATION ||
+      !positiveRevision(draft.revision) ||
+      !canonicalIso(draft.retentionExpiresAt) ||
+      !canonicalIso(draft.updatedAt)
+    ) {
+      throw new TypeError("Property setup draft is malformed");
+    }
+    const parsed = parseSavePropertySetupDraftRequest({
+      stepId: draft.stepId,
+      payload: draft.payload,
+      dirtyFields: draft.dirtyFields,
+      expectedBaseRevisions: draft.baseRevisions,
+      expectedTrackRevision: session.trackRevision,
+      expectedSessionRevision: session.revision,
+      expectedDraftRevision: draft.revision,
+    });
+    if (!parsed.ok) throw new TypeError("Property setup draft is malformed");
+    seen.add(draft.stepId);
+  }
+}
+
+function validateSharedBaseRevisions(facts: readonly PropertySetupRouteOwnerStepFact[]): void {
+  const revisions = new Map<string, string>();
+  for (const fact of facts) {
+    for (const [key, revision] of Object.entries(fact.currentBaseRevisions)) {
+      const existing = revisions.get(key);
+      if (existing !== undefined && existing !== revision) {
+        throw new TypeError(`Property setup owner snapshots disagree on shared revision "${key}"`);
+      }
+      revisions.set(key, revision);
+    }
+  }
 }
 
 function validateOwnerFact(
@@ -377,4 +477,40 @@ function sameTracks(left: readonly SetupTrack[], right: readonly SetupTrack[]): 
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  return (
+    ownKeys.length === keys.length &&
+    keys.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+    })
+  );
+}
+
+function validStepIds(value: unknown): value is PropertySetupStepId[] {
+  return (
+    Array.isArray(value) &&
+    new Set(value).size === value.length &&
+    value.every((stepId) => STEP_IDS.has(stepId))
+  );
+}
+
+function positiveRevision(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 2_147_483_647;
+}
+
+function canonicalUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function canonicalIso(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }

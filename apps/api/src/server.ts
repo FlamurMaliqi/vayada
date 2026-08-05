@@ -5,11 +5,17 @@ import {
 } from "@vayada/backend-authorization";
 import { createBookingDesignReadinessProvider } from "@vayada/domain-booking";
 import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
+import pg from "pg";
 
 import { buildApp, type ApiAuthOptions } from "./app.js";
 import { type ApiConfig, loadConfig } from "./config.js";
 import { createPgBookingDesignCatalogEvidenceRepository } from "./domains/bookingDesignCatalogEvidenceRepository.js";
 import { createPgBookingDesignRepository } from "./domains/bookingDesignRepository.js";
+import { createBookingGuestPolicyCatalogCurrentOwnerEvidenceAdapter } from "./domains/bookingGuestPolicyCatalogCurrentOwnerEvidence.js";
+import { createBookingGuestPolicyCurrentOwnerEvidenceAdapter } from "./domains/bookingGuestPolicyCurrentOwnerEvidence.js";
+import { createPgBookingGuestPolicyRepository } from "./domains/bookingGuestPolicyRepository.js";
+import { createPgBookingGuestPolicyScopeAuthorizationPort } from "./domains/bookingGuestPolicyScopeAuthorization.js";
+import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCatalogCurrentOwnerEvidence.js";
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
 import { createPgHotelMediaResolutionPort } from "./platform/hotelMediaResolver.js";
@@ -38,6 +44,30 @@ import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryR
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
+import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
+import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
+import { createPgPropertySetupFinanceOwnerScopePort } from "./domains/propertySetupFinanceOwnerScope.js";
+import { createPgPropertySetupPmsOwnerRepository } from "./domains/propertySetupPmsOwnerRepository.js";
+import { createPgPmsPricingReadModel } from "./domains/pmsPricingReadModel.js";
+import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
+import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
+import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from "./domains/hotelCatalogOperatingCalendarPropertyProfileEvidence.js";
+import { createPgPmsOperatingCalendarReadModel } from "./domains/pmsOperatingCalendarReadModel.js";
+import { createPgFinancePaymentReadinessReadModel } from "./domains/financePaymentReadinessReadModel.js";
+import { createPgMarketplaceSetupLifecycleStatusRepository } from "./domains/marketplaceSetupLifecycleStatusRepository.js";
+import { createPgBookingSetupLifecycleStatusRepository } from "./domains/bookingSetupLifecycleStatusRepository.js";
+import {
+  createPropertySetupHotelCatalogStateProvider,
+  createPropertySetupMarketplaceStateProvider,
+} from "./platform/propertySetupCatalogMarketplaceState.js";
+import { createPropertySetupBookingStateProvider } from "./platform/propertySetupBookingState.js";
+import {
+  createPropertySetupBookingGuestPolicyPmsCurrentOwnerEvidenceAdapter,
+  createPropertySetupPmsStateProvider,
+} from "./platform/propertySetupPmsState.js";
+import { createPropertySetupFinanceStateProvider } from "./platform/propertySetupFinanceState.js";
+import { createPropertySetupReviewLifecycleStateProvider } from "./platform/propertySetupReviewLifecycleState.js";
+import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupRouteState.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import {
@@ -285,6 +315,12 @@ const hotelAccountInviteRepository = createPgHotelAccountInviteRepository({
 const propertySetupDraftCommandRepository = createPgPropertySetupDraftCommandRepository({
   connectionString: targetDatabaseUrl,
 });
+const propertySetupDraftRepository = createPgPropertySetupDraftRepository({
+  connectionString: targetDatabaseUrl,
+});
+const pmsPricingReadModel = createPgPmsPricingReadModel({
+  connectionString: targetDatabaseUrl,
+});
 
 const xenditBankValidator = config.xenditSecretKey
   ? createXenditBankValidator({
@@ -361,6 +397,113 @@ const platformMediaRuntime = composePlatformMediaRuntime({
   targetDatabaseUrl,
   platformMediaServing: config.platformMediaServing,
   allowedOrigins: config.authSession?.authAllowedOrigins,
+});
+
+const marketplaceSetupLifecycleStatusRepository = createPgMarketplaceSetupLifecycleStatusRepository(
+  { connectionString: targetDatabaseUrl },
+);
+const bookingSetupLifecycleStatusRepository = createPgBookingSetupLifecycleStatusRepository({
+  connectionString: targetDatabaseUrl,
+});
+const financePaymentReadinessReadModel = createPgFinancePaymentReadinessReadModel({
+  connectionString: targetDatabaseUrl,
+  pricingReadPort: pmsPricingReadModel,
+});
+const propertySetupOwnerPool = new pg.Pool({
+  connectionString: targetDatabaseUrl,
+  connectionTimeoutMillis: 5_000,
+  max: 5,
+});
+const hotelCatalogCurrentOwnerEvidence = createPgHotelCatalogCurrentOwnerEvidencePorts({
+  pool: propertySetupOwnerPool,
+});
+const bookingGuestPolicyRepository = createPgBookingGuestPolicyRepository({
+  connectionString: targetDatabaseUrl,
+  pool: propertySetupOwnerPool,
+  scopeAuthorization: createPgBookingGuestPolicyScopeAuthorizationPort({
+    pool: propertySetupOwnerPool,
+  }),
+});
+const bookingGuestPolicyCatalogCurrentOwnerEvidence =
+  createBookingGuestPolicyCatalogCurrentOwnerEvidenceAdapter({
+    location: hotelCatalogCurrentOwnerEvidence.location,
+    policy: hotelCatalogCurrentOwnerEvidence.policy,
+  });
+
+const propertySetupPmsRuntime = (() => {
+  const roomFacts = createPgPmsRoomFactsReadModel({ connectionString: targetDatabaseUrl });
+  const owner = createPgPropertySetupPmsOwnerRepository({ connectionString: targetDatabaseUrl });
+  const recurringPricing = createPgPmsRecurringPricingReadModel({
+    connectionString: targetDatabaseUrl,
+  });
+  const mandatoryCharges = createPgPmsMandatoryChargeConfirmationReadModel({
+    connectionString: targetDatabaseUrl,
+  });
+  const propertyProfileEvidence = createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort({
+    connectionString: targetDatabaseUrl,
+  });
+  const operatingCalendar = createPgPmsOperatingCalendarReadModel({
+    connectionString: targetDatabaseUrl,
+    propertyProfileEvidence,
+    roomEvidence: { roomFacts, roomCapacity: roomFacts },
+  });
+  return {
+    provider: createPropertySetupPmsStateProvider({
+      owner,
+      pricing: pmsPricingReadModel,
+      recurringPricing,
+      mandatoryCharges,
+      operatingCalendar,
+      calendarRegistry: propertyProfileEvidence,
+      catalogLocation: hotelCatalogCurrentOwnerEvidence.location,
+    }),
+    bookingGuestPolicyEvidence: createPropertySetupBookingGuestPolicyPmsCurrentOwnerEvidenceAdapter(
+      {
+        owner,
+        pricing: pmsPricingReadModel,
+      },
+    ),
+    resources: [
+      roomFacts,
+      owner,
+      recurringPricing,
+      mandatoryCharges,
+      propertyProfileEvidence,
+      operatingCalendar,
+    ],
+  };
+})();
+
+const bookingGuestPolicyCurrentOwnerEvidence = createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
+  booking: bookingGuestPolicyRepository,
+  pms: propertySetupPmsRuntime.bookingGuestPolicyEvidence,
+  catalog: bookingGuestPolicyCatalogCurrentOwnerEvidence,
+});
+
+const propertySetupRouteStateReadPort = createPropertySetupRouteStateReadPort({
+  draftRepository: propertySetupDraftRepository,
+  trackRepository: hotelSetupTrackCommandRepository,
+  ownerStateProviders: {
+    hotel_catalog: createPropertySetupHotelCatalogStateProvider(hotelCatalogStep1Repository),
+    marketplace: createPropertySetupMarketplaceStateProvider(
+      marketplaceHotelCollaborationPreferencesRepository,
+    ),
+    booking: createPropertySetupBookingStateProvider({
+      design: bookingDesignRepository,
+      catalog: hotelCatalogStep1Repository,
+      guestPolicy: bookingGuestPolicyCurrentOwnerEvidence,
+    }),
+    pms: propertySetupPmsRuntime.provider,
+    finance: createPropertySetupFinanceStateProvider({
+      scope: createPgPropertySetupFinanceOwnerScopePort({ pool: propertySetupOwnerPool }),
+      finance: financePaymentReadinessReadModel,
+      pricing: pmsPricingReadModel,
+    }),
+    review_lifecycle: createPropertySetupReviewLifecycleStateProvider({
+      marketplace: marketplaceSetupLifecycleStatusRepository,
+      booking: bookingSetupLifecycleStatusRepository,
+    }),
+  },
 });
 
 const marketplaceCreatorSelfServiceRepository = createPgMarketplaceCreatorSelfServiceRepository({
@@ -570,6 +713,7 @@ const app = buildApp({
   sharedHotelSetupStatusRepository,
   hotelSetupTrackCommandRepository,
   propertySetupDraftCommandRepository,
+  propertySetupRouteStateReadPort,
   propertyMediaCommandRepository: platformMediaRuntime?.propertyMediaCommands,
   hotelCatalogStep1: platformMediaRuntime
     ? {
@@ -652,6 +796,19 @@ const runChannexReviews = () => {
 const channexReviewTimer = hasProviderWebhookSecret
   ? setInterval(runChannexReviews, 5_000)
   : undefined;
+
+app.addHook("onClose", async () => {
+  await Promise.all([
+    pmsPricingReadModel.close(),
+    financePaymentReadinessReadModel.close(),
+    marketplaceSetupLifecycleStatusRepository.close(),
+    bookingSetupLifecycleStatusRepository.close(),
+    bookingGuestPolicyRepository.close(),
+    propertySetupOwnerPool.end(),
+    propertySetupDraftRepository.close(),
+    ...propertySetupPmsRuntime.resources.map((resource) => resource.close?.()),
+  ]);
+});
 channexReviewTimer?.unref();
 if (hasProviderWebhookSecret) runChannexReviews();
 app.addHook("onClose", async () => {
