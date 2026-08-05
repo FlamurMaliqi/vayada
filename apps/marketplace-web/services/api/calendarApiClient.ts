@@ -333,24 +333,8 @@ function configurationMatchesRequest(
   const configuration = response.configuration;
   return (
     response.outcome === (request.expectedCalendarRevision === 0 ? "created" : "updated") &&
-    configuration.propertyId === propertyId.toLowerCase() &&
     configuration.calendarRevision === request.expectedCalendarRevision + 1 &&
-    configuration.sourceInputs.propertyProfile.entityId === propertyId.toLowerCase() &&
-    configuration.sourceInputs.propertyProfile.revision ===
-      `profile:${request.expectedPropertyProfileRevision}` &&
-    configuration.defaultMinimumStayNights === request.defaultMinimumStayNights &&
-    JSON.stringify(configuration.schedule) === JSON.stringify(request.schedule) &&
-    configuration.sourceInputs.roomBindings.length === request.roomTypeLimits.length &&
-    configuration.sourceInputs.roomBindings.every((binding, index) => {
-      const expected = request.roomTypeLimits[index];
-      return (
-        expected !== undefined &&
-        binding.roomTypeId === expected.roomTypeId &&
-        binding.sourceRoomFactsRevision === expected.expectedRoomFactsRevision &&
-        binding.sourceRoomUnitsRevision === expected.expectedRoomUnitsRevision &&
-        binding.startingSellableLimitCount === expected.startingSellableLimitCount
-      );
-    })
+    configurationMatchesProposal(propertyId, configuration, request)
   );
 }
 
@@ -364,8 +348,18 @@ function workspaceMatchesProposal(
   return Boolean(
     configuration &&
     currentRead.sourceStatus === "current" &&
-    configuration.propertyId === propertyId.toLowerCase() &&
     configuration.calendarRevision === proposal.expectedCalendarRevision &&
+    configurationMatchesProposal(propertyId, configuration, proposal),
+  );
+}
+
+function configurationMatchesProposal(
+  propertyId: string,
+  configuration: PmsOperatingCalendarCommandResponse["configuration"],
+  proposal: PmsOperatingCalendarImpactPreviewRequest,
+): boolean {
+  return (
+    configuration.propertyId === propertyId.toLowerCase() &&
     configuration.sourceInputs.propertyProfile.entityId === propertyId.toLowerCase() &&
     configuration.sourceInputs.propertyProfile.revision ===
       `profile:${proposal.expectedPropertyProfileRevision}` &&
@@ -381,7 +375,7 @@ function workspaceMatchesProposal(
         binding.sourceRoomUnitsRevision === expected.expectedRoomUnitsRevision &&
         binding.startingSellableLimitCount === expected.startingSellableLimitCount
       );
-    }),
+    })
   );
 }
 

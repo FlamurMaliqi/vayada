@@ -228,6 +228,16 @@ describe("pricingSetupClient", () => {
       code: "draft_revision_conflict",
       requiresRefresh: true,
     });
+
+    calls.put.mockRejectedValue(
+      new ApiErrorResponse(409, {
+        code: "draft_revision_conflict",
+        currentDraftRevision: 2_147_483_648,
+      } as never),
+    );
+    await expect(client.saveDraft(propertyId, draftRequest())).rejects.toMatchObject({
+      code: "owner_contract_violation",
+    });
   });
 
   it.each([

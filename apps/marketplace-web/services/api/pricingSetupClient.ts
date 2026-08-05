@@ -884,7 +884,6 @@ function ownerError(error: unknown, kind: PricingCommandKind): Error {
     track_revision_conflict: "The selected setup track changed in another session.",
     session_revision_conflict: "This setup session changed in another session.",
     draft_revision_conflict: "This pricing draft changed in another session.",
-    base_revision_conflict: "The pricing source manifest changed in another session.",
     setup_session_expired: "This setup session expired. Refresh setup before saving.",
     setup_draft_expired: "This pricing draft expired. Refresh setup before saving.",
     source_revision_conflict: "An optional pricing rule changed in another session.",
@@ -984,7 +983,8 @@ function parseDraftCommandError(value: unknown): SavePropertySetupDraftError | n
   return revisionKey &&
     isExactRecord(value, ["code", revisionKey]) &&
     Number.isSafeInteger(value[revisionKey]) &&
-    (value[revisionKey] as number) >= 0
+    (value[revisionKey] as number) >= 0 &&
+    (value[revisionKey] as number) <= 2_147_483_647
     ? (value as SavePropertySetupDraftError)
     : null;
 }

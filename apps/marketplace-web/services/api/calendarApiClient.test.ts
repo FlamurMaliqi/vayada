@@ -276,7 +276,7 @@ describe("calendarApiClient", () => {
     calls.put.mockRejectedValue(
       new ApiErrorResponse(409, { code: "operating_calendar_unchanged" }),
     );
-    installMatchingWorkspace();
+    installAcceptedWorkspace("current", 2);
 
     await expect(
       createCalendarApiClient(http, profiles).applyCalendar(
@@ -653,40 +653,33 @@ function acceptedCalendar(): PmsOperatingCalendarCurrentReadResult {
   };
 }
 
-function installAcceptedWorkspace(sourceStatus: "current" | "stale" = "current"): void {
+function installAcceptedWorkspace(
+  sourceStatus: "current" | "stale" = "current",
+  calendarRevision = 3,
+): void {
   calls.get.mockImplementation(async (endpoint) => {
     if (endpoint.endsWith("/operating-calendar")) {
       const accepted = acceptedCalendar();
+      const current =
+        calendarRevision === 3
+          ? accepted
+          : {
+              ...accepted,
+              configuration: {
+                ...accepted.configuration,
+                calendarRevision,
+                source: createPmsOperatingCalendarSourceRevision(propertyId, calendarRevision),
+              },
+            };
       return sourceStatus === "current"
-        ? accepted
+        ? current
         : {
-            configuration: accepted.configuration,
+            configuration: current.configuration,
             sourceStatus: "stale",
             sourceConflicts: [
               { code: "room_units_revision_conflict", roomTypeId: roomA, currentRevision: 6 },
             ],
           };
-    }
-    if (endpoint.endsWith("/room-types")) return roomList();
-    if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);
-    if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
-    throw new Error(`Unexpected GET ${endpoint}`);
-  });
-}
-
-function installMatchingWorkspace(): void {
-  calls.get.mockImplementation(async (endpoint) => {
-    if (endpoint.endsWith("/operating-calendar")) {
-      const accepted = acceptedCalendar();
-      return {
-        sourceStatus: "current",
-        sourceConflicts: [],
-        configuration: {
-          ...accepted.configuration,
-          calendarRevision: 2,
-          source: createPmsOperatingCalendarSourceRevision(propertyId, 2),
-        },
-      };
     }
     if (endpoint.endsWith("/room-types")) return roomList();
     if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);

@@ -1010,7 +1010,6 @@ function MonthDayField({
           <select
             id={`${id}-month`}
             aria-label={`${label} month`}
-            data-calendar-period-start={label === "First open night" ? "true" : undefined}
             value={month}
             aria-invalid={Boolean(error)}
             aria-describedby={errorId}
@@ -1250,7 +1249,7 @@ function sameProposal(
 function focusFirstCalendarError(errors: CalendarValidationErrors): void {
   requestAnimationFrame(() => {
     const selector = errors.periods
-      ? '[data-calendar-period-start="true"]'
+      ? 'select[id$="-start-month"], #calendar-add-period'
       : '[aria-invalid="true"], #calendar-confirmation, #calendar-mode-year-round';
     document.querySelector<HTMLElement>(selector)?.focus();
   });
