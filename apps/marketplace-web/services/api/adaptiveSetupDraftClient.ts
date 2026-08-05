@@ -30,7 +30,7 @@ export function createAdaptiveSetupDraftClient(http: AdaptiveSetupDraftHttpClien
           },
         },
       );
-      const receipt = parseReceipt(value, propertyId, request.stepId);
+      const receipt = parseReceipt(value, request.stepId);
       if (!receipt) throw new Error("The setup draft response is invalid. Refresh and try again.");
       return receipt;
     },
@@ -55,7 +55,6 @@ async function draftIdempotencyKey(
 
 function parseReceipt(
   value: unknown,
-  propertyId: string,
   stepId: PropertySetupStepId,
 ): SavePropertySetupDraftReceipt | null {
   if (
@@ -91,7 +90,6 @@ function parseReceipt(
   ) {
     return null;
   }
-  void propertyId;
   return value as SavePropertySetupDraftReceipt;
 }
 
