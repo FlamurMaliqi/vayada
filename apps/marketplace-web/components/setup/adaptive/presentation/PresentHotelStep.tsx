@@ -14,6 +14,7 @@ import {
   HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH,
   HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH,
   hotelCatalogAmenityLabel,
+  normalizeHotelCatalogStep1Summary,
   type HotelCatalogAmenityKey,
   type HotelCatalogContentLocale,
   type HotelCatalogStep1ReadModel,
@@ -320,11 +321,13 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
   const validate = (current: PresentationForm): Errors => {
     const next: Errors = {};
     if (!current.locale) next.locale = "Choose the language used for this public summary.";
-    const trimmed = current.summary.trim();
-    if (trimmed.length < HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH) {
+    const characterCount = summaryCharacterCount(current.summary);
+    if (characterCount < HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH) {
       next.summary = `Write at least ${HOTEL_CATALOG_STEP1_SUMMARY_MIN_LENGTH} characters.`;
-    } else if (trimmed.length > HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH) {
+    } else if (characterCount > HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH) {
       next.summary = `Keep the summary within ${HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH} characters.`;
+    } else if (!normalizeHotelCatalogStep1Summary(current.summary)) {
+      next.summary = "Remove unsupported control characters from the summary.";
     }
     if (current.photos.some(({ status }) => status === "uploading")) {
       next.uploads = "Wait for active uploads to finish, or remove them.";
@@ -450,7 +453,6 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
           <textarea
             ref={summaryRef}
             rows={5}
-            maxLength={HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH}
             value={form.summary}
             onChange={(event) => {
               update({ summary: event.target.value }, ["profile.short_description"]);
@@ -467,7 +469,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
             Describe the location, atmosphere, and what makes a stay special.
           </p>
           <p className="shrink-0 tabular-nums text-gray-600" aria-live="polite">
-            {form.summary.length} / {HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH}
+            {summaryCharacterCount(form.summary)} / {HOTEL_CATALOG_STEP1_SUMMARY_MAX_LENGTH}
           </p>
         </div>
         {errors.summary && (
@@ -738,5 +740,8 @@ function amenityArray(value: unknown): value is HotelCatalogAmenityKey[] {
     Array.isArray(value) &&
     value.every((item) => typeof item === "string" && Object.hasOwn(HOTEL_CATALOG_AMENITIES, item))
   );
+}
+function summaryCharacterCount(value: string): number {
+  return Array.from(value.trim()).length;
 }
 class RevisionMismatchError extends Error {}

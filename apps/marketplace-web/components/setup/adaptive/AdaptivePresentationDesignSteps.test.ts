@@ -129,6 +129,40 @@ describe("adaptive presentation and design steps", () => {
     renderer?.unmount();
   });
 
+  it("uses the Catalog code-point limit for Step 1 Unicode summaries", async () => {
+    const registration = captureRegistration();
+    const props = stepProps("present_hotel", presentationDraft(), registration.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+
+    const textarea = renderer!.root.findByType("textarea");
+    expect(textarea.props.maxLength).toBeUndefined();
+    await act(async () => {
+      textarea.props.onChange({ target: { value: "🏨".repeat(501) } });
+      renderer!.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() });
+    });
+    await flush();
+    expect(mocks.savePresentation).not.toHaveBeenCalled();
+    expect(
+      renderer!.root.findByProps({ id: "presentation-summary-error" }).children.join(""),
+    ).toMatch(/within 500 characters/i);
+
+    await act(async () => {
+      textarea.props.onChange({ target: { value: "🏨".repeat(500) } });
+      renderer!.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() });
+    });
+    await flush();
+    expect(mocks.savePresentation).toHaveBeenCalledWith(
+      propertyId,
+      expect.objectContaining({ shortDescription: "🏨".repeat(500) }),
+    );
+    expect(props.saveAndContinue).toHaveBeenCalledOnce();
+    renderer?.unmount();
+  });
+
   it("saves an incomplete Step 2 selection only as a resumable draft on Exit", async () => {
     mocks.saveDraft.mockResolvedValue(receipt("marketplace_preferences"));
     const registration = captureRegistration();
