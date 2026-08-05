@@ -4,7 +4,6 @@ import {
   FINANCE_PAYOUT_STATUSES,
   FINANCE_RECONCILIATION_JOB_STATUSES,
   FINANCE_RECONCILIATION_RECEIPT_STATUSES,
-  FINANCE_RECONCILIATION_STATUSES,
   FINANCE_RECONCILIATION_SUBJECT_TYPES,
   FINANCE_ROUTE_CONTRACT_VERSION,
   FINANCE_ROUTE_PAYMENT_METHODS,
@@ -26,7 +25,6 @@ import {
   type CreateStripeProviderAccountCommand,
   type FinanceCommandAudit,
   type FinanceCommandMeta,
-  type FinanceFinancialSummaryResponse,
   type FinanceInvoiceDetail,
   type FinanceInvoiceListItem,
   type FinanceInvoiceListQuery,
@@ -36,9 +34,6 @@ import {
   type FinanceInvoiceStatusCounts,
   type FinanceJsonObject,
   type FinanceJsonPolicy,
-  type FinancePaymentLedgerItem,
-  type FinancePaymentLedgerQuery,
-  type FinancePaymentLedgerResponse,
   type FinancePaymentSettingsPatchCommand,
   type FinancePaymentSettingsPatchResponse,
   type FinancePaymentSettingsPatchResult,
@@ -50,7 +45,6 @@ import {
   type FinanceProviderAccountCommandMeta,
   type FinanceProviderAccountCommandResponse,
   type FinanceProviderAccountCommandResult,
-  type FinancePaymentStatusCounts,
   type FinancePropertyPayoutDispatchCommand,
   type FinancePropertyPayoutDispatchReadiness,
   type FinancePropertyPayoutDispatchResponse,
@@ -62,7 +56,6 @@ import {
   type FinanceReconciliationJobStatus,
   type FinanceReconciliationRecommendedAction,
   type FinanceReconciliationReceiptStatus,
-  type FinanceReconciliationStatus,
   type FinanceReconciliationViewKind,
   type FinanceReconciliationViewQuery,
   type FinanceReconciliationViewResponse,
@@ -247,24 +240,6 @@ type FinanceAffiliatePayoutSettingsRow = {
   sourceFreshness: unknown;
 };
 
-type FinanceVisibilitySummaryRow = {
-  propertyId: string;
-  periodStart: Date | string | null;
-  periodEnd: Date | string | null;
-  currency: string;
-  grossPaymentAmount: string;
-  netPaymentAmount: string;
-  payoutAmount: string;
-  commissionAmount: string;
-  outstandingBalanceAmount: string;
-  paymentCount: number;
-  payoutCount: number;
-  failedPaymentCount: number;
-  statusCounts: unknown;
-  sourceFreshness: unknown;
-  projectedAt: Date | string | null;
-};
-
 type FinanceInvoiceRow = {
   invoiceId: string;
   invoiceNumber: string;
@@ -297,27 +272,6 @@ type FinanceInvoicePaymentRow = {
   reference: string | null;
   status: string;
   recordedAt: Date | string;
-};
-
-type FinancePaymentLedgerRow = {
-  paymentId: string;
-  method: string;
-  amount: string;
-  currency: string;
-  reference: string | null;
-  status: string;
-  recordedAt: Date | string;
-  invoiceId: string | null;
-  invoiceNumber: string | null;
-  guestBookingId: string | null;
-  bookingReference: string | null;
-  checkoutChargeId: string | null;
-  provider: string | null;
-  providerStatus: string | null;
-  reconciliationStatus: string | null;
-  total: string | number;
-  counts: unknown;
-  sourceFreshness: unknown;
 };
 
 type FinancePayoutRow = {
@@ -3482,38 +3436,6 @@ async function loadAffiliatePayoutSettingsRow(
   return result.rows[0] ?? null;
 }
 
-async function loadFinancialSummaryRow(
-  pool: FinanceQueryExecutor,
-  propertyId: string,
-): Promise<FinanceVisibilitySummaryRow | null> {
-  const result = await pool.query<FinanceVisibilitySummaryRow>(
-    `SELECT
-       visibility.property_id::text AS "propertyId",
-       visibility.period_start AS "periodStart",
-       visibility.period_end AS "periodEnd",
-       visibility.currency,
-       visibility.gross_payment_amount::text AS "grossPaymentAmount",
-       visibility.net_payment_amount::text AS "netPaymentAmount",
-       visibility.payout_amount::text AS "payoutAmount",
-       visibility.commission_amount::text AS "commissionAmount",
-       visibility.outstanding_balance_amount::text AS "outstandingBalanceAmount",
-       visibility.payment_count AS "paymentCount",
-       visibility.payout_count AS "payoutCount",
-       visibility.failed_payment_count AS "failedPaymentCount",
-       visibility.status_counts AS "statusCounts",
-       visibility.source_freshness AS "sourceFreshness",
-       visibility.projected_at AS "projectedAt"
-     FROM finance.finance_visibility_read_model visibility
-     WHERE visibility.property_id = $1::uuid
-       AND visibility.visibility_scope = 'property_finance'
-       AND visibility.required_permission_key = 'pms.finance.read'
-     ORDER BY visibility.projected_at DESC
-     LIMIT 1`,
-    [propertyId],
-  );
-  return result.rows[0] ?? null;
-}
-
 async function loadInvoiceRows(
   pool: FinanceQueryExecutor,
   propertyId: string,
@@ -3649,110 +3571,6 @@ async function loadInvoicePaymentRows(
      ORDER BY COALESCE(payment.paid_at, payment.authorized_at, payment.created_at) DESC,
        payment.id ASC`,
     [propertyId, guestBookingId],
-  );
-  return result.rows;
-}
-
-async function loadPaymentLedgerRows(
-  pool: FinanceQueryExecutor,
-  propertyId: string,
-  query: FinancePaymentLedgerQuery,
-): Promise<FinancePaymentLedgerRow[]> {
-  const result = await pool.query<FinancePaymentLedgerRow>(
-    `WITH payment_base AS (
-       SELECT
-         payment.id::text AS "paymentId",
-         payment.payment_method AS method,
-         payment.amount::text AS amount,
-         payment.currency,
-         COALESCE(payment.payment_metadata ->> 'reference', payment.source_payment_id) AS reference,
-         payment.status,
-         COALESCE(payment.paid_at, payment.authorized_at, payment.failed_at, payment.created_at) AS "recordedAt",
-         COALESCE(booking.booking_metadata ->> 'invoiceId', booking.id::text) AS "invoiceId",
-         COALESCE(booking.booking_metadata ->> 'invoiceNumber', booking.public_reference) AS "invoiceNumber",
-         booking.id::text AS "guestBookingId",
-         booking.public_reference AS "bookingReference",
-         payment.payment_metadata ->> 'checkoutChargeId' AS "checkoutChargeId",
-         COALESCE(
-           account.provider,
-           CASE
-             WHEN payment.payment_method = 'bank_transfer' THEN 'bank_transfer'
-             WHEN payment.payment_method IN ('cash', 'manual_card', 'other', 'unknown') THEN 'manual'
-             ELSE 'vayada'
-           END
-         ) AS provider,
-         COALESCE(payment.payment_metadata ->> 'providerStatus', payment.status) AS "providerStatus",
-         COALESCE(payment.payment_metadata ->> 'reconciliationStatus', 'pending') AS "reconciliationStatus",
-         NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
-         guest.email AS "guestEmail",
-         COALESCE(visibility.source_freshness, '{}'::jsonb) AS "sourceFreshness"
-       FROM finance.payments payment
-       LEFT JOIN finance.payment_provider_accounts account
-         ON account.id = payment.provider_account_id
-        AND account.property_id = payment.property_id
-       LEFT JOIN booking.guest_bookings booking
-         ON booking.id = payment.guest_booking_id
-        AND booking.property_id = payment.property_id
-       LEFT JOIN booking.booking_guests guest
-         ON guest.guest_booking_id = booking.id
-        AND guest.guest_role = 'booker'
-       LEFT JOIN LATERAL (
-         SELECT source_freshness
-         FROM finance.finance_visibility_read_model visibility
-         WHERE visibility.property_id = payment.property_id
-           AND visibility.visibility_scope = 'property_finance'
-           AND visibility.required_permission_key = 'pms.finance.read'
-         ORDER BY visibility.projected_at DESC
-         LIMIT 1
-       ) visibility ON TRUE
-       WHERE payment.property_id = $1::uuid
-         AND payment.visibility_class IN ('pms_finance', 'migration')
-     ),
-     filtered AS (
-       SELECT *
-       FROM payment_base
-       WHERE ($2::text IS NULL OR status = $2::text)
-         AND ($3::text IS NULL OR provider = $3::text)
-         AND ($4::text IS NULL OR method = $4::text)
-         AND ($5::timestamptz IS NULL OR "recordedAt" >= $5::timestamptz)
-         AND ($6::timestamptz IS NULL OR "recordedAt" <= $6::timestamptz)
-         AND (
-           $7::text IS NULL
-           OR lower(COALESCE("invoiceId", '')) LIKE lower($7::text)
-           OR lower(COALESCE("invoiceNumber", '')) LIKE lower($7::text)
-           OR lower(COALESCE("bookingReference", '')) LIKE lower($7::text)
-           OR lower(COALESCE(reference, '')) LIKE lower($7::text)
-           OR lower(COALESCE("guestDisplayName", '')) LIKE lower($7::text)
-           OR lower(COALESCE("guestEmail", '')) LIKE lower($7::text)
-         )
-     ),
-     counts AS (
-       SELECT jsonb_object_agg(status, count) AS counts
-       FROM (
-         SELECT status, count(*) AS count
-         FROM payment_base
-         GROUP BY status
-       ) status_counts
-     )
-     SELECT
-       filtered.*,
-       count(*) OVER () AS total,
-       COALESCE(counts.counts, '{}'::jsonb) AS counts
-     FROM filtered
-     CROSS JOIN counts
-     ORDER BY "recordedAt" DESC, "paymentId" ASC
-     LIMIT $8::integer OFFSET $9::integer`,
-    [
-      propertyId,
-      query.status ?? null,
-      query.provider ?? null,
-      query.method ?? null,
-      query.from ?? null,
-      query.to ?? null,
-      likeSearch(query.search),
-      query.limit,
-      query.offset,
-    ],
   );
   return result.rows;
 }
@@ -4509,31 +4327,6 @@ function toAffiliatePayoutSettingsResponse(
   };
 }
 
-function toFinancialSummaryResponseBody(
-  row: FinanceVisibilitySummaryRow,
-): Omit<FinanceFinancialSummaryResponse, "contractVersion" | "propertyId"> {
-  const statusCounts = financeJsonObject(row.statusCounts);
-  return {
-    summary: {
-      currency: currencyCode(row.currency),
-      periodStart: row.periodStart ? dateOnly(row.periodStart) : null,
-      periodEnd: row.periodEnd ? dateOnly(row.periodEnd) : null,
-      grossPaymentAmount: decimalString(row.grossPaymentAmount),
-      netPaymentAmount: decimalString(row.netPaymentAmount),
-      payoutAmount: decimalString(row.payoutAmount),
-      commissionAmount: decimalString(row.commissionAmount),
-      outstandingBalanceAmount: decimalString(row.outstandingBalanceAmount),
-      paymentCount: row.paymentCount,
-      payoutCount: row.payoutCount,
-      failedPaymentCount: row.failedPaymentCount,
-      invoiceCounts: invoiceStatusCounts(statusCounts["invoices"] ?? statusCounts),
-      paymentCounts: paymentStatusCounts(statusCounts["payments"] ?? statusCounts),
-      projectedAt: row.projectedAt ? utcDateTime(row.projectedAt, "") : null,
-    },
-    sourceFreshness: financeJsonObject(row.sourceFreshness),
-  };
-}
-
 function toInvoiceListResponseBody(
   rows: FinanceInvoiceRow[],
   query: FinanceInvoiceListQuery,
@@ -4584,35 +4377,6 @@ function toInvoicePayment(row: FinanceInvoicePaymentRow): FinanceInvoicePayment 
     reference: row.reference,
     status: paymentStatus(row.status),
     recordedAt: utcDateTime(row.recordedAt, new Date().toISOString()),
-  };
-}
-
-function toPaymentLedgerResponseBody(
-  rows: FinancePaymentLedgerRow[],
-  query: FinancePaymentLedgerQuery,
-): Omit<FinancePaymentLedgerResponse, "contractVersion" | "propertyId"> {
-  return {
-    payments: rows.map(toPaymentLedgerItem),
-    total: totalFromRows(rows),
-    counts: paymentStatusCounts(rows[0]?.counts),
-    limit: query.limit,
-    offset: query.offset,
-    sourceFreshness: financeJsonObject(rows[0]?.sourceFreshness),
-  };
-}
-
-function toPaymentLedgerItem(row: FinancePaymentLedgerRow): FinancePaymentLedgerItem {
-  const invoicePayment = toInvoicePayment(row);
-  return {
-    ...invoicePayment,
-    invoiceId: row.invoiceId,
-    invoiceNumber: row.invoiceNumber,
-    guestBookingId: row.guestBookingId,
-    bookingReference: row.bookingReference,
-    checkoutChargeId: row.checkoutChargeId,
-    provider: paymentProvider(row.provider),
-    providerStatus: row.providerStatus,
-    reconciliationStatus: reconciliationStatus(row.reconciliationStatus),
   };
 }
 
@@ -6077,10 +5841,6 @@ function invoicePaymentMethod(value: unknown): FinanceInvoicePayment["method"] {
   return "other";
 }
 
-function reconciliationStatus(value: unknown): FinanceReconciliationStatus {
-  return optionalEnum(value, FINANCE_RECONCILIATION_STATUSES) ?? "pending";
-}
-
 function payoutStatus(value: unknown): FinancePayout["payoutStatus"] {
   return optionalEnum(value, FINANCE_PAYOUT_STATUSES) ?? "pending";
 }
@@ -6118,13 +5878,6 @@ function invoiceStatusCounts(value: unknown = {}): FinanceInvoiceStatusCounts {
   return Object.fromEntries(
     FINANCE_INVOICE_STATUSES.map((status) => [status, counts[status] ?? 0]),
   ) as FinanceInvoiceStatusCounts;
-}
-
-function paymentStatusCounts(value: unknown = {}): FinancePaymentStatusCounts {
-  const counts = countRecord(value);
-  return Object.fromEntries(
-    FINANCE_PAYMENT_STATUSES.map((status) => [status, counts[status] ?? 0]),
-  ) as FinancePaymentStatusCounts;
 }
 
 function countRecord(value: unknown): Record<string, number> {
