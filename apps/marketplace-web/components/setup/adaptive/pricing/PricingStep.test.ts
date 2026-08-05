@@ -132,6 +132,39 @@ describe("PricingStep", () => {
     renderer?.unmount();
   });
 
+  it("resumes draft amounts in their saved currency without destructive reinterpretation", async () => {
+    const routeDraft = emptyPricingDraft();
+    routeDraft.payload = {
+      "rate.currency": "USD",
+      "rate.base_nightly_rate": { [roomTypeId]: "175.00" },
+    };
+    const controller = controllerContext(pricingRoute(routeDraft));
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(PricingStep, controller.props));
+    });
+
+    expect(control(renderer!.root, "pricing-currency").props.value).toBe("USD");
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("175.00");
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain(
+      "Change currency and clear every amount?",
+    );
+
+    await act(async () => {
+      control(renderer!.root, "pricing-currency").props.onChange({ target: { value: "EUR" } });
+    });
+    expect(textOf(renderer!.root.findByProps({ role: "alert" }))).toContain(
+      "Changing from USD to EUR",
+    );
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("175.00");
+
+    await act(async () => button(renderer!.root, "Keep USD").props.onClick());
+    expect(control(renderer!.root, "pricing-currency").props.value).toBe("USD");
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("175.00");
+    renderer?.unmount();
+  });
+
   it("serializes saves, retains mid-save edits, and advances receipt revisions", async () => {
     const firstSave = deferred<SavePropertySetupDraftReceipt>();
     mocks.saveDraft
@@ -521,9 +554,7 @@ function resetReceipt() {
 }
 
 function button(root: ReactTestInstance, label: string): ReactTestInstance {
-  return root.find(
-    (node) => node.type === "button" && node.children.some((child) => child === label),
-  );
+  return root.find((node) => node.type === "button" && textOf(node) === label);
 }
 
 function input(root: ReactTestInstance, id: string): ReactTestInstance {
@@ -534,6 +565,10 @@ function control(root: ReactTestInstance, id: string): ReactTestInstance {
   return root.find(
     (node) => (node.type === "input" || node.type === "select") && node.props.id === id,
   );
+}
+
+function textOf(node: ReactTestInstance): string {
+  return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
 function deferred<T>() {

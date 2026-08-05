@@ -128,13 +128,9 @@ export function PricingStep({
         draftRef.current = nextDraft;
         setWorkspace(nextWorkspace);
         setDraft(nextDraft);
-        setPendingCurrency(
-          nextWorkspace.pricing &&
-            nextDraft.currencyInput !== "" &&
-            nextDraft.currencyInput !== nextWorkspace.pricing.pricingCurrency.currency
-            ? nextDraft.currencyInput
-            : null,
-        );
+        // Persisted draft amounts are already denominated in the draft currency.
+        // Only a new user selection requires destructive change confirmation.
+        setPendingCurrency(null);
         if (
           nextDraft.seasons.length > 0 ||
           nextDraft.weekendEnabled ||
@@ -374,13 +370,15 @@ export function PricingStep({
     currency === null ||
     !supportedCurrencies.some(({ code }) => code === currency);
   const chooseCurrency = (nextCurrency: string) => {
-    if (canonicalCurrency && nextCurrency !== canonicalCurrency) {
-      setPendingCurrency(nextCurrency);
+    if (!draft.currencyInput) {
+      setPendingCurrency(null);
+      change((current) => ({ ...current, currencyInput: nextCurrency }));
+      setErrors({});
       return;
     }
-    setPendingCurrency(null);
-    change((current) => ({ ...current, currencyInput: nextCurrency }));
-    setErrors({});
+    if (nextCurrency !== draft.currencyInput) {
+      setPendingCurrency(nextCurrency);
+    }
   };
   const confirmCurrencyChange = () => {
     if (!pendingCurrency) return;
@@ -428,7 +426,7 @@ export function PricingStep({
                 Change currency and clear every amount?
               </h2>
               <p className="mt-1 text-sm leading-6 text-amber-900">
-                Prices cannot be converted safely. Changing from {canonicalCurrency} to{" "}
+                Prices cannot be converted safely. Changing from {draft.currencyInput} to{" "}
                 {pendingCurrency}
                 clears base, seasonal, weekend, and additional-guest amounts.
               </p>
@@ -443,9 +441,9 @@ export function PricingStep({
                 <button
                   type="button"
                   className="min-h-11 rounded-full border border-amber-500 bg-white px-4 text-sm font-semibold text-amber-950 outline-none focus-visible:ring-2 focus-visible:ring-amber-900 focus-visible:ring-offset-2"
-                  onClick={() => chooseCurrency(canonicalCurrency!)}
+                  onClick={() => setPendingCurrency(null)}
                 >
-                  Keep {canonicalCurrency}
+                  Keep {draft.currencyInput}
                 </button>
               </div>
             </div>

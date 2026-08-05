@@ -199,26 +199,55 @@ describe("pricingSetupClient", () => {
     });
   });
 
-  it.each([{ extra: true }, { retentionExpiresAt: "2026-99-99T12:00:00.000Z" }])(
-    "rejects malformed pricing draft receipts %#",
-    async (receiptOverride) => {
-      calls.put.mockResolvedValue({ ...draftReceipt(), ...receiptOverride });
-      const client = createPricingSetupClient(http);
-
-      await expect(client.saveDraft(propertyId, draftRequest())).rejects.toMatchObject({
-        code: "owner_contract_violation",
-      });
-    },
-  );
-
-  it("maps raw draft revision conflicts to refresh-required owner errors", async () => {
-    calls.put.mockRejectedValue(new ApiErrorResponse(409, { code: "base_revision_conflict" }));
+  it.each([
+    { extra: true },
+    { retentionExpiresAt: "2026-99-99T12:00:00.000Z" },
+    { sessionId: "not-a-session" },
+    { trackRevision: 2 },
+    { sessionRevision: 3 },
+    { draftRevision: 2 },
+  ])("rejects malformed pricing draft receipts %#", async (receiptOverride) => {
+    calls.put.mockResolvedValue({ ...draftReceipt(), ...receiptOverride });
     const client = createPricingSetupClient(http);
 
     await expect(client.saveDraft(propertyId, draftRequest())).rejects.toMatchObject({
-      code: "base_revision_conflict",
+      code: "owner_contract_violation",
+    });
+  });
+
+  it("maps raw draft revision conflicts to refresh-required owner errors", async () => {
+    calls.put.mockRejectedValue(
+      new ApiErrorResponse(409, {
+        code: "draft_revision_conflict",
+        currentDraftRevision: 7,
+      } as never),
+    );
+    const client = createPricingSetupClient(http);
+
+    await expect(client.saveDraft(propertyId, draftRequest())).rejects.toMatchObject({
+      code: "draft_revision_conflict",
       requiresRefresh: true,
     });
+  });
+
+  it.each([
+    { status: 422, body: { code: "unsupported_pricing_currency", extra: true } },
+    { status: 409, body: { code: "unsupported_pricing_currency" } },
+    { status: 409, body: { code: "not_a_pricing_error" } },
+  ])("fails closed for malformed pricing error envelopes %#", async ({ status, body }) => {
+    calls.put.mockRejectedValue(new ApiErrorResponse(status, body));
+    const intended = state();
+    intended.currencyInput = "USD";
+
+    await expect(
+      createPricingSetupClient(http).saveCanonical(
+        organizationId,
+        propertyId,
+        intended,
+        workspace(),
+        "de-DE",
+      ),
+    ).rejects.toMatchObject({ code: "owner_contract_violation", requiresRefresh: true });
   });
 
   it("creates a supported first-visit currency before scale-2 prices and confirmation", async () => {

@@ -225,12 +225,25 @@ describe("CalendarStep", () => {
       );
     expect(periodFieldset).toBeDefined();
     expect(periodFieldset!.children[0]).toMatchObject({ type: "legend" });
+    expect(renderer!.root.findByProps({ "aria-label": "First open night month" })).toBeDefined();
+    expect(renderer!.root.findByProps({ "aria-label": "First open night day" })).toBeDefined();
+    expect(renderer!.root.findByProps({ "aria-label": "Last open night month" })).toBeDefined();
+    expect(renderer!.root.findByProps({ "aria-label": "Last open night day" })).toBeDefined();
     expect(renderer!.root.findByProps({ id: "calendar-add-period" }).props.disabled).toBe(false);
     expect(renderer!.root.findAllByProps({ id: "calendar-confirmation" })).toHaveLength(0);
     renderer?.unmount();
   });
 
   it("previews only aggregate impact, confirms the exact proposal, and applies it", async () => {
+    const preview = impactPreview();
+    mocks.previewImpact.mockResolvedValue({
+      ...preview,
+      impact: {
+        ...preview.impact,
+        categories: [...preview.impact.categories, "default_minimum_stay_changes" as const],
+        summary: { ...preview.impact.summary, defaultMinimumStayChanged: true },
+      },
+    });
     const route = calendarRoute(emptyCalendarDraft());
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
@@ -263,6 +276,10 @@ describe("CalendarStep", () => {
     });
     expect(JSON.stringify(renderer!.toJSON())).toContain("Current impact");
     expect(JSON.stringify(renderer!.toJSON())).toContain("accepted booking");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Default minimum stay changes");
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "Accepted bookings fall on dates that will close",
+    );
     const confirmation = input(renderer!.root, "calendar-confirmation");
     await act(async () => confirmation.props.onChange({ target: { checked: true } }));
     expect(button(renderer!.root, "Save and continue").props.disabled).toBe(false);
@@ -280,6 +297,47 @@ describe("CalendarStep", () => {
     );
     expect(controller.refreshRoute).toHaveBeenCalledOnce();
     expect(controller.saveAndContinue).toHaveBeenCalledOnce();
+    renderer?.unmount();
+  });
+
+  it("submits an expired exact confirmation so the server can replay an accepted command", async () => {
+    const expired = impactPreview();
+    mocks.previewImpact.mockResolvedValue({
+      ...expired,
+      confirmation: {
+        ...expired.confirmation,
+        issuedAt: "2000-01-01T00:00:00.000Z",
+        expiresAt: "2000-01-01T00:15:00.000Z",
+      },
+    });
+    const controller = controllerContext(calendarRoute(emptyCalendarDraft()));
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(CalendarStep, controller.props));
+    });
+    await act(async () =>
+      renderer!.root.findByProps({ id: "calendar-mode-year-round" }).props.onChange(),
+    );
+    await act(async () => {
+      button(renderer!.root, "Review impact").props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () =>
+      input(renderer!.root, "calendar-confirmation").props.onChange({ target: { checked: true } }),
+    );
+    await act(async () => {
+      button(renderer!.root, "Save and continue").props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.applyCalendar).toHaveBeenCalledWith(
+      propertyId,
+      expect.any(Object),
+      expect.objectContaining({ expiresAt: "2000-01-01T00:15:00.000Z" }),
+    );
     renderer?.unmount();
   });
 

@@ -12,12 +12,17 @@ import {
   parseRoomTypeFactsSnapshot,
   parsePropertyPricingCurrencyCommandResult,
   type FlexibleRatePlanSnapshot,
+  type FlexibleRatePlanCommandError,
+  type PmsMandatoryChargeConfirmationCommandError,
+  type PmsRecurringPricingCommandError,
   type PmsRecurringPricingSourceSnapshot,
+  type PropertyPricingCurrencyCommandError,
   type RoomTypeFactsSnapshot,
 } from "@vayada/domain-pms";
 import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
   isSetupTrack,
+  type SavePropertySetupDraftError,
   type SavePropertySetupDraftReceipt,
   type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
@@ -155,6 +160,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
         `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/pricing`,
         request,
         await commandKey("pricing-draft", propertyId, request),
+        "draft",
       );
       const receipt = parseDraftReceipt(value, request);
       if (!receipt) throw invalidOwnerContract("pricing draft receipt");
@@ -187,6 +193,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
           `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source/currency`,
           body,
           await commandKey("pricing-currency", propertyId, body),
+          "currency",
         );
         const result = parsePropertyPricingCurrencyCommandResult({ ok: true, response: value });
         if (
@@ -245,6 +252,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
             roomTypeId: room.roomTypeId,
             ...body,
           }),
+          "plan",
         );
         const result = parseFlexibleRatePlanCommandResult({ ok: true, response: value });
         if (
@@ -427,6 +435,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
         `/api/pms/properties/${encodeURIComponent(propertyId)}/mandatory-charge-confirmation`,
         confirmationBody,
         await commandKey("mandatory-charge-confirmation", propertyId, confirmationBody),
+        "confirmation",
       );
       const confirmationResult = parseConfirmMandatoryChargesIncludedResult({
         ok: true,
@@ -463,6 +472,7 @@ async function upsertRecurring(
     `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source/recurring/${encodeURIComponent(sourceId)}`,
     body,
     await commandKey("recurring-pricing", propertyId, { sourceId, ...body }),
+    "recurring",
   );
   const result = parsePmsRecurringPricingCommandResult({ ok: true, response: value });
   if (
@@ -496,6 +506,7 @@ async function disableRecurring(
       sourceId: source.sourceId,
       ...body,
     }),
+    "recurring",
   );
   const result = parsePmsRecurringPricingCommandResult({ ok: true, response: value });
   if (
@@ -790,15 +801,12 @@ function parseDraftReceipt(
     value.selectedTracks.some((track) => !isSetupTrack(track)) ||
     new Set(value.selectedTracks).size !== value.selectedTracks.length ||
     !value.selectedTracks.includes("hotel_operations") ||
-    !revision(value.trackRevision) ||
-    !revision(value.sessionRevision) ||
-    !revision(value.draftRevision) ||
+    value.trackRevision !== request.expectedTrackRevision ||
+    value.sessionRevision !== request.expectedSessionRevision + 1 ||
+    value.draftRevision !== request.expectedDraftRevision + 1 ||
     !isIsoDateTime(value.retentionExpiresAt) ||
     !isIsoDateTime(value.updatedAt) ||
-    typeof value.replayed !== "boolean" ||
-    value.trackRevision < request.expectedTrackRevision ||
-    value.sessionRevision < request.expectedSessionRevision ||
-    value.draftRevision < request.expectedDraftRevision
+    typeof value.replayed !== "boolean"
   ) {
     return null;
   }
@@ -810,13 +818,14 @@ async function ownerPut(
   endpoint: string,
   body: unknown,
   idempotencyKey: string,
+  kind: PricingCommandKind,
 ): Promise<unknown> {
   try {
     return await http.put<unknown>(endpoint, body, {
       headers: { "Idempotency-Key": idempotencyKey },
     });
   } catch (error) {
-    throw ownerError(error);
+    throw ownerError(error, kind);
   }
 }
 
@@ -825,27 +834,52 @@ async function ownerPost(
   endpoint: string,
   body: unknown,
   idempotencyKey: string,
+  kind: PricingCommandKind,
 ): Promise<unknown> {
   try {
     return await http.post<unknown>(endpoint, body, {
       headers: { "Idempotency-Key": idempotencyKey },
     });
   } catch (error) {
-    throw ownerError(error);
+    throw ownerError(error, kind);
   }
 }
 
-function ownerError(error: unknown): Error {
+type PricingCommandKind = "draft" | "currency" | "plan" | "recurring" | "confirmation";
+type PricingCommandError =
+  | SavePropertySetupDraftError
+  | PropertyPricingCurrencyCommandError
+  | FlexibleRatePlanCommandError
+  | PmsRecurringPricingCommandError
+  | PmsMandatoryChargeConfirmationCommandError;
+
+function ownerError(error: unknown, kind: PricingCommandKind): Error {
   if (!(error instanceof ApiErrorResponse))
     return error instanceof Error ? error : new Error("Pricing could not be saved.");
-  const code = typeof error.data.code === "string" ? error.data.code : "request_failed";
+  const parsed = parsePricingCommandError(kind, error.data as unknown);
+  if (!parsed || pricingCommandErrorStatus(kind, parsed) !== error.status) {
+    return invalidOwnerContract(`${kind} command error`);
+  }
+  const code = parsed.code;
   const messages: Record<string, string> = {
     unsupported_pricing_currency: "That currency is not supported end to end yet.",
+    pricing_currency_unchanged: "The pricing currency already matches this draft.",
     pricing_currency_change_blocked:
       "The currency is already used by pricing, payments, bookings, or publication. Keep the current currency.",
+    pricing_currency_not_configured: "Choose a pricing currency before saving room prices.",
     pricing_currency_revision_conflict: "The pricing currency changed in another session.",
+    room_type_not_found: "A room in this pricing draft is no longer available.",
     room_facts_revision_conflict: "A room changed in another session.",
     flexible_rate_plan_revision_conflict: "A room price changed in another session.",
+    ambiguous_legacy_flexible_rate_plans:
+      "Room pricing contains ambiguous historical plans and cannot be changed safely.",
+    source_not_found: "An optional pricing rule is no longer available.",
+    source_kind_conflict: "An optional pricing rule changed type in another session.",
+    flexible_rate_plan_not_found: "A room price required by this rule is no longer available.",
+    additional_guest_capacity_inapplicable:
+      "Additional guest pricing is not available for a room with this occupancy.",
+    optional_pricing_aggregate_revision_conflict:
+      "Optional pricing rules changed in another session.",
     inactive_setup_step: "This setup step is no longer active.",
     track_revision_conflict: "The selected setup track changed in another session.",
     session_revision_conflict: "This setup session changed in another session.",
@@ -870,15 +904,89 @@ function ownerError(error: unknown): Error {
     code === "inactive_setup_step" ||
     code === "setup_session_expired" ||
     code === "setup_draft_expired" ||
+    code === "pricing_currency_unchanged" ||
+    code === "pricing_currency_change_blocked" ||
+    code === "pricing_currency_not_configured" ||
+    code === "room_type_not_found" ||
+    code === "source_not_found" ||
+    code === "source_kind_conflict" ||
+    code === "flexible_rate_plan_not_found" ||
+    code === "ambiguous_legacy_flexible_rate_plans" ||
     code === "pricing_source_conflict" ||
     code === "idempotency_key_conflict" ||
     code === "setup_scope_unavailable";
   return new PricingOwnerError(
     messages[code] ?? error.message ?? "Pricing could not be saved. Try again.",
     code,
-    error.data,
+    parsed,
     requiresRefresh,
   );
+}
+
+function parsePricingCommandError(
+  kind: PricingCommandKind,
+  value: unknown,
+): PricingCommandError | null {
+  if (kind === "draft") return parseDraftCommandError(value);
+  const wrapped = { ok: false as const, error: value };
+  const result =
+    kind === "currency"
+      ? parsePropertyPricingCurrencyCommandResult(wrapped)
+      : kind === "plan"
+        ? parseFlexibleRatePlanCommandResult(wrapped)
+        : kind === "recurring"
+          ? parsePmsRecurringPricingCommandResult(wrapped)
+          : parseConfirmMandatoryChargesIncludedResult(wrapped);
+  return result && !result.ok ? result.error : null;
+}
+
+function pricingCommandErrorStatus(kind: PricingCommandKind, error: PricingCommandError): number {
+  if (error.code === "setup_scope_unavailable") return 404;
+  if (kind === "currency" && error.code === "unsupported_pricing_currency") return 422;
+  if (kind === "plan" && error.code === "room_type_not_found") return 404;
+  if (
+    kind === "recurring" &&
+    ["source_not_found", "room_type_not_found", "flexible_rate_plan_not_found"].includes(error.code)
+  ) {
+    return 404;
+  }
+  if (
+    kind === "recurring" &&
+    [
+      "season_name_conflict",
+      "season_overlap",
+      "additional_guest_capacity_inapplicable",
+      "recurring_pricing_room_plan_set_incomplete",
+    ].includes(error.code)
+  ) {
+    return 422;
+  }
+  return 409;
+}
+
+function parseDraftCommandError(value: unknown): SavePropertySetupDraftError | null {
+  if (!isRecord(value) || typeof value.code !== "string") return null;
+  if (
+    ["setup_scope_unavailable", "idempotency_key_conflict", "command_in_progress"].includes(
+      value.code,
+    )
+  ) {
+    return isExactRecord(value, ["code"]) ? (value as SavePropertySetupDraftError) : null;
+  }
+  const revisionKey =
+    value.code === "inactive_setup_step" || value.code === "track_revision_conflict"
+      ? "currentTrackRevision"
+      : value.code === "session_revision_conflict" || value.code === "setup_session_expired"
+        ? "currentSessionRevision"
+        : value.code === "draft_revision_conflict" || value.code === "setup_draft_expired"
+          ? "currentDraftRevision"
+          : null;
+  return revisionKey &&
+    isExactRecord(value, ["code", revisionKey]) &&
+    Number.isSafeInteger(value[revisionKey]) &&
+    (value[revisionKey] as number) >= 0
+    ? (value as SavePropertySetupDraftError)
+    : null;
 }
 
 function requiredMoney(input: string, locale: string, allowZero: boolean): string {
@@ -906,10 +1014,6 @@ function invalidOwnerContract(name: string): PricingOwnerError {
     null,
     true,
   );
-}
-
-function revision(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function isUuid(value: unknown): value is string {

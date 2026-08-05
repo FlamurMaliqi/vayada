@@ -192,7 +192,15 @@ export function createCalendarApiClient(
         { headers: { "Idempotency-Key": idempotencyKey } },
       );
     } catch (error) {
-      throw commandOwnerError(error);
+      const ownerError = commandOwnerError(error);
+      if (
+        ownerError instanceof CalendarOwnerError &&
+        ownerError.code === "operating_calendar_unchanged"
+      ) {
+        const workspace = await loadWorkspace(propertyId, { cache: "no-store" });
+        if (workspaceMatchesProposal(propertyId, workspace, proposal)) return workspace;
+      }
+      throw ownerError;
     }
     const result = parsePmsOperatingCalendarCommandResult(
       { ok: true, response: value },
@@ -296,7 +304,7 @@ function parseDraftReceipt(
     ]) ||
     value.contractVersion !== PROPERTY_SETUP_DRAFT_CONTRACT_VERSION ||
     value.stepId !== "calendar" ||
-    typeof value.sessionId !== "string" ||
+    !isUuid(value.sessionId) ||
     !Array.isArray(value.selectedTracks) ||
     value.selectedTracks.length === 0 ||
     new Set(value.selectedTracks).size !== value.selectedTracks.length ||
@@ -305,15 +313,12 @@ function parseDraftReceipt(
         typeof track !== "string" || !SETUP_TRACKS.includes(track as (typeof SETUP_TRACKS)[number]),
     ) ||
     !value.selectedTracks.includes("hotel_operations") ||
-    !revision(value.trackRevision) ||
-    !revision(value.sessionRevision) ||
-    !revision(value.draftRevision) ||
+    value.trackRevision !== request.expectedTrackRevision ||
+    value.sessionRevision !== request.expectedSessionRevision + 1 ||
+    value.draftRevision !== request.expectedDraftRevision + 1 ||
     !isoTimestamp(value.retentionExpiresAt) ||
     !isoTimestamp(value.updatedAt) ||
-    typeof value.replayed !== "boolean" ||
-    value.trackRevision < request.expectedTrackRevision ||
-    value.sessionRevision < request.expectedSessionRevision ||
-    value.draftRevision < request.expectedDraftRevision
+    typeof value.replayed !== "boolean"
   ) {
     return null;
   }
@@ -346,6 +351,37 @@ function configurationMatchesRequest(
         binding.startingSellableLimitCount === expected.startingSellableLimitCount
       );
     })
+  );
+}
+
+function workspaceMatchesProposal(
+  propertyId: string,
+  workspace: CalendarWorkspace,
+  proposal: PmsOperatingCalendarImpactPreviewRequest,
+): boolean {
+  const currentRead = workspace.current;
+  const configuration = currentRead?.configuration;
+  return Boolean(
+    configuration &&
+    currentRead.sourceStatus === "current" &&
+    configuration.propertyId === propertyId.toLowerCase() &&
+    configuration.calendarRevision === proposal.expectedCalendarRevision &&
+    configuration.sourceInputs.propertyProfile.entityId === propertyId.toLowerCase() &&
+    configuration.sourceInputs.propertyProfile.revision ===
+      `profile:${proposal.expectedPropertyProfileRevision}` &&
+    configuration.defaultMinimumStayNights === proposal.defaultMinimumStayNights &&
+    JSON.stringify(configuration.schedule) === JSON.stringify(proposal.schedule) &&
+    configuration.sourceInputs.roomBindings.length === proposal.roomTypeLimits.length &&
+    configuration.sourceInputs.roomBindings.every((binding, index) => {
+      const expected = proposal.roomTypeLimits[index];
+      return (
+        expected !== undefined &&
+        binding.roomTypeId === expected.roomTypeId &&
+        binding.sourceRoomFactsRevision === expected.expectedRoomFactsRevision &&
+        binding.sourceRoomUnitsRevision === expected.expectedRoomUnitsRevision &&
+        binding.startingSellableLimitCount === expected.startingSellableLimitCount
+      );
+    }),
   );
 }
 
@@ -486,14 +522,17 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   return keys.length === expected.length && expected.every((key) => keys.includes(key));
 }
 
-function revision(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
 function isoTimestamp(value: unknown): value is string {
   return (
     typeof value === "string" &&
     Number.isFinite(Date.parse(value)) &&
     new Date(value).toISOString() === value
+  );
+}
+
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
 }

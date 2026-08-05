@@ -272,6 +272,23 @@ describe("calendarApiClient", () => {
     });
   });
 
+  it("treats an unchanged command as a verified no-op success", async () => {
+    calls.put.mockRejectedValue(
+      new ApiErrorResponse(409, { code: "operating_calendar_unchanged" }),
+    );
+    installMatchingWorkspace();
+
+    await expect(
+      createCalendarApiClient(http, profiles).applyCalendar(
+        propertyId,
+        calendarProposal(),
+        impactConfirmation(),
+      ),
+    ).resolves.toMatchObject({
+      current: { sourceStatus: "current", configuration: { calendarRevision: 2 } },
+    });
+  });
+
   it("rejects a valid but mismatched command receipt before refetching owner state", async () => {
     const response = acceptedResponse();
     calls.put.mockResolvedValue({
@@ -469,6 +486,18 @@ describe("calendarApiClient", () => {
     await expect(client.saveDraft(propertyId, request)).rejects.toThrow(
       /calendar draft receipt adapter returned invalid data/i,
     );
+
+    for (const receipt of [
+      { ...draftReceipt(), sessionId: "not-a-session" },
+      { ...draftReceipt(), trackRevision: request.expectedTrackRevision + 1 },
+      { ...draftReceipt(), sessionRevision: request.expectedSessionRevision + 2 },
+      { ...draftReceipt(), draftRevision: request.expectedDraftRevision + 2 },
+    ]) {
+      calls.put.mockResolvedValue(receipt);
+      await expect(client.saveDraft(propertyId, request)).rejects.toThrow(
+        /calendar draft receipt adapter returned invalid data/i,
+      );
+    }
   });
 });
 
@@ -637,6 +666,27 @@ function installAcceptedWorkspace(sourceStatus: "current" | "stale" = "current")
               { code: "room_units_revision_conflict", roomTypeId: roomA, currentRevision: 6 },
             ],
           };
+    }
+    if (endpoint.endsWith("/room-types")) return roomList();
+    if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);
+    if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
+    throw new Error(`Unexpected GET ${endpoint}`);
+  });
+}
+
+function installMatchingWorkspace(): void {
+  calls.get.mockImplementation(async (endpoint) => {
+    if (endpoint.endsWith("/operating-calendar")) {
+      const accepted = acceptedCalendar();
+      return {
+        sourceStatus: "current",
+        sourceConflicts: [],
+        configuration: {
+          ...accepted.configuration,
+          calendarRevision: 2,
+          source: createPmsOperatingCalendarSourceRevision(propertyId, 2),
+        },
+      };
     }
     if (endpoint.endsWith("/room-types")) return roomList();
     if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);

@@ -348,7 +348,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     const nextErrors = validateCalendarDraft(current, { requireConfirmation: false });
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
-      focusFirstCalendarError();
+      focusFirstCalendarError(nextErrors);
       return;
     }
     let proposal: PmsOperatingCalendarImpactPreviewRequest;
@@ -394,18 +394,12 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     const nextErrors = validateCalendarDraft(current);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
-      focusFirstCalendarError();
+      focusFirstCalendarError(nextErrors);
       return;
     }
     if (!sameProposal(review.proposal, buildCalendarProposal(current, workspace))) {
       commitImpactReview(null);
       setSaveError("Calendar settings changed after the impact review. Review the impact again.");
-      return;
-    }
-    if (Date.parse(review.preview.confirmation.expiresAt) <= Date.now()) {
-      commitImpactReview(null);
-      commitDraft({ ...current, confirmed: false, dirty: true });
-      setSaveError("The calendar impact review expired. Review the current impact again.");
       return;
     }
     setApplying(true);
@@ -559,6 +553,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
               <fieldset
                 key={period.id}
                 className="relative rounded-2xl border border-gray-200 bg-white p-4 sm:p-5"
+                aria-describedby={errors.periods ? "calendar-periods-error" : undefined}
               >
                 <legend className="pr-14 text-sm font-semibold text-gray-950">
                   Open period {index + 1}
@@ -838,6 +833,26 @@ function CalendarImpactPanel({
         />
       </dl>
 
+      {summary.defaultMinimumStayChanged && (
+        <div className="border-t border-sky-200 bg-sky-50 px-4 py-4 text-sm leading-6 text-sky-950 sm:px-5">
+          <p className="font-semibold">Default minimum stay changes</p>
+          <p className="mt-1">
+            The new minimum will apply by default across the operating calendar.
+          </p>
+        </div>
+      )}
+
+      {impact.categories.length > 0 && (
+        <div className="border-t border-gray-200 px-4 py-4 sm:px-5">
+          <p className="text-sm font-semibold text-gray-950">Changes included in this review</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-gray-700">
+            {impact.categories.map((category) => (
+              <li key={category}>{impactCategoryLabel(category)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {(summary.acceptedBookingCount > 0 ||
         summary.blockedRoomNights > 0 ||
         summary.ownerOverrideDateCount > 0) && (
@@ -994,6 +1009,8 @@ function MonthDayField({
           Month
           <select
             id={`${id}-month`}
+            aria-label={`${label} month`}
+            data-calendar-period-start={label === "First open night" ? "true" : undefined}
             value={month}
             aria-invalid={Boolean(error)}
             aria-describedby={errorId}
@@ -1018,6 +1035,7 @@ function MonthDayField({
           Day
           <select
             id={`${id}-day`}
+            aria-label={`${label} day`}
             value={day}
             disabled={!month}
             aria-invalid={Boolean(error)}
@@ -1229,13 +1247,12 @@ function sameProposal(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function focusFirstCalendarError(): void {
+function focusFirstCalendarError(errors: CalendarValidationErrors): void {
   requestAnimationFrame(() => {
-    document
-      .querySelector<HTMLElement>(
-        '[aria-invalid="true"], #calendar-confirmation, #calendar-mode-year-round',
-      )
-      ?.focus();
+    const selector = errors.periods
+      ? '[data-calendar-period-start="true"]'
+      : '[aria-invalid="true"], #calendar-confirmation, #calendar-mode-year-round';
+    document.querySelector<HTMLElement>(selector)?.focus();
   });
 }
 
@@ -1263,6 +1280,29 @@ function impactStatusLabel(value: string): string {
       return "Opens";
     default:
       return "Availability changes";
+  }
+}
+
+function impactCategoryLabel(value: string): string {
+  switch (value) {
+    case "accepted_bookings_on_closing_dates":
+      return "Accepted bookings fall on dates that will close";
+    case "default_minimum_stay_changes":
+      return "Default minimum stay changes";
+    case "operating_dates_close":
+      return "Operating dates close";
+    case "operating_dates_open":
+      return "Operating dates open";
+    case "owner_overrides_on_changed_dates":
+      return "Owner overrides exist on changed dates";
+    case "room_blocks_on_closing_dates":
+      return "Room blocks exist on dates that will close";
+    case "starting_availability_decreases":
+      return "Starting room availability decreases";
+    case "starting_availability_increases":
+      return "Starting room availability increases";
+    default:
+      return "Calendar configuration changes";
   }
 }
 
