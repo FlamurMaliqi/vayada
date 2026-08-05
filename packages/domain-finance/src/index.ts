@@ -35,7 +35,6 @@ export type FinanceAffiliateId = string;
 export type FinanceUtcDateTime = string;
 export type FinanceCurrencyCode = string;
 export type FinanceContractVersion = "finance-route-contracts.v1";
-export type FinanceDate = string;
 
 /** Decimal representation of a monetary amount, e.g. "150.00". */
 export type FinanceDecimalAmount = string;
@@ -283,40 +282,6 @@ export type PublicPaymentCapabilityProjection = {
   cancellationPolicy: Omit<CancellationPolicy, "updatedAt">;
 };
 
-export const FINANCE_INVOICE_STATUSES = [
-  "draft",
-  "sent",
-  "paid",
-  "partial",
-  "overdue",
-  "voided",
-] as const;
-
-export type FinanceInvoiceStatus = (typeof FINANCE_INVOICE_STATUSES)[number];
-
-export const FINANCE_PAYMENT_STATUSES = [
-  "requires_action",
-  "authorized",
-  "pending",
-  "paid",
-  "partially_refunded",
-  "refunded",
-  "failed",
-  "canceled",
-  "disputed",
-] as const;
-
-export type FinancePaymentStatus = (typeof FINANCE_PAYMENT_STATUSES)[number];
-
-export const FINANCE_RECONCILIATION_STATUSES = [
-  "matched",
-  "pending",
-  "needs_review",
-  "dead_lettered",
-] as const;
-
-export type FinanceReconciliationStatus = (typeof FINANCE_RECONCILIATION_STATUSES)[number];
-
 export const FINANCE_PAYOUT_STATUSES = [
   "pending",
   "scheduled",
@@ -368,117 +333,6 @@ export const FINANCE_RECONCILIATION_SUBJECT_TYPES = [
 
 export type FinanceReconciliationSubjectType =
   (typeof FINANCE_RECONCILIATION_SUBJECT_TYPES)[number];
-
-export type FinanceInvoiceStatusCounts = Record<FinanceInvoiceStatus, number>;
-export type FinancePaymentStatusCounts = Record<FinancePaymentStatus, number>;
-
-export type FinanceInvoiceGuest = {
-  displayName: string;
-  email: string | null;
-};
-
-export type FinanceInvoiceListItem = {
-  invoiceId: string;
-  invoiceNumber: string;
-  guestBookingId: string;
-  bookingReference: string;
-  guest: FinanceInvoiceGuest;
-  stay: {
-    checkIn: FinanceDate;
-    checkOut: FinanceDate;
-    roomName: string | null;
-    roomNumber: string | null;
-  };
-  currency: FinanceCurrencyCode;
-  totalAmount: FinanceDecimalAmount;
-  amountPaid: FinanceDecimalAmount;
-  balanceDue: FinanceDecimalAmount;
-  status: FinanceInvoiceStatus;
-  issuedAt: FinanceUtcDateTime;
-};
-
-export type FinanceInvoicePayment = {
-  paymentId: string;
-  method: Exclude<FinanceRoutePaymentMethod, "wallet">;
-  methodLabel: string;
-  amount: FinanceDecimalAmount;
-  currency: FinanceCurrencyCode;
-  reference: string | null;
-  status: FinancePaymentStatus;
-  recordedAt: FinanceUtcDateTime;
-};
-
-export type FinanceInvoiceDetail = Omit<FinanceInvoiceListItem, "guest"> & {
-  guest: FinanceInvoiceGuest & { phone: string | null };
-  nights: number;
-  charges: Array<{ description: string; detail: string; amount: FinanceDecimalAmount }>;
-  payments: FinanceInvoicePayment[];
-  subtotal: FinanceDecimalAmount;
-};
-
-export type FinancePaymentLedgerItem = FinanceInvoicePayment & {
-  invoiceId: string | null;
-  invoiceNumber: string | null;
-  guestBookingId: string | null;
-  bookingReference: string | null;
-  checkoutChargeId: string | null;
-  provider: FinanceRoutePaymentProvider;
-  providerStatus: string | null;
-  reconciliationStatus: FinanceReconciliationStatus;
-};
-
-export type FinanceFinancialSummary = {
-  currency: FinanceCurrencyCode;
-  periodStart: FinanceDate | null;
-  periodEnd: FinanceDate | null;
-  grossPaymentAmount: FinanceDecimalAmount;
-  netPaymentAmount: FinanceDecimalAmount;
-  payoutAmount: FinanceDecimalAmount;
-  commissionAmount: FinanceDecimalAmount;
-  outstandingBalanceAmount: FinanceDecimalAmount;
-  paymentCount: number;
-  payoutCount: number;
-  failedPaymentCount: number;
-  invoiceCounts: FinanceInvoiceStatusCounts;
-  paymentCounts: FinancePaymentStatusCounts;
-  projectedAt: FinanceUtcDateTime | null;
-};
-
-export type FinanceFinancialSummaryResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  summary: FinanceFinancialSummary;
-  sourceFreshness: FinanceJsonObject;
-};
-
-export type FinanceInvoiceListResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  invoices: FinanceInvoiceListItem[];
-  total: number;
-  counts: FinanceInvoiceStatusCounts;
-  limit: number;
-  offset: number;
-  sourceFreshness: FinanceJsonObject;
-};
-
-export type FinanceInvoiceDetailResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  invoice: FinanceInvoiceDetail;
-  sourceFreshness: FinanceJsonObject;
-};
-
-export type FinancePaymentLedgerResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  payments: FinancePaymentLedgerItem[];
-  total: number;
-  counts: FinancePaymentStatusCounts;
-  limit: number;
-  offset: number;
-  sourceFreshness: FinanceJsonObject;
-};
 
 export type FinancePayout = {
   payoutId: string;
@@ -885,23 +739,6 @@ export type FinanceAffiliatePayoutSettingsPatchResult =
       message: string;
     };
 
-export type FinanceInvoiceCsvExportDisposition = {
-  status: "ready" | "queued" | "unsupported";
-  disposition: "stream_existing_read_model" | "durable_export_job" | "not_available";
-  filename: string;
-  contentType: "text/csv";
-  downloadUrl: string | null;
-  jobId: string | null;
-  message: string;
-};
-
-export type FinanceInvoiceCsvExportResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  export: FinanceInvoiceCsvExportDisposition;
-  sourceFreshness: FinanceJsonObject;
-};
-
 // ---------------------------------------------------------------------------
 // Billing config read model
 //
@@ -1074,45 +911,7 @@ export type FinancePropertySettingsReadRepository = {
   close?(): Promise<void>;
 };
 
-export type FinanceInvoiceListQuery = {
-  status?: FinanceInvoiceStatus;
-  search?: string;
-  sort: "issuedAt" | "guest" | "amount";
-  limit: number;
-  offset: number;
-};
-
-export type FinancePaymentLedgerQuery = {
-  status?: FinancePaymentStatus;
-  provider?: FinanceRoutePaymentProvider;
-  method?: FinanceInvoicePayment["method"];
-  from?: FinanceUtcDateTime;
-  to?: FinanceUtcDateTime;
-  search?: string;
-  limit: number;
-  offset: number;
-};
-
-export type FinancePropertyLedgerReadRepository = {
-  getFinancialSummary(
-    propertyId: FinancePropertyId,
-  ): Promise<Omit<FinanceFinancialSummaryResponse, "contractVersion" | "propertyId"> | null>;
-
-  listInvoices(
-    propertyId: FinancePropertyId,
-    query: FinanceInvoiceListQuery,
-  ): Promise<Omit<FinanceInvoiceListResponse, "contractVersion" | "propertyId">>;
-
-  getInvoice(
-    propertyId: FinancePropertyId,
-    invoiceId: string,
-  ): Promise<Omit<FinanceInvoiceDetailResponse, "contractVersion" | "propertyId"> | null>;
-
-  listPayments(
-    propertyId: FinancePropertyId,
-    query: FinancePaymentLedgerQuery,
-  ): Promise<Omit<FinancePaymentLedgerResponse, "contractVersion" | "propertyId">>;
-
+export type FinancePropertyOperationsReadRepository = {
   listPayouts(
     propertyId: FinancePropertyId,
     query: FinancePayoutListQuery,
@@ -1123,11 +922,6 @@ export type FinancePropertyLedgerReadRepository = {
     view: FinanceReconciliationViewKind,
     query: FinanceReconciliationViewQuery,
   ): Promise<Omit<FinanceReconciliationViewResponse, "contractVersion" | "propertyId">>;
-
-  getInvoiceCsvExportDisposition(
-    propertyId: FinancePropertyId,
-    query: FinanceInvoiceListQuery,
-  ): Promise<Omit<FinanceInvoiceCsvExportResponse, "contractVersion" | "propertyId">>;
 };
 
 export type FinancePropertyCommandRepository = {
@@ -1167,7 +961,7 @@ export type FinanceAffiliateRepository = {
 };
 
 export type FinancePropertyReadRepository = FinancePropertySettingsReadRepository &
-  Partial<FinancePropertyLedgerReadRepository> &
+  Partial<FinancePropertyOperationsReadRepository> &
   Partial<FinanceAffiliateRepository> &
   Partial<FinancePropertyCommandRepository>;
 
