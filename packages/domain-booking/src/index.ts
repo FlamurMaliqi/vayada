@@ -24,6 +24,7 @@ export * from "./bookingPriceSnapshotInput.js";
 export * from "./bookingGuestPolicy.js";
 export * from "./bookingGuestPolicyComposer.js";
 export * from "./bookingGuestPolicyAggregate.js";
+export * from "./bookingAttribution.js";
 export * from "./bookingGuestPolicyCurrentOwnerEvidence.js";
 export * from "./bookingGuestPolicyReadiness.js";
 export * from "./bookingGuestPolicyProjection.js";
