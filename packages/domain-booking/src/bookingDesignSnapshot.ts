@@ -208,9 +208,7 @@ export function parseBookingDesignCatalogSafeMediaEvidenceResult(
   value: unknown,
   expectedScope: BookingDesignCatalogEvidenceScope & Readonly<{ mediaObjectId: string }>,
 ):
-  | BookingDesignCatalogSafeMediaEvidence
-  | BookingDesignCatalogEvidenceFailure<"safe_media">
-  | null {
+  BookingDesignCatalogSafeMediaEvidence | BookingDesignCatalogEvidenceFailure<"safe_media"> | null {
   const failure = parseFailure(value, "safe_media");
   if (failure) return failure;
   const scope = parseScope(expectedScope);

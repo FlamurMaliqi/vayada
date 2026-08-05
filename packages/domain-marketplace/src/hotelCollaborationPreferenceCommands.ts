@@ -148,8 +148,7 @@ export function serializeMarketplaceHotelCollaborationPreferencesSourceRevision(
     throw new TypeError("Marketplace preference source revision must be a non-negative integer");
   }
   return `preferences:${revision}` as
-    | "preferences:0"
-    | MarketplaceHotelCollaborationPreferencesSourceRevision;
+    "preferences:0" | MarketplaceHotelCollaborationPreferencesSourceRevision;
 }
 
 export type MarketplaceHotelCollaborationPreferencesChangedEvent = {

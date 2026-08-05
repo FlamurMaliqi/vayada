@@ -20,6 +20,7 @@ import {
   uploadPlatformMedia,
   type PlatformMediaUploadResult,
 } from "@vayada/marketplace-shared/api/platformMedia";
+import { createHotelCatalogStep1MediaAssignments } from "@vayada/domain-hotels";
 import { countries } from "countries-list";
 import { STORAGE_KEYS } from "@/lib/constants";
 import {
@@ -27,6 +28,7 @@ import {
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/sharedSetupGuard";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { hotelPresentationClient } from "./hotelPresentationClient";
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { targetApiClient } from "./targetClient";
 
@@ -357,7 +359,11 @@ export const hotelService = {
     });
     if (!uploaded) throw new Error("Platform media did not return an uploaded image");
 
-    const publicProfile = await sharedHotelSetupApi.getPublicPropertyProfile(profileId);
+    const canonicalPresentation = await hotelPresentationClient.load(profileId);
+    const galleryAssignments = createHotelCatalogStep1MediaAssignments(
+      canonicalPresentation.profile.media,
+      canonicalPresentation.displayName,
+    ).filter(({ role }) => role === "gallery");
     await sharedHotelSetupApi.replacePropertyPresentationMedia(
       profileId,
       {
@@ -369,15 +375,7 @@ export const hotelService = {
             altText: null,
             sortOrder: 0,
           },
-          ...publicProfile.publicProfile.media
-            .filter(({ mediaType }) => mediaType === "gallery_image")
-            .sort((left, right) => left.sortOrder - right.sortOrder)
-            .map(({ mediaObjectId, altText }, index) => ({
-              mediaObjectId,
-              role: "gallery" as const,
-              altText,
-              sortOrder: index + 1,
-            })),
+          ...galleryAssignments,
         ],
       },
       `marketplace.property-cover.assign:${profileId}:revision:${expectedProfileRevision}:media:${uploaded.mediaId}`,

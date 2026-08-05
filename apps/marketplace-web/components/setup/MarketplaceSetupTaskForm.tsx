@@ -746,9 +746,17 @@ function updateOfferProgress(
   );
 }
 
-function errorMessage(cause: unknown, fallback: string): string {
+export function errorMessage(cause: unknown, fallback: string): string {
   if (!(cause instanceof ApiErrorResponse)) return fallback;
-  return cause.data.detail === undefined
-    ? cause.message || fallback
-    : formatErrorDetail(cause.data.detail) || cause.message || fallback;
+  const detail = cause.data.detail;
+  const formattedDetail =
+    (typeof detail === "string" && detail.trim()) ||
+    (Array.isArray(detail) && detail.length > 0 ? formatErrorDetail(detail) : "");
+  return (
+    formattedDetail ||
+    (typeof cause.data.message === "string" && cause.data.message.trim()) ||
+    (typeof cause.data.error === "string" && cause.data.error.trim()) ||
+    cause.message.trim() ||
+    fallback
+  );
 }

@@ -210,9 +210,7 @@ export type SafeDeleteRoomTypeError =
   | RoomFactsCommandCoordinationError;
 
 export type RoomFactsCommandError =
-  | CreateRoomTypeFactsError
-  | UpdateRoomTypeFactsError
-  | SafeDeleteRoomTypeError;
+  CreateRoomTypeFactsError | UpdateRoomTypeFactsError | SafeDeleteRoomTypeError;
 
 export type DraftRoomTypeBinding = {
   readonly propertyId: string;
@@ -250,9 +248,7 @@ export type SafeDeleteRoomTypeResponse = {
 };
 
 export type RoomFactsCommandResponse =
-  | CreateRoomTypeFactsResponse
-  | UpdateRoomTypeFactsResponse
-  | SafeDeleteRoomTypeResponse;
+  CreateRoomTypeFactsResponse | UpdateRoomTypeFactsResponse | SafeDeleteRoomTypeResponse;
 
 export type CreateRoomTypeFactsResult =
   | { readonly ok: true; readonly response: CreateRoomTypeFactsResponse }
@@ -267,9 +263,7 @@ export type SafeDeleteRoomTypeResult =
   | { readonly ok: false; readonly error: SafeDeleteRoomTypeError };
 
 export type RoomFactsCommandResult =
-  | CreateRoomTypeFactsResult
-  | UpdateRoomTypeFactsResult
-  | SafeDeleteRoomTypeResult;
+  CreateRoomTypeFactsResult | UpdateRoomTypeFactsResult | SafeDeleteRoomTypeResult;
 
 /**
  * Implementations authorize the organization/property relationship. Under the

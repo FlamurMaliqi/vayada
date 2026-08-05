@@ -804,6 +804,29 @@ test.describe("marketplace-web shared setup activation", () => {
       marketplaceProfile: marketplaceProfileUpdates,
       propertyPresentation: propertyPresentationUpdates,
     });
+    await routeJson(
+      page,
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/steps/present-hotel`),
+      {
+        contractVersion: "hotel-catalog-step1.v1",
+        propertyId,
+        displayName: "Alpenrose Munich",
+        profileRevision: 1,
+        supportedLocales: ["en"],
+        profile: {
+          locale: "en",
+          shortDescription: "A welcoming independent hotel close to Munich's historic city centre.",
+          publicSlug: "alpenrose-munich",
+          amenities: { reviewed: true, keys: [] },
+          media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
+        },
+        baseRevisions: {
+          "hotel_catalog.profile": "profile:1",
+          "hotel_catalog.media": "profile:1",
+          "hotel_catalog.amenities": "profile:1",
+        },
+      },
+    );
     await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);

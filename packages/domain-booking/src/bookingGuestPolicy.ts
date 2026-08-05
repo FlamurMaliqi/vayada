@@ -40,8 +40,7 @@ export type BookingGuestPolicyAbsentSourceRevision = Readonly<
   }
 >;
 export type BookingGuestPolicyCurrentSourceRevision =
-  | BookingGuestPolicySourceRevision
-  | BookingGuestPolicyAbsentSourceRevision;
+  BookingGuestPolicySourceRevision | BookingGuestPolicyAbsentSourceRevision;
 
 export type BookingGuestPolicyChoices = Readonly<{
   defaultGuestLanguage: BookingGuestLanguage;

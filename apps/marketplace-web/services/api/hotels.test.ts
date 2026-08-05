@@ -1441,7 +1441,9 @@ describe("hotel target self-service client", () => {
 
   it("promotes a restored remote offer photo to the canonical hotel cover", async () => {
     const sourceUrl = "https://images.example/restored-offer.webp";
+    const canonicalPropertyId = "00000000-0000-4000-8000-000000000008";
     const mediaObjectId = "00000000-0000-4000-8000-000000000009";
+    const hiddenGalleryMediaObjectId = "00000000-0000-4000-8000-000000000011";
     const galleryMedia = {
       mediaObjectId: "00000000-0000-4000-8000-000000000010",
       mediaType: "gallery_image",
@@ -1460,14 +1462,16 @@ describe("hotel target self-service client", () => {
         const body = JSON.parse(String(init?.body));
         expect(body).toMatchObject({
           idempotencyKey: expect.stringMatching(
-            /^marketplace\.property-hero:property-two:revision:17:files:sha256:[0-9a-f]{64}$/,
+            new RegExp(
+              `^marketplace\\.property-hero:${canonicalPropertyId}:revision:17:files:sha256:[0-9a-f]{64}$`,
+            ),
           ),
           purpose: "property.hero_image",
           visibility: "private",
           resource: {
             product: "hotel_catalog",
             resourceType: "property",
-            resourceId: propertyId,
+            resourceId: canonicalPropertyId,
           },
         });
         expect(body).not.toHaveProperty("expectedProfileRevision");
@@ -1503,35 +1507,57 @@ describe("hotel target self-service client", () => {
           ],
         });
       }
-      if (href.endsWith(`/api/hotel-setup/properties/${propertyId}/public-profile`)) {
+      if (href.endsWith(`/api/hotel-setup/properties/${canonicalPropertyId}/steps/present-hotel`)) {
+        return jsonResponse({
+          contractVersion: "hotel-catalog-step1.v1",
+          propertyId: canonicalPropertyId,
+          displayName: "Alpenrose Munich",
+          profileRevision: 17,
+          supportedLocales: ["en"],
+          profile: {
+            locale: "en",
+            shortDescription:
+              "A welcoming independent hotel close to Munich's historic city centre.",
+            publicSlug: "alpenrose-munich",
+            amenities: { reviewed: true, keys: [] },
+            media: {
+              coverMediaObjectId: "00000000-0000-4000-8000-000000000001",
+              galleryMediaObjectIds: [galleryMedia.mediaObjectId, hiddenGalleryMediaObjectId],
+            },
+          },
+          baseRevisions: {
+            "hotel_catalog.profile": "profile:17",
+            "hotel_catalog.media": "profile:17",
+            "hotel_catalog.amenities": "profile:17",
+          },
+        });
+      }
+      if (href.endsWith(`/api/hotel-setup/properties/${canonicalPropertyId}/public-profile`)) {
         publicProfileReads += 1;
         return jsonResponse({
-          propertyId,
-          profileRevision: publicProfileReads === 1 ? 17 : 18,
+          propertyId: canonicalPropertyId,
+          profileRevision: 18,
           publicProfile: {
             locale: "en",
             shortDescription: "A welcoming independent hotel.",
             longDescription: null,
-            media:
-              publicProfileReads === 1
-                ? [publicProfile.publicProfile.media[0], galleryMedia]
-                : [
-                    {
-                      mediaObjectId,
-                      mediaType: "hero_image",
-                      url: "https://cdn.example/hotels/cover.webp",
-                      altText: null,
-                      sortOrder: 0,
-                    },
-                    galleryMedia,
-                  ],
+            media: [
+              {
+                mediaObjectId,
+                mediaType: "hero_image",
+                url: "https://cdn.example/hotels/cover.webp",
+                altText: null,
+                sortOrder: 0,
+              },
+              galleryMedia,
+            ],
           },
         });
       }
-      if (href.endsWith(`/api/hotel-setup/properties/${propertyId}/media/presentation`)) {
+      if (href.endsWith(`/api/hotel-setup/properties/${canonicalPropertyId}/media/presentation`)) {
         expect(init?.method).toBe("PUT");
         expect(requestHeader(init, "Idempotency-Key")).toBe(
-          `marketplace.property-cover.assign:${propertyId}:revision:17:media:${mediaObjectId}`,
+          `marketplace.property-cover.assign:${canonicalPropertyId}:revision:17:media:${mediaObjectId}`,
         );
         expect(JSON.parse(String(init?.body))).toEqual({
           expectedProfileRevision: 17,
@@ -1540,8 +1566,14 @@ describe("hotel target self-service client", () => {
             {
               mediaObjectId: galleryMedia.mediaObjectId,
               role: "gallery",
-              altText: galleryMedia.altText,
+              altText: "Alpenrose Munich gallery photo 1",
               sortOrder: 1,
+            },
+            {
+              mediaObjectId: hiddenGalleryMediaObjectId,
+              role: "gallery",
+              altText: "Alpenrose Munich gallery photo 2",
+              sortOrder: 2,
             },
           ],
         });
@@ -1554,8 +1586,14 @@ describe("hotel target self-service client", () => {
             {
               mediaObjectId: galleryMedia.mediaObjectId,
               role: "gallery",
-              altText: galleryMedia.altText,
+              altText: "Alpenrose Munich gallery photo 1",
               sortOrder: 1,
+            },
+            {
+              mediaObjectId: hiddenGalleryMediaObjectId,
+              role: "gallery",
+              altText: "Alpenrose Munich gallery photo 2",
+              sortOrder: 2,
             },
           ],
         });
@@ -1565,12 +1603,12 @@ describe("hotel target self-service client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      hotelService.uploadProfileImageFromSource(sourceUrl, propertyId, 17),
+      hotelService.uploadProfileImageFromSource(sourceUrl, canonicalPropertyId, 17),
     ).resolves.toMatchObject({
       mediaObjectId,
       url: "https://cdn.example/hotels/cover.webp",
     });
-    expect(publicProfileReads).toBe(2);
+    expect(publicProfileReads).toBe(1);
   });
 
   it("classifies a browser-blocked canonical photo before starting a media upload", async () => {
