@@ -2117,95 +2117,6 @@ type QueryCall = {
   values?: readonly unknown[];
 };
 
-type FinanceInvoiceRowFixture = {
-  invoiceId: string;
-  invoiceNumber: string;
-  guestBookingId: string;
-  bookingReference: string;
-  propertyName: string | null;
-  guestDisplayName: string | null;
-  guestEmail: string | null;
-  guestPhone: string | null;
-  checkIn: string;
-  checkOut: string;
-  roomName: string | null;
-  roomNumber: string | null;
-  currency: string;
-  totalAmount: string;
-  amountPaid: string;
-  balanceDue: string;
-  status: string;
-  issuedAt: string;
-  total: number;
-  counts: unknown;
-  sourceFreshness: unknown;
-};
-
-function targetManualPaymentPool(
-  options: {
-    propertyId?: string;
-    invoice?: Partial<FinanceInvoiceRowFixture>;
-  } = {},
-): {
-  calls: QueryCall[];
-  pool: {
-    connect(): Promise<{
-      query<T extends QueryResultRow = QueryResultRow>(
-        text: string,
-        values?: readonly unknown[],
-      ): Promise<{ rows: T[]; rowCount: number }>;
-      release(): void;
-    }>;
-    query<T extends QueryResultRow = QueryResultRow>(
-      text: string,
-      values?: readonly unknown[],
-    ): Promise<{ rows: T[]; rowCount: number }>;
-    end(): Promise<void>;
-  };
-  requiredCall(fragment: string): QueryCall;
-} {
-  const calls: QueryCall[] = [];
-  const activePropertyId = options.propertyId ?? propertyId;
-  const invoice = financeInvoiceRowFixture({
-    ...options.invoice,
-    guestBookingId:
-      activePropertyId === propertyId
-        ? invoiceDetails[0]!.guestBookingId
-        : "f6000000-0000-0000-0000-000000000688",
-  });
-
-  const query = async <T extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values?: readonly unknown[],
-  ): Promise<{ rows: T[]; rowCount: number }> => {
-    calls.push({ text, values });
-    const rows = targetManualPaymentRows<T>(text, values, invoice);
-    return { rows, rowCount: rows.length };
-  };
-
-  const client = {
-    query,
-    release() {},
-  };
-  const pool = {
-    async connect() {
-      return client;
-    },
-    query,
-    async end() {},
-  };
-
-  return {
-    calls,
-    pool,
-    requiredCall(fragment: string) {
-      const call = calls.find((candidate) => candidate.text.includes(fragment));
-      expect(call, fragment).toBeDefined();
-      return call!;
-    },
-  };
-}
-
 function targetPaymentSettingsPool(): {
   calls: QueryCall[];
   providerAccountId: string;
@@ -2393,63 +2304,6 @@ function targetPaymentSettingsRow(
   };
 }
 
-function targetManualPaymentRows<T extends QueryResultRow>(
-  text: string,
-  values: readonly unknown[] | undefined,
-  invoice: FinanceInvoiceRowFixture,
-): T[] {
-  if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return [];
-  if (text.includes("WITH invoice_base AS")) return [invoice as unknown as T];
-  if (text.includes("INSERT INTO finance.payments")) {
-    return [{ paymentId: "f9000000-0000-0000-0000-000000000686", replay: false } as unknown as T];
-  }
-  if (text.includes('SELECT id::text AS "paymentId", true AS replay')) return [];
-  if (text.includes("SELECT") && text.includes("FROM platform.idempotency_keys")) return [];
-  if (text.includes("INSERT INTO platform.idempotency_keys")) {
-    return [
-      {
-        status: "in_progress",
-        requestFingerprintHash: String(values?.[1]),
-      } as unknown as T,
-    ];
-  }
-  if (text.includes("INSERT INTO platform.domain_events")) {
-    return [{ eventId: "fa000000-0000-0000-0000-000000000686" } as unknown as T];
-  }
-  if (text.includes("INSERT INTO platform.outbox_events")) {
-    return [
-      {
-        destination: "booking.projection-refresh",
-        outboxEventId: "fb000000-0000-0000-0000-000000000686",
-      },
-      {
-        destination: "pms.projection-refresh",
-        outboxEventId: "fc000000-0000-0000-0000-000000000686",
-      },
-    ] as unknown as T[];
-  }
-  if (text.includes("INSERT INTO platform.jobs") && text.includes('"jobId", replay')) {
-    return [{ jobId: "fd000000-0000-0000-0000-000000000686", replay: false } as unknown as T];
-  }
-  if (text.includes("INSERT INTO platform.jobs")) return [];
-  if (text.includes("INSERT INTO platform.product_audit_events")) return [];
-  if (text.includes("UPDATE platform.idempotency_keys")) return [];
-  if (text.includes("FROM finance.payments payment")) {
-    return [
-      {
-        paymentId: "f9000000-0000-0000-0000-000000000686",
-        method: "cash",
-        amount: "250.00",
-        currency: "EUR",
-        reference: "front desk receipt 8812",
-        status: "paid",
-        recordedAt: "2026-06-12T12:00:00.000Z",
-      } as unknown as T,
-    ];
-  }
-  return [];
-}
-
 function targetStripeProviderAccountPool(options: { failInsert?: boolean } = {}): {
   calls: QueryCall[];
   existingAccount: FinanceProviderAccountRowFixture | null;
@@ -2632,35 +2486,6 @@ function stripePropertyOnboardingLinkTargetCommand(
       requestedAt: "2026-06-12T12:00:00.000Z",
     },
     payload: { providerAccountId },
-  };
-}
-
-function financeInvoiceRowFixture(
-  overrides: Partial<FinanceInvoiceRowFixture> = {},
-): FinanceInvoiceRowFixture {
-  return {
-    invoiceId: "inv_2026_abcd",
-    invoiceNumber: "INV-2026-0002",
-    guestBookingId: invoiceDetails[0]!.guestBookingId,
-    bookingReference: "B-FIN-686",
-    propertyName: "Hotel Alpenrose",
-    guestDisplayName: "Fi Guest",
-    guestEmail: "finance.guest@example.test",
-    guestPhone: "+15555550123",
-    checkIn: "2026-08-01",
-    checkOut: "2026-08-05",
-    roomName: "Alpine Suite",
-    roomNumber: "201",
-    currency: "EUR",
-    totalAmount: "1200.00",
-    amountPaid: "350.00",
-    balanceDue: "850.00",
-    status: "partial",
-    issuedAt: "2026-06-12T10:00:00.000Z",
-    total: 1,
-    counts: { partial: 1 },
-    sourceFreshness: {},
-    ...overrides,
   };
 }
 
