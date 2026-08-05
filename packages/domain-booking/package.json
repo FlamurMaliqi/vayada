@@ -13,14 +13,16 @@
     }
   },
   "scripts": {
-    "prebuild": "npm --workspace @vayada/domain-pms run build",
-    "pretest": "npm --workspace @vayada/domain-pms run build",
-    "pretypecheck": "npm --workspace @vayada/domain-pms run build",
+    "prebuild": "npm --workspace @vayada/domain-hotels run build && npm --workspace @vayada/domain-pms run build && npm --workspace @vayada/domain-finance run build",
+    "pretest": "npm --workspace @vayada/domain-hotels run build && npm --workspace @vayada/domain-pms run build && npm --workspace @vayada/domain-finance run build",
+    "pretypecheck": "npm --workspace @vayada/domain-hotels run build && npm --workspace @vayada/domain-pms run build && npm --workspace @vayada/domain-finance run build",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@vayada/domain-finance": "0.0.0",
+    "@vayada/domain-hotels": "0.0.0",
     "@vayada/domain-pms": "0.0.0"
   },
   "devDependencies": {

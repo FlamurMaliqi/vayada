@@ -1,4 +1,16 @@
+export * from "./roomFacts.js";
+export * from "./roomAmenities.js";
 export * from "./roomMedia.js";
+export * from "./roomPublication.js";
+export * from "./physicalRoomUnits.js";
+export * from "./pricing.js";
+export * from "./recurringPricing.js";
+export * from "./mandatoryChargeConfirmation.js";
+export * from "./operatingCalendar.js";
+export * from "./operatingCalendarImpact.js";
+export * from "./inventoryMaterialization.js";
+export * from "./inventoryMaterializationPlanner.js";
+export * from "./inventoryReservationLifecycle.js";
 
 export const PMS_RESERVATION_CONTRACT_VERSION = "pms-reservation.v1" as const;
 export const PMS_INVENTORY_RESERVATION_MARKER_VERSION = "pms.inventory-reservation.v1" as const;

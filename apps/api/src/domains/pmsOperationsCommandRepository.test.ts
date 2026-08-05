@@ -9,6 +9,7 @@ import {
 } from "./pmsOperationsCommandRepository.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import type {
+  PmsAssignmentCommand,
   PmsCheckInCommand,
   PmsCheckOutCommand,
   PmsCheckOutRecord,
@@ -185,6 +186,22 @@ function baseCheckInCommand(overrides: Partial<PmsCheckInCommand> = {}): PmsChec
   };
 }
 
+function baseAssignmentCommand(
+  overrides: Partial<PmsAssignmentCommand> = {},
+): PmsAssignmentCommand {
+  return {
+    propertyId,
+    guestBookingId,
+    commandId: "cmd-assignment-001",
+    idempotencyKey: "pms-assignment-001",
+    expectedVersion: "reservation-v7",
+    action: "assign",
+    assignmentId: assignmentOneId,
+    roomId: "f6855100-0000-0000-0000-000000000003",
+    ...overrides,
+  };
+}
+
 function baseStatusCommand(
   overrides: Partial<PmsOperationalStatusCommand> = {},
 ): PmsOperationalStatusCommand {
@@ -264,17 +281,51 @@ function createRepository(handler: QueryHandler): {
 }
 
 function successfulOperationalHandler(status = "assigned"): QueryHandler {
-  return (text) => {
+  return (text, values) => {
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
     if (text.includes("FROM platform.idempotency_keys")) return ok();
     if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
     if (text.includes("FROM pms.operational_booking_assignments")) {
       return ok(assignmentRows(status));
     }
+    if (text.includes("FROM pms.rooms") && text.includes("operational_label_status = 'verified'")) {
+      const roomIds = (values?.[1] ?? []) as string[];
+      return ok(roomIds.map((id) => ({ id })));
+    }
     if (text.includes("FROM pms.booking_checkin_records")) return ok();
     if (text.includes("INSERT INTO pms.booking_checkin_records")) return ok([], 2);
     if (text.includes("UPDATE pms.operational_booking_assignments")) return ok([], 2);
     if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
+    if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
+    throw new Error(`Unhandled SQL: ${text}`);
+  };
+}
+
+function successfulAssignmentHandler(): QueryHandler {
+  return (text) => {
+    if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+    if (text.includes("FROM platform.idempotency_keys")) return ok();
+    if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+    if (text.includes("FROM pms.operational_booking_assignments assignment")) {
+      return ok([assignmentRows()[0]!]);
+    }
+    if (text.includes("pg_advisory_xact_lock")) return ok([{ locked: true }]);
+    if (text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE")) return ok();
+    if (text.includes("status = 'available'") && text.includes("FROM pms.rooms")) {
+      return ok([
+        {
+          roomId: "f6855100-0000-0000-0000-000000000003",
+          roomTypeId: assignmentRows()[0]!.roomTypeId,
+          status: "available",
+        },
+      ]);
+    }
+    if (text.includes("WITH stay_dates AS")) return ok([{ eligible: 1 }]);
+    if (text.includes("UPDATE pms.operational_booking_assignments")) return ok([], 1);
+    if (text.includes("INSERT INTO platform.domain_events")) {
+      return ok([{ eventId: "f6855900-0000-0000-0000-000000000001" }], 1);
+    }
+    if (text.includes("INSERT INTO platform.outbox_events")) return ok([], 1);
     if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
     throw new Error(`Unhandled SQL: ${text}`);
   };
@@ -384,6 +435,113 @@ function successfulCheckoutHandler(
 }
 
 describe("target PMS operations command repository", () => {
+  it.each(["assign", "move"] as const)(
+    "serializes %s before accepting a verified operational room",
+    async (action) => {
+      const { client, repository } = createRepository(successfulAssignmentHandler());
+
+      const result = await repository.executeAssignmentCommand(
+        baseAssignmentCommand({
+          action,
+          commandId: `cmd-${action}-verified`,
+          idempotencyKey: `key-${action}-verified`,
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      const advisoryLockIndex = client.calls.findIndex(({ text }) =>
+        text.includes("pg_advisory_xact_lock"),
+      );
+      const roomLockIndex = client.calls.findIndex(
+        ({ text }) => text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE"),
+      );
+      const eligibilityIndex = client.calls.findIndex(
+        ({ text }) => text.includes("status = 'available'") && text.includes("FROM pms.rooms"),
+      );
+      expect(advisoryLockIndex).toBeGreaterThan(-1);
+      expect(advisoryLockIndex).toBeLessThan(roomLockIndex);
+      expect(roomLockIndex).toBeLessThan(eligibilityIndex);
+      expect(requiredCall(client, "UPDATE pms.operational_booking_assignments").values[0]).toBe(
+        "f6855100-0000-0000-0000-000000000003",
+      );
+    },
+  );
+
+  it.each(["assign", "move"] as const)(
+    "rejects %s to an unlabeled or unverified physical unit",
+    async (action) => {
+      const { client, repository } = createRepository((text) => {
+        if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+        if (text.includes("FROM platform.idempotency_keys")) return ok();
+        if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }]);
+        if (text.includes("pg_advisory_xact_lock")) return ok([{ locked: true }]);
+        if (text.includes("FROM pms.operational_booking_assignments assignment")) {
+          return ok([assignmentRows()[0]!]);
+        }
+        if (text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE")) return ok();
+        if (text.includes("status = 'available'") && text.includes("FROM pms.rooms")) {
+          expect(text).toContain("operational_label_status = 'verified'");
+          expect(text).toContain("room_number IS NOT NULL");
+          return ok();
+        }
+        throw new Error(`Unhandled SQL: ${text}`);
+      });
+
+      const result = await repository.executeAssignmentCommand(
+        baseAssignmentCommand({
+          action,
+          commandId: `cmd-${action}`,
+          idempotencyKey: `key-${action}`,
+        }),
+      );
+
+      expect(result).toMatchObject({ ok: false, statusCode: 409, code: "room_unavailable" });
+      expect(
+        client.calls.some((call) =>
+          call.text.includes("UPDATE pms.operational_booking_assignments"),
+        ),
+      ).toBe(false);
+      expect(client.calls.some((call) => call.text === "ROLLBACK")).toBe(true);
+    },
+  );
+
+  it("rejects a swap when any non-null room lacks verified operational identity", async () => {
+    let assignmentLookup = 0;
+    const { client, repository } = createRepository((text) => {
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }]);
+      if (text.includes("pg_advisory_xact_lock")) return ok([{ locked: true }]);
+      if (text.includes("FROM pms.operational_booking_assignments assignment")) {
+        const row = assignmentRows()[assignmentLookup];
+        assignmentLookup += 1;
+        return ok(row ? [row] : []);
+      }
+      if (text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE")) return ok();
+      if (
+        text.includes("FROM pms.rooms") &&
+        text.includes("operational_label_status = 'verified'")
+      ) {
+        return ok([{ id: assignmentRows()[0]!.roomId }]);
+      }
+      throw new Error(`Unhandled SQL: ${text}`);
+    });
+
+    const result = await repository.executeAssignmentCommand(
+      baseAssignmentCommand({
+        action: "swap",
+        roomId: undefined,
+        targetAssignmentId: assignmentTwoId,
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, statusCode: 409, code: "room_unavailable" });
+    expect(
+      client.calls.some((call) => call.text.includes("UPDATE pms.operational_booking_assignments")),
+    ).toBe(false);
+    expect(client.calls.some((call) => call.text === "ROLLBACK")).toBe(true);
+  });
+
   it("writes property-scoped audit events and reservation-wide check-in mutations", async () => {
     const { client, repository } = createRepository(successfulOperationalHandler());
 
@@ -417,6 +575,64 @@ describe("target PMS operations command repository", () => {
       ok: false,
       statusCode: 400,
       code: "invalid_status_transition",
+    });
+    expect(
+      client.calls.some((call) => call.text.includes("UPDATE pms.operational_booking_assignments")),
+    ).toBe(false);
+    expect(
+      client.calls.some((call) => call.text.includes("INSERT INTO platform.product_audit_events")),
+    ).toBe(false);
+    expect(client.calls.some((call) => call.text === "ROLLBACK")).toBe(true);
+  });
+
+  it("rejects check-in when an assigned room lacks verified operational identity", async () => {
+    const successful = successfulOperationalHandler();
+    const { client, repository } = createRepository((text, values) => {
+      if (
+        text.includes("FROM pms.rooms") &&
+        text.includes("operational_label_status = 'verified'")
+      ) {
+        return ok();
+      }
+      return successful(text, values);
+    });
+
+    const result = await repository.executeCheckInCommand(baseCheckInCommand());
+
+    expect(result).toMatchObject({
+      ok: false,
+      statusCode: 400,
+      code: "invalid_status_transition",
+      message: "PMS check-in requires an active room with a verified operational label.",
+    });
+    expect(
+      client.calls.some((call) => call.text.includes("INSERT INTO pms.booking_checkin_records")),
+    ).toBe(false);
+    expect(
+      client.calls.some((call) => call.text.includes("INSERT INTO platform.product_audit_events")),
+    ).toBe(false);
+    expect(client.calls.some((call) => call.text === "ROLLBACK")).toBe(true);
+  });
+
+  it("rejects an in-house status transition without verified operational identity", async () => {
+    const successful = successfulOperationalHandler();
+    const { client, repository } = createRepository((text, values) => {
+      if (
+        text.includes("FROM pms.rooms") &&
+        text.includes("operational_label_status = 'verified'")
+      ) {
+        return ok([{ id: assignmentRows()[0]?.roomId }]);
+      }
+      return successful(text, values);
+    });
+
+    const result = await repository.executeOperationalStatusCommand(baseStatusCommand());
+
+    expect(result).toMatchObject({
+      ok: false,
+      statusCode: 400,
+      code: "invalid_status_transition",
+      message: "PMS status update requires an active room with a verified operational label.",
     });
     expect(
       client.calls.some((call) => call.text.includes("UPDATE pms.operational_booking_assignments")),

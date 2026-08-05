@@ -124,11 +124,130 @@ test.describe("vayada-admin smoke", () => {
     await assertNoLegacyCalls();
     await assertHealthy();
   });
+
+  test("creates every hotel invite route without retired onboarding fields", async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "vayada-admin-hotel-invites");
+    const adminBaseURL = baseURL?.startsWith("http://127.0.0.1:3001")
+      ? "http://localhost:3001"
+      : (baseURL ?? "https://admin.localhost");
+    const pageOrigin = new URL(adminBaseURL).origin;
+    const requests: Array<Record<string, unknown>> = [];
+
+    await page.addInitScript(() => {
+      const expiresAt = Date.now() + 60 * 60 * 1000;
+      window.localStorage.setItem("access_token", "e2e-platform-token");
+      window.localStorage.setItem("token_expires_at", String(expiresAt));
+      window.localStorage.setItem("isLoggedIn", "true");
+      window.localStorage.setItem("userId", "user_platform_admin");
+      window.localStorage.setItem("userEmail", "platform-admin@example.test");
+      window.localStorage.setItem("userStatus", "active");
+      window.localStorage.setItem("isSuperAdmin", "true");
+      window.localStorage.setItem(
+        "user",
+        JSON.stringify({
+          id: "user_platform_admin",
+          email: "platform-admin@example.test",
+          status: "active",
+          is_superadmin: true,
+        }),
+      );
+    });
+
+    await page.route(
+      /https:\/\/api\.localhost(?::\d+)?\/api\/marketplace\/admin\/invite-codes(?:\?|$)/,
+      async (route) => {
+        if (route.request().method() === "GET") {
+          await fulfillJson(route, pageOrigin, []);
+          return;
+        }
+        const request = route.request().postDataJSON() as Record<string, unknown>;
+        requests.push(request);
+        await fulfillJson(
+          route,
+          pageOrigin,
+          {
+            contractVersion: "hotel-account-invite.v1",
+            id: `invite_${requests.length}`,
+            code: `VAY-ROUTE-${requests.length}`,
+            status: "pending",
+            createdAt: "2026-08-02T12:00:00.000Z",
+            expiresAt: "2026-09-01T12:00:00.000Z",
+            identity: request.identity,
+            organization: request.organization,
+            property: request.property,
+            selectedTracks: request.selectedTracks,
+            handoffPath: "/setup",
+            redeemedAt: null,
+          },
+          201,
+        );
+      },
+    );
+
+    await page.goto(new URL("/dashboard/invite-codes", adminBaseURL).toString());
+    await expect(page.getByRole("heading", { name: "Hotel invitations" })).toBeVisible();
+
+    const routeCases = [
+      {
+        radio: /^Creator Marketplace/,
+        expected: ["creator_marketplace"],
+      },
+      {
+        radio: /^Hotel Operations/,
+        expected: ["hotel_operations"],
+      },
+      {
+        radio: /^Marketplace \+ Hotel Operations/,
+        expected: ["hotel_operations", "creator_marketplace"],
+      },
+    ];
+
+    for (const [index, routeCase] of routeCases.entries()) {
+      await page.getByRole("button", { name: "Create invite" }).click();
+      await page.getByLabel("Hotel owner email").fill(`owner-${index + 1}@example.test`);
+      await page.getByLabel("Hotel group name").fill(`Hotel Group ${index + 1}`);
+      await page.getByLabel("Property name").fill(`Hotel Route ${index + 1}`);
+      await page.getByRole("radio", { name: routeCase.radio }).check();
+      await page.getByRole("button", { name: "Create invite code" }).click();
+
+      await expect(page.getByRole("heading", { name: "Hotel invite created" })).toBeVisible();
+      await expect(page.getByText("After secure acceptance: /setup")).toBeVisible();
+      await page.getByRole("button", { name: "Back to invitations" }).click();
+    }
+
+    expect(requests).toHaveLength(3);
+    expect(requests.map((request) => request.selectedTracks)).toEqual(
+      routeCases.map((routeCase) => routeCase.expected),
+    );
+    for (const request of requests) {
+      expect(Object.keys(request).sort()).toEqual([
+        "identity",
+        "organization",
+        "property",
+        "selectedTracks",
+      ]);
+      expect(JSON.stringify(request)).not.toMatch(
+        /rooms|rates|policies|payout|iban|swift|bank|payment|addons|benefits/i,
+      );
+    }
+
+    await assertNoLegacyCalls();
+    await assertHealthy();
+  });
 });
 
-async function fulfillJson(route: Route, origin: string, body: unknown): Promise<void> {
+async function fulfillJson(
+  route: Route,
+  origin: string,
+  body: unknown,
+  status = 200,
+): Promise<void> {
   await route.fulfill({
-    status: 200,
+    status,
     headers: {
       "access-control-allow-origin": origin,
       "access-control-allow-credentials": "true",

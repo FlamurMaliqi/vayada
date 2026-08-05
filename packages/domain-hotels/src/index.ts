@@ -13,13 +13,18 @@
  */
 
 export * from "./adaptiveHotelSetup.js";
+export * from "./hotelCatalogCurrentOwnerEvidence.js";
+export * from "./hotelCatalogStep1.js";
 export * from "./hotelMediaProjection.js";
+export * from "./onboardingLifecycle.js";
+export * from "./onboardingReadiness.js";
 export * from "./propertyMedia.js";
 export * from "./propertyMediaWire.js";
 export * from "./propertySetupDraft.js";
 export * from "./propertySetupDraftFieldValidation.js";
 export * from "./propertySetupDraftRequest.js";
 export * from "./propertySetupDraftRequestSafety.js";
+export * from "./propertySetupDraftReset.js";
 export * from "./propertySetupRoute.js";
 export * from "./propertyProfile.js";
 export * from "./publicPropertyProfile.js";

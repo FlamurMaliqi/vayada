@@ -4,12 +4,13 @@ import {
   isSharedAccountDetailsComplete,
   isValidSharedAccountPhone,
   normalizeSharedAccountName,
+  sharedAccountInitials,
   sharedAccountProfileImageError,
   splitSharedAccountName,
 } from "@vayada/product-onboarding";
 
 describe("shared account details", () => {
-  it("requires a full name, valid phone, and canonical photo before skipping the shared step", () => {
+  it("requires a full name and valid phone without requiring hotel-manager media", () => {
     expect(isSharedAccountDetailsComplete(null)).toBe(false);
     expect(isSharedAccountDetailsComplete({ name: "Flamur" })).toBe(false);
     expect(isSharedAccountDetailsComplete({ name: "Flamur Maliqi" })).toBe(false);
@@ -28,14 +29,9 @@ describe("shared account details", () => {
         profilePictureMediaObjectId: "media-profile-1",
       }),
     ).toBe(false);
-    expect(
-      isSharedAccountDetailsComplete({
-        name: "Flamur Maliqi",
-        phone: "+49 89 123456",
-        profilePictureUrl: "https://media.example/profile.webp",
-        profilePictureMediaObjectId: "media-profile-1",
-      }),
-    ).toBe(true);
+    expect(isSharedAccountDetailsComplete({ name: "Flamur Maliqi", phone: "+49 89 123456" })).toBe(
+      true,
+    );
   });
 
   it("validates optional phone numbers by format and digit count", () => {
@@ -57,6 +53,11 @@ describe("shared account details", () => {
     expect(normalizeSharedAccountName(" Ada ", " Byron  Lovelace ")).toBe("Ada Byron Lovelace");
     expect(normalizeSharedAccountName("Ada", "")).toBe("Ada");
     expect(normalizeSharedAccountName("", "Lovelace")).toBe("Lovelace");
+  });
+
+  it("renders stable manager initials without using property media", () => {
+    expect(sharedAccountInitials(" Flamur ", " Maliqi ")).toBe("FM");
+    expect(sharedAccountInitials("", "")).toBe("?");
   });
 
   it("accepts supported profile photos within the shared 5 MB limit", () => {

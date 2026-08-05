@@ -8,6 +8,7 @@ import {
   getActivePropertySetupStepIds,
   type PropertySetupBaseRevisions,
   type PropertySetupDraftPayload,
+  type JsonValue,
   type SavePropertySetupDraftReceipt,
   type SavePropertySetupDraftResult,
 } from "./propertySetupDraft.js";
@@ -28,6 +29,18 @@ describe("property setup draft contract", () => {
       "payments",
       "review",
     ]);
+    expect(
+      PROPERTY_SETUP_STEP_DEFINITIONS.find(({ stepId }) => stepId === "present_hotel"),
+    ).toMatchObject({
+      permission: "hotel_catalog.setup.manage",
+      fields: [
+        "profile.default_locale",
+        "profile.short_description",
+        "profile.hero_image",
+        "profile.gallery_images",
+        "profile.amenities",
+      ],
+    });
     expect(
       PROPERTY_SETUP_STEP_DEFINITIONS.find(({ stepId }) => stepId === "payments"),
     ).toMatchObject({
@@ -68,6 +81,9 @@ describe("property setup draft contract", () => {
     expectTypeOf<PropertySetupBaseRevisions<"review">>().toEqualTypeOf<
       Readonly<Record<string, never>>
     >();
+    expectTypeOf<PropertySetupDraftPayload<"present_hotel">>()
+      .toHaveProperty("profile.default_locale")
+      .toEqualTypeOf<JsonValue | undefined>();
     expectTypeOf<SavePropertySetupDraftReceipt>().not.toHaveProperty("payload");
     expectTypeOf<SavePropertySetupDraftReceipt>().not.toHaveProperty("baseRevisions");
     expectTypeOf<SavePropertySetupDraftResult>().toMatchTypeOf<

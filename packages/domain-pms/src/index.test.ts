@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   PMS_RESERVATION_CONTRACT_VERSION,
   PMS_RESERVATION_ERROR_CODES,
+  PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
+  parsePmsPricingCurrencyCapabilities,
   ROOM_MEDIA_MAX_ITEMS,
   type CreatePmsReservationCommand,
   type GetPmsOperationalReservationQuery,
@@ -21,6 +23,18 @@ describe("@vayada/domain-pms", () => {
 
   it("exports the room-media command contract", () => {
     expect(ROOM_MEDIA_MAX_ITEMS).toBe(20);
+  });
+
+  it("exports the strict pricing-currency capability contract", () => {
+    expect(PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION).toBe(
+      "pms-pricing-currency-capabilities.v1",
+    );
+    expect(
+      parsePmsPricingCurrencyCapabilities({
+        contractVersion: PMS_PRICING_CURRENCY_CAPABILITIES_CONTRACT_VERSION,
+        supportedCurrencies: [{ code: "EUR", scale: 2 }],
+      }),
+    ).not.toBeNull();
   });
 
   it("allows downstream packages to implement the PMS reservation sink", async () => {

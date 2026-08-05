@@ -1,6 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { requireAuthContext, type PermissionKey, type RequestContext } from "@vayada/backend-auth";
+import { isSetupTrack, type SetupTrack } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 
@@ -13,6 +14,16 @@ import {
 import { enforceRoutePolicy } from "./policy.js";
 
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
+export const HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION = "hotel-account-invite.v1" as const;
+export const HOTEL_ACCOUNT_INVITE_HANDOFF_PATH = "/setup" as const;
+
+export function hotelAccountInviteOrganizationExternalId(inviteId: string): string {
+  return `vayada-signup:marketplace-web:hotel:invite:${inviteId}`;
+}
+
+export function hotelAccountInviteTrackCorrelationId(inviteId: string): string {
+  return `hotel-account-invite:${inviteId}:tracks`;
+}
 
 export const MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT = {
   method: "GET",
@@ -243,14 +254,36 @@ export type MarketplaceAdminUserProfileUpdateResponse = {
 };
 
 export type MarketplaceAdminInviteCode = {
+  contractVersion: typeof HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION;
   id: string;
   code: string;
   status: "pending" | "redeemed" | "expired";
-  created_at: string;
-  expires_at: string;
-  hotel_name: string | null;
-  redeemed_at: string | null;
-  setup_data?: unknown;
+  createdAt: string;
+  expiresAt: string;
+  identity: MarketplaceAdminHotelAccountInviteCreateRequest["identity"] | null;
+  organization: MarketplaceAdminHotelAccountInviteCreateRequest["organization"] | null;
+  property: MarketplaceAdminHotelAccountInviteCreateRequest["property"] | null;
+  selectedTracks: SetupTrack[];
+  handoffPath: typeof HOTEL_ACCOUNT_INVITE_HANDOFF_PATH;
+  redeemedAt: string | null;
+};
+
+export type MarketplaceAdminHotelAccountInviteCreateRequest = {
+  identity: {
+    email: string;
+  };
+  organization: {
+    displayName: string;
+  };
+  property: {
+    displayName: string;
+  };
+  selectedTracks: SetupTrack[];
+};
+
+type MarketplaceAdminHotelAccountInvitePayload = MarketplaceAdminHotelAccountInviteCreateRequest & {
+  contractVersion: typeof HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION;
+  handoffPath: typeof HOTEL_ACCOUNT_INVITE_HANDOFF_PATH;
 };
 
 export type MarketplaceAdminOffer = {
@@ -334,7 +367,7 @@ export type MarketplaceAdminRepository = {
   }): Promise<MarketplaceAdminUserProfileUpdateResponse | null>;
   listInviteCodes(): Promise<MarketplaceAdminInviteCode[]>;
   createInviteCode(input: {
-    payload: unknown;
+    invite: MarketplaceAdminHotelAccountInvitePayload;
     createdByUserId: string;
   }): Promise<MarketplaceAdminInviteCode>;
   revokeInviteCode(inviteCodeId: string): Promise<boolean>;
@@ -586,8 +619,11 @@ export function createPgMarketplaceAdminRepository(config: {
     async listInviteCodes() {
       const result = await pool.query<InviteCodeRow>(
         `${INVITE_CODE_SELECT_SQL}
-         WHERE invite.status <> 'revoked'
+         WHERE invite.invite_type = 'hotel'
+           AND invite.payload ->> 'contractVersion' = $1
+           AND invite.status <> 'revoked'
          ORDER BY invite.created_at DESC, invite.id`,
+        [HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION],
       );
       return result.rows.map(toInviteCode);
     },
@@ -607,23 +643,72 @@ export function createPgMarketplaceAdminRepository(config: {
          )
          ${INVITE_CODE_SELECT_BODY}`,
         [
-          `VAY-${randomUUID().slice(0, 8).toUpperCase()}`,
-          JSON.stringify(input.payload ?? {}),
+          `VAY-${randomBytes(24).toString("base64url")}`,
+          JSON.stringify(input.invite),
           input.createdByUserId,
         ],
       );
       return toInviteCode(result.rows[0]!);
     },
     async revokeInviteCode(inviteCodeId) {
-      const result = await pool.query<{ id: string }>(
-        `UPDATE marketplace.invite_codes
-         SET status = 'revoked'
-         WHERE id::text = $1
-           AND status <> 'redeemed'
-         RETURNING id::text AS id`,
-        [inviteCodeId],
-      );
-      return Boolean(result.rows[0]);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const invite = await client.query<{ id: string }>(
+          `SELECT id::text AS id
+           FROM marketplace.invite_codes
+           WHERE id::text = $1
+             AND invite_type = 'hotel'
+             AND payload ->> 'contractVersion' = $2
+             AND status <> 'redeemed'
+           FOR UPDATE`,
+          [inviteCodeId, HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION],
+        );
+        if (!invite.rows[0]) {
+          await client.query("ROLLBACK");
+          return false;
+        }
+
+        const redemption = await client.query<{ exists: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1
+             FROM platform.idempotency_keys redemption
+             JOIN identity.organizations organization
+               ON organization.id = redemption.organization_id
+             WHERE redemption.operation_scope = 'hotel_catalog'
+               AND redemption.operation = 'hotel_setup.tracks.update'
+               AND redemption.correlation_id = $1
+               AND redemption.tenant_scope = 'organization'
+               AND redemption.status = 'completed'
+               AND redemption.response_status_code = 200
+               AND organization.workos_external_id = $2
+           ) AS exists`,
+          [
+            hotelAccountInviteTrackCorrelationId(inviteCodeId),
+            hotelAccountInviteOrganizationExternalId(inviteCodeId),
+          ],
+        );
+        if (redemption.rows[0]?.exists) {
+          await client.query("ROLLBACK");
+          return false;
+        }
+
+        const result = await client.query<{ id: string }>(
+          `UPDATE marketplace.invite_codes
+           SET status = 'revoked'
+           WHERE id::text = $1
+             AND status <> 'redeemed'
+           RETURNING id::text AS id`,
+          [inviteCodeId],
+        );
+        await client.query("COMMIT");
+        return Boolean(result.rows[0]);
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async readHotelReviewForUser(input) {
       const profileResult = await pool.query<AdminHotelReviewRow>(ADMIN_HOTEL_REVIEW_SELECT_SQL, [
@@ -893,10 +978,14 @@ export async function registerMarketplaceAdminRoutes(
 
   app.post<{ Body: unknown }>("/admin/invite-codes", async (request, reply) => {
     const access = await requireMarketplaceAdminAccess(request, options);
-    const payload =
-      isRecord(request.body) && "data" in request.body ? request.body.data : request.body;
+    const parsed = parseHotelAccountInviteCreateRequest(request.body);
+    if (typeof parsed === "string") return sendAdminError(reply, 422, parsed);
     const inviteCode = await repository.createInviteCode({
-      payload,
+      invite: {
+        contractVersion: HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION,
+        ...parsed,
+        handoffPath: HOTEL_ACCOUNT_INVITE_HANDOFF_PATH,
+      },
       createdByUserId: access.context.actor.internalUserId,
     });
     return reply.status(201).send(inviteCode);
@@ -1081,6 +1170,129 @@ function readIdempotencyKey(request: FastifyRequest): string | null {
   const body = request.body && typeof request.body === "object" ? request.body : {};
   const bodyValue = "idempotencyKey" in body ? body.idempotencyKey : undefined;
   return readNonEmptyString(headerValue) ?? readNonEmptyString(bodyValue);
+}
+
+const HOTEL_ACCOUNT_INVITE_REQUEST_KEYS = [
+  "identity",
+  "organization",
+  "property",
+  "selectedTracks",
+] as const;
+const HOTEL_ACCOUNT_INVITE_PAYLOAD_KEYS = [
+  "contractVersion",
+  ...HOTEL_ACCOUNT_INVITE_REQUEST_KEYS,
+  "handoffPath",
+] as const;
+const HOTEL_ACCOUNT_INVITE_REDEMPTION_KEY = "redemption";
+const INVITE_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const INVITE_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+
+export function parseHotelAccountInviteCreateRequest(
+  body: unknown,
+): MarketplaceAdminHotelAccountInviteCreateRequest | string {
+  if (!isRecord(body)) return "invite_body_required";
+  if (!hasOnlyKeys(body, HOTEL_ACCOUNT_INVITE_REQUEST_KEYS)) {
+    return "unsupported_invite_field";
+  }
+  if (!isRecord(body.identity) || !hasOnlyKeys(body.identity, ["email"])) {
+    return "invalid_invite_identity";
+  }
+  if (!isRecord(body.organization) || !hasOnlyKeys(body.organization, ["displayName"])) {
+    return "invalid_invite_organization";
+  }
+  if (!isRecord(body.property) || !hasOnlyKeys(body.property, ["displayName"])) {
+    return "invalid_invite_property";
+  }
+
+  const email = readInviteText(body.identity.email, 254)?.toLowerCase();
+  const organizationName = readInviteText(body.organization.displayName, 160);
+  const propertyName = readInviteText(body.property.displayName, 160);
+  if (!email || !INVITE_EMAIL_PATTERN.test(email)) return "invalid_invite_email";
+  if (!organizationName) return "invalid_invite_organization";
+  if (!propertyName) return "invalid_invite_property";
+  if (
+    !Array.isArray(body.selectedTracks) ||
+    body.selectedTracks.length === 0 ||
+    body.selectedTracks.length > 2 ||
+    body.selectedTracks.some((track) => !isSetupTrack(track))
+  ) {
+    return "invalid_selected_tracks";
+  }
+
+  const uniqueTracks = new Set<SetupTrack>(body.selectedTracks as SetupTrack[]);
+  if (uniqueTracks.size !== body.selectedTracks.length) return "invalid_selected_tracks";
+  const selectedTracks: SetupTrack[] = [];
+  if (uniqueTracks.has("hotel_operations")) selectedTracks.push("hotel_operations");
+  if (uniqueTracks.has("creator_marketplace")) selectedTracks.push("creator_marketplace");
+
+  return {
+    identity: { email },
+    organization: { displayName: organizationName },
+    property: { displayName: propertyName },
+    selectedTracks,
+  };
+}
+
+function parseStoredHotelAccountInvite(
+  value: unknown,
+): MarketplaceAdminHotelAccountInvitePayload | null {
+  if (!isRecord(value)) return null;
+  const hasRedemption = Object.prototype.hasOwnProperty.call(
+    value,
+    HOTEL_ACCOUNT_INVITE_REDEMPTION_KEY,
+  );
+  const allowedKeys = hasRedemption
+    ? [...HOTEL_ACCOUNT_INVITE_PAYLOAD_KEYS, HOTEL_ACCOUNT_INVITE_REDEMPTION_KEY]
+    : HOTEL_ACCOUNT_INVITE_PAYLOAD_KEYS;
+  if (Object.keys(value).length !== allowedKeys.length || !hasOnlyKeys(value, allowedKeys)) {
+    return null;
+  }
+  if (hasRedemption) {
+    const redemption = value.redemption;
+    if (
+      !isRecord(redemption) ||
+      Object.keys(redemption).length !== 1 ||
+      !hasOnlyKeys(redemption, ["organizationId"]) ||
+      typeof redemption.organizationId !== "string"
+    ) {
+      return null;
+    }
+  }
+  if (
+    value.contractVersion !== HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION ||
+    value.handoffPath !== HOTEL_ACCOUNT_INVITE_HANDOFF_PATH
+  ) {
+    return null;
+  }
+  const parsed = parseHotelAccountInviteCreateRequest({
+    identity: value.identity,
+    organization: value.organization,
+    property: value.property,
+    selectedTracks: value.selectedTracks,
+  });
+  if (typeof parsed === "string") return null;
+  return {
+    contractVersion: HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION,
+    ...parsed,
+    handoffPath: HOTEL_ACCOUNT_INVITE_HANDOFF_PATH,
+  };
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
+}
+
+function readInviteText(value: unknown, maximumLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > maximumLength ||
+    INVITE_CONTROL_CHARACTER_PATTERN.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
 }
 
 export function validateCreateOfferRequest(
@@ -2248,15 +2460,20 @@ function toOfferMedia(value: unknown): MarketplaceAdminOfferMedia[] {
 function toInviteCode(row: InviteCodeRow): MarketplaceAdminInviteCode {
   const status =
     row.status === "redeemed" ? "redeemed" : row.status === "expired" ? "expired" : "pending";
+  const invite = parseStoredHotelAccountInvite(row.payload);
   return {
+    contractVersion: HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION,
     id: row.id,
     code: row.code,
     status,
-    created_at: toIsoString(row.createdAt),
-    expires_at: toIsoString(row.expiresAt),
-    hotel_name: row.hotelName,
-    redeemed_at: toIsoStringOrNull(row.redeemedAt),
-    setup_data: row.payload,
+    createdAt: toIsoString(row.createdAt),
+    expiresAt: toIsoString(row.expiresAt),
+    identity: invite?.identity ?? null,
+    organization: invite?.organization ?? null,
+    property: invite?.property ?? null,
+    selectedTracks: invite?.selectedTracks ?? [],
+    handoffPath: HOTEL_ACCOUNT_INVITE_HANDOFF_PATH,
+    redeemedAt: toIsoStringOrNull(row.redeemedAt),
   };
 }
 
@@ -2550,7 +2767,6 @@ type InviteCodeRow = {
   status: string;
   createdAt: Date | string;
   expiresAt: Date | string;
-  hotelName: string | null;
   redeemedAt: Date | string | null;
   payload: unknown;
 };
@@ -2617,11 +2833,9 @@ const INVITE_CODE_SELECT_BODY = `
     invite.status,
     invite.created_at AS "createdAt",
     invite.expires_at AS "expiresAt",
-    property.display_name AS "hotelName",
     invite.redeemed_at AS "redeemedAt",
     invite.payload
   FROM invite
-  LEFT JOIN hotel_catalog.properties property ON property.id = invite.property_id
 `;
 
 const INVITE_CODE_SELECT_SQL = `

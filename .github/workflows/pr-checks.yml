@@ -42,6 +42,115 @@ jobs:
       - name: Build
         run: npm run build
 
+  api_postgres:
+    name: TypeScript API PostgreSQL Integration (PG${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [16, 17]
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}-alpine
+        env:
+          POSTGRES_USER: vayada_test
+          POSTGRES_PASSWORD: vayada_test
+          POSTGRES_DB: vayada_api_test
+        options: >-
+          --health-cmd "pg_isready -U vayada_test -d vayada_api_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply target migrations
+        run: npm --workspace @vayada/backend-migration run target:migrate -- --env local
+        env:
+          TARGET_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Run PMS TypeScript PostgreSQL integration
+        run: >-
+          npm --workspace vayada-api run test --
+          --no-file-parallelism
+          src/domains/pmsRoomFactsCommandRepository.integration.test.ts
+          src/domains/pmsPhysicalRoomUnitReconcileRepository.integration.test.ts
+          src/domains/pmsRoomPublicationCommandRepository.integration.test.ts
+          src/domains/pmsOperatingCalendarCommandRepository.integration.test.ts
+          src/domains/pmsOperatingCalendarImpact.integration.test.ts
+          src/domains/bookingGuestPolicyRepository.integration.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+  setup_draft_reset_postgres:
+    name: Setup Draft Reset PostgreSQL ${{ matrix.postgres }} Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["16", "17"]
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}-alpine
+        env:
+          POSTGRES_USER: vayada_test
+          POSTGRES_PASSWORD: vayada_test
+          POSTGRES_DB: vayada_api_test
+        options: >-
+          --health-cmd "pg_isready -U vayada_test -d vayada_api_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply target migrations
+        run: npm --workspace @vayada/backend-migration run target:migrate -- --env local
+        env:
+          TARGET_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Run setup draft reset integration
+        run: >-
+          npm --workspace vayada-api run test --
+          --no-file-parallelism
+          src/propertySetupDraftCommand.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
   backend:
     name: Backend Tests (${{ matrix.app }})
     runs-on: ubuntu-latest
@@ -197,14 +306,18 @@ jobs:
     timeout-minutes: 5
     needs:
       - frontend
+      - api_postgres
+      - setup_draft_reset_postgres
       - backend
     if: always()
 
     steps:
       - name: Verify required jobs
         run: |
-          if [ "${{ needs.frontend.result }}" != "success" ] || [ "${{ needs.backend.result }}" != "success" ]; then
+          if [ "${{ needs.frontend.result }}" != "success" ] || [ "${{ needs.api_postgres.result }}" != "success" ] || [ "${{ needs.setup_draft_reset_postgres.result }}" != "success" ] || [ "${{ needs.backend.result }}" != "success" ]; then
             echo "Frontend result: ${{ needs.frontend.result }}"
+            echo "TypeScript API PostgreSQL result: ${{ needs.api_postgres.result }}"
+            echo "Setup Draft Reset PostgreSQL result: ${{ needs.setup_draft_reset_postgres.result }}"
             echo "Backend result: ${{ needs.backend.result }}"
             exit 1
           fi

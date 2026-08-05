@@ -13,9 +13,15 @@
     }
   },
   "scripts": {
+    "prebuild": "npm --workspace @vayada/domain-hotels run build",
+    "pretest": "npm --workspace @vayada/domain-hotels run build",
+    "pretypecheck": "npm --workspace @vayada/domain-hotels run build",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vayada/domain-hotels": "0.0.0"
   },
   "devDependencies": {
     "@types/node": "^20",

@@ -6,11 +6,13 @@ import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 test.describe("marketplace-web shared setup activation", () => {
-  test("uses the shared hotel personal-account step when the saved photo is missing", async ({
+  test("does not reopen personal account setup when only a hotel-manager photo is missing", async ({
     page,
     baseURL,
   }) => {
     await primeBrowserState(page, true);
+    let accountProfileWrites = 0;
+    let personalMediaRequests = 0;
     await page.route(/\/auth\/session(?:\?|$)/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
@@ -36,20 +38,34 @@ test.describe("marketplace-web shared setup activation", () => {
         },
       });
     });
+    await page.route(/\/auth\/profile$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      accountProfileWrites += 1;
+      await route.fulfill({ status: 200, headers: corsHeaders(route), json: { updated: true } });
+    });
+    await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      personalMediaRequests += 1;
+      await route.fulfill({
+        status: 500,
+        headers: corsHeaders(route),
+        json: { error: "unexpected" },
+      });
+    });
+    await mockSharedSetupStatus(page, sharedSetupStatus());
+    await mockMarketplaceProfileApis(page);
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByRole("heading", { name: "Let’s create your profile" })).toBeVisible();
-    await expect(
-      page.getByText("Start with your details. Next, we’ll set up your first hotel."),
-    ).toBeVisible();
-    await expect(page.getByLabel("First name")).toHaveValue("Hotel");
-    await expect(page.getByLabel("Last name")).toHaveValue("Owner");
-    await expect(page.getByLabel("Email address")).toHaveValue("owner@alpenrose.example");
-    await expect(page.getByLabel("Phone number")).toHaveValue("+49 89 123456");
-    await expect(page.getByLabel("Phone number")).toHaveAttribute("required", "");
-    await expect(page.getByLabel("Profile photo file")).toHaveAttribute("required", "");
-    await expect(page.getByText("Optional", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Continue to hotel setup" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Describe your hotel" })).toBeVisible();
+    await expect(page.getByLabel("Profile photo file")).toHaveCount(0);
+    expect(accountProfileWrites).toBe(0);
+    expect(personalMediaRequests).toBe(0);
   });
 
   test("makes the unsupported hotel external-creator action explicit", async ({
@@ -83,13 +99,21 @@ test.describe("marketplace-web shared setup activation", () => {
     await mockGooglePlaces(page);
     await primeBrowserState(page, true);
     await mockAuthSession(page);
-    await mockMarketplaceProfileApis(page, [], [canonicalHeroMedia()]);
+    const publicProfileWrites: unknown[] = [];
+    await mockMarketplaceProfileApis(page, [], [canonicalHeroMedia()], {
+      publicProfile: publicProfileWrites,
+    });
     await routeJson(page, /\/api\/hotel-setup\/property-types/, {
       contractVersion: "adaptive-hotel-property-types.v1",
       propertyTypes: [{ value: "hotel", label: "Hotel" }],
     });
 
-    let created = false;
+    const logoMediaObjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let propertyCreated = false;
+    let logoUploadFinalized = false;
+    let logoAssigned = false;
+    let personalMediaRequests = 0;
+    let accountProfileWrites = 0;
     let creatorTrackSelected = false;
     await page.route(/\/api\/hotel-setup\/status/, async (route) => {
       if (route.request().method() === "OPTIONS") {
@@ -99,7 +123,7 @@ test.describe("marketplace-web shared setup activation", () => {
       await route.fulfill({
         status: 200,
         headers: corsHeaders(route),
-        json: created
+        json: logoAssigned
           ? sharedSetupStatus([], "ready")
           : creatorTrackSelected
             ? createAdaptiveHotelSetupStatusMock({
@@ -154,7 +178,7 @@ test.describe("marketplace-web shared setup activation", () => {
           postalCode: "80331",
           city: "Munich",
           countryCode: "DE",
-          localityPublic: false,
+          localityPublic: true,
           geoPublic: false,
           mapDisplayMode: "hidden",
         },
@@ -181,13 +205,111 @@ test.describe("marketplace-web shared setup activation", () => {
       });
       expect(payload.location.timezone).toMatch(/\//);
       expect(route.request().headers()["idempotency-key"]).toBeTruthy();
-      created = true;
+      propertyCreated = true;
       await route.fulfill({
         status: 201,
         headers: corsHeaders(route),
         json: sharedPropertyProfile(payload),
       });
     });
+    await page.route(/\/auth\/profile$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      accountProfileWrites += 1;
+      await route.fulfill({ status: 200, headers: corsHeaders(route), json: { updated: true } });
+    });
+    await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      if (route.request().url().endsWith("/finalize")) {
+        expect(propertyCreated).toBe(true);
+        expect(logoAssigned).toBe(false);
+        logoUploadFinalized = true;
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            mediaObjects: [
+              {
+                mediaObjectId: logoMediaObjectId,
+                purpose: "property.logo",
+                status: "private_ready",
+                publicVariants: [],
+              },
+            ],
+          },
+        });
+        return;
+      }
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      if (payload.purpose !== "property.logo") personalMediaRequests += 1;
+      expect(payload).toMatchObject({
+        purpose: "property.logo",
+        visibility: "private",
+        resource: {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: propertyId,
+        },
+      });
+      expect(payload).not.toHaveProperty("expectedProfileRevision");
+      await route.fulfill({
+        status: 201,
+        headers: corsHeaders(route),
+        json: {
+          uploadSession: { sessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+          uploadTargets: [
+            {
+              uploadTargetId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/property-logo",
+              headers: {},
+            },
+          ],
+        },
+      });
+    });
+    await page.route(
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/media/logo$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        expect(propertyCreated).toBe(true);
+        expect(logoUploadFinalized).toBe(true);
+        expect(route.request().headers()["idempotency-key"]).toBeTruthy();
+        expect(route.request().postDataJSON()).toEqual({
+          expectedProfileRevision: 1,
+          assignment: {
+            mediaObjectId: logoMediaObjectId,
+            role: "logo",
+            altText: null,
+            sortOrder: 0,
+          },
+        });
+        logoAssigned = true;
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            outcome: "updated",
+            profileRevision: 2,
+            logoAssignment: {
+              mediaObjectId: logoMediaObjectId,
+              role: "logo",
+              altText: null,
+              sortOrder: 0,
+            },
+            presentationAssignments: [],
+          },
+        });
+      },
+    );
 
     await page.goto(setupUrl(baseURL));
 
@@ -200,6 +322,11 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(hotelName).toHaveValue("Hotel Alpenrose");
     await page.locator('label:has(input[type="radio"][value="hotel"])').click();
     await expect(page.getByRole("radio", { name: "Hotel", exact: true })).toBeChecked();
+    await page.getByLabel("Hotel logo file").setInputFiles({
+      name: "alpenrose.webp",
+      mimeType: "image/webp",
+      buffer: Buffer.from("property-logo"),
+    });
     await page.getByRole("button", { name: "Continue" }).click();
 
     const locationSearchPanel = page.getByTestId("location-search-panel");
@@ -280,6 +407,11 @@ test.describe("marketplace-web shared setup activation", () => {
     const countrySelect = page.getByRole("combobox", { name: /Country/ });
     await expect(countrySelect.locator('option[value="PR"]')).toHaveCount(1);
     await countrySelect.selectOption("DE");
+    const localityConsent = page.getByRole("checkbox", {
+      name: "Show city and country publicly",
+    });
+    await expect(localityConsent).not.toBeChecked();
+    await localityConsent.check();
     await expect(locationContinueButton).toBeEnabled();
 
     if (searchFirst) {
@@ -316,6 +448,12 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(marketplaceProgress.locator('[data-state="reached"]')).toHaveCount(4);
     await expect(marketplaceProgress.locator('[data-state="upcoming"]')).toHaveCount(0);
     await expect(page.getByText("Step 4 of 4", { exact: true })).toBeVisible();
+    expect(propertyCreated).toBe(true);
+    expect(logoUploadFinalized).toBe(true);
+    expect(logoAssigned).toBe(true);
+    expect(accountProfileWrites).toBe(0);
+    expect(personalMediaRequests).toBe(0);
+    expect(publicProfileWrites).toEqual([]);
     const review = page.locator('section[aria-labelledby="setup-review-title"]');
     await expect(review).toBeVisible();
     await expect(

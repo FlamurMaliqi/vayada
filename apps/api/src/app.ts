@@ -1,6 +1,7 @@
 import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backend-auth";
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
+import type { BookingPublicationCommandPort } from "@vayada/domain-booking";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -13,6 +14,7 @@ import {
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
+import type { HotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
@@ -64,6 +66,10 @@ import {
   type MarketplaceAdminRoutesOptions,
 } from "./routes/marketplaceAdmin.js";
 import {
+  registerHotelAccountInviteRoutes,
+  type HotelAccountInviteRoutesOptions,
+} from "./routes/hotelAccountInvites.js";
+import {
   registerMarketplaceHotelProfileStatusRoutes,
   type MarketplaceHotelProfileStatusRepository,
 } from "./routes/marketplaceHotelProfileStatus.js";
@@ -85,6 +91,23 @@ import {
   type SharedHotelSetupStatusRepository,
 } from "./routes/sharedHotelSetupStatus.js";
 import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
+import { registerHotelCatalogStep1Routes } from "./routes/hotelCatalogStep1.js";
+import {
+  registerMarketplaceHotelCollaborationPreferencesRoutes,
+  type MarketplaceHotelCollaborationPreferencesRoutesOptions,
+} from "./routes/marketplaceHotelCollaborationPreferences.js";
+import {
+  registerBookingDesignRoutes,
+  type BookingDesignRoutesOptions,
+} from "./routes/bookingDesign.js";
+import {
+  registerBookingDesignReadinessRoutes,
+  type BookingDesignReadinessRoutesOptions,
+} from "./routes/bookingDesignReadiness.js";
+import {
+  registerPropertySetupRouteRoutes,
+  type PropertySetupRouteStateReadPort,
+} from "./routes/propertySetupRoute.js";
 import {
   registerIdentityAdminUserRoutes,
   type IdentityAdminUsersReadRepository,
@@ -139,6 +162,8 @@ import {
 } from "./routes/pmsModuleActivations.js";
 import { registerPmsReviewRoutes, type PmsReviewRepository } from "./routes/pmsReviews.js";
 import { registerPropertySetupDraftRoutes } from "./routes/propertySetupDrafts.js";
+import { registerBookingPublicationRoutes } from "./routes/bookingPublication.js";
+import type { BookingPublicationRoutesOptions } from "./routes/bookingPublication.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
@@ -175,6 +200,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceTripRepository?: MarketplaceTripReadRepository;
   marketplaceAdminRepository?: MarketplaceAdminRepository;
   marketplaceAdminLegacySuperadminFallbackEnabled?: MarketplaceAdminRoutesOptions["legacySuperadminFallbackEnabled"];
+  hotelAccountInvites?: Omit<HotelAccountInviteRoutesOptions, "trackCommandRepository">;
   marketplaceHotelProfileStatusRepository?: MarketplaceHotelProfileStatusRepository;
   marketplaceHotelSelfServiceRepository?: MarketplaceHotelSelfServiceRepository;
   marketplaceCreatorSelfServiceRepository?: MarketplaceCreatorSelfServiceRepository;
@@ -186,7 +212,19 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
+  hotelCatalogStep1?: {
+    repository: HotelCatalogStep1Repository;
+    mediaCommands: Pick<PropertyMediaCommandRepository, "replacePresentation">;
+  };
+  marketplaceHotelCollaborationPreferences?: MarketplaceHotelCollaborationPreferencesRoutesOptions;
+  bookingDesign?: BookingDesignRoutesOptions;
+  bookingDesignReadiness?: BookingDesignReadinessRoutesOptions;
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
+  propertySetupRouteStateReadPort?: PropertySetupRouteStateReadPort;
+  bookingPublication?: {
+    repository: BookingPublicationCommandPort;
+    readinessProvider: BookingPublicationRoutesOptions["readinessProvider"];
+  };
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
   identityAdminUsersReadRepository?: IdentityAdminUsersReadRepository;
@@ -251,6 +289,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       profileImageMediaRepository:
         options.authSession.profileImageMediaRepository ??
         options.marketplaceCreatorProfileMediaRepository,
+      hotelAccountInviteOnboarding:
+        options.hotelAccountInvites?.repository ?? options.authSession.hotelAccountInviteOnboarding,
     });
   }
   if (options.workosWebhooks) {
@@ -332,6 +372,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       legacySuperadminFallbackEnabled: options.marketplaceAdminLegacySuperadminFallbackEnabled,
     });
   }
+  if (options.hotelAccountInvites) {
+    if (!options.hotelSetupTrackCommandRepository) {
+      throw new Error("hotelSetupTrackCommandRepository is required with hotelAccountInvites");
+    }
+    app.register(registerHotelAccountInviteRoutes, {
+      prefix: "/api/marketplace",
+      ...options.hotelAccountInvites,
+      trackCommandRepository: options.hotelSetupTrackCommandRepository,
+    });
+  }
   if (options.marketplaceHotelProfileStatusRepository) {
     app.register(registerMarketplaceHotelProfileStatusRoutes, {
       prefix: "/api/marketplace",
@@ -377,16 +427,58 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
     });
   }
+  if (options.propertySetupRouteStateReadPort) {
+    if (!options.hotelSetupTrackCommandRepository) {
+      throw new Error(
+        "hotelSetupTrackCommandRepository is required with propertySetupRouteStateReadPort",
+      );
+    }
+    app.register(registerPropertySetupRouteRoutes, {
+      prefix: "/api/hotel-setup",
+      routeStateReadPort: options.propertySetupRouteStateReadPort,
+      trackCommandRepository: options.hotelSetupTrackCommandRepository,
+    });
+  }
   if (options.propertyMediaCommandRepository) {
     app.register(registerPropertyMediaRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.propertyMediaCommandRepository,
     });
   }
+  if (options.hotelCatalogStep1) {
+    app.register(registerHotelCatalogStep1Routes, {
+      prefix: "/api/hotel-setup",
+      ...options.hotelCatalogStep1,
+    });
+  }
+  if (options.marketplaceHotelCollaborationPreferences) {
+    app.register(registerMarketplaceHotelCollaborationPreferencesRoutes, {
+      prefix: "/api/marketplace",
+      ...options.marketplaceHotelCollaborationPreferences,
+    });
+  }
+  if (options.bookingDesign) {
+    app.register(registerBookingDesignRoutes, {
+      prefix: "/api/booking",
+      ...options.bookingDesign,
+    });
+  }
+  if (options.bookingDesignReadiness) {
+    app.register(registerBookingDesignReadinessRoutes, {
+      prefix: "/api/booking",
+      ...options.bookingDesignReadiness,
+    });
+  }
   if (options.propertySetupDraftCommandRepository) {
     app.register(registerPropertySetupDraftRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.propertySetupDraftCommandRepository,
+    });
+  }
+  if (options.bookingPublication) {
+    app.register(registerBookingPublicationRoutes, {
+      prefix: "/api/hotel-setup",
+      ...options.bookingPublication,
     });
   }
   if (options.identityPrivacyRepository) {

@@ -116,9 +116,81 @@ report `succeeded` only from durable local completion evidence or a confirmed,
 persisted provider result. A timeout, accepted provider request, missing job,
 or successful retry dispatch must never be presented as success.
 
+`booking.publication.request` is the concrete external-work reference. Booking
+persists the attempt and returns `pending` with a stable operation ID; the same
+transaction reserves and completes idempotency, records the audit and domain
+event, and inserts the required Distribution-projector outbox intent. The
+attempt stores the expected active public-content revision so the projector can
+compare-and-set the Distribution pointer instead of overwriting a newer
+publication. At most one `pending` or `unknown` attempt may exist per property.
+
+The protected adapter accepts only the expected active revision and the
+readiness/source-manifest hashes last observed by the caller. It obtains the
+complete readiness result from the injected Booking readiness provider after
+route authorization; callers cannot submit or self-assert a `ready` result.
+The adapter is registered only when both the Booking command repository and
+that owner-supplied readiness provider are available.
+
+The production server intentionally does not compose this optional adapter yet.
+The current shared setup-status projection is not an exact Booking launch
+manifest, and the current mutable public-bookability profile is not a prepared
+first-publication builder. A later product slice must supply both typed
+boundaries before enabling the route or outbox worker; falling back to the
+coarse shared progress facts or requiring already-public content would violate
+this contract. The durable worker re-evaluates the supplied readiness provider
+immediately before projection and terminally records
+`source_content_changed` when either verified hash has moved.
+
+Terminal failure, outbox acknowledgement, and required dead-letter insertion
+share one database transaction. If success status cannot be persisted after
+the Distribution pointer activates, the outbox remains retryable without
+exhausting its budget; each retry reconciles the active pointer before it can
+record a failure. Expired leases are likewise requeued below the retry ceiling
+and pass through that reconciliation before exhaustion can terminalize them.
+Distribution locks the claimed outbox row with the current lease token inside
+the same transaction that appends and activates the revision. Lease recovery
+therefore cannot overtake an in-flight activation, and a superseded worker
+cannot activate after a replacement worker has terminalized the operation.
+Terminal transitions also take the property publication lock and recheck the
+active pointer before committing failure.
+
+The request fingerprint is SHA-256 over this exact `JSON.stringify` field
+order. Readiness `evaluatedAt` is excluded because the readiness contract
+explicitly excludes it from identity; the two verified hashes bind the complete
+readiness groups and source manifest.
+
+```json
+{
+  "organizationId": "<authorized organization>",
+  "propertyId": "<authorized property>",
+  "expectedActiveContentRevisionId": null,
+  "readiness": {
+    "contractVersion": "onboarding-product-readiness.v1",
+    "product": "booking",
+    "propertyId": "<authorized property>",
+    "status": "ready",
+    "sourceManifestHash": "sha256:<64 lowercase hex>",
+    "readinessHash": "sha256:<64 lowercase hex>"
+  }
+}
+```
+
+The canonical hashes are order-independent. The first accepted request still
+persists the complete source manifest for audit and projection, but equivalent
+source ordering does not change command identity.
+
+The recovery read exposes only operation ID, property ID, persisted state,
+expected/result revision IDs, a safe failure code, and timestamps. It never
+returns source manifests, readiness details, unpublished content, raw provider
+errors, or another tenant's existence. `succeeded` requires the persisted
+public content revision to be the active Distribution pointer; `pending` and
+`unknown` remain non-success outcomes.
+
 The fixture vocabulary in
 `engineering/fixtures/onboarding-command-safety/cases.json` covers exact retry,
 changed payload, changed revision, concurrent stale write, and injected audit
 rollback in `cases`, plus the authentication, permission, organization-scope,
 revoked-retry, and allowed-access matrix in `authorizationCases`, for reuse by
-later setup commands.
+later setup commands. `externalOperationCases` adds durable outbox rollback,
+operation recovery, and false-success boundaries for externally uncertain
+commands.

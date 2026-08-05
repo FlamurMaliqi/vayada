@@ -15,6 +15,7 @@ import type {
   ProductAuditEvent,
 } from "./routes/authSession.js";
 import type { ApprovedPublicProfileImageRepository } from "./routes/platformMedia.js";
+import type { HotelAccountInviteRepository } from "./routes/hotelAccountInvites.js";
 
 const user: IdentityUser = {
   userId: "user_platform_admin",
@@ -1791,6 +1792,224 @@ describe("AuthKit session routes", () => {
     ]);
     expect(workosCalls).toEqual(["organization", "membership", "refresh"]);
   });
+
+  it("selects the server-validated invite-bound hotel organization for an existing multi-org user", async () => {
+    const inviteCode = "VAY-secret-invite-code";
+    const inviteId = "77777777-7777-4777-8777-777777777777";
+    const inviteExternalId = `vayada-signup:marketplace-web:hotel:invite:${inviteId}`;
+    const commands: IdentityLifecycleCommand[] = [];
+    const onboardingInputs: unknown[] = [];
+    const existingCreatorSession: AuthKitSession = {
+      ...session,
+      organizationId: "org_workos_existing_creator",
+      sealedSession: "existing-creator-session",
+      user: {
+        ...session.user,
+        id: "user_workos_invited_owner",
+        email: "owner@example.test",
+      },
+    };
+    const invitedHotelSession: AuthKitSession = {
+      ...existingCreatorSession,
+      organizationId: "org_workos_invite_hotel",
+      sealedSession: "invite-hotel-session",
+      accessToken: "invite-hotel-access-token",
+    };
+
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return existingCreatorSession;
+        },
+        async createSignupOrganization(input) {
+          expect(input).toMatchObject({
+            name: "Alpenrose Hospitality",
+            externalId: inviteExternalId,
+          });
+          expect(JSON.stringify(input)).not.toContain(inviteCode);
+          return { organizationId: "org_workos_invite_hotel" };
+        },
+        async ensureSignupOrganizationMembership(input) {
+          expect(input).toEqual({
+            workosUserId: "user_workos_invited_owner",
+            workosOrganizationId: "org_workos_invite_hotel",
+            roleKey: "hotel_owner",
+          });
+          return {
+            membershipId: "om_invite_hotel",
+            roleSlugs: ["hotel_owner"],
+            status: "active",
+          };
+        },
+        async refreshSession(input) {
+          expect(input).toEqual({
+            sealedSession: "existing-creator-session",
+            organizationId: "org_workos_invite_hotel",
+          });
+          return invitedHotelSession;
+        },
+      }),
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          userId: "user_invited_owner",
+          email: "owner@example.test",
+          status: "active",
+        }),
+        organizationByWorkosOrgId: async (workosOrgId) =>
+          workosOrgId === "org_workos_invite_hotel"
+            ? {
+                organizationId: "org_invite_hotel",
+                workosOrgId,
+                name: "Alpenrose Hospitality",
+                kind: "hotel_group",
+                status: "active",
+              }
+            : {
+                organizationId: "org_existing_creator",
+                workosOrgId,
+                name: "Existing Creator Workspace",
+                kind: "creator_workspace",
+                status: "active",
+              },
+        activeMembership: async (_userId, organizationId) => ({
+          membershipId: `membership_${organizationId}`,
+          status: "active",
+          roleKey: organizationId === "org_invite_hotel" ? "hotel_owner" : "creator_owner",
+          workosMembershipId:
+            organizationId === "org_invite_hotel" ? "om_invite_hotel" : "om_existing_creator",
+          workosRoleSlugs: [
+            organizationId === "org_invite_hotel" ? "hotel_owner" : "creator_owner",
+          ],
+        }),
+      }),
+      lifecycleCommandBus: {
+        async execute(command) {
+          commands.push(command);
+          return {
+            status: "accepted",
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            events: [],
+          };
+        },
+      },
+      hotelAccountInviteOnboarding: {
+        async resolveForOnboarding(input) {
+          onboardingInputs.push(input);
+          return {
+            inviteId,
+            organizationName: "Alpenrose Hospitality",
+            organizationExternalId: inviteExternalId,
+          };
+        },
+      },
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/onboarding",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: { type: "hotel", surface: "marketplace-web", inviteCode },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      organizationId: "org_invite_hotel",
+      organizationKind: "hotel_group",
+      workosOrganizationId: "org_workos_invite_hotel",
+    });
+    expect(onboardingInputs).toEqual([
+      expect.objectContaining({
+        code: inviteCode,
+        actorEmail: "owner@example.test",
+      }),
+    ]);
+    expect(commands).toEqual([
+      expect.objectContaining({
+        commandType: "identity.access.grant",
+        idempotencyKey: `workos-onboarding:user_invited_owner:hotel:invite:${inviteId}`,
+        payload: expect.objectContaining({
+          organization: expect.objectContaining({
+            name: "Alpenrose Hospitality",
+            workosExternalId: inviteExternalId,
+          }),
+          membership: expect.objectContaining({
+            permissionKeys: [
+              "hotel_catalog.setup.read",
+              "hotel_catalog.setup.manage",
+              "hotel_catalog.products.manage",
+            ],
+          }),
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(commands)).not.toContain(inviteCode);
+  });
+
+  it.each(["VAY-invalid-or-unavailable", "", "   ", "not-an-invite-code"])(
+    "does not provision an organization when invite onboarding validation fails for %j",
+    async (inviteCode) => {
+      const createOrganization = vi.fn(async () => ({ organizationId: "unexpected" }));
+      const resolveForOnboarding = vi.fn(async () => null);
+      const noOrgSession = { ...session, organizationId: undefined };
+      app = buildAuthSessionApp({
+        allowedOrigins: ["https://marketplace.localhost"],
+        authKitClient: createAuthKitClient({
+          async authenticateSession() {
+            return noOrgSession;
+          },
+          createSignupOrganization: createOrganization,
+        }),
+        identityRepository: createIdentityRepository({
+          userByProviderUserId: async () => user,
+        }),
+        hotelAccountInviteOnboarding: {
+          resolveForOnboarding,
+        },
+        surfacePolicies: {
+          "marketplace-web": {
+            requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+            allowMissingOrganization: true,
+          },
+        },
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/auth/onboarding",
+        headers: {
+          cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+          origin: "https://marketplace.localhost",
+          "x-vayada-csrf": "csrf-token",
+        },
+        payload: {
+          type: "hotel",
+          surface: "marketplace-web",
+          inviteCode,
+        },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        state: "auth_failed",
+        message: "This hotel account invitation is invalid or no longer available.",
+      });
+      expect(resolveForOnboarding).toHaveBeenCalledWith(
+        expect.objectContaining({ code: inviteCode }),
+      );
+      expect(createOrganization).not.toHaveBeenCalled();
+    },
+  );
 
   it("persists a refreshed WorkOS session when onboarding is already complete", async () => {
     const existingCreatorSession: AuthKitSession = {
@@ -3626,6 +3845,7 @@ function buildAuthSessionApp(
       >
     >;
     profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
+    hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
   } = {},
 ) {
   return buildApp({
@@ -3646,6 +3866,7 @@ function buildAuthSessionApp(
       cookieSecure: false,
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
       profileImageMediaRepository: options.profileImageMediaRepository,
+      hotelAccountInviteOnboarding: options.hotelAccountInviteOnboarding,
     },
   });
 }

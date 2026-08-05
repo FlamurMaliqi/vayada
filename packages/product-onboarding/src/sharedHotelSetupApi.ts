@@ -1,6 +1,7 @@
 import {
   parseAdaptiveHotelSetupStatus,
   parsePropertyMediaCommandResponse,
+  parsePropertyMediaLibraryItem,
   parsePropertyProfileResponse,
   parsePublicPropertyProfileResponse,
   parseReplacePropertyPresentationMediaRequest,
@@ -19,6 +20,7 @@ import {
 } from "@vayada/domain-hotels";
 
 import type { SharedHotelSetupEntryProduct } from "./sharedFirstRunSetupFlow";
+import { sharedPropertyLogoContentType, sharedPropertyLogoError } from "./sharedPropertyLogo";
 
 export type SharedHotelSetupHttpClient = {
   get<T>(endpoint: string, options?: RequestInit): Promise<T>;
@@ -67,6 +69,16 @@ export type SharedHotelSetupApi = {
   replacePropertyPresentationMedia(
     propertyId: string,
     request: ReplacePropertyPresentationMediaRequest,
+    idempotencyKey: string,
+  ): Promise<PropertyMediaCommandResponse>;
+  uploadPropertyLogo(propertyId: string, file: File, idempotencyKey: string): Promise<string>;
+  assignPropertyLogo(
+    propertyId: string,
+    request: {
+      expectedProfileRevision: number;
+      mediaObjectId: string;
+      altText: string | null;
+    },
     idempotencyKey: string,
   ): Promise<PropertyMediaCommandResponse>;
   updateTracks(request: UpdateTracksRequest, idempotencyKey: string): Promise<UpdateTracksResponse>;
@@ -140,6 +152,73 @@ export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): S
         ),
       );
     },
+    uploadPropertyLogo: async (propertyId, file, idempotencyKey) => {
+      const validationError = sharedPropertyLogoError(file);
+      if (validationError) throw new Error(validationError);
+      const contentType = sharedPropertyLogoContentType(file);
+      const created = await client.post<unknown>("/api/media/upload-sessions", {
+        idempotencyKey,
+        purpose: "property.logo",
+        visibility: "private",
+        resource: {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: propertyId,
+        },
+        files: [
+          {
+            clientFileId: "property_logo",
+            filename: file.name || "property-logo.jpg",
+            contentType,
+            sizeBytes: file.size,
+          },
+        ],
+      });
+      const replayedMediaObject = firstPropertyLogoMediaObject(created);
+      if (replayedMediaObject) return replayedMediaObject;
+      const upload = propertyLogoUploadTarget(created);
+      if (!upload.uploadUrl.startsWith("https://uploads.vayada.localhost/")) {
+        const response = await fetch(upload.uploadUrl, {
+          method: "PUT",
+          headers: upload.headers,
+          body: file,
+        });
+        if (!response.ok) throw new Error("The hotel logo could not be uploaded.");
+      }
+      const finalized = await client.post<unknown>(
+        `/api/media/upload-sessions/${encodeURIComponent(upload.sessionId)}/finalize`,
+        {
+          files: [
+            {
+              uploadTargetId: upload.uploadTargetId,
+              contentType,
+              sizeBytes: file.size,
+            },
+          ],
+        },
+      );
+      const mediaObjectId = firstPropertyLogoMediaObject(finalized);
+      if (!mediaObjectId) throw new Error("The hotel logo upload did not finish.");
+      return mediaObjectId;
+    },
+    assignPropertyLogo: async (propertyId, request, idempotencyKey) => {
+      const value = await client.put<unknown>(
+        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/media/logo`,
+        {
+          expectedProfileRevision: request.expectedProfileRevision,
+          assignment: {
+            mediaObjectId: request.mediaObjectId,
+            role: "logo",
+            altText: request.altText,
+            sortOrder: 0,
+          },
+        },
+        idempotencyOptions(idempotencyKey),
+      );
+      const response = parsePropertyMediaCommandResponse(value);
+      if (!response) throw new Error("Hotel logo assignment data is invalid.");
+      return response;
+    },
     updateTracks: (request, idempotencyKey) =>
       client.put<UpdateTracksResponse>(
         "/api/hotel-setup/tracks",
@@ -147,6 +226,53 @@ export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): S
         idempotencyOptions(idempotencyKey),
       ),
   };
+}
+
+function propertyLogoUploadTarget(value: unknown): {
+  sessionId: string;
+  uploadTargetId: string;
+  uploadUrl: string;
+  headers: Record<string, string>;
+} {
+  if (!value || typeof value !== "object")
+    throw new Error("The hotel logo upload could not start.");
+  const response = value as {
+    uploadSession?: { sessionId?: unknown };
+    uploadTargets?: Array<{
+      uploadTargetId?: unknown;
+      method?: unknown;
+      uploadUrl?: unknown;
+      headers?: unknown;
+    }>;
+  };
+  const target = response.uploadTargets?.[0];
+  if (
+    typeof response.uploadSession?.sessionId !== "string" ||
+    typeof target?.uploadTargetId !== "string" ||
+    target.method !== "PUT" ||
+    typeof target.uploadUrl !== "string" ||
+    !target.headers ||
+    typeof target.headers !== "object" ||
+    Array.isArray(target.headers)
+  ) {
+    throw new Error("The hotel logo upload could not start.");
+  }
+  return {
+    sessionId: response.uploadSession.sessionId,
+    uploadTargetId: target.uploadTargetId,
+    uploadUrl: target.uploadUrl,
+    headers: target.headers as Record<string, string>,
+  };
+}
+
+function firstPropertyLogoMediaObject(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const mediaObjects = (value as { mediaObjects?: unknown }).mediaObjects;
+  if (!Array.isArray(mediaObjects) || mediaObjects.length !== 1) return null;
+  const media = parsePropertyMediaLibraryItem(mediaObjects[0]);
+  return media?.purpose === "property.logo" && media.status === "private_ready"
+    ? media.mediaObjectId
+    : null;
 }
 
 function statusEndpoint(params: AdaptiveHotelSetupStatusParams = {}): string {
