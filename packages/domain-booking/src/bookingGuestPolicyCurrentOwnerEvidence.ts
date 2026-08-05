@@ -1,3 +1,5 @@
+import type { BookingGuestPolicyCurrentSourceRevision } from "./bookingGuestPolicy.js";
+
 export const BOOKING_GUEST_POLICY_CURRENT_BASE_REVISION_KEYS = Object.freeze([
   "booking.guest_experience",
   "pms.pricing_settings",
@@ -10,9 +12,14 @@ export const BOOKING_GUEST_POLICY_CURRENT_BASE_REVISION_KEYS = Object.freeze([
 export type BookingGuestPolicyCurrentBaseRevisionKey =
   (typeof BOOKING_GUEST_POLICY_CURRENT_BASE_REVISION_KEYS)[number];
 
-export type BookingGuestPolicyCurrentBaseRevisions = Readonly<
-  Record<BookingGuestPolicyCurrentBaseRevisionKey, string>
->;
+export type BookingGuestPolicyCurrentBaseRevisions = Readonly<{
+  "booking.guest_experience": BookingGuestPolicyCurrentSourceRevision["revision"];
+  "pms.pricing_settings": string;
+  "pms.rate_plans": string;
+  "pms.room_types": string;
+  "hotel_catalog.location": string;
+  "hotel_catalog.policy": string;
+}>;
 
 export type BookingGuestPolicyPmsCurrentBaseRevisions = Readonly<
   Pick<

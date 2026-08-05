@@ -1,10 +1,12 @@
 import {
+  createBookingGuestPolicyAbsentSourceRevision,
   createBookingGuestPolicySourceRevision,
   parseBookingGuestPolicyCatalogCurrentOwnerEvidence,
   parseBookingGuestPolicyCurrentOwnerEvidenceScope,
   parseBookingGuestPolicyPmsCurrentOwnerEvidence,
   parseBookingGuestPolicyRevision,
   type BookingGuestPolicyCatalogCurrentOwnerEvidencePort,
+  type BookingGuestPolicyCurrentSourceRevision,
   type BookingGuestPolicyCurrentOwnerEvidenceFailure,
   type BookingGuestPolicyCurrentOwnerEvidencePort,
   type BookingGuestPolicyPmsCurrentOwnerEvidencePort,
@@ -27,22 +29,25 @@ export function createBookingGuestPolicyCurrentOwnerEvidenceAdapter(dependencies
         dependencies.catalog.getCurrentGuestPolicyBaseRevisions(scope),
       ]);
       const failures: BookingGuestPolicyCurrentOwnerEvidenceFailure[] = [];
-      const booking =
-        bookingResult.status === "fulfilled"
-          ? bookingResult.value === null
-            ? null
-            : parseSafely(() => parseBookingGuestPolicyRevision(bookingResult.value))
-          : undefined;
+      let bookingSource: BookingGuestPolicyCurrentSourceRevision | null = null;
       if (bookingResult.status === "rejected") {
         failures.push({ owner: "booking", outcome: "unavailable", errorSource: "system" });
       } else if (bookingResult.value === null) {
-        failures.push({ owner: "booking", outcome: "missing" });
-      } else if (
-        !booking ||
-        booking.organizationId !== scope.organizationId ||
-        booking.propertyId !== scope.propertyId
-      ) {
-        failures.push({ owner: "booking", outcome: "malformed" });
+        bookingSource = createBookingGuestPolicyAbsentSourceRevision(scope.propertyId);
+      } else {
+        const booking = parseSafely(() => parseBookingGuestPolicyRevision(bookingResult.value));
+        if (
+          !booking ||
+          booking.organizationId !== scope.organizationId ||
+          booking.propertyId !== scope.propertyId
+        ) {
+          failures.push({ owner: "booking", outcome: "malformed" });
+        } else {
+          bookingSource = createBookingGuestPolicySourceRevision(
+            booking.propertyId,
+            booking.revision,
+          );
+        }
       }
 
       const pms =
@@ -62,7 +67,7 @@ export function createBookingGuestPolicyCurrentOwnerEvidenceAdapter(dependencies
 
       if (
         failures.length > 0 ||
-        !booking ||
+        !bookingSource ||
         !pms ||
         pms.outcome !== "available" ||
         !catalog ||
@@ -80,10 +85,7 @@ export function createBookingGuestPolicyCurrentOwnerEvidenceAdapter(dependencies
         organizationId: scope.organizationId,
         propertyId: scope.propertyId,
         currentBaseRevisions: Object.freeze({
-          "booking.guest_experience": createBookingGuestPolicySourceRevision(
-            booking.propertyId,
-            booking.revision,
-          ).revision,
+          "booking.guest_experience": bookingSource.revision,
           "pms.pricing_settings": pms.evidence.revisions["pms.pricing_settings"],
           "pms.rate_plans": pms.evidence.revisions["pms.rate_plans"],
           "pms.room_types": pms.evidence.revisions["pms.room_types"],
