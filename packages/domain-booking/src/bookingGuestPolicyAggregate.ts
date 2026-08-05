@@ -380,6 +380,81 @@ export function createBookingGuestPolicyPublicProjection(
   });
 }
 
+export function parseBookingGuestPolicyPublicProjection(
+  value: unknown,
+): BookingGuestPolicyPublicProjection | null {
+  if (
+    !exact(value, [
+      "contractVersion",
+      "propertyId",
+      "guestPolicyRevision",
+      "catalogProfileSourceRevision",
+      "sourceFingerprint",
+      "bundleHash",
+      "policy",
+    ]) ||
+    value.contractVersion !== BOOKING_GUEST_POLICY_CONTRACT_VERSION ||
+    !canonicalUuid(value.propertyId) ||
+    !revision(value.guestPolicyRevision, false) ||
+    !profileRevision(value.catalogProfileSourceRevision) ||
+    !parseBookingGuestPolicyHash(value.sourceFingerprint) ||
+    !parseBookingGuestPolicyHash(value.bundleHash) ||
+    !exact(value.policy, [
+      "childrenEnabled",
+      "adultAgeThreshold",
+      "checkInTime",
+      "checkOutTime",
+      "pricingCurrency",
+      "propertyTimeZone",
+      "rates",
+    ]) ||
+    typeof value.policy.childrenEnabled !== "boolean" ||
+    (value.policy.childrenEnabled
+      ? !integer(value.policy.adultAgeThreshold, 1, 21)
+      : value.policy.adultAgeThreshold !== null) ||
+    !localTime(value.policy.checkInTime) ||
+    !localTime(value.policy.checkOutTime) ||
+    typeof value.policy.pricingCurrency !== "string" ||
+    !/^[A-Z]{3}$/.test(value.policy.pricingCurrency) ||
+    typeof value.policy.propertyTimeZone !== "string" ||
+    !timeZone(value.policy.propertyTimeZone) ||
+    !Array.isArray(value.policy.rates)
+  )
+    return null;
+  const policy = value.policy;
+  const childrenEnabled = policy.childrenEnabled as boolean;
+  const adultAgeThreshold = policy.adultAgeThreshold as number | null;
+  const checkInTime = policy.checkInTime as string;
+  const checkOutTime = policy.checkOutTime as string;
+  const pricingCurrency = policy.pricingCurrency as string;
+  const propertyTimeZone = policy.propertyTimeZone as string;
+  const rates = (policy.rates as unknown[]).map((rate) =>
+    parsePublicRate(rate, pricingCurrency, propertyTimeZone, childrenEnabled),
+  );
+  if (
+    rates.some((rate) => rate === null) ||
+    rates.some((rate, index) => index > 0 && rates[index - 1]!.roomTypeId >= rate!.roomTypeId)
+  )
+    return null;
+  return deepFreeze({
+    contractVersion: BOOKING_GUEST_POLICY_CONTRACT_VERSION,
+    propertyId: value.propertyId,
+    guestPolicyRevision: value.guestPolicyRevision,
+    catalogProfileSourceRevision: value.catalogProfileSourceRevision,
+    sourceFingerprint: value.sourceFingerprint as BookingGuestPolicyHash,
+    bundleHash: value.bundleHash as BookingGuestPolicyHash,
+    policy: {
+      childrenEnabled,
+      adultAgeThreshold,
+      checkInTime,
+      checkOutTime,
+      pricingCurrency,
+      propertyTimeZone,
+      rates: rates as BookingGuestPolicyPublicProjection["policy"]["rates"],
+    },
+  });
+}
+
 export function parseBookingGuestPolicyRevision(value: unknown): BookingGuestPolicyRevision | null {
   if (
     !exact(value, [
@@ -407,7 +482,7 @@ export function parseBookingGuestPolicyRevision(value: unknown): BookingGuestPol
     return null;
   const bundle = parseBookingGuestPolicyBundle(value.bundle);
   const confirmation = parsePolicyConfirmation(value.confirmation);
-  const projectionReceipt = parseProjectionReceipt(value.projectionReceipt);
+  const projectionReceipt = parseBookingGuestPolicyProjectionReceipt(value.projectionReceipt);
   if (
     !bundle ||
     !confirmation ||
@@ -569,6 +644,102 @@ export function parseBookingGuestPolicyBundle(value: unknown): BookingGuestPolic
   }) as BookingGuestPolicyBundle;
 }
 
+export function parseBookingGuestPolicyComposition(
+  value: unknown,
+): BookingGuestPolicyComposition | null {
+  if (exact(value, ["outcome", "bundle"]) && value.outcome === "ready") {
+    const bundle = parseBookingGuestPolicyBundle(value.bundle);
+    return bundle ? Object.freeze({ outcome: "ready", bundle }) : null;
+  }
+  if (
+    !exact(value, [
+      "outcome",
+      "organizationId",
+      "propertyId",
+      "sourceBindings",
+      "sourceFingerprint",
+      "blockers",
+    ]) ||
+    value.outcome !== "blocked" ||
+    !canonicalUuid(value.organizationId) ||
+    !canonicalUuid(value.propertyId) ||
+    !Array.isArray(value.sourceBindings) ||
+    !Array.isArray(value.blockers)
+  )
+    return null;
+  const sourceBindings = value.sourceBindings.map(parseSourceBinding);
+  const sourceFingerprint = parseBookingGuestPolicyHash(value.sourceFingerprint);
+  const blockers = value.blockers.map(parseCompositionBlocker);
+  if (
+    !sourceFingerprint ||
+    sourceBindings.some((source) => !source) ||
+    blockers.length === 0 ||
+    blockers.some((candidate) => !candidate) ||
+    !canonicalSources(sourceBindings as BookingGuestPolicySourceBinding[])
+  )
+    return null;
+  return deepFreeze({
+    outcome: "blocked",
+    organizationId: value.organizationId,
+    propertyId: value.propertyId,
+    sourceBindings: sourceBindings as BookingGuestPolicySourceBinding[],
+    sourceFingerprint,
+    blockers: blockers as BookingGuestPolicyCompositionBlocker[],
+  });
+}
+
+export function parseBookingGuestPolicySetupAggregate(
+  value: unknown,
+): BookingGuestPolicySetupAggregate | null {
+  if (
+    !exact(value, [
+      "contractVersion",
+      "organizationId",
+      "propertyId",
+      "supportedLanguages",
+      "draft",
+      "current",
+      "composition",
+    ]) ||
+    value.contractVersion !== BOOKING_GUEST_POLICY_CONTRACT_VERSION ||
+    !canonicalUuid(value.organizationId) ||
+    !canonicalUuid(value.propertyId) ||
+    !Array.isArray(value.supportedLanguages) ||
+    value.supportedLanguages.length !== BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES.length ||
+    !value.supportedLanguages.every(
+      (language, index) => language === BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES[index],
+    )
+  )
+    return null;
+  const current = value.current === null ? null : parseBookingGuestPolicyRevision(value.current);
+  const composition =
+    value.composition === null ? null : parseBookingGuestPolicyComposition(value.composition);
+  const draft = value.draft === null ? null : parseNewDraft(value.draft);
+  if (
+    (value.current !== null && !current) ||
+    (value.composition !== null && !composition) ||
+    (value.draft !== null && !draft) ||
+    (current === null
+      ? !draft || composition !== null
+      : draft !== null ||
+        !composition ||
+        current.organizationId !== value.organizationId ||
+        current.propertyId !== value.propertyId ||
+        compositionScope(composition).organizationId !== value.organizationId ||
+        compositionScope(composition).propertyId !== value.propertyId)
+  )
+    return null;
+  return deepFreeze({
+    contractVersion: BOOKING_GUEST_POLICY_CONTRACT_VERSION,
+    organizationId: value.organizationId,
+    propertyId: value.propertyId,
+    supportedLanguages: BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES,
+    draft,
+    current,
+    composition,
+  });
+}
+
 export function parseUpsertBookingGuestPolicyRequest(
   value: unknown,
 ): UpsertBookingGuestPolicyRequest | null {
@@ -596,6 +767,41 @@ export function parseUpsertBookingGuestPolicyRequest(
     : null;
 }
 
+export function parseBookingGuestPolicyCommandResult(
+  value: unknown,
+  command: UpsertBookingGuestPolicyCommand,
+): BookingGuestPolicyCommandResult | null {
+  try {
+    serializeBookingGuestPolicyCommandFingerprint(command);
+  } catch {
+    return null;
+  }
+  if (exact(value, ["ok", "outcome", "revision"]) && value.ok === true) {
+    const revisionValue = parseBookingGuestPolicyRevision(value.revision);
+    const expectedOutcome = command.expectedRevision === 0 ? "created" : "updated";
+    const outcome = value.outcome;
+    if (
+      !revisionValue ||
+      (outcome !== expectedOutcome && outcome !== "idempotent_replay") ||
+      revisionValue.organizationId !== command.organizationId.toLowerCase() ||
+      revisionValue.propertyId !== command.propertyId.toLowerCase() ||
+      revisionValue.revision !== command.expectedRevision + 1 ||
+      revisionValue.bundle.sourceFingerprint !== command.expectedSourceFingerprint ||
+      JSON.stringify(canonicalChoices(revisionValue.bundle.choices)) !==
+        JSON.stringify(canonicalChoices(command.choices))
+    )
+      return null;
+    return Object.freeze({
+      ok: true,
+      outcome: outcome as "created" | "updated" | "idempotent_replay",
+      revision: revisionValue,
+    });
+  }
+  if (!exact(value, ["ok", "error"]) || value.ok !== false) return null;
+  const error = parseCommandError(value.error);
+  return error ? deepFreeze({ ok: false, error }) : null;
+}
+
 export function serializeBookingGuestPolicyCommandFingerprint(
   command: UpsertBookingGuestPolicyCommand,
 ): string {
@@ -613,18 +819,22 @@ export function serializeBookingGuestPolicyCommandFingerprint(
     propertyId: command.propertyId.toLowerCase(),
     expectedRevision: command.expectedRevision,
     expectedSourceFingerprint: command.expectedSourceFingerprint,
-    choices: {
-      defaultGuestLanguage: command.choices.defaultGuestLanguage,
-      childrenEnabled: command.choices.childrenEnabled,
-      adultAgeThreshold: command.choices.adultAgeThreshold,
-      phoneRequired: command.choices.phoneRequired,
-      arrivalTimeEnabled: command.choices.arrivalTimeEnabled,
-      specialRequestsEnabled: command.choices.specialRequestsEnabled,
-      checkInTime: command.choices.checkInTime,
-      checkOutTime: command.choices.checkOutTime,
-    },
+    choices: canonicalChoices(command.choices),
     confirmPolicyBundle: command.confirmPolicyBundle,
   });
+}
+
+function canonicalChoices(choices: BookingGuestPolicyChoices) {
+  return {
+    defaultGuestLanguage: choices.defaultGuestLanguage,
+    childrenEnabled: choices.childrenEnabled,
+    adultAgeThreshold: choices.adultAgeThreshold,
+    phoneRequired: choices.phoneRequired,
+    arrivalTimeEnabled: choices.arrivalTimeEnabled,
+    specialRequestsEnabled: choices.specialRequestsEnabled,
+    checkInTime: choices.checkInTime,
+    checkOutTime: choices.checkOutTime,
+  };
 }
 
 export function parseBookingGuestPolicyChangedEvent(
@@ -691,7 +901,9 @@ function parsePolicyConfirmation(value: unknown): BookingPolicyConfirmation | nu
   });
 }
 
-function parseProjectionReceipt(value: unknown): BookingGuestPolicyProjectionReceipt | null {
+export function parseBookingGuestPolicyProjectionReceipt(
+  value: unknown,
+): BookingGuestPolicyProjectionReceipt | null {
   if (value === null) return null;
   const common = [
     "outcome",
@@ -755,6 +967,111 @@ function parseProjectionReceipt(value: unknown): BookingGuestPolicyProjectionRec
     observedCatalogProfileRevision: value.observedCatalogProfileRevision,
     recordedAt: value.recordedAt,
   });
+}
+
+function parseCompositionBlocker(value: unknown): BookingGuestPolicyCompositionBlocker | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const optionalKeys = ["roomTypeId", "sourceId"].filter((key) => Object.hasOwn(value, key));
+  if (
+    !exact(value, ["code", ...optionalKeys]) ||
+    !COMPOSITION_BLOCKER_CODES.has(value.code as BookingGuestPolicyCompositionBlocker["code"]) ||
+    (Object.hasOwn(value, "roomTypeId") && !canonicalUuid(value.roomTypeId)) ||
+    (Object.hasOwn(value, "sourceId") && !canonicalUuid(value.sourceId))
+  )
+    return null;
+  return Object.freeze({
+    code: value.code as BookingGuestPolicyCompositionBlocker["code"],
+    ...(typeof value.roomTypeId === "string" ? { roomTypeId: value.roomTypeId } : {}),
+    ...(typeof value.sourceId === "string" ? { sourceId: value.sourceId } : {}),
+  });
+}
+
+const COMPOSITION_BLOCKER_CODES = new Set<BookingGuestPolicyCompositionBlocker["code"]>([
+  "pricing_source_invalid",
+  "pricing_source_missing",
+  "pricing_currency_mismatch",
+  "property_timezone_missing",
+  "property_timezone_invalid",
+  "property_profile_unavailable",
+  "property_profile_malformed",
+  "room_capacity_missing",
+  "room_capacity_invalid",
+  "child_policy_capacity_incompatible",
+  "mandatory_charge_confirmation_missing",
+  "mandatory_charge_confirmation_unavailable",
+  "mandatory_charge_confirmation_malformed",
+  "mandatory_charge_confirmation_stale",
+  "flexible_rate_policy_missing",
+  "optional_rate_policy_invalid",
+]);
+
+function parseNewDraft(value: unknown): BookingGuestPolicySetupDraft | null {
+  return exact(value, [
+    "defaultGuestLanguage",
+    "childrenEnabled",
+    "adultAgeThreshold",
+    "phoneRequired",
+    "arrivalTimeEnabled",
+    "specialRequestsEnabled",
+    "checkInTime",
+    "checkOutTime",
+  ]) &&
+    value.defaultGuestLanguage === null &&
+    value.childrenEnabled === null &&
+    value.adultAgeThreshold === null &&
+    value.phoneRequired === BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.phoneRequired &&
+    value.arrivalTimeEnabled === BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.arrivalTimeEnabled &&
+    value.specialRequestsEnabled ===
+      BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.specialRequestsEnabled &&
+    value.checkInTime === null &&
+    value.checkOutTime === null
+    ? createBookingGuestPolicyNewDraft()
+    : null;
+}
+
+function compositionScope(
+  composition: BookingGuestPolicyComposition,
+): Readonly<{ organizationId: string; propertyId: string }> {
+  return composition.outcome === "ready"
+    ? {
+        organizationId: composition.bundle.organizationId,
+        propertyId: composition.bundle.propertyId,
+      }
+    : { organizationId: composition.organizationId, propertyId: composition.propertyId };
+}
+
+function parseCommandError(value: unknown): BookingGuestPolicyCommandError | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const code = Object.getOwnPropertyDescriptor(value, "code")?.value;
+  if (
+    (code === "command_in_progress" ||
+      code === "idempotency_key_conflict" ||
+      code === "setup_scope_unavailable" ||
+      code === "policy_confirmation_required") &&
+    exact(value, ["code"])
+  )
+    return Object.freeze({ code });
+  if (
+    code === "guest_policy_revision_conflict" &&
+    exact(value, ["code", "currentRevision"]) &&
+    revision(value.currentRevision, true)
+  )
+    return Object.freeze({ code, currentRevision: value.currentRevision });
+  if (code === "source_revision_conflict" && exact(value, ["code", "currentSourceFingerprint"])) {
+    const currentSourceFingerprint = parseBookingGuestPolicyHash(value.currentSourceFingerprint);
+    return currentSourceFingerprint ? Object.freeze({ code, currentSourceFingerprint }) : null;
+  }
+  if (
+    code === "guest_policy_not_ready" &&
+    exact(value, ["code", "blockers"]) &&
+    Array.isArray(value.blockers)
+  ) {
+    const blockers = value.blockers.map(parseCompositionBlocker);
+    return blockers.length > 0 && blockers.every((candidate) => candidate !== null)
+      ? deepFreeze({ code, blockers: blockers as BookingGuestPolicyCompositionBlocker[] })
+      : null;
+  }
+  return null;
 }
 
 function parseSourceBinding(value: unknown): BookingGuestPolicySourceBinding | null {
@@ -854,6 +1171,91 @@ function parseRate(
     nonRefundable,
     additionalGuest,
   }) as BookingGuestPolicyRateDisclosure;
+}
+
+function parsePublicRate(
+  value: unknown,
+  pricingCurrency: string,
+  propertyTimeZone: string,
+  childrenEnabled: boolean,
+): BookingGuestPolicyPublicProjection["policy"]["rates"][number] | null {
+  if (
+    !exact(value, ["roomTypeId", "flexible", "nonRefundable", "additionalGuest"]) ||
+    !canonicalUuid(value.roomTypeId) ||
+    !exact(value.flexible, [
+      "freeCancellationDeadlineDays",
+      "cutoff",
+      "afterDeadlinePenalty",
+      "noShowPenalty",
+    ]) ||
+    !integer(value.flexible.freeCancellationDeadlineDays, 0, 365) ||
+    !exact(value.flexible.cutoff, ["localTime", "timeZone"]) ||
+    !localTime(value.flexible.cutoff.localTime) ||
+    value.flexible.cutoff.timeZone !== propertyTimeZone ||
+    value.flexible.afterDeadlinePenalty !== "full_booking_amount" ||
+    value.flexible.noShowPenalty !== "full_booking_amount"
+  )
+    return null;
+  const nonRefundable = parsePublicNonRefundable(value.nonRefundable);
+  const additionalGuest = parsePublicAdditionalGuest(
+    value.additionalGuest,
+    pricingCurrency,
+    childrenEnabled,
+  );
+  if (nonRefundable === undefined || additionalGuest === undefined) return null;
+  return deepFreeze({
+    roomTypeId: value.roomTypeId,
+    flexible: {
+      freeCancellationDeadlineDays: value.flexible.freeCancellationDeadlineDays,
+      cutoff: {
+        localTime: value.flexible.cutoff.localTime,
+        timeZone: value.flexible.cutoff.timeZone,
+      },
+      afterDeadlinePenalty: "full_booking_amount",
+      noShowPenalty: "full_booking_amount",
+    },
+    nonRefundable,
+    additionalGuest,
+  });
+}
+
+function parsePublicNonRefundable(
+  value: unknown,
+): BookingGuestPolicyPublicProjection["policy"]["rates"][number]["nonRefundable"] | undefined {
+  if (value === null) return null;
+  return exact(value, ["refundPolicy", "noShowPenalty", "paymentTiming"]) &&
+    value.refundPolicy === "no_refund" &&
+    value.noShowPenalty === "full_booking_amount" &&
+    value.paymentTiming === "prepay_full"
+    ? Object.freeze({
+        refundPolicy: "no_refund",
+        noShowPenalty: "full_booking_amount",
+        paymentTiming: "prepay_full",
+      })
+    : undefined;
+}
+
+function parsePublicAdditionalGuest(
+  value: unknown,
+  pricingCurrency: string,
+  childrenEnabled: boolean,
+): BookingGuestPolicyPublicProjection["policy"]["rates"][number]["additionalGuest"] | undefined {
+  if (value === null) return null;
+  if (
+    !exact(value, ["includedGuestsPerRoom", "amountDecimal", "currency", "countedGuestTypes"]) ||
+    !integer(value.includedGuestsPerRoom, 1, 99) ||
+    typeof value.amountDecimal !== "string" ||
+    !/^(?:0|[1-9][0-9]*)\.[0-9]{2}$/.test(value.amountDecimal) ||
+    value.currency !== pricingCurrency ||
+    !guestTypes(value.countedGuestTypes, childrenEnabled)
+  )
+    return undefined;
+  return Object.freeze({
+    includedGuestsPerRoom: value.includedGuestsPerRoom,
+    amountDecimal: value.amountDecimal,
+    currency: value.currency,
+    countedGuestTypes: childrenEnabled ? (["adult", "child"] as const) : (["adult"] as const),
+  });
 }
 
 function parseNonRefundable(

@@ -5,6 +5,7 @@ import {
   BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES,
   createBookingGuestPolicyAbsentSourceRevision,
   createBookingGuestPolicySourceRevision,
+  parseBookingGuestPolicyCatalogProfileEvidenceResult,
   parseBookingGuestPolicyCurrentSourceRevision,
   parseBookingGuestPolicyChoices,
   parseBookingGuestPolicyHash,
@@ -125,6 +126,40 @@ describe("Booking guest-policy contract", () => {
       parseBookingGuestPolicyCurrentSourceRevision(
         createBookingGuestPolicySourceRevision(propertyId, 1),
         "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      ),
+    ).toBeNull();
+  });
+
+  it("strictly parses scope-bound Catalog profile evidence", () => {
+    const value = {
+      outcome: "available",
+      evidence: {
+        source: {
+          ownerDomain: "hotel_catalog",
+          entityType: "property_profile",
+          entityId: propertyId,
+          revision: "profile:3",
+        },
+        timeZone: "Europe/Berlin",
+      },
+    };
+    expect(parseBookingGuestPolicyCatalogProfileEvidenceResult(value, propertyId)).toEqual(value);
+    expect(
+      parseBookingGuestPolicyCatalogProfileEvidenceResult(
+        {
+          ...value,
+          evidence: {
+            ...value.evidence,
+            source: { ...value.evidence.source, entityId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+          },
+        },
+        propertyId,
+      ),
+    ).toBeNull();
+    expect(
+      parseBookingGuestPolicyCatalogProfileEvidenceResult(
+        { ...value, evidence: { ...value.evidence, extra: true } },
+        propertyId,
       ),
     ).toBeNull();
   });
