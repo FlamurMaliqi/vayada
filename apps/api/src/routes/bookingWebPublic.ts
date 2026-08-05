@@ -1081,6 +1081,7 @@ type TargetBookingRow = QueryResultRow & {
   guestBookingId: string;
   propertyId: string;
   publicReference: string;
+  sourceSystem: string;
   hotelName?: string;
   guestFirstName?: string;
   guestLastName?: string;
@@ -1109,6 +1110,7 @@ type TargetCheckoutQuoteOfferRow = QueryResultRow & {
   publicPolicy: unknown;
   paymentOptions: string[] | null;
   availableRooms: string | number;
+  nightlyRoomAmounts: unknown;
   roomTotal: string | number;
   taxesAndFees: string | number;
   discounts: string | number;
@@ -1199,12 +1201,10 @@ type PgTargetBookingWebCheckoutAdapterConfig = {
 const TARGET_CHECKOUT_SUPPORTED_PAYMENT_METHODS = ["pay_at_property", "cash"] as const;
 
 type TargetCheckoutCommandReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 type TargetBookingChangeDecisionReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
@@ -1365,6 +1365,13 @@ export function createTargetBookingWebCheckoutAdapter(
           inventoryReservation: reservation,
           context,
         });
+        await captureTargetNightlyRevenueEvidence(
+          client,
+          updatedBooking,
+          selectedOffer,
+          context,
+          targetPropertyDateOnly(property.timezone, context.occurredAt),
+        );
         await enqueuePmsReservationHandoff(
           client,
           propertyId,
@@ -1504,6 +1511,12 @@ export function createTargetBookingWebCheckoutAdapter(
           context,
           quote,
           guestPhone,
+        );
+        await captureTargetNightlyRevenueEvidence(
+          client,
+          booking,
+          quote.selectedOfferSnapshot,
+          context,
         );
         await enqueueBankTransferReservedPendingPaymentEmail(
           client,
@@ -2071,6 +2084,7 @@ async function createTargetCheckoutQuote(
     paymentOptions,
     paymentMethod,
     availableRooms: integerValue(offer.availableRooms, roomCount),
+    nightlyRoomAmounts: targetNightlyRoomAmounts(offer.nightlyRoomAmounts, checkIn, checkOut),
     sourceFreshness: objectValue(offer.sourceFreshness),
     generatedAt: toIsoDateTime(offer.generatedAt),
   };
@@ -2240,6 +2254,9 @@ async function loadTargetCheckoutOffer(
            ELSE 0
          END
        ) AS "availableRooms",
+       jsonb_agg(jsonb_build_object(
+         'stayDate', offer.stay_date, 'grossRoomAmount', offer.base_price_amount
+       ) ORDER BY offer.stay_date) AS "nightlyRoomAmounts",
        SUM(offer.base_price_amount) * $7::int AS "roomTotal",
        SUM(offer.taxes_and_fees_amount) * $7::int AS "taxesAndFees",
        SUM(offer.discounts_amount) * $7::int AS discounts,
@@ -2682,6 +2699,7 @@ async function createTargetGuestBooking(
          id::text AS "guestBookingId",
          property_id::text AS "propertyId",
          public_reference AS "publicReference",
+         source_system AS "sourceSystem",
          lifecycle_status AS "lifecycleStatus",
          payment_status AS "paymentStatus",
          check_in::text AS "checkIn",
@@ -2826,6 +2844,118 @@ async function createTargetGuestBooking(
   return booking;
 }
 
+export async function captureTargetNightlyRevenueEvidence(
+  pool: BookingWebQueryExecutor,
+  booking: TargetBookingRow,
+  selectedOffer: Record<string, unknown>,
+  context: Pick<BookingWebCheckoutCommandContext, "fingerprint" | "occurredAt">,
+  recognizedOn: string | null = null,
+  clear = false,
+): Promise<void> {
+  const roomTypeId = stringValue(selectedOffer["roomTypeId"]);
+  if (!roomTypeId) throw createHttpError(409, "Booked room evidence is unavailable.");
+  const nights = clear
+    ? []
+    : targetNightlyRoomAmounts(
+        selectedOffer["nightlyRoomAmounts"],
+        dateOnly(booking.checkIn),
+        dateOnly(booking.checkOut),
+      );
+  await pool.query(
+    `WITH booking_scope AS (
+       SELECT id, property_id, currency, room_count, lifecycle_status
+       FROM booking.guest_bookings
+       WHERE id = $1::uuid AND property_id = $2::uuid
+         AND source_system = 'booking'
+         AND lifecycle_status IN ('confirmed', 'canceled', 'no_show')
+       FOR UPDATE
+     ), desired AS (
+       SELECT (night ->> 'stayDate')::date AS stay_date,
+         (night ->> 'grossRoomAmount')::numeric AS amount, room.line_position
+       FROM booking_scope scope
+       CROSS JOIN LATERAL jsonb_array_elements($4::jsonb) night
+       CROSS JOIN LATERAL generate_series(1, scope.room_count) room(line_position)
+     ), current_state AS (
+       SELECT evidence.stay_date, evidence.line_position,
+         SUM(evidence.gross_room_amount) AS amount,
+         SUM(evidence.occupied_room_nights)::int AS occupied,
+         (array_agg(evidence.id ORDER BY evidence.source_revision DESC,
+           evidence.created_at DESC, evidence.id DESC))[1] AS target_id
+       FROM booking_scope scope
+       JOIN booking.nightly_revenue_evidence evidence ON evidence.guest_booking_id = scope.id
+       WHERE evidence.economic_event <> 'retained_charge'
+       GROUP BY evidence.stay_date, evidence.line_position
+     ), revision AS (
+       SELECT COALESCE(MAX(evidence.source_revision), 0) + 1 AS value
+       FROM booking_scope scope
+       LEFT JOIN booking.nightly_revenue_evidence evidence ON evidence.guest_booking_id = scope.id
+     ), changes AS (
+       SELECT COALESCE(desired.stay_date, current_state.stay_date) AS stay_date,
+         COALESCE(desired.line_position, current_state.line_position) AS line_position,
+         desired.amount AS desired_amount, current_state.amount AS current_amount,
+         current_state.occupied, current_state.target_id
+       FROM desired FULL JOIN current_state USING (stay_date, line_position)
+       WHERE (desired.stay_date IS NULL AND current_state.occupied = 1)
+          OR (desired.stay_date IS NOT NULL AND current_state.stay_date IS NULL)
+          OR (desired.stay_date IS NOT NULL AND current_state.occupied = 0)
+          OR (desired.stay_date IS NOT NULL AND current_state.occupied = 1
+            AND desired.amount <> current_state.amount)
+     )
+     INSERT INTO booking.nightly_revenue_evidence
+       (property_id, guest_booking_id, room_type_id, stay_date, recognized_on, currency,
+        gross_room_amount, occupied_room_nights, economic_event, lifecycle_state,
+        source_kind, evidence_quality, source_revision, line_position,
+        corrects_evidence_id, command_key)
+     SELECT scope.property_id, scope.id, $3::uuid, changes.stay_date,
+       CASE WHEN changes.target_id IS NULL THEN changes.stay_date
+            ELSE COALESCE($6::date, changes.stay_date) END,
+       scope.currency,
+       CASE WHEN changes.target_id IS NULL THEN changes.desired_amount
+            WHEN changes.desired_amount IS NULL THEN -changes.current_amount
+            ELSE changes.desired_amount - changes.current_amount END,
+       CASE WHEN changes.target_id IS NULL THEN 1 WHEN changes.desired_amount IS NULL THEN -1
+            WHEN changes.occupied = 0 THEN 1 ELSE 0 END,
+       CASE WHEN changes.target_id IS NULL THEN 'room_night'
+            WHEN changes.desired_amount IS NULL OR changes.occupied = 0
+              THEN 'occupancy_adjustment' ELSE 'correction' END,
+       CASE WHEN changes.target_id IS NULL THEN 'confirmed'
+            WHEN scope.lifecycle_status IN ('canceled', 'no_show')
+              THEN scope.lifecycle_status ELSE 'corrected' END,
+       'direct', 'exact', revision.value, changes.line_position, changes.target_id,
+       'direct:' || encode(digest($5, 'sha256'), 'hex') || ':'
+         || changes.stay_date::text || ':' || changes.line_position::text
+     FROM changes CROSS JOIN booking_scope scope CROSS JOIN revision`,
+    [
+      booking.guestBookingId,
+      booking.propertyId,
+      roomTypeId,
+      JSON.stringify(nights),
+      context.fingerprint,
+      recognizedOn,
+    ],
+  );
+}
+
+function targetNightlyRoomAmounts(
+  value: unknown,
+  checkIn: string,
+  checkOut: string,
+): Array<{ stayDate: string; grossRoomAmount: string }> {
+  const expectedDates = dateRange(checkIn, checkOut);
+  if (!Array.isArray(value) || value.length !== expectedDates.length) {
+    throw createHttpError(409, "Nightly room price evidence is unavailable.");
+  }
+  return value.map((entry, index) => {
+    const night = objectValue(entry);
+    const stayDate = normalizeDateOnly(stringValue(night["stayDate"]) ?? undefined);
+    const grossRoomAmount = moneyString(night["grossRoomAmount"]);
+    if (stayDate !== expectedDates[index] || !grossRoomAmount) {
+      throw createHttpError(409, "Nightly room price evidence is unavailable.");
+    }
+    return { stayDate, grossRoomAmount };
+  });
+}
+
 async function resolveTargetGuestPhone(
   pool: BookingWebQueryExecutor,
   propertyId: string,
@@ -2880,6 +3010,7 @@ async function withGuestLifecycleMutation(
             id::text AS "guestBookingId",
             property_id::text AS "propertyId",
             public_reference AS "publicReference",
+            source_system AS "sourceSystem",
             lifecycle_status AS "lifecycleStatus",
             payment_status AS "paymentStatus",
             check_in::text AS "checkIn",
@@ -2934,6 +3065,16 @@ async function withGuestLifecycleMutation(
     if (!updated) {
       throw createHttpError(409, "Booking status changed. Please refresh and try again.");
     }
+    if (updated.sourceSystem === "booking") {
+      await captureTargetNightlyRevenueEvidence(
+        client,
+        updated,
+        objectValue(objectValue(updated.bookingMetadata)["selectedOffer"]),
+        context,
+        null,
+        true,
+      );
+    }
     const currentReservation = inventoryReservationReceiptFromBookingMetadata(
       updated.bookingMetadata,
       updated.propertyId,
@@ -2970,6 +3111,7 @@ async function loadTargetBooking(
        b.id::text AS "guestBookingId",
        b.property_id::text AS "propertyId",
        b.public_reference AS "publicReference",
+       b.source_system AS "sourceSystem",
        property.display_name AS "hotelName",
        booker.first_name AS "guestFirstName",
        booker.last_name AS "guestLastName",
@@ -3167,6 +3309,7 @@ async function previewTargetDateChange(
       rateSummary: objectValue(offer.rateSummary),
       occupancy: objectValue(offer.occupancy),
       publicPolicy: objectValue(offer.publicPolicy),
+      nightlyRoomAmounts: targetNightlyRoomAmounts(offer.nightlyRoomAmounts, checkIn, checkOut),
       sourceFreshness: objectValue(offer.sourceFreshness),
       generatedAt: toIsoDateTime(offer.generatedAt),
     };
@@ -3343,6 +3486,7 @@ async function loadTargetHotelBooking(
        booking.id::text AS "guestBookingId",
        booking.property_id::text AS "propertyId",
        booking.public_reference AS "publicReference",
+       booking.source_system AS "sourceSystem",
        booking.lifecycle_status AS "lifecycleStatus",
        booking.payment_status AS "paymentStatus",
        booking.check_in::text AS "checkIn",
@@ -3558,6 +3702,7 @@ async function applyAcceptedTargetDateChange(
         booking.id::text AS "guestBookingId",
         booking.property_id::text AS "propertyId",
         booking.public_reference AS "publicReference",
+        booking.source_system AS "sourceSystem",
         booking.lifecycle_status AS "lifecycleStatus",
         booking.payment_status AS "paymentStatus",
         booking.check_in::text AS "checkIn",

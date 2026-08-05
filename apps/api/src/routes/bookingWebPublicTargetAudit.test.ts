@@ -166,6 +166,11 @@ function quoteHarness(options: {
               publicPolicy: {},
               paymentOptions: ["pay_at_property"],
               availableRooms: 2,
+              nightlyRoomAmounts: [
+                { stayDate: "2026-09-12", grossRoomAmount: "90.00" },
+                { stayDate: "2026-09-13", grossRoomAmount: "90.00" },
+                { stayDate: "2026-09-14", grossRoomAmount: "90.00" },
+              ],
               roomTotal: "270.00",
               taxesAndFees: "0.00",
               discounts: "0.00",
