@@ -39,8 +39,6 @@ import {
   type FinanceJsonObject,
   type FinanceJsonPolicy,
   type FinanceManualPaymentRecordCommand,
-  type FinanceManualPaymentRecordResponse,
-  type FinanceManualPaymentRecordResult,
   type FinancePaymentLedgerItem,
   type FinancePaymentLedgerQuery,
   type FinancePaymentLedgerResponse,
@@ -388,12 +386,7 @@ type FinanceRowsWithTotal<T extends { total: string | number }> = {
   total: number;
 };
 
-type FinanceManualPaymentWriteRow = {
-  paymentId: string;
-  replay: boolean;
-};
-
-type FinanceManualPaymentIdempotencyRow = {
+type FinanceIdempotencyRow = {
   status: string;
   requestFingerprintHash: string;
 };
@@ -2199,9 +2192,9 @@ async function loadProviderAccountIdempotency(
   command: CreateStripeProviderAccountCommand | IssueStripeOnboardingLinkCommand,
   operation: "stripe_provider_account_create" | "stripe_onboarding_link_issue",
   keyHash: string,
-): Promise<FinanceManualPaymentIdempotencyRow | null> {
+): Promise<FinanceIdempotencyRow | null> {
   const owner = financeProviderAccountOwner(command);
-  const result = await client.query<FinanceManualPaymentIdempotencyRow>(
+  const result = await client.query<FinanceIdempotencyRow>(
     `SELECT
        status,
        request_fingerprint_hash AS "requestFingerprintHash"
@@ -2794,9 +2787,7 @@ async function updateAffiliatePayoutSettingsInClient(
   const keyHash = sha256(command.idempotencyKey);
   const fingerprint = sha256(stableJson(command.payload));
   const requestedAt = command.audit.requestedAt;
-  const idempotency = await client.query<
-    FinanceManualPaymentIdempotencyRow & { inserted: boolean }
-  >(
+  const idempotency = await client.query<FinanceIdempotencyRow & { inserted: boolean }>(
     `INSERT INTO platform.idempotency_keys (
        operation_scope,
        operation,
@@ -3285,241 +3276,6 @@ async function recordPropertyPayoutDispatchAuditEvent(
       }),
     ],
   );
-}
-
-async function reserveManualPaymentIdempotency(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  keyHash: string,
-  fingerprint: string,
-  recordedAt: string,
-): Promise<Extract<FinanceManualPaymentRecordResult, { ok: false }> | null> {
-  const result = await client.query<{
-    status: string;
-    requestFingerprintHash: string;
-  }>(
-    `INSERT INTO platform.idempotency_keys (
-       operation_scope,
-       operation,
-       key_hash,
-       request_fingerprint_hash,
-       status,
-       tenant_scope,
-       organization_id,
-       property_id,
-       correlation_id,
-       first_seen_at,
-       last_seen_at,
-       expires_at,
-       idempotency_metadata
-     )
-     VALUES (
-       'finance',
-       'manual_payment_record',
-       $1,
-       $2,
-       'in_progress',
-       'property',
-       NULL,
-       $3::uuid,
-       $4,
-       $5::timestamptz,
-       $5::timestamptz,
-       $5::timestamptz + interval '24 hours',
-       $6::jsonb
-     )
-     ON CONFLICT (operation_scope, operation, key_hash, scope_key)
-     DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
-     RETURNING
-       status,
-       request_fingerprint_hash AS "requestFingerprintHash"`,
-    [
-      keyHash,
-      fingerprint,
-      command.propertyId,
-      command.audit.correlationId ?? command.audit.requestId,
-      recordedAt,
-      JSON.stringify({
-        commandId: command.commandId,
-        idempotencyKey: command.idempotencyKey,
-        actorOrganizationId:
-          command.audit.actor.kind === "user" ? command.audit.actor.organizationId : null,
-      }),
-    ],
-  );
-  const row = result.rows[0];
-  if (row && row.requestFingerprintHash !== fingerprint) {
-    return {
-      ok: false,
-      statusCode: 409,
-      code: "idempotency_conflict",
-      message: "Idempotency key was already used with a different manual payment payload.",
-    };
-  }
-  return null;
-}
-
-async function loadManualPaymentIdempotency(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  keyHash: string,
-): Promise<FinanceManualPaymentIdempotencyRow | null> {
-  const result = await client.query<FinanceManualPaymentIdempotencyRow>(
-    `SELECT
-       status,
-       request_fingerprint_hash AS "requestFingerprintHash"
-     FROM platform.idempotency_keys
-     WHERE operation_scope = 'finance'
-       AND operation = 'manual_payment_record'
-       AND key_hash = $1
-       AND tenant_scope = 'property'
-       AND property_id = $2::uuid
-     LIMIT 1`,
-    [keyHash, command.propertyId],
-  );
-  return result.rows[0] ?? null;
-}
-
-async function loadManualPaymentByIdempotencyKey(
-  client: FinancePropertySettingsWriteClient,
-  propertyId: string,
-  idempotencyKey: string,
-): Promise<FinanceManualPaymentWriteRow | null> {
-  const result = await client.query<FinanceManualPaymentWriteRow>(
-    `SELECT id::text AS "paymentId", true AS replay
-     FROM finance.payments
-     WHERE property_id = $1::uuid
-       AND idempotency_key = $2
-     LIMIT 1`,
-    [propertyId, idempotencyKey],
-  );
-  return result.rows[0] ?? null;
-}
-
-function validateManualPaymentInvoice(
-  command: FinanceManualPaymentRecordCommand,
-  invoice: FinanceInvoiceRow,
-): Extract<FinanceManualPaymentRecordResult, { ok: false }> | null {
-  const status = invoiceStatus(invoice.status);
-  if (status === "paid") {
-    return invalidManualPaymentCommand("Paid invoices cannot accept manual payments.");
-  }
-  if (status === "voided") {
-    return invalidManualPaymentCommand("Voided invoices cannot accept manual payments.");
-  }
-
-  const invoiceCurrency = currencyCode(invoice.currency);
-  if (command.payload.currency !== invoiceCurrency) {
-    return invalidManualPaymentCommand("Manual payment currency must match the invoice currency.");
-  }
-
-  const amountCents = numeric15Scale2Cents(command.payload.amount);
-  const balanceCents = numeric15Scale2Cents(invoice.balanceDue, { allowZero: true });
-  if (amountCents === null) {
-    return invalidManualPaymentCommand("Manual payment amount is outside the supported range.");
-  }
-  if (balanceCents === null) {
-    return invalidManualPaymentCommand("Finance invoice balance is unavailable.");
-  }
-  if (balanceCents <= 0n) {
-    return invalidManualPaymentCommand("Finance invoice has no outstanding balance.");
-  }
-  if (amountCents > balanceCents) {
-    return invalidManualPaymentCommand("Manual payment amount exceeds the invoice balance.");
-  }
-
-  return null;
-}
-
-function invalidManualPaymentCommand(
-  message: string,
-): Extract<FinanceManualPaymentRecordResult, { ok: false }> {
-  return {
-    ok: false,
-    statusCode: 400,
-    code: "invalid_command",
-    message,
-  };
-}
-
-async function insertManualPayment(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  scopedPaymentIdempotencyKey: string,
-  recordedAt: string,
-): Promise<FinanceManualPaymentWriteRow> {
-  const result = await client.query<FinanceManualPaymentWriteRow>(
-    `WITH inserted AS (
-       INSERT INTO finance.payments (
-         property_id,
-         organization_id,
-         guest_booking_id,
-         source_system,
-         idempotency_key,
-         payment_kind,
-         payment_method,
-         status,
-         amount,
-         fee_amount,
-         net_amount,
-         refunded_amount,
-         currency,
-         payment_metadata,
-         visibility_class,
-         paid_at,
-         created_at,
-         updated_at
-       )
-       VALUES (
-         $1::uuid,
-         $2::uuid,
-         $3::uuid,
-         'finance',
-         $4,
-         'manual',
-         $5,
-         'paid',
-         $6::numeric,
-         0,
-         $6::numeric,
-         0,
-         $7,
-         $8::jsonb,
-         'pms_finance',
-         $9::timestamptz,
-         $9::timestamptz,
-         $9::timestamptz
-       )
-       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-       RETURNING id::text AS "paymentId", false AS replay
-     )
-     SELECT "paymentId", replay FROM inserted
-     UNION ALL
-     SELECT id::text AS "paymentId", true AS replay
-     FROM finance.payments
-     WHERE property_id = $1::uuid
-       AND idempotency_key = $4
-     LIMIT 1`,
-    [
-      command.propertyId,
-      command.audit.actor.kind === "user" ? command.audit.actor.organizationId : null,
-      guestBookingId,
-      scopedPaymentIdempotencyKey,
-      command.payload.paymentMethod,
-      command.payload.amount,
-      command.payload.currency,
-      JSON.stringify({
-        invoiceId: command.payload.invoiceId,
-        reference: command.payload.reference ?? null,
-        commandId: command.commandId,
-        reconciliationStatus: "matched",
-        providerStatus: "paid",
-      }),
-      recordedAt,
-    ],
-  );
-  return result.rows[0]!;
 }
 
 function buildManualPaymentCommandMeta(
@@ -4124,44 +3880,6 @@ async function recordManualPaymentAuditEvent(
         requestId: command.audit.requestId,
         idempotencyKeyHash: keyHash,
       }),
-    ],
-  );
-}
-
-async function completeManualPaymentIdempotency(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  keyHash: string,
-  fingerprint: string,
-  paymentId: string,
-  commandMeta: ReturnType<typeof buildManualPaymentCommandMeta>,
-  recordedAt: string,
-): Promise<void> {
-  await client.query(
-    `UPDATE platform.idempotency_keys
-     SET status = 'completed',
-         request_fingerprint_hash = $1,
-         response_status_code = 201,
-         response_resource_product = 'finance',
-         response_resource_type = 'payment',
-         response_resource_id = $2,
-         response_body_hash = $3,
-         completed_at = $4::timestamptz,
-         last_seen_at = $4::timestamptz,
-         idempotency_metadata = $5::jsonb
-     WHERE operation_scope = 'finance'
-       AND operation = 'manual_payment_record'
-       AND key_hash = $6
-       AND tenant_scope = 'property'
-       AND property_id = $7::uuid`,
-    [
-      fingerprint,
-      paymentId,
-      sha256(stableJson(commandMeta)),
-      recordedAt,
-      JSON.stringify({ commandMeta, commandId: command.commandId }),
-      keyHash,
-      command.propertyId,
     ],
   );
 }
@@ -6378,7 +6096,6 @@ function maskAccountNumber(accountNumber: string): string {
 
 function toFinanceCommandError(
   result:
-    | Extract<FinanceManualPaymentRecordResult, { ok: false }>
     | Extract<FinanceProviderAccountCommandResult, { ok: false }>
     | Extract<FinanceXenditPayoutReconciliationResult, { ok: false }>
     | Extract<FinancePropertyPayoutDispatchResult, { ok: false }>
