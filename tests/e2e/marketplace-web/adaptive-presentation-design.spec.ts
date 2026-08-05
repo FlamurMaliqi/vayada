@@ -56,6 +56,7 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
     await page.getByRole("checkbox", { name: "Instagram" }).check();
     await page.getByRole("checkbox", { name: "Short-form video" }).check();
     await page.getByRole("radio", { name: "Year-round" }).check();
+    await assertHealthy();
     await page.getByRole("button", { name: "Save and continue" }).click();
 
     await expect(
@@ -64,9 +65,16 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
     await expect(
       page.getByText("Save these choices to prepare the private preview."),
     ).toBeVisible();
-    await page.getByRole("radio", { name: "Ocean blue" }).check();
-    await page.getByRole("radio", { name: "Modern Minimalist" }).check();
-    await assertHealthy();
+    const assertDesignHealthy = watchPageHealth(page, testInfo);
+    const oceanBlue = page.getByRole("radio", { name: "Ocean blue" });
+    await oceanBlue.focus();
+    await page.keyboard.press("Space");
+    await expect(oceanBlue).toBeChecked();
+    const modernMinimalist = page.getByRole("radio", { name: "Modern Minimalist" });
+    await modernMinimalist.focus();
+    await page.keyboard.press("Space");
+    await expect(modernMinimalist).toBeChecked();
+    await assertDesignHealthy();
     await page.getByRole("button", { name: "Save and continue" }).click();
 
     await expect(page).toHaveURL(/[?&]step=rooms(?:&|$)/);
@@ -183,6 +191,14 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
   const legacyCalls: string[] = [];
   let readinessReads = 0;
   let failNextDraft: DraftFailure = null;
+
+  await page.route("https://media.example/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "image/webp",
+      body: Buffer.from("safe-booking-preview"),
+    });
+  });
 
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;

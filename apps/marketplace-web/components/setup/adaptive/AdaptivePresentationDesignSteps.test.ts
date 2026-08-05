@@ -141,7 +141,11 @@ describe("adaptive presentation and design steps", () => {
     const instagram = renderer!.root
       .findAllByType("input")
       .find((input) => input.props["aria-label"] === "Instagram")!;
+    const yearRound = renderer!.root
+      .findAllByType("input")
+      .find((input) => input.props.value === "year_round")!;
     await act(async () => instagram.props.onChange());
+    await act(async () => yearRound.props.onChange());
     await act(async () => registration.callback!());
 
     expect(mocks.saveDraft).toHaveBeenCalledWith(
@@ -151,9 +155,11 @@ describe("adaptive presentation and design steps", () => {
         dirtyFields: [
           "marketplace.preferences.compensation_types",
           "marketplace.preferences.content_platforms",
+          "marketplace.preferences.availability",
         ],
         payload: expect.objectContaining({
           "marketplace.preferences.content_platforms": ["instagram"],
+          "marketplace.preferences.availability": { mode: "year_round", months: [] },
         }),
       }),
     );

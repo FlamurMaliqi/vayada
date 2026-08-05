@@ -132,7 +132,8 @@ export function AdaptiveHotelSetupShell({
               onAction={onRefresh}
               disabled={refreshing}
             />
-          ) : loading ? (
+          ) : null}
+          {loading ? (
             <div
               className="rounded-2xl border border-gray-200 bg-white px-6 py-12 text-center sm:px-10"
               role="status"
@@ -141,7 +142,7 @@ export function AdaptiveHotelSetupShell({
               <p className="text-sm font-medium text-gray-700">Loading setup…</p>
             </div>
           ) : (
-            children
+            <div className={routeError || staleDraftMessage ? "mt-6" : undefined}>{children}</div>
           )}
         </section>
       </div>

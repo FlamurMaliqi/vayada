@@ -175,7 +175,7 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
           "marketplace.preferences.content_platforms": current.contentPlatforms,
           "marketplace.preferences.content_types": current.contentTypes,
           "marketplace.preferences.availability": current.availabilityMode
-            ? { mode: current.availabilityMode, selectedMonths: current.selectedMonths }
+            ? { mode: current.availabilityMode, months: current.selectedMonths }
             : null,
         },
         dirtyFields: Array.from(dirtyFieldsRef.current),
@@ -493,13 +493,8 @@ function PillCheckbox({ inputRef, label, checked, describedBy, onChange }: Choic
         aria-label={label}
         aria-describedby={describedBy}
         onChange={onChange}
-        className="sr-only peer"
+        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-600"
       />
-      <span
-        className={`flex h-4 w-4 items-center justify-center rounded border ${checked ? "border-primary-600 bg-primary-600 text-white" : "border-gray-400"}`}
-      >
-        {checked && <CheckIcon className="h-3 w-3" aria-hidden="true" />}
-      </span>
       {label}
     </label>
   );
@@ -571,7 +566,7 @@ function hydrate(
     availability(payload["marketplace.preferences.availability"])
   ) {
     form.availabilityMode = payload["marketplace.preferences.availability"].mode;
-    form.selectedMonths = [...payload["marketplace.preferences.availability"].selectedMonths];
+    form.selectedMonths = [...payload["marketplace.preferences.availability"].months];
   }
   return form;
 }
@@ -583,15 +578,18 @@ function selection<T extends string>(value: unknown, allowed: readonly T[]): val
 }
 function availability(
   value: unknown,
-): value is { mode: MarketplacePreferenceAvailability["mode"]; selectedMonths: number[] } {
+): value is { mode: MarketplacePreferenceAvailability["mode"]; months: number[] } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   return (
+    Object.keys(item).length === 2 &&
+    Object.hasOwn(item, "mode") &&
+    Object.hasOwn(item, "months") &&
     MARKETPLACE_PREFERENCE_AVAILABILITY_MODES.includes(
       item.mode as MarketplacePreferenceAvailability["mode"],
     ) &&
-    Array.isArray(item.selectedMonths) &&
-    item.selectedMonths.every((month) => Number.isInteger(month) && month >= 1 && month <= 12)
+    Array.isArray(item.months) &&
+    item.months.every((month) => Number.isInteger(month) && month >= 1 && month <= 12)
   );
 }
 class RevisionMismatchError extends Error {}
