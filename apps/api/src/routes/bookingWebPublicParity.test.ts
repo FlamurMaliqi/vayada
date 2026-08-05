@@ -1748,6 +1748,10 @@ describe("Booking Web public bootstrap parity", () => {
       expectedTotalAmount: 100,
       balanceAmount: 100,
       paymentStatus: "paid",
+      bookingChannel: "airbnb",
+      directBookingSource: "whatsapp",
+      booking_channel: "expedia",
+      direct_booking_source: "call",
     };
     const context = {
       operation: "booking-create",
@@ -1781,6 +1785,17 @@ describe("Booking Web public bootstrap parity", () => {
     );
     expect(optionalPhone.bookingWriteValues?.[10]).toBe("unpaid");
     expect(optionalPhone.bookingWriteValues?.[9]).toBe("pending_payment");
+    const bookingWrite = optionalPhone.calls.find((text) =>
+      text.includes("INSERT INTO booking.guest_bookings"),
+    );
+    expect(bookingWrite).toMatch(
+      /source_system,\s+booking_channel,\s+direct_booking_source,\s+lifecycle_status/,
+    );
+    expect(bookingWrite).toMatch(/'booking',\s+'direct',\s+'booking_engine',\s+\$10/);
+    expect(optionalPhone.bookingWriteValues).not.toContain("airbnb");
+    expect(optionalPhone.bookingWriteValues).not.toContain("whatsapp");
+    expect(optionalPhone.bookingWriteValues).not.toContain("expedia");
+    expect(optionalPhone.bookingWriteValues).not.toContain("call");
     expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[18]))).toMatchObject({
       acceptanceMode: "request",
       hostResponseDeadlineAt: "2026-06-26T12:00:00.000Z",

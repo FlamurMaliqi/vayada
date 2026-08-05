@@ -1312,12 +1312,10 @@ const BOOKING_LOOKUP_RATE_LIMIT = 5;
 const BOOKING_LOOKUP_RATE_WINDOW_MS = 60 * 1000;
 
 type TargetCheckoutCommandReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 type TargetBookingChangeDecisionReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
@@ -3243,6 +3241,8 @@ async function createTargetGuestBooking(
            checkout_context_id,
            public_reference,
            source_system,
+           booking_channel,
+           direct_booking_source,
            lifecycle_status,
            payment_status,
            check_in,
@@ -3266,6 +3266,8 @@ async function createTargetGuestBooking(
          checkout.id,
          $9,
          'booking',
+         'direct',
+         'booking_engine',
          $10,
          $11,
          $12::date,
