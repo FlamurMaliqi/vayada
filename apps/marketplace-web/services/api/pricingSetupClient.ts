@@ -50,6 +50,7 @@ export type PricingSetupClient = {
   saveDraft(
     propertyId: string,
     request: Extract<SavePropertySetupDraftRequest, { stepId: "pricing" }>,
+    expectedSessionId: string | null,
   ): Promise<SavePropertySetupDraftReceipt>;
   saveCanonical(
     organizationId: string,
@@ -154,7 +155,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
 
   return {
     loadWorkspace,
-    async saveDraft(propertyId, request) {
+    async saveDraft(propertyId, request, expectedSessionId) {
       const value = await ownerPut(
         http,
         `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/pricing`,
@@ -162,7 +163,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
         await commandKey("pricing-draft", propertyId, request),
         "draft",
       );
-      const receipt = parseDraftReceipt(value, request);
+      const receipt = parseDraftReceipt(value, request, expectedSessionId);
       if (!receipt) throw invalidOwnerContract("pricing draft receipt");
       return receipt;
     },
@@ -780,6 +781,7 @@ function parseRoomList(value: unknown, propertyId: string): RoomTypeFactsSnapsho
 function parseDraftReceipt(
   value: unknown,
   request: Extract<SavePropertySetupDraftRequest, { stepId: "pricing" }>,
+  expectedSessionId: string | null,
 ): SavePropertySetupDraftReceipt | null {
   if (
     !isExactRecord(value, [
@@ -797,6 +799,7 @@ function parseDraftReceipt(
     value.contractVersion !== PROPERTY_SETUP_DRAFT_CONTRACT_VERSION ||
     value.stepId !== "pricing" ||
     !isUuid(value.sessionId) ||
+    (expectedSessionId !== null && value.sessionId !== expectedSessionId) ||
     !Array.isArray(value.selectedTracks) ||
     value.selectedTracks.some((track) => !isSetupTrack(track)) ||
     new Set(value.selectedTracks).size !== value.selectedTracks.length ||

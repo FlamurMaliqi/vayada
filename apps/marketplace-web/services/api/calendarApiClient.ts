@@ -22,6 +22,7 @@ import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
   SETUP_TRACKS,
   type PropertyProfileResponse,
+  type SavePropertySetupDraftError,
   type SavePropertySetupDraftReceipt,
   type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
@@ -139,14 +140,20 @@ export function createCalendarApiClient(
   const saveDraft = async (
     propertyId: string,
     request: Extract<SavePropertySetupDraftRequest, { stepId: "calendar" }>,
+    expectedSessionId: string | null,
   ): Promise<SavePropertySetupDraftReceipt> => {
     const key = await sha256Key("calendar-draft", propertyId, request);
-    const value = await http.put<unknown>(
-      `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/calendar`,
-      request,
-      { headers: { "Idempotency-Key": key } },
-    );
-    const receipt = parseDraftReceipt(value, request);
+    let value: unknown;
+    try {
+      value = await http.put<unknown>(
+        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/calendar`,
+        request,
+        { headers: { "Idempotency-Key": key } },
+      );
+    } catch (error) {
+      throw draftOwnerError(error);
+    }
+    const receipt = parseDraftReceipt(value, request, expectedSessionId);
     if (!receipt) throw invalidOwnerContract("calendar draft receipt");
     return receipt;
   };
@@ -287,6 +294,7 @@ function parseRoomFactsList(value: unknown, propertyId: string) {
 function parseDraftReceipt(
   value: unknown,
   request: Extract<SavePropertySetupDraftRequest, { stepId: "calendar" }>,
+  expectedSessionId: string | null,
 ): SavePropertySetupDraftReceipt | null {
   if (
     !isRecord(value) ||
@@ -305,6 +313,7 @@ function parseDraftReceipt(
     value.contractVersion !== PROPERTY_SETUP_DRAFT_CONTRACT_VERSION ||
     value.stepId !== "calendar" ||
     !isUuid(value.sessionId) ||
+    (expectedSessionId !== null && value.sessionId !== expectedSessionId) ||
     !Array.isArray(value.selectedTracks) ||
     value.selectedTracks.length === 0 ||
     new Set(value.selectedTracks).size !== value.selectedTracks.length ||
@@ -397,6 +406,61 @@ function commandOwnerError(error: unknown): Error {
   return result && !result.ok && calendarErrorStatus(result.error.code) === error.status
     ? calendarOwnerError(result.error)
     : invalidOwnerContract("operating calendar command error");
+}
+
+function draftOwnerError(error: unknown): Error {
+  if (!(error instanceof ApiErrorResponse)) {
+    return asError(error, "Calendar draft could not be saved.");
+  }
+  const parsed = parseDraftCommandError(error.data);
+  if (!parsed || (parsed.code === "setup_scope_unavailable" ? 404 : 409) !== error.status) {
+    return invalidOwnerContract("calendar draft error");
+  }
+  const messages: Record<SavePropertySetupDraftError["code"], string> = {
+    setup_scope_unavailable: "Calendar setup access is no longer available for this hotel.",
+    inactive_setup_step: "This setup step is no longer active.",
+    track_revision_conflict: "The selected setup track changed in another session.",
+    session_revision_conflict: "This setup session changed in another session.",
+    draft_revision_conflict: "This calendar draft changed in another session.",
+    setup_session_expired: "This setup session expired. Refresh setup before saving.",
+    setup_draft_expired: "This calendar draft expired. Refresh setup before saving.",
+    idempotency_key_conflict:
+      "This draft save key was reused for different calendar input. Reload the latest calendar.",
+    command_in_progress: "This calendar draft save is still processing. Retry in a moment.",
+  };
+  return new CalendarOwnerError(
+    messages[parsed.code],
+    parsed.code,
+    parsed,
+    parsed.code !== "command_in_progress",
+    false,
+  );
+}
+
+function parseDraftCommandError(value: unknown): SavePropertySetupDraftError | null {
+  if (!isRecord(value) || typeof value.code !== "string") return null;
+  if (
+    ["setup_scope_unavailable", "idempotency_key_conflict", "command_in_progress"].includes(
+      value.code,
+    )
+  ) {
+    return hasExactKeys(value, ["code"]) ? (value as SavePropertySetupDraftError) : null;
+  }
+  const revisionKey =
+    value.code === "inactive_setup_step" || value.code === "track_revision_conflict"
+      ? "currentTrackRevision"
+      : value.code === "session_revision_conflict" || value.code === "setup_session_expired"
+        ? "currentSessionRevision"
+        : value.code === "draft_revision_conflict" || value.code === "setup_draft_expired"
+          ? "currentDraftRevision"
+          : null;
+  return revisionKey &&
+    hasExactKeys(value, ["code", revisionKey]) &&
+    Number.isSafeInteger(value[revisionKey]) &&
+    (value[revisionKey] as number) >= 0 &&
+    (value[revisionKey] as number) <= 2_147_483_647
+    ? (value as SavePropertySetupDraftError)
+    : null;
 }
 
 function calendarErrorStatus(code: string): number {

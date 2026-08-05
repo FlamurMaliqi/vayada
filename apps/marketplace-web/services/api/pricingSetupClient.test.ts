@@ -203,6 +203,7 @@ describe("pricingSetupClient", () => {
     { extra: true },
     { retentionExpiresAt: "2026-99-99T12:00:00.000Z" },
     { sessionId: "not-a-session" },
+    { sessionId: "99999999-9999-4999-8999-999999999999" },
     { trackRevision: 2 },
     { sessionRevision: 3 },
     { draftRevision: 2 },
@@ -210,8 +211,22 @@ describe("pricingSetupClient", () => {
     calls.put.mockResolvedValue({ ...draftReceipt(), ...receiptOverride });
     const client = createPricingSetupClient(http);
 
-    await expect(client.saveDraft(propertyId, draftRequest())).rejects.toMatchObject({
+    await expect(
+      client.saveDraft(propertyId, draftRequest(), organizationId),
+    ).rejects.toMatchObject({
       code: "owner_contract_violation",
+    });
+  });
+
+  it("binds resumed receipts to their session while accepting a valid first-visit session", async () => {
+    calls.put.mockResolvedValue(draftReceipt());
+    const client = createPricingSetupClient(http);
+
+    await expect(
+      client.saveDraft(propertyId, draftRequest(), organizationId),
+    ).resolves.toMatchObject({ sessionId: organizationId });
+    await expect(client.saveDraft(propertyId, draftRequest(), null)).resolves.toMatchObject({
+      sessionId: organizationId,
     });
   });
 
@@ -224,7 +239,9 @@ describe("pricingSetupClient", () => {
     );
     const client = createPricingSetupClient(http);
 
-    await expect(client.saveDraft(propertyId, draftRequest())).rejects.toMatchObject({
+    await expect(
+      client.saveDraft(propertyId, draftRequest(), organizationId),
+    ).rejects.toMatchObject({
       code: "draft_revision_conflict",
       requiresRefresh: true,
     });
@@ -235,7 +252,9 @@ describe("pricingSetupClient", () => {
         currentDraftRevision: 2_147_483_648,
       } as never),
     );
-    await expect(client.saveDraft(propertyId, draftRequest())).rejects.toMatchObject({
+    await expect(
+      client.saveDraft(propertyId, draftRequest(), organizationId),
+    ).rejects.toMatchObject({
       code: "owner_contract_violation",
     });
   });

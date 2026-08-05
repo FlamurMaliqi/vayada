@@ -30,6 +30,7 @@ vi.mock("@/services/api/propertySetupDraftResetClient", async () => ({
 }));
 
 import { PricingOwnerError } from "@/services/api/pricingSetupClient";
+import { PropertySetupDraftResetError } from "@/services/api/propertySetupDraftResetClient";
 import { PricingStep } from "./PricingStep";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
@@ -99,6 +100,7 @@ describe("PricingStep", () => {
           "rate.base_nightly_rate": { [roomTypeId]: "125.50" },
         }),
       }),
+      null,
     );
     expect(mocks.saveCanonical).not.toHaveBeenCalled();
     expect(controller.beforeLeave).toBeTypeOf("function");
@@ -395,11 +397,10 @@ describe("PricingStep", () => {
       input(renderer!.root, `base-${roomTypeId}`).props.onChange({ target: { value: "189.00" } });
     });
     expect(button(renderer!.root, "Start from latest pricing")).toBeDefined();
+    expect(controller.staleRecoveryMode).toBe("reset");
 
     await act(async () => {
-      button(renderer!.root, "Start from latest pricing").props.onClick();
-      await Promise.resolve();
-      await Promise.resolve();
+      await controller.staleRecovery?.();
     });
 
     expect(mocks.resetDraft).toHaveBeenCalledWith(propertyId, {
@@ -426,6 +427,35 @@ describe("PricingStep", () => {
     expect(JSON.stringify(renderer!.toJSON())).toContain("Review the current pricing");
     renderer?.unmount();
   });
+
+  it("rejects registered stale recovery conflicts while retaining mounted input", async () => {
+    const route = pricingRoute(emptyPricingDraft());
+    route.steps[0]!.currentBaseRevisions = {
+      ...exactManifest,
+      "pms.rate_plans": "plans:5",
+    };
+    const conflict = new PropertySetupDraftResetError(
+      "This setup draft changed in another session.",
+      "draft_revision_conflict",
+      { code: "draft_revision_conflict", currentDraftRevision: 5 },
+      true,
+    );
+    mocks.resetDraft.mockRejectedValueOnce(conflict);
+    const controller = controllerContext(route);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(PricingStep, controller.props));
+    });
+    await act(async () => {
+      input(renderer!.root, `base-${roomTypeId}`).props.onChange({ target: { value: "189.00" } });
+    });
+
+    await expect(act(async () => controller.staleRecovery?.())).rejects.toBe(conflict);
+    expect(controller.reportRevisionConflict).toHaveBeenCalledWith(conflict.message);
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("189.00");
+    renderer?.unmount();
+  });
 });
 
 const exactManifest = {
@@ -436,11 +466,14 @@ const exactManifest = {
 
 function controllerContext(route: PropertySetupRouteReadModel) {
   const dispose = vi.fn<() => void>();
+  const disposeStaleRecovery = vi.fn<() => void>();
   const refreshRoute = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const reportRevisionConflict = vi.fn<(message?: string) => void>();
   const saveAndContinue = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const controller: {
     beforeLeave?: () => Promise<void>;
+    staleRecovery?: () => Promise<void>;
+    staleRecoveryMode?: "refresh" | "reset";
     dispose: typeof dispose;
     refreshRoute: typeof refreshRoute;
     reportRevisionConflict: typeof reportRevisionConflict;
@@ -464,6 +497,11 @@ function controllerContext(route: PropertySetupRouteReadModel) {
     registerBeforeLeave(callback) {
       controller.beforeLeave = callback;
       return dispose;
+    },
+    registerStaleRecovery(callback, mode) {
+      controller.staleRecovery = callback;
+      controller.staleRecoveryMode = mode;
+      return disposeStaleRecovery;
     },
   };
   return controller;

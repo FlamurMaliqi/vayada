@@ -21,7 +21,7 @@ import {
   PropertySetupDraftResetError,
   propertySetupDraftResetApi,
 } from "@/services/api/propertySetupDraftResetClient";
-import type { AdaptiveSetupStepRenderContext } from "../AdaptiveHotelSetupController";
+import type { AdaptiveSetupStepComponentProps } from "../AdaptiveSetupStepFormDispatcher";
 import {
   CALENDAR_MAX_PERIODS,
   CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
@@ -39,11 +39,6 @@ import {
   type CalendarWorkspace,
 } from "./calendarState";
 
-export type AdaptiveSetupStepComponentProps = AdaptiveSetupStepRenderContext & {
-  propertyId: string;
-  registerBeforeLeave: (callback: () => Promise<void>) => () => void;
-};
-
 type WorkspaceState = "loading" | "ready" | "error";
 
 type CalendarImpactReview = Readonly<{
@@ -51,20 +46,11 @@ type CalendarImpactReview = Readonly<{
   preview: PmsOperatingCalendarImpactPreview;
 }>;
 
-const STALE_DRAFT_CODES = new Set([
-  "track_revision_conflict",
-  "session_revision_conflict",
-  "draft_revision_conflict",
-  "base_revision_conflict",
-  "setup_session_expired",
-  "setup_draft_expired",
-  "inactive_setup_step",
-]);
-
 export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   const {
     propertyId,
     registerBeforeLeave,
+    registerStaleRecovery,
     reportRevisionConflict,
     refreshRoute,
     route,
@@ -146,8 +132,9 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       setSaving(true);
       setSaveError(null);
       try {
-        const request = buildCalendarDraftRequest(current, revisionRef.current);
-        const receipt = await calendarApi.saveDraft(propertyId, request);
+        const revision = revisionRef.current;
+        const request = buildCalendarDraftRequest(current, revision);
+        const receipt = await calendarApi.saveDraft(propertyId, request, revision.sessionId);
         revisionRef.current = {
           ...revisionRef.current,
           sessionId: receipt.sessionId,
@@ -165,7 +152,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
           );
         }
       } catch (error) {
-        if (isStaleDraftError(error)) {
+        if (error instanceof CalendarOwnerError && error.requiresRefresh) {
           reportRevisionConflict(
             "This calendar draft changed in another tab or session. Refresh it before continuing.",
           );
@@ -238,26 +225,23 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     workspaceReload,
   ]);
 
-  const updateDraft = useCallback(
-    (
-      update: (current: CalendarDraft) => CalendarDraft,
-      options?: { preserveConfirmation?: boolean },
-    ) => {
-      const current = draftRef.current;
-      if (!current) return;
-      const next = update(current);
-      const confirmationCleared = current.confirmed && !options?.preserveConfirmation;
-      commitDraft({
-        ...next,
-        confirmed: options?.preserveConfirmation ? next.confirmed : false,
-        dirty: true,
-      });
-      if (!options?.preserveConfirmation) commitImpactReview(null);
-      setSaveError(null);
-      if (confirmationCleared) setAnnouncement("Calendar confirmation cleared after a change.");
-    },
-    [commitDraft, commitImpactReview],
-  );
+  const updateDraft = (
+    update: (current: CalendarDraft) => CalendarDraft,
+    options?: { preserveConfirmation?: boolean },
+  ) => {
+    const current = draftRef.current;
+    if (!current) return;
+    const next = update(current);
+    const confirmationCleared = current.confirmed && !options?.preserveConfirmation;
+    commitDraft({
+      ...next,
+      confirmed: options?.preserveConfirmation ? next.confirmed : false,
+      dirty: true,
+    });
+    if (!options?.preserveConfirmation) commitImpactReview(null);
+    setSaveError(null);
+    if (confirmationCleared) setAnnouncement("Calendar confirmation cleared after a change.");
+  };
 
   const chooseMode = (mode: "year_round" | "recurring") => {
     updateDraft((current) => ({
@@ -294,7 +278,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     setAnnouncement(`${label} removed.`);
   };
 
-  const resetStaleDraft = async () => {
+  const resetStaleDraft = useCallback(async () => {
     if (resetting) return;
     retainLocalOnReloadRef.current = true;
     setResetting(true);
@@ -314,12 +298,21 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
         reportRevisionConflict(error.message);
       }
       if (mounted.current) setSaveError(errorMessage(error));
+      throw error;
     } finally {
       if (mounted.current) setResetting(false);
     }
-  };
+  }, [
+    commitImpactReview,
+    propertyId,
+    refreshRoute,
+    reportRevisionConflict,
+    resetting,
+    route,
+    step,
+  ]);
 
-  const refreshCurrentCalendar = async () => {
+  const refreshCurrentCalendar = useCallback(async () => {
     if (!discardHistoricalOnReloadRef.current) retainLocalOnReloadRef.current = true;
     setSaveError(null);
     commitImpactReview(null);
@@ -328,8 +321,19 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       if (mounted.current) setWorkspaceReload((value) => value + 1);
     } catch (error) {
       if (mounted.current) setSaveError(errorMessage(error));
+      throw error;
     }
-  };
+  }, [commitImpactReview, refreshRoute]);
+
+  const recoverStaleDraft = useCallback(
+    () => (step.draft ? resetStaleDraft() : refreshCurrentCalendar()),
+    [refreshCurrentCalendar, resetStaleDraft, step.draft],
+  );
+
+  useEffect(
+    () => registerStaleRecovery?.(recoverStaleDraft, step.draft ? "reset" : "refresh"),
+    [recoverStaleDraft, registerStaleRecovery, step.draft],
+  );
 
   const reportCalendarError = (error: unknown) => {
     if (error instanceof CalendarOwnerError) {
@@ -475,7 +479,11 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
             type="button"
             disabled={resetting}
             className={`${secondaryButtonClass} mt-3`}
-            onClick={() => void (manifestStale ? resetStaleDraft() : refreshCurrentCalendar())}
+            onClick={() =>
+              void (manifestStale ? resetStaleDraft() : refreshCurrentCalendar()).catch(
+                () => undefined,
+              )
+            }
           >
             {manifestStale
               ? resetting
@@ -491,7 +499,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
           title="Calendar sources changed since this draft was started"
           message="The saved draft keeps its historical revision manifest and cannot overwrite newer calendar data. Starting from the current calendar discards the historical saved values after fresh owner data loads."
           actionLabel={resetting ? "Starting from latest..." : "Start from latest calendar"}
-          onAction={() => void resetStaleDraft()}
+          onAction={() => void resetStaleDraft().catch(() => undefined)}
         />
       )}
 
@@ -510,7 +518,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
               <button
                 type="button"
                 className={`${secondaryButtonClass} mt-3`}
-                onClick={() => void refreshCurrentCalendar()}
+                onClick={() => void refreshCurrentCalendar().catch(() => undefined)}
               >
                 Refresh current calendar
               </button>
@@ -1216,16 +1224,6 @@ function clearErrorPrefix(
     keys.forEach((key) => delete next[key]);
     return next;
   });
-}
-
-function isStaleDraftError(error: unknown): boolean {
-  return (
-    error instanceof ApiErrorResponse &&
-    error.status === 409 &&
-    isRecord(error.data) &&
-    typeof error.data.code === "string" &&
-    STALE_DRAFT_CODES.has(error.data.code)
-  );
 }
 
 function errorMessage(error: unknown): string {

@@ -411,8 +411,8 @@ describe("calendarApiClient", () => {
       revisionContext(),
     );
 
-    await client.saveDraft(propertyId, request);
-    await client.saveDraft(propertyId, request);
+    await client.saveDraft(propertyId, request, revisionContext().sessionId);
+    await client.saveDraft(propertyId, request, revisionContext().sessionId);
 
     expect(calls.put).toHaveBeenCalledTimes(2);
     expect(calls.put.mock.calls[0]?.[0]).toBe(
@@ -434,6 +434,44 @@ describe("calendarApiClient", () => {
     );
   });
 
+  it("strictly parses calendar draft conflicts before exposing stale recovery", async () => {
+    const client = createCalendarApiClient(http, profiles);
+    const request = calendarDraftRequest();
+    calls.put.mockRejectedValueOnce(
+      new ApiErrorResponse(409, {
+        code: "draft_revision_conflict",
+        currentDraftRevision: 7,
+      } as never),
+    );
+
+    await expect(
+      client.saveDraft(propertyId, request, revisionContext().sessionId),
+    ).rejects.toMatchObject({
+      name: "CalendarOwnerError",
+      code: "draft_revision_conflict",
+      requiresRefresh: true,
+      requiresPreview: false,
+    });
+
+    for (const failure of [
+      new ApiErrorResponse(409, { code: "base_revision_conflict" }),
+      new ApiErrorResponse(409, {
+        code: "draft_revision_conflict",
+        currentDraftRevision: 7,
+        extra: true,
+      } as never),
+      new ApiErrorResponse(404, {
+        code: "draft_revision_conflict",
+        currentDraftRevision: 7,
+      } as never),
+    ]) {
+      calls.put.mockRejectedValueOnce(failure);
+      const save = client.saveDraft(propertyId, request, revisionContext().sessionId);
+      await expect(save).rejects.toThrow(/calendar draft error adapter returned invalid data/i);
+      await expect(save).rejects.not.toBeInstanceOf(CalendarOwnerError);
+    }
+  });
+
   it("rejects extra keys on local room-list and draft-receipt envelopes", async () => {
     calls.get.mockImplementation(async (endpoint) => {
       if (endpoint.endsWith("/operating-calendar")) return currentCalendar();
@@ -448,9 +486,9 @@ describe("calendarApiClient", () => {
 
     const request = calendarDraftRequest();
     calls.put.mockResolvedValue({ ...draftReceipt(), unexpected: true });
-    await expect(client.saveDraft(propertyId, request)).rejects.toThrow(
-      /calendar draft receipt adapter returned invalid data/i,
-    );
+    await expect(
+      client.saveDraft(propertyId, request, revisionContext().sessionId),
+    ).rejects.toThrow(/calendar draft receipt adapter returned invalid data/i);
   });
 
   it("rejects duplicate room IDs in the owner room-list envelope", async () => {
@@ -478,25 +516,26 @@ describe("calendarApiClient", () => {
       ...draftReceipt(),
       selectedTracks: ["hotel_operations", "hotel_operations"],
     });
-    await expect(client.saveDraft(propertyId, request)).rejects.toThrow(
-      /calendar draft receipt adapter returned invalid data/i,
-    );
+    await expect(
+      client.saveDraft(propertyId, request, revisionContext().sessionId),
+    ).rejects.toThrow(/calendar draft receipt adapter returned invalid data/i);
 
     calls.put.mockResolvedValue({ ...draftReceipt(), updatedAt: "August 4, 2026" });
-    await expect(client.saveDraft(propertyId, request)).rejects.toThrow(
-      /calendar draft receipt adapter returned invalid data/i,
-    );
+    await expect(
+      client.saveDraft(propertyId, request, revisionContext().sessionId),
+    ).rejects.toThrow(/calendar draft receipt adapter returned invalid data/i);
 
     for (const receipt of [
       { ...draftReceipt(), sessionId: "not-a-session" },
+      { ...draftReceipt(), sessionId: "99999999-9999-4999-8999-999999999999" },
       { ...draftReceipt(), trackRevision: request.expectedTrackRevision + 1 },
       { ...draftReceipt(), sessionRevision: request.expectedSessionRevision + 2 },
       { ...draftReceipt(), draftRevision: request.expectedDraftRevision + 2 },
     ]) {
       calls.put.mockResolvedValue(receipt);
-      await expect(client.saveDraft(propertyId, request)).rejects.toThrow(
-        /calendar draft receipt adapter returned invalid data/i,
-      );
+      await expect(
+        client.saveDraft(propertyId, request, revisionContext().sessionId),
+      ).rejects.toThrow(/calendar draft receipt adapter returned invalid data/i);
     }
   });
 });

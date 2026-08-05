@@ -16,7 +16,7 @@ import {
   type ReactNode,
 } from "react";
 
-import type { AdaptiveSetupStepRenderContext } from "../AdaptiveHotelSetupController";
+import type { AdaptiveSetupStepComponentProps } from "../AdaptiveSetupStepFormDispatcher";
 import {
   PRICING_WEEKDAYS,
   PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
@@ -41,12 +41,6 @@ import {
   propertySetupDraftResetApi,
 } from "@/services/api/propertySetupDraftResetClient";
 
-/** Structural match for the VAY-1116 dispatcher contract without importing its owned file. */
-export type AdaptiveSetupStepComponentProps = AdaptiveSetupStepRenderContext & {
-  propertyId: string;
-  registerBeforeLeave: (callback: () => Promise<void>) => () => void;
-};
-
 type WorkspaceState = "loading" | "ready" | "error";
 
 export function PricingStep({
@@ -58,6 +52,7 @@ export function PricingStep({
   refreshRoute,
   reportRevisionConflict,
   registerBeforeLeave,
+  registerStaleRecovery,
 }: AdaptiveSetupStepComponentProps) {
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState>("loading");
   const [workspace, setWorkspace] = useState<PricingCanonicalWorkspace | null>(null);
@@ -157,27 +152,25 @@ export function PricingStep({
     if (mounted.current) setDraft(next);
   }, []);
 
-  const change = useCallback(
-    (update: (current: PricingDraftState) => PricingDraftState) => {
-      const current = draftRef.current;
-      if (!current) return;
-      commit({
-        ...update(current),
-        mandatoryChargesAcknowledged: false,
-        dirty: true,
-      });
-      setNotice(null);
-    },
-    [commit],
-  );
+  const change = (update: (current: PricingDraftState) => PricingDraftState) => {
+    const current = draftRef.current;
+    if (!current) return;
+    commit({
+      ...update(current),
+      mandatoryChargesAcknowledged: false,
+      dirty: true,
+    });
+    setNotice(null);
+  };
 
   const persistDraft = useCallback(() => {
     const run = async () => {
       const current = draftRef.current;
       if (!current?.dirty) return;
-      const request = buildPricingDraftRequest(current, revisionRef.current, locale);
+      const revision = revisionRef.current;
+      const request = buildPricingDraftRequest(current, revision, locale);
       try {
-        const receipt = await pricingSetupApi.saveDraft(propertyId, request);
+        const receipt = await pricingSetupApi.saveDraft(propertyId, request, revision.sessionId);
         revisionRef.current = {
           ...revisionRef.current,
           sessionId: receipt.sessionId,
@@ -202,7 +195,7 @@ export function PricingStep({
 
   useEffect(() => registerBeforeLeave(persistDraft), [persistDraft, registerBeforeLeave]);
 
-  const save = useCallback(async () => {
+  const save = async () => {
     const current = draftRef.current;
     if (!current || !workspace || saving) return;
     const nextErrors = validatePricingDraft(current, locale);
@@ -273,23 +266,9 @@ export function PricingStep({
     } finally {
       if (mounted.current) setSaving(false);
     }
-  }, [
-    commit,
-    locale,
-    manifestMissing,
-    manifestStale,
-    pendingCurrency,
-    persistDraft,
-    propertyId,
-    refreshRoute,
-    reportRevisionConflict,
-    route.scope.organizationId,
-    saveAndContinue,
-    saving,
-    workspace,
-  ]);
+  };
 
-  const saveDraftOnly = useCallback(async () => {
+  const saveDraftOnly = async () => {
     if (saving || !draftRef.current?.dirty) return;
     if (manifestMissing) {
       setSaveError(PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
@@ -316,7 +295,7 @@ export function PricingStep({
     } finally {
       if (mounted.current) setSaving(false);
     }
-  }, [manifestMissing, manifestStale, persistDraft, saving]);
+  };
 
   const resetStaleDraft = useCallback(async () => {
     if (resetting) return;
@@ -337,6 +316,7 @@ export function PricingStep({
         reportRevisionConflict(error.message);
       }
       if (mounted.current) setSaveError(errorMessage(error));
+      throw error;
     } finally {
       if (mounted.current) setResetting(false);
     }
@@ -349,8 +329,19 @@ export function PricingStep({
       if (mounted.current) setReload((value) => value + 1);
     } catch (error) {
       if (mounted.current) setSaveError(errorMessage(error));
+      throw error;
     }
   }, [refreshRoute]);
+
+  const recoverStaleDraft = useCallback(
+    () => (step.draft ? resetStaleDraft() : refreshCurrentPricing()),
+    [refreshCurrentPricing, resetStaleDraft, step.draft],
+  );
+
+  useEffect(
+    () => registerStaleRecovery?.(recoverStaleDraft, step.draft ? "reset" : "refresh"),
+    [recoverStaleDraft, registerStaleRecovery, step.draft],
+  );
 
   if (workspaceState === "loading") return <PricingSkeleton />;
   if (workspaceState === "error" || !draft || !workspace) {
@@ -412,7 +403,7 @@ export function PricingStep({
           title="Pricing changed since this draft was started"
           message="The saved draft keeps its historical revision manifest and cannot overwrite newer pricing. Starting from current pricing discards the historical saved values after fresh owner data loads."
           actionLabel={resetting ? "Starting from latest..." : "Start from latest pricing"}
-          onAction={() => void resetStaleDraft()}
+          onAction={() => void resetStaleDraft().catch(() => undefined)}
         />
       )}
 
@@ -461,7 +452,7 @@ export function PricingStep({
             <button
               type="button"
               disabled={resetting}
-              onClick={() => void resetStaleDraft()}
+              onClick={() => void resetStaleDraft().catch(() => undefined)}
               className="mt-3 min-h-11 rounded-full border border-red-400 bg-white px-4 text-sm font-semibold text-red-900 outline-none hover:bg-red-100 focus-visible:ring-2 focus-visible:ring-red-700 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {resetting ? "Starting from latest..." : "Start from latest pricing"}

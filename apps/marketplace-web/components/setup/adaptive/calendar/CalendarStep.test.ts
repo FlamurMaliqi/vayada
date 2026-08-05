@@ -7,7 +7,6 @@ import type {
 } from "@vayada/domain-hotels";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiErrorResponse } from "@/services/api/client";
 import type { CalendarWorkspace } from "./calendarState";
 
 const mocks = vi.hoisted(() => ({
@@ -20,8 +19,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/services/api/calendarApiClient", () => ({
   CalendarOwnerError: class CalendarOwnerError extends Error {
-    requiresPreview = false;
-    requiresRefresh = false;
+    constructor(
+      message: string,
+      readonly code: string,
+      readonly details: unknown,
+      readonly requiresRefresh: boolean,
+      readonly requiresPreview: boolean,
+    ) {
+      super(message);
+      this.name = "CalendarOwnerError";
+    }
   },
   calendarApi: mocks,
 }));
@@ -32,6 +39,7 @@ vi.mock("@/services/api/propertySetupDraftResetClient", async () => ({
   propertySetupDraftResetApi: { reset: mocks.resetDraft },
 }));
 
+import { CalendarOwnerError } from "@/services/api/calendarApiClient";
 import { CalendarStep } from "./CalendarStep";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
@@ -117,6 +125,7 @@ describe("CalendarStep", () => {
           "rate.initial_availability": expect.objectContaining({ confirmed: false }),
         }),
       }),
+      null,
     );
     expect(controller.saveAndContinue).not.toHaveBeenCalled();
     expect(controller.beforeLeave).toBeTypeOf("function");
@@ -171,10 +180,13 @@ describe("CalendarStep", () => {
 
   it("reports stale draft conflicts, rejects before-leave, and retains local input", async () => {
     mocks.saveDraft.mockRejectedValueOnce(
-      new ApiErrorResponse(409, {
-        code: "draft_revision_conflict",
-        detail: "The draft changed in another session.",
-      }),
+      new CalendarOwnerError(
+        "The draft changed in another session.",
+        "draft_revision_conflict",
+        { code: "draft_revision_conflict", currentDraftRevision: 5 },
+        true,
+        false,
+      ),
     );
     const route = calendarRoute(emptyCalendarDraft());
     const controller = controllerContext(route);
@@ -188,7 +200,7 @@ describe("CalendarStep", () => {
     });
 
     await expect(act(async () => controller.beforeLeave?.())).rejects.toBeInstanceOf(
-      ApiErrorResponse,
+      CalendarOwnerError,
     );
     expect(controller.reportRevisionConflict).toHaveBeenCalledWith(
       expect.stringContaining("changed in another tab or session"),
@@ -363,11 +375,10 @@ describe("CalendarStep", () => {
     await act(async () => {
       input(renderer!.root, "calendar-minimum-stay").props.onChange({ target: { value: "4" } });
     });
+    expect(controller.staleRecoveryMode).toBe("reset");
 
     await act(async () => {
-      button(renderer!.root, "Start from latest calendar").props.onClick();
-      await Promise.resolve();
-      await Promise.resolve();
+      await controller.staleRecovery?.();
     });
 
     expect(mocks.resetDraft).toHaveBeenCalledWith(propertyId, {
@@ -406,11 +417,14 @@ const exactManifest = {
 
 function controllerContext(route: PropertySetupRouteReadModel) {
   const dispose = vi.fn<() => void>();
+  const disposeStaleRecovery = vi.fn<() => void>();
   const refreshRoute = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const reportRevisionConflict = vi.fn<(message?: string) => void>();
   const saveAndContinue = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const controller: {
     beforeLeave?: () => Promise<void>;
+    staleRecovery?: () => Promise<void>;
+    staleRecoveryMode?: "refresh" | "reset";
     dispose: typeof dispose;
     refreshRoute: typeof refreshRoute;
     reportRevisionConflict: typeof reportRevisionConflict;
@@ -434,6 +448,11 @@ function controllerContext(route: PropertySetupRouteReadModel) {
     registerBeforeLeave(callback) {
       controller.beforeLeave = callback;
       return controller.dispose;
+    },
+    registerStaleRecovery(callback, mode) {
+      controller.staleRecovery = callback;
+      controller.staleRecoveryMode = mode;
+      return disposeStaleRecovery;
     },
   };
   return controller;
