@@ -280,6 +280,7 @@ export function PricingStep({
       if (mounted.current) setSaving(false);
     }
   }, [
+    commit,
     locale,
     manifestMissing,
     manifestStale,
