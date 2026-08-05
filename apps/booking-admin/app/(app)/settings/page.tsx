@@ -54,6 +54,17 @@ type Section =
   | "billing"
   | "payments";
 
+type BillingSubscription = {
+  plan: "commission" | "fixed";
+  status: string | null;
+  amount: number;
+  currency: "EUR";
+  roomCount: number;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  canManageBilling: boolean;
+};
+
 const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2777"];
 
 const hasValidCoordinatePair = (latitude: number, longitude: number) =>
@@ -158,6 +169,14 @@ export default function SettingsPage() {
   const [paymentError, setPaymentError] = useState("");
   const [paymentSuccess, setPaymentSuccess] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
+  const [billingSubscription, setBillingSubscription] = useState<BillingSubscription | null>(null);
+  const [billingLoading, setBillingLoading] = useState(true);
+  const [billingActionLoading, setBillingActionLoading] = useState(false);
+  const [billingModal, setBillingModal] = useState<"fixed" | "commission" | null>(null);
+  const [billingFeedback, setBillingFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
   const [propertyCoordinate, setPropertyCoordinate] = useState<{
     latitude: number;
@@ -221,11 +240,64 @@ export default function SettingsPage() {
     }
   }, [t]);
 
+  const loadBillingStatus = useCallback(async (showLoading = true) => {
+    if (showLoading) setBillingLoading(true);
+    try {
+      const data = await pmsClient.get<BillingSubscription>("/admin/billing/subscription");
+      setBillingSubscription(data);
+      setSettings((current) => ({ ...current, billing_active_plan: data.plan }));
+      return data;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Could not load billing details.";
+      setBillingFeedback({ type: "error", message });
+      return null;
+    } finally {
+      if (showLoading) setBillingLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("section") === "payments" || params.has("stripe")) {
       setActiveSection("payments");
+    } else if (params.get("section") === "billing" || params.has("checkout")) {
+      setActiveSection("billing");
     }
+
+    let cancelled = false;
+    const refreshBilling = async () => {
+      const checkoutResult = params.get("checkout");
+      const attempts = checkoutResult === "success" ? 5 : 1;
+      let latestStatus: BillingSubscription | null = null;
+      if (checkoutResult === "cancelled") {
+        setBillingFeedback({ type: "error", message: "Stripe Checkout was cancelled." });
+      }
+      for (let attempt = 0; attempt < attempts && !cancelled; attempt += 1) {
+        const status = await loadBillingStatus(attempt === 0);
+        latestStatus = status;
+        if (status?.plan === "fixed") {
+          if (checkoutResult === "success") {
+            setBillingFeedback({ type: "success", message: "You're now on the Fixed Plan." });
+          }
+          break;
+        }
+        if (attempt < attempts - 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        }
+      }
+      if (
+        checkoutResult === "success" &&
+        latestStatus &&
+        latestStatus.plan !== "fixed" &&
+        !cancelled
+      ) {
+        setBillingFeedback({
+          type: "success",
+          message: "Payment received. Your Fixed Plan is being activated.",
+        });
+      }
+    };
+    void refreshBilling();
 
     fetchSettings();
     customDomainService
@@ -252,7 +324,56 @@ export default function SettingsPage() {
         }));
       })
       .catch(() => {});
-  }, [fetchSettings]);
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchSettings, loadBillingStatus]);
+
+  const handleStartFixedCheckout = async () => {
+    setBillingActionLoading(true);
+    setBillingFeedback(null);
+    try {
+      const result = await pmsClient.post<{ url: string }>("/admin/billing/fixed-checkout", {});
+      window.location.assign(result.url);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Stripe Checkout is unavailable.";
+      setBillingFeedback({ type: "error", message });
+      setBillingModal(null);
+      setBillingActionLoading(false);
+    }
+  };
+
+  const handleManageBilling = async () => {
+    setBillingActionLoading(true);
+    setBillingFeedback(null);
+    try {
+      const result = await pmsClient.post<{ url: string }>("/admin/billing/portal", {});
+      window.location.assign(result.url);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Stripe Billing is unavailable.";
+      setBillingFeedback({ type: "error", message });
+      setBillingActionLoading(false);
+    }
+  };
+
+  const handleCancelFixedPlan = async () => {
+    setBillingActionLoading(true);
+    setBillingFeedback(null);
+    try {
+      await pmsClient.post("/admin/billing/cancel", {});
+      await loadBillingStatus(false);
+      setBillingFeedback({
+        type: "success",
+        message: "Your Fixed Plan will stay active until the end of the paid period.",
+      });
+      setBillingModal(null);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Could not cancel the subscription.";
+      setBillingFeedback({ type: "error", message });
+    } finally {
+      setBillingActionLoading(false);
+    }
+  };
 
   const handleCreateStripeAccount = async () => {
     if (!connectEmail) return;
@@ -543,6 +664,16 @@ export default function SettingsPage() {
     { id: "billing", label: t("settings.tabs.billing"), icon: CreditCardIcon },
     { id: "payments", label: "Payments", icon: BanknotesIcon },
   ];
+  const activeBillingPlan = billingSubscription?.plan ?? settings.billing_active_plan;
+  const fixedPlanAmount =
+    billingSubscription?.amount ?? settings.fixed_plan_projected_monthly_fee ?? 30;
+  const currentPeriodEnd = billingSubscription?.currentPeriodEnd
+    ? new Date(billingSubscription.currentPeriodEnd).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      })
+    : null;
 
   return (
     <SettingsLayout
@@ -1303,189 +1434,138 @@ export default function SettingsPage() {
       {/* Billing tab */}
       {activeSection === "billing" && (
         <div className="mt-5 space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Commission Plan */}
-            <div
-              className={`bg-white rounded-lg border-2 p-5 transition-all ${
-                settings.billing_active_plan === "commission" && !settings.billing_pending_switch
-                  ? "border-primary-500 ring-1 ring-primary-200"
-                  : settings.billing_pending_switch === "commission"
-                    ? "border-amber-400 ring-1 ring-amber-200"
+          {billingFeedback && (
+            <FeedbackAlert type={billingFeedback.type} message={billingFeedback.message} />
+          )}
+          {billingSubscription?.status === "past_due" && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-[13px] text-amber-800">
+              A subscription payment failed. Stripe will retry it automatically. You can update the
+              payment method under Manage billing.
+            </div>
+          )}
+          {billingLoading ? (
+            <div className="flex items-center justify-center py-10">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Commission Plan */}
+              <div
+                className={`bg-white rounded-lg border-2 p-5 transition-all ${
+                  activeBillingPlan === "commission"
+                    ? "border-primary-500 ring-1 ring-primary-200"
                     : "border-gray-200"
-              }`}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-[14px] font-semibold text-gray-900">
-                  {t("settings.billing.commission")}
-                </h3>
-                {settings.billing_active_plan === "commission" &&
-                  !settings.billing_pending_switch && (
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-[14px] font-semibold text-gray-900">
+                    {t("settings.billing.commission")}
+                  </h3>
+                  {activeBillingPlan === "commission" && (
                     <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-full">
                       {t("settings.billing.current")}
                     </span>
                   )}
-                {settings.billing_pending_switch === "commission" && (
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-full">
-                    {t("settings.billing.nextMonth")}
-                  </span>
-                )}
-              </div>
-              <p className="text-[12px] text-gray-500 mb-3">
-                {t("settings.billing.percentagePerDirect")}
-              </p>
-              <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2">
-                <div className="flex items-center justify-between text-[13px]">
-                  <span className="text-gray-600">{t("settings.billing.directBookings")}</span>
-                  <span className="flex items-center gap-2">
-                    {(settings.booking_engine_fee_pct ?? 5) !== 5 && (
-                      <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-amber-100 text-amber-700 rounded-full tracking-wide">
-                        {t("settings.billing.customRate")}
-                      </span>
-                    )}
-                    <span className="font-semibold text-gray-900">
-                      {settings.booking_engine_fee_pct ?? 5}%
-                    </span>
-                  </span>
                 </div>
-                <p className="text-[10px] text-gray-400 text-center pt-1">
-                  {t("settings.billing.noMonthlyFee")}
+                <p className="text-[12px] text-gray-500 mb-3">
+                  {t("settings.billing.percentagePerDirect")}
                 </p>
-              </div>
-              {settings.billing_active_plan !== "commission" &&
-                !settings.billing_pending_switch && (
+                <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2">
+                  <div className="flex items-center justify-between text-[13px]">
+                    <span className="text-gray-600">{t("settings.billing.directBookings")}</span>
+                    <span className="flex items-center gap-2">
+                      {(settings.booking_engine_fee_pct ?? 5) !== 5 && (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-amber-100 text-amber-700 rounded-full tracking-wide">
+                          {t("settings.billing.customRate")}
+                        </span>
+                      )}
+                      <span className="font-semibold text-gray-900">
+                        {settings.booking_engine_fee_pct ?? 5}%
+                      </span>
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-400 text-center pt-1">
+                    {t("settings.billing.noMonthlyFee")}
+                  </p>
+                </div>
+                {activeBillingPlan === "fixed" && !billingSubscription?.cancelAtPeriodEnd && (
                   <button
-                    onClick={async () => {
-                      try {
-                        await settingsService.updatePropertySettings({
-                          billing_pending_switch: "commission",
-                        });
-                        setSettings((s) => ({ ...s, billing_pending_switch: "commission" }));
-                      } catch {
-                        /* */
-                      }
-                    }}
+                    onClick={() => setBillingModal("commission")}
                     className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
                   >
-                    {t("settings.billing.switchFromNextMonth")}
+                    Switch to Commission
                   </button>
                 )}
-              {settings.billing_pending_switch === "commission" && (
-                <button
-                  onClick={async () => {
-                    try {
-                      await settingsService.updatePropertySettings({ billing_pending_switch: "" });
-                      setSettings((s) => ({ ...s, billing_pending_switch: null }));
-                    } catch {
-                      /* */
-                    }
-                  }}
-                  className="w-full py-2 text-[12px] font-semibold border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 transition-colors"
-                >
-                  {t("settings.billing.cancelSwitch")}
-                </button>
-              )}
-            </div>
+                {activeBillingPlan === "fixed" && billingSubscription?.cancelAtPeriodEnd && (
+                  <p className="text-center text-[11px] font-medium text-amber-700">
+                    Starts after {currentPeriodEnd ?? "the paid period"}
+                  </p>
+                )}
+              </div>
 
-            {/* Fixed Fee Plan */}
-            <div
-              className={`bg-white rounded-lg border-2 p-5 transition-all ${
-                settings.billing_active_plan === "fixed" && !settings.billing_pending_switch
-                  ? "border-primary-500 ring-1 ring-primary-200"
-                  : settings.billing_pending_switch === "fixed"
-                    ? "border-amber-400 ring-1 ring-amber-200"
+              {/* Fixed Fee Plan */}
+              <div
+                className={`bg-white rounded-lg border-2 p-5 transition-all ${
+                  activeBillingPlan === "fixed"
+                    ? "border-primary-500 ring-1 ring-primary-200"
                     : "border-gray-200"
-              }`}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-[14px] font-semibold text-gray-900">
-                  {t("settings.billing.fixedFee")}
-                </h3>
-                {settings.billing_active_plan === "fixed" && !settings.billing_pending_switch && (
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-full">
-                    {t("settings.billing.current")}
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-[14px] font-semibold text-gray-900">
+                    {t("settings.billing.fixedFee")}
+                  </h3>
+                  {activeBillingPlan === "fixed" && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-full">
+                      {t("settings.billing.current")}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[12px] text-gray-500 mb-3">Flat fee charged every 30 days</p>
+                <div className="bg-gray-50 rounded-xl p-4 text-center mb-4">
+                  <span className="text-3xl font-bold text-gray-900">
+                    €
+                    {fixedPlanAmount.toLocaleString("en-US", {
+                      minimumFractionDigits: 0,
+                      maximumFractionDigits: 2,
+                    })}
                   </span>
+                  <p className="text-[11px] text-gray-400 mt-1">every 30 days</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    €30 for the first active room + €5 per additional active room
+                  </p>
+                </div>
+                {activeBillingPlan !== "fixed" &&
+                  billingSubscription?.status !== "checkout_pending" && (
+                    <button
+                      onClick={() => setBillingModal("fixed")}
+                      className="w-full py-2 text-[12px] font-semibold bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                    >
+                      Switch to Fixed Plan
+                    </button>
+                  )}
+                {activeBillingPlan !== "fixed" &&
+                  billingSubscription?.status === "checkout_pending" && (
+                    <p className="text-center text-[11px] font-medium text-amber-700">
+                      Stripe Checkout is in progress
+                    </p>
+                  )}
+                {activeBillingPlan === "fixed" && currentPeriodEnd && (
+                  <p className="mb-3 text-center text-[11px] text-gray-500">
+                    {billingSubscription?.cancelAtPeriodEnd ? "Active until" : "Next billing"}:{" "}
+                    {currentPeriodEnd}
+                  </p>
                 )}
-                {settings.billing_pending_switch === "fixed" && (
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-full">
-                    {t("settings.billing.nextMonth")}
-                  </span>
+                {activeBillingPlan === "fixed" && billingSubscription?.canManageBilling && (
+                  <button
+                    onClick={handleManageBilling}
+                    disabled={billingActionLoading}
+                    className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    Manage billing
+                  </button>
                 )}
               </div>
-              <p className="text-[12px] text-gray-500 mb-3">{t("settings.billing.flatMonthly")}</p>
-              <div className="bg-gray-50 rounded-xl p-4 text-center mb-4">
-                <span className="text-3xl font-bold text-gray-900">
-                  $
-                  {(
-                    settings.fixed_plan_projected_monthly_fee ??
-                    settings.billing_fixed_fee ??
-                    30
-                  ).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
-                </span>
-                <p className="text-[11px] text-gray-400 mt-1">{t("settings.billing.perMonth")}</p>
-                <p className="text-[10px] text-gray-400 mt-0.5">
-                  {typeof settings.active_room_count === "number"
-                    ? t(
-                        settings.active_room_count === 1
-                          ? "settings.billing.atActiveRoomsOne"
-                          : "settings.billing.atActiveRoomsOther",
-                        { count: settings.active_room_count },
-                      )
-                    : t("settings.billing.baseFeePerRoom")}
-                </p>
-              </div>
-              {settings.billing_active_plan !== "fixed" && !settings.billing_pending_switch && (
-                <button
-                  onClick={async () => {
-                    try {
-                      await settingsService.updatePropertySettings({
-                        billing_pending_switch: "fixed",
-                      });
-                      setSettings((s) => ({ ...s, billing_pending_switch: "fixed" }));
-                    } catch {
-                      /* */
-                    }
-                  }}
-                  className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                >
-                  {t("settings.billing.switchFromNextMonth")}
-                </button>
-              )}
-              {settings.billing_pending_switch === "fixed" && (
-                <button
-                  onClick={async () => {
-                    try {
-                      await settingsService.updatePropertySettings({ billing_pending_switch: "" });
-                      setSettings((s) => ({ ...s, billing_pending_switch: null }));
-                    } catch {
-                      /* */
-                    }
-                  }}
-                  className="w-full py-2 text-[12px] font-semibold border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 transition-colors"
-                >
-                  {t("settings.billing.cancelSwitch")}
-                </button>
-              )}
-            </div>
-          </div>
-
-          {settings.billing_pending_switch && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-              <p className="text-[13px] text-amber-800">
-                {t("settings.billing.switchBannerLeadTo")}{" "}
-                <strong>
-                  {settings.billing_pending_switch === "commission"
-                    ? t("settings.billing.commission")
-                    : t("settings.billing.fixedFee")}
-                </strong>{" "}
-                {settings.billing_switch_effective_date
-                  ? t("settings.billing.switchBannerOnDate", {
-                      date: new Date(settings.billing_switch_effective_date).toLocaleDateString(
-                        undefined,
-                        { day: "numeric", month: "long", year: "numeric" },
-                      ),
-                    })
-                  : t("settings.billing.switchBannerNextMonth")}
-              </p>
             </div>
           )}
 
@@ -2387,6 +2467,62 @@ export default function SettingsPage() {
             </>
           )}
         </SettingsSection>
+      )}
+
+      {billingModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="billing-modal-title"
+            className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl"
+          >
+            <h2 id="billing-modal-title" className="text-lg font-semibold text-gray-900">
+              {billingModal === "fixed" ? "Switch to Fixed Plan" : "Switch to Commission"}
+            </h2>
+            {billingModal === "fixed" ? (
+              <div className="mt-3 space-y-3 text-[13px] leading-5 text-gray-600">
+                <p>
+                  You will be charged €{fixedPlanAmount.toLocaleString("en-US")} now and then every
+                  30 days through Stripe.
+                </p>
+                <p>
+                  Existing bookings keep their Commission terms. New rooms affect only the next
+                  30-day charge.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-3 text-[13px] leading-5 text-gray-600">
+                Your Fixed Plan remains active until {currentPeriodEnd ?? "the paid period ends"}.
+                The property then returns to Commission.
+              </p>
+            )}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setBillingModal(null)}
+                disabled={billingActionLoading}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={
+                  billingModal === "fixed" ? handleStartFixedCheckout : handleCancelFixedPlan
+                }
+                disabled={billingActionLoading}
+                className="rounded-lg bg-primary-600 px-4 py-2 text-[13px] font-semibold text-white hover:bg-primary-700 disabled:opacity-50"
+              >
+                {billingActionLoading
+                  ? "Please wait…"
+                  : billingModal === "fixed"
+                    ? "Continue to Stripe"
+                    : "Confirm switch"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </SettingsLayout>
   );
