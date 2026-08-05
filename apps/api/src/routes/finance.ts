@@ -85,7 +85,6 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
-import { enqueueBookingLifecycleEmailJob } from "../jobs/bookingEmails.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
 import { enforceRoutePolicy, type RouteAuthorizationPolicy } from "./policy.js";
 
@@ -3343,19 +3342,6 @@ function xenditPayoutReconciliationWindow(
   return `key-${sha256(command.idempotencyKey).slice(0, 12)}`;
 }
 
-function manualPaymentAuditKey(propertyId: string, keyHash: string): string {
-  return `finance.manual-payment.audit.property.${propertyId}.key.${keyHash}.v1`;
-}
-
-function buildManualPaymentProjectionJobIdempotencyKey(input: {
-  propertyId: string;
-  jobType: "booking.projection-refresh" | "pms.projection-refresh";
-  guestBookingId: string;
-  paymentIdempotencyKeyHash: string;
-}): string {
-  return `${input.jobType}:property:${input.propertyId}:booking:${input.guestBookingId}:finance-payment:${input.paymentIdempotencyKeyHash}:v1`;
-}
-
 async function recordXenditPayoutReconciliationAuditEvent(
   client: FinancePropertySettingsWriteClient,
   command: FinanceXenditPayoutReconciliationCommand,
@@ -3422,241 +3408,6 @@ async function recordXenditPayoutReconciliationAuditEvent(
       JSON.stringify({
         contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
         legacyDisposition: XENDIT_PAYOUT_RECONCILIATION_LEGACY_DISPOSITION,
-      }),
-    ],
-  );
-}
-
-async function enqueueManualPaymentJobs(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  paymentId: string,
-  domainEventId: string,
-  outboxEventIds: { booking: string; pms: string },
-  keyHash: string,
-): Promise<void> {
-  const bookingJobKey = buildManualPaymentProjectionJobIdempotencyKey({
-    propertyId: command.propertyId,
-    jobType: "booking.projection-refresh",
-    guestBookingId,
-    paymentIdempotencyKeyHash: keyHash,
-  });
-  const pmsJobKey = buildManualPaymentProjectionJobIdempotencyKey({
-    propertyId: command.propertyId,
-    jobType: "pms.projection-refresh",
-    guestBookingId,
-    paymentIdempotencyKeyHash: keyHash,
-  });
-  await client.query(
-    `INSERT INTO platform.jobs (
-       job_key,
-       queue_name,
-       job_type,
-       source_domain_event_id,
-       source_outbox_event_id,
-       tenant_scope,
-       organization_id,
-       property_id,
-       resource_product,
-       resource_type,
-       resource_id,
-       correlation_id,
-       idempotency_key_hash,
-       payload,
-       job_metadata
-     )
-     VALUES
-       (
-         $1,
-         'booking-projections',
-         'booking.projection-refresh',
-         $2::uuid,
-         $3::uuid,
-         'property',
-         NULL,
-         $4::uuid,
-         'booking',
-         'guest_booking',
-         $5,
-         $6,
-         $7,
-         $8::jsonb,
-         $9::jsonb
-       ),
-       (
-         $10,
-         'pms-projections',
-         'pms.projection-refresh',
-         $2::uuid,
-         $11::uuid,
-         'property',
-         NULL,
-         $4::uuid,
-         'pms',
-         'operational_booking',
-         $5,
-         $6,
-         $7,
-         $8::jsonb,
-         $9::jsonb
-       )
-     ON CONFLICT (queue_name, job_key) DO NOTHING`,
-    [
-      bookingJobKey,
-      domainEventId,
-      outboxEventIds.booking,
-      command.propertyId,
-      guestBookingId,
-      command.audit.correlationId ?? command.audit.requestId,
-      keyHash,
-      JSON.stringify({
-        propertyId: command.propertyId,
-        guestBookingId,
-        invoiceId: command.payload.invoiceId,
-        paymentId,
-      }),
-      JSON.stringify({ commandId: command.commandId }),
-      pmsJobKey,
-      outboxEventIds.pms,
-    ],
-  );
-}
-
-async function enqueueBankTransferFinalConfirmationEmail(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  invoice: FinanceInvoiceRow,
-  recordedAt: string,
-): Promise<void> {
-  if (command.payload.paymentMethod !== "bank_transfer") return;
-  if (!manualPaymentSettlesInvoice(command, invoice)) return;
-
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "final_confirmation",
-    occurredAt: recordedAt,
-    correlationId: command.audit.correlationId ?? command.audit.requestId,
-    causationId: `finance.manual_payment.record:${command.commandId}`,
-    actor:
-      command.audit.actor.kind === "user"
-        ? { type: "user", userId: command.audit.actor.userId }
-        : { type: command.audit.actor.kind },
-    source: "apps/api-finance-manual-payment",
-    booking: {
-      propertyId: command.propertyId,
-      guestBookingId: invoice.guestBookingId,
-      bookingReference: invoice.bookingReference,
-      guestEmail: invoice.guestEmail,
-      guestName: invoice.guestDisplayName,
-      propertyName: invoice.propertyName,
-      checkIn: invoice.checkIn,
-      checkOut: invoice.checkOut,
-      totalAmount: invoice.totalAmount,
-      balanceAmount: invoice.balanceDue,
-      currency: invoice.currency,
-      paymentMethod: "bank_transfer",
-    },
-  });
-}
-
-function manualPaymentSettlesInvoice(
-  command: FinanceManualPaymentRecordCommand,
-  invoice: FinanceInvoiceRow,
-): boolean {
-  const amountCents = numeric15Scale2Cents(command.payload.amount);
-  const balanceCents = numeric15Scale2Cents(invoice.balanceDue, { allowZero: true });
-  return (
-    amountCents !== null &&
-    balanceCents !== null &&
-    balanceCents > 0n &&
-    amountCents === balanceCents
-  );
-}
-
-async function recordManualPaymentAuditEvent(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  paymentId: string,
-  domainEventId: string,
-  keyHash: string,
-  recordedAt: string,
-): Promise<void> {
-  await client.query(
-    `INSERT INTO platform.product_audit_events (
-       audit_key,
-       product,
-       action,
-       action_version,
-       occurred_at,
-       tenant_scope,
-       organization_id,
-       property_id,
-       actor_type,
-       actor_user_id,
-       target_resource_product,
-       target_resource_type,
-       target_resource_id,
-       secondary_resource_product,
-       secondary_resource_type,
-       secondary_resource_id,
-       domain_event_id,
-       correlation_id,
-       causation_id,
-       redacted_payload,
-       private_payload,
-       audit_metadata,
-       retention_class,
-       privacy_scope
-     )
-     VALUES (
-       $1,
-       'finance',
-       'manual_payment.recorded',
-       1,
-       $2::timestamptz,
-       'property',
-       NULL,
-       $3::uuid,
-       $4,
-       $5::uuid,
-       'finance',
-       'payment',
-       $6,
-       'booking',
-       'guest_booking',
-       $7,
-       $8::uuid,
-       $9,
-       $10,
-       $11::jsonb,
-       $12::jsonb,
-       $13::jsonb,
-       'financial',
-       'confidential'
-     )
-     ON CONFLICT (product, audit_key) DO NOTHING`,
-    [
-      manualPaymentAuditKey(command.propertyId, keyHash),
-      recordedAt,
-      command.propertyId,
-      command.audit.actor.kind,
-      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
-      paymentId,
-      guestBookingId,
-      domainEventId,
-      command.audit.correlationId ?? command.audit.requestId,
-      command.commandId,
-      JSON.stringify({
-        amount: command.payload.amount,
-        currency: command.payload.currency,
-        paymentMethod: command.payload.paymentMethod,
-        invoiceId: command.payload.invoiceId,
-      }),
-      JSON.stringify({ reference: command.payload.reference ?? null }),
-      JSON.stringify({
-        requestId: command.audit.requestId,
-        idempotencyKeyHash: keyHash,
       }),
     ],
   );
@@ -5703,7 +5454,8 @@ function currencyArray(value: unknown): string[] | null {
 }
 
 type FinanceJsonPolicyBodyResult =
-  { ok: true; value: FinanceJsonPolicy } | { ok: false; error: FinanceValidationError };
+  | { ok: true; value: FinanceJsonPolicy }
+  | { ok: false; error: FinanceValidationError };
 
 function jsonPolicyBody(value: unknown, name: string): FinanceJsonPolicyBodyResult {
   const record = plainRecord(value);
