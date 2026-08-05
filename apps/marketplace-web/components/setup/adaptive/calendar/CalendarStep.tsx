@@ -81,6 +81,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   const draftRef = useRef<CalendarDraft | null>(null);
   const impactReviewRef = useRef<CalendarImpactReview | null>(null);
   const retainLocalOnReloadRef = useRef(false);
+  const discardHistoricalOnReloadRef = useRef(false);
   const [draft, setDraft] = useState<CalendarDraft | null>(null);
   const [impactReview, setImpactReview] = useState<CalendarImpactReview | null>(null);
   const [workspace, setWorkspace] = useState<CalendarWorkspace | null>(null);
@@ -199,6 +200,10 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       setWorkspaceError(null);
       return () => controller.abort();
     }
+    if (discardHistoricalOnReloadRef.current && step.draft !== null) {
+      setWorkspaceState("loading");
+      return () => controller.abort();
+    }
     setWorkspaceState("loading");
     setWorkspaceError(null);
     void calendarApi
@@ -206,10 +211,12 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       .then((loaded) => {
         if (controller.signal.aborted) return;
         const hydrated = hydrateCalendarDraft(loaded, step.draft);
-        const next =
-          retainLocalOnReloadRef.current && draftRef.current
+        const next = discardHistoricalOnReloadRef.current
+          ? hydrated
+          : retainLocalOnReloadRef.current && draftRef.current
             ? mergeCalendarLocalInput(draftRef.current, hydrated)
             : hydrated;
+        discardHistoricalOnReloadRef.current = false;
         retainLocalOnReloadRef.current = false;
         setWorkspace(loaded);
         commitDraft(next);
@@ -300,12 +307,11 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     try {
       const request = buildCalendarDraftResetRequest(route, step);
       await propertySetupDraftResetApi.reset(propertyId, request);
+      discardHistoricalOnReloadRef.current = true;
+      retainLocalOnReloadRef.current = false;
       await refreshRoute();
       if (mounted.current) {
-        setWorkspaceReload((value) => value + 1);
-        setAnnouncement(
-          "The stale saved draft was removed. Your local input is ready on current calendar data.",
-        );
+        setAnnouncement("The stale saved draft was removed. Review the current calendar.");
       }
     } catch (error) {
       if (error instanceof PropertySetupDraftResetError && error.requiresRefresh) {
@@ -318,7 +324,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   };
 
   const refreshCurrentCalendar = async () => {
-    retainLocalOnReloadRef.current = true;
+    if (!discardHistoricalOnReloadRef.current) retainLocalOnReloadRef.current = true;
     setSaveError(null);
     commitImpactReview(null);
     try {
@@ -487,7 +493,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       {manifestStale && (
         <StatusPanel
           title="Calendar sources changed since this draft was started"
-          message="The saved draft keeps its historical revision manifest and cannot overwrite newer calendar data. Start from current owner data; your input stays on this page while only the stale saved draft is removed."
+          message="The saved draft keeps its historical revision manifest and cannot overwrite newer calendar data. Starting from the current calendar discards the historical saved values after fresh owner data loads."
           actionLabel={resetting ? "Starting from latest..." : "Start from latest calendar"}
           onAction={() => void resetStaleDraft()}
         />

@@ -365,12 +365,19 @@ describe("PricingStep", () => {
     renderer?.unmount();
   });
 
-  it("resets only a stale saved draft and retains local pricing input", async () => {
+  it("keeps input until reset refreshes, then hydrates only fresh pricing", async () => {
     const route = pricingRoute(emptyPricingDraft());
     route.steps[0]!.currentBaseRevisions = {
       ...exactManifest,
       "pms.rate_plans": "plans:5",
     };
+    const latestRoute = pricingRoute(null);
+    latestRoute.sessionRevision = 8;
+    latestRoute.steps[0]!.currentBaseRevisions = route.steps[0]!.currentBaseRevisions;
+    mocks.loadWorkspace
+      .mockReset()
+      .mockResolvedValueOnce(workspace())
+      .mockResolvedValueOnce(workspace(true, "205.00"));
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -398,7 +405,18 @@ describe("PricingStep", () => {
     });
     expect(controller.refreshRoute).toHaveBeenCalledOnce();
     expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("189.00");
-    expect(JSON.stringify(renderer!.toJSON())).toContain("only the stale saved draft");
+    await act(async () => {
+      renderer!.update(
+        createElement(PricingStep, {
+          ...controller.props,
+          route: latestRoute,
+          step: latestRoute.steps[0]!,
+        }),
+      );
+    });
+    await vi.waitFor(() => expect(mocks.loadWorkspace).toHaveBeenCalledTimes(2));
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("205.00");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Review the current pricing");
     renderer?.unmount();
   });
 });
@@ -481,7 +499,7 @@ function emptyPricingDraft(): Extract<PropertySetupStepDraft, { stepId: "pricing
   };
 }
 
-function workspace(withCurrency = true): PricingCanonicalWorkspace {
+function workspace(withCurrency = true, baseAmount = "160.00"): PricingCanonicalWorkspace {
   return {
     currencyCapabilities: {
       contractVersion: "pms-pricing-currency-capabilities.v1",
@@ -506,7 +524,7 @@ function workspace(withCurrency = true): PricingCanonicalWorkspace {
               roomTypeId,
               flexibleRatePlanId: "55555555-5555-4555-8555-555555555555",
               flexibleRatePlanRevision: 4,
-              baseAmount: { amountDecimal: "160.00" },
+              baseAmount: { amountDecimal: baseAmount },
               cancellationTerms: { freeCancellationDeadlineDays: 7 },
             },
           ],

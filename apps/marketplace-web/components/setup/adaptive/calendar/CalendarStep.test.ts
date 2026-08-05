@@ -341,12 +341,19 @@ describe("CalendarStep", () => {
     renderer?.unmount();
   });
 
-  it("resets only a stale saved draft and rebinds retained input to current calendar data", async () => {
+  it("keeps input until reset refreshes, then hydrates only fresh calendar data", async () => {
     const route = calendarRoute(emptyCalendarDraft());
     route.steps[0]!.currentBaseRevisions = {
       ...exactManifest,
       "pms.inventory": "inventory:2",
     };
+    const latestRoute = calendarRoute(null);
+    latestRoute.sessionRevision = 8;
+    latestRoute.steps[0]!.currentBaseRevisions = route.steps[0]!.currentBaseRevisions;
+    mocks.loadWorkspace
+      .mockReset()
+      .mockResolvedValueOnce(workspace())
+      .mockResolvedValueOnce(workspace(6));
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -373,7 +380,19 @@ describe("CalendarStep", () => {
     });
     expect(controller.refreshRoute).toHaveBeenCalledOnce();
     expect(input(renderer!.root, "calendar-minimum-stay").props.value).toBe("4");
-    expect(JSON.stringify(renderer!.toJSON())).toContain("only the stale saved draft");
+    await act(async () => {
+      renderer!.update(
+        createElement(CalendarStep, {
+          ...controller.props,
+          route: latestRoute,
+          step: latestRoute.steps[0]!,
+        }),
+      );
+    });
+    await vi.waitFor(() => expect(mocks.loadWorkspace).toHaveBeenCalledTimes(2));
+    expect(input(renderer!.root, "calendar-minimum-stay").props.value).toBe("1");
+    expect(input(renderer!.root, `calendar-room-${roomTypeId}`).props.value).toBe("6");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Review the current calendar");
     renderer?.unmount();
   });
 });
@@ -457,7 +476,7 @@ function emptyCalendarDraft(): Extract<PropertySetupStepDraft, { stepId: "calend
   };
 }
 
-function workspace(): CalendarWorkspace {
+function workspace(physicalCapacityCount = 4): CalendarWorkspace {
   return {
     propertyProfileRevision: 3,
     propertyTimeZone: "Europe/Berlin",
@@ -467,7 +486,7 @@ function workspace(): CalendarWorkspace {
         name: "Garden Suite",
         roomFactsRevision: 2,
         roomUnitsRevision: 3,
-        physicalCapacityCount: 4,
+        physicalCapacityCount,
       },
     ],
     current: null,

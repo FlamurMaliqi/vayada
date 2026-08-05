@@ -77,6 +77,7 @@ export function PricingStep({
   const revisionIdentityRef = useRef(routeIdentity);
   const draftSaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const retainLocalOnReloadRef = useRef(false);
+  const discardHistoricalOnReloadRef = useRef(false);
   const mounted = useRef(true);
   const errorSummaryRef = useRef<HTMLDivElement>(null);
   const locale = interfaceLocale;
@@ -110,6 +111,10 @@ export function PricingStep({
       setLoadError("This pricing step does not match the selected hotel.");
       return () => controller.abort();
     }
+    if (discardHistoricalOnReloadRef.current && step.draft !== null) {
+      setWorkspaceState("loading");
+      return () => controller.abort();
+    }
     setWorkspaceState("loading");
     setLoadError(null);
     void pricingSetupApi
@@ -120,10 +125,12 @@ export function PricingStep({
       .then((nextWorkspace) => {
         if (controller.signal.aborted) return;
         const hydrated = hydratePricingDraft(step.draft, nextWorkspace);
-        const nextDraft =
-          draftRef.current?.dirty || (retainLocalOnReloadRef.current && draftRef.current)
+        const nextDraft = discardHistoricalOnReloadRef.current
+          ? hydrated
+          : draftRef.current?.dirty || (retainLocalOnReloadRef.current && draftRef.current)
             ? mergeLocalInput(draftRef.current, hydrated)
             : hydrated;
+        discardHistoricalOnReloadRef.current = false;
         retainLocalOnReloadRef.current = false;
         draftRef.current = nextDraft;
         setWorkspace(nextWorkspace);
@@ -323,12 +330,11 @@ export function PricingStep({
     try {
       const request = buildPricingDraftResetRequest(route, step);
       await propertySetupDraftResetApi.reset(propertyId, request);
+      discardHistoricalOnReloadRef.current = true;
+      retainLocalOnReloadRef.current = false;
       await refreshRoute();
       if (mounted.current) {
-        setReload((value) => value + 1);
-        setNotice(
-          "The stale saved draft was removed. Your local input is ready on current pricing data.",
-        );
+        setNotice("The stale saved draft was removed. Review the current pricing before saving.");
       }
     } catch (error) {
       if (error instanceof PropertySetupDraftResetError && error.requiresRefresh) {
@@ -341,7 +347,7 @@ export function PricingStep({
   }, [propertyId, refreshRoute, reportRevisionConflict, resetting, route, step]);
 
   const refreshCurrentPricing = useCallback(async () => {
-    retainLocalOnReloadRef.current = true;
+    if (!discardHistoricalOnReloadRef.current) retainLocalOnReloadRef.current = true;
     try {
       await refreshRoute();
       if (mounted.current) setReload((value) => value + 1);
@@ -408,7 +414,7 @@ export function PricingStep({
       {manifestStale && (
         <RecoveryPanel
           title="Pricing changed since this draft was started"
-          message="The saved draft keeps its historical revision manifest and cannot overwrite newer pricing. Start from current owner data; your input stays on this page while only the stale saved draft is removed."
+          message="The saved draft keeps its historical revision manifest and cannot overwrite newer pricing. Starting from current pricing discards the historical saved values after fresh owner data loads."
           actionLabel={resetting ? "Starting from latest..." : "Start from latest pricing"}
           onAction={() => void resetStaleDraft()}
         />
