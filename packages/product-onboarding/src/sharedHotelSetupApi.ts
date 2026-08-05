@@ -1,13 +1,17 @@
 import {
   parseAdaptiveHotelSetupStatus,
+  parsePropertyMediaCommandResponse,
   parsePropertyProfileResponse,
   parsePublicPropertyProfileResponse,
+  parseReplacePropertyPresentationMediaRequest,
   parseUpdatePublicPropertyProfileRequest,
   parseUpdatePropertyProfileRequest,
   type AdaptiveHotelSetupStatus,
   type CreatePropertyProfileRequest,
+  type PropertyMediaCommandResponse,
   type PropertyProfileResponse,
   type PublicPropertyProfileResponse,
+  type ReplacePropertyPresentationMediaRequest,
   type UpdatePropertyProfileRequest,
   type UpdatePublicPropertyProfileRequest,
   type UpdateTracksRequest,
@@ -60,6 +64,11 @@ export type SharedHotelSetupApi = {
     propertyId: string,
     request: UpdatePublicPropertyProfileRequest,
   ): Promise<PublicPropertyProfileResponse>;
+  replacePropertyPresentationMedia(
+    propertyId: string,
+    request: ReplacePropertyPresentationMediaRequest,
+    idempotencyKey: string,
+  ): Promise<PropertyMediaCommandResponse>;
   updateTracks(request: UpdateTracksRequest, idempotencyKey: string): Promise<UpdateTracksResponse>;
 };
 
@@ -120,6 +129,17 @@ export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): S
         ),
       );
     },
+    replacePropertyPresentationMedia: async (propertyId, request, idempotencyKey) => {
+      const update = parseReplacePropertyPresentationMediaRequest(request);
+      if (!update) throw new Error("Hotel cover and gallery assignments are invalid.");
+      return propertyMediaCommandResponse(
+        await client.put<unknown>(
+          `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/media/presentation`,
+          update,
+          idempotencyOptions(idempotencyKey),
+        ),
+      );
+    },
     updateTracks: (request, idempotencyKey) =>
       client.put<UpdateTracksResponse>(
         "/api/hotel-setup/tracks",
@@ -155,4 +175,12 @@ function publicPropertyProfileResponse(value: unknown): PublicPropertyProfileRes
     throw new Error("Public hotel profile data is invalid. Refresh the page and try again.");
   }
   return profile;
+}
+
+function propertyMediaCommandResponse(value: unknown): PropertyMediaCommandResponse {
+  const response = parsePropertyMediaCommandResponse(value);
+  if (!response) {
+    throw new Error("Hotel media assignment data is invalid. Refresh the page and try again.");
+  }
+  return response;
 }

@@ -1441,25 +1441,36 @@ describe("hotel target self-service client", () => {
 
   it("promotes a restored remote offer photo to the canonical hotel cover", async () => {
     const sourceUrl = "https://images.example/restored-offer.webp";
+    const mediaObjectId = "00000000-0000-4000-8000-000000000009";
+    const galleryMedia = {
+      mediaObjectId: "00000000-0000-4000-8000-000000000010",
+      mediaType: "gallery_image",
+      url: "https://cdn.example/hotels/gallery.webp",
+      altText: "Hotel courtyard",
+      sortOrder: 1,
+    } as const;
+    let publicProfileReads = 0;
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url) === sourceUrl) {
+      const href = String(url);
+      if (href === sourceUrl) {
         expect(init).toEqual({ credentials: "omit" });
         return new Response(new Blob(["hotel-cover"], { type: "image/webp" }), { status: 200 });
       }
-      if (String(url).endsWith("/api/media/upload-sessions")) {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
+      if (href.endsWith("/api/media/upload-sessions")) {
+        const body = JSON.parse(String(init?.body));
+        expect(body).toMatchObject({
           idempotencyKey: expect.stringMatching(
             /^marketplace\.property-hero:property-two:revision:17:files:sha256:[0-9a-f]{64}$/,
           ),
           purpose: "property.hero_image",
-          expectedProfileRevision: 17,
+          visibility: "private",
           resource: {
-            product: "marketplace",
-            resourceType: "hotel_profile",
+            product: "hotel_catalog",
+            resourceType: "property",
             resourceId: propertyId,
-            targetResourceId: propertyId,
           },
         });
+        expect(body).not.toHaveProperty("expectedProfileRevision");
         return jsonResponse({
           uploadSession: { sessionId: "cover-session" },
           uploadTargets: [
@@ -1473,21 +1484,78 @@ describe("hotel target self-service client", () => {
           ],
         });
       }
-      if (String(url).endsWith("/api/media/upload-sessions/cover-session/finalize")) {
+      if (href.endsWith("/api/media/upload-sessions/cover-session/finalize")) {
         return jsonResponse({
           mediaObjects: [
             {
-              mediaId: "00000000-0000-4000-8000-000000000009",
-              storageKey: "public/hotels/cover.webp",
+              mediaId: mediaObjectId,
+              storageKey: "private/media/hotel-cover.webp",
               contentType: "image/webp",
               sizeBytes: 11,
               originalFilename: "shared-hotel-photo-1.webp",
               variants: [
                 {
-                  publicCdnUrl: "https://cdn.example/hotels/cover.webp",
-                  storageKey: "public/hotels/cover.webp",
+                  publicCdnUrl: null,
+                  storageKey: "private/media/hotel-cover.webp",
                 },
               ],
+            },
+          ],
+        });
+      }
+      if (href.endsWith(`/api/hotel-setup/properties/${propertyId}/public-profile`)) {
+        publicProfileReads += 1;
+        return jsonResponse({
+          propertyId,
+          profileRevision: publicProfileReads === 1 ? 17 : 18,
+          publicProfile: {
+            locale: "en",
+            shortDescription: "A welcoming independent hotel.",
+            longDescription: null,
+            media:
+              publicProfileReads === 1
+                ? [publicProfile.publicProfile.media[0], galleryMedia]
+                : [
+                    {
+                      mediaObjectId,
+                      mediaType: "hero_image",
+                      url: "https://cdn.example/hotels/cover.webp",
+                      altText: null,
+                      sortOrder: 0,
+                    },
+                    galleryMedia,
+                  ],
+          },
+        });
+      }
+      if (href.endsWith(`/api/hotel-setup/properties/${propertyId}/media/presentation`)) {
+        expect(init?.method).toBe("PUT");
+        expect(requestHeader(init, "Idempotency-Key")).toBe(
+          `marketplace.property-cover.assign:${propertyId}:revision:17:media:${mediaObjectId}`,
+        );
+        expect(JSON.parse(String(init?.body))).toEqual({
+          expectedProfileRevision: 17,
+          assignments: [
+            { mediaObjectId, role: "cover", altText: null, sortOrder: 0 },
+            {
+              mediaObjectId: galleryMedia.mediaObjectId,
+              role: "gallery",
+              altText: galleryMedia.altText,
+              sortOrder: 1,
+            },
+          ],
+        });
+        return jsonResponse({
+          outcome: "updated",
+          profileRevision: 18,
+          logoAssignment: null,
+          presentationAssignments: [
+            { mediaObjectId, role: "cover", altText: null, sortOrder: 0 },
+            {
+              mediaObjectId: galleryMedia.mediaObjectId,
+              role: "gallery",
+              altText: galleryMedia.altText,
+              sortOrder: 1,
             },
           ],
         });
@@ -1499,9 +1567,10 @@ describe("hotel target self-service client", () => {
     await expect(
       hotelService.uploadProfileImageFromSource(sourceUrl, propertyId, 17),
     ).resolves.toMatchObject({
-      mediaObjectId: "00000000-0000-4000-8000-000000000009",
+      mediaObjectId,
       url: "https://cdn.example/hotels/cover.webp",
     });
+    expect(publicProfileReads).toBe(2);
   });
 
   it("classifies a browser-blocked canonical photo before starting a media upload", async () => {

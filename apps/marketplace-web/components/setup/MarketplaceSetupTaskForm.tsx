@@ -545,7 +545,7 @@ export function MarketplaceSetupTaskForm({
         setError(
           cause.data.code === "profile_revision_conflict"
             ? "This hotel profile changed in another tab. Reload this step and try again."
-            : formatErrorDetail(cause.data.detail) || cause.message || "Failed to save this step.",
+            : errorMessage(cause, "Failed to save this step."),
         );
       } else {
         setError(errorMessage(cause, "Failed to save this step. Try again."));
@@ -747,7 +747,8 @@ function updateOfferProgress(
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
-  return cause instanceof ApiErrorResponse
-    ? formatErrorDetail(cause.data.detail) || cause.message || fallback
-    : fallback;
+  if (!(cause instanceof ApiErrorResponse)) return fallback;
+  return cause.data.detail === undefined
+    ? cause.message || fallback
+    : formatErrorDetail(cause.data.detail) || cause.message || fallback;
 }
