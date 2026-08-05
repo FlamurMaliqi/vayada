@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "@vayada/domain-booking": "*",
     "@vayada/domain-hotels": "*",
+    "@vayada/domain-marketplace": "*",
     "@vayada/domain-pms": "*",
     "@vayada/marketplace-shared": "*",
     "@vayada/product-onboarding": "*",
