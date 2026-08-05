@@ -40,8 +40,7 @@ export type BookingGuestPolicyAbsentSourceRevision = Readonly<
   }
 >;
 export type BookingGuestPolicyCurrentSourceRevision =
-  | BookingGuestPolicySourceRevision
-  | BookingGuestPolicyAbsentSourceRevision;
+  BookingGuestPolicySourceRevision | BookingGuestPolicyAbsentSourceRevision;
 
 export type BookingGuestPolicyChoices = Readonly<{
   defaultGuestLanguage: BookingGuestLanguage;
@@ -187,6 +186,58 @@ export function parseBookingGuestPolicyHash(value: unknown): BookingGuestPolicyH
     : null;
 }
 
+export function parseBookingGuestPolicyCatalogProfileEvidenceResult(
+  value: unknown,
+  propertyId: string,
+): BookingGuestPolicyCatalogProfileEvidenceResult | null {
+  if (!uuid(propertyId) || !exact(value, ["outcome", ...catalogResultKeys(value)])) return null;
+  if (value.outcome === "malformed") return Object.freeze({ outcome: "malformed" });
+  if (value.outcome === "unavailable") {
+    return value.errorSource === "provider" || value.errorSource === "system"
+      ? Object.freeze({ outcome: "unavailable", errorSource: value.errorSource })
+      : null;
+  }
+  let evidence: Record<string, unknown> | null = null;
+  let sourceValue: unknown;
+  if (value.outcome === "available") {
+    if (!exact(value.evidence, ["source", "timeZone"])) return null;
+    evidence = value.evidence;
+    sourceValue = evidence.source;
+  } else {
+    sourceValue = value.source;
+  }
+  if (
+    (value.outcome !== "available" &&
+      value.outcome !== "timezone_missing" &&
+      value.outcome !== "timezone_invalid") ||
+    !exact(sourceValue, ["ownerDomain", "entityType", "entityId", "revision"]) ||
+    sourceValue.ownerDomain !== "hotel_catalog" ||
+    sourceValue.entityType !== "property_profile" ||
+    sourceValue.entityId !== propertyId.toLowerCase() ||
+    typeof sourceValue.revision !== "string" ||
+    !/^profile:[1-9][0-9]*$/.test(sourceValue.revision)
+  )
+    return null;
+  const source = Object.freeze({
+    ownerDomain: "hotel_catalog" as const,
+    entityType: "property_profile" as const,
+    entityId: sourceValue.entityId,
+    revision: sourceValue.revision,
+  });
+  if (!evidence) {
+    if (value.outcome === "timezone_missing")
+      return Object.freeze({ outcome: "timezone_missing", source });
+    if (value.outcome === "timezone_invalid")
+      return Object.freeze({ outcome: "timezone_invalid", source });
+    return null;
+  }
+  if (typeof evidence.timeZone !== "string" || !timeZone(evidence.timeZone)) return null;
+  return deepFreeze({
+    outcome: "available",
+    evidence: { source, timeZone: evidence.timeZone },
+  });
+}
+
 export function createBookingGuestPolicySourceRevision(
   propertyId: string,
   revision: number,
@@ -249,6 +300,25 @@ function age(value: unknown, required: boolean): boolean {
 
 function localTime(value: unknown): value is string {
   return typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function catalogResultKeys(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const outcome = Object.getOwnPropertyDescriptor(value, "outcome")?.value;
+  if (outcome === "malformed") return [];
+  if (outcome === "unavailable") return ["errorSource"];
+  if (outcome === "available") return ["evidence"];
+  if (outcome === "timezone_missing" || outcome === "timezone_invalid") return ["source"];
+  return [];
+}
+
+function timeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format();
+    return value.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function positiveRevision(value: unknown): value is number {
