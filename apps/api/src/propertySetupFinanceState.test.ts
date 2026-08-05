@@ -67,13 +67,13 @@ describe("property setup Finance owner state", () => {
       }),
       createPropertySetupFinanceStateProvider({
         scope: authorizedScope(),
-        finance: { getPaymentReadiness: vi.fn(async () => paymentReadiness(2, 4)) },
-        pricing: {
-          getPropertyPricingCurrency: vi
+        finance: {
+          getPaymentReadiness: vi
             .fn()
-            .mockResolvedValueOnce(pricingCurrency(4))
-            .mockResolvedValueOnce(pricingCurrency(5)),
+            .mockResolvedValueOnce(paymentReadiness(2, 4))
+            .mockResolvedValueOnce(paymentReadiness(2, 4, [])),
         },
+        pricing: { getPropertyPricingCurrency: vi.fn(async () => pricingCurrency(4)) },
       }),
     ];
     for (const provider of cases) {
@@ -82,14 +82,18 @@ describe("property setup Finance owner state", () => {
       });
     }
 
+    const deniedFinance = vi.fn(async () => null);
+    const deniedPricing = vi.fn(async () => pricingCurrency(4));
     const denied = createPropertySetupFinanceStateProvider({
       scope: { hasPaymentOwnerScope: vi.fn(async () => false) },
-      finance: { getPaymentReadiness: vi.fn(async () => null) },
-      pricing: { getPropertyPricingCurrency: vi.fn(async () => pricingCurrency(4)) },
+      finance: { getPaymentReadiness: deniedFinance },
+      pricing: { getPropertyPricingCurrency: deniedPricing },
     });
     await expect(denied.getOwnerState(request())).resolves.toEqual({
       outcome: "provider_failure",
     });
+    expect(deniedFinance).not.toHaveBeenCalled();
+    expect(deniedPricing).not.toHaveBeenCalled();
   });
 });
 
@@ -119,7 +123,11 @@ function pricingCurrency(revision: number) {
   } as const;
 }
 
-function paymentReadiness(paymentMethodsRevision: number, pricingRevision: number) {
+function paymentReadiness(
+  paymentMethodsRevision: number,
+  pricingRevision: number,
+  selectedMethods: Array<"pay_at_property"> = ["pay_at_property"],
+) {
   const pricing = {
     contractVersion: PMS_PRICING_CONTRACT_VERSION,
     currency: "EUR",
@@ -128,7 +136,7 @@ function paymentReadiness(paymentMethodsRevision: number, pricingRevision: numbe
   return createFinancePaymentReadinessSnapshot({
     propertyId,
     paymentMethodsRevision,
-    selectedMethods: ["pay_at_property"],
+    selectedMethods,
     committedPricing: pricing,
     currentPricing: pricing,
     updatedAt: "2026-08-04T12:00:00.000Z",

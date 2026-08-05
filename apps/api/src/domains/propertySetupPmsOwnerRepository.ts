@@ -204,7 +204,7 @@ export function createPgPropertySetupPmsOwnerRepository(config: {
       const rooms = result.rows.flatMap((row) => {
         if (row.roomTypeId === null) {
           if (!validEmptyRoomSentinel(row) || result.rows.length !== 1)
-            throw new Error("PMS room owner result contains a sentinel");
+            throw new Error("PMS room owner result has an invalid or mixed sentinel");
           return [];
         }
         return [parseRoomRow(row, scope.propertyId)];
@@ -292,6 +292,7 @@ function validEmptyInventorySentinel(row: InventoryRow): boolean {
 
 function parseRoomRow(row: RoomRow, propertyId: string): PropertySetupPmsRoomOwnerFact {
   const roomTypeId = normalizedUuid(row.roomTypeId);
+  const roomFactsRevision = positiveRevision(row.roomFactsRevision);
   const roomUnitsRevision = positiveRevision(row.roomUnitsRevision);
   const roomMediaRevision = positiveRevision(row.roomMediaRevision);
   const roomAmenitiesRevision = positiveRevision(row.roomAmenitiesRevision);
@@ -306,6 +307,7 @@ function parseRoomRow(row: RoomRow, propertyId: string): PropertySetupPmsRoomOwn
     row.description === null ||
     row.createdAt === null ||
     row.updatedAt === null ||
+    roomFactsRevision === null ||
     roomUnitsRevision === null ||
     roomMediaRevision === null ||
     roomAmenitiesRevision === null ||
@@ -319,7 +321,7 @@ function parseRoomRow(row: RoomRow, propertyId: string): PropertySetupPmsRoomOwn
   const roomFacts = pmsRoomFactsSnapshotFromRow({
     propertyId,
     roomTypeId,
-    roomFactsRevision: row.roomFactsRevision!,
+    roomFactsRevision,
     active: true,
     name: row.name,
     description: row.description,

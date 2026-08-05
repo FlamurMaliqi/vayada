@@ -1,7 +1,13 @@
-import pg from "pg";
+import {
+  FINANCE_PAYMENT_READINESS_CONTRACT_VERSION,
+  type FinancePaymentReadinessReadPort,
+} from "@vayada/domain-finance";
+import { PMS_PRICING_CONTRACT_VERSION, parsePmsPricingCurrency } from "@vayada/domain-pms";
+import pg, { type QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createPgPropertySetupFinanceOwnerScopePort } from "./propertySetupFinanceOwnerScope.js";
+import { createPgFinancePaymentReadinessReadModel } from "./financePaymentReadinessReadModel.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const organizationId = "19600000-0000-4000-8000-000000000001";
@@ -12,6 +18,30 @@ describe.skipIf(!TEST_DATABASE_URL)("Property setup Finance PostgreSQL owner sco
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
   });
   const scope = createPgPropertySetupFinanceOwnerScopePort({ pool: client });
+  const readiness: FinancePaymentReadinessReadPort = createPgFinancePaymentReadinessReadModel({
+    connectionString: "postgresql://unused",
+    pool: {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: readonly unknown[],
+      ) {
+        const result = await client.query<T>(text, values ? [...values] : []);
+        return { rows: result.rows, rowCount: result.rowCount };
+      },
+    },
+    pricingReadPort: {
+      async getPropertyPricingCurrency(requestedPropertyId) {
+        return {
+          contractVersion: PMS_PRICING_CONTRACT_VERSION,
+          propertyId: requestedPropertyId,
+          currency: parsePmsPricingCurrency("EUR")!,
+          pricingCurrencyRevision: 7,
+          createdAt: "2026-08-05T12:00:00.000Z",
+          updatedAt: "2026-08-05T12:00:00.000Z",
+        };
+      },
+    },
+  });
 
   beforeAll(async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
@@ -42,6 +72,12 @@ describe.skipIf(!TEST_DATABASE_URL)("Property setup Finance PostgreSQL owner sco
                'pms', 'pms_property', $2::uuid::text)`,
       [organizationId, propertyId],
     );
+    await client.query(
+      `INSERT INTO pms.property_pricing_settings
+         (property_id, currency, pricing_currency_revision)
+       VALUES ($1::uuid, 'EUR', 7)`,
+      [propertyId],
+    );
   });
 
   afterAll(async () => {
@@ -51,6 +87,35 @@ describe.skipIf(!TEST_DATABASE_URL)("Property setup Finance PostgreSQL owner sco
 
   it("accepts aggregate-route owner relationships and rejects entitlement revocation", async () => {
     await expect(scope.hasPaymentOwnerScope({ organizationId, propertyId })).resolves.toBe(true);
+
+    await client.query(
+      `UPDATE identity.organization_resource_links
+          SET relationship = 'front_desk'
+        WHERE organization_id = $1::uuid
+          AND product = 'pms'
+          AND resource_id = $2::uuid::text`,
+      [organizationId, propertyId],
+    );
+    await expect(scope.hasPaymentOwnerScope({ organizationId, propertyId })).resolves.toBe(false);
+
+    await client.query(
+      `UPDATE identity.organization_resource_links
+          SET relationship = 'owner', status = 'suspended'
+        WHERE organization_id = $1::uuid
+          AND product = 'pms'
+          AND resource_id = $2::uuid::text`,
+      [organizationId, propertyId],
+    );
+    await expect(scope.hasPaymentOwnerScope({ organizationId, propertyId })).resolves.toBe(false);
+
+    await client.query(
+      `UPDATE identity.organization_resource_links
+          SET status = 'active'
+        WHERE organization_id = $1::uuid
+          AND product = 'pms'
+          AND resource_id = $2::uuid::text`,
+      [organizationId, propertyId],
+    );
 
     await client.query(
       `UPDATE identity.organization_resource_links
@@ -81,6 +146,45 @@ describe.skipIf(!TEST_DATABASE_URL)("Property setup Finance PostgreSQL owner sco
       [organizationId],
     );
     await expect(scope.hasPaymentOwnerScope({ organizationId, propertyId })).resolves.toBe(false);
+  });
+
+  it("reads existing public-safe payment progress for an authorized PMS operator", async () => {
+    await client.query(
+      `UPDATE identity.organization_resource_links
+          SET relationship = 'operator', status = 'active'
+        WHERE organization_id = $1::uuid
+          AND product = 'pms'
+          AND resource_id = $2::uuid::text`,
+      [organizationId, propertyId],
+    );
+    await client.query(
+      `UPDATE identity.product_entitlements
+          SET status = 'active'
+        WHERE organization_id = $1::uuid
+          AND product = 'pms'
+          AND entitlement_key = 'property-management'`,
+      [organizationId],
+    );
+    await client.query(
+      `INSERT INTO finance.payment_settings (
+         property_id,
+         payment_readiness_contract_version,
+         payment_methods_revision,
+         source_pricing_currency_revision,
+         default_currency,
+         accepted_methods
+       ) VALUES ($1::uuid, $2, 3, 7, 'EUR', ARRAY['pay_at_property'])`,
+      [propertyId, FINANCE_PAYMENT_READINESS_CONTRACT_VERSION],
+    );
+
+    await expect(scope.hasPaymentOwnerScope({ organizationId, propertyId })).resolves.toBe(true);
+    await expect(
+      readiness.getPaymentReadiness({ organizationId, propertyId }),
+    ).resolves.toMatchObject({
+      propertyId,
+      paymentMethodsRevision: 3,
+      selectedMethodCount: 1,
+    });
   });
 });
 

@@ -120,7 +120,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL property setup PMS owner state",
     if (!TEST_DATABASE_URL) return;
     await admin.query("BEGIN");
     try {
-      await admin.query("SET LOCAL session_replication_role = replica");
       await admin.query("DELETE FROM pms.rooms WHERE property_id = $1::uuid", [propertyId]);
       await admin.query("DELETE FROM pms.room_types WHERE property_id = $1::uuid", [propertyId]);
       await admin.query(

@@ -1,10 +1,20 @@
-import { isPropertySetupBaseRevisionManifest } from "@vayada/domain-hotels";
+import { createHash } from "node:crypto";
+
 import { parseBookingGuestPolicyPmsCurrentOwnerEvidence } from "@vayada/domain-booking";
+import { isPropertySetupBaseRevisionManifest } from "@vayada/domain-hotels";
+import {
+  createPmsMandatoryChargePricingSourceSnapshot,
+  parsePmsMandatoryChargePricingSourceFingerprint,
+  parsePmsPricingSourceSnapshot,
+  parsePmsRecurringPricingBookingEvidence,
+  parseRoomTypeFacts,
+} from "@vayada/domain-pms";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   createPropertySetupBookingGuestPolicyPmsCurrentOwnerEvidenceAdapter,
   createPropertySetupPmsStateProvider,
+  type PropertySetupPmsStateOptions,
 } from "./platform/propertySetupPmsState.js";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
@@ -41,13 +51,11 @@ describe("property setup PMS owner state", () => {
       expect(isPropertySetupBaseRevisionManifest(fact.stepId, fact.currentBaseRevisions)).toBe(
         true,
       );
-      expect(Object.values(fact.currentBaseRevisions)).toEqual(
-        expect.arrayContaining([
-          expect.stringMatching(
-            /^(?:[a-z-]+:(?:0|[0-9a-f]{64})|hotel_catalog\.location:[0-9a-f-]{36}:r5)$/,
-          ),
-        ]),
-      );
+      for (const revision of Object.values(fact.currentBaseRevisions)) {
+        expect(revision).toMatch(
+          /^(?:[a-z-]+:(?:0|[0-9a-f]{64})|hotel_catalog\.location:[0-9a-f-]{36}:r5)$/,
+        );
+      }
     }
     expect(Object.keys(result.facts[0]!.currentBaseRevisions)).toEqual([
       "pms.room_types",
@@ -97,6 +105,98 @@ describe("property setup PMS owner state", () => {
     });
   });
 
+  it("reports independent partial pricing state without requiring recurring pricing", async () => {
+    const provider = createPropertySetupPmsStateProvider(
+      options({
+        owner: {
+          getRoomOwnerSnapshot: vi.fn(async (_input) => emptyRooms()),
+          getInventoryOwnerSnapshot: vi.fn(async (_input) => null),
+        },
+        pricing: { getPricingSourceSnapshot: vi.fn(async () => pricingSnapshot()) },
+      }),
+    );
+
+    await expect(provider.getOwnerState(request())).resolves.toMatchObject({
+      outcome: "found",
+      facts: [
+        { stepId: "rooms", state: "not_started" },
+        { stepId: "pricing", state: "saved" },
+        { stepId: "calendar", state: "not_started" },
+      ],
+    });
+  });
+
+  it("fails closed on impossible recurring evidence without base pricing", async () => {
+    const provider = createPropertySetupPmsStateProvider(
+      options({
+        recurringPricing: {
+          getRecurringPricingBookingEvidence: vi.fn(async () => recurringPricingSnapshot()),
+        },
+      }),
+    );
+
+    await expect(provider.getOwnerState(request())).resolves.toEqual({
+      outcome: "provider_failure",
+    });
+  });
+
+  it("marks rooms and pricing complete only from matching current owner evidence", async () => {
+    const pricing = pricingSnapshot();
+    const recurring = recurringPricingSnapshot();
+    const pricingSource = createPmsMandatoryChargePricingSourceSnapshot({
+      rooms: [
+        {
+          roomTypeId: completeRoom().roomTypeId,
+          roomFactsRevision: completeRoom().roomFactsRevision,
+          occupancy: completeRoom().facts.occupancy,
+        },
+      ],
+      pricing,
+      recurringPricing: recurring,
+    });
+    const fingerprint = parsePmsMandatoryChargePricingSourceFingerprint(
+      createHash("sha256").update(pricingSource.serializedPayload).digest("hex"),
+    )!;
+    const provider = createPropertySetupPmsStateProvider(
+      options({
+        owner: {
+          getRoomOwnerSnapshot: vi.fn(async (_input) => ({
+            ...emptyRooms(),
+            rooms: [completeRoom()],
+          })),
+          getInventoryOwnerSnapshot: vi.fn(async (_input) => null),
+        },
+        pricing: { getPricingSourceSnapshot: vi.fn(async () => pricing) },
+        recurringPricing: {
+          getRecurringPricingBookingEvidence: vi.fn(async () => recurring),
+        },
+        mandatoryCharges: {
+          getMandatoryChargeConfirmation: vi.fn(async () => ({
+            outcome: "available" as const,
+            organizationId,
+            propertyId,
+            evidence: {
+              organizationId,
+              propertyId,
+              pricingSourceFingerprint: fingerprint,
+              confirmationRevision: 3,
+              confirmedAt: "2026-08-05T12:00:00.000Z",
+            },
+          })),
+        },
+      }),
+    );
+
+    await expect(provider.getOwnerState(request())).resolves.toMatchObject({
+      outcome: "found",
+      facts: [
+        { stepId: "rooms", state: "complete" },
+        { stepId: "pricing", state: "complete" },
+        { stepId: "calendar", state: "not_started" },
+      ],
+    });
+  });
+
   it("bridges exact current PMS guest-policy keys and rejects revision races", async () => {
     const owner = {
       getRoomOwnerSnapshot: vi.fn(async () => emptyRooms()),
@@ -140,39 +240,45 @@ describe("property setup PMS owner state", () => {
   });
 });
 
-function options(overrides: Record<string, unknown> = {}) {
+function options(
+  overrides: Partial<PropertySetupPmsStateOptions> = {},
+): PropertySetupPmsStateOptions {
   return {
     owner: {
-      getRoomOwnerSnapshot: vi.fn(async () => emptyRooms()),
-      getInventoryOwnerSnapshot: vi.fn(async () => null),
+      getRoomOwnerSnapshot: vi.fn(async (_input) => emptyRooms()),
+      getInventoryOwnerSnapshot: vi.fn(async (_input) => null),
     },
     pricing: { getPricingSourceSnapshot: vi.fn(async () => null) },
     recurringPricing: { getRecurringPricingBookingEvidence: vi.fn(async () => null) },
     mandatoryCharges: {
       getMandatoryChargeConfirmation: vi.fn(async () => ({
-        outcome: "missing",
+        outcome: "missing" as const,
         organizationId,
         propertyId,
       })),
     },
     operatingCalendar: { getCurrentOperatingCalendarConfiguration: vi.fn(async () => null) },
-    calendarRegistry: {} as never,
+    calendarRegistry: {
+      ownerDomain: "hotel_catalog",
+      registryVersion: "test.v1",
+      isCanonicalIanaTimeZone: vi.fn(() => true),
+    },
     catalogLocation: {
       ownerKey: "hotel_catalog.location",
       getCurrentLocationOwnerEvidence: vi.fn(async () => ({
-        outcome: "available",
+        outcome: "available" as const,
         evidence: {
           organizationId,
           propertyId,
-          ownerKey: "hotel_catalog.location",
-          sourceIdentity: `hotel_catalog.location:${propertyId}`,
+          ownerKey: "hotel_catalog.location" as const,
+          sourceIdentity: `hotel_catalog.location:${propertyId}` as const,
           revision: 5,
-          baseRevision: `hotel_catalog.location:${propertyId}:r5`,
+          baseRevision: `hotel_catalog.location:${propertyId}:r5` as const,
         },
       })),
     },
     ...overrides,
-  } as never;
+  };
 }
 
 function request() {
@@ -197,13 +303,17 @@ function emptyRooms() {
 function completeRoom() {
   return {
     roomTypeId: "44444444-4444-4444-8444-444444444444",
-    facts: {
+    facts: parseRoomTypeFacts({
       name: "Double Room",
       description: "A comfortable double room.",
-      category: "double",
+      category: null,
       occupancy: { maxGuests: 2, maxAdults: 2, maxChildren: 1 },
-      attributes: { bedType: "double", bathroomType: "private", smokingPolicy: "non_smoking" },
-    },
+      beds: [{ type: "double", quantity: 1 }],
+      bedrooms: 1,
+      bathrooms: 1,
+      bathroomType: "private",
+      size: null,
+    })!,
     roomFactsRevision: 2,
     roomUnitsRevision: 2,
     activeUnitCount: 1,
@@ -212,4 +322,51 @@ function completeRoom() {
     roomAmenitiesRevision: 2,
     amenitiesReviewed: true,
   } as const;
+}
+
+function pricingSnapshot() {
+  return parsePmsPricingSourceSnapshot({
+    contractVersion: "pms-pricing.v1",
+    propertyId,
+    pricingCurrency: {
+      contractVersion: "pms-pricing.v1",
+      propertyId,
+      currency: "EUR",
+      pricingCurrencyRevision: 2,
+      createdAt: "2026-08-05T12:00:00.000Z",
+      updatedAt: "2026-08-05T12:00:00.000Z",
+    },
+    flexibleRatePlans: [
+      {
+        contractVersion: "pms-pricing.v1",
+        propertyId,
+        roomTypeId: completeRoom().roomTypeId,
+        flexibleRatePlanId: "55555555-5555-4555-8555-555555555555",
+        flexibleRatePlanRevision: 3,
+        sourceRoomFactsRevision: completeRoom().roomFactsRevision,
+        baseAmount: { amountDecimal: "160.00", currency: "EUR" },
+        cancellationTerms: {
+          type: "free_until_days_before_arrival",
+          freeCancellationDeadlineDays: 7,
+          afterDeadlinePenalty: "full_booking_amount",
+          noShowPenalty: "full_booking_amount",
+        },
+        createdAt: "2026-08-05T12:00:00.000Z",
+        updatedAt: "2026-08-05T12:00:00.000Z",
+      },
+    ],
+    capturedAt: "2026-08-05T12:00:00.000Z",
+  })!;
+}
+
+function recurringPricingSnapshot() {
+  return parsePmsRecurringPricingBookingEvidence({
+    contractVersion: "pms-recurring-pricing.v1",
+    propertyId,
+    pricingCurrencyRevision: 2,
+    optionalPricingAggregateRevision: 0,
+    currency: "EUR",
+    sources: [],
+    capturedAt: "2026-08-05T12:00:00.000Z",
+  })!;
 }

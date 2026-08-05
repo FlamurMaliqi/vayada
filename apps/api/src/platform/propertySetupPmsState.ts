@@ -22,6 +22,7 @@ import {
 } from "@vayada/domain-pms";
 
 import type { PropertySetupPmsOwnerReadPort } from "../domains/propertySetupPmsOwnerRepository.js";
+import type { PropertySetupPmsRoomOwnerSnapshot } from "../domains/propertySetupPmsOwnerRepository.js";
 import type {
   PropertySetupOwnerStateProviderPort,
   PropertySetupOwnerStateRequest,
@@ -133,20 +134,9 @@ async function readGuestPolicyPmsSnapshot(
   )
     return null;
   const revisions = Object.freeze({
-    "pms.pricing_settings": `pricing:${pricing?.pricingCurrency.pricingCurrencyRevision ?? 0}`,
-    "pms.rate_plans": collectionRevision(
-      "rate-plans",
-      (pricing?.flexibleRatePlans ?? []).map((plan) => [
-        plan.roomTypeId,
-        plan.flexibleRatePlanId,
-        plan.flexibleRatePlanRevision,
-        plan.sourceRoomFactsRevision,
-      ]),
-    ),
-    "pms.room_types": collectionRevision(
-      "room-types",
-      rooms.rooms.map((room) => [room.roomTypeId, room.roomFactsRevision]),
-    ),
+    "pms.pricing_settings": pricingSettingsRevision(pricing),
+    "pms.rate_plans": ratePlansRevision(pricing),
+    "pms.room_types": roomTypesRevision(rooms.rooms),
   });
   return Object.freeze({ revisions, identity: digest(JSON.stringify(revisions)) });
 }
@@ -206,6 +196,7 @@ async function readSnapshot(
     !rooms ||
     (rawPricing !== null && !pricing) ||
     (rawRecurring !== null && !recurring) ||
+    (pricing === null && recurring !== null) ||
     !confirmation ||
     (rawCalendar !== null && !calendar) ||
     !catalogLocation ||
@@ -219,17 +210,13 @@ async function readSnapshot(
     confirmation.organizationId !== request.organizationId ||
     confirmation.propertyId !== request.propertyId ||
     confirmation.outcome === "malformed" ||
-    confirmation.outcome === "unavailable" ||
-    (pricing === null) !== (recurring === null)
+    confirmation.outcome === "unavailable"
   ) {
     return null;
   }
 
   const roomsManifest = Object.freeze({
-    "pms.room_types": collectionRevision(
-      "room-types",
-      rooms.rooms.map((room) => [room.roomTypeId, room.roomFactsRevision]),
-    ),
+    "pms.room_types": roomTypesRevision(rooms.rooms),
     "pms.room_units": collectionRevision(
       "room-units",
       rooms.rooms.map((room) => [room.roomTypeId, room.roomUnitsRevision]),
@@ -239,7 +226,6 @@ async function readSnapshot(
       rooms.rooms.map((room) => [room.roomTypeId, room.roomMediaRevision]),
     ),
   });
-  const pricingRevision = pricing?.pricingCurrency.pricingCurrencyRevision ?? 0;
   const ratePlans = pricing?.flexibleRatePlans ?? [];
   const currentPricingFingerprint =
     pricing && recurring
@@ -260,16 +246,8 @@ async function readSnapshot(
       ? [confirmation.evidence.confirmationRevision, confirmation.evidence.pricingSourceFingerprint]
       : [0, "missing"];
   const pricingManifest = Object.freeze({
-    "pms.pricing_settings": `pricing:${pricingRevision}`,
-    "pms.rate_plans": collectionRevision(
-      "rate-plans",
-      ratePlans.map((plan) => [
-        plan.roomTypeId,
-        plan.flexibleRatePlanId,
-        plan.flexibleRatePlanRevision,
-        plan.sourceRoomFactsRevision,
-      ]),
-    ),
+    "pms.pricing_settings": pricingSettingsRevision(pricing),
+    "pms.rate_plans": ratePlansRevision(pricing),
     "pms.rate_rules": collectionRevision("rate-rules", [
       recurring?.optionalPricingAggregateRevision ?? 0,
       ...(recurring?.sources.map((source) => [
@@ -399,6 +377,31 @@ function validRooms(
 
 function collectionRevision(namespace: string, value: unknown): string {
   return `${namespace}:${digest(JSON.stringify(value))}`;
+}
+
+function pricingSettingsRevision(
+  pricing: ReturnType<typeof parsePmsPricingSourceSnapshot>,
+): string {
+  return `pricing:${pricing?.pricingCurrency.pricingCurrencyRevision ?? 0}`;
+}
+
+function ratePlansRevision(pricing: ReturnType<typeof parsePmsPricingSourceSnapshot>): string {
+  return collectionRevision(
+    "rate-plans",
+    (pricing?.flexibleRatePlans ?? []).map((plan) => [
+      plan.roomTypeId,
+      plan.flexibleRatePlanId,
+      plan.flexibleRatePlanRevision,
+      plan.sourceRoomFactsRevision,
+    ]),
+  );
+}
+
+function roomTypesRevision(rooms: PropertySetupPmsRoomOwnerSnapshot["rooms"]): string {
+  return collectionRevision(
+    "room-types",
+    rooms.map((room) => [room.roomTypeId, room.roomFactsRevision]),
+  );
 }
 
 function digest(value: string): string {

@@ -127,10 +127,12 @@ async function readSnapshot(
     return null;
   }
   const designRevision = design?.revision ?? 0;
-  if (design) createBookingDesignSourceRevision(request.propertyId, design.revision);
+  const designSourceRevision = design
+    ? createBookingDesignSourceRevision(request.propertyId, design.revision).revision
+    : "design:0";
   const designBaseRevisions = wantsDesign
     ? Object.freeze({
-        "booking.design": `design:${designRevision}`,
+        "booking.design": designSourceRevision,
         "hotel_catalog.profile": catalog!.baseRevisions["hotel_catalog.profile"],
         "hotel_catalog.media": catalog!.baseRevisions["hotel_catalog.media"],
       })

@@ -13,11 +13,15 @@ import type {
   PropertySetupOwnerStateResult,
 } from "./propertySetupRouteState.js";
 
-export function createPropertySetupFinanceStateProvider(options: {
+export type PropertySetupFinanceStateOptions = Readonly<{
   scope: PropertySetupFinanceOwnerScopePort;
   finance: FinancePaymentReadinessReadPort;
   pricing: Pick<PmsPricingReadPort, "getPropertyPricingCurrency">;
-}): PropertySetupOwnerStateProviderPort {
+}>;
+
+export function createPropertySetupFinanceStateProvider(
+  options: PropertySetupFinanceStateOptions,
+): PropertySetupOwnerStateProviderPort {
   return {
     async getOwnerState(request) {
       if (request.stepIds.length !== 1 || request.stepIds[0] !== "payments") return failure();
@@ -49,25 +53,21 @@ export function createPropertySetupFinanceStateProvider(options: {
 }
 
 async function snapshot(
-  options: {
-    scope: PropertySetupFinanceOwnerScopePort;
-    finance: FinancePaymentReadinessReadPort;
-    pricing: Pick<PmsPricingReadPort, "getPropertyPricingCurrency">;
-  },
+  options: PropertySetupFinanceStateOptions,
   request: PropertySetupOwnerStateRequest,
 ) {
-  const [authorized, rawFinance, rawPricing] = await Promise.all([
-    options.scope.hasPaymentOwnerScope({
-      organizationId: request.organizationId,
-      propertyId: request.propertyId,
-    }),
+  const authorized = await options.scope.hasPaymentOwnerScope({
+    organizationId: request.organizationId,
+    propertyId: request.propertyId,
+  });
+  if (!authorized) return null;
+  const [rawFinance, rawPricing] = await Promise.all([
     options.finance.getPaymentReadiness({
       organizationId: request.organizationId,
       propertyId: request.propertyId,
     }),
     options.pricing.getPropertyPricingCurrency(request.propertyId),
   ]);
-  if (!authorized) return null;
   const finance = rawFinance === null ? null : parseFinancePaymentReadinessSnapshot(rawFinance);
   const pricing = rawPricing === null ? null : parsePropertyPricingCurrencySnapshot(rawPricing);
   if (
@@ -90,11 +90,14 @@ async function snapshot(
     "finance.payment_methods": `payment-methods:${paymentMethodsRevision}`,
     "pms.pricing_settings": `pricing:${pricingRevision}`,
   });
-  return Object.freeze({
+  const payload = {
     paymentMethodsRevision,
     selectedMethodCount: finance?.selectedMethodCount ?? 0,
     currentBaseRevisions,
-    identity: createHash("sha256").update(JSON.stringify(currentBaseRevisions)).digest("hex"),
+  };
+  return Object.freeze({
+    ...payload,
+    identity: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
   });
 }
 

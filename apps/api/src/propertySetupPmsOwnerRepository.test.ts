@@ -74,21 +74,28 @@ describe("property setup PMS owner repository", () => {
       rooms: [],
     });
 
-    for (const row of [
-      { ...roomRow(), authorized: false },
-      { ...roomRow(), roomFactsRevision: 0 },
-      { ...emptyRoomSentinel(), name: "unexpected" },
+    for (const { rows, message } of [
+      {
+        rows: [{ ...roomRow(), authorized: false }],
+        message: "room scope is unavailable",
+      },
+      { rows: [{ ...roomRow(), roomFactsRevision: 0 }], message: "room owner result is malformed" },
+      {
+        rows: [{ ...emptyRoomSentinel(), name: "unexpected" }],
+        message: "invalid or mixed sentinel",
+      },
+      { rows: [roomRow(), roomRow()], message: "room facts are duplicated" },
     ]) {
       const repository = createPgPropertySetupPmsOwnerRepository({
         connectionString: "postgresql://test",
         pool: {
-          query: vi.fn(async () => ({ rows: [row], rowCount: 1 })) as never,
+          query: vi.fn(async () => ({ rows, rowCount: rows.length })) as never,
           end: vi.fn(async () => undefined),
         },
       });
-      await expect(
-        repository.getRoomOwnerSnapshot({ organizationId, propertyId }),
-      ).rejects.toThrow();
+      await expect(repository.getRoomOwnerSnapshot({ organizationId, propertyId })).rejects.toThrow(
+        message,
+      );
     }
 
     const malformedInventory = createPgPropertySetupPmsOwnerRepository({

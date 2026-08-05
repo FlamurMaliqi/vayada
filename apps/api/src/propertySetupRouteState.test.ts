@@ -234,6 +234,40 @@ describe("property setup route state composition", () => {
     });
   });
 
+  it("preserves historical track metadata but rejects unauthorized returned progress", async () => {
+    const historical = sessionWithBookingDraft();
+    historical.trackRevision = 3;
+    historical.resumeStepId = null;
+    historical.completedStepIds = ["present_hotel"];
+    historical.drafts = [];
+    const preserved = createPropertySetupRouteStateReadPort({
+      draftRepository: { getActiveSession: vi.fn(async () => historical) },
+      trackRepository: trackRepository(["creator_marketplace"], 4),
+      ownerStateProviders: makeProviders(["creator_marketplace"]),
+    });
+
+    await expect(
+      preserved.getPropertySetupRouteState(input(["creator_marketplace"])),
+    ).resolves.toMatchObject({
+      outcome: "found",
+      session: {
+        selectedTracks: ["hotel_operations", "creator_marketplace"],
+        trackRevision: 3,
+        completedStepIds: ["present_hotel"],
+      },
+    });
+
+    historical.resumeStepId = "booking_design";
+    const unauthorized = createPropertySetupRouteStateReadPort({
+      draftRepository: { getActiveSession: vi.fn(async () => historical) },
+      trackRepository: trackRepository(["creator_marketplace"], 4),
+      ownerStateProviders: makeProviders(["creator_marketplace"]),
+    });
+    await expect(
+      unauthorized.getPropertySetupRouteState(input(["creator_marketplace"])),
+    ).resolves.toEqual({ outcome: "provider_failure" });
+  });
+
   it("returns not found when a canonical owner cannot find the property", async () => {
     const providers = makeProviders(["creator_marketplace"]);
     providers.hotel_catalog = {

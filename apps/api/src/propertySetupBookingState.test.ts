@@ -83,7 +83,7 @@ describe("property setup Booking owner state", () => {
     });
   });
 
-  it("fails closed for missing guest evidence and owner revision races", async () => {
+  it("fails closed on a Booking design revision race", async () => {
     const getCurrentDesign = vi
       .fn()
       .mockResolvedValueOnce(design(2))
@@ -96,10 +96,23 @@ describe("property setup Booking owner state", () => {
     await expect(provider.getOwnerState(request(["booking_design"]))).resolves.toEqual({
       outcome: "provider_failure",
     });
+    expect(getCurrentDesign).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails before owner reads when required guest evidence is absent", async () => {
+    const getCurrentDesign = vi.fn(async () => design(2));
+    const provider = createPropertySetupBookingStateProvider({
+      design: { getCurrentDesign },
+      catalog: { getState: vi.fn(async () => catalog()) },
+    });
+
     await expect(
       provider.getOwnerState(request(["booking_design", "guest_experience"])),
     ).resolves.toEqual({ outcome: "provider_failure" });
+    expect(getCurrentDesign).not.toHaveBeenCalled();
+  });
 
+  it("fails closed on a guest-policy evidence race", async () => {
     const getCurrentGuestPolicyOwnerEvidence = vi
       .fn()
       .mockResolvedValueOnce(guestEvidence())
@@ -118,6 +131,7 @@ describe("property setup Booking owner state", () => {
     await expect(
       guestRace.getOwnerState(request(["booking_design", "guest_experience"])),
     ).resolves.toEqual({ outcome: "provider_failure" });
+    expect(getCurrentGuestPolicyOwnerEvidence).toHaveBeenCalledTimes(2);
   });
 });
 

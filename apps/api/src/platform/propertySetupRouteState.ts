@@ -347,8 +347,9 @@ function validateSession(
     ) ||
     !positiveRevision(session.trackRevision) ||
     !positiveRevision(session.revision) ||
-    (session.resumeStepId !== null && !STEP_IDS.has(session.resumeStepId)) ||
-    !validStepIds(session.completedStepIds) ||
+    (session.resumeStepId !== null &&
+      !input.authorizedDraftStepIds.includes(session.resumeStepId)) ||
+    !validStepIds(session.completedStepIds, input.authorizedDraftStepIds) ||
     !canonicalIso(session.retentionExpiresAt) ||
     !Array.isArray(session.drafts)
   ) {
@@ -493,11 +494,15 @@ function exactRecord(value: unknown, keys: readonly string[]): value is Record<s
   );
 }
 
-function validStepIds(value: unknown): value is PropertySetupStepId[] {
+function validStepIds(
+  value: unknown,
+  authorizedStepIds: readonly PropertySetupStepId[],
+): value is PropertySetupStepId[] {
+  const authorized = new Set(authorizedStepIds);
   return (
     Array.isArray(value) &&
     new Set(value).size === value.length &&
-    value.every((stepId) => STEP_IDS.has(stepId))
+    value.every((stepId) => STEP_IDS.has(stepId) && authorized.has(stepId))
   );
 }
 

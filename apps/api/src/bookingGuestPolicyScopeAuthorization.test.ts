@@ -46,6 +46,24 @@ describe("Booking guest-policy scope authorization", () => {
     expect(query).not.toHaveBeenCalled();
     await expect(port.authorizeGuestPolicyScope(input())).resolves.toBe(false);
   });
+
+  it("fails closed for mismatched authorization metadata and timestamps", async () => {
+    const query = vi.fn(async () => ({ rows: [{ authorized: true }], rowCount: 1 }));
+    const port = createPgBookingGuestPolicyScopeAuthorizationPort({ pool: { query } as never });
+    const rejected = [
+      { ...input(), permission: "booking.settings.read" },
+      { ...input(), entitlement: { ...input().entitlement, key: "other-key" } },
+      { ...input(), resource: { ...input().resource, resourceType: "other_type" } },
+      { ...input(), resource: { ...input().resource, allowedRelationships: [] } },
+      { ...input(), checkedAt: "2026-08-05T13:00:00Z" },
+      { ...input(), checkedAt: "not-a-timestamp" },
+    ];
+
+    for (const candidate of rejected) {
+      await expect(port.authorizeGuestPolicyScope(candidate as never)).resolves.toBe(false);
+    }
+    expect(query).not.toHaveBeenCalled();
+  });
 });
 
 function input() {

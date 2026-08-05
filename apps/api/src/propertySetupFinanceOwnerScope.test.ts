@@ -37,4 +37,17 @@ describe("property setup Finance owner scope", () => {
     expect(query).not.toHaveBeenCalled();
     await expect(scope.hasPaymentOwnerScope({ organizationId, propertyId })).resolves.toBe(false);
   });
+
+  it.each([[[{ authorized: false }]], [[]], [[{ authorized: true }, { authorized: true }]]])(
+    "fails closed for an unauthorized or unexpected result shape",
+    async (rows) => {
+      const scope = createPgPropertySetupFinanceOwnerScopePort({
+        pool: {
+          query: vi.fn(async () => ({ rows, rowCount: rows.length })),
+        } as never,
+      });
+
+      await expect(scope.hasPaymentOwnerScope({ organizationId, propertyId })).resolves.toBe(false);
+    },
+  );
 });
