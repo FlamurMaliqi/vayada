@@ -216,9 +216,7 @@ export type BookingGuestPolicyAuthorizedReplayResult =
   | Readonly<{ outcome: "replay"; revision: BookingGuestPolicyRevision }>
   | Readonly<{
       outcome: "rejected";
-      error: Readonly<{
-        code: "command_in_progress" | "idempotency_key_conflict" | "setup_scope_unavailable";
-      }>;
+      error: BookingGuestPolicyCommandError;
     }>;
 
 export interface BookingGuestPolicyAuthorizedReplayPort {
@@ -233,6 +231,21 @@ export interface BookingGuestPolicyPersistencePort {
   persistGuestPolicy(
     command: PersistBookingGuestPolicyCommand,
   ): Promise<BookingGuestPolicyCommandResult>;
+}
+
+/** Typed authorization recheck used by Booking persistence without cross-domain SQL. */
+export interface BookingGuestPolicyScopeAuthorizationPort {
+  authorizeGuestPolicyScope(
+    input: Readonly<{
+      organizationId: string;
+      propertyId: string;
+      actorUserId: string;
+      permission: typeof BOOKING_GUEST_POLICY_AUTHORIZATION.permission;
+      entitlement: typeof BOOKING_GUEST_POLICY_AUTHORIZATION.entitlement;
+      resource: typeof BOOKING_GUEST_POLICY_AUTHORIZATION.resource;
+      checkedAt: string;
+    }>,
+  ): Promise<boolean>;
 }
 
 export interface BookingGuestPolicyReadPort {
