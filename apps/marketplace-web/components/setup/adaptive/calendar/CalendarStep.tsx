@@ -17,14 +17,21 @@ import type {
 
 import { ApiErrorResponse } from "@/services/api/client";
 import { CalendarOwnerError, calendarApi } from "@/services/api/calendarApiClient";
+import {
+  PropertySetupDraftResetError,
+  propertySetupDraftResetApi,
+} from "@/services/api/propertySetupDraftResetClient";
 import type { AdaptiveSetupStepRenderContext } from "../AdaptiveHotelSetupController";
 import {
   CALENDAR_MAX_PERIODS,
   CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
+  buildCalendarDraftResetRequest,
   buildCalendarDraftRequest,
   buildCalendarProposal,
+  calendarDraftManifestIsCurrent,
   calendarDraftRevisionContext,
   hydrateCalendarDraft,
+  mergeCalendarLocalInput,
   validateCalendarDraft,
   type CalendarDraft,
   type CalendarDraftRevisionContext,
@@ -73,6 +80,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   const saveInFlightRef = useRef<Promise<void> | null>(null);
   const draftRef = useRef<CalendarDraft | null>(null);
   const impactReviewRef = useRef<CalendarImpactReview | null>(null);
+  const retainLocalOnReloadRef = useRef(false);
   const [draft, setDraft] = useState<CalendarDraft | null>(null);
   const [impactReview, setImpactReview] = useState<CalendarImpactReview | null>(null);
   const [workspace, setWorkspace] = useState<CalendarWorkspace | null>(null);
@@ -84,12 +92,14 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
   const [saving, setSaving] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const mounted = useRef(true);
   const manifestMissing =
     !routeRevision.sessionId ||
     routeRevision.sessionRevision === null ||
     routeRevision.baseRevisions === null;
+  const manifestStale = !calendarDraftManifestIsCurrent(step);
   const scopeInvalid = propertyId.toLowerCase() !== route.scope.propertyId;
 
   useEffect(() => {
@@ -128,6 +138,11 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     if (!current?.dirty) return;
     if (manifestMissing || scopeInvalid) {
       throw new Error(CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
+    }
+    if (manifestStale) {
+      const message = "Start from the current calendar before saving this historical draft.";
+      reportRevisionConflict(message);
+      throw new Error(message);
     }
     const save = (async () => {
       setSaving(true);
@@ -169,7 +184,14 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     } finally {
       if (saveInFlightRef.current === save) saveInFlightRef.current = null;
     }
-  }, [commitDraft, manifestMissing, propertyId, reportRevisionConflict, scopeInvalid]);
+  }, [
+    commitDraft,
+    manifestMissing,
+    manifestStale,
+    propertyId,
+    reportRevisionConflict,
+    scopeInvalid,
+  ]);
 
   useEffect(() => registerBeforeLeave(persistDraft), [persistDraft, registerBeforeLeave]);
 
@@ -186,7 +208,12 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       .loadWorkspace(propertyId, { signal: controller.signal, cache: "no-store" })
       .then((loaded) => {
         if (controller.signal.aborted) return;
-        const next = hydrateCalendarDraft(loaded, step.draft);
+        const hydrated = hydrateCalendarDraft(loaded, step.draft);
+        const next =
+          retainLocalOnReloadRef.current && draftRef.current
+            ? mergeCalendarLocalInput(draftRef.current, hydrated)
+            : hydrated;
+        retainLocalOnReloadRef.current = false;
         setWorkspace(loaded);
         commitDraft(next);
         commitImpactReview(null);
@@ -272,6 +299,44 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       await persistDraft();
     } catch {
       // The contextual error remains visible and local input remains mounted.
+    }
+  };
+
+  const resetStaleDraft = async () => {
+    if (resetting) return;
+    retainLocalOnReloadRef.current = true;
+    setResetting(true);
+    setSaveError(null);
+    commitImpactReview(null);
+    try {
+      const request = buildCalendarDraftResetRequest(route, step);
+      await propertySetupDraftResetApi.reset(propertyId, request);
+      await refreshRoute();
+      if (mounted.current) {
+        setWorkspaceReload((value) => value + 1);
+        setAnnouncement(
+          "The stale saved draft was removed. Your local input is ready on current calendar data.",
+        );
+      }
+    } catch (error) {
+      if (error instanceof PropertySetupDraftResetError && error.requiresRefresh) {
+        reportRevisionConflict(error.message);
+      }
+      if (mounted.current) setSaveError(errorMessage(error));
+    } finally {
+      if (mounted.current) setResetting(false);
+    }
+  };
+
+  const refreshCurrentCalendar = async () => {
+    retainLocalOnReloadRef.current = true;
+    setSaveError(null);
+    commitImpactReview(null);
+    try {
+      await refreshRoute();
+      if (mounted.current) setWorkspaceReload((value) => value + 1);
+    } catch (error) {
+      if (mounted.current) setSaveError(errorMessage(error));
     }
   };
 
@@ -421,10 +486,31 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-4" role="alert">
           <p className="text-sm font-semibold text-red-900">Calendar draft was not saved</p>
           <p className="mt-1 text-sm leading-6 text-red-800">{saveError}</p>
+          <button
+            type="button"
+            disabled={resetting}
+            className={`${secondaryButtonClass} mt-3`}
+            onClick={() => void (manifestStale ? resetStaleDraft() : refreshCurrentCalendar())}
+          >
+            {manifestStale
+              ? resetting
+                ? "Starting from latest..."
+                : "Start from latest calendar"
+              : "Refresh current calendar"}
+          </button>
         </div>
       )}
 
-      {sourceStale && (
+      {manifestStale && (
+        <StatusPanel
+          title="Calendar sources changed since this draft was started"
+          message="The saved draft keeps its historical revision manifest and cannot overwrite newer calendar data. Start from current owner data; your input stays on this page while only the stale saved draft is removed."
+          actionLabel={resetting ? "Starting from latest..." : "Start from latest calendar"}
+          onAction={() => void resetStaleDraft()}
+        />
+      )}
+
+      {sourceStale && !manifestStale && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4" role="status">
           <div className="flex items-start gap-3">
             <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 text-amber-700" aria-hidden="true" />
@@ -436,6 +522,13 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
                 Review the current room capacities and run a fresh impact review before saving. Your
                 protected draft remains available while you decide.
               </p>
+              <button
+                type="button"
+                className={`${secondaryButtonClass} mt-3`}
+                onClick={() => void refreshCurrentCalendar()}
+              >
+                Refresh current calendar
+              </button>
             </div>
           </div>
         </div>
@@ -678,7 +771,9 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
           <button
             type="button"
             className={`${secondaryButtonClass} justify-center`}
-            disabled={saving || previewing || applying || !draft.dirty}
+            disabled={
+              saving || previewing || applying || resetting || manifestStale || !draft.dirty
+            }
             onClick={() => void saveDraftNow()}
           >
             {saving ? "Saving..." : "Save draft"}
@@ -686,7 +781,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
           <button
             type="button"
             className={`${secondaryButtonClass} justify-center`}
-            disabled={saving || previewing || applying}
+            disabled={saving || previewing || applying || resetting || manifestStale}
             onClick={() => void reviewImpact()}
           >
             {previewing
@@ -698,7 +793,15 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
           <button
             type="button"
             className={`${primaryButtonClass} justify-center`}
-            disabled={saving || previewing || applying || !impactReview || !draft.confirmed}
+            disabled={
+              saving ||
+              previewing ||
+              applying ||
+              resetting ||
+              manifestStale ||
+              !impactReview ||
+              !draft.confirmed
+            }
             onClick={() => void applyCalendar()}
           >
             {applying ? "Saving calendar..." : "Save and continue"}

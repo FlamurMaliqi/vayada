@@ -9,9 +9,12 @@ import { describe, expect, it } from "vitest";
 import {
   CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
   buildCalendarDraftRequest,
+  buildCalendarDraftResetRequest,
   buildCalendarProposal,
+  calendarDraftManifestIsCurrent,
   calendarDraftRevisionContext,
   hydrateCalendarDraft,
+  mergeCalendarLocalInput,
   validateCalendarDraft,
   type CalendarDraft,
   type CalendarWorkspace,
@@ -164,6 +167,70 @@ describe("calendarState", () => {
     ).toThrow(CALENDAR_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
   });
 
+  it("uses current revisions for a first save and historical revisions for a resumed draft", () => {
+    const historicalDraft = calendarDraft({});
+    const resumedRoute = setupRoute(historicalDraft);
+    const resumedStep = resumedRoute.steps[0]!;
+    resumedStep.currentBaseRevisions = {
+      ...resumedStep.currentBaseRevisions,
+      "pms.inventory": "inventory:2",
+    };
+    expect(calendarDraftRevisionContext(resumedRoute, resumedStep).baseRevisions).toEqual(
+      historicalDraft.baseRevisions,
+    );
+    expect(calendarDraftManifestIsCurrent(resumedStep)).toBe(false);
+    expect(buildCalendarDraftResetRequest(resumedRoute, resumedStep)).toEqual({
+      sessionId: resumedRoute.sessionId,
+      stepId: "calendar",
+      expectedTrackRevision: 4,
+      expectedSessionRevision: 8,
+      expectedDraftRevision: 2,
+      expectedBaseRevisions: historicalDraft.baseRevisions,
+    });
+
+    const firstVisitRoute = setupRoute(historicalDraft);
+    const firstVisitStep = {
+      ...firstVisitRoute.steps[0]!,
+      state: "not_started" as const,
+      draft: null,
+    };
+    firstVisitRoute.steps = [firstVisitStep];
+    const firstVisit = calendarDraftRevisionContext(firstVisitRoute, firstVisitStep);
+    expect(firstVisit.draftRevision).toBe(0);
+    expect(firstVisit.baseRevisions).toEqual(firstVisitStep.currentBaseRevisions);
+    expect(calendarDraftManifestIsCurrent(firstVisitStep)).toBe(true);
+  });
+
+  it("retains local calendar input while rebinding rooms to latest owner revisions", () => {
+    const local = completeDraft({
+      mode: "recurring",
+      periods: [{ id: "local", startsOn: "05-01", endsOn: "09-30" }],
+      defaultMinimumStayNights: "4",
+      confirmed: true,
+    });
+    const latestWorkspace = workspace(null);
+    latestWorkspace.rooms = [
+      { ...latestWorkspace.rooms[0]!, roomFactsRevision: 4, roomUnitsRevision: 6 },
+    ];
+    const merged = mergeCalendarLocalInput(local, hydrateCalendarDraft(latestWorkspace, null));
+
+    expect(merged).toMatchObject({
+      mode: "recurring",
+      periods: [{ startsOn: "05-01", endsOn: "09-30" }],
+      defaultMinimumStayNights: "4",
+      confirmed: false,
+      dirty: true,
+      rooms: [
+        {
+          roomTypeId: roomA,
+          roomFactsRevision: 4,
+          roomUnitsRevision: 6,
+          startingSellableLimit: "4",
+        },
+      ],
+    });
+  });
+
   it("builds the exact browser-safe impact proposal without scope or audit fields", () => {
     const draft = completeDraft({ confirmed: false });
     expect(validateCalendarDraft(draft, { requireConfirmation: false })).toEqual({});
@@ -294,32 +361,30 @@ function calendarDraft(
 function setupRoute(
   draft: Extract<PropertySetupStepDraft, { stepId: "calendar" }>,
 ): PropertySetupRouteReadModel {
-  const stepIds = [
-    "present_hotel",
-    "booking_design",
-    "rooms",
-    "pricing",
-    "calendar",
-    "guest_experience",
-    "payments",
-    "review",
-  ] as const;
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations"],
     trackRevision: 4,
     sessionId: "55555555-5555-4555-8555-555555555555",
     sessionRevision: 8,
     resumeStepId: "calendar",
-    progress: { complete: 4, total: stepIds.length },
-    steps: stepIds.map((stepId, index) => ({
-      stepId,
-      position: index + 1,
-      state: stepId === "calendar" ? "draft" : index < 4 ? "complete" : "not_started",
-      sourceRevision: null,
-      draft: stepId === "calendar" ? draft : null,
-      blockers: [],
-    })),
+    progress: { complete: 0, total: 1 },
+    steps: [
+      {
+        stepId: "calendar",
+        position: 1,
+        state: "draft",
+        sourceRevision: "calendar:1",
+        currentBaseRevisions: {
+          "pms.operating_calendar": "calendar:1",
+          "pms.inventory": "inventory:1",
+          "pms.room_types": "types:3",
+          "hotel_catalog.location": "location:7",
+        },
+        draft,
+        blockers: [],
+      },
+    ],
   };
 }

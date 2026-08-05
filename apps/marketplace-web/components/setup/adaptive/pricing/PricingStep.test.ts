@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
   saveDraft: vi.fn(),
   saveCanonical: vi.fn(),
+  resetDraft: vi.fn(),
 }));
 
 vi.mock("@/services/api/pricingSetupClient", async () => ({
@@ -20,6 +21,12 @@ vi.mock("@/services/api/pricingSetupClient", async () => ({
     "@/services/api/pricingSetupClient",
   )),
   pricingSetupApi: mocks,
+}));
+vi.mock("@/services/api/propertySetupDraftResetClient", async () => ({
+  ...(await vi.importActual<typeof import("@/services/api/propertySetupDraftResetClient")>(
+    "@/services/api/propertySetupDraftResetClient",
+  )),
+  propertySetupDraftResetApi: { reset: mocks.resetDraft },
 }));
 
 import { PricingOwnerError } from "@/services/api/pricingSetupClient";
@@ -35,12 +42,14 @@ describe("PricingStep", () => {
     mocks.loadWorkspace.mockResolvedValue(workspace());
     mocks.saveDraft.mockResolvedValue(draftReceipt());
     mocks.saveCanonical.mockResolvedValue(workspace());
+    mocks.resetDraft.mockResolvedValue(resetReceipt());
   });
 
   afterEach(() => vi.unstubAllGlobals());
 
   it("fails closed without the exact manifest", async () => {
     const route = pricingRoute(null);
+    route.steps[0]!.currentBaseRevisions = {};
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -57,7 +66,7 @@ describe("PricingStep", () => {
 
   it("requires a server-supported currency on first visit and saves incomplete draft input", async () => {
     mocks.loadWorkspace.mockResolvedValue(workspace(false));
-    const route = pricingRoute(emptyPricingDraft());
+    const route = pricingRoute(null);
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -309,13 +318,50 @@ describe("PricingStep", () => {
     );
 
     await act(async () => {
-      button(renderer!.root, "Reload latest").props.onClick();
+      button(renderer!.root, "Refresh current pricing").props.onClick();
     });
     await vi.waitFor(() => expect(mocks.loadWorkspace).toHaveBeenCalledTimes(2));
     expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("175.00");
     expect(input(renderer!.root, `base-${secondRoomId}`)).toBeDefined();
     expect(input(renderer!.root, "mandatory-charges-acknowledged").props.checked).toBe(false);
     expect(JSON.stringify(renderer!.toJSON())).toContain("Garden Suite updated");
+    renderer?.unmount();
+  });
+
+  it("resets only a stale saved draft and retains local pricing input", async () => {
+    const route = pricingRoute(emptyPricingDraft());
+    route.steps[0]!.currentBaseRevisions = {
+      ...exactManifest,
+      "pms.rate_plans": "plans:5",
+    };
+    const controller = controllerContext(route);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(PricingStep, controller.props));
+    });
+    await act(async () => {
+      input(renderer!.root, `base-${roomTypeId}`).props.onChange({ target: { value: "189.00" } });
+    });
+    expect(button(renderer!.root, "Start from latest pricing")).toBeDefined();
+
+    await act(async () => {
+      button(renderer!.root, "Start from latest pricing").props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.resetDraft).toHaveBeenCalledWith(propertyId, {
+      sessionId: route.sessionId,
+      stepId: "pricing",
+      expectedTrackRevision: 3,
+      expectedSessionRevision: 7,
+      expectedDraftRevision: 4,
+      expectedBaseRevisions: exactManifest,
+    });
+    expect(controller.refreshRoute).toHaveBeenCalledOnce();
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("189.00");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("only the stale saved draft");
     renderer?.unmount();
   });
 });
@@ -363,7 +409,7 @@ function controllerContext(route: PropertySetupRouteReadModel) {
 
 function pricingRoute(draft: PropertySetupStepDraft | null): PropertySetupRouteReadModel {
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations"],
     trackRevision: 3,
@@ -376,7 +422,8 @@ function pricingRoute(draft: PropertySetupStepDraft | null): PropertySetupRouteR
         stepId: "pricing",
         position: 5,
         state: draft ? "draft" : "not_started",
-        sourceRevision: null,
+        sourceRevision: "pricing:1",
+        currentBaseRevisions: exactManifest,
         draft,
         blockers: [],
       },
@@ -449,6 +496,23 @@ function draftReceipt(
     updatedAt: "2026-08-04T12:05:00.000Z",
     replayed: false,
     ...overrides,
+  };
+}
+
+function resetReceipt() {
+  return {
+    contractVersion: "property-setup-draft-reset.v1" as const,
+    operation: "reset_step_draft" as const,
+    sessionId: "44444444-4444-4444-8444-444444444444",
+    stepId: "pricing" as const,
+    trackRevision: 3,
+    sessionRevision: 8,
+    discardedDraftRevision: 4,
+    resetAt: "2026-08-04T12:05:00.000Z",
+    nextRead: {
+      method: "GET" as const,
+      href: "/api/hotel-setup/properties/" + propertyId + "/route",
+    },
   };
 }
 

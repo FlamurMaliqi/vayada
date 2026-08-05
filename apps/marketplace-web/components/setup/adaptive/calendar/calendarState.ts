@@ -5,9 +5,11 @@ import {
   type PmsOperatingCalendarCurrentReadResult,
   type PmsOperatingCalendarImpactPreviewRequest,
 } from "@vayada/domain-pms";
-import type {
-  PropertySetupRouteReadModel,
-  SavePropertySetupDraftRequest,
+import {
+  isPropertySetupBaseRevisionManifest,
+  type PropertySetupRouteReadModel,
+  type ResetPropertySetupDraftRequest,
+  type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
 
 export const CALENDAR_DRAFT_FIELDS = [
@@ -74,7 +76,8 @@ export function calendarDraftRevisionContext(
   step: PropertySetupRouteReadModel["steps"][number],
 ): CalendarDraftRevisionContext {
   const draft = step.stepId === "calendar" ? step.draft : null;
-  const base = draft?.stepId === "calendar" ? draft.baseRevisions : null;
+  const candidate = draft?.stepId === "calendar" ? draft.baseRevisions : step.currentBaseRevisions;
+  const base = isPropertySetupBaseRevisionManifest("calendar", candidate) ? candidate : null;
   return {
     sessionId: route.sessionId,
     trackRevision: route.trackRevision,
@@ -82,10 +85,10 @@ export function calendarDraftRevisionContext(
     draftRevision: draft?.stepId === "calendar" ? draft.revision : 0,
     baseRevisions: base
       ? {
-          "pms.operating_calendar": base["pms.operating_calendar"],
-          "pms.inventory": base["pms.inventory"],
-          "pms.room_types": base["pms.room_types"],
-          "hotel_catalog.location": base["hotel_catalog.location"],
+          "pms.operating_calendar": base["pms.operating_calendar"]!,
+          "pms.inventory": base["pms.inventory"]!,
+          "pms.room_types": base["pms.room_types"]!,
+          "hotel_catalog.location": base["hotel_catalog.location"]!,
         }
       : null,
   };
@@ -168,6 +171,76 @@ export function hydrateCalendarDraft(
     // Every mount requires a fresh impact review before final confirmation.
     confirmed: false,
     dirty: false,
+  };
+}
+
+export function mergeCalendarLocalInput(
+  local: CalendarDraft,
+  latest: CalendarDraft,
+): CalendarDraft {
+  const localLimits = new Map(
+    local.rooms.map(({ roomTypeId, startingSellableLimit }) => [roomTypeId, startingSellableLimit]),
+  );
+  return {
+    ...latest,
+    mode: local.mode,
+    periods: local.periods,
+    defaultMinimumStayNights: local.defaultMinimumStayNights,
+    rooms: latest.rooms.map((room) => ({
+      ...room,
+      startingSellableLimit: localLimits.get(room.roomTypeId) ?? room.startingSellableLimit,
+    })),
+    confirmed: false,
+    dirty: true,
+  };
+}
+
+export function calendarDraftManifestIsCurrent(
+  step: PropertySetupRouteReadModel["steps"][number],
+): boolean {
+  if (step.stepId !== "calendar" || step.draft?.stepId !== "calendar") return true;
+  const current = step.currentBaseRevisions;
+  const historical = step.draft.baseRevisions;
+  if (
+    !isPropertySetupBaseRevisionManifest("calendar", current) ||
+    !isPropertySetupBaseRevisionManifest("calendar", historical)
+  ) {
+    return false;
+  }
+  const keys = [
+    "pms.operating_calendar",
+    "pms.inventory",
+    "pms.room_types",
+    "hotel_catalog.location",
+  ] as const;
+  return keys.every((key) => current[key] === historical[key]);
+}
+
+export function buildCalendarDraftResetRequest(
+  route: PropertySetupRouteReadModel,
+  step: PropertySetupRouteReadModel["steps"][number],
+): Extract<ResetPropertySetupDraftRequest, { stepId: "calendar" }> {
+  const draft = step.stepId === "calendar" && step.draft?.stepId === "calendar" ? step.draft : null;
+  if (
+    !draft ||
+    !route.sessionId ||
+    route.sessionRevision === null ||
+    !isPropertySetupBaseRevisionManifest("calendar", draft.baseRevisions)
+  ) {
+    throw new Error("The stale calendar draft cannot be reset without its historical manifest.");
+  }
+  return {
+    sessionId: route.sessionId,
+    stepId: "calendar",
+    expectedTrackRevision: route.trackRevision,
+    expectedSessionRevision: route.sessionRevision,
+    expectedDraftRevision: draft.revision,
+    expectedBaseRevisions: {
+      "pms.operating_calendar": draft.baseRevisions["pms.operating_calendar"]!,
+      "pms.inventory": draft.baseRevisions["pms.inventory"]!,
+      "pms.room_types": draft.baseRevisions["pms.room_types"]!,
+      "hotel_catalog.location": draft.baseRevisions["hotel_catalog.location"]!,
+    },
   };
 }
 

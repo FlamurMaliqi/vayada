@@ -1,6 +1,8 @@
-import type {
-  PropertySetupRouteReadModel,
-  SavePropertySetupDraftRequest,
+import {
+  isPropertySetupBaseRevisionManifest,
+  type PropertySetupRouteReadModel,
+  type ResetPropertySetupDraftRequest,
+  type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
 import {
   parsePmsRecurringMonthDay,
@@ -112,7 +114,8 @@ export function pricingDraftRevisionContext(
   step: PropertySetupRouteReadModel["steps"][number],
 ): PricingDraftRevisionContext {
   const draft = step.stepId === "pricing" ? step.draft : null;
-  const base = draft?.stepId === "pricing" ? draft.baseRevisions : null;
+  const candidate = draft?.stepId === "pricing" ? draft.baseRevisions : step.currentBaseRevisions;
+  const base = isPropertySetupBaseRevisionManifest("pricing", candidate) ? candidate : null;
   return {
     sessionId: route.sessionId,
     trackRevision: route.trackRevision,
@@ -120,9 +123,9 @@ export function pricingDraftRevisionContext(
     draftRevision: draft?.stepId === "pricing" ? draft.revision : 0,
     baseRevisions: base
       ? {
-          "pms.pricing_settings": base["pms.pricing_settings"],
-          "pms.rate_plans": base["pms.rate_plans"],
-          "pms.rate_rules": base["pms.rate_rules"],
+          "pms.pricing_settings": base["pms.pricing_settings"]!,
+          "pms.rate_plans": base["pms.rate_plans"]!,
+          "pms.rate_rules": base["pms.rate_rules"]!,
         }
       : null,
   };
@@ -533,24 +536,47 @@ export function formatDecimal(amountDecimal: string, locale: string): string {
 export const PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE =
   "This pricing draft is missing its server revision manifest. Refresh setup and try again.";
 
-/** VAY-1049 route-v2 compatibility seam: historical draft manifests are never rebased. */
 export function pricingDraftManifestIsCurrent(
   step: PropertySetupRouteReadModel["steps"][number],
 ): boolean {
-  const current = (
-    step as PropertySetupRouteReadModel["steps"][number] & {
-      currentBaseRevisions?: unknown;
-    }
-  ).currentBaseRevisions;
-  if (current === undefined) return true;
   if (step.stepId !== "pricing" || step.draft?.stepId !== "pricing") return true;
-  if (!isRecord(current)) return false;
+  const current = step.currentBaseRevisions;
+  const historical = step.draft.baseRevisions;
+  if (
+    !isPropertySetupBaseRevisionManifest("pricing", current) ||
+    !isPropertySetupBaseRevisionManifest("pricing", historical)
+  ) {
+    return false;
+  }
   const keys = ["pms.pricing_settings", "pms.rate_plans", "pms.rate_rules"] as const;
-  const historical = step.draft.baseRevisions as Record<(typeof keys)[number], string>;
-  return (
-    Object.keys(current).length === keys.length &&
-    keys.every((key) => typeof current[key] === "string" && current[key] === historical[key])
-  );
+  return keys.every((key) => current[key] === historical[key]);
+}
+
+export function buildPricingDraftResetRequest(
+  route: PropertySetupRouteReadModel,
+  step: PropertySetupRouteReadModel["steps"][number],
+): Extract<ResetPropertySetupDraftRequest, { stepId: "pricing" }> {
+  const draft = step.stepId === "pricing" && step.draft?.stepId === "pricing" ? step.draft : null;
+  if (
+    !draft ||
+    !route.sessionId ||
+    route.sessionRevision === null ||
+    !isPropertySetupBaseRevisionManifest("pricing", draft.baseRevisions)
+  ) {
+    throw new Error("The stale pricing draft cannot be reset without its historical manifest.");
+  }
+  return {
+    sessionId: route.sessionId,
+    stepId: "pricing",
+    expectedTrackRevision: route.trackRevision,
+    expectedSessionRevision: route.sessionRevision,
+    expectedDraftRevision: draft.revision,
+    expectedBaseRevisions: {
+      "pms.pricing_settings": draft.baseRevisions["pms.pricing_settings"]!,
+      "pms.rate_plans": draft.baseRevisions["pms.rate_plans"]!,
+      "pms.rate_rules": draft.baseRevisions["pms.rate_rules"]!,
+    },
+  };
 }
 
 function cancellationDeadlineInput(plans: readonly FlexibleRatePlanSnapshot[]): string {

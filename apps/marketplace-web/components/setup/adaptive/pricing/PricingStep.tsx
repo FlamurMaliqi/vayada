@@ -20,6 +20,7 @@ import type { AdaptiveSetupStepRenderContext } from "../AdaptiveHotelSetupContro
 import {
   PRICING_WEEKDAYS,
   PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE,
+  buildPricingDraftResetRequest,
   buildPricingDraftRequest,
   discountedDecimal,
   formatDecimal,
@@ -35,6 +36,10 @@ import {
   type PricingValidationErrors,
 } from "./pricingState";
 import { PricingOwnerError, pricingSetupApi } from "@/services/api/pricingSetupClient";
+import {
+  PropertySetupDraftResetError,
+  propertySetupDraftResetApi,
+} from "@/services/api/propertySetupDraftResetClient";
 
 /** Structural match for the VAY-1116 dispatcher contract without importing its owned file. */
 export type AdaptiveSetupStepComponentProps = AdaptiveSetupStepRenderContext & {
@@ -63,6 +68,7 @@ export function PricingStep({
   const [errors, setErrors] = useState<PricingValidationErrors>({});
   const [moreOpen, setMoreOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [reload, setReload] = useState(0);
   const [pendingCurrency, setPendingCurrency] = useState<string | null>(null);
   const draftRef = useRef<PricingDraftState | null>(null);
@@ -217,9 +223,7 @@ export function PricingStep({
       return;
     }
     if (manifestStale) {
-      setSaveError(
-        "Pricing changed since this draft was started. Reload the latest setup before applying canonical prices.",
-      );
+      setSaveError("Start from current pricing before saving this historical draft.");
       return;
     }
     if (
@@ -296,6 +300,10 @@ export function PricingStep({
       setSaveError(PRICING_DRAFT_MANIFEST_UNAVAILABLE_MESSAGE);
       return;
     }
+    if (manifestStale) {
+      setSaveError("Start from current pricing before saving this historical draft.");
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     setNotice(null);
@@ -313,9 +321,34 @@ export function PricingStep({
     } finally {
       if (mounted.current) setSaving(false);
     }
-  }, [manifestMissing, persistDraft, saving]);
+  }, [manifestMissing, manifestStale, persistDraft, saving]);
 
-  const reloadLatest = useCallback(async () => {
+  const resetStaleDraft = useCallback(async () => {
+    if (resetting) return;
+    retainLocalOnReloadRef.current = true;
+    setResetting(true);
+    setSaveError(null);
+    try {
+      const request = buildPricingDraftResetRequest(route, step);
+      await propertySetupDraftResetApi.reset(propertyId, request);
+      await refreshRoute();
+      if (mounted.current) {
+        setReload((value) => value + 1);
+        setNotice(
+          "The stale saved draft was removed. Your local input is ready on current pricing data.",
+        );
+      }
+    } catch (error) {
+      if (error instanceof PropertySetupDraftResetError && error.requiresRefresh) {
+        reportRevisionConflict(error.message);
+      }
+      if (mounted.current) setSaveError(errorMessage(error));
+    } finally {
+      if (mounted.current) setResetting(false);
+    }
+  }, [propertyId, refreshRoute, reportRevisionConflict, resetting, route, step]);
+
+  const refreshCurrentPricing = useCallback(async () => {
     retainLocalOnReloadRef.current = true;
     try {
       await refreshRoute();
@@ -381,9 +414,9 @@ export function PricingStep({
       {manifestStale && (
         <RecoveryPanel
           title="Pricing changed since this draft was started"
-          message="The saved draft keeps its historical revision manifest and cannot overwrite newer pricing. Reload setup to review the latest owner state."
-          actionLabel="Reload latest"
-          onAction={() => void reloadLatest()}
+          message="The saved draft keeps its historical revision manifest and cannot overwrite newer pricing. Start from current owner data; your input stays on this page while only the stale saved draft is removed."
+          actionLabel={resetting ? "Starting from latest..." : "Start from latest pricing"}
+          onAction={() => void resetStaleDraft()}
         />
       )}
 
@@ -428,13 +461,25 @@ export function PricingStep({
         <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-4" role="alert">
           <p className="text-sm font-semibold text-red-950">Pricing was not saved</p>
           <p className="mt-1 text-sm leading-6 text-red-900">{saveError}</p>
-          <button
-            type="button"
-            onClick={() => void reloadLatest()}
-            className="mt-3 min-h-11 rounded-full border border-red-400 bg-white px-4 text-sm font-semibold text-red-900 outline-none hover:bg-red-100 focus-visible:ring-2 focus-visible:ring-red-700 focus-visible:ring-offset-2"
-          >
-            Reload latest
-          </button>
+          {manifestStale && (
+            <button
+              type="button"
+              disabled={resetting}
+              onClick={() => void resetStaleDraft()}
+              className="mt-3 min-h-11 rounded-full border border-red-400 bg-white px-4 text-sm font-semibold text-red-900 outline-none hover:bg-red-100 focus-visible:ring-2 focus-visible:ring-red-700 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {resetting ? "Starting from latest..." : "Start from latest pricing"}
+            </button>
+          )}
+          {!manifestStale && (
+            <button
+              type="button"
+              onClick={() => void refreshCurrentPricing()}
+              className="mt-3 min-h-11 rounded-full border border-red-400 bg-white px-4 text-sm font-semibold text-red-900 outline-none hover:bg-red-100 focus-visible:ring-2 focus-visible:ring-red-700 focus-visible:ring-offset-2"
+            >
+              Refresh current pricing
+            </button>
+          )}
         </div>
       )}
 
@@ -712,7 +757,7 @@ export function PricingStep({
       <div className="flex flex-col items-stretch gap-3 border-t border-gray-200 pt-6 sm:items-end">
         <button
           type="button"
-          disabled={saving || manifestMissing || !draft.dirty}
+          disabled={saving || resetting || manifestMissing || manifestStale || !draft.dirty}
           onClick={() => void saveDraftOnly()}
           className="min-h-11 whitespace-nowrap rounded-full border border-gray-300 bg-white px-6 text-sm font-semibold text-gray-800 outline-none hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:text-gray-400"
         >
@@ -720,7 +765,7 @@ export function PricingStep({
         </button>
         <button
           type="button"
-          disabled={saving || manifestMissing || manifestStale || currencyUnavailable}
+          disabled={saving || resetting || manifestMissing || manifestStale || currencyUnavailable}
           onClick={() => void save()}
           className="min-h-11 whitespace-nowrap rounded-full bg-primary-600 px-6 text-sm font-semibold text-white outline-none hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-primary-300"
         >

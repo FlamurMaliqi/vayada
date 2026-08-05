@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   saveDraft: vi.fn(),
   previewImpact: vi.fn(),
   applyCalendar: vi.fn(),
+  resetDraft: vi.fn(),
 }));
 
 vi.mock("@/services/api/calendarApiClient", () => ({
@@ -23,6 +24,12 @@ vi.mock("@/services/api/calendarApiClient", () => ({
     requiresRefresh = false;
   },
   calendarApi: mocks,
+}));
+vi.mock("@/services/api/propertySetupDraftResetClient", async () => ({
+  ...(await vi.importActual<typeof import("@/services/api/propertySetupDraftResetClient")>(
+    "@/services/api/propertySetupDraftResetClient",
+  )),
+  propertySetupDraftResetApi: { reset: mocks.resetDraft },
 }));
 
 import { CalendarStep } from "./CalendarStep";
@@ -38,12 +45,14 @@ describe("CalendarStep", () => {
     mocks.saveDraft.mockResolvedValue(draftReceipt());
     mocks.previewImpact.mockResolvedValue(impactPreview());
     mocks.applyCalendar.mockResolvedValue(workspace());
+    mocks.resetDraft.mockResolvedValue(resetReceipt());
   });
 
   afterEach(() => vi.unstubAllGlobals());
 
   it("fails closed without the exact VAY-1049 manifest", async () => {
     const route = calendarRoute(null);
+    route.steps[0]!.currentBaseRevisions = {};
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -63,7 +72,7 @@ describe("CalendarStep", () => {
   });
 
   it("renders an explicit first visit and saves bounded incomplete draft input only", async () => {
-    const route = calendarRoute(emptyCalendarDraft());
+    const route = calendarRoute(null);
     const controller = controllerContext(route);
     let renderer: ReactTestRenderer | undefined;
 
@@ -269,6 +278,42 @@ describe("CalendarStep", () => {
     expect(controller.saveAndContinue).toHaveBeenCalledOnce();
     renderer?.unmount();
   });
+
+  it("resets only a stale saved draft and rebinds retained input to current calendar data", async () => {
+    const route = calendarRoute(emptyCalendarDraft());
+    route.steps[0]!.currentBaseRevisions = {
+      ...exactManifest,
+      "pms.inventory": "inventory:2",
+    };
+    const controller = controllerContext(route);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(CalendarStep, controller.props));
+    });
+    await act(async () => {
+      input(renderer!.root, "calendar-minimum-stay").props.onChange({ target: { value: "4" } });
+    });
+
+    await act(async () => {
+      button(renderer!.root, "Start from latest calendar").props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.resetDraft).toHaveBeenCalledWith(propertyId, {
+      sessionId: route.sessionId,
+      stepId: "calendar",
+      expectedTrackRevision: 3,
+      expectedSessionRevision: 7,
+      expectedDraftRevision: 4,
+      expectedBaseRevisions: exactManifest,
+    });
+    expect(controller.refreshRoute).toHaveBeenCalledOnce();
+    expect(input(renderer!.root, "calendar-minimum-stay").props.value).toBe("4");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("only the stale saved draft");
+    renderer?.unmount();
+  });
 });
 
 const exactManifest = {
@@ -315,7 +360,7 @@ function controllerContext(route: PropertySetupRouteReadModel) {
 
 function calendarRoute(draft: PropertySetupStepDraft | null): PropertySetupRouteReadModel {
   return {
-    contractVersion: "property-setup-route.v1",
+    contractVersion: "property-setup-route.v2",
     scope: { organizationId, propertyId },
     selectedTracks: ["hotel_operations"],
     trackRevision: 3,
@@ -328,7 +373,8 @@ function calendarRoute(draft: PropertySetupStepDraft | null): PropertySetupRoute
         stepId: "calendar",
         position: 6,
         state: draft ? "draft" : "not_started",
-        sourceRevision: null,
+        sourceRevision: "calendar:0",
+        currentBaseRevisions: exactManifest,
         draft,
         blockers: [],
       },
@@ -458,6 +504,23 @@ function draftReceipt(
     updatedAt: "2026-08-04T12:05:00.000Z",
     replayed: false,
     ...overrides,
+  };
+}
+
+function resetReceipt() {
+  return {
+    contractVersion: "property-setup-draft-reset.v1" as const,
+    operation: "reset_step_draft" as const,
+    sessionId: "44444444-4444-4444-8444-444444444444",
+    stepId: "calendar" as const,
+    trackRevision: 3,
+    sessionRevision: 8,
+    discardedDraftRevision: 4,
+    resetAt: "2026-08-04T12:05:00.000Z",
+    nextRead: {
+      method: "GET" as const,
+      href: "/api/hotel-setup/properties/" + propertyId + "/route",
+    },
   };
 }
 
