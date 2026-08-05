@@ -367,7 +367,7 @@ function previewOwnerError(error: unknown): Error {
   if (!(error instanceof ApiErrorResponse))
     return asError(error, "Calendar impact could not be previewed.");
   const parsed = parsePmsOperatingCalendarImpactPreviewError(error.data as unknown);
-  return parsed
+  return parsed && calendarErrorStatus(parsed.code) === error.status
     ? calendarOwnerError(parsed)
     : invalidOwnerContract("operating calendar impact error");
 }
@@ -378,9 +378,23 @@ function commandOwnerError(error: unknown): Error {
     { ok: false, error: error.data },
     timeZoneRegistry,
   );
-  return result && !result.ok
+  return result && !result.ok && calendarErrorStatus(result.error.code) === error.status
     ? calendarOwnerError(result.error)
     : invalidOwnerContract("operating calendar command error");
+}
+
+function calendarErrorStatus(code: string): number {
+  if (code === "setup_scope_unavailable") return 404;
+  if (
+    code === "property_timezone_missing" ||
+    code === "property_timezone_invalid" ||
+    code === "active_room_type_set_empty" ||
+    code === "room_capacity_unavailable" ||
+    code === "starting_sellable_limit_exceeds_capacity"
+  ) {
+    return 422;
+  }
+  return 409;
 }
 
 function calendarOwnerError(

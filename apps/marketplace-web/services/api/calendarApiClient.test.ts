@@ -226,6 +226,20 @@ describe("calendarApiClient", () => {
     });
   });
 
+  it("fails closed when a typed preview error arrives with the wrong HTTP status", async () => {
+    calls.post.mockRejectedValue(
+      ownerApiError(422, {
+        code: "room_units_revision_conflict",
+        currentRevision: 6,
+        roomTypeId: roomA,
+      }),
+    );
+
+    await expect(
+      createCalendarApiClient(http, profiles).previewImpact(propertyId, calendarProposal()),
+    ).rejects.toThrow(/impact error adapter returned invalid data/i);
+  });
+
   it("applies the exact confirmed proposal with one stable key and verifies the refetched revision", async () => {
     calls.put.mockResolvedValue(acceptedResponse());
     installAcceptedWorkspace();
@@ -342,6 +356,18 @@ describe("calendarApiClient", () => {
     const malformed = client.applyCalendar(propertyId, calendarProposal(), impactConfirmation());
     await expect(malformed).rejects.toThrow(/command error adapter returned invalid data/i);
     await expect(malformed).rejects.not.toBeInstanceOf(CalendarOwnerError);
+  });
+
+  it("fails closed when a typed command error arrives with the wrong HTTP status", async () => {
+    calls.put.mockRejectedValue(new ApiErrorResponse(404, { code: "impact_confirmation_stale" }));
+
+    await expect(
+      createCalendarApiClient(http, profiles).applyCalendar(
+        propertyId,
+        calendarProposal(),
+        impactConfirmation(),
+      ),
+    ).rejects.toThrow(/command error adapter returned invalid data/i);
   });
 
   it("saves only the exact resumable draft with a stable request fingerprint", async () => {
