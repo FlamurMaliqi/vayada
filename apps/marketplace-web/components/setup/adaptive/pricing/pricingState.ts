@@ -15,7 +15,7 @@ import {
   type RoomTypeFactsSnapshot,
 } from "@vayada/domain-pms";
 
-export const PRICING_DRAFT_FIELDS = [
+const PRICING_DRAFT_FIELDS = [
   "rate.currency",
   "rate.base_nightly_rate",
   "rate.free_cancellation_deadline_days",
@@ -51,7 +51,7 @@ export type PricingCanonicalWorkspace = {
   confirmationRevision: number;
 };
 
-export type PricingRoomDraft = {
+type PricingRoomDraft = {
   roomTypeId: string;
   name: string;
   maximumAdults: number;

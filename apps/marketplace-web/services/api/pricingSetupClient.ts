@@ -76,19 +76,22 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
     const [capabilitiesValue, roomValue, pricingValue, recurringValue, confirmationValue] =
       await Promise.all([
         http.get<unknown>(
-          `/api/pms/properties/${encoded(propertyId)}/pricing-source/currency-capabilities`,
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source/currency-capabilities`,
           options,
         ),
-        http.get<unknown>(`/api/pms/properties/${encoded(propertyId)}/room-types`, options),
+        http.get<unknown>(
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types`,
+          options,
+        ),
         optionalGet(
           http,
-          `/api/pms/properties/${encoded(propertyId)}/pricing-source`,
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source`,
           "pricing_currency_not_configured",
           options,
         ),
         optionalGet(
           http,
-          `/api/pms/properties/${encoded(propertyId)}/pricing-source/recurring-booking-evidence`,
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source/recurring-booking-evidence`,
           "pricing_currency_not_configured",
           options,
         ),
@@ -149,7 +152,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
     async saveDraft(propertyId, request) {
       const value = await ownerPut(
         http,
-        `/api/hotel-setup/properties/${encoded(propertyId)}/setup-drafts/pricing`,
+        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/pricing`,
         request,
         await commandKey("pricing-draft", propertyId, request),
       );
@@ -181,7 +184,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
         };
         const value = await ownerPut(
           http,
-          `/api/pms/properties/${encoded(propertyId)}/pricing-source/currency`,
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source/currency`,
           body,
           await commandKey("pricing-currency", propertyId, body),
         );
@@ -236,7 +239,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
         }
         const value = await ownerPut(
           http,
-          `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(room.roomTypeId)}/flexible-rate-plan`,
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(room.roomTypeId)}/flexible-rate-plan`,
           body,
           await commandKey("flexible-rate-plan", propertyId, {
             roomTypeId: room.roomTypeId,
@@ -421,7 +424,7 @@ export function createPricingSetupClient(http: PricingSetupHttpClient): PricingS
       };
       const confirmationValue = await ownerPut(
         http,
-        `/api/pms/properties/${encoded(propertyId)}/mandatory-charge-confirmation`,
+        `/api/pms/properties/${encodeURIComponent(propertyId)}/mandatory-charge-confirmation`,
         confirmationBody,
         await commandKey("mandatory-charge-confirmation", propertyId, confirmationBody),
       );
@@ -457,7 +460,7 @@ async function upsertRecurring(
 }> {
   const value = await ownerPut(
     http,
-    `/api/pms/properties/${encoded(propertyId)}/pricing-source/recurring/${encoded(sourceId)}`,
+    `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source/recurring/${encodeURIComponent(sourceId)}`,
     body,
     await commandKey("recurring-pricing", propertyId, { sourceId, ...body }),
   );
@@ -487,7 +490,7 @@ async function disableRecurring(
   const body = { sourceKind: source.sourceKind, expectedSourceRevision: source.sourceRevision };
   const value = await ownerPost(
     http,
-    `/api/pms/properties/${encoded(propertyId)}/pricing-source/recurring/${encoded(source.sourceId)}/disable`,
+    `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source/recurring/${encodeURIComponent(source.sourceId)}/disable`,
     body,
     await commandKey("disable-recurring-pricing", propertyId, {
       sourceId: source.sourceId,
@@ -718,7 +721,7 @@ async function confirmationGet(
 ) {
   try {
     const value = await http.get<unknown>(
-      `/api/pms/properties/${encoded(propertyId)}/mandatory-charge-confirmation`,
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/mandatory-charge-confirmation`,
       options,
     );
     const result = parsePmsMandatoryChargeConfirmationReadResult(value);
@@ -903,10 +906,6 @@ function invalidOwnerContract(name: string): PricingOwnerError {
     null,
     true,
   );
-}
-
-function encoded(value: string): string {
-  return encodeURIComponent(value);
 }
 
 function revision(value: unknown): value is number {

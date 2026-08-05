@@ -45,23 +45,6 @@ export type CalendarPropertyProfileReader = {
   getPropertyProfile(propertyId: string, options?: RequestInit): Promise<PropertyProfileResponse>;
 };
 
-export type CalendarApiClient = {
-  loadWorkspace(propertyId: string, options?: RequestInit): Promise<CalendarWorkspace>;
-  saveDraft(
-    propertyId: string,
-    request: Extract<SavePropertySetupDraftRequest, { stepId: "calendar" }>,
-  ): Promise<SavePropertySetupDraftReceipt>;
-  previewImpact(
-    propertyId: string,
-    proposal: PmsOperatingCalendarImpactPreviewRequest,
-  ): Promise<PmsOperatingCalendarImpactPreview>;
-  applyCalendar(
-    propertyId: string,
-    proposal: PmsOperatingCalendarImpactPreviewRequest,
-    confirmation: PmsOperatingCalendarImpactConfirmation,
-  ): Promise<CalendarWorkspace>;
-};
-
 export class CalendarOwnerError extends Error {
   constructor(
     message: string,
@@ -87,7 +70,7 @@ const timeZoneRegistry: PmsOperatingCalendarCanonicalTimeZoneRegistry = {
 export function createCalendarApiClient(
   http: CalendarHttpClient,
   profiles: CalendarPropertyProfileReader,
-): CalendarApiClient {
+) {
   const loadWorkspace = async (
     propertyId: string,
     options?: RequestInit,
@@ -95,7 +78,10 @@ export function createCalendarApiClient(
     const normalizedPropertyId = propertyId.toLowerCase();
     const [profile, factsValue, current] = await Promise.all([
       profiles.getPropertyProfile(propertyId, options),
-      http.get<unknown>(`/api/pms/properties/${encoded(propertyId)}/room-types`, options),
+      http.get<unknown>(
+        `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types`,
+        options,
+      ),
       readCurrentCalendar(http, propertyId, options),
     ]);
     if (
@@ -113,7 +99,7 @@ export function createCalendarApiClient(
     const rooms = await Promise.all(
       activeFacts.map(async (snapshot): Promise<CalendarWorkspaceRoom> => {
         const capacityValue = await http.get<unknown>(
-          `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(snapshot.roomTypeId)}/capacity`,
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(snapshot.roomTypeId)}/capacity`,
           options,
         );
         const capacity = parseRoomTypeCapacitySnapshot(capacityValue);
@@ -156,7 +142,7 @@ export function createCalendarApiClient(
   ): Promise<SavePropertySetupDraftReceipt> => {
     const key = await sha256Key("calendar-draft", propertyId, request);
     const value = await http.put<unknown>(
-      `/api/hotel-setup/properties/${encoded(propertyId)}/setup-drafts/calendar`,
+      `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/calendar`,
       request,
       { headers: { "Idempotency-Key": key } },
     );
@@ -174,7 +160,7 @@ export function createCalendarApiClient(
     let value: unknown;
     try {
       value = await http.post<unknown>(
-        `/api/pms/properties/${encoded(propertyId)}/operating-calendar/impact-preview`,
+        `/api/pms/properties/${encodeURIComponent(propertyId)}/operating-calendar/impact-preview`,
         request,
       );
     } catch (error) {
@@ -201,7 +187,7 @@ export function createCalendarApiClient(
     let value: unknown;
     try {
       value = await http.put<unknown>(
-        `/api/pms/properties/${encoded(propertyId)}/operating-calendar`,
+        `/api/pms/properties/${encodeURIComponent(propertyId)}/operating-calendar`,
         request,
         { headers: { "Idempotency-Key": idempotencyKey } },
       );
@@ -251,7 +237,7 @@ async function readCurrentCalendar(
 ) {
   try {
     const value = await http.get<unknown>(
-      `/api/pms/properties/${encoded(propertyId)}/operating-calendar`,
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/operating-calendar`,
       options,
     );
     const current = parsePmsOperatingCalendarCurrentReadResult(value, timeZoneRegistry);
@@ -489,10 +475,6 @@ function invalidOwnerContract(label: string): Error {
 
 function invalidClientContract(label: string): TypeError {
   return new TypeError(`The ${label} is invalid.`);
-}
-
-function encoded(value: string): string {
-  return encodeURIComponent(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

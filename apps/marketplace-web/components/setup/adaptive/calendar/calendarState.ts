@@ -12,7 +12,7 @@ import {
   type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
 
-export const CALENDAR_DRAFT_FIELDS = [
+const CALENDAR_DRAFT_FIELDS = [
   "rate.operating_periods",
   "rate.minimum_stay",
   "rate.initial_availability",
@@ -34,13 +34,13 @@ export type CalendarWorkspace = {
   current: PmsOperatingCalendarCurrentReadResult | null;
 };
 
-export type CalendarPeriodDraft = {
+type CalendarPeriodDraft = {
   id: string;
   startsOn: string;
   endsOn: string;
 };
 
-export type CalendarRoomLimitDraft = CalendarWorkspaceRoom & {
+type CalendarRoomLimitDraft = CalendarWorkspaceRoom & {
   startingSellableLimit: string;
 };
 

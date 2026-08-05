@@ -291,14 +291,6 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
     setAnnouncement(`${label} removed.`);
   };
 
-  const saveDraftNow = async () => {
-    try {
-      await persistDraft();
-    } catch {
-      // The contextual error remains visible and local input remains mounted.
-    }
-  };
-
   const resetStaleDraft = async () => {
     if (resetting) return;
     retainLocalOnReloadRef.current = true;
@@ -771,7 +763,7 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
             disabled={
               saving || previewing || applying || resetting || manifestStale || !draft.dirty
             }
-            onClick={() => void saveDraftNow()}
+            onClick={() => void persistDraft().catch(() => undefined)}
           >
             {saving ? "Saving..." : "Save draft"}
           </button>
