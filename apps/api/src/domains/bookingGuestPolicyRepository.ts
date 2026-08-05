@@ -325,16 +325,23 @@ export function createPgBookingGuestPolicyRepository(config: {
 
     async getGuestPolicyPublicProjection(input) {
       if (
+        !uuid(input.organizationId) ||
         !uuid(input.propertyId) ||
         !uuid(input.revisionId) ||
-        !revision(input.guestPolicyRevision, false)
+        !revision(input.guestPolicyRevision, false) ||
+        !uuid(input.outboxEventId)
       )
         throw new TypeError("Booking guest-policy public projection read scope is malformed");
       const client = await pool.connect();
       try {
-        const stored = await readRevision(client, input.revisionId.toLowerCase());
+        const stored = await readRevision(
+          client,
+          input.revisionId.toLowerCase(),
+          input.organizationId.toLowerCase(),
+        );
         return stored?.propertyId === input.propertyId.toLowerCase() &&
-          stored.revision === input.guestPolicyRevision
+          stored.revision === input.guestPolicyRevision &&
+          stored.outboxEventId === input.outboxEventId.toLowerCase()
           ? createBookingGuestPolicyPublicProjection(stored)
           : null;
       } finally {

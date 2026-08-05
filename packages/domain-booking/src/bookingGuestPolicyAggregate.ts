@@ -254,9 +254,11 @@ export interface BookingGuestPolicyReadPort {
     propertyId: string;
   }): Promise<BookingGuestPolicyRevision | null>;
   getGuestPolicyPublicProjection(input: {
+    organizationId: string;
     propertyId: string;
     revisionId: string;
     guestPolicyRevision: number;
+    outboxEventId: string;
   }): Promise<BookingGuestPolicyPublicProjection | null>;
 }
 
