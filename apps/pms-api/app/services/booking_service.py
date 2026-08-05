@@ -42,7 +42,13 @@ from app.services.email_service import (
     send_host_guest_cancelled,
 )
 from app.services.occupancy import room_allows_guest_mix
-from app.services.payout_service import calculate_split, fetch_billing_config, schedule_payouts
+from app.services.payout_service import (
+    billing_config_for_booking,
+    billing_snapshot_fields,
+    calculate_split,
+    fetch_billing_config,
+    schedule_payouts,
+)
 from app.services.room_assignment import (
     apply_moves_atomic,
     record_auto_rearrange,
@@ -711,6 +717,7 @@ def _booking_draft_payload(
     payment_method: str,
     deadline: datetime | None,
     deposit: DepositSnapshot,
+    billing: dict,
 ) -> dict:
     """Snapshot every field needed to materialize the booking later. Stored
     as JSONB on the draft so the materializer never has to re-resolve
@@ -752,6 +759,7 @@ def _booking_draft_payload(
         "deposit_percentage": deposit.percentage,
         "deposit_amount": deposit.amount,
         "balance_amount": deposit.balance,
+        **billing_snapshot_fields(billing),
     }
 
 
@@ -816,6 +824,7 @@ async def _create_booking_draft(
     capture_method: str,
     instant_book: bool,
     deposit: DepositSnapshot,
+    billing: dict,
 ) -> dict:
     """Card-path branch of create_booking_request. Skips the booking row
     entirely (no inventory commit, no Channex push, no host email) and
@@ -845,6 +854,7 @@ async def _create_booking_draft(
         payment_method="card",
         deadline=deadline,
         deposit=deposit,
+        billing=billing,
     )
 
     draft = await BookingDraftRepository.create(
@@ -1261,6 +1271,7 @@ async def create_booking_request(slug: str, data: BookingCreate) -> dict:
     # Deposit card payments are captured immediately even in request-flow
     # hotels — the guest pays the deposit upfront and it is refunded on rejection.
     capture_method = "manual" if (use_request_flow and not deposit.required) else "automatic"
+    billing = await fetch_billing_config(hotel_id)
 
     # ── Card path: defer the booking row until Stripe authorizes ──
     # VAY-388: an unauthorized card-payment booking must not exist in
@@ -1280,6 +1291,7 @@ async def create_booking_request(slug: str, data: BookingCreate) -> dict:
             capture_method=capture_method,
             instant_book=instant_book,
             deposit=deposit,
+            billing=billing,
         )
 
     # ── Persist booking row + auto-assign a room unit ──────────────
@@ -1317,6 +1329,7 @@ async def create_booking_request(slug: str, data: BookingCreate) -> dict:
         "promo_discount": pricing.promo_discount,
         "last_minute_discount_percent": pricing.last_minute_discount_pct,
         "last_minute_discount_amount": pricing.last_minute_discount_amount,
+        **billing_snapshot_fields(billing),
     }
     _apply_deposit_snapshot(booking_data, deposit)
     # VAY-397: same auto-rearrange path as the draft-materialize flow.
@@ -1509,7 +1522,7 @@ async def _finalize_accepted_booking(booking_id: str, *, capture_card: bool = Tr
                 str(payment["id"]), "captured", captured_at=datetime.now(UTC)
             )
 
-    billing = await fetch_billing_config(hotel_id)
+    billing = billing_config_for_booking(booking, await fetch_billing_config(hotel_id))
 
     has_affiliate = booking.get("affiliate_id") is not None
     affiliate_commission_pct = 0.0

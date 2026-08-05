@@ -30,6 +30,13 @@ def _make_booking_ref() -> str:
 class BookingRepository:
     @staticmethod
     async def create(data: dict) -> dict:
+        if not data.get("billing_plan_at_creation"):
+            from app.services.payout_service import billing_snapshot_fields, fetch_billing_config
+
+            data = {
+                **data,
+                **billing_snapshot_fields(await fetch_billing_config(str(data["hotel_id"]))),
+            }
         # If the caller passed a pre-generated reference (VAY-388 draft
         # materialization keeps the same code across draft + booking),
         # use it; otherwise generate a fresh unique one.
@@ -68,13 +75,15 @@ class BookingRepository:
                 last_minute_discount_percent, last_minute_discount_amount,
                 guest_country, number_of_rooms,
                 deposit_required, deposit_percentage, deposit_amount, balance_amount
+                , billing_plan_at_creation, booking_engine_fee_pct_at_creation
+                , channel_manager_fee_pct_at_creation, affiliate_platform_fee_pct_at_creation
             ) VALUES (
                 COALESCE($37::uuid, uuid_generate_v4()),
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19,
                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
                 $31, $32, $33, $34, $35, $36, $38,
-                $39, $40, $41, $42
+                $39, $40, $41, $42, $43, $44, $45, $46
             ) RETURNING *
             """,
             data["hotel_id"],
@@ -119,6 +128,10 @@ class BookingRepository:
             data.get("deposit_percentage"),
             data.get("deposit_amount", 0),
             data.get("balance_amount", data["total_amount"]),
+            data.get("billing_plan_at_creation"),
+            data.get("booking_engine_fee_pct_at_creation"),
+            data.get("channel_manager_fee_pct_at_creation"),
+            data.get("affiliate_platform_fee_pct_at_creation"),
         )
         booking = dict(row)
 

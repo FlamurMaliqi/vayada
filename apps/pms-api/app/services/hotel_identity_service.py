@@ -82,6 +82,27 @@ async def get_currency(hotel_id: str) -> str:
         return DEFAULT_CURRENCY
 
 
+async def get_fixed_plan_config(hotel_id: str) -> dict | None:
+    """Return the legacy Fixed-plan price configuration."""
+    if not _is_configured():
+        return None
+    row = await BookingEngineDatabase.fetchrow(
+        """
+        SELECT billing_active_plan,
+               fixed_base_fee,
+               fixed_rooms_included,
+               fixed_per_extra_room_fee,
+               booking_engine_fee_pct,
+               channel_manager_fee_pct,
+               affiliate_platform_fee_pct
+          FROM booking_hotels
+         WHERE id = $1
+        """,
+        hotel_id,
+    )
+    return dict(row) if row else None
+
+
 async def get_payment_flags_by_slug(slug: str) -> dict | None:
     """Read payment-method flags from the Booking Engine DB
     for a hotel by slug. Returns ``None`` if BE-DB is unconfigured, the
@@ -172,6 +193,23 @@ async def set_payment_flags(hotel_id: str, fields: dict) -> None:
         f"UPDATE booking_hotels SET {sets} WHERE id = $1",
         hotel_id,
         *vals,
+    )
+
+
+async def set_billing_plan(hotel_id: str, plan: str) -> None:
+    """Set the paid plan and clear the retired calendar-month switch."""
+    if not _is_configured():
+        raise RuntimeError("Booking engine database is not configured")
+    await BookingEngineDatabase.execute(
+        """
+        UPDATE booking_hotels
+           SET billing_active_plan = $2,
+               billing_pending_switch = NULL,
+               billing_switch_effective_date = NULL
+         WHERE id = $1
+        """,
+        hotel_id,
+        plan,
     )
 
 

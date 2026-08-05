@@ -17,6 +17,7 @@ from app.models.room_type import (
 from app.repositories.channex_mapping_repo import ChannexConnectionRepository
 from app.repositories.room_repo import RoomRepository
 from app.repositories.room_type_repo import RoomTypeRepository
+from app.services import fixed_plan_billing
 from app.services.channex.orchestrator import push_ari_for_hotel
 from app.services.channex.provisioning import provision_property
 from app.services.channex_sync_service import push_cancellation_policy_for_room_type
@@ -255,6 +256,7 @@ async def create_room_type(
         int(payload.get("total_rooms") or 0),
         room["name"],
     )
+    await fixed_plan_billing.sync_subscription_price_for_hotel(hotel_id)
     return _room_to_admin(room)
 
 
@@ -371,6 +373,9 @@ async def update_room_type(
     rate_affecting = _RATE_AFFECTING_FIELDS & updates.keys()
     if rate_affecting:
         asyncio.create_task(_push_ari_after_rate_change(hotel_id, sorted(rate_affecting)))
+
+    if desired_total is not None or "is_active" in updates:
+        await fixed_plan_billing.sync_subscription_price_for_hotel(hotel_id)
 
     return _room_to_admin(room)
 
@@ -502,6 +507,7 @@ async def duplicate_room_type(
         int(clone_data.get("total_rooms") or 0),
         room["name"],
     )
+    await fixed_plan_billing.sync_subscription_price_for_hotel(hotel_id)
     return _room_to_admin(room)
 
 
@@ -525,3 +531,4 @@ async def delete_room_type(
     except Exception as e:
         logger.exception("Unexpected error deleting room type %s", room_type_id)
         raise HTTPException(status_code=500, detail="Internal server error") from e
+    await fixed_plan_billing.sync_subscription_price_for_hotel(hotel_id)

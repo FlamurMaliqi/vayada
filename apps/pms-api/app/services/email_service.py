@@ -737,6 +737,22 @@ async def send_affiliate_payout_notification(
     await _send_email(affiliate_email, subject, _wrap_html(content))
 
 
+async def send_fixed_plan_payment_failed_notification(
+    *, hotel_id: str, hotel_name: str, subscription_id: str
+):
+    subject = f"Fixed Plan payment failed — {hotel_name}"
+    content = f"""
+    <h2>Fixed Plan Payment Failed</h2>
+    <p class="detail">Stripe could not collect a recurring Fixed Plan payment.</p>
+    <hr class="divider">
+    <p class="detail"><strong>Hotel:</strong> {hotel_name}</p>
+    <p class="detail"><strong>Hotel ID:</strong> {hotel_id}</p>
+    <p class="detail"><strong>Subscription:</strong> {subscription_id}</p>
+    <p class="detail">The hotel remains on the Fixed Plan while Stripe retries the payment.</p>
+    """
+    await _send_email(settings.VAYADA_OPS_EMAIL, subject, _wrap_html(content))
+
+
 async def send_host_ota_booking_imported(
     hotel_email: str, booking: dict, *, event: str = "imported"
 ):

@@ -24,6 +24,7 @@ from app.services.channex.inbound import poll_bookings_for_hotel
 from app.services.channex.messaging import poll_messages_for_all_hotels
 from app.services.channex.orchestrator import push_ari_for_hotel
 from app.services.email_service import send_affiliate_payout_notification
+from app.services.fixed_plan_billing import sync_all_subscription_prices
 from app.services.payout_service import (
     dispatch_stripe_transfer,
     dispatch_xendit_payout,
@@ -34,6 +35,7 @@ from app.services.xendit_service import XenditError
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
+fixed_plan_billing_scheduler = AsyncIOScheduler()
 SchedulerStatus = dict[str, Any]
 
 
@@ -567,6 +569,21 @@ def setup_scheduler(target_scheduler: AsyncIOScheduler | None = None):
 
     _scheduler_status = status
     _log_scheduler_status(status)
+    return target_scheduler
+
+
+def setup_fixed_plan_billing_scheduler(
+    target_scheduler: AsyncIOScheduler | None = None,
+) -> AsyncIOScheduler:
+    """Configure the billing outbox worker independently of frozen legacy jobs."""
+    target_scheduler = target_scheduler or fixed_plan_billing_scheduler
+    target_scheduler.remove_all_jobs()
+    target_scheduler.add_job(
+        sync_all_subscription_prices,
+        trigger=IntervalTrigger(minutes=5),
+        id="sync_fixed_plan_subscription_prices",
+        replace_existing=True,
+    )
     return target_scheduler
 
 

@@ -5,6 +5,7 @@ import pytest
 from app.config import settings
 from app.main import health
 from app.routers import webhooks
+from fastapi import HTTPException
 from starlette.requests import Request
 
 
@@ -69,6 +70,177 @@ async def test_stripe_cutover_modes_skip_legacy_mutation(monkeypatch, mode):
         proxy.assert_awaited_once()
     else:
         proxy.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["ack_only_with_receipt", "proxy_to_target"])
+async def test_fixed_plan_webhook_stays_local_during_cutover(monkeypatch, mode):
+    _set_mode(monkeypatch, "stripe", mode)
+    request = _request("/webhooks/stripe", b"{}", {"stripe-signature": "sig-test"})
+    event = {
+        "id": "evt_fixed_paid",
+        "type": "invoice.paid",
+        "data": {
+            "object": {
+                "subscription": "sub_fixed",
+                "metadata": {
+                    "hotel_id": "hotel-1",
+                    "vayada_payment_kind": "fixed_plan",
+                },
+            }
+        },
+    }
+
+    with (
+        patch.object(webhooks.stripe_service, "construct_webhook_event", return_value=event),
+        patch.object(
+            webhooks.HotelPaymentSettingsRepository,
+            "claim_billing_webhook_event",
+            new=AsyncMock(return_value="claimed"),
+        ),
+        patch.object(
+            webhooks.HotelPaymentSettingsRepository,
+            "complete_billing_webhook_event",
+            new=AsyncMock(),
+        ),
+        patch.object(
+            webhooks.fixed_plan_billing,
+            "activate_subscription",
+            new=AsyncMock(),
+        ) as activate,
+        patch.object(
+            webhooks,
+            "_proxy_provider_webhook_to_target",
+            new_callable=AsyncMock,
+        ) as proxy,
+    ):
+        response = await webhooks.stripe_webhook(request)
+
+    assert response == {"status": "ok"}
+    activate.assert_awaited_once_with("hotel-1", "sub_fixed")
+    proxy.assert_not_awaited()
+
+
+async def test_fixed_plan_failed_renewal_notifies_vayada_and_keeps_subscription():
+    request = _request("/webhooks/stripe", b"{}", {"stripe-signature": "sig-test"})
+    event = {
+        "id": "evt_fixed_failed",
+        "type": "invoice.payment_failed",
+        "data": {
+            "object": {
+                "subscription": "sub_fixed",
+                "metadata": {
+                    "hotel_id": "hotel-1",
+                    "vayada_payment_kind": "fixed_plan",
+                },
+            }
+        },
+    }
+    payment_settings = {
+        "hotel_id": "hotel-1",
+        "stripe_billing_status": "active",
+    }
+
+    with (
+        patch.object(webhooks.stripe_service, "construct_webhook_event", return_value=event),
+        patch.object(
+            webhooks.HotelPaymentSettingsRepository,
+            "claim_billing_webhook_event",
+            new=AsyncMock(return_value="claimed"),
+        ),
+        patch.object(
+            webhooks.HotelPaymentSettingsRepository,
+            "complete_billing_webhook_event",
+            new=AsyncMock(),
+        ),
+        patch.object(
+            webhooks.fixed_plan_billing,
+            "mark_payment_failed",
+            new=AsyncMock(return_value=payment_settings),
+        ) as mark_failed,
+        patch.object(
+            webhooks.hotel_identity_service,
+            "get_name",
+            new=AsyncMock(return_value="Hotel Test"),
+        ),
+        patch.object(
+            webhooks,
+            "send_fixed_plan_payment_failed_notification",
+            new=AsyncMock(),
+        ) as notify,
+        patch.object(
+            webhooks.fixed_plan_billing,
+            "end_subscription",
+            new=AsyncMock(),
+        ) as end_subscription,
+    ):
+        response = await webhooks.stripe_webhook(request)
+
+    assert response == {"status": "ok"}
+    mark_failed.assert_awaited_once_with("sub_fixed")
+    notify.assert_awaited_once_with(
+        hotel_id="hotel-1",
+        hotel_name="Hotel Test",
+        subscription_id="sub_fixed",
+    )
+    end_subscription.assert_not_awaited()
+
+
+async def test_deleted_fixed_plan_subscription_reverts_to_commission():
+    request = _request("/webhooks/stripe", b"{}", {"stripe-signature": "sig-test"})
+    event = {
+        "id": "evt_fixed_deleted",
+        "type": "customer.subscription.deleted",
+        "data": {
+            "object": {
+                "id": "sub_fixed",
+                "metadata": {
+                    "hotel_id": "hotel-1",
+                    "vayada_payment_kind": "fixed_plan",
+                },
+            }
+        },
+    }
+
+    with (
+        patch.object(webhooks.stripe_service, "construct_webhook_event", return_value=event),
+        patch.object(
+            webhooks.HotelPaymentSettingsRepository,
+            "claim_billing_webhook_event",
+            new=AsyncMock(return_value="claimed"),
+        ),
+        patch.object(
+            webhooks.HotelPaymentSettingsRepository,
+            "complete_billing_webhook_event",
+            new=AsyncMock(),
+        ),
+        patch.object(
+            webhooks.fixed_plan_billing,
+            "end_subscription",
+            new=AsyncMock(),
+        ) as end_subscription,
+    ):
+        response = await webhooks.stripe_webhook(request)
+
+    assert response == {"status": "ok"}
+    end_subscription.assert_awaited_once_with("sub_fixed", "hotel-1")
+
+
+async def test_in_progress_fixed_plan_event_returns_retryable_error():
+    with patch.object(
+        webhooks.HotelPaymentSettingsRepository,
+        "claim_billing_webhook_event",
+        new=AsyncMock(return_value="in_progress"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await webhooks._handle_fixed_plan_event(
+                {"id": "evt_in_progress"},
+                "invoice.paid",
+                {"subscription": "sub_fixed"},
+                "hotel-1",
+                "sub_fixed",
+            )
+
+    assert exc_info.value.status_code == 503
 
 
 @pytest.mark.parametrize("mode", ["ack_only_with_receipt", "proxy_to_target"])

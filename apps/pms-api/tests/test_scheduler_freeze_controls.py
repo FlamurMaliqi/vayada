@@ -1,4 +1,9 @@
-from app.services.scheduler import LEGACY_SCHEDULER_JOBS, build_scheduler_status
+from app.services.scheduler import (
+    LEGACY_SCHEDULER_JOBS,
+    build_scheduler_status,
+    setup_fixed_plan_billing_scheduler,
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 EXPECTED_JOB_IDS = [
     "expire_pending_bookings",
@@ -68,3 +73,11 @@ def test_scheduler_status_fails_closed_for_unknown_job_ids():
     assert status["active_jobs"] == []
     assert [job["id"] for job in status["frozen_jobs"]] == EXPECTED_JOB_IDS
     assert {job["reason"] for job in status["frozen_jobs"]} == {"invalid_job_id"}
+
+
+def test_fixed_plan_billing_worker_is_independent_of_legacy_freeze():
+    billing_scheduler = setup_fixed_plan_billing_scheduler(AsyncIOScheduler())
+
+    job = billing_scheduler.get_job("sync_fixed_plan_subscription_prices")
+    assert job is not None
+    assert str(job.trigger) == "interval[0:05:00]"
