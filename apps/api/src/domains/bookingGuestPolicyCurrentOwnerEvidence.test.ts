@@ -12,6 +12,34 @@ const organizationId = "b1000000-0000-4000-8000-000000000002";
 const propertyId = "b1000000-0000-4000-8000-000000000003";
 
 describe("Booking guest-policy current owner evidence adapter", () => {
+  it("emits a stable explicit absence revision on first visit", async () => {
+    const adapter = createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
+      booking: {
+        async getCurrentGuestPolicy() {
+          return null;
+        },
+      },
+      pms: availablePmsPort(),
+      catalog: availableCatalogPort(),
+    });
+
+    await expect(
+      adapter.getCurrentGuestPolicyOwnerEvidence({ organizationId, propertyId }),
+    ).resolves.toEqual({
+      outcome: "available",
+      organizationId,
+      propertyId,
+      currentBaseRevisions: {
+        "booking.guest_experience": "guest-policy:absent",
+        "pms.pricing_settings": "pricing-settings:2",
+        "pms.rate_plans": "rate-plans:4",
+        "pms.room_types": "room-types:6",
+        "hotel_catalog.location": "location:3",
+        "hotel_catalog.policy": "policy:7",
+      },
+    });
+  });
+
   it("fails closed with deterministic owner failures", async () => {
     const booking = vi
       .fn<BookingGuestPolicyReadPort["getCurrentGuestPolicy"]>()
@@ -31,7 +59,6 @@ describe("Booking guest-policy current owner evidence adapter", () => {
       organizationId,
       propertyId,
       failures: [
-        { owner: "booking", outcome: "missing" },
         { owner: "pms", outcome: "missing" },
         { owner: "hotel_catalog", outcome: "unavailable", errorSource: "provider" },
       ],
@@ -88,6 +115,35 @@ describe("Booking guest-policy current owner evidence adapter", () => {
     });
   });
 });
+
+function availablePmsPort(): BookingGuestPolicyPmsCurrentOwnerEvidencePort {
+  return pmsPort({
+    outcome: "available",
+    evidence: {
+      organizationId,
+      propertyId,
+      revisions: {
+        "pms.pricing_settings": "pricing-settings:2",
+        "pms.rate_plans": "rate-plans:4",
+        "pms.room_types": "room-types:6",
+      },
+    },
+  });
+}
+
+function availableCatalogPort(): BookingGuestPolicyCatalogCurrentOwnerEvidencePort {
+  return catalogPort({
+    outcome: "available",
+    evidence: {
+      organizationId,
+      propertyId,
+      revisions: {
+        "hotel_catalog.location": "location:3",
+        "hotel_catalog.policy": "policy:7",
+      },
+    },
+  });
+}
 
 function pmsPort(
   result: Awaited<

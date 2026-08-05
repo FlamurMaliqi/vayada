@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS,
   BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES,
+  createBookingGuestPolicyAbsentSourceRevision,
   createBookingGuestPolicySourceRevision,
+  parseBookingGuestPolicyCurrentSourceRevision,
   parseBookingGuestPolicyChoices,
   parseBookingGuestPolicyHash,
 } from "./bookingGuestPolicy.js";
@@ -85,5 +87,45 @@ describe("Booking guest-policy contract", () => {
     );
     expect(parseBookingGuestPolicyHash("a".repeat(64))).toBeNull();
     expect(parseBookingGuestPolicyHash(`sha256:${"A".repeat(64)}`)).toBeNull();
+  });
+
+  it("represents an unconfigured aggregate without inventing revision zero", () => {
+    const absent = createBookingGuestPolicyAbsentSourceRevision(propertyId.toUpperCase());
+    expect(absent).toEqual({
+      ownerDomain: "booking",
+      entityType: "guest_policy_revision",
+      entityId: propertyId,
+      revision: "guest-policy:absent",
+    });
+    expect(Object.isFrozen(absent)).toBe(true);
+    expect(createBookingGuestPolicyAbsentSourceRevision(propertyId)).toEqual(absent);
+    expect(parseBookingGuestPolicyCurrentSourceRevision(absent, propertyId)).toEqual(absent);
+    expect(
+      parseBookingGuestPolicyCurrentSourceRevision(
+        createBookingGuestPolicySourceRevision(propertyId, 1),
+        propertyId,
+      ),
+    ).toEqual(createBookingGuestPolicySourceRevision(propertyId, 1));
+    for (const invalid of [
+      { ...absent, revision: "guest-policy:0" },
+      { ...absent, revision: "guest-policy:01" },
+      { ...absent, revision: "guest-policy:ABSENT" },
+      { ...absent, entityId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+      { ...absent, extra: true },
+    ]) {
+      expect(parseBookingGuestPolicyCurrentSourceRevision(invalid, propertyId)).toBeNull();
+    }
+    const accessor = { ...absent };
+    Object.defineProperty(accessor, "revision", {
+      enumerable: true,
+      get: () => "guest-policy:absent",
+    });
+    expect(parseBookingGuestPolicyCurrentSourceRevision(accessor, propertyId)).toBeNull();
+    expect(
+      parseBookingGuestPolicyCurrentSourceRevision(
+        createBookingGuestPolicySourceRevision(propertyId, 1),
+        "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      ),
+    ).toBeNull();
   });
 });

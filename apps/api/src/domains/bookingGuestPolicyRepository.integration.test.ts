@@ -53,6 +53,40 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking guest-policy repository"
     now: () => new Date(acceptedAt),
     scopeAuthorization,
   });
+  const currentOwnerEvidence = createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
+    booking: repository,
+    pms: {
+      bookingGuestPolicyCurrentOwnerEvidencePort: "pms",
+      async getCurrentGuestPolicyBaseRevisions(scope) {
+        return {
+          outcome: "available",
+          evidence: {
+            ...scope,
+            revisions: {
+              "pms.pricing_settings": "pricing-settings:2",
+              "pms.rate_plans": "rate-plans:4",
+              "pms.room_types": "room-types:6",
+            },
+          },
+        };
+      },
+    },
+    catalog: {
+      bookingGuestPolicyCurrentOwnerEvidencePort: "hotel_catalog",
+      async getCurrentGuestPolicyBaseRevisions(scope) {
+        return {
+          outcome: "available",
+          evidence: {
+            ...scope,
+            revisions: {
+              "hotel_catalog.location": "location:3",
+              "hotel_catalog.policy": "policy:9",
+            },
+          },
+        };
+      },
+    },
+  });
 
   beforeAll(async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
@@ -72,6 +106,12 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking guest-policy repository"
   });
 
   it("atomically persists exact confirmation, secret-safe events, audit, outbox, and current evidence", async () => {
+    await expect(
+      currentOwnerEvidence.getCurrentGuestPolicyOwnerEvidence({ organizationId, propertyId }),
+    ).resolves.toMatchObject({
+      outcome: "available",
+      currentBaseRevisions: { "booking.guest_experience": "guest-policy:absent" },
+    });
     const result = await repository.persistGuestPolicy(command("create", 0));
     expect(result).toMatchObject({
       ok: true,
@@ -90,40 +130,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking guest-policy repository"
     );
     if (!result.ok) throw new Error("Expected created guest policy");
     await expect(
-      createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
-        booking: repository,
-        pms: {
-          bookingGuestPolicyCurrentOwnerEvidencePort: "pms",
-          async getCurrentGuestPolicyBaseRevisions(scope) {
-            return {
-              outcome: "available",
-              evidence: {
-                ...scope,
-                revisions: {
-                  "pms.pricing_settings": "pricing-settings:2",
-                  "pms.rate_plans": "rate-plans:4",
-                  "pms.room_types": "room-types:6",
-                },
-              },
-            };
-          },
-        },
-        catalog: {
-          bookingGuestPolicyCurrentOwnerEvidencePort: "hotel_catalog",
-          async getCurrentGuestPolicyBaseRevisions(scope) {
-            return {
-              outcome: "available",
-              evidence: {
-                ...scope,
-                revisions: {
-                  "hotel_catalog.location": "location:3",
-                  "hotel_catalog.policy": "policy:9",
-                },
-              },
-            };
-          },
-        },
-      }).getCurrentGuestPolicyOwnerEvidence({ organizationId, propertyId }),
+      currentOwnerEvidence.getCurrentGuestPolicyOwnerEvidence({ organizationId, propertyId }),
     ).resolves.toEqual({
       outcome: "available",
       organizationId,
@@ -136,6 +143,17 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking guest-policy repository"
         "hotel_catalog.location": "location:3",
         "hotel_catalog.policy": "policy:9",
       },
+    });
+    await expect(repository.persistGuestPolicy(command("create", 0))).resolves.toMatchObject({
+      ok: true,
+      outcome: "idempotent_replay",
+      revision: { revision: 1 },
+    });
+    await expect(
+      currentOwnerEvidence.getCurrentGuestPolicyOwnerEvidence({ organizationId, propertyId }),
+    ).resolves.toMatchObject({
+      outcome: "available",
+      currentBaseRevisions: { "booking.guest_experience": "guest-policy:1" },
     });
     await expect(
       repository.getGuestPolicyPublicProjection({

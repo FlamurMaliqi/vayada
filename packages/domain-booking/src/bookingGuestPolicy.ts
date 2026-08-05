@@ -5,6 +5,7 @@ import type { BookingPricingSourceFingerprint } from "./bookingPricingEvidence.j
 
 export const BOOKING_GUEST_POLICY_CONTRACT_VERSION = "booking-guest-policy.v1" as const;
 export const BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE = "guest_policy_revision" as const;
+export const BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION = "guest-policy:absent" as const;
 export const BOOKING_GUEST_POLICY_CHANGED_EVENT_TYPE = "booking.guest_policy.changed" as const;
 export const BOOKING_GUEST_POLICY_OUTBOX_DESTINATION = "hotel-catalog.public-policy" as const;
 export const BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES = Object.freeze([
@@ -28,8 +29,19 @@ export type BookingGuestPolicySourceRevision = Readonly<
   SourceEntityRevision & {
     ownerDomain: "booking";
     entityType: typeof BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE;
+    revision: `guest-policy:${number}`;
   }
 >;
+export type BookingGuestPolicyAbsentSourceRevision = Readonly<
+  SourceEntityRevision & {
+    ownerDomain: "booking";
+    entityType: typeof BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE;
+    revision: typeof BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION;
+  }
+>;
+export type BookingGuestPolicyCurrentSourceRevision =
+  | BookingGuestPolicySourceRevision
+  | BookingGuestPolicyAbsentSourceRevision;
 
 export type BookingGuestPolicyChoices = Readonly<{
   defaultGuestLanguage: BookingGuestLanguage;
@@ -188,6 +200,45 @@ export function createBookingGuestPolicySourceRevision(
     entityId: propertyId.toLowerCase(),
     revision: `guest-policy:${revision}`,
   });
+}
+
+export function createBookingGuestPolicyAbsentSourceRevision(
+  propertyId: string,
+): BookingGuestPolicyAbsentSourceRevision {
+  if (!uuid(propertyId)) {
+    throw new TypeError("Booking guest-policy absent source revision is invalid");
+  }
+  return Object.freeze({
+    ownerDomain: "booking",
+    entityType: BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE,
+    entityId: propertyId.toLowerCase(),
+    revision: BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION,
+  });
+}
+
+export function parseBookingGuestPolicyCurrentSourceRevision(
+  value: unknown,
+  expectedPropertyId: string,
+): BookingGuestPolicyCurrentSourceRevision | null {
+  if (
+    !uuid(expectedPropertyId) ||
+    !exact(value, ["ownerDomain", "entityType", "entityId", "revision"]) ||
+    value.ownerDomain !== "booking" ||
+    value.entityType !== BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE ||
+    typeof value.entityId !== "string" ||
+    value.entityId !== expectedPropertyId.toLowerCase() ||
+    typeof value.revision !== "string"
+  )
+    return null;
+  if (value.revision === BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION) {
+    return createBookingGuestPolicyAbsentSourceRevision(expectedPropertyId);
+  }
+  const match = /^guest-policy:([1-9][0-9]*)$/.exec(value.revision);
+  if (!match) return null;
+  const revision = Number(match[1]);
+  return positiveRevision(revision)
+    ? createBookingGuestPolicySourceRevision(expectedPropertyId, revision)
+    : null;
 }
 
 function age(value: unknown, required: boolean): boolean {
