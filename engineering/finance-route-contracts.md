@@ -1,5 +1,11 @@
 # Finance route contracts
 
+> **PMS Financials reset:** VAY-1121 supersedes this document's financial
+> summary, synthetic invoice, invoice CSV, invoice-scoped manual payment and PMS
+> payment-ledger presentation contracts. See
+> [`pms-financials-contracts.md`](pms-financials-contracts.md). Payment settings,
+> provider onboarding, payment facts, payouts and reconciliation remain active.
+
 _VAY-795 contract record. Covers F1 from
 [`booking-pms-route-migration-inventory.md`](booking-pms-route-migration-inventory.md)
 against the finance target schema from VAY-673
