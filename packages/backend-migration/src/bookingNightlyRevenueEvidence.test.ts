@@ -8,6 +8,10 @@ const migration = await readFile(
   join(import.meta.dirname, "../migrations/0069_booking_nightly_revenue_evidence.sql"),
   "utf8",
 );
+const adjustments = await readFile(
+  join(import.meta.dirname, "../migrations/0070_booking_nightly_revenue_adjustments.sql"),
+  "utf8",
+);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const PROPERTY_A = "20000000-0000-4000-8000-000000000001";
 const PROPERTY_B = "20000000-0000-4000-8000-000000000002";
@@ -35,6 +39,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
         currency CHAR(3) NOT NULL, UNIQUE (id, property_id));
     `);
     await client.query(migration);
+    await client.query(adjustments);
   });
 
   afterAll(async () => {
@@ -71,6 +76,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       corrects: string | null;
       key: string;
     }> = {},
+    executor: pg.Client = client,
   ) => {
     const values = {
       id: crypto.randomUUID(),
@@ -90,7 +96,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       key: crypto.randomUUID(),
       ...overrides,
     };
-    return client.query(
+    return executor.query(
       `INSERT INTO booking.nightly_revenue_evidence
        (id, property_id, guest_booking_id, room_type_id, stay_date, recognized_on,
         currency, gross_room_amount, occupied_room_nights, economic_event, lifecycle_state,
@@ -191,6 +197,143 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       });
     for (const amount of ["NaN", "Infinity", "-Infinity"]) {
       await expect(insertEvidence(booking, { amount, revision: 3 })).rejects.toBeDefined();
+    }
+  });
+
+  it("supports exact date-change occupancy adjustments", async () => {
+    const booking = await createBooking();
+    const original = (await insertEvidence(booking)).rows[0]!.id as string;
+    const adjustment = {
+      event: "occupancy_adjustment",
+      lifecycle: "corrected",
+      corrects: original,
+    };
+    await rejects(insertEvidence(booking, { ...adjustment, occupied: 1, revision: 2 }), {
+      code: "23514",
+    });
+    await rejects(
+      insertEvidence(booking, { ...adjustment, amount: "-100", occupied: -1, revision: 2 }),
+      { code: "23514" },
+    );
+    const removed = (
+      await insertEvidence(booking, {
+        ...adjustment,
+        amount: "-120",
+        occupied: -1,
+        revision: 2,
+      })
+    ).rows[0]!.id as string;
+    await rejects(
+      insertEvidence(booking, { ...adjustment, amount: "-120", occupied: -1, revision: 3 }),
+      { code: "23514" },
+    );
+    await rejects(
+      insertEvidence(booking, {
+        event: "room_night_reversal",
+        lifecycle: "canceled",
+        amount: "-120",
+        occupied: -1,
+        revision: 3,
+        corrects: original,
+      }),
+      { code: "23514" },
+    );
+    const readded = (
+      await insertEvidence(booking, {
+        event: "occupancy_adjustment",
+        lifecycle: "corrected",
+        amount: "120",
+        occupied: 1,
+        revision: 3,
+        corrects: removed,
+      })
+    ).rows[0]!.id as string;
+    await rejects(
+      insertEvidence(booking, {
+        ...adjustment,
+        lifecycle: "canceled",
+        amount: "-120",
+        occupied: -1,
+        recognizedOn: "2026-09-10",
+        revision: 4,
+        corrects: readded,
+      }),
+      { constraint: "chk_booking_nightly_revenue_evidence_event" },
+    );
+    const canceled = (
+      await insertEvidence(booking, {
+        ...adjustment,
+        lifecycle: "canceled",
+        amount: "-120",
+        occupied: -1,
+        revision: 4,
+        corrects: readded,
+      })
+    ).rows[0]!.id as string;
+    await rejects(
+      insertEvidence(booking, {
+        ...adjustment,
+        lifecycle: "canceled",
+        amount: "120",
+        occupied: 1,
+        revision: 5,
+        corrects: canceled,
+      }),
+      { constraint: "chk_booking_nightly_revenue_evidence_event" },
+    );
+    const aggregate = await client.query(
+      `SELECT SUM(gross_room_amount)::TEXT AS amount, SUM(occupied_room_nights)::INT AS occupied
+       FROM booking.finance_nightly_revenue_evidence WHERE guest_booking_id = $1`,
+      [booking],
+    );
+    expect(aggregate.rows[0]).toEqual({ amount: "0.0000", occupied: 0 });
+  });
+
+  it("rejects concurrent mixed occupancy changes against one tip", async () => {
+    const booking = await createBooking();
+    const original = (await insertEvidence(booking)).rows[0]!.id as string;
+    const peer = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await peer.connect();
+    const peerPid = (await peer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!
+      .pid;
+    try {
+      await client.query("BEGIN");
+      await insertEvidence(booking, {
+        event: "occupancy_adjustment",
+        lifecycle: "corrected",
+        amount: "-120",
+        occupied: -1,
+        revision: 2,
+        corrects: original,
+      });
+      await peer.query("BEGIN");
+      const collision = insertEvidence(
+        booking,
+        {
+          event: "room_night_reversal",
+          lifecycle: "canceled",
+          amount: "-120",
+          occupied: -1,
+          revision: 2,
+          corrects: original,
+        },
+        peer,
+      );
+      await expect
+        .poll(async () => {
+          const result = await client.query<{ blockers: number }>(
+            "SELECT cardinality(pg_blocking_pids($1)) AS blockers",
+            [peerPid],
+          );
+          return result.rows[0]?.blockers ?? 0;
+        })
+        .toBeGreaterThan(0);
+      await client.query("COMMIT");
+      await rejects(collision, { code: "23505" });
+    } finally {
+      await client.query("ROLLBACK");
+      await peer.query("ROLLBACK");
+      await peer.end();
     }
   });
 
