@@ -38,7 +38,6 @@ import {
   type FinanceInvoiceStatusCounts,
   type FinanceJsonObject,
   type FinanceJsonPolicy,
-  type FinanceManualPaymentRecordCommand,
   type FinancePaymentLedgerItem,
   type FinancePaymentLedgerQuery,
   type FinancePaymentLedgerResponse,
@@ -424,7 +423,6 @@ type FinanceCommandError = {
     | "invalid_command"
     | "affiliate_not_found"
     | "property_not_found"
-    | "invoice_not_found"
     | "provider_account_not_found"
     | "payout_not_found"
     | "reconciliation_not_ready"
@@ -437,15 +435,6 @@ type FinanceCommandError = {
     | "provider_rejected";
   category: "validation" | "not_found" | "conflict" | "write_model" | "provider";
   message: string;
-};
-
-type ManualPaymentBody = {
-  commandId?: unknown;
-  idempotencyKey?: unknown;
-  amount?: unknown;
-  currency?: unknown;
-  paymentMethod?: unknown;
-  reference?: unknown;
 };
 
 type StripeProviderAccountBody = {
@@ -4967,67 +4956,6 @@ function parseReconciliationViewQuery(
   };
 }
 
-function toManualPaymentCommand(
-  request: FastifyRequest<{ Body: ManualPaymentBody }>,
-  propertyId: string,
-  invoiceId: string,
-): FinanceManualPaymentRecordCommand | FinanceValidationError {
-  const body = request.body ?? {};
-  const commandId = nonEmptyString(body.commandId);
-  const idempotencyKey = nonEmptyString(body.idempotencyKey);
-  const amount = decimalBodyString(body.amount);
-  const currency = currencyBodyString(body.currency);
-  const paymentMethod = optionalEnum(body.paymentMethod, FINANCE_ROUTE_PAYMENT_METHODS);
-  const reference = nullableTrimmedString(body.reference);
-
-  if (!commandId || !idempotencyKey || !currency) {
-    return invalidQuery(
-      "invalid_body",
-      "Manual payment command requires commandId, idempotencyKey, amount, currency, and paymentMethod.",
-    );
-  }
-
-  if (!amount) {
-    return invalidQuery(
-      "invalid_body",
-      "Manual payment amount must be a positive NUMERIC(15,2) value.",
-    );
-  }
-
-  if (!paymentMethod || paymentMethod === "wallet" || paymentMethod === "xendit") {
-    return invalidQuery("invalid_payment_method", "Invalid manual payment method.");
-  }
-
-  const now = new Date().toISOString();
-  const authContext = request.authContext;
-  return {
-    commandType: "finance.manual_payment.record",
-    commandId,
-    idempotencyKey,
-    propertyId,
-    audit: {
-      actor: authContext
-        ? {
-            kind: "user",
-            userId: authContext.actor.internalUserId,
-            organizationId: authContext.selectedOrganization.organizationId,
-          }
-        : { kind: "system", service: "apps/api" },
-      requestId: authContext?.audit.requestId ?? commandId,
-      correlationId: authContext?.audit.correlationId,
-      reason: "Manual property-side invoice payment recorded",
-      requestedAt: authContext?.audit.receivedAt ?? now,
-    },
-    payload: {
-      invoiceId,
-      amount,
-      currency,
-      paymentMethod,
-      reference,
-    },
-  };
-}
-
 function toStripePropertyAccountCommand(
   request: FastifyRequest<{ Body: StripeProviderAccountBody }>,
   propertyId: string,
@@ -5609,13 +5537,6 @@ function currencyBodyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const currency = value.trim().toUpperCase();
   return /^[A-Z]{3}$/.test(currency) ? currency : undefined;
-}
-
-function nullableTrimmedString(value: unknown): string | null | undefined {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
 }
 
 function maskAccountNumber(accountNumber: string): string {

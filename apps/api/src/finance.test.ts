@@ -11,15 +11,12 @@ import type {
   FinanceAffiliatePayoutSettingsPatchCommand,
   FinanceAffiliatePayoutSettingsPatchResult,
   FinanceAffiliatePayoutSettingsReadModel,
-  FinanceCommandMeta,
   FinanceFinancialSummary,
   FinanceInvoiceDetail,
   FinanceInvoiceListItem,
   FinanceInvoiceListQuery,
   FinanceInvoicePayment,
   FinanceInvoiceStatusCounts,
-  FinanceManualPaymentRecordCommand,
-  FinanceManualPaymentRecordResult,
   FinancePaymentLedgerItem,
   FinancePaymentLedgerQuery,
   FinancePaymentSettingsPatchCommand,
@@ -2667,41 +2664,6 @@ function financeInvoiceRowFixture(
   };
 }
 
-function manualPaymentTargetCommand(
-  options: {
-    propertyId?: string;
-    idempotencyKey?: string;
-    payload?: Partial<FinanceManualPaymentRecordCommand["payload"]>;
-  } = {},
-): FinanceManualPaymentRecordCommand {
-  const commandPropertyId = options.propertyId ?? propertyId;
-  return {
-    commandType: "finance.manual_payment.record",
-    commandId: "cmd-manual-payment-target",
-    idempotencyKey: options.idempotencyKey ?? "finance-manual-payment-inv-2026-abcd-001",
-    propertyId: commandPropertyId,
-    audit: {
-      actor: {
-        kind: "user",
-        userId: "f1000000-0000-0000-0000-000000000686",
-        organizationId: "f2000000-0000-0000-0000-000000000686",
-      },
-      requestId: "req_manual_payment_target",
-      correlationId: "corr_manual_payment_target",
-      reason: "Manual payment target test",
-      requestedAt: "2026-06-12T12:00:00.000Z",
-    },
-    payload: {
-      invoiceId: "inv_2026_abcd",
-      amount: "250.00",
-      currency: "EUR",
-      paymentMethod: "cash",
-      reference: "front desk receipt 8812",
-      ...options.payload,
-    },
-  };
-}
-
 function paymentSettingsTargetCommand(
   options: {
     propertyId?: string;
@@ -3052,62 +3014,6 @@ const financeRepository: FinancePropertyReadRepository = {
     };
   },
 };
-
-function manualPaymentRepository(): FinancePropertyReadRepository & {
-  writeCount: number;
-  outboxEnqueueCount: number;
-} {
-  const records = new Map<string, FinanceManualPaymentRecordResult & { ok: true }>();
-  const repository: FinancePropertyReadRepository & {
-    writeCount: number;
-    outboxEnqueueCount: number;
-  } = {
-    ...financeRepository,
-    writeCount: 0,
-    outboxEnqueueCount: 0,
-    async recordManualPayment(command) {
-      const validationError = manualPaymentValidationError(command);
-      if (validationError) return validationError;
-
-      if (command.propertyId !== propertyId || command.payload.invoiceId !== "inv_2026_abcd") {
-        return {
-          ok: false,
-          statusCode: 404,
-          code: "invoice_not_found",
-          message: "Finance invoice was not found.",
-        };
-      }
-
-      const existing = records.get(command.idempotencyKey);
-      if (existing) {
-        return {
-          ...existing,
-          status: "idempotent_replay",
-          commandMeta: {
-            ...existing.commandMeta,
-            jobs: existing.commandMeta.jobs.map((job) => ({
-              ...job,
-              status: "idempotent_replay",
-            })),
-          },
-        };
-      }
-
-      repository.writeCount += 1;
-      repository.outboxEnqueueCount += 2;
-      const commandMeta = manualPaymentCommandMeta(command, "queued");
-      const result = {
-        ok: true,
-        status: "created",
-        invoice: invoiceDetails[0]!,
-        commandMeta,
-      } satisfies FinanceManualPaymentRecordResult & { ok: true };
-      records.set(command.idempotencyKey, result);
-      return result;
-    },
-  };
-  return repository;
-}
 
 function paymentSettingsWriteRepository(): FinancePropertyReadRepository & {
   writeCount: number;
@@ -3501,66 +3407,6 @@ function paymentSettingsPatchResult(
       outboxEvents: [],
       jobs: [],
     },
-  };
-}
-
-function manualPaymentValidationError(
-  command: FinanceManualPaymentRecordCommand,
-): Extract<FinanceManualPaymentRecordResult, { ok: false }> | null {
-  if (command.payload.invoiceId === "inv_2026_paid") {
-    return manualPaymentInvalidCommand("Paid invoices cannot accept manual payments.");
-  }
-  if (command.payload.invoiceId === "inv_2026_voided") {
-    return manualPaymentInvalidCommand("Voided invoices cannot accept manual payments.");
-  }
-  if (command.payload.invoiceId === "inv_2026_paid_zero") {
-    return manualPaymentInvalidCommand("Finance invoice has no outstanding balance.");
-  }
-  if (command.payload.currency !== "EUR") {
-    return manualPaymentInvalidCommand("Manual payment currency must match the invoice currency.");
-  }
-  if (Number(command.payload.amount) > 850) {
-    return manualPaymentInvalidCommand("Manual payment amount exceeds the invoice balance.");
-  }
-  return null;
-}
-
-function manualPaymentInvalidCommand(
-  message: string,
-): Extract<FinanceManualPaymentRecordResult, { ok: false }> {
-  return {
-    ok: false,
-    statusCode: 400,
-    code: "invalid_command",
-    message,
-  };
-}
-
-function manualPaymentCommandMeta(
-  command: FinanceManualPaymentRecordCommand,
-  jobStatus: "queued" | "idempotent_replay",
-): FinanceCommandMeta {
-  const keyHash = sha256(command.idempotencyKey);
-  return {
-    commandId: command.commandId,
-    idempotencyKey: command.idempotencyKey,
-    sideEffects: ["audit_event", "booking_projection_refresh", "pms_projection_refresh"],
-    outboxEvents: [
-      `finance.manual-payment.booking-projection.property.${command.propertyId}.key.${keyHash}.v1`,
-      `finance.manual-payment.pms-projection.property.${command.propertyId}.key.${keyHash}.v1`,
-    ],
-    jobs: [
-      {
-        jobType: "booking.projection-refresh",
-        idempotencyKey: `booking.projection-refresh:property:${command.propertyId}:booking:${invoiceDetails[0]!.guestBookingId}:finance-payment:${keyHash}:v1`,
-        status: jobStatus,
-      },
-      {
-        jobType: "pms.projection-refresh",
-        idempotencyKey: `pms.projection-refresh:property:${command.propertyId}:booking:${invoiceDetails[0]!.guestBookingId}:finance-payment:${keyHash}:v1`,
-        status: jobStatus,
-      },
-    ],
   };
 }
 
