@@ -242,6 +242,7 @@ Owner package: `domain-finance`.
 | `invoice_lines`                                      | Finance                            | New normalized decimal invoice line items.                                                                  | Line totals are generated; deferred transaction checks keep the header total exact.                                                              |
 | `invoice_payment_allocations`                        | Finance                            | New append-only links from issued invoices to existing payment facts.                                       | Database-managed totals serialize concurrent allocation and prevent invoice or payment over-allocation.                                          |
 | `invoice_documents`                                  | Finance / Platform Media reference | New immutable invoice revision/version evidence.                                                            | References one active private PDF media object; Finance never stores binary data or raw storage locations.                                       |
+| `invoice_delivery_attempts`                          | Finance                            | New durable email delivery evidence for one immutable invoice document version.                             | Queued attempts transition once to sent or failed; terminal provider/failure facts are immutable and replay-safe.                                |
 
 ### Distribution and Public Bookability
 
