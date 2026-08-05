@@ -22,7 +22,7 @@ describe("hotelPresentationClient", () => {
       undefined,
     );
 
-    calls.put.mockResolvedValue({ ...readModel(8), outcome: "updated" });
+    calls.put.mockResolvedValue({ ...readModel(8), outcome: "idempotent_replay" });
     await expect(
       client.save(propertyId, {
         expectedProfileRevision: 7,
@@ -31,7 +31,7 @@ describe("hotelPresentationClient", () => {
         amenities: { reviewed: true, keys: ["wifi"] },
         media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
       }),
-    ).resolves.toMatchObject({ profileRevision: 8, outcome: "updated" });
+    ).resolves.toMatchObject({ profileRevision: 8, outcome: "idempotent_replay" });
   });
 
   it("loads the exact nullable first-visit Step 1 model", async () => {

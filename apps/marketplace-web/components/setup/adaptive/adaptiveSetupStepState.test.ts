@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   AdaptiveStepManifestUnavailableError,
   adaptiveStepDraftRevision,
+  adaptiveStepResetRequest,
   draftRequest,
   exactSourceRevision,
   withDraftReceipt,
@@ -60,6 +61,25 @@ describe("adaptiveSetupStepState", () => {
         "hotel_catalog.amenities": "profile:11",
       },
     });
+  });
+
+  it("builds reset CAS only from the persisted historical draft manifest", () => {
+    const route = setupRoute(true);
+    expect(adaptiveStepResetRequest(route, route.steps[0]!, "present_hotel")).toEqual({
+      sessionId,
+      stepId: "present_hotel",
+      expectedTrackRevision: 4,
+      expectedSessionRevision: 8,
+      expectedDraftRevision: 3,
+      expectedBaseRevisions: {
+        "hotel_catalog.profile": "profile:7",
+        "hotel_catalog.media": "profile:7",
+        "hotel_catalog.amenities": "profile:7",
+      },
+    });
+    expect(
+      adaptiveStepResetRequest(setupRoute(false), setupRoute(false).steps[0]!, "present_hotel"),
+    ).toBeNull();
   });
 
   it("fails closed when no validated manifest is available", () => {

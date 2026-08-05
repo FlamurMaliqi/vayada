@@ -19,6 +19,7 @@ export type AdaptiveHotelSetupShellProps = {
   routeErrorTitle?: string;
   onRetry?: (() => void) | null;
   staleDraftMessage?: string | null;
+  staleDraftActionLabel?: string;
   onRefresh?: (() => void) | null;
   refreshing?: boolean;
 };
@@ -39,6 +40,7 @@ export function AdaptiveHotelSetupShell({
   routeErrorTitle = "Setup could not be loaded",
   onRetry,
   staleDraftMessage,
+  staleDraftActionLabel = "Refresh",
   onRefresh,
   refreshing = false,
 }: AdaptiveHotelSetupShellProps) {
@@ -128,7 +130,7 @@ export function AdaptiveHotelSetupShell({
             <RecoveryMessage
               title="This setup draft is out of date"
               message={staleDraftMessage}
-              actionLabel={refreshing ? "Refreshing…" : "Refresh"}
+              actionLabel={refreshing ? "Recovering…" : staleDraftActionLabel}
               onAction={onRefresh}
               disabled={refreshing}
             />

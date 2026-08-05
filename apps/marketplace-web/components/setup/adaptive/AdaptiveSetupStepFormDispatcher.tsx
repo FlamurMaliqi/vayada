@@ -8,6 +8,7 @@ import { PresentHotelStep } from "./presentation/PresentHotelStep";
 export type AdaptiveSetupStepComponentProps = AdaptiveSetupStepRenderContext & {
   propertyId: string;
   registerBeforeLeave: (callback: () => Promise<void>) => () => void;
+  registerStaleRecovery?: (callback: () => Promise<void>, mode?: "refresh" | "reset") => () => void;
 };
 
 export function AdaptiveSetupStepFormDispatcher(props: AdaptiveSetupStepComponentProps) {

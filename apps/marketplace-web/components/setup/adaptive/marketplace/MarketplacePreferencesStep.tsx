@@ -24,6 +24,7 @@ import {
 import {
   adaptiveStepDraftRevision,
   adaptiveStepErrorMessage,
+  adaptiveStepResetRequest,
   draftRequest,
   exactSourceRevision,
   isAdaptiveRevisionConflict,
@@ -31,6 +32,10 @@ import {
 } from "../adaptiveSetupStepState";
 import { adaptiveSetupDraftClient } from "@/services/api/adaptiveSetupDraftClient";
 import { marketplacePreferencesClient } from "@/services/api/marketplacePreferencesClient";
+import {
+  PropertySetupDraftResetError,
+  propertySetupDraftResetApi,
+} from "@/services/api/propertySetupDraftResetClient";
 
 type PreferenceForm = {
   compensationTypes: MarketplacePreferenceCompensationType[];
@@ -95,6 +100,7 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
     route,
     step,
     registerBeforeLeave,
+    registerStaleRecovery,
     refreshRoute,
     saveAndContinue,
     reportRevisionConflict,
@@ -105,6 +111,9 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
   const revisionRef = useRef(adaptiveStepDraftRevision(route, step, "marketplace_preferences"));
   const dirtyRef = useRef(false);
   const dirtyFieldsRef = useRef<Set<PreferenceField>>(new Set());
+  const mutationVersionRef = useRef(0);
+  const draftSaveRef = useRef<Promise<void> | null>(null);
+  const preserveLocalOnReloadRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -131,16 +140,24 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
       .load(propertyId, { signal: controller.signal, cache: "no-store" })
       .then((read) => {
         if (controller.signal.aborted) return;
-        const next = hydrate(read, step.draft);
         ownerRef.current = read;
-        formRef.current = next;
-        setForm(next);
-        dirtyFieldsRef.current = new Set(
-          step.draft?.stepId === "marketplace_preferences"
-            ? (step.draft.dirtyFields as PreferenceField[])
-            : [],
-        );
-        dirtyRef.current = false;
+        if (preserveLocalOnReloadRef.current && formRef.current) {
+          const next = mergeLocalPreferences(read, formRef.current, dirtyFieldsRef.current);
+          formRef.current = next;
+          setForm(next);
+        } else {
+          const next = hydrate(read, step.draft);
+          formRef.current = next;
+          setForm(next);
+          dirtyFieldsRef.current = new Set(
+            step.draft?.stepId === "marketplace_preferences"
+              ? (step.draft.dirtyFields as PreferenceField[])
+              : [],
+          );
+          dirtyRef.current = false;
+          mutationVersionRef.current = 0;
+        }
+        preserveLocalOnReloadRef.current = false;
       })
       .catch((error) => {
         if (!controller.signal.aborted) setLoadError(adaptiveStepErrorMessage(error));
@@ -159,52 +176,90 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
     dirtyFieldsRef.current.add(field);
     const next = { ...current, ...change };
     formRef.current = next;
+    mutationVersionRef.current += 1;
     dirtyRef.current = true;
     setForm(next);
   }, []);
 
   const persistDraft = useCallback(async () => {
-    const current = formRef.current;
-    if (!current || !dirtyRef.current) return;
-    const receipt = await adaptiveSetupDraftClient.save(
-      propertyId,
-      draftRequest(revisionRef.current, {
-        stepId: "marketplace_preferences",
-        payload: {
-          "marketplace.preferences.compensation_types": current.compensationTypes,
-          "marketplace.preferences.content_platforms": current.contentPlatforms,
-          "marketplace.preferences.content_types": current.contentTypes,
-          "marketplace.preferences.availability": current.availabilityMode
-            ? { mode: current.availabilityMode, months: current.selectedMonths }
-            : null,
-        },
-        dirtyFields: Array.from(dirtyFieldsRef.current),
-      }),
-    );
-    revisionRef.current = withDraftReceipt(revisionRef.current, receipt);
-    dirtyRef.current = false;
-    setSaveError(null);
+    if (draftSaveRef.current) return draftSaveRef.current;
+    const pending = (async () => {
+      while (dirtyRef.current) {
+        const current = formRef.current;
+        if (!current) return;
+        const mutationVersion = mutationVersionRef.current;
+        const receipt = await adaptiveSetupDraftClient.save(
+          propertyId,
+          draftRequest(revisionRef.current, {
+            stepId: "marketplace_preferences",
+            payload: {
+              "marketplace.preferences.compensation_types": current.compensationTypes,
+              "marketplace.preferences.content_platforms": current.contentPlatforms,
+              "marketplace.preferences.content_types": current.contentTypes,
+              "marketplace.preferences.availability": current.availabilityMode
+                ? { mode: current.availabilityMode, months: current.selectedMonths }
+                : null,
+            },
+            dirtyFields: Array.from(dirtyFieldsRef.current),
+          }),
+        );
+        revisionRef.current = withDraftReceipt(revisionRef.current, receipt);
+        if (mutationVersionRef.current === mutationVersion) dirtyRef.current = false;
+      }
+      setSaveError(null);
+    })();
+    draftSaveRef.current = pending;
+    try {
+      await pending;
+    } finally {
+      if (draftSaveRef.current === pending) draftSaveRef.current = null;
+    }
   }, [propertyId]);
 
   useEffect(
     () =>
       registerBeforeLeave(async () => {
-        try {
-          await persistDraft();
-          await refreshRoute();
-        } catch (error) {
-          setSaveError(adaptiveStepErrorMessage(error));
-          throw error;
-        }
+        setSaveError(null);
+        await persistDraft();
+        await refreshRoute();
       }),
     [persistDraft, refreshRoute, registerBeforeLeave],
   );
 
+  const recoverStaleDraft = useCallback(async () => {
+    const request = adaptiveStepResetRequest(route, step, "marketplace_preferences");
+    if (!request) {
+      preserveLocalOnReloadRef.current = true;
+      await refreshRoute();
+      setReload((value) => value + 1);
+      return;
+    }
+    try {
+      await propertySetupDraftResetApi.reset(propertyId, request);
+      dirtyRef.current = true;
+      preserveLocalOnReloadRef.current = true;
+      await refreshRoute();
+      setReload((value) => value + 1);
+    } catch (error) {
+      if (error instanceof PropertySetupDraftResetError && error.requiresRefresh) {
+        preserveLocalOnReloadRef.current = true;
+        await refreshRoute();
+        setReload((value) => value + 1);
+        reportRevisionConflict(error.message);
+      }
+      throw error;
+    }
+  }, [propertyId, refreshRoute, reportRevisionConflict, route, step]);
+
+  useEffect(
+    () => registerStaleRecovery?.(recoverStaleDraft, step.draft ? "reset" : "refresh"),
+    [recoverStaleDraft, registerStaleRecovery, step.draft],
+  );
+
   const submit = async () => {
-    const current = formRef.current;
-    const owner = ownerRef.current;
-    if (!current || !owner) return;
-    const nextErrors = validate(current);
+    const initial = formRef.current;
+    if (!initial || !ownerRef.current) return;
+    const nextErrors = validate(initial);
     setErrors(nextErrors);
     const first = [
       [nextErrors.compensationTypes, compensationRef],
@@ -221,6 +276,22 @@ export function MarketplacePreferencesStep(props: AdaptiveSetupStepComponentProp
     setSaveError(null);
     try {
       await persistDraft();
+      const current = formRef.current;
+      const owner = ownerRef.current;
+      if (!current || !owner) return;
+      const latestErrors = validate(current);
+      setErrors(latestErrors);
+      const latestFirst = [
+        [latestErrors.compensationTypes, compensationRef],
+        [latestErrors.contentPlatforms, platformRef],
+        [latestErrors.contentTypes, contentRef],
+        [latestErrors.availability, availabilityRef],
+        [latestErrors.months, monthRef],
+      ].find(([message]) => !!message) as [string, RefObject<HTMLInputElement>] | undefined;
+      if (latestFirst) {
+        latestFirst[1].current?.focus();
+        return;
+      }
       const source = revisionRef.current.baseRevisions?.["marketplace.collaboration_preferences"];
       const expectedRevision = source ? exactSourceRevision(source, "preferences") : null;
       if (expectedRevision === null || source !== owner.sourceRevision)
@@ -569,6 +640,30 @@ function hydrate(
     form.selectedMonths = [...payload["marketplace.preferences.availability"].months];
   }
   return form;
+}
+function mergeLocalPreferences(
+  read: MarketplaceHotelCollaborationPreferencesReadModel,
+  local: PreferenceForm,
+  dirty: ReadonlySet<PreferenceField>,
+): PreferenceForm {
+  const fresh = hydrate(read, null);
+  return {
+    compensationTypes: dirty.has("marketplace.preferences.compensation_types")
+      ? local.compensationTypes
+      : fresh.compensationTypes,
+    contentPlatforms: dirty.has("marketplace.preferences.content_platforms")
+      ? local.contentPlatforms
+      : fresh.contentPlatforms,
+    contentTypes: dirty.has("marketplace.preferences.content_types")
+      ? local.contentTypes
+      : fresh.contentTypes,
+    availabilityMode: dirty.has("marketplace.preferences.availability")
+      ? local.availabilityMode
+      : fresh.availabilityMode,
+    selectedMonths: dirty.has("marketplace.preferences.availability")
+      ? local.selectedMonths
+      : fresh.selectedMonths,
+  };
 }
 function selection<T extends string>(value: unknown, allowed: readonly T[]): value is T[] {
   return (

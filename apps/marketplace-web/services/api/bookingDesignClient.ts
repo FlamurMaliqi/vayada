@@ -25,7 +25,7 @@ export function createBookingDesignClient(http: HttpClient) {
         if (!parsed || parsed.propertyId !== propertyId.toLowerCase()) throw invalid("read");
         return parsed;
       } catch (error) {
-        if (error instanceof ApiErrorResponse && error.status === 404) return null;
+        if (isNotConfigured(error)) return null;
         throw error;
       }
     },
@@ -65,11 +65,10 @@ export function createBookingDesignClient(http: HttpClient) {
         },
         { headers: { "Idempotency-Key": await key(propertyId, parsedRequest) } },
       );
+      const expectedOutcome = parsedRequest.expectedRevision === 0 ? "created" : "updated";
       if (
-        !record(value) ||
-        (value.outcome !== "created" &&
-          value.outcome !== "updated" &&
-          value.outcome !== "idempotent_replay")
+        !exactRecord(value, ["outcome", "design"]) ||
+        (value.outcome !== expectedOutcome && value.outcome !== "idempotent_replay")
       ) {
         throw invalid("save");
       }
@@ -113,6 +112,27 @@ function invalid(operation: string): Error {
   return new Error(`The Booking design ${operation} response is invalid. Refresh and try again.`);
 }
 
+function isNotConfigured(error: unknown): boolean {
+  return (
+    error instanceof ApiErrorResponse &&
+    error.status === 404 &&
+    exactRecord(error.data, ["code"]) &&
+    error.data.code === "booking_design_not_configured"
+  );
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!record(value) || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  return (
+    ownKeys.length === keys.length &&
+    keys.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor && "value" in descriptor;
+    })
+  );
 }

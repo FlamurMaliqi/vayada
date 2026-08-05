@@ -1,9 +1,11 @@
-import type {
-  PropertySetupBaseRevisions,
-  PropertySetupRouteReadModel,
-  PropertySetupStepId,
-  SavePropertySetupDraftReceipt,
-  SavePropertySetupDraftRequest,
+import {
+  parseResetPropertySetupDraftRequest,
+  type PropertySetupBaseRevisions,
+  type PropertySetupRouteReadModel,
+  type PropertySetupStepId,
+  type ResetPropertySetupDraftRequest,
+  type SavePropertySetupDraftReceipt,
+  type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
 
 import { ApiErrorResponse } from "@/services/api/client";
@@ -63,6 +65,26 @@ export function withDraftReceipt<TStepId extends PropertySetupStepId>(
     sessionRevision: receipt.sessionRevision,
     draftRevision: receipt.draftRevision,
   };
+}
+
+export function adaptiveStepResetRequest<TStepId extends PropertySetupStepId>(
+  route: PropertySetupRouteReadModel,
+  step: PropertySetupRouteReadModel["steps"][number],
+  stepId: TStepId,
+): Extract<ResetPropertySetupDraftRequest, { stepId: TStepId }> | null {
+  const draft = step.draft?.stepId === stepId ? step.draft : null;
+  if (!route.sessionId || !route.sessionRevision || !draft) return null;
+  const parsed = parseResetPropertySetupDraftRequest({
+    sessionId: route.sessionId,
+    stepId,
+    expectedTrackRevision: route.trackRevision,
+    expectedSessionRevision: route.sessionRevision,
+    expectedDraftRevision: draft.revision,
+    expectedBaseRevisions: draft.baseRevisions,
+  });
+  return parsed.ok
+    ? (parsed.value as Extract<ResetPropertySetupDraftRequest, { stepId: TStepId }>)
+    : null;
 }
 
 export function draftRequest<TStepId extends PropertySetupStepId>(

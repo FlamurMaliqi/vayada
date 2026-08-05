@@ -24,7 +24,7 @@ describe("adaptiveSetupDraftClient", () => {
       draftRevision: 1,
       retentionExpiresAt: now,
       updatedAt: now,
-      replayed: false,
+      replayed: true,
     });
     const client = createAdaptiveSetupDraftClient({
       put: put as AdaptiveSetupDraftHttpClient["put"],
@@ -46,6 +46,7 @@ describe("adaptiveSetupDraftClient", () => {
     await expect(client.save(propertyId, request)).resolves.toMatchObject({
       sessionId,
       draftRevision: 1,
+      replayed: true,
     });
     expect(put).toHaveBeenCalledWith(
       `/api/hotel-setup/properties/${propertyId}/setup-drafts/present_hotel`,
@@ -69,6 +70,76 @@ describe("adaptiveSetupDraftClient", () => {
       retentionExpiresAt: "not-a-date",
       updatedAt: now,
       replayed: false,
+    });
+    const client = createAdaptiveSetupDraftClient({
+      put: put as AdaptiveSetupDraftHttpClient["put"],
+    });
+
+    await expect(
+      client.save(propertyId, {
+        stepId: "present_hotel",
+        payload: {},
+        dirtyFields: [],
+        expectedBaseRevisions: {
+          "hotel_catalog.profile": "profile:7",
+          "hotel_catalog.media": "profile:7",
+          "hotel_catalog.amenities": "profile:7",
+        },
+        expectedTrackRevision: 3,
+        expectedSessionRevision: 0,
+        expectedDraftRevision: 0,
+      }),
+    ).rejects.toThrow(/response is invalid/i);
+  });
+
+  it("rejects zero receipt revisions fail-closed", async () => {
+    put.mockResolvedValue({
+      contractVersion: "property-setup-draft.v1",
+      sessionId,
+      stepId: "present_hotel",
+      selectedTracks: ["hotel_operations"],
+      trackRevision: 3,
+      sessionRevision: 1,
+      draftRevision: 0,
+      retentionExpiresAt: now,
+      updatedAt: now,
+      replayed: false,
+    });
+    const client = createAdaptiveSetupDraftClient({
+      put: put as AdaptiveSetupDraftHttpClient["put"],
+    });
+
+    await expect(
+      client.save(propertyId, {
+        stepId: "present_hotel",
+        payload: {},
+        dirtyFields: [],
+        expectedBaseRevisions: {
+          "hotel_catalog.profile": "profile:7",
+          "hotel_catalog.media": "profile:7",
+          "hotel_catalog.amenities": "profile:7",
+        },
+        expectedTrackRevision: 3,
+        expectedSessionRevision: 0,
+        expectedDraftRevision: 0,
+      }),
+    ).rejects.toThrow(/response is invalid/i);
+  });
+
+  it.each([
+    ["track", { trackRevision: 4, sessionRevision: 1, draftRevision: 1 }],
+    ["session", { trackRevision: 3, sessionRevision: 2, draftRevision: 1 }],
+    ["draft", { trackRevision: 3, sessionRevision: 1, draftRevision: 2 }],
+  ])("rejects a mismatched positive %s revision", async (_label, revisions) => {
+    put.mockResolvedValue({
+      contractVersion: "property-setup-draft.v1",
+      sessionId,
+      stepId: "present_hotel",
+      selectedTracks: ["hotel_operations"],
+      ...revisions,
+      retentionExpiresAt: now,
+      updatedAt: now,
+      replayed: true,
     });
     const client = createAdaptiveSetupDraftClient({
       put: put as AdaptiveSetupDraftHttpClient["put"],

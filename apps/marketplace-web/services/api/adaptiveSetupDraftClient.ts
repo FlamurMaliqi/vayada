@@ -2,7 +2,6 @@ import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
   SETUP_TRACKS,
   parseSavePropertySetupDraftRequest,
-  type PropertySetupStepId,
   type SavePropertySetupDraftReceipt,
   type SavePropertySetupDraftRequest,
 } from "@vayada/domain-hotels";
@@ -22,7 +21,7 @@ export function createAdaptiveSetupDraftClient(http: AdaptiveSetupDraftHttpClien
       const parsed = parseSavePropertySetupDraftRequest(request);
       if (!parsed.ok) throw new TypeError("The setup draft is invalid and was not sent.");
       const value = await http.put<unknown>(
-        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/${request.stepId}`,
+        `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/setup-drafts/${parsed.value.stepId}`,
         parsed.value,
         {
           headers: {
@@ -30,7 +29,7 @@ export function createAdaptiveSetupDraftClient(http: AdaptiveSetupDraftHttpClien
           },
         },
       );
-      const receipt = parseReceipt(value, request.stepId);
+      const receipt = parseReceipt(value, parsed.value);
       if (!receipt) throw new Error("The setup draft response is invalid. Refresh and try again.");
       return receipt;
     },
@@ -55,7 +54,7 @@ async function draftIdempotencyKey(
 
 function parseReceipt(
   value: unknown,
-  stepId: PropertySetupStepId,
+  request: SavePropertySetupDraftRequest,
 ): SavePropertySetupDraftReceipt | null {
   if (
     !record(value) ||
@@ -72,7 +71,7 @@ function parseReceipt(
       "replayed",
     ]) ||
     value.contractVersion !== PROPERTY_SETUP_DRAFT_CONTRACT_VERSION ||
-    value.stepId !== stepId ||
+    value.stepId !== request.stepId ||
     typeof value.sessionId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value.sessionId,
@@ -84,6 +83,9 @@ function parseReceipt(
     !revision(value.trackRevision) ||
     !revision(value.sessionRevision) ||
     !revision(value.draftRevision) ||
+    value.trackRevision !== request.expectedTrackRevision ||
+    value.sessionRevision !== request.expectedSessionRevision + 1 ||
+    value.draftRevision !== request.expectedDraftRevision + 1 ||
     !timestamp(value.retentionExpiresAt) ||
     !timestamp(value.updatedAt) ||
     typeof value.replayed !== "boolean"
@@ -103,7 +105,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function revision(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
+  return Number.isSafeInteger(value) && (value as number) >= 1;
 }
 
 function timestamp(value: unknown): value is string {

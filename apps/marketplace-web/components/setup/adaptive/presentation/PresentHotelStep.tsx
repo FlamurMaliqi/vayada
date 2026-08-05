@@ -32,6 +32,7 @@ import {
 import {
   adaptiveStepDraftRevision,
   adaptiveStepErrorMessage,
+  adaptiveStepResetRequest,
   draftRequest,
   exactSourceRevision,
   isAdaptiveRevisionConflict,
@@ -39,6 +40,10 @@ import {
 } from "../adaptiveSetupStepState";
 import { adaptiveSetupDraftClient } from "@/services/api/adaptiveSetupDraftClient";
 import { hotelPresentationClient } from "@/services/api/hotelPresentationClient";
+import {
+  PropertySetupDraftResetError,
+  propertySetupDraftResetApi,
+} from "@/services/api/propertySetupDraftResetClient";
 
 type PhotoDraft = {
   key: string;
@@ -73,6 +78,7 @@ const LOCALE_LABELS: Record<HotelCatalogContentLocale, string> = {
   zh: "Chinese",
 };
 const AMENITY_KEYS = Object.keys(HOTEL_CATALOG_AMENITIES) as HotelCatalogAmenityKey[];
+const MAX_PRESENTATION_PHOTOS = 26;
 type PresentationField =
   | "profile.default_locale"
   | "profile.short_description"
@@ -86,6 +92,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
     route,
     step,
     registerBeforeLeave,
+    registerStaleRecovery,
     refreshRoute,
     saveAndContinue,
     reportRevisionConflict,
@@ -104,6 +111,11 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
   const [reload, setReload] = useState(0);
   const dirtyRef = useRef(false);
   const dirtyFieldsRef = useRef<Set<PresentationField>>(new Set());
+  const mutationVersionRef = useRef(0);
+  const draftSaveRef = useRef<Promise<void> | null>(null);
+  const activeUploadBatchesRef = useRef(0);
+  const reservedPhotoCountRef = useRef(0);
+  const preserveLocalOnReloadRef = useRef(false);
   const revisionRef = useRef(adaptiveStepDraftRevision(route, step, "present_hotel"));
   const summaryRef = useRef<HTMLTextAreaElement>(null);
   const localeRef = useRef<HTMLSelectElement>(null);
@@ -132,17 +144,25 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
       .load(propertyId, { signal: controller.signal, cache: "no-store" })
       .then((read) => {
         if (controller.signal.aborted) return;
-        const next = hydrate(read, step.draft);
         ownerRef.current = read;
-        formRef.current = next;
         setOwner(read);
-        setForm(next);
-        dirtyFieldsRef.current = new Set(
-          step.draft?.stepId === "present_hotel"
-            ? (step.draft.dirtyFields as PresentationField[])
-            : [],
-        );
-        dirtyRef.current = false;
+        if (preserveLocalOnReloadRef.current && formRef.current) {
+          const next = mergeLocalPresentation(read, formRef.current, dirtyFieldsRef.current);
+          formRef.current = next;
+          setForm(next);
+        } else {
+          const next = hydrate(read, step.draft);
+          formRef.current = next;
+          setForm(next);
+          dirtyFieldsRef.current = new Set(
+            step.draft?.stepId === "present_hotel"
+              ? (step.draft.dirtyFields as PresentationField[])
+              : [],
+          );
+          dirtyRef.current = false;
+          mutationVersionRef.current = 0;
+        }
+        preserveLocalOnReloadRef.current = false;
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
@@ -163,6 +183,7 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
       if (!current) return;
       const next = { ...current, ...change };
       formRef.current = next;
+      mutationVersionRef.current += 1;
       dirtyRef.current = true;
       setForm(next);
     },
@@ -170,78 +191,141 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
   );
 
   const persistDraft = useCallback(async () => {
-    const current = formRef.current;
-    if (!current || !dirtyRef.current) return;
-    const receipt = await adaptiveSetupDraftClient.save(
-      propertyId,
-      draftRequest(revisionRef.current, {
-        stepId: "present_hotel",
-        payload: {
-          "profile.default_locale": current.locale,
-          "profile.short_description": current.summary,
-          "profile.hero_image": current.coverMediaObjectId,
-          "profile.gallery_images": readyMediaIds(current).filter(
-            (mediaObjectId) => mediaObjectId !== current.coverMediaObjectId,
-          ),
-          "profile.amenities": current.amenities,
-        },
-        dirtyFields: Array.from(dirtyFieldsRef.current),
-      }),
-    );
-    revisionRef.current = withDraftReceipt(revisionRef.current, receipt);
-    dirtyRef.current = false;
-    setSaveError(null);
+    if (draftSaveRef.current) return draftSaveRef.current;
+    const pending = (async () => {
+      while (dirtyRef.current) {
+        const current = formRef.current;
+        if (!current) return;
+        const mutationVersion = mutationVersionRef.current;
+        const receipt = await adaptiveSetupDraftClient.save(
+          propertyId,
+          draftRequest(revisionRef.current, {
+            stepId: "present_hotel",
+            payload: {
+              "profile.default_locale": current.locale,
+              "profile.short_description": current.summary,
+              "profile.hero_image": current.coverMediaObjectId,
+              "profile.gallery_images": readyMediaIds(current).filter(
+                (mediaObjectId) => mediaObjectId !== current.coverMediaObjectId,
+              ),
+              "profile.amenities": current.amenities,
+            },
+            dirtyFields: Array.from(dirtyFieldsRef.current),
+          }),
+        );
+        revisionRef.current = withDraftReceipt(revisionRef.current, receipt);
+        if (mutationVersionRef.current === mutationVersion) dirtyRef.current = false;
+      }
+      setSaveError(null);
+    })();
+    draftSaveRef.current = pending;
+    try {
+      await pending;
+    } finally {
+      if (draftSaveRef.current === pending) draftSaveRef.current = null;
+    }
   }, [propertyId]);
 
   useEffect(
     () =>
       registerBeforeLeave(async () => {
-        try {
-          await persistDraft();
-          await refreshRoute();
-        } catch (error) {
-          setSaveError(adaptiveStepErrorMessage(error));
-          throw error;
+        setSaveError(null);
+        if (activeUploadBatchesRef.current > 0) {
+          throw new Error("Wait for active photo uploads to finish before leaving this step.");
         }
+        await persistDraft();
+        await refreshRoute();
       }),
     [persistDraft, refreshRoute, registerBeforeLeave],
+  );
+
+  const recoverStaleDraft = useCallback(async () => {
+    const request = adaptiveStepResetRequest(route, step, "present_hotel");
+    if (!request) {
+      preserveLocalOnReloadRef.current = true;
+      await refreshRoute();
+      setReload((value) => value + 1);
+      return;
+    }
+    try {
+      await propertySetupDraftResetApi.reset(propertyId, request);
+      dirtyRef.current = true;
+      preserveLocalOnReloadRef.current = true;
+      await refreshRoute();
+      setReload((value) => value + 1);
+    } catch (error) {
+      if (error instanceof PropertySetupDraftResetError && error.requiresRefresh) {
+        preserveLocalOnReloadRef.current = true;
+        await refreshRoute();
+        setReload((value) => value + 1);
+        reportRevisionConflict(error.message);
+      }
+      throw error;
+    }
+  }, [propertyId, refreshRoute, reportRevisionConflict, route, step]);
+
+  useEffect(
+    () => registerStaleRecovery?.(recoverStaleDraft, step.draft ? "reset" : "refresh"),
+    [recoverStaleDraft, registerStaleRecovery, step.draft],
   );
 
   const uploadPhotos = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!formRef.current || files.length === 0) return;
-    try {
-      // Establish a durable, exact-manifest draft boundary before external uploads.
-      dirtyRef.current = true;
-      await persistDraft();
-    } catch (error) {
-      setSaveError(adaptiveStepErrorMessage(error));
+    const current = formRef.current;
+    if (!current || files.length === 0) return;
+    if (
+      current.photos.length + reservedPhotoCountRef.current + files.length >
+      MAX_PRESENTATION_PHOTOS
+    ) {
+      setErrors((value) => ({
+        ...value,
+        uploads: `Add up to ${MAX_PRESENTATION_PHOTOS} photos, including the cover. Remove a photo before uploading more.`,
+      }));
       return;
     }
-    const placeholders = files.map<PhotoDraft>((file) => ({
-      key: crypto.randomUUID(),
-      mediaObjectId: null,
-      previewUrl: URL.createObjectURL(file),
-      filename: file.name || "Hotel photo",
-      file,
-      status: "uploading",
-    }));
-    update({ photos: [...formRef.current.photos, ...placeholders] }, [
-      "profile.hero_image",
-      "profile.gallery_images",
-    ]);
-    await Promise.all(
-      files.map(async (file, index) => {
-        const placeholder = placeholders[index]!;
-        await uploadPhoto(placeholder, file);
-      }),
-    );
-    ensureCover();
+    setErrors((value) => ({ ...value, uploads: undefined }));
+    activeUploadBatchesRef.current += 1;
+    reservedPhotoCountRef.current += files.length;
+    let photosReserved = true;
     try {
-      await persistDraft();
-    } catch (error) {
-      setSaveError(adaptiveStepErrorMessage(error));
+      try {
+        // Establish a durable, exact-manifest draft boundary before external uploads.
+        dirtyRef.current = true;
+        await persistDraft();
+      } catch (error) {
+        setSaveError(adaptiveStepErrorMessage(error));
+        return;
+      }
+      const placeholders = files.map<PhotoDraft>((file) => ({
+        key: crypto.randomUUID(),
+        mediaObjectId: null,
+        previewUrl: URL.createObjectURL(file),
+        filename: file.name || "Hotel photo",
+        file,
+        status: "uploading",
+      }));
+      reservedPhotoCountRef.current -= files.length;
+      photosReserved = false;
+      update({ photos: [...formRef.current!.photos, ...placeholders] }, [
+        "profile.hero_image",
+        "profile.gallery_images",
+      ]);
+      await Promise.all(
+        files.map(async (file, index) => {
+          const placeholder = placeholders[index]!;
+          await uploadPhoto(placeholder, file);
+        }),
+      );
+      ensureCover();
+      try {
+        await persistDraft();
+      } catch (error) {
+        setSaveError(adaptiveStepErrorMessage(error));
+      }
+    } finally {
+      if (photosReserved) reservedPhotoCountRef.current -= files.length;
+      activeUploadBatchesRef.current -= 1;
     }
   };
 
@@ -285,12 +369,17 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
 
   const retryPhoto = async (photo: PhotoDraft) => {
     if (!photo.file) return;
-    await uploadPhoto(photo, photo.file);
-    ensureCover();
+    activeUploadBatchesRef.current += 1;
     try {
-      await persistDraft();
-    } catch (error) {
-      setSaveError(adaptiveStepErrorMessage(error));
+      await uploadPhoto(photo, photo.file);
+      ensureCover();
+      try {
+        await persistDraft();
+      } catch (error) {
+        setSaveError(adaptiveStepErrorMessage(error));
+      }
+    } finally {
+      activeUploadBatchesRef.current -= 1;
     }
   };
 
@@ -336,10 +425,9 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
   };
 
   const continueSetup = async () => {
-    const current = formRef.current;
-    const read = ownerRef.current;
-    if (!current || !read) return;
-    const nextErrors = validate(current);
+    const initial = formRef.current;
+    if (!initial || !ownerRef.current) return;
+    const nextErrors = validate(initial);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
       if (nextErrors.locale) localeRef.current?.focus();
@@ -350,6 +438,16 @@ export function PresentHotelStep(props: AdaptiveSetupStepComponentProps) {
     setSaveError(null);
     try {
       await persistDraft();
+      const current = formRef.current;
+      const read = ownerRef.current;
+      if (!current || !read) return;
+      const latestErrors = validate(current);
+      setErrors(latestErrors);
+      if (Object.keys(latestErrors).length > 0) {
+        if (latestErrors.locale) localeRef.current?.focus();
+        else if (latestErrors.summary) summaryRef.current?.focus();
+        return;
+      }
       const base = revisionRef.current.baseRevisions;
       const profileRevision = base
         ? exactSourceRevision(base["hotel_catalog.profile"], "profile")
@@ -728,6 +826,32 @@ function readyMediaIds(form: PresentationForm): string[] {
   return form.photos.flatMap((photo) =>
     photo.status === "ready" && photo.mediaObjectId ? [photo.mediaObjectId] : [],
   );
+}
+function mergeLocalPresentation(
+  owner: HotelCatalogStep1ReadModel,
+  local: PresentationForm,
+  dirty: ReadonlySet<PresentationField>,
+): PresentationForm {
+  const fresh = hydrate(owner, null);
+  const useLocalGallery = dirty.has("profile.gallery_images");
+  const photos = useLocalGallery ? local.photos : fresh.photos;
+  const coverMediaObjectId = dirty.has("profile.hero_image")
+    ? local.coverMediaObjectId
+    : fresh.coverMediaObjectId;
+  const cover = coverMediaObjectId
+    ? (local.photos.find((photo) => photo.mediaObjectId === coverMediaObjectId) ??
+      fresh.photos.find((photo) => photo.mediaObjectId === coverMediaObjectId))
+    : undefined;
+  return {
+    locale: dirty.has("profile.default_locale") ? local.locale : fresh.locale,
+    summary: dirty.has("profile.short_description") ? local.summary : fresh.summary,
+    amenities: dirty.has("profile.amenities") ? local.amenities : fresh.amenities,
+    coverMediaObjectId,
+    photos:
+      cover && !photos.some((photo) => photo.mediaObjectId === coverMediaObjectId)
+        ? [cover, ...photos]
+        : photos,
+  };
 }
 function isLocale(value: unknown): value is HotelCatalogContentLocale {
   return HOTEL_CATALOG_CONTENT_LOCALES.includes(value as HotelCatalogContentLocale);

@@ -18,6 +18,9 @@ describe("bookingDesignClient", () => {
     );
     await expect(client.load(propertyId)).resolves.toBeNull();
 
+    calls.get.mockRejectedValueOnce(new ApiErrorResponse(404, { code: "property_not_found" }));
+    await expect(client.load(propertyId)).rejects.toBeInstanceOf(ApiErrorResponse);
+
     calls.get.mockRejectedValueOnce(new ApiErrorResponse(500, { code: "internal_error" }));
     await expect(client.load(propertyId)).rejects.toBeInstanceOf(ApiErrorResponse);
   });
@@ -46,6 +49,40 @@ describe("bookingDesignClient", () => {
         choices: { primaryColor: "#4F46E5", fontPairing: "high-end-serif" },
       }),
     ).rejects.toThrow(/response is invalid/i);
+
+    calls.put.mockResolvedValue({ outcome: "created", design: design(1), extra: true });
+    await expect(
+      client.save(propertyId, {
+        expectedRevision: 0,
+        choices: { primaryColor: "#4F46E5", fontPairing: "high-end-serif" },
+      }),
+    ).rejects.toThrow(/response is invalid/i);
+  });
+
+  it.each([
+    ["updated", 0, 1],
+    ["created", 1, 2],
+  ] as const)(
+    "rejects outcome %s for expected revision %s",
+    async (outcome, expectedRevision, revision) => {
+      calls.put.mockResolvedValue({ outcome, design: design(revision) });
+      await expect(
+        client.save(propertyId, {
+          expectedRevision,
+          choices: { primaryColor: "#4F46E5", fontPairing: "high-end-serif" },
+        }),
+      ).rejects.toThrow(/response is invalid/i);
+    },
+  );
+
+  it("accepts an exact replay for an update", async () => {
+    calls.put.mockResolvedValue({ outcome: "idempotent_replay", design: design(2) });
+    await expect(
+      client.save(propertyId, {
+        expectedRevision: 1,
+        choices: { primaryColor: "#4F46E5", fontPairing: "high-end-serif" },
+      }),
+    ).resolves.toEqual(design(2));
   });
 
   it("loads only a strict, scope-bound private renderer snapshot", async () => {

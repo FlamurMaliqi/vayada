@@ -15,6 +15,15 @@ const mocks = vi.hoisted(() => ({
   loadDesign: vi.fn(),
   loadDesignReadiness: vi.fn(),
   saveDesign: vi.fn(),
+  resetDraft: vi.fn(),
+  ResetError: class ResetError extends Error {
+    constructor(
+      message: string,
+      readonly requiresRefresh: boolean,
+    ) {
+      super(message);
+    }
+  },
 }));
 
 vi.mock("@/services/api/adaptiveSetupDraftClient", () => ({
@@ -37,6 +46,10 @@ vi.mock("@/services/api/bookingDesignClient", () => ({
     save: mocks.saveDesign,
   },
 }));
+vi.mock("@/services/api/propertySetupDraftResetClient", () => ({
+  PropertySetupDraftResetError: mocks.ResetError,
+  propertySetupDraftResetApi: { reset: mocks.resetDraft },
+}));
 
 import { BookingDesignStep } from "./booking/BookingDesignStep";
 import { MarketplacePreferencesStep } from "./marketplace/MarketplacePreferencesStep";
@@ -56,6 +69,20 @@ describe("adaptive presentation and design steps", () => {
     mocks.loadDesign.mockResolvedValue(null);
     mocks.loadDesignReadiness.mockResolvedValue(designBlocked());
     mocks.saveDesign.mockResolvedValue(designRead());
+    mocks.resetDraft.mockResolvedValue({
+      contractVersion: "property-setup-draft-reset.v1",
+      operation: "reset_step_draft",
+      sessionId,
+      stepId: "present_hotel",
+      trackRevision: 2,
+      sessionRevision: 6,
+      discardedDraftRevision: 2,
+      resetAt: now,
+      nextRead: {
+        method: "GET",
+        href: `/api/hotel-setup/properties/${propertyId}/route`,
+      },
+    });
   });
 
   it("resumes Step 1 from its historical draft and preserves edited input on a failed Back save", async () => {
@@ -87,6 +114,335 @@ describe("adaptive presentation and design steps", () => {
     );
     expect(mocks.savePresentation).not.toHaveBeenCalled();
     expect(props.refreshRoute).not.toHaveBeenCalled();
+    renderer?.unmount();
+  });
+
+  it("persists an edit made while the Back draft save is still in flight", async () => {
+    let finishFirstSave: ((value: unknown) => void) | undefined;
+    mocks.saveDraft
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishFirstSave = resolve;
+          }),
+      )
+      .mockResolvedValue(receipt("present_hotel"));
+    const registration = captureRegistration();
+    const props = stepProps("present_hotel", presentationDraft(), registration.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    const textarea = renderer!.root.findByType("textarea");
+    await act(async () => {
+      textarea.props.onChange({ target: { value: "First edit captured by the pending save." } });
+    });
+
+    let leavePromise!: Promise<void>;
+    act(() => {
+      leavePromise = registration.callback!();
+    });
+    await flush();
+    await act(async () => {
+      textarea.props.onChange({
+        target: { value: "Newer edit that must be saved before navigation completes." },
+      });
+    });
+    finishFirstSave?.(receipt("present_hotel"));
+    await act(async () => leavePromise);
+
+    expect(mocks.saveDraft).toHaveBeenCalledTimes(2);
+    expect(mocks.saveDraft).toHaveBeenLastCalledWith(
+      propertyId,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          "profile.short_description": "Newer edit that must be saved before navigation completes.",
+        }),
+      }),
+    );
+    expect(props.refreshRoute).toHaveBeenCalledOnce();
+    renderer?.unmount();
+  });
+
+  it("applies the latest edit canonically when it changes during the submit draft save", async () => {
+    let finishFirstSave: ((value: unknown) => void) | undefined;
+    mocks.saveDraft
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishFirstSave = resolve;
+          }),
+      )
+      .mockResolvedValue(receipt("present_hotel"));
+    const registration = captureRegistration();
+    const props = stepProps("present_hotel", presentationDraft(), registration.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    const textarea = renderer!.root.findByType("textarea");
+    await act(async () => {
+      textarea.props.onChange({
+        target: { value: "A valid first value that starts the draft save before canonical apply." },
+      });
+      renderer!.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() });
+    });
+    await flush();
+    await act(async () => {
+      textarea.props.onChange({
+        target: {
+          value: "A newer valid value that must be the one applied to the Hotel Catalog owner.",
+        },
+      });
+    });
+    finishFirstSave?.(receipt("present_hotel"));
+    await flush();
+    await flush();
+    await flush();
+
+    expect(mocks.saveDraft).toHaveBeenCalledTimes(2);
+    expect(mocks.savePresentation).toHaveBeenCalledWith(
+      propertyId,
+      expect.objectContaining({
+        shortDescription:
+          "A newer valid value that must be the one applied to the Hotel Catalog owner.",
+      }),
+    );
+    expect(props.saveAndContinue).toHaveBeenCalledOnce();
+    renderer?.unmount();
+  });
+
+  it("resets only the stale Step 1 draft and retains mounted local input", async () => {
+    const beforeLeave = captureRegistration();
+    const staleRecovery = captureRegistration();
+    const props = stepProps(
+      "present_hotel",
+      presentationDraft(),
+      beforeLeave.register,
+      staleRecovery.register,
+    );
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+
+    await act(async () => staleRecovery.callback!());
+    await flush();
+
+    expect(mocks.resetDraft).toHaveBeenCalledWith(propertyId, {
+      sessionId,
+      stepId: "present_hotel",
+      expectedTrackRevision: 2,
+      expectedSessionRevision: 5,
+      expectedDraftRevision: 2,
+      expectedBaseRevisions: presentationDraft().baseRevisions,
+    });
+    expect(props.refreshRoute).toHaveBeenCalledOnce();
+    expect(renderer!.root.findByType("textarea").props.value).toBe(
+      "A locally resumed description that has not been saved canonically yet.",
+    );
+    await act(async () => beforeLeave.callback!());
+    expect(mocks.saveDraft).toHaveBeenCalled();
+    renderer?.unmount();
+  });
+
+  it("merges fresh Step 1 owner fields with only the locally dirty values after reset", async () => {
+    const fresh = presentationRead();
+    mocks.loadPresentation.mockResolvedValueOnce(presentationRead()).mockResolvedValueOnce({
+      ...fresh,
+      profile: {
+        ...fresh.profile,
+        locale: "de",
+        amenities: { reviewed: true, keys: ["wifi"] },
+      },
+    });
+    const beforeLeave = captureRegistration();
+    const staleRecovery = captureRegistration();
+    const props = stepProps(
+      "present_hotel",
+      presentationDraft(),
+      beforeLeave.register,
+      staleRecovery.register,
+    );
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    await act(async () => staleRecovery.callback!());
+    await flush();
+
+    expect(renderer!.root.findByType("textarea").props.value).toContain("locally resumed");
+    expect(renderer!.root.findByType("select").props.value).toBe("de");
+    await act(async () => renderer!.root.findByProps({ "aria-expanded": false }).props.onClick());
+    expect(
+      renderer!.root
+        .findAllByType("input")
+        .find((input) => input.props.type === "checkbox" && input.props.checked)?.props.checked,
+    ).toBe(true);
+    renderer?.unmount();
+  });
+
+  it("merges fresh Step 2 availability with only the locally dirty compensation after reset", async () => {
+    const fresh = preferencesRead();
+    mocks.saveDraft.mockResolvedValue(receipt("marketplace_preferences"));
+    mocks.loadPreferences.mockResolvedValueOnce(preferencesRead()).mockResolvedValueOnce({
+      ...fresh,
+      revision: 1,
+      sourceRevision: "preferences:1",
+      preferences: {
+        compensationTypes: ["paid"],
+        contentPlatforms: ["instagram"],
+        contentTypes: ["post"],
+        availability: { mode: "selected_months", selectedMonths: [7] },
+      },
+    });
+    const beforeLeave = captureRegistration();
+    const staleRecovery = captureRegistration();
+    const props = stepProps(
+      "marketplace_preferences",
+      preferencesDraft(),
+      beforeLeave.register,
+      staleRecovery.register,
+    );
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(MarketplacePreferencesStep, props));
+    });
+    await flush();
+    await act(async () => staleRecovery.callback!());
+    await flush();
+
+    const compensation = renderer!.root
+      .findAllByType("input")
+      .filter((input) => input.props.type === "checkbox")
+      .slice(0, 4);
+    expect(compensation[0]!.props.checked).toBe(true);
+    expect(compensation[1]!.props.checked).toBe(false);
+    expect(renderer!.root.findByProps({ value: "selected_months" }).props.checked).toBe(true);
+    expect(renderer!.root.findByProps({ "aria-label": "July" }).props.checked).toBe(true);
+    renderer?.unmount();
+  });
+
+  it("merges fresh Step 3 font choice with only the locally dirty color after reset", async () => {
+    const draft = baseDraft({
+      stepId: "booking_design",
+      payload: { "booking.primary_color": "#7B2D8E" },
+      dirtyFields: ["booking.primary_color"],
+      baseRevisions: {
+        "booking.design": "design:1",
+        "hotel_catalog.profile": "profile:7",
+        "hotel_catalog.media": "profile:7",
+      },
+    });
+    mocks.loadDesign.mockResolvedValueOnce(designRead()).mockResolvedValueOnce({
+      ...designRead(),
+      revision: 2,
+      choices: { primaryColor: "#0077B6", fontPairing: "italiana-serif" },
+    });
+    const beforeLeave = captureRegistration();
+    const staleRecovery = captureRegistration();
+    const props = stepProps("booking_design", draft, beforeLeave.register, staleRecovery.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(BookingDesignStep, props));
+    });
+    await flush();
+    await act(async () => staleRecovery.callback!());
+    await flush();
+
+    expect(renderer!.root.findByProps({ "aria-label": "Royal purple" }).props.checked).toBe(true);
+    expect(renderer!.root.findByProps({ value: "italiana-serif" }).props.checked).toBe(true);
+    renderer?.unmount();
+  });
+
+  it("refreshes a first-visit conflict without inventing a draft reset", async () => {
+    const beforeLeave = captureRegistration();
+    const staleRecovery = captureRegistration();
+    const draftProps = stepProps(
+      "present_hotel",
+      presentationDraft(),
+      beforeLeave.register,
+      staleRecovery.register,
+    );
+    const route = {
+      ...draftProps.route,
+      sessionId: null,
+      sessionRevision: null,
+      steps: [{ ...draftProps.step, state: "not_started" as const, draft: null }],
+    };
+    const props = { ...draftProps, route, step: route.steps[0]! };
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    await act(async () => {
+      renderer!.root.findByType("textarea").props.onChange({
+        target: { value: "First-visit local text stays mounted through refresh." },
+      });
+      await staleRecovery.callback!();
+    });
+    await flush();
+
+    expect(staleRecovery.mode).toBe("refresh");
+    expect(mocks.resetDraft).not.toHaveBeenCalled();
+    expect(props.refreshRoute).toHaveBeenCalledOnce();
+    expect(renderer!.root.findByType("textarea").props.value).toBe(
+      "First-visit local text stays mounted through refresh.",
+    );
+    renderer?.unmount();
+  });
+
+  it("refreshes reset CAS metadata before retrying with the new historical manifest", async () => {
+    mocks.resetDraft.mockRejectedValueOnce(new mocks.ResetError("Draft changed again.", true));
+    const beforeLeave = captureRegistration();
+    const staleRecovery = captureRegistration();
+    const props = stepProps(
+      "present_hotel",
+      presentationDraft(),
+      beforeLeave.register,
+      staleRecovery.register,
+    );
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    await expect(act(async () => staleRecovery.callback!())).rejects.toThrow(
+      "Draft changed again.",
+    );
+    expect(props.refreshRoute).toHaveBeenCalledOnce();
+    expect(props.reportRevisionConflict).toHaveBeenCalledWith("Draft changed again.");
+
+    const nextDraft = {
+      ...presentationDraft(),
+      revision: 4,
+      baseRevisions: {
+        "hotel_catalog.profile": "profile:8",
+        "hotel_catalog.media": "profile:8",
+        "hotel_catalog.amenities": "profile:8",
+      },
+    } as PropertySetupStepDraft;
+    const nextRoute = setupRoute("present_hotel", nextDraft);
+    nextRoute.sessionRevision = 6;
+    const nextProps = { ...props, route: nextRoute, step: nextRoute.steps[0]! };
+    await act(async () => {
+      renderer!.update(createElement(PresentHotelStep, nextProps));
+    });
+    await act(async () => staleRecovery.callback!());
+
+    expect(mocks.resetDraft).toHaveBeenLastCalledWith(
+      propertyId,
+      expect.objectContaining({
+        expectedSessionRevision: 6,
+        expectedDraftRevision: 4,
+        expectedBaseRevisions: nextDraft.baseRevisions,
+      }),
+    );
     renderer?.unmount();
   });
 
@@ -126,6 +482,127 @@ describe("adaptive presentation and design steps", () => {
         }),
       }),
     );
+    renderer?.unmount();
+  });
+
+  it("rejects photos beyond the Catalog cover-plus-gallery limit before upload", async () => {
+    const registration = captureRegistration();
+    const props = stepProps("present_hotel", presentationDraft(), registration.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+
+    const input = renderer!.root
+      .findAllByType("input")
+      .find((candidate) => candidate.props.type === "file")!;
+    await act(async () => {
+      input.props.onChange({
+        target: {
+          files: Array.from(
+            { length: 27 },
+            (_, index) =>
+              new File([new Uint8Array([index])], `hotel-${index + 1}.jpg`, {
+                type: "image/jpeg",
+              }),
+          ),
+          value: "selected",
+        },
+      });
+    });
+
+    expect(mocks.uploadPresentation).not.toHaveBeenCalled();
+    expect(renderer!.root.findByProps({ role: "alert" }).children.join("")).toMatch(
+      /up to 26 photos/i,
+    );
+    renderer?.unmount();
+  });
+
+  it("blocks Back or Exit while a Step 1 photo upload is active", async () => {
+    let finishUpload: ((value: unknown) => void) | undefined;
+    mocks.uploadPresentation.mockReturnValue(
+      new Promise((resolve) => {
+        finishUpload = resolve;
+      }),
+    );
+    const registration = captureRegistration();
+    const props = stepProps("present_hotel", presentationDraft(), registration.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    const input = renderer!.root
+      .findAllByType("input")
+      .find((candidate) => candidate.props.type === "file")!;
+    await act(async () => {
+      input.props.onChange({
+        target: {
+          files: [new File([new Uint8Array([1])], "pending.jpg", { type: "image/jpeg" })],
+          value: "selected",
+        },
+      });
+    });
+    await flush();
+
+    await expect(act(async () => registration.callback!())).rejects.toThrow(
+      /wait for active photo uploads/i,
+    );
+    expect(props.refreshRoute).not.toHaveBeenCalled();
+
+    finishUpload?.([{ mediaObjectId: "55555555-5555-4555-8555-555555555551" }]);
+    await flush();
+    await flush();
+    await act(async () => registration.callback!());
+    expect(props.refreshRoute).toHaveBeenCalledOnce();
+    renderer?.unmount();
+  });
+
+  it("blocks Back or Exit while a failed Step 1 photo retry is active", async () => {
+    let finishRetry: ((value: unknown) => void) | undefined;
+    mocks.uploadPresentation.mockRejectedValueOnce(new Error("Upload failed")).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRetry = resolve;
+      }),
+    );
+    const registration = captureRegistration();
+    const props = stepProps("present_hotel", presentationDraft(), registration.register);
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(createElement(PresentHotelStep, props));
+    });
+    await flush();
+    const input = renderer!.root
+      .findAllByType("input")
+      .find((candidate) => candidate.props.type === "file")!;
+    await act(async () => {
+      input.props.onChange({
+        target: {
+          files: [new File([new Uint8Array([1])], "retry.jpg", { type: "image/jpeg" })],
+          value: "selected",
+        },
+      });
+    });
+    await flush();
+    await flush();
+
+    const retry = renderer!.root
+      .findAllByType("button")
+      .find((button) => button.children.includes("Retry"))!;
+    await act(async () => retry.props.onClick());
+    await flush();
+
+    await expect(act(async () => registration.callback!())).rejects.toThrow(
+      /wait for active photo uploads/i,
+    );
+    expect(props.refreshRoute).not.toHaveBeenCalled();
+
+    finishRetry?.([{ mediaObjectId: "55555555-5555-4555-8555-555555555551" }]);
+    await flush();
+    await flush();
+    await act(async () => registration.callback!());
+    expect(props.refreshRoute).toHaveBeenCalledOnce();
     renderer?.unmount();
   });
 
@@ -262,15 +739,22 @@ describe("adaptive presentation and design steps", () => {
 });
 
 function captureRegistration() {
-  const state: { callback?: () => Promise<void> } = {};
+  const state: { callback?: () => Promise<void>; mode?: "refresh" | "reset" } = {};
   return {
     get callback() {
       return state.callback;
     },
-    register: vi.fn((callback: () => Promise<void>) => {
+    get mode() {
+      return state.mode;
+    },
+    register: vi.fn((callback: () => Promise<void>, mode?: "refresh" | "reset") => {
       state.callback = callback;
+      state.mode = mode;
       return () => {
-        if (state.callback === callback) state.callback = undefined;
+        if (state.callback === callback) {
+          state.callback = undefined;
+          state.mode = undefined;
+        }
       };
     }),
   };
@@ -280,6 +764,7 @@ function stepProps(
   stepId: "present_hotel" | "marketplace_preferences" | "booking_design",
   draft: PropertySetupStepDraft,
   registerBeforeLeave: AdaptiveSetupStepComponentProps["registerBeforeLeave"],
+  registerStaleRecovery?: AdaptiveSetupStepComponentProps["registerStaleRecovery"],
 ): AdaptiveSetupStepComponentProps {
   const route = setupRoute(stepId, draft);
   return {
@@ -288,6 +773,7 @@ function stepProps(
     step: route.steps[0]!,
     interfaceLocale: "en",
     registerBeforeLeave,
+    registerStaleRecovery,
     refreshRoute: vi.fn().mockResolvedValue(undefined),
     saveAndContinue: vi.fn().mockResolvedValue(undefined),
     reportRevisionConflict: vi.fn(),

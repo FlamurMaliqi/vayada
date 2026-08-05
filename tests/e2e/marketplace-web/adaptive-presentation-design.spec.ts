@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import {
   createBookingDesignButtonColors,
   type BookingDesignFontPairing,
@@ -24,7 +25,7 @@ const summary =
   "A quiet canal-side hotel near museums, cafés, local markets, and the historic centre.";
 
 test.describe("adaptive presentation, Marketplace preferences, and Booking design", () => {
-  test.describe.configure({ timeout: 120_000 });
+  test.describe.configure({ mode: "serial", timeout: 120_000 });
 
   test("completes the first-visit desktop Steps 1–3 through exact owner boundaries", async ({
     page,
@@ -36,6 +37,7 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
 
     await page.goto(setupUrl(baseURL));
     await expect(page.getByRole("heading", { name: "Present your hotel", level: 1 })).toBeVisible();
+    await expectNoSeriousAccessibilityViolations(page);
     const assertHealthy = watchPageHealth(page, testInfo);
     await page.getByLabel("Content language").selectOption("en");
     await page.getByLabel("Short hotel summary").fill(summary);
@@ -56,6 +58,7 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
     await page.getByRole("checkbox", { name: "Instagram" }).check();
     await page.getByRole("checkbox", { name: "Short-form video" }).check();
     await page.getByRole("radio", { name: "Year-round" }).check();
+    await expectNoSeriousAccessibilityViolations(page);
     await assertHealthy();
     await page.getByRole("button", { name: "Save and continue" }).click();
 
@@ -65,6 +68,24 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
     await expect(
       page.getByText("Save these choices to prepare the private preview."),
     ).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    expect(api.fontStylesheetRequest).toContain("family=Inter");
+    expect(await page.evaluate(() => document.fonts.check("16px Inter"))).toBe(true);
+    const computedFontFamilies = await Promise.all(
+      [
+        "High-end Serif",
+        "Modern Minimalist",
+        "Grand Classic",
+        "Imperial Serif",
+        "Italiana Serif",
+      ].map((label) =>
+        page
+          .getByText(label, { exact: true })
+          .evaluate((element) => getComputedStyle(element).fontFamily),
+      ),
+    );
+    expect(new Set(computedFontFamilies).size).toBe(5);
+    await expectNoSeriousAccessibilityViolations(page);
     const assertDesignHealthy = watchPageHealth(page, testInfo);
     const oceanBlue = page.getByRole("radio", { name: "Ocean blue" });
     await oceanBlue.focus();
@@ -110,6 +131,7 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
       .locator("..");
     await expect(saveFailure).toBeVisible();
     await expect(textarea).toHaveValue(summary);
+    await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(1);
     await saveFailure.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(page).toHaveURL(/\/marketplace$/);
 
@@ -125,6 +147,16 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
     await expect(page.getByLabel("Short hotel summary")).toHaveValue(
       `${summary} Still locally retained.`,
     );
+    await page.getByRole("button", { name: "Reset saved draft" }).click();
+    await expect(
+      page.getByRole("heading", { name: "This setup draft is out of date" }),
+    ).toHaveCount(0);
+    await expect(page.getByLabel("Short hotel summary")).toHaveValue(
+      `${summary} Still locally retained.`,
+    );
+    expect(api.resetSteps).toEqual(["present_hotel"]);
+    await page.getByRole("button", { name: "Exit setup", exact: true }).click();
+    await expect(page).toHaveURL(/\/marketplace$/);
     expect(api.canonicalWrites).toEqual([]);
   });
 
@@ -153,6 +185,7 @@ test.describe("adaptive presentation, Marketplace preferences, and Booking desig
     await expect(dialog.getByText("Canal House")).toBeVisible();
     await expect(dialog.getByText(summary)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Check availability" })).toHaveCount(0);
+    await expectNoSeriousAccessibilityViolations(page, '[role="dialog"]');
     await page.keyboard.press("Tab");
     await expect(close).toBeFocused();
     await page.keyboard.press("Escape");
@@ -186,10 +219,12 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
   const draftRevisions = new Map<PropertySetupStepId, number>();
   const drafts = new Map<PropertySetupStepId, PropertySetupStepDraft>();
   const draftSteps: PropertySetupStepId[] = [];
+  const resetSteps: PropertySetupStepId[] = [];
   const canonicalWrites: PropertySetupStepId[] = [];
   const uploadResources: string[] = [];
   const legacyCalls: string[] = [];
   let readinessReads = 0;
+  let fontStylesheetRequest: string | null = null;
   let failNextDraft: DraftFailure = null;
 
   await page.route("https://media.example/**", async (route) => {
@@ -197,6 +232,19 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
       status: 200,
       contentType: "image/webp",
       body: Buffer.from("safe-booking-preview"),
+    });
+  });
+  await page.route("https://fonts.googleapis.com/**", async (route) => {
+    fontStylesheetRequest = route.request().url();
+    await route.fulfill({
+      status: 200,
+      contentType: "text/css",
+      body: `@font-face {
+        font-family: "Inter";
+        font-style: normal;
+        font-weight: 300 700;
+        src: local("Arial"), local("DejaVu Sans");
+      }`,
     });
   });
 
@@ -242,12 +290,70 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
   );
 
   await page.route(
+    /\/api\/hotel-setup\/properties\/[^/]+\/setup-drafts\/([^/?]+)\/reset$/,
+    async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      const segments = new URL(route.request().url()).pathname.split("/");
+      const stepId = decodeURIComponent(segments.at(-2)!) as PropertySetupStepId;
+      const body = route.request().postDataJSON() as {
+        sessionId: string;
+        expectedTrackRevision: number;
+        expectedSessionRevision: number;
+        expectedDraftRevision: number;
+        expectedBaseRevisions: PropertySetupStepDraft["baseRevisions"];
+      };
+      const draft = drafts.get(stepId);
+      if (
+        !draft ||
+        body.sessionId !== sessionId ||
+        body.expectedTrackRevision !== 3 ||
+        body.expectedSessionRevision !== sessionRevision ||
+        body.expectedDraftRevision !== draft.revision ||
+        JSON.stringify(body.expectedBaseRevisions) !== JSON.stringify(draft.baseRevisions)
+      ) {
+        await route.fulfill({
+          status: 409,
+          headers: corsHeaders(route),
+          json: { code: "draft_base_revision_conflict" },
+        });
+        return;
+      }
+      drafts.delete(stepId);
+      draftRevisions.delete(stepId);
+      resetSteps.push(stepId);
+      sessionRevision += 1;
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          contractVersion: "property-setup-draft-reset.v1",
+          operation: "reset_step_draft",
+          sessionId,
+          stepId,
+          trackRevision: 3,
+          sessionRevision,
+          discardedDraftRevision: draft.revision,
+          resetAt: now,
+          nextRead: {
+            method: "GET",
+            href: `/api/hotel-setup/properties/${propertyId}/route`,
+          },
+        },
+      });
+    },
+  );
+
+  await page.route(
     /\/api\/hotel-setup\/properties\/[^/]+\/setup-drafts\/([^/?]+)$/,
     async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      const stepId = decodeURIComponent(
+        new URL(route.request().url()).pathname.split("/").at(-1)!,
+      ) as PropertySetupStepId;
       if (failNextDraft) {
         const failure = failNextDraft;
         failNextDraft = null;
+        if (failure === "stale" && stepId === "present_hotel") profileRevision += 1;
         await route.fulfill({
           status: failure === "stale" ? 409 : 503,
           headers: corsHeaders(route),
@@ -258,9 +364,6 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
         });
         return;
       }
-      const stepId = decodeURIComponent(
-        new URL(route.request().url()).pathname.split("/").at(-1)!,
-      ) as PropertySetupStepId;
       const body = route.request().postDataJSON() as {
         payload: Record<string, unknown>;
         dirtyFields: PropertySetupStepDraft["dirtyFields"];
@@ -464,11 +567,15 @@ async function mockAdaptiveApis(page: Page, options: { designConfigured?: boolea
 
   return {
     draftSteps,
+    resetSteps,
     canonicalWrites,
     uploadResources,
     legacyCalls,
     get readinessReads() {
       return readinessReads;
+    },
+    get fontStylesheetRequest() {
+      return fontStylesheetRequest;
     },
     get failNextDraft() {
       return failNextDraft;
@@ -695,4 +802,13 @@ function setupUrl(baseURL: string | undefined, step?: PropertySetupStepId) {
   url.pathname = "/setup";
   url.search = query.toString();
   return url.toString();
+}
+
+async function expectNoSeriousAccessibilityViolations(page: Page, selector = "main") {
+  const results = await new AxeBuilder({ page }).include(selector).analyze();
+  expect(
+    results.violations
+      .filter(({ impact }) => impact === "critical" || impact === "serious")
+      .map(({ id, impact, nodes }) => ({ id, impact, targets: nodes.map(({ target }) => target) })),
+  ).toEqual([]);
 }
