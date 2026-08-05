@@ -111,10 +111,6 @@ export function PricingStep({
       setLoadError("This pricing step does not match the selected hotel.");
       return () => controller.abort();
     }
-    if (discardHistoricalOnReloadRef.current && step.draft !== null) {
-      setWorkspaceState("loading");
-      return () => controller.abort();
-    }
     setWorkspaceState("loading");
     setLoadError(null);
     void pricingSetupApi

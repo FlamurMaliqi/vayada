@@ -200,10 +200,6 @@ export function CalendarStep(props: AdaptiveSetupStepComponentProps) {
       setWorkspaceError(null);
       return () => controller.abort();
     }
-    if (discardHistoricalOnReloadRef.current && step.draft !== null) {
-      setWorkspaceState("loading");
-      return () => controller.abort();
-    }
     setWorkspaceState("loading");
     setWorkspaceError(null);
     void calendarApi

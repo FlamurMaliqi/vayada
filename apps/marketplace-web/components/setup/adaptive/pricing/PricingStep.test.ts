@@ -371,8 +371,15 @@ describe("PricingStep", () => {
       ...exactManifest,
       "pms.rate_plans": "plans:5",
     };
-    const latestRoute = pricingRoute(null);
-    latestRoute.sessionRevision = 8;
+    const concurrentDraft = emptyPricingDraft();
+    concurrentDraft.revision = 5;
+    concurrentDraft.baseRevisions = route.steps[0]!.currentBaseRevisions as never;
+    concurrentDraft.payload = {
+      "rate.currency": "EUR",
+      "rate.base_nightly_rate": { [roomTypeId]: "215.00" },
+    };
+    const latestRoute = pricingRoute(concurrentDraft);
+    latestRoute.sessionRevision = 9;
     latestRoute.steps[0]!.currentBaseRevisions = route.steps[0]!.currentBaseRevisions;
     mocks.loadWorkspace
       .mockReset()
@@ -415,7 +422,7 @@ describe("PricingStep", () => {
       );
     });
     await vi.waitFor(() => expect(mocks.loadWorkspace).toHaveBeenCalledTimes(2));
-    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("205.00");
+    expect(input(renderer!.root, `base-${roomTypeId}`).props.value).toBe("215.00");
     expect(JSON.stringify(renderer!.toJSON())).toContain("Review the current pricing");
     renderer?.unmount();
   });
