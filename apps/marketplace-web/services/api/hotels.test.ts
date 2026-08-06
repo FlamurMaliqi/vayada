@@ -1441,25 +1441,40 @@ describe("hotel target self-service client", () => {
 
   it("promotes a restored remote offer photo to the canonical hotel cover", async () => {
     const sourceUrl = "https://images.example/restored-offer.webp";
+    const canonicalPropertyId = "00000000-0000-4000-8000-000000000008";
+    const mediaObjectId = "00000000-0000-4000-8000-000000000009";
+    const hiddenGalleryMediaObjectId = "00000000-0000-4000-8000-000000000011";
+    const galleryMedia = {
+      mediaObjectId: "00000000-0000-4000-8000-000000000010",
+      mediaType: "gallery_image",
+      url: "https://cdn.example/hotels/gallery.webp",
+      altText: "Hotel courtyard",
+      sortOrder: 1,
+    } as const;
+    let publicProfileReads = 0;
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url) === sourceUrl) {
+      const href = String(url);
+      if (href === sourceUrl) {
         expect(init).toEqual({ credentials: "omit" });
         return new Response(new Blob(["hotel-cover"], { type: "image/webp" }), { status: 200 });
       }
-      if (String(url).endsWith("/api/media/upload-sessions")) {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
+      if (href.endsWith("/api/media/upload-sessions")) {
+        const body = JSON.parse(String(init?.body));
+        expect(body).toMatchObject({
           idempotencyKey: expect.stringMatching(
-            /^marketplace\.property-hero:property-two:revision:17:files:sha256:[0-9a-f]{64}$/,
+            new RegExp(
+              `^marketplace\\.property-hero:${canonicalPropertyId}:revision:17:files:sha256:[0-9a-f]{64}$`,
+            ),
           ),
           purpose: "property.hero_image",
-          expectedProfileRevision: 17,
+          visibility: "private",
           resource: {
-            product: "marketplace",
-            resourceType: "hotel_profile",
-            resourceId: propertyId,
-            targetResourceId: propertyId,
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: canonicalPropertyId,
           },
         });
+        expect(body).not.toHaveProperty("expectedProfileRevision");
         return jsonResponse({
           uploadSession: { sessionId: "cover-session" },
           uploadTargets: [
@@ -1473,21 +1488,112 @@ describe("hotel target self-service client", () => {
           ],
         });
       }
-      if (String(url).endsWith("/api/media/upload-sessions/cover-session/finalize")) {
+      if (href.endsWith("/api/media/upload-sessions/cover-session/finalize")) {
         return jsonResponse({
           mediaObjects: [
             {
-              mediaId: "00000000-0000-4000-8000-000000000009",
-              storageKey: "public/hotels/cover.webp",
+              mediaId: mediaObjectId,
+              storageKey: "private/media/hotel-cover.webp",
               contentType: "image/webp",
               sizeBytes: 11,
               originalFilename: "shared-hotel-photo-1.webp",
               variants: [
                 {
-                  publicCdnUrl: "https://cdn.example/hotels/cover.webp",
-                  storageKey: "public/hotels/cover.webp",
+                  publicCdnUrl: null,
+                  storageKey: "private/media/hotel-cover.webp",
                 },
               ],
+            },
+          ],
+        });
+      }
+      if (href.endsWith(`/api/hotel-setup/properties/${canonicalPropertyId}/steps/present-hotel`)) {
+        return jsonResponse({
+          contractVersion: "hotel-catalog-step1.v1",
+          propertyId: canonicalPropertyId,
+          displayName: "Alpenrose Munich",
+          profileRevision: 17,
+          supportedLocales: ["en"],
+          profile: {
+            locale: "en",
+            shortDescription:
+              "A welcoming independent hotel close to Munich's historic city centre.",
+            publicSlug: "alpenrose-munich",
+            amenities: { reviewed: true, keys: [] },
+            media: {
+              coverMediaObjectId: "00000000-0000-4000-8000-000000000001",
+              galleryMediaObjectIds: [galleryMedia.mediaObjectId, hiddenGalleryMediaObjectId],
+            },
+          },
+          baseRevisions: {
+            "hotel_catalog.profile": "profile:17",
+            "hotel_catalog.media": "profile:17",
+            "hotel_catalog.amenities": "profile:17",
+          },
+        });
+      }
+      if (href.endsWith(`/api/hotel-setup/properties/${canonicalPropertyId}/public-profile`)) {
+        publicProfileReads += 1;
+        return jsonResponse({
+          propertyId: canonicalPropertyId,
+          profileRevision: 18,
+          publicProfile: {
+            locale: "en",
+            shortDescription: "A welcoming independent hotel.",
+            longDescription: null,
+            media: [
+              {
+                mediaObjectId,
+                mediaType: "hero_image",
+                url: "https://cdn.example/hotels/cover.webp",
+                altText: null,
+                sortOrder: 0,
+              },
+              galleryMedia,
+            ],
+          },
+        });
+      }
+      if (href.endsWith(`/api/hotel-setup/properties/${canonicalPropertyId}/media/presentation`)) {
+        expect(init?.method).toBe("PUT");
+        expect(requestHeader(init, "Idempotency-Key")).toBe(
+          `marketplace.property-cover.assign:${canonicalPropertyId}:revision:17:media:${mediaObjectId}`,
+        );
+        expect(JSON.parse(String(init?.body))).toEqual({
+          expectedProfileRevision: 17,
+          assignments: [
+            { mediaObjectId, role: "cover", altText: null, sortOrder: 0 },
+            {
+              mediaObjectId: galleryMedia.mediaObjectId,
+              role: "gallery",
+              altText: "Alpenrose Munich gallery photo 1",
+              sortOrder: 1,
+            },
+            {
+              mediaObjectId: hiddenGalleryMediaObjectId,
+              role: "gallery",
+              altText: "Alpenrose Munich gallery photo 2",
+              sortOrder: 2,
+            },
+          ],
+        });
+        return jsonResponse({
+          outcome: "updated",
+          profileRevision: 18,
+          logoAssignment: null,
+          presentationAssignments: [
+            { mediaObjectId, role: "cover", altText: null, sortOrder: 0 },
+            {
+              mediaObjectId: galleryMedia.mediaObjectId,
+              role: "gallery",
+              altText: "Alpenrose Munich gallery photo 1",
+              sortOrder: 1,
+            },
+            {
+              mediaObjectId: hiddenGalleryMediaObjectId,
+              role: "gallery",
+              altText: "Alpenrose Munich gallery photo 2",
+              sortOrder: 2,
             },
           ],
         });
@@ -1497,11 +1603,12 @@ describe("hotel target self-service client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      hotelService.uploadProfileImageFromSource(sourceUrl, propertyId, 17),
+      hotelService.uploadProfileImageFromSource(sourceUrl, canonicalPropertyId, 17),
     ).resolves.toMatchObject({
-      mediaObjectId: "00000000-0000-4000-8000-000000000009",
+      mediaObjectId,
       url: "https://cdn.example/hotels/cover.webp",
     });
+    expect(publicProfileReads).toBe(1);
   });
 
   it("classifies a browser-blocked canonical photo before starting a media upload", async () => {

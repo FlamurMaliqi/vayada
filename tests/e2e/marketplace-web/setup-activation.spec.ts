@@ -773,7 +773,7 @@ test.describe("marketplace-web shared setup activation", () => {
     });
   }
 
-  test("saves one hotel description to both profiles and advances to the collaboration offer", async ({
+  test("uploads a canonical hotel cover, saves both profiles, and advances to the collaboration offer", async ({
     page,
     baseURL,
   }) => {
@@ -781,6 +781,10 @@ test.describe("marketplace-web shared setup activation", () => {
     await mockAuthSession(page);
     const publicProfileUpdates: unknown[] = [];
     const marketplaceProfileUpdates: unknown[] = [];
+    const propertyPresentationUpdates: unknown[] = [];
+    const uploadedMediaObjectId = "00000000-0000-4000-8000-000000000099";
+    let uploadSessionRequest: Record<string, unknown> | null = null;
+    let uploadFinalized = false;
     await page.route(/\/api\/hotel-setup\/status/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
@@ -795,9 +799,81 @@ test.describe("marketplace-web shared setup activation", () => {
           : sharedSetupStatus(["publicProfile"]),
       });
     });
-    await mockMarketplaceProfileApis(page, [], [canonicalHeroMedia()], {
+    await mockMarketplaceProfileApis(page, [], [], {
       publicProfile: publicProfileUpdates,
       marketplaceProfile: marketplaceProfileUpdates,
+      propertyPresentation: propertyPresentationUpdates,
+    });
+    await routeJson(
+      page,
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/steps/present-hotel`),
+      {
+        contractVersion: "hotel-catalog-step1.v1",
+        propertyId,
+        displayName: "Alpenrose Munich",
+        profileRevision: 1,
+        supportedLocales: ["en"],
+        profile: {
+          locale: "en",
+          shortDescription: "A welcoming independent hotel close to Munich's historic city centre.",
+          publicSlug: "alpenrose-munich",
+          amenities: { reviewed: true, keys: [] },
+          media: { coverMediaObjectId: null, galleryMediaObjectIds: [] },
+        },
+        baseRevisions: {
+          "hotel_catalog.profile": "profile:1",
+          "hotel_catalog.media": "profile:1",
+          "hotel_catalog.amenities": "profile:1",
+        },
+      },
+    );
+    await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      if (route.request().url().endsWith("/finalize")) {
+        uploadFinalized = true;
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            mediaObjects: [
+              {
+                mediaId: uploadedMediaObjectId,
+                storageKey: "private/media/uploaded-cover.webp",
+                contentType: "image/webp",
+                sizeBytes: 11,
+                originalFilename: "hotel-cover.webp",
+                variants: [
+                  {
+                    publicCdnUrl: null,
+                    storageKey: "private/media/uploaded-cover.webp",
+                  },
+                ],
+              },
+            ],
+          },
+        });
+        return;
+      }
+      uploadSessionRequest = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 201,
+        headers: corsHeaders(route),
+        json: {
+          uploadSession: { sessionId: "hotel-cover-e2e" },
+          uploadTargets: [
+            {
+              uploadTargetId: "hotel-cover-target-e2e",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/hotel-cover-e2e",
+              headers: {},
+            },
+          ],
+        },
+      });
     });
 
     await page.goto(setupUrl(baseURL));
@@ -818,6 +894,11 @@ test.describe("marketplace-web shared setup activation", () => {
     const sharedCopy =
       "An independent Munich stay that gives guests and creators a memorable city base.";
     await description.fill(sharedCopy);
+    await page.getByLabel("Hotel cover photo file").setInputFiles({
+      name: "hotel-cover.webp",
+      mimeType: "image/webp",
+      buffer: Buffer.from("hotel-cover"),
+    });
     const saveProfile = page.getByRole("button", { name: "Save hotel profile" });
     await expect(saveProfile).toBeEnabled();
     await saveProfile.click();
@@ -827,8 +908,32 @@ test.describe("marketplace-web shared setup activation", () => {
     ).toBeVisible();
     expect(publicProfileUpdates).toEqual([
       {
-        expectedProfileRevision: 1,
+        expectedProfileRevision: 2,
         patch: { shortDescription: sharedCopy },
+      },
+    ]);
+    expect(uploadSessionRequest).toMatchObject({
+      purpose: "property.hero_image",
+      visibility: "private",
+      resource: {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: propertyId,
+      },
+    });
+    expect(uploadSessionRequest).not.toHaveProperty("expectedProfileRevision");
+    expect(uploadFinalized).toBe(true);
+    expect(propertyPresentationUpdates).toEqual([
+      {
+        expectedProfileRevision: 1,
+        assignments: [
+          {
+            mediaObjectId: uploadedMediaObjectId,
+            role: "cover",
+            altText: null,
+            sortOrder: 0,
+          },
+        ],
       },
     ]);
     expect(marketplaceProfileUpdates).toEqual([{ hostSummary: sharedCopy }]);
@@ -1552,6 +1657,7 @@ async function mockMarketplaceProfileApis(
   writes?: {
     publicProfile?: unknown[];
     marketplaceProfile?: unknown[];
+    propertyPresentation?: unknown[];
   },
 ) {
   await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile-status`), {
@@ -1561,7 +1667,7 @@ async function mockMarketplaceProfileApis(
     missing_offers: false,
     completion_steps: ["Complete your marketplace hotel profile"],
   });
-  const canonicalProfile = sharedPropertyProfile({
+  let canonicalProfile = sharedPropertyProfile({
     displayName: "Alpenrose Munich",
     propertyType: "hotel",
     location: {
@@ -1607,25 +1713,26 @@ async function mockMarketplaceProfileApis(
       if (route.request().method() === "PUT") {
         const request = route.request().postDataJSON() as Record<string, unknown>;
         expect(request).toEqual({
-          expectedProfileRevision: 1,
+          expectedProfileRevision: canonicalProfile.profileRevision,
           patch: expect.any(Object),
         });
         const patch = request.patch as Record<string, unknown>;
+        canonicalProfile = {
+          propertyId,
+          profileRevision: canonicalProfile.profileRevision + 1,
+          profile: {
+            ...canonicalProfile.profile,
+            ...patch,
+            location:
+              patch.location && typeof patch.location === "object"
+                ? { ...canonicalProfile.profile.location, ...patch.location }
+                : canonicalProfile.profile.location,
+          },
+        };
         await route.fulfill({
           status: 200,
           headers: corsHeaders(route),
-          json: {
-            propertyId,
-            profileRevision: 2,
-            profile: {
-              ...canonicalProfile.profile,
-              ...patch,
-              location:
-                patch.location && typeof patch.location === "object"
-                  ? { ...canonicalProfile.profile.location, ...patch.location }
-                  : canonicalProfile.profile.location,
-            },
-          },
+          json: canonicalProfile,
         });
         return;
       }
@@ -1636,7 +1743,7 @@ async function mockMarketplaceProfileApis(
       });
     },
   );
-  const publicProfile = {
+  let publicProfile = {
     propertyId,
     profileRevision: 1,
     publicProfile: {
@@ -1671,22 +1778,27 @@ async function mockMarketplaceProfileApis(
         const request = route.request().postDataJSON() as Record<string, unknown>;
         writes?.publicProfile?.push(request);
         expect(request).toEqual({
-          expectedProfileRevision: 1,
+          expectedProfileRevision: publicProfile.profileRevision,
           patch: expect.any(Object),
         });
         const patch = request.patch as Record<string, unknown>;
+        publicProfile = {
+          propertyId,
+          profileRevision: publicProfile.profileRevision + 1,
+          publicProfile: {
+            ...publicProfile.publicProfile,
+            ...patch,
+            media: publicProfile.publicProfile.media,
+          },
+        };
+        canonicalProfile = {
+          ...canonicalProfile,
+          profileRevision: publicProfile.profileRevision,
+        };
         await route.fulfill({
           status: 200,
           headers: corsHeaders(route),
-          json: {
-            propertyId,
-            profileRevision: 2,
-            publicProfile: {
-              ...publicProfile.publicProfile,
-              ...patch,
-              media: publicProfile.publicProfile.media,
-            },
-          },
+          json: publicProfile,
         });
         return;
       }
@@ -1694,6 +1806,59 @@ async function mockMarketplaceProfileApis(
         status: 200,
         headers: corsHeaders(route),
         json: publicProfile,
+      });
+    },
+  );
+  await page.route(
+    new RegExp(`/api/hotel-setup/properties/${propertyId}/media/presentation`),
+    async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      const request = route.request().postDataJSON() as {
+        expectedProfileRevision: number;
+        assignments: Array<{
+          mediaObjectId: string;
+          role: "cover" | "gallery";
+          altText: string | null;
+          sortOrder: number;
+        }>;
+      };
+      writes?.propertyPresentation?.push(request);
+      expect(request.expectedProfileRevision).toBe(publicProfile.profileRevision);
+      const existingMedia = new Map(
+        publicProfile.publicProfile.media.map((item) => [item.mediaObjectId, item]),
+      );
+      publicProfile = {
+        propertyId,
+        profileRevision: publicProfile.profileRevision + 1,
+        publicProfile: {
+          ...publicProfile.publicProfile,
+          media: request.assignments.map((assignment) => ({
+            mediaObjectId: assignment.mediaObjectId,
+            mediaType: assignment.role === "cover" ? "hero_image" : "gallery_image",
+            url:
+              existingMedia.get(assignment.mediaObjectId)?.url ??
+              "https://media.example/uploaded-cover.webp",
+            altText: assignment.altText,
+            sortOrder: assignment.sortOrder,
+          })),
+        },
+      };
+      canonicalProfile = {
+        ...canonicalProfile,
+        profileRevision: publicProfile.profileRevision,
+      };
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          outcome: "updated",
+          profileRevision: publicProfile.profileRevision,
+          logoAssignment: null,
+          presentationAssignments: request.assignments,
+        },
       });
     },
   );

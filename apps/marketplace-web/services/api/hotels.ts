@@ -20,6 +20,7 @@ import {
   uploadPlatformMedia,
   type PlatformMediaUploadResult,
 } from "@vayada/marketplace-shared/api/platformMedia";
+import { createHotelCatalogStep1MediaAssignments } from "@vayada/domain-hotels";
 import { countries } from "countries-list";
 import { STORAGE_KEYS } from "@/lib/constants";
 import {
@@ -27,6 +28,7 @@ import {
   SELECTED_SHARED_PROPERTY_ID_KEY,
 } from "@/lib/utils/sharedSetupGuard";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { hotelPresentationClient } from "./hotelPresentationClient";
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
 import { targetApiClient } from "./targetClient";
 
@@ -347,17 +349,47 @@ export const hotelService = {
     const [uploaded] = await uploadPlatformMedia({
       idempotencyKey: `marketplace.property-hero:${profileId}:revision:${expectedProfileRevision}`,
       purpose: "property.hero_image",
-      expectedProfileRevision,
+      visibility: "private",
       resource: {
-        product: "marketplace",
-        resourceType: "hotel_profile",
+        product: "hotel_catalog",
+        resourceType: "property",
         resourceId: profileId,
-        targetResourceId: profileId,
       },
       files: [file],
     });
     if (!uploaded) throw new Error("Platform media did not return an uploaded image");
-    return { ...uploaded, mediaObjectId: uploaded.mediaId };
+
+    const canonicalPresentation = await hotelPresentationClient.load(profileId);
+    const galleryAssignments = createHotelCatalogStep1MediaAssignments(
+      canonicalPresentation.profile.media,
+      canonicalPresentation.displayName,
+    ).filter(({ role }) => role === "gallery");
+    await sharedHotelSetupApi.replacePropertyPresentationMedia(
+      profileId,
+      {
+        expectedProfileRevision,
+        assignments: [
+          {
+            mediaObjectId: uploaded.mediaId,
+            role: "cover",
+            altText: null,
+            sortOrder: 0,
+          },
+          ...galleryAssignments,
+        ],
+      },
+      `marketplace.property-cover.assign:${profileId}:revision:${expectedProfileRevision}:media:${uploaded.mediaId}`,
+    );
+
+    const publishedProfile = await sharedHotelSetupApi.getPublicPropertyProfile(profileId);
+    const publishedCover = publishedProfile.publicProfile.media.find(
+      ({ mediaObjectId, mediaType }) =>
+        mediaType === "hero_image" && mediaObjectId === uploaded.mediaId,
+    );
+    if (!publishedCover) {
+      throw new Error("The hotel cover was assigned but its public image is unavailable.");
+    }
+    return { ...uploaded, url: publishedCover.url, mediaObjectId: uploaded.mediaId };
   },
 
   /**
