@@ -1462,21 +1462,21 @@ describe("hotel target self-service client", () => {
         const body = JSON.parse(String(init?.body));
         expect(body).toMatchObject({
           idempotencyKey: expect.stringMatching(
-            new RegExp(
-              `^marketplace\\.property-hero:${canonicalPropertyId}:revision:17:files:sha256:[0-9a-f]{64}$`,
-            ),
+            new RegExp(`^presentation-media:${canonicalPropertyId}:[0-9a-f]{40}$`),
           ),
-          purpose: "property.hero_image",
+          purpose: "property.gallery_image",
           visibility: "private",
           resource: {
             product: "hotel_catalog",
             resourceType: "property",
             resourceId: canonicalPropertyId,
+            propertyId: canonicalPropertyId,
           },
         });
         expect(body).not.toHaveProperty("expectedProfileRevision");
         return jsonResponse({
-          uploadSession: { sessionId: "cover-session" },
+          contractVersion: "platform-media-upload.v2",
+          uploadSession: { sessionId: "cover-session", status: "signed" },
           uploadTargets: [
             {
               uploadTargetId: "cover-target",
@@ -1490,19 +1490,13 @@ describe("hotel target self-service client", () => {
       }
       if (href.endsWith("/api/media/upload-sessions/cover-session/finalize")) {
         return jsonResponse({
+          contractVersion: "platform-media-upload.v2",
           mediaObjects: [
             {
-              mediaId: mediaObjectId,
-              storageKey: "private/media/hotel-cover.webp",
-              contentType: "image/webp",
-              sizeBytes: 11,
-              originalFilename: "shared-hotel-photo-1.webp",
-              variants: [
-                {
-                  publicCdnUrl: null,
-                  storageKey: "private/media/hotel-cover.webp",
-                },
-              ],
+              mediaObjectId,
+              purpose: "property.gallery_image",
+              status: "private_ready",
+              publicVariants: [],
             },
           ],
         });
