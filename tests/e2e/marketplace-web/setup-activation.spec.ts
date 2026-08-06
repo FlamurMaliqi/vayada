@@ -838,19 +838,13 @@ test.describe("marketplace-web shared setup activation", () => {
           status: 200,
           headers: corsHeaders(route),
           json: {
+            contractVersion: "platform-media-upload.v2",
             mediaObjects: [
               {
-                mediaId: uploadedMediaObjectId,
-                storageKey: "private/media/uploaded-cover.webp",
-                contentType: "image/webp",
-                sizeBytes: 11,
-                originalFilename: "hotel-cover.webp",
-                variants: [
-                  {
-                    publicCdnUrl: null,
-                    storageKey: "private/media/uploaded-cover.webp",
-                  },
-                ],
+                mediaObjectId: uploadedMediaObjectId,
+                purpose: "property.gallery_image",
+                status: "private_ready",
+                publicVariants: [],
               },
             ],
           },
@@ -862,7 +856,8 @@ test.describe("marketplace-web shared setup activation", () => {
         status: 201,
         headers: corsHeaders(route),
         json: {
-          uploadSession: { sessionId: "hotel-cover-e2e" },
+          contractVersion: "platform-media-upload.v2",
+          uploadSession: { sessionId: "hotel-cover-e2e", status: "signed" },
           uploadTargets: [
             {
               uploadTargetId: "hotel-cover-target-e2e",
@@ -913,12 +908,13 @@ test.describe("marketplace-web shared setup activation", () => {
       },
     ]);
     expect(uploadSessionRequest).toMatchObject({
-      purpose: "property.hero_image",
+      purpose: "property.gallery_image",
       visibility: "private",
       resource: {
         product: "hotel_catalog",
         resourceType: "property",
         resourceId: propertyId,
+        propertyId,
       },
     });
     expect(uploadSessionRequest).not.toHaveProperty("expectedProfileRevision");
