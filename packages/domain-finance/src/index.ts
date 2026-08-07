@@ -25,6 +25,7 @@
 export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
 export * from "./paymentReadinessSnapshot.js";
+export * from "./otaCommissionRules.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
@@ -146,12 +147,7 @@ export type PaymentSettingsReadModel = {
 export type FinanceJsonPolicy = Record<string, string | number | boolean | null>;
 export type FinanceJsonObject = Record<string, FinanceJsonValue>;
 export type FinanceJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | FinanceJsonValue[]
-  | { [key: string]: FinanceJsonValue };
+  string | number | boolean | null | FinanceJsonValue[] | { [key: string]: FinanceJsonValue };
 
 export type FinanceProviderAccountReadModel = {
   providerAccountId: string | null;
@@ -504,8 +500,7 @@ export type CreateStripeAffiliateAccountCommand = Omit<
 };
 
 export type CreateStripeProviderAccountCommand =
-  | CreateStripePropertyAccountCommand
-  | CreateStripeAffiliateAccountCommand;
+  CreateStripePropertyAccountCommand | CreateStripeAffiliateAccountCommand;
 
 export type IssueStripeOnboardingLinkPayload = {
   providerAccountId: string;
@@ -528,8 +523,7 @@ export type IssueStripeAffiliateOnboardingLinkCommand = Omit<
 };
 
 export type IssueStripeOnboardingLinkCommand =
-  | IssueStripePropertyOnboardingLinkCommand
-  | IssueStripeAffiliateOnboardingLinkCommand;
+  IssueStripePropertyOnboardingLinkCommand | IssueStripeAffiliateOnboardingLinkCommand;
 
 export type FinanceProviderAccountCommandResponse = {
   contractVersion: FinanceContractVersion;
@@ -732,10 +726,7 @@ export type FinanceAffiliatePayoutSettingsPatchResult =
       ok: false;
       statusCode: 400 | 404 | 409 | 500;
       code:
-        | "invalid_command"
-        | "affiliate_not_found"
-        | "idempotency_conflict"
-        | "write_unavailable";
+        "invalid_command" | "affiliate_not_found" | "idempotency_conflict" | "write_unavailable";
       message: string;
     };
 
@@ -791,13 +782,7 @@ export type AddOnPricingReadModel = {
 // ---------------------------------------------------------------------------
 
 export type ManualCheckoutChargePaymentMethod =
-  | "cash"
-  | "card"
-  | "pay_at_property"
-  | "bank_transfer"
-  | "manual_card"
-  | "xendit"
-  | "other";
+  "cash" | "card" | "pay_at_property" | "bank_transfer" | "manual_card" | "xendit" | "other";
 
 export type SettleManualCheckoutChargePayload = {
   guestBookingId: string;
