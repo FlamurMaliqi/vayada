@@ -134,6 +134,8 @@ export type RequiredResourceLink = {
 
 export type AuthSurfacePolicy = {
   requiredOrganizationKind: OrganizationKind | OrganizationKind[];
+  publicOrigin?: string;
+  firstPartySession?: boolean;
   allowMissingOrganization?: boolean;
   logoutReturnUrl?: string;
   legacyJwtSecret?: string;
@@ -152,6 +154,7 @@ export type AuthSessionRouteOptions = {
   tokenVerifier: TokenVerifier;
   logoutReturnUrl: string;
   allowedOrigins: string[];
+  compatibilityCallbackOrigin: string;
   requiredOrganizationKind: OrganizationKind;
   surfacePolicies?: Partial<Record<AuthSurface, AuthSurfacePolicy>>;
   oauthStateSecret: string;
@@ -242,6 +245,14 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!parsed.ok) {
       return reply.code(400).send(parsed.error);
     }
+    const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+    const callbackUri = googleOAuthCallbackUrl(request, surfacePolicy, options);
+    if (!callbackUri) {
+      return reply.code(400).send({
+        error: "invalid_callback_origin",
+        message: "OAuth callback origin is not trusted for this auth surface.",
+      });
+    }
 
     const state = createOAuthState(options, {
       provider: "google",
@@ -253,18 +264,20 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     });
     const authorizationUrl = options.authKitClient.getAuthorizationUrl({
       provider: "GoogleOAuth",
-      redirectUri: googleOAuthCallbackUrl(request),
+      redirectUri: callbackUri,
       state: state.value,
       loginHint: parsed.loginHint,
     });
 
     reply.header(
       "set-cookie",
-      serializeCookie(OAUTH_STATE_COOKIE, state.nonce, {
-        maxAge: OAUTH_STATE_MAX_AGE_SECONDS,
-        secure: options.cookieSecure,
-        domain: options.cookieDomain,
-      }),
+      authCookieHeaders(
+        OAUTH_STATE_COOKIE,
+        state.nonce,
+        OAUTH_STATE_MAX_AGE_SECONDS,
+        surfacePolicy,
+        options,
+      ),
     );
     return reply.redirect(authorizationUrl);
   });
@@ -276,7 +289,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!state.ok) {
       return reply.code(400).send({ error: "invalid_oauth_state" });
     }
-    if (readCookie(request, OAUTH_STATE_COOKIE) !== state.value.nonce) {
+    const surfacePolicy = getSurfacePolicy(state.value.surface, options);
+    if (!googleOAuthCallbackUrl(request, surfacePolicy, options)) {
+      return reply.code(400).send({ error: "invalid_callback_origin" });
+    }
+    if (readCookie(request, OAUTH_STATE_COOKIE, surfacePolicy) !== state.value.nonce) {
       return redirectWithOAuthError(
         reply,
         state.value,
@@ -285,11 +302,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     reply.header(
       "set-cookie",
-      serializeCookie(OAUTH_STATE_COOKIE, "", {
-        maxAge: 0,
-        secure: options.cookieSecure,
-        domain: options.cookieDomain,
-      }),
+      authCookieHeaders(OAUTH_STATE_COOKIE, "", 0, surfacePolicy, options),
     );
     if (typeof query.error === "string") {
       return redirectWithOAuthError(reply, state.value, "Google sign-in was cancelled.");
@@ -309,7 +322,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return redirectWithOAuthError(reply, state.value, "Google sign-in failed. Please try again.");
     }
 
-    const surfacePolicy = getSurfacePolicy(state.value.surface, options);
     let selectedSession = session;
     let signupContext: AuthSignupContext | undefined;
     if (state.value.flow === "signup") {
@@ -496,20 +508,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
     const csrfToken = randomBytes(24).toString("base64url");
     reply.headers({
-      "set-cookie": [
-        serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
-        serializeCookie(CSRF_COOKIE, csrfToken, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-          httpOnly: false,
-        }),
-        ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
-      ],
+      "set-cookie": authSessionCookieHeaders(resolution.session, csrfToken, surfacePolicy, options),
     });
     return reply.send(
       toSessionResponse(
@@ -655,20 +654,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
     const csrfToken = randomBytes(24).toString("base64url");
     reply.headers({
-      "set-cookie": [
-        serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
-        serializeCookie(CSRF_COOKIE, csrfToken, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-          httpOnly: false,
-        }),
-        ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
-      ],
+      "set-cookie": authSessionCookieHeaders(resolution.session, csrfToken, surfacePolicy, options),
     });
     return reply.send(
       toSessionResponse(
@@ -781,20 +767,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
     const csrfToken = randomBytes(24).toString("base64url");
     reply.headers({
-      "set-cookie": [
-        serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-        }),
-        serializeCookie(CSRF_COOKIE, csrfToken, {
-          maxAge: 60 * 60 * 24 * 7,
-          secure: options.cookieSecure,
-          domain: options.cookieDomain,
-          httpOnly: false,
-        }),
-        ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
-      ],
+      "set-cookie": authSessionCookieHeaders(resolution.session, csrfToken, surfacePolicy, options),
     });
     return reply.send(
       toSessionResponse(
@@ -905,7 +878,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({ error: "origin_rejected" });
     }
-    const sealedSession = readCookie(request, SESSION_COOKIE);
+    const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     if (!sealedSession) {
       return reply.code(401).send({ error: "missing_session" });
     }
@@ -936,18 +909,24 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       }
       return reply.code(403).send(toAuthError(error));
     }
-    const setCookieHeaders = [
-      ...(resolution.session.sealedSession !== sealedSession
-        ? [
-            serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
-              maxAge: 60 * 60 * 24 * 7,
-              secure: options.cookieSecure,
-              domain: options.cookieDomain,
-            }),
-          ]
-        : []),
-      ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
-    ];
+    const requestCsrfToken = readCsrfToken(request, surfacePolicy);
+    const csrfToken =
+      requestCsrfToken ??
+      (surfacePolicy.firstPartySession ? randomBytes(24).toString("base64url") : undefined);
+    const setCookieHeaders = surfacePolicy.firstPartySession
+      ? authSessionCookieHeaders(resolution.session, csrfToken!, surfacePolicy, options)
+      : [
+          ...(resolution.session.sealedSession !== sealedSession
+            ? authCookieHeaders(
+                SESSION_COOKIE,
+                resolution.session.sealedSession,
+                60 * 60 * 24 * 7,
+                surfacePolicy,
+                options,
+              )
+            : []),
+          ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
+        ];
     if (setCookieHeaders.length > 0) {
       reply.header(
         "set-cookie",
@@ -958,7 +937,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       toSessionResponse(
         resolution.session,
         resolution.user,
-        readCsrfToken(request),
+        csrfToken,
         resolution.organizationId,
         resolution.organizationKind,
         resolution.resourceScope,
@@ -970,15 +949,15 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({ error: "origin_rejected" });
     }
-    if (!passesCsrfCheck(request, options)) {
+    const body = request.body as { organizationId?: string; surface?: string } | undefined;
+    const surfacePolicy = getSurfacePolicy(parseSurface(body?.surface), options);
+    if (!passesCsrfCheck(request, options, surfacePolicy)) {
       return reply.code(403).send({ error: "csrf_rejected" });
     }
-    const sealedSession = readCookie(request, SESSION_COOKIE);
+    const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     if (!sealedSession) {
       return reply.code(401).send({ error: "missing_session" });
     }
-    const body = request.body as { organizationId?: string; surface?: string } | undefined;
-    const surfacePolicy = getSurfacePolicy(parseSurface(body?.surface), options);
     const session = await options.authKitClient.refreshSession({
       sealedSession,
       organizationId: body?.organizationId,
@@ -1008,21 +987,26 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       }
       return reply.code(403).send(toAuthError(error));
     }
-    const setCookieHeaders = [
-      serializeCookie(SESSION_COOKIE, resolution.session.sealedSession, {
-        maxAge: 60 * 60 * 24 * 7,
-        secure: options.cookieSecure,
-        domain: options.cookieDomain,
-      }),
-      ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
-    ];
+    const csrfToken = readCsrfToken(request, surfacePolicy)!;
+    const setCookieHeaders = surfacePolicy.firstPartySession
+      ? authSessionCookieHeaders(resolution.session, csrfToken, surfacePolicy, options)
+      : [
+          ...authCookieHeaders(
+            SESSION_COOKIE,
+            resolution.session.sealedSession,
+            60 * 60 * 24 * 7,
+            surfacePolicy,
+            options,
+          ),
+          ...selectedOrganizationCookieHeaders(resolution.session, surfacePolicy, options),
+        ];
     reply
       .header("set-cookie", setCookieHeaders.length === 1 ? setCookieHeaders[0] : setCookieHeaders)
       .send(
         toSessionResponse(
           resolution.session,
           resolution.user,
-          readCsrfToken(request),
+          csrfToken,
           resolution.organizationId,
           resolution.organizationKind,
           resolution.resourceScope,
@@ -1034,15 +1018,15 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({ error: "origin_rejected" });
     }
-    if (!passesCsrfCheck(request, options)) {
-      return reply.code(403).send({ error: "csrf_rejected" });
-    }
     const parsed = parseOnboardingBody(request.body);
     if (!parsed.ok) {
       return reply.code(400).send(parsed.error);
     }
     const surfacePolicy = getSurfacePolicy(parsed.surface, options);
-    const sealedSession = readCookie(request, SESSION_COOKIE);
+    if (!passesCsrfCheck(request, options, surfacePolicy)) {
+      return reply.code(403).send({ error: "csrf_rejected" });
+    }
+    const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     if (!sealedSession) {
       return reply.code(401).send({ error: "missing_session" });
     }
@@ -1050,7 +1034,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!session) {
       return reply.code(401).send({ error: "invalid_session" });
     }
-    persistRefreshedSessionCookie(reply, sealedSession, session, options);
+    persistRefreshedSessionCookie(reply, sealedSession, session, surfacePolicy, options);
 
     let baseResolution: IdentityResolution;
     try {
@@ -1063,7 +1047,13 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
-    persistRefreshedSessionCookie(reply, sealedSession, baseResolution.session, options);
+    persistRefreshedSessionCookie(
+      reply,
+      sealedSession,
+      baseResolution.session,
+      surfacePolicy,
+      options,
+    );
 
     let inviteResolution: HotelAccountInviteOnboardingResolution | null = null;
     if (parsed.inviteCode !== undefined) {
@@ -1098,7 +1088,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         toSessionResponse(
           baseResolution.session,
           baseResolution.user,
-          readCsrfToken(request),
+          readCsrfToken(request, surfacePolicy),
           baseResolution.organizationId,
           baseResolution.organizationKind,
           baseResolution.resourceScope,
@@ -1184,7 +1174,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(403).send(toAuthError(error));
     }
 
-    const csrfToken = readCsrfToken(request) ?? randomBytes(24).toString("base64url");
+    const csrfToken =
+      readCsrfToken(request, surfacePolicy) ?? randomBytes(24).toString("base64url");
     reply.header(
       "set-cookie",
       authSessionCookieHeaders(resolution.session, csrfToken, surfacePolicy, options),
@@ -1205,14 +1196,15 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({ error: "origin_rejected" });
     }
-    if (!passesCsrfCheck(request, options)) {
-      return reply.code(403).send({ error: "csrf_rejected" });
-    }
     const parsed = parseProfileBody(request.body);
     if (!parsed.ok) {
       return reply.code(400).send(parsed.error);
     }
-    const sealedSession = readCookie(request, SESSION_COOKIE);
+    const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+    if (!passesCsrfCheck(request, options, surfacePolicy)) {
+      return reply.code(403).send({ error: "csrf_rejected" });
+    }
+    const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     if (!sealedSession) {
       return reply.code(401).send({ error: "missing_session" });
     }
@@ -1220,11 +1212,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!session) {
       return reply.code(401).send({ error: "invalid_session" });
     }
-    persistRefreshedSessionCookie(reply, sealedSession, session, options);
+    persistRefreshedSessionCookie(reply, sealedSession, session, surfacePolicy, options);
 
     let resolution: IdentityResolution;
     try {
-      const surfacePolicy = getSurfacePolicy(parsed.surface, options);
       resolution = await resolveExistingIdentity(
         session,
         options,
@@ -1234,7 +1225,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     } catch (error) {
       return reply.code(403).send(toAuthError(error));
     }
-    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, options);
+    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, surfacePolicy, options);
 
     let profilePictureUrl = parsed.profilePictureUrl;
     if (parsed.profilePictureMediaObjectId) {
@@ -1307,12 +1298,12 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!writeCorsHeaders(request, reply, options)) {
       return reply.code(403).send({ error: "origin_rejected" });
     }
-    if (!passesCsrfCheck(request, options)) {
-      return reply.code(403).send({ error: "csrf_rejected" });
-    }
     const body = request.body as { surface?: string; return_to?: string } | undefined;
     const surfacePolicy = getSurfacePolicy(parseSurface(body?.surface), options);
-    const sealedSession = readCookie(request, SESSION_COOKIE);
+    if (!passesCsrfCheck(request, options, surfacePolicy)) {
+      return reply.code(403).send({ error: "csrf_rejected" });
+    }
+    const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     const returnTo = body?.return_to
       ? validateReturnTo(body.return_to, options.allowedOrigins)
       : (surfacePolicy.logoutReturnUrl ?? options.logoutReturnUrl);
@@ -1360,17 +1351,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     reply
       .headers({
         "set-cookie": [
-          serializeCookie(SESSION_COOKIE, "", {
-            maxAge: 0,
-            secure: options.cookieSecure,
-            domain: options.cookieDomain,
+          ...authCookieHeaders(SESSION_COOKIE, "", 0, surfacePolicy, options),
+          ...authCookieHeaders(CSRF_COOKIE, "", 0, surfacePolicy, options, {
+            httpOnly: surfacePolicy.firstPartySession === true,
           }),
-          serializeCookie(CSRF_COOKIE, "", {
-            maxAge: 0,
-            secure: options.cookieSecure,
-            domain: options.cookieDomain,
-            httpOnly: false,
-          }),
+          ...authCookieHeaders(OAUTH_STATE_COOKIE, "", 0, surfacePolicy, options),
           ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
         ],
       })
@@ -1491,8 +1476,9 @@ function parseGoogleOAuthStartQuery(
       };
     }
   }
-  const returnTo = safeAllowedReturnTo(query.return_to, options);
-  const errorReturnTo = safeAllowedReturnTo(query.error_return_to, options);
+  const surfaceOrigin = options.surfacePolicies?.[surface]?.publicOrigin;
+  const returnTo = safeAllowedReturnTo(query.return_to, options, surfaceOrigin);
+  const errorReturnTo = safeAllowedReturnTo(query.error_return_to, options, surfaceOrigin);
   if (!returnTo || !errorReturnTo) {
     return {
       ok: false,
@@ -1510,26 +1496,68 @@ function parseGoogleOAuthStartQuery(
   };
 }
 
-function safeAllowedReturnTo(value: unknown, options: AuthSessionRouteOptions): string | null {
+function safeAllowedReturnTo(
+  value: unknown,
+  options: AuthSessionRouteOptions,
+  requiredOrigin?: string,
+): string | null {
   if (typeof value !== "string" || !value) return null;
   try {
     const url = new URL(value);
-    return options.allowedOrigins.includes(url.origin) ? url.toString() : null;
+    return options.allowedOrigins.includes(url.origin) &&
+      (!requiredOrigin || url.origin === requiredOrigin)
+      ? url.toString()
+      : null;
   } catch {
     return null;
   }
 }
 
-function googleOAuthCallbackUrl(request: FastifyRequest): string {
-  const proto = firstHeader(request.headers["x-forwarded-proto"]) ?? request.protocol;
-  const host =
-    firstHeader(request.headers["x-forwarded-host"]) ?? firstHeader(request.headers.host);
-  if (!host) throw new Error("Missing request host");
-  return `${proto}://${host}/auth/oauth/google/callback`;
+function googleOAuthCallbackUrl(
+  request: FastifyRequest,
+  surfacePolicy: AuthSurfacePolicy,
+  options: AuthSessionRouteOptions,
+): string | null {
+  const callbackOrigin = surfacePolicy.firstPartySession
+    ? surfacePolicy.publicOrigin
+    : options.compatibilityCallbackOrigin;
+  if (!callbackOrigin || !options.allowedOrigins.includes(callbackOrigin)) return null;
+
+  const forwardedOrigin = readForwardedOrigin(request);
+  if (
+    (surfacePolicy.firstPartySession && !forwardedOrigin.present) ||
+    (forwardedOrigin.present && forwardedOrigin.origin !== callbackOrigin)
+  ) {
+    return null;
+  }
+  return `${callbackOrigin}/auth/oauth/google/callback`;
 }
 
-function firstHeader(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
+function readForwardedOrigin(
+  request: FastifyRequest,
+): { present: false } | { present: true; origin: string | null } {
+  const forwardedProto = firstProxyHeaderValue(request.headers["x-forwarded-proto"]);
+  const forwardedHost = firstProxyHeaderValue(request.headers["x-forwarded-host"]);
+  if (!forwardedProto && !forwardedHost) return { present: false };
+  const proto = forwardedProto ?? request.protocol;
+  const host = forwardedHost ?? firstProxyHeaderValue(request.headers.host);
+  if (!host || !["http", "https"].includes(proto.toLowerCase())) {
+    return { present: true, origin: null };
+  }
+  try {
+    const url = new URL(`${proto.toLowerCase()}://${host}`);
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+      return { present: true, origin: null };
+    }
+    return { present: true, origin: url.origin };
+  } catch {
+    return { present: true, origin: null };
+  }
+}
+
+function firstProxyHeaderValue(value: string | string[] | undefined): string | undefined {
+  const first = Array.isArray(value) ? value[0] : value;
+  return first?.split(",", 1)[0]?.trim() || undefined;
 }
 
 function createOAuthState(
@@ -2206,10 +2234,10 @@ function registerCompatibilityTokenRoute(
     if (!surfacePolicy.legacyJwtSecret) {
       return reply.code(404).send({ error: "legacy_compatibility_bridge_not_configured" });
     }
-    if (!passesCsrfCheck(request, options)) {
+    if (!passesCsrfCheck(request, options, surfacePolicy)) {
       return reply.code(403).send({ error: "csrf_rejected" });
     }
-    const sealedSession = readCookie(request, SESSION_COOKIE);
+    const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     if (!sealedSession) {
       return reply.code(401).send({ error: "missing_session" });
     }
@@ -2217,7 +2245,7 @@ function registerCompatibilityTokenRoute(
     if (!session) {
       return reply.code(401).send({ error: "invalid_session" });
     }
-    persistRefreshedSessionCookie(reply, sealedSession, session, options);
+    persistRefreshedSessionCookie(reply, sealedSession, session, surfacePolicy, options);
     let resolution: IdentityResolution;
     try {
       resolution = await resolveExistingIdentity(
@@ -2230,11 +2258,15 @@ function registerCompatibilityTokenRoute(
       );
     } catch (error) {
       if (error instanceof OrganizationSelectionRequiredError) {
-        return sendOrganizationSelectionResponse(reply, error, readCsrfToken(request));
+        return sendOrganizationSelectionResponse(
+          reply,
+          error,
+          readCsrfToken(request, surfacePolicy),
+        );
       }
       return reply.code(403).send(toAuthError(error));
     }
-    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, options);
+    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, surfacePolicy, options);
     const expiresIn = 15 * 60;
     const resourceScope = resolution.resourceScope
       ? { [resourceScopeKey(resolution.resourceScope)]: resolution.resourceScope.resourceIds }
@@ -2637,16 +2669,15 @@ function sendOrganizationSelectionSessionResponse(
   const csrfToken = randomBytes(24).toString("base64url");
   reply.headers({
     "set-cookie": [
-      serializeCookie(SESSION_COOKIE, session.sealedSession, {
-        maxAge: 60 * 60 * 24 * 7,
-        secure: options.cookieSecure,
-        domain: options.cookieDomain,
-      }),
-      serializeCookie(CSRF_COOKIE, csrfToken, {
-        maxAge: 60 * 60 * 24 * 7,
-        secure: options.cookieSecure,
-        domain: options.cookieDomain,
-        httpOnly: false,
+      ...authCookieHeaders(
+        SESSION_COOKIE,
+        session.sealedSession,
+        60 * 60 * 24 * 7,
+        surfacePolicy,
+        options,
+      ),
+      ...authCookieHeaders(CSRF_COOKIE, csrfToken, 60 * 60 * 24 * 7, surfacePolicy, options, {
+        httpOnly: surfacePolicy.firstPartySession === true,
       }),
       ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
     ],
@@ -2696,7 +2727,7 @@ function organizationAccessOptionsFromRequest(
   return {
     allowMissingOrganization: surfacePolicy.allowMissingOrganization === true,
     selectedWorkosOrganizationId: selectedOrganizationCookieName
-      ? (readCookie(request, selectedOrganizationCookieName) ?? null)
+      ? (readCookie(request, selectedOrganizationCookieName, surfacePolicy) ?? null)
       : null,
     ...overrides,
   };
@@ -2715,16 +2746,15 @@ function authSessionCookieHeaders(
   options: AuthSessionRouteOptions,
 ): string[] {
   return [
-    serializeCookie(SESSION_COOKIE, session.sealedSession, {
-      maxAge: 60 * 60 * 24 * 7,
-      secure: options.cookieSecure,
-      domain: options.cookieDomain,
-    }),
-    serializeCookie(CSRF_COOKIE, csrfToken, {
-      maxAge: 60 * 60 * 24 * 7,
-      secure: options.cookieSecure,
-      domain: options.cookieDomain,
-      httpOnly: false,
+    ...authCookieHeaders(
+      SESSION_COOKIE,
+      session.sealedSession,
+      60 * 60 * 24 * 7,
+      surfacePolicy,
+      options,
+    ),
+    ...authCookieHeaders(CSRF_COOKIE, csrfToken, 60 * 60 * 24 * 7, surfacePolicy, options, {
+      httpOnly: surfacePolicy.firstPartySession === true,
     }),
     ...selectedOrganizationCookieHeaders(session, surfacePolicy, options),
   ];
@@ -2734,16 +2764,19 @@ function persistRefreshedSessionCookie(
   reply: FastifyReply,
   requestSealedSession: string,
   session: AuthKitSession,
+  surfacePolicy: AuthSurfacePolicy,
   options: AuthSessionRouteOptions,
 ): void {
   if (session.sealedSession === requestSealedSession) return;
   reply.header(
     "set-cookie",
-    serializeCookie(SESSION_COOKIE, session.sealedSession, {
-      maxAge: 60 * 60 * 24 * 7,
-      secure: options.cookieSecure,
-      domain: options.cookieDomain,
-    }),
+    authCookieHeaders(
+      SESSION_COOKIE,
+      session.sealedSession,
+      60 * 60 * 24 * 7,
+      surfacePolicy,
+      options,
+    ),
   );
 }
 
@@ -2754,25 +2787,21 @@ function selectedOrganizationCookieHeaders(
 ): string[] {
   const cookieName = surfacePolicy.selectedOrganizationCookieName;
   if (!cookieName || !session.organizationId) return [];
-  return [
-    serializeCookie(cookieName, session.organizationId, {
-      maxAge: 60 * 60 * 24 * 7,
-      secure: options.cookieSecure,
-      domain: options.cookieDomain,
-    }),
-  ];
+  return authCookieHeaders(
+    cookieName,
+    session.organizationId,
+    60 * 60 * 24 * 7,
+    surfacePolicy,
+    options,
+  );
 }
 
 function clearSelectedOrganizationCookieHeaders(
   surfacePolicy: AuthSurfacePolicy,
   options: AuthSessionRouteOptions,
 ): string[] {
-  return selectedOrganizationCookieNames(surfacePolicy).map((name) =>
-    serializeCookie(name, "", {
-      maxAge: 0,
-      secure: options.cookieSecure,
-      domain: options.cookieDomain,
-    }),
+  return selectedOrganizationCookieNames(surfacePolicy).flatMap((name) =>
+    authCookieHeaders(name, "", 0, surfacePolicy, options),
   );
 }
 
@@ -2881,8 +2910,17 @@ function base64Url(value: string): string {
   return Buffer.from(value).toString("base64url");
 }
 
-function readCookie(request: FastifyRequest, name: string): string | undefined {
-  return readCookies(request, name)[0];
+function readCookie(
+  request: FastifyRequest,
+  name: string,
+  surfacePolicy: AuthSurfacePolicy,
+): string | undefined {
+  const values = readCookies(request, activeCookieName(name, surfacePolicy));
+  return surfacePolicy.firstPartySession
+    ? values.length === 1
+      ? values[0]
+      : undefined
+    : values[0];
 }
 
 function readCookies(request: FastifyRequest, name: string): string[] {
@@ -2902,13 +2940,19 @@ function readCookies(request: FastifyRequest, name: string): string[] {
 function serializeCookie(
   name: string,
   value: string,
-  options: { maxAge: number; secure: boolean; domain?: string; httpOnly?: boolean },
+  options: {
+    maxAge: number;
+    secure: boolean;
+    sameSite: "Lax" | "None";
+    domain?: string;
+    httpOnly?: boolean;
+  },
 ): string {
   const parts = [
     `${name}=${encodeURIComponent(value)}`,
     "Path=/auth",
     `Max-Age=${options.maxAge}`,
-    `SameSite=${options.secure ? "None" : "Lax"}`,
+    `SameSite=${options.sameSite}`,
   ];
   if (options.httpOnly !== false) parts.push("HttpOnly");
   if (options.secure) parts.push("Secure");
@@ -2916,17 +2960,52 @@ function serializeCookie(
   return parts.join("; ");
 }
 
-function clearHostOnlyCookies(
-  names: string[],
-  options: { secure: boolean; domain?: string },
+function authCookieHeaders(
+  name: string,
+  value: string,
+  maxAge: number,
+  surfacePolicy: AuthSurfacePolicy,
+  options: AuthSessionRouteOptions,
+  cookieOptions: { httpOnly?: boolean } = {},
 ): string[] {
-  if (!options.domain) return [];
-  return names.map((name) =>
-    serializeCookie(name, "", {
-      maxAge: 0,
-      secure: options.secure,
-    }),
-  );
+  const firstParty = surfacePolicy.firstPartySession === true;
+  const primary = serializeCookie(activeCookieName(name, surfacePolicy), value, {
+    maxAge,
+    secure: options.cookieSecure,
+    sameSite: firstParty ? "Lax" : options.cookieSecure ? "None" : "Lax",
+    ...(!firstParty && options.cookieDomain ? { domain: options.cookieDomain } : {}),
+    ...(firstParty
+      ? { httpOnly: true }
+      : cookieOptions.httpOnly !== undefined
+        ? { httpOnly: cookieOptions.httpOnly }
+        : {}),
+  });
+  if (!firstParty) return [primary];
+  const legacyCookieOptions = {
+    maxAge: 0,
+    secure: options.cookieSecure,
+    sameSite: options.cookieSecure ? ("None" as const) : ("Lax" as const),
+    ...(cookieOptions.httpOnly !== undefined ? { httpOnly: cookieOptions.httpOnly } : {}),
+  };
+  return [
+    primary,
+    serializeCookie(name, "", legacyCookieOptions),
+    ...(options.cookieDomain
+      ? [
+          serializeCookie(name, "", {
+            ...legacyCookieOptions,
+            domain: options.cookieDomain,
+          }),
+        ]
+      : []),
+  ];
+}
+
+function activeCookieName(name: string, surfacePolicy: AuthSurfacePolicy): string {
+  if (!surfacePolicy.firstPartySession) return name;
+  return name.startsWith("vayada_")
+    ? `vayada_fp_${name.slice("vayada_".length)}`
+    : `vayada_fp_${name}`;
 }
 
 function toAuthError(error: unknown) {
@@ -2947,17 +3026,28 @@ function toEmailVerificationError(error: unknown) {
   };
 }
 
-function passesCsrfCheck(request: FastifyRequest, options: AuthSessionRouteOptions): boolean {
+function passesCsrfCheck(
+  request: FastifyRequest,
+  options: AuthSessionRouteOptions,
+  surfacePolicy: AuthSurfacePolicy,
+): boolean {
   const origin = request.headers.origin;
   if (origin && !options.allowedOrigins.includes(origin)) {
     return false;
   }
   const csrfHeader = readCsrfHeader(request);
-  return Boolean(csrfHeader && readCookies(request, CSRF_COOKIE).includes(csrfHeader));
+  if (!csrfHeader) return false;
+  const csrfValues = readCookies(request, activeCookieName(CSRF_COOKIE, surfacePolicy));
+  return surfacePolicy.firstPartySession
+    ? csrfValues.length === 1 && csrfValues[0] === csrfHeader
+    : csrfValues.includes(csrfHeader);
 }
 
-function readCsrfToken(request: FastifyRequest): string | undefined {
-  return readCsrfHeader(request) ?? readCookie(request, CSRF_COOKIE);
+function readCsrfToken(
+  request: FastifyRequest,
+  surfacePolicy: AuthSurfacePolicy,
+): string | undefined {
+  return readCsrfHeader(request) ?? readCookie(request, CSRF_COOKIE, surfacePolicy);
 }
 
 function readCsrfHeader(request: FastifyRequest): string | undefined {

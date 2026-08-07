@@ -80,13 +80,16 @@ callback origin from arbitrary forwarded headers:
 
 `AUTH_FIRST_PARTY_SURFACES` is a comma-separated rollout list. A surface in
 that list uses the first-party callback and cookie policy. A surface outside it
-may retain the temporary cross-origin compatibility behavior until its own
-ticket is deployed. Remove this compatibility switch after all surfaces pass
-VAY-1203.
+uses the exact API origin in `AUTH_COMPATIBILITY_CALLBACK_ORIGIN` and may retain
+the temporary cross-origin cookie policy until its own ticket is deployed. The
+backend never derives either callback from forwarded headers. Remove both
+compatibility settings after all surfaces pass VAY-1203.
 
 `AUTH_ALLOWED_ORIGINS` remains the backend CSRF/CORS allowlist and must contain
-the configured surface origins. `AUTH_COOKIE_DOMAIN` must be unset for every
-first-party surface.
+the configured surface origins. Active first-party cookies never include an
+`AUTH_COOKIE_DOMAIN`. During migration, retain the previous value only long
+enough for the backend to expire legacy Domain-scoped cookies alongside the new
+host-only cookies, then unset it after the cleanup window.
 
 ### Request rules
 
@@ -142,6 +145,11 @@ First-party surfaces use host-only cookies:
 | WorkOS sealed session  | `HttpOnly; Secure; SameSite=Lax; Path=/auth`; no `Domain`                 |
 | OAuth state / verifier | `HttpOnly; Secure; SameSite=Lax; Path=/auth`; short lifetime; no `Domain` |
 | Vayada CSRF cookie     | `HttpOnly; Secure; SameSite=Lax; Path=/auth`; no `Domain`                 |
+
+First-party cookies use a distinct `vayada_fp_*` name family. Compatibility
+surfaces retain the existing names, so a later compatibility login cannot win
+through ambiguous browser cookie ordering. First-party responses also expire
+the legacy host-only and configured Domain-scoped names during migration.
 
 Plain HTTP localhost fallback omits `Secure`; portless and every deployed
 environment use HTTPS and require it. `SameSite=None` is not used by a

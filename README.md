@@ -218,9 +218,14 @@ set +a
 export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-$AUTH_DATABASE_URL}"
 export AUTH_COOKIE_SECRET=local-dev-auth-cookie-secret-0123456789abcdef
 export AUTH_LOGOUT_URL=http://localhost:3004/login
-export AUTH_ALLOWED_ORIGINS=http://localhost:8003,http://localhost:3004
+export AUTH_ALLOWED_ORIGINS=http://localhost:8003,http://localhost:3000,http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:3005
 export AUTH_COOKIE_SECURE=false
+export AUTH_COMPATIBILITY_CALLBACK_ORIGIN=http://localhost:8003
+export AUTH_PLATFORM_ADMIN_ORIGIN=http://localhost:3001
+export AUTH_MARKETPLACE_WEB_ORIGIN=http://localhost:3000
+export AUTH_BOOKING_ADMIN_ORIGIN=http://localhost:3003
 export AUTH_PMS_WEB_ORIGIN=http://localhost:3004
+export AUTH_AFFILIATE_DASHBOARD_ORIGIN=http://localhost:3005
 # Enable only after the PMS /auth gateway is present.
 export AUTH_FIRST_PARTY_SURFACES=pms-web
 export AUTH_LEGACY_PMS_JWT_SECRET=your-secret-key-change-in-production
