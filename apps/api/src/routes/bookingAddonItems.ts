@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { parseAddonEconomicTerms, type AddonEconomicTerms } from "@vayada/domain-booking";
 import pg, { type QueryResultRow } from "pg";
 
 import { enforceRoutePolicy } from "./policy.js";
@@ -28,7 +29,7 @@ export type BookingAddonItem = {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
-};
+} & AddonEconomicTerms;
 
 export type CreateBookingAddonItemBody = {
   name: string;
@@ -42,9 +43,15 @@ export type CreateBookingAddonItemBody = {
   publicVisible: boolean;
   status: Exclude<BookingAddonItemStatus, "retired">;
   sortOrder: number;
-};
+} & AddonEconomicTerms;
 
-export type UpdateBookingAddonItemBody = Partial<CreateBookingAddonItemBody>;
+type UpdateAddonEconomicTerms =
+  { ownershipKind?: never; partnerCommissionRate?: never } | AddonEconomicTerms;
+
+export type UpdateBookingAddonItemBody = Partial<
+  Omit<CreateBookingAddonItemBody, keyof AddonEconomicTerms>
+> &
+  UpdateAddonEconomicTerms;
 
 export type BookingAddonItemsRepository = {
   listAddonItemsByHotelId(hotelId: string): Promise<BookingAddonItem[] | null>;
@@ -248,9 +255,10 @@ export function createPgTargetBookingAddonItemsRepository(config: {
         `WITH inserted AS (
            INSERT INTO booking.addon_definitions (
              property_id, name, description, category, pricing_model,
-             price_amount, currency, public_visible, status, metadata
+             price_amount, currency, public_visible, status,
+             ownership_kind, partner_commission_rate, metadata
            )
-           VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8, $9, $10::jsonb)
+           VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8, $9, $10, $11::numeric, $12::jsonb)
            RETURNING id
          )
          ${addonItemSelectSql()}
@@ -265,6 +273,8 @@ export function createPgTargetBookingAddonItemsRepository(config: {
           body.currency,
           body.publicVisible,
           body.status,
+          body.ownershipKind,
+          body.partnerCommissionRate,
           JSON.stringify(metadataFromBody(body)),
         ],
       );
@@ -272,6 +282,12 @@ export function createPgTargetBookingAddonItemsRepository(config: {
       return row ? toAddonItem(row, hotelId) : null;
     },
     async updateAddonItemByHotelId(hotelId, addonItemId, body) {
+      if (
+        ("ownershipKind" in body || "partnerCommissionRate" in body) &&
+        !parseAddonEconomicTerms(body)
+      ) {
+        throw new Error("Add-on economic updates require a complete valid ownership pair");
+      }
       const propertyId = await resolvePropertyId(hotelId);
       if (!propertyId) return null;
       const values: unknown[] = [propertyId, addonItemId];
@@ -284,6 +300,10 @@ export function createPgTargetBookingAddonItemsRepository(config: {
       addSet(sets, values, "currency", body.currency);
       addSet(sets, values, "public_visible", body.publicVisible);
       addSet(sets, values, "status", body.status);
+      if (body.ownershipKind !== undefined) {
+        addSet(sets, values, "ownership_kind", body.ownershipKind);
+        addSet(sets, values, "partner_commission_rate", body.partnerCommissionRate, "::numeric");
+      }
       const metadata = metadataFromBody(body);
       if (Object.keys(metadata).length > 0) {
         values.push(JSON.stringify(metadata));
@@ -335,6 +355,8 @@ type AddonItemRow = {
   currency: string;
   publicVisible: boolean;
   status: BookingAddonItemStatus;
+  ownershipKind: string;
+  partnerCommissionRate: string | null;
   metadata: unknown;
   createdAt: Date | string;
   updatedAt: Date | string;
@@ -352,6 +374,8 @@ function addonItemSelectSql(): string {
     addon_definitions.currency,
     addon_definitions.public_visible AS "publicVisible",
     addon_definitions.status,
+    addon_definitions.ownership_kind AS "ownershipKind",
+    addon_definitions.partner_commission_rate::text AS "partnerCommissionRate",
     addon_definitions.metadata,
     addon_definitions.created_at AS "createdAt",
     addon_definitions.updated_at AS "updatedAt"
@@ -372,6 +396,8 @@ function addSet(
 
 function toAddonItem(row: AddonItemRow, hotelId: string): BookingAddonItem {
   const metadata = isRecord(row.metadata) ? row.metadata : {};
+  const economicTerms = parseAddonEconomicTerms(row);
+  if (!economicTerms) throw new Error("Stored add-on economics are invalid");
   const imageUrl = nullableString(metadata.imageUrl);
   const duration = nullableString(metadata.duration);
   const sortOrder = typeof metadata.sortOrder === "number" ? metadata.sortOrder : 0;
@@ -392,6 +418,7 @@ function toAddonItem(row: AddonItemRow, hotelId: string): BookingAddonItem {
     sortOrder,
     createdAt: new Date(row.createdAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
+    ...economicTerms,
   };
 }
 
@@ -419,6 +446,10 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingAddonItem
   const publicVisible = optionalBoolean(input, "publicVisible", details) ?? true;
   const status = optionalEnum(input, "status", WRITABLE_STATUSES, details) ?? "active";
   const sortOrder = optionalInteger(input, "sortOrder", details) ?? 0;
+  const economicTerms = parseEconomicTerms(input, details, true) ?? {
+    ownershipKind: "property",
+    partnerCommissionRate: null,
+  };
   if (details.length > 0) return { ok: false, details };
   return {
     ok: true,
@@ -434,6 +465,7 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingAddonItem
       publicVisible,
       status: status as CreateBookingAddonItemBody["status"],
       sortOrder,
+      ...economicTerms,
     },
   };
 }
@@ -479,6 +511,8 @@ function parseUpdateBody(body: unknown): ValidationResult<UpdateBookingAddonItem
     ) as CreateBookingAddonItemBody["status"];
   }
   if ("sortOrder" in input) value.sortOrder = requiredInteger(input, "sortOrder", details);
+  const economicTerms = parseEconomicTerms(input, details, false);
+  if (economicTerms) Object.assign(value, economicTerms);
   if (details.length > 0) return { ok: false, details };
   return { ok: true, value };
 }
@@ -495,7 +529,29 @@ const KNOWN_FIELDS = new Set([
   "publicVisible",
   "status",
   "sortOrder",
+  "ownershipKind",
+  "partnerCommissionRate",
 ]);
+
+function parseEconomicTerms(
+  input: Record<string, unknown>,
+  details: string[],
+  defaultToProperty: boolean,
+): AddonEconomicTerms | undefined {
+  if (!defaultToProperty && !("ownershipKind" in input) && !("partnerCommissionRate" in input)) {
+    return undefined;
+  }
+  const parsed = parseAddonEconomicTerms({
+    ownershipKind: input["ownershipKind"] ?? (defaultToProperty ? "property" : undefined),
+    partnerCommissionRate: input["partnerCommissionRate"] ?? null,
+  });
+  if (!parsed) {
+    details.push(
+      "ownershipKind and partnerCommissionRate must be property/null or partner/a 0..100 decimal with at most four decimal places.",
+    );
+  }
+  return parsed ?? undefined;
+}
 
 function expectObject(body: unknown): ValidationResult<Record<string, unknown>> {
   if (!isRecord(body)) return { ok: false, details: ["Body must be an object."] };

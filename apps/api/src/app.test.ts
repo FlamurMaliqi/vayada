@@ -752,6 +752,8 @@ const bookingAddonItem: BookingAddonItem = {
   publicVisible: true,
   status: "active",
   sortOrder: 0,
+  ownershipKind: "property",
+  partnerCommissionRate: null,
   createdAt: "2026-06-01T10:00:00.000Z",
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
@@ -759,6 +761,15 @@ const bookingAddonItem: BookingAddonItem = {
 function addonItemFromBody(
   body: CreateBookingAddonItemBody | UpdateBookingAddonItemBody,
 ): BookingAddonItem {
+  const ownershipKind = body.ownershipKind ?? bookingAddonItem.ownershipKind;
+  const economicTerms =
+    ownershipKind === "partner"
+      ? {
+          ownershipKind: "partner" as const,
+          partnerCommissionRate:
+            body.partnerCommissionRate ?? bookingAddonItem.partnerCommissionRate ?? "0",
+        }
+      : { ownershipKind: "property" as const, partnerCommissionRate: null };
   return {
     ...bookingAddonItem,
     addonItemId: "0f840001-0000-4000-8000-000000000002",
@@ -773,6 +784,7 @@ function addonItemFromBody(
     publicVisible: body.publicVisible ?? bookingAddonItem.publicVisible,
     status: body.status ?? bookingAddonItem.status,
     sortOrder: body.sortOrder ?? bookingAddonItem.sortOrder,
+    ...economicTerms,
     updatedAt: "2026-06-01T11:00:00.000Z",
   };
 }
@@ -4889,6 +4901,8 @@ describe("vayada-api", () => {
         publicVisible: false,
         status: "disabled",
         sortOrder: 3,
+        ownershipKind: "partner",
+        partnerCommissionRate: "18.7500",
       },
     });
 
@@ -4908,6 +4922,8 @@ describe("vayada-api", () => {
       publicVisible: false,
       status: "disabled",
       sortOrder: 3,
+      ownershipKind: "partner",
+      partnerCommissionRate: "18.7500",
     });
   });
 
@@ -4925,6 +4941,8 @@ describe("vayada-api", () => {
         price: "55.00",
         pricingModel: "per_guest",
         publicVisible: false,
+        ownershipKind: "property",
+        partnerCommissionRate: null,
       },
     });
 
@@ -4936,6 +4954,8 @@ describe("vayada-api", () => {
       price: "55.00",
       pricingModel: "per_guest",
       publicVisible: false,
+      ownershipKind: "property",
+      partnerCommissionRate: null,
     });
   });
 
@@ -5047,6 +5067,7 @@ describe("vayada-api", () => {
         category: "legacy",
         status: "retired",
         legacyField: true,
+        ownershipKind: "partner",
       },
     });
 
@@ -5058,6 +5079,9 @@ describe("vayada-api", () => {
       message: "Booking add-on item payload is invalid.",
     });
     expect(response.body.details).toEqual(expect.any(Array));
+    expect(response.body.details).toContain(
+      "ownershipKind and partnerCommissionRate must be property/null or partner/a 0..100 decimal with at most four decimal places.",
+    );
   });
 
   it("lists booking promo codes with the typed target route", async () => {
@@ -7815,6 +7839,8 @@ describe("vayada-api", () => {
               currency: "EUR",
               publicVisible: true,
               status: "active",
+              ownershipKind: "property",
+              partnerCommissionRate: null,
               metadata: {},
               createdAt: "2026-06-01T10:00:00.000Z",
               updatedAt: "2026-06-01T10:00:00.000Z",
@@ -7847,17 +7873,46 @@ describe("vayada-api", () => {
         publicVisible: true,
         status: "active",
         sortOrder: 0,
+        ownershipKind: "property",
+        partnerCommissionRate: null,
         createdAt: "2026-06-01T10:00:00.000Z",
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
     ]);
+    await expect(
+      repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
+        partnerCommissionRate: "15.5000",
+      } as unknown as UpdateBookingAddonItemBody),
+    ).rejects.toThrow("Add-on economic updates require a complete valid ownership pair");
     const updated = await repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
       name: "Updated",
+      ownershipKind: "partner",
+      partnerCommissionRate: "15.5000",
+    });
+    await repository.createAddonItemByHotelId(hotelId, {
+      name: "Partner transfer",
+      description: "Private transfer",
+      price: "50.00",
+      currency: "EUR",
+      category: "transport",
+      imageUrl: null,
+      duration: null,
+      pricingModel: "per_stay",
+      publicVisible: true,
+      status: "active",
+      sortOrder: 1,
+      ownershipKind: "partner",
+      partnerCommissionRate: "12.5000",
     });
 
     expect(updated?.hotelId).toBe(hotelId);
     expect(queries[1]?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
     expect(queries[1]?.text).toContain("addon_definitions.status <> 'retired'");
+    expect(queries[1]?.text).toContain('addon_definitions.ownership_kind AS "ownershipKind"');
+    expect(queries[3]?.text).toContain("partner_commission_rate");
+    expect(queries[3]?.values).toContain("15.5000");
+    expect(queries[5]?.text).toContain("ownership_kind, partner_commission_rate");
+    expect(queries[5]?.values).toContain("12.5000");
     expect(queries[0]?.text).toContain("property.id::text = $1");
     expect(queries[0]?.text).toContain("UNION ALL");
     expect(queries[0]?.text).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");

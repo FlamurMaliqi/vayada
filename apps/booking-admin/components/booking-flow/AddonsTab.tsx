@@ -14,6 +14,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 const CATEGORY_OPTIONS = ["dining", "experience", "transport", "wellness", "other"] as const;
+const PARTNER_COMMISSION_RATE = /^(?:100(?:\.0{1,4})?|(?:0|[1-9]\d?)(?:\.\d{1,4})?)$/;
 
 export type AddonItemCategory = (typeof CATEGORY_OPTIONS)[number];
 
@@ -27,6 +28,8 @@ export interface AddonItemFormValues {
   duration: string;
   perPerson: boolean;
   perNight: boolean;
+  ownershipKind: "property" | "partner";
+  partnerCommissionRate: string;
 }
 
 function AddonsIcon({ className }: { className?: string }) {
@@ -56,6 +59,8 @@ function emptyDraft(currency: string): AddonItemFormValues {
     duration: "",
     perPerson: false,
     perNight: false,
+    ownershipKind: "property",
+    partnerCommissionRate: "",
   };
 }
 
@@ -76,6 +81,8 @@ function toDraft(addon: AddonItem, fallbackCurrency: string): AddonItemFormValue
     duration: addon.duration ?? "",
     perPerson: addon.perPerson === true,
     perNight: addon.perNight === true,
+    ownershipKind: addon.ownershipKind,
+    partnerCommissionRate: addon.partnerCommissionRate ?? "",
   };
 }
 
@@ -160,6 +167,11 @@ export default function AddonsTab({
       setItemError("Price must be a non-negative amount.");
       return;
     }
+    const partnerCommissionRate = draft.partnerCommissionRate.trim();
+    if (draft.ownershipKind === "partner" && !PARTNER_COMMISSION_RATE.test(partnerCommissionRate)) {
+      setItemError("Partner commission must be between 0 and 100 with up to 4 decimals.");
+      return;
+    }
 
     setSavingItem(true);
     setItemError(null);
@@ -171,6 +183,7 @@ export default function AddonsTab({
       currency: draft.currency.trim().toUpperCase(),
       image: draft.image.trim(),
       duration: draft.duration.trim(),
+      partnerCommissionRate: draft.ownershipKind === "partner" ? partnerCommissionRate : "",
     };
 
     try {
@@ -358,6 +371,11 @@ export default function AddonsTab({
                     {addon.duration && (
                       <span className="text-[11px] text-gray-400">{addon.duration}</span>
                     )}
+                    <span className="text-[11px] text-gray-400">
+                      {addon.ownershipKind === "partner"
+                        ? `Partner · ${addon.partnerCommissionRate}%`
+                        : "Own"}
+                    </span>
                   </div>
                 </div>
 
@@ -523,6 +541,44 @@ export default function AddonsTab({
                   placeholder="45 min"
                 />
               </label>
+              <label className="text-[12px] font-medium text-gray-700">
+                Ownership
+                <select
+                  value={draft.ownershipKind}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      ownershipKind: event.target.value as "property" | "partner",
+                      partnerCommissionRate:
+                        event.target.value === "property" ? "" : current.partnerCommissionRate,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
+                >
+                  <option value="property">Own</option>
+                  <option value="partner">Partner</option>
+                </select>
+              </label>
+              {draft.ownershipKind === "partner" && (
+                <label className="text-[12px] font-medium text-gray-700">
+                  Partner commission (%)
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.0001"
+                    required
+                    value={draft.partnerCommissionRate}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        partnerCommissionRate: event.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
+                  />
+                </label>
+              )}
               <label className="sm:col-span-2 text-[12px] font-medium text-gray-700">
                 Image URL
                 <input

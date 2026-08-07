@@ -44,6 +44,8 @@ test.describe("booking-admin add-ons settings cutover", () => {
         publicVisible: true,
         status: "active",
         sortOrder: 0,
+        ownershipKind: "property",
+        partnerCommissionRate: null,
         createdAt: "2026-06-01T10:00:00.000Z",
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
@@ -62,6 +64,8 @@ test.describe("booking-admin add-ons settings cutover", () => {
         publicVisible: true,
         status: "active",
         sortOrder: 1,
+        ownershipKind: "property",
+        partnerCommissionRate: null,
         createdAt: "2026-06-01T10:02:00.000Z",
         updatedAt: "2026-06-01T10:02:00.000Z",
       },
@@ -88,6 +92,8 @@ test.describe("booking-admin add-ons settings cutover", () => {
           publicVisible: body.publicVisible,
           status: body.status,
           sortOrder: body.sortOrder ?? addonItems.length,
+          ownershipKind: body.ownershipKind,
+          partnerCommissionRate: body.partnerCommissionRate,
           createdAt: "2026-06-01T10:05:00.000Z",
           updatedAt: "2026-06-01T10:05:00.000Z",
         };
@@ -157,11 +163,18 @@ test.describe("booking-admin add-ons settings cutover", () => {
     await page.getByLabel("Category").selectOption("wellness");
     await page.getByLabel("Duration").fill("90 min");
     await page.getByLabel("Per person").check();
+    await page.getByLabel("Ownership").selectOption("partner");
+    await page.getByRole("button", { name: "Create Add-on" }).click();
+    expect(typedItemWrites.filter((write) => write.method === "POST")).toHaveLength(0);
+    await page.getByLabel("Partner commission (%)").fill("12.5000");
     await page.getByRole("button", { name: "Create Add-on" }).click();
     await expect(page.getByText("Spa ritual")).toBeVisible();
+    await expect(page.getByText("Partner · 12.5000%")).toBeVisible();
 
     await page.getByRole("button", { name: "Edit Spa ritual" }).click();
     await page.getByLabel("Name").fill("Spa ritual deluxe");
+    await page.getByLabel("Ownership").selectOption("property");
+    await expect(page.getByLabel("Partner commission (%)")).toHaveCount(0);
     await page.getByRole("button", { name: "Save Changes" }).click();
     await expect(page.getByText("Spa ritual deluxe")).toBeVisible();
 
@@ -224,6 +237,8 @@ test.describe("booking-admin add-ons settings cutover", () => {
           publicVisible: true,
           status: "active",
           sortOrder: 2,
+          ownershipKind: "partner",
+          partnerCommissionRate: "12.5000",
         },
       },
       {
@@ -238,6 +253,8 @@ test.describe("booking-admin add-ons settings cutover", () => {
           imageUrl: null,
           duration: "90 min",
           pricingModel: "per_guest",
+          ownershipKind: "property",
+          partnerCommissionRate: null,
         },
       },
       {
