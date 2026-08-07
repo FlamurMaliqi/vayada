@@ -23,6 +23,7 @@ export type SetFinanceOtaCommissionRuleCommand = {
   channel: FinanceOtaChannel;
   percentageRate: FinanceOtaCommissionRate;
   effectiveFrom: string;
+  expectedRevision: number;
   audit: FinanceCommandAudit;
 };
 const OPERATION = "finance.ota_commission_rule.set";
@@ -53,13 +54,19 @@ export function createPgFinanceOtaCommissionRuleRepository(connectionString: str
       const actor = rawCommand.audit.actor;
       const effectiveFrom = normalizeFinanceOtaCommissionInstant(rawCommand.effectiveFrom);
       const validRate = normalizeFinanceOtaCommissionRate(rawCommand.percentageRate);
-      if (!effectiveFrom || validRate !== rawCommand.percentageRate || actor.kind !== "user")
+      if (
+        !effectiveFrom ||
+        validRate !== rawCommand.percentageRate ||
+        !Number.isSafeInteger(rawCommand.expectedRevision) ||
+        rawCommand.expectedRevision < 0 ||
+        actor.kind !== "user"
+      )
         throw new Error("OTA commission command failed contract validation");
       const command = { ...rawCommand, effectiveFrom };
       const keyHash = hash(command.idempotencyKey);
       const correlationId = command.audit.correlationId ?? command.audit.requestId;
       const fingerprint = hash(
-        `${command.propertyId}|${command.channel}|${command.percentageRate}|${command.effectiveFrom}`,
+        `${command.propertyId}|${command.channel}|${command.percentageRate}|${command.effectiveFrom}|${command.expectedRevision}`,
       );
       const client = await pool.connect();
       try {
@@ -106,6 +113,10 @@ export function createPgFinanceOtaCommissionRuleRepository(connectionString: str
           [command.propertyId, command.channel],
         );
         const previous = priorRows.rows[0] ? rule(priorRows.rows[0]) : null;
+        if ((previous?.revision ?? 0) !== command.expectedRevision) {
+          await client.query("ROLLBACK");
+          return { status: "conflict" as const, reason: "revision_conflict" as const };
+        }
         if (previous && Date.parse(previous.effectiveFrom) >= Date.parse(command.effectiveFrom)) {
           await client.query("ROLLBACK");
           return { status: "conflict" as const, reason: "effective_window_conflict" as const };
