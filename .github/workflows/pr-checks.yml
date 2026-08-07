@@ -158,6 +158,13 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 
+      - name: Verify Finance OTA commission migration
+        run: >-
+          npm --workspace @vayada/backend-migration run test --
+          src/financeOtaCommissionRules.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
   setup_draft_reset_postgres:
     name: Setup Draft Reset PostgreSQL ${{ matrix.postgres }} Integration
     runs-on: ubuntu-latest

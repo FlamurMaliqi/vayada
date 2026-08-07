@@ -31,6 +31,7 @@ export * from "./manualBookingSettlement.js";
 export * from "./subscriptions.js";
 export * from "./platformAffiliatePayouts.js";
 export * from "./affiliateCommission.js";
+export * from "./otaCommissionRules.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
