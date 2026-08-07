@@ -42,6 +42,14 @@ export function normalizeFinanceOtaCommissionRate(value: string): FinanceOtaComm
   return `${whole}.${fraction.padEnd(4, "0")}` as FinanceOtaCommissionRate;
 }
 
+export function normalizeFinanceOtaCommissionInstant(value: string): string | null {
+  try {
+    return new Date(timestamp(value)).toISOString();
+  } catch {
+    return null;
+  }
+}
+
 export function resolveFinanceOtaCommissionRule(
   rules: readonly FinanceOtaCommissionRule[],
   input: { propertyId: string; channel: FinanceOtaChannel; effectiveAt: string },
