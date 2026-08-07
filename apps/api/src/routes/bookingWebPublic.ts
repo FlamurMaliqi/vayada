@@ -10,6 +10,7 @@ import {
   type PublicBookabilityProfileProjection,
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
+import { parseAddonEconomicTerms, type AddonEconomicTerms } from "@vayada/domain-booking";
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
@@ -1134,6 +1135,21 @@ type TargetCheckoutQuoteRow = QueryResultRow & {
   expiresAt: Date | string;
 };
 
+type TargetCheckoutAddonRequest = {
+  addonIds: string[];
+  addonQuantities: Record<string, number>;
+  addonDates: Record<string, string[]>;
+};
+
+type TargetCheckoutAddonPurchase = AddonEconomicTerms & {
+  addonDefinitionId: string;
+  addonSnapshot: Record<string, unknown>;
+  quantity: number;
+  serviceDate: string;
+  totalAmount: string;
+  currency: string;
+};
+
 type TargetCheckoutQuoteSnapshot = {
   quoteSessionId: string;
   publicQuoteReference: string;
@@ -1149,6 +1165,7 @@ type TargetCheckoutQuoteSnapshot = {
   selectedOfferSnapshot: Record<string, unknown>;
   totals: Record<string, unknown>;
   policySnapshot: Record<string, unknown>;
+  addonPurchases: TargetCheckoutAddonPurchase[];
   expiresAt: string;
 };
 
@@ -1199,12 +1216,10 @@ type PgTargetBookingWebCheckoutAdapterConfig = {
 const TARGET_CHECKOUT_SUPPORTED_PAYMENT_METHODS = ["pay_at_property", "cash"] as const;
 
 type TargetCheckoutCommandReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 type TargetBookingChangeDecisionReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
@@ -1530,7 +1545,7 @@ export function createTargetBookingWebCheckoutAdapter(
       });
     },
     async quoteBooking(slug, request, context) {
-      assertTargetQuotePricingInputsSupported(request);
+      assertTargetPromoPricingInputSupported(request);
       const action = async (executor: BookingWebQueryExecutor) => {
         const property = await resolveTargetCheckoutProperty(executor, slug, true);
         if (context) {
@@ -2034,6 +2049,15 @@ async function createTargetCheckoutQuote(
     rateType,
     requestedAt,
   });
+  const addonRequest = parseTargetCheckoutAddonRequest(request);
+  const addonPurchases = await resolveTargetCheckoutAddonPurchases(pool, {
+    propertyId: property.propertyId,
+    currency,
+    checkIn,
+    checkOut,
+    adults,
+    request: addonRequest,
+  });
   const paymentOptions = offer.paymentOptions ?? [];
   const paymentMethod =
     stringField(request, "paymentMethod") ??
@@ -2047,7 +2071,19 @@ async function createTargetCheckoutQuote(
   const roomTotal = moneyNumber(offer.roomTotal) ?? 0;
   const taxesAndFees = moneyNumber(offer.taxesAndFees) ?? 0;
   const discounts = moneyNumber(offer.discounts) ?? 0;
-  const totalAmount = roundMoney(roomTotal + taxesAndFees - discounts);
+  const addonTotal = Number(
+    moneyFromCents(
+      addonPurchases.reduce((total, purchase) => total + moneyToCents(purchase.totalAmount), 0n),
+    ),
+  );
+  const totalAmount = Number(
+    moneyFromCents(
+      moneyToCents(roomTotal) +
+        moneyToCents(taxesAndFees) +
+        moneyToCents(addonTotal) -
+        moneyToCents(discounts),
+    ),
+  );
   // Target checkout currently only authorizes pay-at-property/cash. Until an
   // online deposit payment is captured, the full amount remains outstanding.
   const depositPercentage = 0;
@@ -2073,13 +2109,15 @@ async function createTargetCheckoutQuote(
     availableRooms: integerValue(offer.availableRooms, roomCount),
     sourceFreshness: objectValue(offer.sourceFreshness),
     generatedAt: toIsoDateTime(offer.generatedAt),
+    addonRequest,
+    addonPurchases,
   };
   const totals = {
     currency,
     roomTotal,
     taxesAndFees,
     discounts,
-    addonTotal: 0,
+    addonTotal,
     promoDiscount: 0,
     totalAmount,
     depositRequired,
@@ -2099,6 +2137,7 @@ async function createTargetCheckoutQuote(
       roomTypeId,
       rateType,
       paymentMethod,
+      addonRequest,
       promoCode: stringField(request, "promoCode"),
       referralCode: stringField(request, "referralCode"),
     }),
@@ -2196,6 +2235,7 @@ async function createTargetCheckoutQuote(
     selectedOfferSnapshot,
     totals,
     policySnapshot: objectValue(offer.publicPolicy),
+    addonPurchases,
     expiresAt,
   };
 }
@@ -2444,11 +2484,39 @@ async function loadTargetCheckoutQuoteSnapshot(
   const roomCount = Number(row.roomCount);
   const selectedOfferSnapshot = objectValue(row.selectedOfferSnapshot);
   const totals = objectValue(row.totals);
+  let addonRequest: TargetCheckoutAddonRequest;
+  let addonPurchases: TargetCheckoutAddonPurchase[];
+  try {
+    addonRequest =
+      selectedOfferSnapshot["addonRequest"] === undefined
+        ? { addonIds: [], addonQuantities: {}, addonDates: {} }
+        : parseTargetCheckoutAddonRequest(recordBody(selectedOfferSnapshot["addonRequest"]));
+    const addonPurchasesValue = selectedOfferSnapshot["addonPurchases"] ?? [];
+    if (!Array.isArray(addonPurchasesValue) || !addonPurchasesValue.every(isTargetAddonPurchase)) {
+      throw new Error("invalid add-on purchase");
+    }
+    addonPurchases = addonPurchasesValue;
+    const definitionIds = new Set(addonPurchases.map(({ addonDefinitionId }) => addonDefinitionId));
+    // prettier-ignore
+    if (definitionIds.size !== addonRequest.addonIds.length || new Set(addonPurchases.map(({ addonDefinitionId, serviceDate }) => `${addonDefinitionId}:${serviceDate}`)).size !== addonPurchases.length || addonRequest.addonIds.some((id) => { const rows = addonPurchases.filter((purchase) => purchase.addonDefinitionId === id || purchase.addonSnapshot["sourceAddonId"] === id); const model = String(rows[0]?.addonSnapshot["pricingModel"]); const requestedQuantity = addonRequest.addonQuantities[id]; const stayDates = dateRange(checkIn, checkOut); const requestedDates = addonRequest.addonDates[id] ?? []; const expectedDates = model.includes("night") ? (requestedDates.length > 0 ? requestedDates : model === "per_night" && requestedQuantity ? stayDates.slice(0, requestedQuantity) : stayDates) : [checkIn]; const expectedQuantity = model.includes("guest") ? (requestedQuantity ?? adults) : model === "per_stay" ? (requestedQuantity ?? 1) : 1; return (model.includes("guest") && expectedQuantity > adults) || (model === "per_night" && (requestedQuantity ?? 0) > stayDates.length) || expectedDates.some((date) => date < checkIn || date >= checkOut) || rows.length !== expectedDates.length || rows.some((row) => row.quantity !== expectedQuantity || !expectedDates.includes(row.serviceDate) || stableJson([row.addonSnapshot, row.ownershipKind, row.partnerCommissionRate]) !== stableJson([rows[0]!.addonSnapshot, rows[0]!.ownershipKind, rows[0]!.partnerCommissionRate])); })) throw new Error("missing add-on");
+  } catch {
+    throw createHttpError(409, "Checkout quote add-on evidence is unavailable. Please refresh.");
+  }
   const totalAmount = moneyString(totals["totalAmount"]);
   const balanceAmount = moneyString(totals["balanceAmount"]) ?? totalAmount;
   if (!totalAmount || !balanceAmount) {
     throw createHttpError(409, "Checkout quote is no longer available. Please refresh.");
   }
+  if (addonPurchases.length > 0) {
+    // prettier-ignore
+    const purchaseTotal = addonPurchases.reduce((sum, purchase) => sum + moneyToCents(purchase.totalAmount), 0n);
+    // prettier-ignore
+    const quotedTotal = moneyToCents(moneyString(totals["roomTotal"]) ?? "") + moneyToCents(moneyString(totals["taxesAndFees"]) ?? "0") + purchaseTotal - moneyToCents(moneyString(totals["discounts"]) ?? "0");
+    // prettier-ignore
+    if (purchaseTotal !== moneyToCents(moneyString(totals["addonTotal"]) ?? "") || moneyToCents(totalAmount) !== quotedTotal || moneyToCents(totalAmount) > 999_999_999_999_999n || addonPurchases.some(({ currency }) => currency !== row.currency)) throw createHttpError(409, "Checkout quote add-on evidence is unavailable. Please refresh.");
+  }
+  // prettier-ignore
+  if (addonPurchases.length === 0 && moneyToCents(moneyString(totals["addonTotal"]) ?? "0") !== 0n) throw createHttpError(409, "Checkout quote add-on evidence is unavailable. Please refresh.");
 
   const requestedCheckIn = dateField(request, "checkIn");
   const requestedCheckOut = dateField(request, "checkOut");
@@ -2487,6 +2555,9 @@ async function loadTargetCheckoutQuoteSnapshot(
       "Booking payment method changed. Please refresh the checkout quote.",
     );
   }
+  if (stableJson(parseTargetCheckoutAddonRequest(request)) !== stableJson(addonRequest)) {
+    throw createHttpError(409, "Booking add-ons changed. Please refresh the checkout quote.");
+  }
 
   return {
     quoteSessionId: row.quoteSessionId,
@@ -2503,6 +2574,7 @@ async function loadTargetCheckoutQuoteSnapshot(
     selectedOfferSnapshot,
     totals,
     policySnapshot: objectValue(row.policySnapshot),
+    addonPurchases,
     expiresAt,
   };
 }
@@ -2695,6 +2767,44 @@ async function createTargetGuestBooking(
          booking_metadata AS "bookingMetadata",
          created_at AS "createdAt"
      ),
+     addon_selections AS (
+       INSERT INTO booking.booking_addon_selections
+         (
+           property_id,
+           guest_booking_id,
+           addon_definition_id,
+           addon_snapshot,
+           quantity,
+           service_date,
+           total_amount,
+           currency,
+           ownership_kind_snapshot,
+           partner_commission_rate_snapshot
+         )
+       SELECT
+         booking_row."propertyId"::uuid,
+         booking_row."guestBookingId"::uuid,
+         selection."addonDefinitionId",
+         selection."addonSnapshot",
+         selection.quantity,
+         selection."serviceDate",
+         selection."totalAmount",
+         selection.currency,
+         selection."ownershipKind",
+         selection."partnerCommissionRate"
+       FROM booking_row
+       CROSS JOIN LATERAL jsonb_to_recordset($30::jsonb) AS selection(
+         "addonDefinitionId" uuid,
+         "addonSnapshot" jsonb,
+         quantity integer,
+         "serviceDate" date,
+         "totalAmount" numeric,
+         currency text,
+         "ownershipKind" text,
+         "partnerCommissionRate" numeric
+       )
+       RETURNING id
+     ),
      booker AS (
        INSERT INTO booking.booking_guests
          (
@@ -2792,7 +2902,7 @@ async function createTargetGuestBooking(
       stringField(request, "locale") ?? property.defaultLocale,
       quote.currency,
       JSON.stringify(redactGuestInput(request)),
-      JSON.stringify(Array.isArray(request["selectedAddons"]) ? request["selectedAddons"] : []),
+      JSON.stringify(quote.addonPurchases),
       JSON.stringify(objectValue(request["paymentContext"])),
       JSON.stringify(objectValue(request["promoContext"])),
       new Date(context.occurredAt.getTime() + 30 * 60 * 1000).toISOString(),
@@ -2817,6 +2927,7 @@ async function createTargetGuestBooking(
       stringField(request, "specialRequests"),
       JSON.stringify({ requestId: context.requestId, correlationId: context.correlationId }),
       quote.quoteSessionId,
+      JSON.stringify(quote.addonPurchases),
     ],
   );
   const booking = result.rows[0];
@@ -4662,6 +4773,20 @@ function moneyString(value: unknown): string | null {
   return amount === null ? null : amount.toFixed(2);
 }
 
+function moneyToCents(value: string | number): bigint {
+  const normalized = typeof value === "number" ? value.toFixed(2) : value.trim();
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
+  if (!match) throw createHttpError(409, "Checkout pricing evidence is invalid. Please refresh.");
+  return BigInt(match[1]) * 100n + BigInt((match[2] ?? "").padEnd(2, "0"));
+}
+
+function moneyFromCents(value: bigint): string {
+  if (value < 0n || value > 999_999_999_999_999n) {
+    throw createHttpError(409, "Checkout pricing evidence is invalid. Please refresh.");
+  }
+  return `${value / 100n}.${String(value % 100n).padStart(2, "0")}`;
+}
+
 function moneyNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     return roundMoney(value);
@@ -4732,28 +4857,171 @@ function assertTargetPaymentMethodReady(method: string | null): void {
   );
 }
 
-function assertTargetQuotePricingInputsSupported(record: Record<string, unknown>): void {
-  const addonIds = Array.isArray(record["addonIds"]) ? record["addonIds"] : [];
-  const selectedAddons = Array.isArray(record["selectedAddons"]) ? record["selectedAddons"] : [];
-  const addonQuantities = objectValue(record["addonQuantities"]);
-  const addonDates = objectValue(record["addonDates"]);
-  if (
-    addonIds.length > 0 ||
-    selectedAddons.length > 0 ||
-    Object.keys(addonQuantities).length > 0 ||
-    Object.keys(addonDates).length > 0
-  ) {
-    throw createHttpError(
-      409,
-      "Target checkout add-on pricing is not configured. Please refresh without add-ons.",
-    );
-  }
+function assertTargetPromoPricingInputSupported(record: Record<string, unknown>): void {
   if (stringField(record, "promoCode")) {
     throw createHttpError(
       409,
       "Target checkout promo pricing is not configured. Please refresh without a promo code.",
     );
   }
+}
+
+function parseTargetCheckoutAddonRequest(
+  request: BookingWebCheckoutRequest,
+): TargetCheckoutAddonRequest {
+  const rawIds = request["addonIds"] ?? [];
+  const quantityInput = request["addonQuantities"] ?? {};
+  const dateInput = request["addonDates"] ?? {};
+  // prettier-ignore
+  if (!Array.isArray(rawIds) || !quantityInput || typeof quantityInput !== "object" || Array.isArray(quantityInput) || !dateInput || typeof dateInput !== "object" || Array.isArray(dateInput)) throw createHttpError(400, "Selected add-on details are invalid.");
+  const addonIds = rawIds.map((value) => (typeof value === "string" ? value.trim() : ""));
+  const addonQuantities = numericObject(quantityInput);
+  const addonDates = dateArrayObject(dateInput);
+  const detailKeys = new Set([...Object.keys(quantityInput), ...Object.keys(dateInput)]);
+  if (addonIds.some((value) => !value) || new Set(addonIds).size !== addonIds.length) {
+    throw createHttpError(400, "Selected add-on identifiers are invalid.");
+  }
+  if (
+    Object.keys(addonQuantities).length !== Object.keys(quantityInput).length ||
+    Object.values(addonQuantities).some(
+      (quantity) => !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 2_147_483_647,
+    ) ||
+    stableJson(addonDates) !== stableJson(dateInput) ||
+    Object.values(addonDates).some((dates) => new Set(dates).size !== dates.length) ||
+    [...detailKeys].some((key) => !addonIds.includes(key))
+  ) {
+    throw createHttpError(400, "Selected add-on details are invalid.");
+  }
+  return { addonIds, addonQuantities, addonDates };
+}
+
+function isTargetAddonPurchase(value: unknown): value is TargetCheckoutAddonPurchase {
+  const purchase = objectValue(value);
+  const snapshot = objectValue(purchase["addonSnapshot"]);
+  const addonDefinitionId = stringValue(purchase["addonDefinitionId"]);
+  const quantity = purchase["quantity"];
+  const serviceDate = stringValue(purchase["serviceDate"]);
+  const totalAmount = stringValue(purchase["totalAmount"]);
+  const currency = stringValue(purchase["currency"]);
+  const unitAmount = stringValue(snapshot["unitAmount"]);
+  // prettier-ignore
+  return Boolean(
+    addonDefinitionId && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(addonDefinitionId) &&
+    snapshot["addonDefinitionId"] === addonDefinitionId && stringValue(snapshot["name"]) &&
+    ["per_stay", "per_night", "per_guest", "per_guest_night"].includes(stringValue(snapshot["pricingModel"]) ?? "") &&
+    unitAmount && currency && /^[A-Z]{3}$/.test(currency) && snapshot["currency"] === currency &&
+    typeof quantity === "number" && Number.isInteger(quantity) && quantity > 0 && quantity <= 2_147_483_647 &&
+    serviceDate && normalizeDateOnly(serviceDate) === serviceDate && totalAmount && parseAddonEconomicTerms(purchase) &&
+    moneyToCents(totalAmount) <= 999_999_999_999_999n && moneyToCents(totalAmount) === moneyToCents(unitAmount) * BigInt(quantity)
+  );
+}
+
+async function resolveTargetCheckoutAddonPurchases(
+  pool: BookingWebQueryExecutor,
+  input: {
+    propertyId: string;
+    currency: string;
+    checkIn: string;
+    checkOut: string;
+    adults: number;
+    request: TargetCheckoutAddonRequest;
+  },
+): Promise<TargetCheckoutAddonPurchase[]> {
+  if (input.request.addonIds.length === 0) return [];
+  const result = await pool.query(
+    `SELECT
+       id::text AS "addonDefinitionId",
+       source_addon_id AS "sourceAddonId",
+       name,
+       description,
+       category,
+       pricing_model AS "pricingModel",
+       price_amount::text AS "unitAmount",
+       currency,
+       ownership_kind AS "ownershipKind",
+       partner_commission_rate::text AS "partnerCommissionRate"
+     FROM booking.addon_definitions
+     WHERE property_id = $1::uuid
+       AND (id::text = ANY($2::text[]) OR source_addon_id = ANY($2::text[]))
+       AND public_visible = TRUE
+       AND status = 'active'`,
+    [input.propertyId, input.request.addonIds],
+  );
+  const stayDates = dateRange(input.checkIn, input.checkOut);
+  const stayDateSet = new Set(stayDates);
+  const selectedDefinitions = new Set<string>();
+  const purchases: TargetCheckoutAddonPurchase[] = [];
+  for (const addonId of input.request.addonIds) {
+    const matches = result.rows.filter(
+      (definition) =>
+        definition.addonDefinitionId === addonId || definition.sourceAddonId === addonId,
+    );
+    const definition = matches.length === 1 ? matches[0] : undefined;
+    if (!definition || selectedDefinitions.has(definition.addonDefinitionId)) {
+      throw createHttpError(409, "Selected add-ons are invalid or unavailable. Please refresh.");
+    }
+    selectedDefinitions.add(definition.addonDefinitionId);
+    if (definition.currency !== input.currency) {
+      throw createHttpError(409, "Selected add-on currency is not supported for this quote.");
+    }
+    const economicTerms = parseAddonEconomicTerms(definition);
+    if (!economicTerms) {
+      throw createHttpError(409, "Selected add-ons are invalid or unavailable. Please refresh.");
+    }
+    const requestedQuantity = input.request.addonQuantities[addonId];
+    const requestedDates = input.request.addonDates[addonId] ?? [];
+    if (requestedDates.some((date) => !stayDateSet.has(date))) {
+      throw createHttpError(400, "Selected add-on dates must be within the stay.");
+    }
+    const perGuest = ["per_guest", "per_guest_night"].includes(definition.pricingModel);
+    const perNight = ["per_night", "per_guest_night"].includes(definition.pricingModel);
+    if (!perGuest && !perNight && definition.pricingModel !== "per_stay") {
+      throw createHttpError(409, "Selected add-on pricing model is not supported.");
+    }
+    const quantity = perGuest
+      ? (requestedQuantity ?? input.adults)
+      : perNight
+        ? 1
+        : (requestedQuantity ?? 1);
+    if (perGuest && quantity > input.adults) {
+      throw createHttpError(400, "Selected add-on quantity exceeds the adult guest count.");
+    }
+    const serviceDates = perNight
+      ? requestedDates.length > 0
+        ? requestedDates
+        : definition.pricingModel === "per_night" && requestedQuantity
+          ? stayDates.slice(0, requestedQuantity)
+          : stayDates
+      : [input.checkIn];
+    if (
+      serviceDates.length === 0 ||
+      (definition.pricingModel === "per_night" && (requestedQuantity ?? 0) > stayDates.length)
+    ) {
+      throw createHttpError(400, "Selected add-on nights exceed the stay.");
+    }
+    const addonSnapshot = {
+      addonDefinitionId: definition.addonDefinitionId,
+      sourceAddonId: definition.sourceAddonId,
+      name: definition.name,
+      description: definition.description,
+      category: definition.category,
+      pricingModel: definition.pricingModel,
+      unitAmount: definition.unitAmount,
+      currency: definition.currency,
+    };
+    for (const serviceDate of serviceDates) {
+      purchases.push({
+        addonDefinitionId: definition.addonDefinitionId,
+        addonSnapshot,
+        quantity,
+        serviceDate,
+        totalAmount: moneyFromCents(moneyToCents(definition.unitAmount) * BigInt(quantity)),
+        currency: definition.currency,
+        ...economicTerms,
+      });
+    }
+  }
+  return purchases;
 }
 
 function requireGuestEmail(value: unknown): string {
@@ -4898,6 +5166,7 @@ function redactGuestInput(record: Record<string, unknown>): Record<string, unkno
   for (const key of ["cardNumber", "cardCvc", "paymentToken", "providerPaymentIntentSecret"]) {
     delete redacted[key];
   }
+  delete redacted.selectedAddons;
   return redacted;
 }
 

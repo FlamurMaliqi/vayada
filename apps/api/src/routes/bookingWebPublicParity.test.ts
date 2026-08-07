@@ -476,7 +476,7 @@ describe("Booking Web public bootstrap parity", () => {
         roomTypeId: "room_deluxe",
         guestEmail: "guest@example.com",
         checkIn: "2026-09-12",
-        checkOut: "2026-09-15",
+        checkOut: "2026-09-13",
         paymentMethod: "pay_at_property",
       },
     });
@@ -1030,6 +1030,7 @@ describe("Booking Web public bootstrap parity", () => {
   it("creates target checkout quotes from public offer snapshots", async () => {
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
     let ended = 0;
+    let unitAmount = "10.25";
     const pool = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
@@ -1079,6 +1080,22 @@ describe("Booking Web public bootstrap parity", () => {
             ],
           };
         }
+        if (text.includes("FROM booking.addon_definitions")) {
+          return {
+            rows: [
+              {
+                addonDefinitionId: "d8000000-0000-0000-0000-000000000682",
+                sourceAddonId: "spa_partner",
+                name: "Partner spa",
+                pricingModel: "per_guest_night",
+                unitAmount,
+                currency: "EUR",
+                ownershipKind: "partner",
+                partnerCommissionRate: "18.7500",
+              },
+            ],
+          };
+        }
         if (text.includes("INSERT INTO platform.idempotency_keys")) {
           return { rows: [{ id: "799e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
         }
@@ -1115,6 +1132,10 @@ describe("Booking Web public bootstrap parity", () => {
         numberOfRooms: 1,
         paymentMethod: "pay_at_property",
         rateType: "flexible",
+        addonIds: ["spa_partner"],
+        addonQuantities: { spa_partner: 2 },
+        addonDates: { spa_partner: ["2026-09-12"] },
+        selectedAddons: [{ id: "spa_partner", price: 0, ownershipKind: "property" }],
       },
       {
         operation: "booking-quote",
@@ -1139,9 +1160,13 @@ describe("Booking Web public bootstrap parity", () => {
         numberOfRooms: 1,
         paymentMethod: "pay_at_property",
         rateType: "flexible",
-        addonIds: ["airport_transfer"],
+        addonIds: ["spa_partner"],
+        addonQuantities: { spa_partner: 2_147_483_648 },
       }),
-    ).rejects.toThrow("add-on pricing");
+    ).rejects.toThrow("details are invalid");
+    unitAmount = "5000000000000.00";
+    // prettier-ignore
+    await expect(adapter.quoteBooking("hotel-alpenrose", { roomTypeId: "room_deluxe", checkIn: "2026-09-12", checkOut: "2026-09-13", adults: 2, children: 0, numberOfRooms: 1, paymentMethod: "pay_at_property", rateType: "flexible", addonIds: ["spa_partner"], addonQuantities: { spa_partner: 2 } })).rejects.toThrow("pricing evidence");
 
     expect(quote).toMatchObject({
       quoteId: "Q-TARGETQUOTE1",
@@ -1149,11 +1174,12 @@ describe("Booking Web public bootstrap parity", () => {
       roomName: "Deluxe Double Room",
       paymentMethod: "pay_at_property",
       roomTotal: 561.6,
-      totalAmount: 561.6,
+      addonTotal: 20.5,
+      totalAmount: 582.1,
       depositRequired: false,
       depositPercentage: 0,
       depositAmount: 0,
-      balanceAmount: 561.6,
+      balanceAmount: 582.1,
       currency: "EUR",
     });
     expect(
@@ -1193,10 +1219,17 @@ describe("Booking Web public bootstrap parity", () => {
     const quoteWrite = calls.find((call) =>
       call.text.includes("INSERT INTO booking.quote_sessions"),
     );
-    expect(JSON.parse(String(quoteWrite?.values?.[9]))).toMatchObject({
+    const writtenQuote = JSON.parse(String(quoteWrite?.values?.[9]));
+    expect(writtenQuote).toMatchObject({
       paymentOptions: ["pay_at_property"],
       paymentMethod: "pay_at_property",
     });
+    expect(writtenQuote.addonPurchases[0]).toMatchObject({
+      totalAmount: "20.50",
+      ownershipKind: "partner",
+      partnerCommissionRate: "18.7500",
+    });
+    expect(JSON.parse(String(quoteWrite?.values?.[10]))).toMatchObject({ addonTotal: 20.5 });
     expect(calls.some((call) => call.text.includes("platform.product_audit_events"))).toBe(true);
     await adapter.close?.();
     expect(ended).toBe(0);
@@ -1257,7 +1290,7 @@ describe("Booking Web public bootstrap parity", () => {
   });
 
   it("validates target booking phone and atomically reserves fresh inventory", async () => {
-    const createAdapter = (phoneRequired: boolean) => {
+    const createAdapter = (phoneRequired: boolean, addonTotal = "20.50") => {
       const calls: string[] = [];
       let bookingWriteValues: readonly unknown[] | undefined;
       const pool = {
@@ -1297,8 +1330,27 @@ describe("Booking Web public bootstrap parity", () => {
                     roomTypeId: "room_deluxe",
                     publicOfferKey: "room_deluxe:flexible",
                     paymentMethod: "pay_at_property",
+                    addonRequest: {
+                      addonIds: ["spa_partner"],
+                      addonQuantities: { spa_partner: 2 },
+                      addonDates: {},
+                    },
+                    addonPurchases: [
+                      {
+                        addonDefinitionId: "d8000000-0000-0000-0000-000000000682",
+                        // prettier-ignore
+                        addonSnapshot: { addonDefinitionId: "d8000000-0000-0000-0000-000000000682", sourceAddonId: "spa_partner", name: "Partner spa", pricingModel: "per_guest", unitAmount: "10.25", currency: "EUR" },
+                        quantity: 2,
+                        serviceDate: "2026-09-12",
+                        totalAmount: "20.50",
+                        currency: "EUR",
+                        ownershipKind: "partner",
+                        partnerCommissionRate: "18.7500",
+                      },
+                    ],
                   },
-                  totals: { totalAmount: "100.00", balanceAmount: "100.00" },
+                  // prettier-ignore
+                  totals: { roomTotal: "79.50", addonTotal, totalAmount: "100.00", balanceAmount: "100.00" },
                   policySnapshot: { freeUntilDays: 7 },
                   expiresAt: "2026-09-12T12:00:00.000Z",
                 },
@@ -1372,6 +1424,8 @@ describe("Booking Web public bootstrap parity", () => {
       children: 0,
       numberOfRooms: 1,
       paymentMethod: "pay_at_property",
+      addonIds: ["spa_partner"],
+      addonQuantities: { spa_partner: 2 },
       expectedTotalAmount: 100,
       balanceAmount: 100,
       paymentStatus: "paid",
@@ -1397,6 +1451,10 @@ describe("Booking Web public bootstrap parity", () => {
       requiredPhone.calls.some((text) => text.includes("INSERT INTO booking.guest_bookings")),
     ).toBe(false);
 
+    await expect(
+      createAdapter(false, "19.00").adapter.createBooking("hotel-alpenrose", request, context),
+    ).rejects.toThrow("add-on evidence");
+
     const optionalPhone = createAdapter(false);
     await expect(
       optionalPhone.adapter.createBooking("hotel-alpenrose", request, context),
@@ -1407,6 +1465,12 @@ describe("Booking Web public bootstrap parity", () => {
       true,
     );
     expect(optionalPhone.bookingWriteValues?.[10]).toBe("unpaid");
+    expect(
+      optionalPhone.calls.find((text) => text.includes("SELECT * FROM booking_row")),
+    ).toContain("booking.booking_addon_selections");
+    expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[29]))).toMatchObject([
+      { ownershipKind: "partner", partnerCommissionRate: "18.7500" },
+    ]);
     expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[18]))).toMatchObject({
       policySnapshot: { freeUntilDays: 7 },
       inventoryReservation: {
