@@ -210,9 +210,9 @@ export AUTH_MARKETPLACE_WEB_ORIGIN="$MARKETPLACE_ORIGIN"
 export AUTH_BOOKING_ADMIN_ORIGIN="$BOOKING_ADMIN_ORIGIN"
 export AUTH_PMS_WEB_ORIGIN="$PMS_ORIGIN"
 export AUTH_AFFILIATE_DASHBOARD_ORIGIN="$AFFILIATE_ORIGIN"
-# Surface tickets enable this comma-separated rollout list after their gateway
-# is present. Empty preserves the direct API-host compatibility transport.
-export AUTH_FIRST_PARTY_SURFACES="${AUTH_FIRST_PARTY_SURFACES:-}"
+# Marketplace ships its first-party gateway in VAY-1197. Later surface tickets
+# append their names; an explicit override can still restore compatibility mode.
+export AUTH_FIRST_PARTY_SURFACES="${AUTH_FIRST_PARTY_SURFACES-marketplace-web}"
 export AUTH_BOOKING_ADMIN_LOGOUT_URL="${AUTH_BOOKING_ADMIN_LOGOUT_URL:-${BOOKING_ADMIN_ORIGIN}/login}"
 export AUTH_PMS_WEB_LOGOUT_URL="${AUTH_PMS_WEB_LOGOUT_URL:-${PMS_ORIGIN}/login}"
 export AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL="${AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL:-${AFFILIATE_ORIGIN}/login}"
