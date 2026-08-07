@@ -31,6 +31,7 @@
     "format:check": "prettier --check .",
     "check:architecture-boundaries": "node scripts/check-architecture-boundaries.mjs",
     "test:architecture-boundaries": "node --test scripts/check-architecture-boundaries.test.mjs",
+    "test:workos-local-config": "bash scripts/dev-workos-local-config.test.sh",
     "lint:python": "ruff check .",
     "format:python": "ruff format .",
     "e2e": "playwright test",
