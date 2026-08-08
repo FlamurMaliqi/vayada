@@ -3,7 +3,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   createPgFinanceExpenseCategoryRepository,
+  type ArchiveFinanceExpenseCategoryCommand,
   type CreateFinanceExpenseCategoryCommand,
+  type UpdateFinanceExpenseCategoryCommand,
 } from "./financeExpenseCategoryRepository.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
@@ -25,7 +27,9 @@ describe.skipIf(!URL)("PostgreSQL Finance expense category repository", () => {
          VALUES ('${ACTOR}','category@example.test','Category','active');
        INSERT INTO hotel_catalog.properties (id,public_id,display_name) VALUES
          ('${PROPERTY_A}','category-a','Category A'),
-         ('${PROPERTY_B}','category-b','Category B')`,
+         ('${PROPERTY_B}','category-b','Category B');
+       INSERT INTO pms.property_pricing_settings (property_id,currency) VALUES
+         ('${PROPERTY_A}','EUR'),('${PROPERTY_B}','USD')`,
     );
   });
   afterAll(async () => {
@@ -105,6 +109,108 @@ describe.skipIf(!URL)("PostgreSQL Finance expense category repository", () => {
     expect(evidence.rows[0]?.count).toBe(0);
   });
 
+  it("updates system presentation in scope and replays only matching input", async () => {
+    const categoryId = await systemCategory(PROPERTY_A);
+    const input = updateCommand("system", PROPERTY_A, categoryId, 1, {
+      name: "Team",
+      color: "#111111",
+      sortOrder: 2,
+    });
+    const updated = await repository.update(input);
+    expect(updated).toMatchObject({
+      status: "updated",
+      category: { systemKey: "staff", name: "Team", revision: 2 },
+    });
+    input.commandId = "regenerated";
+    await expect(repository.update(input)).resolves.toMatchObject({ status: "replayed" });
+    await expect(
+      repository.update(updateCommand("system", PROPERTY_A, categoryId, 1, { name: "Changed" })),
+    ).resolves.toEqual({ status: "conflict", reason: "idempotency_key_reused" });
+    await expect(
+      repository.update(updateCommand("cross", PROPERTY_B, categoryId, 2, { name: "Leaked" })),
+    ).resolves.toEqual({ status: "not_found" });
+    const audit = await admin.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM platform.product_audit_events
+       WHERE action='finance.expense_category.update' AND property_id=$1
+         AND redacted_payload->'previous'->>'systemKey'='staff'
+         AND redacted_payload->'category'->>'name'='Team'`,
+      [PROPERTY_A],
+    );
+    expect(audit.rows[0]?.count).toBe(1);
+  });
+
+  it("enforces one expected revision across concurrent updates", async () => {
+    const categoryId = await customCategory("concurrency", PROPERTY_A);
+    const results = await Promise.all([
+      repository.update(updateCommand("left", PROPERTY_A, categoryId, 1, { name: "Left" })),
+      repository.update(updateCommand("right", PROPERTY_A, categoryId, 1, { name: "Right" })),
+    ]);
+    expect(results.map(({ status }) => status).sort()).toEqual(["conflict", "updated"]);
+    expect(results).toContainEqual({ status: "conflict", reason: "revision_conflict" });
+    await expect(repository.list(PROPERTY_A)).resolves.toMatchObject([{ revision: 2 }]);
+  });
+
+  it("archives without deleting history and replays the original result", async () => {
+    const categoryId = await customCategory("history", PROPERTY_A);
+    await admin.query(
+      `INSERT INTO finance.expenses
+         (property_id,category_id,origin,incurred_on,vendor,amount,currency)
+       VALUES ($1,$2,'manual','2026-08-01','Vendor',10,'EUR')`,
+      [PROPERTY_A, categoryId],
+    );
+    const input = archiveCommand("archive", PROPERTY_A, categoryId, 1);
+    await expect(repository.archive(input)).resolves.toMatchObject({
+      status: "updated",
+      category: { archived: true, revision: 2 },
+    });
+    input.commandId = "regenerated";
+    await expect(repository.archive(input)).resolves.toMatchObject({ status: "replayed" });
+    await expect(
+      repository.archive(archiveCommand("archive", PROPERTY_A, categoryId, 2)),
+    ).resolves.toEqual({ status: "conflict", reason: "idempotency_key_reused" });
+    await expect(
+      repository.archive(archiveCommand("already", PROPERTY_A, categoryId, 2)),
+    ).resolves.toEqual({ status: "conflict", reason: "already_archived" });
+    const history = await admin.query<{ categories: number; expenses: number }>(
+      `SELECT (SELECT count(*)::int FROM finance.expense_categories WHERE id=$1) AS categories,
+              (SELECT count(*)::int FROM finance.expenses WHERE category_id=$1) AS expenses`,
+      [categoryId],
+    );
+    expect(history.rows[0]).toEqual({ categories: 1, expenses: 1 });
+  });
+
+  it("blocks active automation and rolls back when update audit persistence fails", async () => {
+    const systemId = await systemCategory(PROPERTY_B);
+    await admin.query(
+      `INSERT INTO finance.recurring_expense_rules
+         (property_id,category_id,cadence,starts_on,next_due_on,vendor,amount,currency)
+       VALUES ($1,$2,'monthly','2026-08-01','2026-08-01','Vendor',10,'USD')`,
+      [PROPERTY_B, systemId],
+    );
+    await expect(
+      repository.archive(archiveCommand("blocked", PROPERTY_B, systemId, 1)),
+    ).resolves.toEqual({ status: "blocked", reason: "active_recurring_rule" });
+    await expect(repository.list(PROPERTY_B)).resolves.toMatchObject([
+      { id: systemId, archived: false, revision: 1 },
+    ]);
+
+    const categoryId = await customCategory("rollback-update", PROPERTY_A);
+    const input = updateCommand("rollback-update", PROPERTY_A, categoryId, 1, { name: "Lost" });
+    input.audit.actor = { kind: "user", userId: MISSING_PROPERTY, organizationId: ORGANIZATION };
+    await expect(repository.update(input)).rejects.toMatchObject({ code: "23503" });
+    await expect(repository.list(PROPERTY_A)).resolves.toMatchObject([
+      { id: categoryId, name: "rollback-update", revision: 1 },
+    ]);
+    const residue = await admin.query<{ count: number }>(
+      `SELECT ((SELECT count(*) FROM platform.idempotency_keys
+                 WHERE property_id IN ($1,$2) AND operation<>'finance.expense_category.create') +
+               (SELECT count(*) FROM platform.product_audit_events
+                 WHERE property_id IN ($1,$2) AND action<>'finance.expense_category.create'))::int AS count`,
+      [PROPERTY_A, PROPERTY_B],
+    );
+    expect(residue.rows[0]?.count).toBe(0);
+  });
+
   async function cleanup() {
     await admin.query(
       `BEGIN; SET LOCAL session_replication_role = replica;
@@ -112,12 +218,33 @@ describe.skipIf(!URL)("PostgreSQL Finance expense category repository", () => {
          WHERE property_id IN ('${PROPERTY_A}','${PROPERTY_B}');
        DELETE FROM platform.idempotency_keys
          WHERE property_id IN ('${PROPERTY_A}','${PROPERTY_B}');
+       DELETE FROM finance.expenses
+         WHERE property_id IN ('${PROPERTY_A}','${PROPERTY_B}');
+       DELETE FROM finance.recurring_expense_rules
+         WHERE property_id IN ('${PROPERTY_A}','${PROPERTY_B}');
        DELETE FROM finance.expense_categories
+         WHERE property_id IN ('${PROPERTY_A}','${PROPERTY_B}');
+       DELETE FROM pms.property_pricing_settings
          WHERE property_id IN ('${PROPERTY_A}','${PROPERTY_B}');
        DELETE FROM hotel_catalog.properties
          WHERE id IN ('${PROPERTY_A}','${PROPERTY_B}');
        DELETE FROM identity.users WHERE id='${ACTOR}'; COMMIT`,
     );
+  }
+
+  async function systemCategory(propertyId: string): Promise<string> {
+    const result = await admin.query<{ id: string }>(
+      `INSERT INTO finance.expense_categories (property_id,system_key,name,color,sort_order)
+       VALUES ($1,'staff','Staff','#6366F1',10) RETURNING id::text`,
+      [propertyId],
+    );
+    return result.rows[0]!.id;
+  }
+
+  async function customCategory(key: string, propertyId: string): Promise<string> {
+    const result = await repository.create(command(key, propertyId, key, "#123456", 5));
+    if (result.status !== "created") throw new Error("category setup failed");
+    return result.category.id;
   }
 });
 
@@ -129,14 +256,39 @@ function command(
   sortOrder: number,
 ): CreateFinanceExpenseCategoryCommand {
   return {
-    commandId: `command-${key}`,
-    idempotencyKey: key,
-    propertyId,
+    ...context(key, propertyId),
     name,
     color,
     sortOrder,
+  };
+}
+
+function updateCommand(
+  key: string,
+  propertyId: string,
+  categoryId: string,
+  expectedRevision: number,
+  fields: Partial<{ name: string; color: string; sortOrder: number }>,
+): UpdateFinanceExpenseCategoryCommand {
+  return { ...context(key, propertyId), categoryId, expectedRevision, ...fields };
+}
+
+function archiveCommand(
+  key: string,
+  propertyId: string,
+  categoryId: string,
+  expectedRevision: number,
+): ArchiveFinanceExpenseCategoryCommand {
+  return { ...context(key, propertyId), categoryId, expectedRevision };
+}
+
+function context(key: string, propertyId: string) {
+  return {
+    commandId: `command-${key}`,
+    idempotencyKey: key,
+    propertyId,
     audit: {
-      actor: { kind: "user", userId: ACTOR, organizationId: ORGANIZATION },
+      actor: { kind: "user" as const, userId: ACTOR, organizationId: ORGANIZATION },
       requestId: `request-${key}`,
       correlationId: `correlation-${key}`,
       reason: "test",
