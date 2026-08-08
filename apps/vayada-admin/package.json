@@ -11,6 +11,7 @@
     "start": "next start -p 3001",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "seed:users": "node scripts/seed-mock-users.js"
   },
   "dependencies": {
