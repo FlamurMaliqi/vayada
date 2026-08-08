@@ -144,6 +144,7 @@ jobs:
           src/domains/pmsManualBookingCommandRepository.integration.test.ts
           src/domains/bookingGuestPolicyRepository.integration.test.ts
           src/domains/financeOtaCommissionRuleRepository.integration.test.ts
+          src/domains/financeExpenseCategoryRepository.integration.test.ts
           src/routes/bookingWebPublicAttribution.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
           src/platform/workosWebhooks.integration.test.ts
