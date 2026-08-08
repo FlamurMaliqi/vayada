@@ -26,6 +26,7 @@ export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
 export * from "./paymentReadinessSnapshot.js";
 export * from "./otaCommissionRules.js";
+export * from "./financialExpenses.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
