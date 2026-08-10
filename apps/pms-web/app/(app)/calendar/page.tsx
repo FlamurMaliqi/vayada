@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   format,
   addDays,
@@ -11,6 +11,8 @@ import {
   endOfMonth,
   addMonths,
   subMonths,
+  startOfWeek,
+  endOfWeek,
 } from "date-fns";
 import {
   calendarService,
@@ -33,6 +35,7 @@ import { getChannelBarColor, normalizeChannelKey } from "@/lib/constants/statusS
 
 const VIEW_DAYS = 21;
 const VIEW_MODE_STORAGE_KEY = "pms.calendar.viewMode";
+const MOBILE_CALENDAR_QUERY = "(max-width: 767px)";
 const CALENDAR_WRITES_AVAILABLE = false;
 type ViewMode = "timeline" | "month";
 
@@ -68,8 +71,11 @@ export default function CalendarPage() {
   const { t } = useTranslation();
   const [viewMode, setViewMode] = useState<ViewMode>("timeline");
   const [startDate, setStartDate] = useState(() => startOfDay(new Date()));
+  const [mobileMonth, setMobileMonth] = useState(() => startOfMonth(new Date()));
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean | null>(null);
   const [data, setData] = useState<CalendarData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [showNewBookingModal, setShowNewBookingModal] = useState(false);
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
@@ -94,6 +100,7 @@ export default function CalendarPage() {
   const [localRooms, setLocalRooms] = useState<CalendarRoom[] | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const roomViewMenuRef = useRef<HTMLDivElement | null>(null);
+  const latestFetchRef = useRef(0);
 
   // Drag-to-select state for creating bookings/blocks by dragging across day cells
   const [drag, setDrag] = useState<{
@@ -112,31 +119,55 @@ export default function CalendarPage() {
   } | null>(null);
   const dragActive = drag !== null;
 
-  const endDate = addDays(startDate, VIEW_DAYS);
+  const endDate = useMemo(() => addDays(startDate, VIEW_DAYS), [startDate]);
   const dates = useMemo(
     () => Array.from({ length: VIEW_DAYS }, (_, i) => addDays(startDate, i)),
     [startDate],
   );
 
-  // Fetch range depends on view mode. Month view needs the entire month; the
-  // existing endpoint handles arbitrary ranges so no backend change is needed.
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_CALENDAR_QUERY);
+    const updateViewport = () => setIsMobileViewport(mediaQuery.matches);
+    updateViewport();
+    mediaQuery.addEventListener("change", updateViewport);
+    return () => mediaQuery.removeEventListener("change", updateViewport);
+  }, []);
+
+  // Mobile shows a complete month grid, including the adjacent days that fill
+  // its first and last weeks. Desktop keeps its existing timeline/month ranges.
   const fetchRange = useMemo(() => {
+    if (isMobileViewport) {
+      return {
+        start: startOfWeek(startOfMonth(mobileMonth), { weekStartsOn: 1 }),
+        end: addDays(endOfWeek(endOfMonth(mobileMonth), { weekStartsOn: 1 }), 1),
+      };
+    }
     if (viewMode === "month") {
       const mStart = startOfMonth(startDate);
       const mEnd = addDays(endOfMonth(startDate), 1);
       return { start: mStart, end: mEnd };
     }
     return { start: startDate, end: endDate };
-  }, [viewMode, startDate, endDate]);
+  }, [isMobileViewport, mobileMonth, viewMode, startDate, endDate]);
 
-  const fetchData = () => {
+  const fetchData = useCallback(async () => {
+    if (isMobileViewport === null) return;
+    const fetchId = ++latestFetchRef.current;
     setLoading(true);
-    calendarService
-      .getCalendarData(format(fetchRange.start, "yyyy-MM-dd"), format(fetchRange.end, "yyyy-MM-dd"))
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
+    setLoadError(false);
+    try {
+      const nextData = await calendarService.getCalendarData(
+        format(fetchRange.start, "yyyy-MM-dd"),
+        format(fetchRange.end, "yyyy-MM-dd"),
+      );
+      if (latestFetchRef.current === fetchId) setData(nextData);
+    } catch (error) {
+      console.error(error);
+      if (latestFetchRef.current === fetchId) setLoadError(true);
+    } finally {
+      if (latestFetchRef.current === fetchId) setLoading(false);
+    }
+  }, [fetchRange, isMobileViewport]);
 
   // Restore view mode from session on mount.
   useEffect(() => {
@@ -155,8 +186,8 @@ export default function CalendarPage() {
   }, []);
 
   useEffect(() => {
-    fetchData();
-  }, [startDate, viewMode]);
+    void fetchData();
+  }, [fetchData]);
 
   useEffect(() => {
     channexService
@@ -496,9 +527,13 @@ export default function CalendarPage() {
           </div>
         ) : (
           <MobileCalendar
+            currentMonth={mobileMonth}
             bookings={allBookings}
             blocks={data?.blocks || []}
             roomTypes={data?.roomTypes || []}
+            loading={loading}
+            loadError={loadError}
+            onMonthChange={setMobileMonth}
             onSelectBooking={(id) => setSelectedBookingId(id)}
             onNewBooking={handleMobileNewBooking}
             onBlockRoom={handleMobileBlockRoom}
