@@ -44,6 +44,8 @@
     "e2e:marketplace-web": "playwright test --project=marketplace-web-chromium",
     "e2e:pms-web": "playwright test --project=pms-web-chromium",
     "e2e:vayada-admin": "playwright test --project=vayada-admin-chromium",
+    "e2e:first-party-auth": "playwright test --project=first-party-auth-chromium",
+    "e2e:first-party-auth:live": "playwright test --project=first-party-auth-live-chromium",
     "e2e:report": "playwright show-report",
     "build:api": "npm --workspace vayada-api run build",
     "build:affiliate-dashboard": "npm --workspace vayada-affiliate-dashboard run build",

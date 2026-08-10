@@ -42,6 +42,50 @@ jobs:
       - name: Build
         run: npm run build
 
+  first_party_auth:
+    name: First-Party Auth Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend domain packages
+        run: |
+          npm --workspace @vayada/domain-hotels run build
+          npm --workspace @vayada/domain-booking run build
+          npm --workspace @vayada/domain-marketplace run build
+          npm --workspace @vayada/domain-pms run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify frontend auth gateways
+        run: |
+          npm --workspace vayada-creator-marketplace run test -- 'app/auth/[...path]/route.test.ts'
+          npm --workspace vayada-booking-engine-frontend-admin run test -- 'app/auth/[...path]/route.test.ts'
+          npm --workspace vayada-pms-frontend run test -- 'app/auth/[...path]/route.test.ts'
+          npm --workspace vayada-affiliate-dashboard run test -- 'app/auth/[...path]/route.test.ts'
+          npm --workspace vayada-admin run test -- 'app/auth/[...path]/route.test.ts'
+
+      - name: Run first-party auth browser regressions
+        run: npm run e2e:first-party-auth
+        env:
+          E2E_FIRST_PARTY_AUTH_ONLY: "1"
+          E2E_START_SERVERS: "1"
+
   api_postgres:
     name: TypeScript API PostgreSQL Integration (PG${{ matrix.postgres }})
     runs-on: ubuntu-latest
