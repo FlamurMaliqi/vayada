@@ -160,6 +160,14 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       });
     },
 
+    async isSessionActive(input) {
+      const sessions = await workos.userManagement.listSessions(input.workosUserId);
+      const activeSessions = await sessions.autoPagination();
+      return activeSessions.some(
+        (session) => session.id === input.sessionId && session.status === "active",
+      );
+    },
+
     refreshSession: refreshSealedSession,
 
     async createSignupOrganization(input) {

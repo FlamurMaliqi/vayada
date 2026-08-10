@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { ROUTES } from "@/lib/constants";
 import { authService } from "@/services/auth";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
@@ -10,20 +10,30 @@ import {
   missingOrganizationHandoffLoginPath,
   organizationSelectionLoginPath,
 } from "@vayada/product-onboarding/returnTo";
+import {
+  BrowserAuthHandoffError,
+  redeemBrowserAuthHandoff,
+  useSingleFlightGuard,
+} from "@vayada/product-onboarding";
 
 // Cross-app AuthKit handoff landing page. Other products provide only
 // organization/property hints; authentication always comes from the sealed
 // browser session and never from URL-supplied token or user data.
 export default function HandoffPage() {
+  const [retryable, setRetryable] = useState(false);
+  const beginRedemption = useSingleFlightGuard();
+
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!beginRedemption()) return;
 
     const hashParams = new URLSearchParams(window.location.hash.slice(1));
-    const handoffHotelId = hashParams.get("hotel_id");
-    const propertyId = hashParams.get("property_id");
-    const organizationId = hashParams.get("organization_id")?.trim() || null;
-    const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
-    const organizationSelectionPath = organizationSelectionLoginPath(
+    const code = hashParams.get("code");
+    let handoffHotelId = hashParams.get("hotel_id");
+    let propertyId = hashParams.get("property_id");
+    let organizationId = hashParams.get("organization_id")?.trim() || null;
+    let workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
+    let organizationSelectionPath = organizationSelectionLoginPath(
       window.location.pathname,
       window.location.search,
       window.location.hash,
@@ -33,57 +43,104 @@ export default function HandoffPage() {
     // relative path, so another app can hand off onto a specific page.
     const queryParams = new URLSearchParams(window.location.search);
     const redirectParam = queryParams.get("redirect");
-    const safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
+    let safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
 
     void (async () => {
-      try {
-        let session = await authService.refreshSession();
-        if (isAuthOrganizationSelectionResponse(session)) {
-          const organization = organizationId
-            ? session.organizations.find((candidate) => candidate.organizationId === organizationId)
-            : workosOrganizationId
-              ? session.organizations.find(
-                  (candidate) => candidate.workosOrganizationId === workosOrganizationId,
-                )
-              : session.organizations.length === 1
-                ? session.organizations[0]
-                : undefined;
-
-          if (
-            !organization ||
-            (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
-          ) {
-            window.location.href = organizationSelectionPath;
+      let redeemed = false;
+      if (code) {
+        try {
+          const handoff = await redeemBrowserAuthHandoff({
+            code,
+            targetSurface: "marketplace-web",
+          });
+          window.history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}`,
+          );
+          organizationSelectionPath = organizationSelectionLoginPath(
+            window.location.pathname,
+            window.location.search,
+            "",
+          );
+          handoffHotelId = handoff.routingHints.hotelId ?? null;
+          propertyId = handoff.routingHints.propertyId ?? null;
+          organizationId = handoff.routingHints.organizationId ?? null;
+          workosOrganizationId = handoff.routingHints.workosOrganizationId ?? null;
+          safeRedirect = handoff.targetPath;
+          if (!(await authService.ensureSession())) throw new Error("Handoff session unavailable");
+          redeemed = true;
+        } catch (error) {
+          if (error instanceof BrowserAuthHandoffError && error.retryable) {
+            setRetryable(true);
             return;
           }
-
-          session = await authService.refreshSession(
-            workosOrganizationId ?? organization.workosOrganizationId,
+          window.history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}`,
           );
-          if (
-            isAuthOrganizationSelectionResponse(session) ||
+          window.location.replace(
+            organizationSelectionLoginPath(window.location.pathname, window.location.search, ""),
+          );
+          return;
+        }
+      }
+
+      try {
+        if (redeemed) {
+          // Redemption already selected and authorized the target-host session.
+        } else {
+          let session = await authService.refreshSession();
+          if (isAuthOrganizationSelectionResponse(session)) {
+            const organization = organizationId
+              ? session.organizations.find(
+                  (candidate) => candidate.organizationId === organizationId,
+                )
+              : workosOrganizationId
+                ? session.organizations.find(
+                    (candidate) => candidate.workosOrganizationId === workosOrganizationId,
+                  )
+                : session.organizations.length === 1
+                  ? session.organizations[0]
+                  : undefined;
+
+            if (
+              !organization ||
+              (workosOrganizationId && organization.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+
+            session = await authService.refreshSession(
+              workosOrganizationId ?? organization.workosOrganizationId,
+            );
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
+          } else if (
             (organizationId && session.organizationId !== organizationId) ||
             (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
           ) {
-            window.location.href = organizationSelectionPath;
-            return;
-          }
-        } else if (
-          (organizationId && session.organizationId !== organizationId) ||
-          (workosOrganizationId && session.workosOrganizationId !== workosOrganizationId)
-        ) {
-          if (!workosOrganizationId) {
-            window.location.href = missingOrganizationHandoffLoginPath();
-            return;
-          }
-          session = await authService.refreshSession(workosOrganizationId);
-          if (
-            isAuthOrganizationSelectionResponse(session) ||
-            (organizationId && session.organizationId !== organizationId) ||
-            session.workosOrganizationId !== workosOrganizationId
-          ) {
-            window.location.href = organizationSelectionPath;
-            return;
+            if (!workosOrganizationId) {
+              window.location.href = missingOrganizationHandoffLoginPath();
+              return;
+            }
+            session = await authService.refreshSession(workosOrganizationId);
+            if (
+              isAuthOrganizationSelectionResponse(session) ||
+              (organizationId && session.organizationId !== organizationId) ||
+              session.workosOrganizationId !== workosOrganizationId
+            ) {
+              window.location.href = organizationSelectionPath;
+              return;
+            }
           }
         }
       } catch {
@@ -127,7 +184,24 @@ export default function HandoffPage() {
     })().catch(() => {
       window.location.href = organizationSelectionPath;
     });
-  }, []);
+  }, [beginRedemption]);
+
+  if (retryable) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50 px-6 text-center">
+        <p className="text-sm font-medium text-gray-700">
+          Your session transfer is temporarily unavailable.
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">

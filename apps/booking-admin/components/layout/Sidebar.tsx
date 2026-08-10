@@ -15,6 +15,12 @@ import {
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { getAuthCsrfToken } from "@/services/auth/sessionStore";
+import {
+  createBrowserAuthHandoff,
+  crossAppReauthenticationUrl,
+  type BrowserAuthSurface,
+} from "@vayada/product-onboarding";
 
 type Product = "booking" | "pms" | "marketplace";
 
@@ -50,6 +56,29 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const switcherRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
   const navItems = coreNavItems;
+
+  const switchApp = async (
+    baseUrl: string,
+    targetSurface: BrowserAuthSurface,
+    targetPath: string,
+  ) => {
+    setShowSwitcher(false);
+    const csrfToken = getAuthCsrfToken();
+    if (csrfToken) {
+      try {
+        window.location.href = await createBrowserAuthHandoff({
+          csrfToken,
+          sourceSurface: "booking-admin",
+          targetPath,
+          targetSurface,
+        });
+        return;
+      } catch {
+        // Require target-app authentication when the one-time exchange is unavailable.
+      }
+    }
+    window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+  };
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -197,7 +226,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = PMS_FRONTEND_URL;
+                  void switchApp(PMS_FRONTEND_URL, "pms-web", "/dashboard");
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >
@@ -233,7 +262,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = MARKETPLACE_URL;
+                  void switchApp(MARKETPLACE_URL, "marketplace-web", "/marketplace");
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >

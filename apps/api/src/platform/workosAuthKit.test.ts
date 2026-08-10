@@ -6,6 +6,7 @@ const workosMocks = vi.hoisted(() => ({
   WorkOS: vi.fn(),
   authenticate: vi.fn(),
   loadSealedSession: vi.fn(),
+  listSessions: vi.fn(),
   refresh: vi.fn(),
   updateUser: vi.fn(),
 }));
@@ -19,6 +20,7 @@ describe("createWorkOSAuthKitClient", () => {
     workosMocks.WorkOS.mockReset();
     workosMocks.authenticate.mockReset();
     workosMocks.loadSealedSession.mockReset();
+    workosMocks.listSessions.mockReset();
     workosMocks.refresh.mockReset();
     workosMocks.updateUser.mockReset();
   });
@@ -244,6 +246,42 @@ describe("createWorkOSAuthKitClient", () => {
       client.authenticateSession({ sealedSession: "stale-session" }),
     ).resolves.toBeNull();
     expect(workosMocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("checks the provider session before issuing a cross-app handoff", async () => {
+    const autoPagination = vi.fn().mockResolvedValue([
+      { id: "session_active", status: "active" },
+      { id: "session_revoked", status: "revoked" },
+    ]);
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          listSessions: workosMocks.listSessions,
+        },
+      };
+    });
+    workosMocks.listSessions.mockResolvedValue({ autoPagination });
+
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await expect(
+      client.isSessionActive({
+        sessionId: "session_active",
+        workosUserId: "user_workos_hotel",
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      client.isSessionActive({
+        sessionId: "session_revoked",
+        workosUserId: "user_workos_hotel",
+      }),
+    ).resolves.toBe(false);
+    expect(workosMocks.listSessions).toHaveBeenCalledWith("user_workos_hotel");
+    expect(autoPagination).toHaveBeenCalledTimes(2);
   });
 
   it("rethrows unclassified sealed-session errors without refreshing", async () => {

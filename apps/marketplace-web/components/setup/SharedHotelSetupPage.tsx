@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   SharedAccountDetailsStep,
   SharedFirstRunPropertySetupWizard,
+  createBrowserAuthHandoff,
+  crossAppReauthenticationUrl,
   isSharedAccountDetailsComplete,
   isSafeSharedHotelSetupReturnTo,
   normalizeSharedAccountName,
@@ -21,7 +23,7 @@ import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
-import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { getAuthCsrfToken, getAuthSessionUser } from "@/services/auth/sessionStore";
 import { AdaptiveRoomAuthoringSetupController } from "./adaptive/rooms/AdaptiveRoomAuthoringSetupController";
 import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 
@@ -106,15 +108,50 @@ export function SharedHotelSetupPage({
     });
   };
 
+  const handoffToProduct = async (
+    product: Exclude<SharedHotelSetupEntryProduct, "marketplace">,
+    targetPath: string,
+    propertyId?: string | null,
+  ) => {
+    const baseUrl = product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL;
+    const targetSurface = product === "booking" ? "booking-admin" : "pms-web";
+    const csrfToken = getAuthCsrfToken();
+    if (csrfToken) {
+      try {
+        window.location.replace(
+          await createBrowserAuthHandoff({
+            csrfToken,
+            routingHints: propertyId ? { propertyId } : undefined,
+            sourceSurface: "marketplace-web",
+            targetPath,
+            targetSurface,
+          }),
+        );
+        return;
+      } catch {
+        // Require target-app authentication when the one-time exchange is unavailable.
+      }
+    }
+    window.location.replace(crossAppReauthenticationUrl(baseUrl, targetPath));
+  };
+
   const handleContinue = async (input: SharedFirstRunContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
     const requestedReturnTo = input.product === returnProduct ? input.returnTo : null;
     if (input.product === "booking") {
-      window.location.replace(productReturnUrl("booking", requestedReturnTo));
+      await handoffToProduct(
+        "booking",
+        safeSharedHotelSetupReturnTo(requestedReturnTo, "/dashboard"),
+        input.propertyId,
+      );
       return;
     }
     if (input.product === "pms") {
-      window.location.replace(productReturnUrl("pms", requestedReturnTo));
+      await handoffToProduct(
+        "pms",
+        safeSharedHotelSetupReturnTo(requestedReturnTo, "/dashboard"),
+        input.propertyId,
+      );
       return;
     }
     router.replace(
@@ -129,7 +166,11 @@ export function SharedHotelSetupPage({
       router.replace(returnTo);
       return;
     }
-    window.location.replace(productReturnUrl(returnProduct, returnTo));
+    void handoffToProduct(
+      returnProduct,
+      returnTo,
+      localStorage.getItem("selectedSharedPropertyId"),
+    );
   };
 
   if (checkingAuth || !authorized) {
@@ -230,17 +271,6 @@ export function SharedHotelSetupPage({
       onExit={handleExit}
     />
   );
-}
-
-function productReturnUrl(
-  product: Exclude<SharedHotelSetupEntryProduct, "marketplace">,
-  returnTo: string | null,
-): string {
-  const safeReturnTo = safeSharedHotelSetupReturnTo(returnTo, "/dashboard");
-  return new URL(
-    safeReturnTo,
-    product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL,
-  ).toString();
 }
 
 export function setupPathForSelectedProperty(query: string, propertyId: string): string {
