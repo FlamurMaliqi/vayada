@@ -68,6 +68,73 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       ok: false,
       code: "idempotency_conflict",
     });
+    const update = { ...mutation("update", 2), vendor: "Updated supplier" };
+    await expect(repository.update(update)).resolves.toMatchObject({
+      ok: true,
+      outcome: "updated",
+      item: { id: EXPENSE, revision: 3 },
+    });
+    await expect(
+      repository.update({
+        ...update,
+        amount: { currency: update.amount.currency, amount: update.amount.amount },
+      }),
+    ).resolves.toMatchObject({ ok: true, outcome: "replayed" });
+    await expect(repository.update({ ...update, vendor: "Changed reuse" })).resolves.toEqual({
+      ok: false,
+      code: "idempotency_conflict",
+    });
+    const races = [
+      { ...mutation("race-a", 3), vendor: "Concurrent A" },
+      { ...mutation("race-b", 3), vendor: "Concurrent B" },
+    ];
+    const raced = await Promise.all(races.map((value) => repository.update(value)));
+    expect(raced.map((value) => (value.ok ? value.outcome : value.code)).sort()).toEqual([
+      "revision_conflict",
+      "updated",
+    ]);
+    for (const [index, patch] of [
+      { paymentStatus: "unpaid", paidOn: "2026-08-11" },
+      { vendor: null },
+      { incurredOn: null },
+    ].entries())
+      await expect(
+        repository.update({
+          ...mutation(`invalid-${index}`, 4),
+          ...patch,
+        } as never),
+      ).resolves.toEqual({ ok: false, code: "invalid_command" });
+    const rollbackUpdate = { ...mutation("update-rollback", 4), vendor: "Must roll back" };
+    rollbackUpdate.audit.actor.userId = crypto.randomUUID();
+    await expect(repository.update(rollbackUpdate)).rejects.toMatchObject({ code: "23503" });
+    const [correction, goodReceipt, badReceipt, badCorrection] = Array.from({ length: 4 }, () =>
+      crypto.randomUUID(),
+    );
+    await admin.query(
+      `INSERT INTO platform.media_objects
+       (id,bucket,storage_key,visibility,purpose,property_id,resource_product,resource_type,
+        resource_id,lifecycle_status,created_by_user_id) VALUES
+       ($1,'test','good','private','finance.expense.receipt',$3,'finance','expense',$2,'active',$4),
+       ($5,'test','bad','private','finance.expense.receipt',$6,'finance','expense',$7,'active',$4)`,
+      [goodReceipt, correction, PROPERTY, ACTOR, badReceipt, OTHER_PROPERTY, badCorrection],
+    );
+    await expect(
+      repository.update({
+        ...mutation("bad-receipt", 4, EXPENSE, badCorrection),
+        incurredOn: "2026-08-11",
+        receiptMediaId: badReceipt,
+      }),
+    ).resolves.toEqual(mismatch);
+    const correct = {
+      ...mutation("correct", 4, EXPENSE, correction),
+      incurredOn: "2026-08-11",
+      receiptMediaId: goodReceipt,
+    };
+    await expect(repository.update(correct)).resolves.toMatchObject({
+      ok: true,
+      outcome: "corrected",
+      item: { id: correction, reversesExpenseId: EXPENSE },
+    });
     await admin.query(
       "UPDATE platform.media_objects SET lifecycle_status='quarantined' WHERE id=$1",
       [RECEIPT],
@@ -93,13 +160,19 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       organizationId: crypto.randomUUID(),
     };
     await expect(repository.create(rollback)).rejects.toMatchObject({ code: "23503" });
-    const evidence = await admin.query<{ expenses: number; audits: number; keys: number }>(
+    const evidence = await admin.query(
       `SELECT (SELECT count(*)::int FROM finance.expenses WHERE property_id=$1) AS expenses,
         (SELECT count(*)::int FROM platform.product_audit_events WHERE property_id=$1) AS audits,
-        (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$1) AS keys`,
-      [PROPERTY],
+        (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$1) AS keys,
+        (SELECT redacted_payload FROM platform.product_audit_events
+         WHERE property_id=$1 AND redacted_payload->>'commandId'=$2) AS audit`,
+      [PROPERTY, update.commandId],
     );
-    expect(evidence.rows[0]).toEqual({ expenses: 1, audits: 1, keys: 1 });
+    expect(evidence.rows[0]).toMatchObject({ expenses: 2, audits: 4, keys: 4 });
+    expect(evidence.rows[0].audit).toMatchObject({
+      previous: { vendor: "Supplier" },
+      next: { vendor: "Updated supplier" },
+    });
   });
 
   async function cleanup() {
@@ -107,7 +180,8 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       DELETE FROM finance.expenses WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM platform.product_audit_events WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM platform.idempotency_keys WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
-      DELETE FROM platform.media_objects WHERE id='${RECEIPT}';
+      DELETE FROM platform.media_objects WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}')
+        AND purpose='finance.expense.receipt';
       DELETE FROM finance.expense_categories WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM pms.property_pricing_settings WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM hotel_catalog.properties WHERE id IN ('${PROPERTY}','${OTHER_PROPERTY}');
@@ -133,4 +207,13 @@ function command(id: string, key: string, categoryId = CATEGORY, currency = "EUR
       requestedAt: "2026-08-10T12:00:00Z",
     },
   };
+}
+
+function mutation(
+  key: string,
+  expectedRevision: number,
+  expenseId = EXPENSE,
+  commandId = crypto.randomUUID(),
+) {
+  return { ...command(commandId, key), expectedRevision, expenseId };
 }
