@@ -216,6 +216,7 @@ export type BookingRoomFilterSettingsReadModel = {
 };
 
 export type BookingDesignSettingsReadModel = {
+  headerLogo?: string | null;
   heroImage?: string | null;
   heroHeading?: string | null;
   heroSubtext?: string | null;
@@ -299,6 +300,7 @@ export type BookingRoomFilterSettingsResponse = {
 };
 
 export type BookingDesignSettingsResponse = {
+  headerLogo: string;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -845,6 +847,7 @@ type TargetBookingSettingsRow = {
   booking_filters: unknown;
   custom_filters: unknown;
   filter_rooms: unknown;
+  header_logo_url: string | null;
   hero_image_url: string | null;
   hero_heading: string | null;
   hero_subtext: string | null;
@@ -1013,6 +1016,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     settings.booking_filters,
     settings.custom_filters,
     settings.filter_rooms,
+    settings.header_logo_url,
     settings.hero_image_url,
     settings.hero_heading,
     settings.hero_subtext,
@@ -1102,6 +1106,7 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
     settings.booking_filters,
     settings.custom_filters,
     settings.filter_rooms,
+    settings.header_logo_url,
     settings.hero_image_url,
     settings.hero_heading,
     settings.hero_subtext,
@@ -1122,7 +1127,12 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
   ${TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE},
   updated_settings AS (
     UPDATE booking.booking_settings settings
-    SET hero_image_url = CASE
+    SET header_logo_url = CASE
+          WHEN $2::jsonb ? 'headerLogo'
+            THEN NULLIF(BTRIM($2::jsonb ->> 'headerLogo'), '')
+          ELSE settings.header_logo_url
+        END,
+        hero_image_url = CASE
           WHEN $2::jsonb ? 'heroImage'
             THEN NULLIF(BTRIM($2::jsonb ->> 'heroImage'), '')
           ELSE settings.hero_image_url
@@ -1167,6 +1177,7 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
       settings.booking_filters,
       settings.custom_filters,
       settings.filter_rooms,
+      settings.header_logo_url,
       settings.hero_image_url,
       settings.hero_heading,
       settings.hero_subtext,
@@ -1194,6 +1205,7 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
     updated_settings.booking_filters,
     updated_settings.custom_filters,
     updated_settings.filter_rooms,
+    updated_settings.header_logo_url,
     updated_settings.hero_image_url,
     updated_settings.hero_heading,
     updated_settings.hero_subtext,
@@ -1430,6 +1442,7 @@ function toTargetRoomFilterSettings(
 
 function toTargetDesignSettings(row: TargetBookingSettingsRow): BookingDesignSettingsReadModel {
   return {
+    headerLogo: row.header_logo_url,
     heroImage: row.hero_image_url,
     heroHeading: row.hero_heading,
     heroSubtext: row.hero_subtext,
@@ -1895,6 +1908,7 @@ export function createPgTargetBookingSettingsRepository(config: {
           settings.booking_filters,
           settings.custom_filters,
           settings.filter_rooms,
+          settings.header_logo_url,
           settings.hero_image_url,
           settings.hero_heading,
           settings.hero_subtext,
@@ -1922,6 +1936,7 @@ export function createPgTargetBookingSettingsRepository(config: {
           updated_settings.booking_filters,
           updated_settings.custom_filters,
           updated_settings.filter_rooms,
+          updated_settings.header_logo_url,
           updated_settings.hero_image_url,
           updated_settings.hero_heading,
           updated_settings.hero_subtext,
@@ -3091,6 +3106,7 @@ function parseDesignSettingsWriteBody(
   }
 
   const allowedKeys = new Set([
+    "headerLogo",
     "heroImage",
     "heroHeading",
     "heroSubtext",
@@ -3105,6 +3121,13 @@ function parseDesignSettingsWriteBody(
   if (keys.length === 0) details.push("At least one design setting is required.");
 
   const value: UpdateBookingDesignSettingsBody = {};
+  const headerLogo = expectOptionalBoundedString(body, "headerLogo", 2048, details);
+  if (headerLogo !== undefined) {
+    if (headerLogo && !isHttpUrl(headerLogo)) {
+      details.push("headerLogo must be an http or https URL.");
+    }
+    value.headerLogo = headerLogo;
+  }
   const heroImage = expectOptionalBoundedString(body, "heroImage", 2048, details);
   if (heroImage !== undefined) {
     if (heroImage && !isHttpUrl(heroImage)) {
@@ -3235,6 +3258,7 @@ export function toDesignSettingsResponse(
   settings: BookingDesignSettingsReadModel,
 ): BookingDesignSettingsResponse {
   return {
+    headerLogo: settings.headerLogo ?? "",
     heroImage: settings.heroImage ?? "",
     heroHeading: settings.heroHeading ?? "",
     heroSubtext: settings.heroSubtext ?? "",

@@ -80,6 +80,7 @@ type TargetPublicHotelProfileRow = {
   policies: unknown;
   capabilities: unknown;
   supportedQuoteParameters: unknown;
+  bookingHeaderLogo: string | null;
   bookingHeroImage: string | null;
   bookingHeroHeading: string | null;
   bookingHeroSubtext: string | null;
@@ -411,6 +412,7 @@ function serializeHotelProfile(
     ...(hotel.branding
       ? {
           branding: {
+            logoUrl: hotel.branding.logoUrl ?? null,
             heroImage: hotel.branding.heroImage ?? null,
             heroHeading: hotel.branding.heroHeading ?? null,
             heroSubtext: hotel.branding.heroSubtext ?? null,
@@ -553,6 +555,7 @@ const TARGET_PUBLIC_PROFILE_SELECT = `SELECT
            profile.policies,
            profile.capabilities,
            profile.supported_quote_parameters AS "supportedQuoteParameters",
+           booking_branding.header_logo_url AS "bookingHeaderLogo",
            booking_branding.hero_image_url AS "bookingHeroImage",
            booking_branding.hero_heading AS "bookingHeroHeading",
            booking_branding.hero_subtext AS "bookingHeroSubtext",
@@ -680,6 +683,7 @@ function publicBookingBranding(
   row: TargetPublicHotelProfileRow,
 ): Pick<PublicBookabilityHotelProfile, "branding"> {
   const branding = {
+    logoUrl: stringValue(row.bookingHeaderLogo),
     heroImage: stringValue(row.bookingHeroImage),
     heroHeading: stringValue(row.bookingHeroHeading),
     heroSubtext: stringValue(row.bookingHeroSubtext),
@@ -767,9 +771,11 @@ function imageArray(value: unknown): PublicBookabilityHotelProfile["images"] {
       continue;
     }
     const object = objectValue(entry);
+    const mediaType = stringValue(object["type"]) ?? stringValue(object["mediaType"]);
+    if (mediaType === "logo") continue;
     const url = stringValue(object["url"]);
     if (url) {
-      images.push({ url, alt: stringValue(object["alt"]) });
+      images.push({ url, alt: stringValue(object["alt"]) ?? stringValue(object["altText"]) });
     }
   }
   return images;

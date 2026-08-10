@@ -106,6 +106,7 @@ export interface BookingAdminRoomFilterSettingsFixture {
 }
 
 export interface BookingAdminDesignSettingsFixture {
+  headerLogo: string;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -281,6 +282,7 @@ const defaultRoomFilterSettings: BookingAdminRoomFilterSettingsFixture = {
 };
 
 export const defaultBookingAdminDesignSettings: BookingAdminDesignSettingsFixture = {
+  headerLogo: "",
   heroImage: "/hotel-hero.JPG",
   heroHeading: "Stay above the clouds",
   heroSubtext: "An independent alpine escape made for memorable direct stays.",

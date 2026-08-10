@@ -129,6 +129,9 @@ describe("target public bookability publication", () => {
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'sellable_availability'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'payment_method'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "COALESCE(media.item ->> 'type', media.item ->> 'mediaType') IS DISTINCT FROM 'logo'",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
       "ELSE 'https://' || input.verified_hostname || '/' || input.locale",
     );
 
@@ -360,6 +363,44 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
       latitude: 52.52,
       longitude: 13.4,
     });
+  });
+
+  it("persists photos without leaking a canonical logo into the Booking hero fallback", async () => {
+    await client.query(
+      `UPDATE hotel_catalog.property_public_profile_read_model
+       SET media = $2::jsonb
+       WHERE property_id = $1::uuid`,
+      [
+        publicLocationPropertyId,
+        JSON.stringify([
+          {
+            type: "logo",
+            url: "https://cdn.vayada.test/property/logo.webp",
+            altText: "Property logo",
+          },
+          {
+            type: "hero_image",
+            url: "https://cdn.vayada.test/property/hero.webp",
+            altText: "Mountain view",
+          },
+        ]),
+      ],
+    );
+
+    await projectPublicBookabilityLocation(client);
+
+    const result = await client.query<{ media: Array<Record<string, unknown>> }>(
+      `SELECT media
+       FROM distribution.public_hotel_bookability_profiles
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    expect(result.rows[0]?.media).toEqual([
+      {
+        url: "https://cdn.vayada.test/property/hero.webp",
+        alt: "Mountain view",
+      },
+    ]);
   });
 });
 

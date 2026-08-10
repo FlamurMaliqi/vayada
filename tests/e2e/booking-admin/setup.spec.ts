@@ -585,6 +585,108 @@ test.describe("booking-admin adaptive setup", () => {
     );
     await expect(page.getByRole("button", { name: "Save Changes" })).toBeEnabled();
   });
+
+  test("uploads, previews, and removes a Booking header logo", async ({ page }) => {
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    const { requests } = await mockBookingAdminDesignSettings(page);
+    const logoUrls = [
+      "https://media.example/alpenrose-header-logo.webp",
+      "https://media.example/alpenrose-header-logo-replacement.webp",
+    ];
+    let uploadCount = 0;
+
+    await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
+      const request = route.request();
+      if (request.url().endsWith("/finalize")) {
+        const logoUrl = logoUrls[Math.max(0, uploadCount - 1)]!;
+        await route.fulfill({
+          json: {
+            mediaObjects: [
+              {
+                purpose: "booking.header_logo",
+                visibility: "public",
+                variants: [{ publicCdnUrl: logoUrl }],
+              },
+            ],
+          },
+        });
+        return;
+      }
+
+      expect(request.postDataJSON()).toMatchObject({
+        purpose: "booking.header_logo",
+        visibility: "public",
+        resource: {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: BOOKING_ADMIN_HOTEL_ID,
+        },
+        files: [{ contentType: "image/svg+xml" }],
+      });
+      uploadCount += 1;
+      await route.fulfill({
+        json: {
+          uploadSession: { sessionId: `header-logo-session-${uploadCount}` },
+          uploadTargets: [
+            {
+              uploadTargetId: `header-logo-target-${uploadCount}`,
+              method: "PUT",
+              uploadUrl: `https://uploads.vayada.localhost/header-logo-target-${uploadCount}`,
+              headers: { "content-type": "image/svg+xml" },
+            },
+          ],
+        },
+      });
+    });
+
+    await page.goto("/design-studio");
+    await page.locator('input[accept*="image/svg+xml"]').setInputFiles({
+      name: "alpenrose.svg",
+      mimeType: "image/svg+xml",
+      buffer: Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="80"><rect width="300" height="80" fill="white"/></svg>',
+      ),
+    });
+
+    await expect(page.getByAltText("Header logo preview")).toHaveAttribute("src", logoUrls[0]!);
+    await expect(page.getByAltText("Alpenrose logo")).toHaveAttribute("src", logoUrls[0]!);
+    await expect
+      .poll(
+        () =>
+          requests.find(
+            (request) => request.method === "PATCH" && request.body?.headerLogo === logoUrls[0],
+          )?.body?.headerLogo,
+      )
+      .toBe(logoUrls[0]);
+
+    const replacement = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(
+        new File(
+          [
+            '<svg xmlns="http://www.w3.org/2000/svg" width="260" height="72"><rect width="260" height="72" fill="navy"/></svg>',
+          ],
+          "alpenrose-replacement.svg",
+          { type: "image/svg+xml" },
+        ),
+      );
+      return transfer;
+    });
+    await page.getByTestId("header-logo-dropzone").dispatchEvent("drop", {
+      dataTransfer: replacement,
+    });
+    await expect(page.getByAltText("Header logo preview")).toHaveAttribute("src", logoUrls[1]!);
+    await expect(page.getByAltText("Alpenrose logo")).toHaveAttribute("src", logoUrls[1]!);
+
+    await page.getByRole("button", { name: "Remove logo" }).click();
+    await expect(page.getByAltText("Header logo preview")).toHaveCount(0);
+    await expect(page.getByRole("main").getByText("Alpenrose", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Save Changes" }).click();
+    await expect
+      .poll(() => requests.filter((request) => request.method === "PATCH").at(-1)?.body?.headerLogo)
+      .toBe("");
+  });
 });
 
 function bookingAuthSession(

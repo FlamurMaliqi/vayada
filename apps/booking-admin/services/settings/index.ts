@@ -92,6 +92,7 @@ export interface PointOfInterest {
 export type PropertySettingsUpdate = Partial<PropertySettings>;
 
 export interface DesignSettings {
+  header_logo: string;
   hero_image: string;
   hero_heading: string;
   hero_subtext: string;
@@ -102,6 +103,7 @@ export interface DesignSettings {
 export type DesignSettingsUpdate = Partial<DesignSettings>;
 
 type BookingDesignSettings = {
+  headerLogo: string;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -113,6 +115,7 @@ type BookingDesignSettingsUpdate = Partial<BookingDesignSettings>;
 
 function toDesignSettings(branding: BookingDesignSettings): DesignSettings {
   return {
+    header_logo: branding.headerLogo,
     hero_image: branding.heroImage,
     hero_heading: branding.heroHeading,
     hero_subtext: branding.heroSubtext,
@@ -123,6 +126,7 @@ function toDesignSettings(branding: BookingDesignSettings): DesignSettings {
 
 function toBrandingDesignUpdate(data: DesignSettingsUpdate): BookingDesignSettingsUpdate {
   return {
+    headerLogo: data.header_logo,
     heroImage: data.hero_image,
     heroHeading: data.hero_heading,
     heroSubtext: data.hero_subtext,

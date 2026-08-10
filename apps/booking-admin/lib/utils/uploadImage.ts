@@ -9,7 +9,7 @@ const PLATFORM_MEDIA_API_BASE_URL =
   process.env.NEXT_PUBLIC_AUTH_API_URL ||
   "https://api.localhost";
 
-type BookingMediaPurpose = "property.hero_image" | "property.gallery_image";
+type BookingMediaPurpose = "property.hero_image" | "property.gallery_image" | "booking.header_logo";
 
 type UploadTarget = {
   uploadTargetId: string;
@@ -62,7 +62,7 @@ export async function uploadImages(
       files: fileList.map((file, index) => ({
         clientFileId: `file_${index + 1}`,
         filename: file.name || `booking-image-${index + 1}.jpg`,
-        contentType: file.type || "image/jpeg",
+        contentType: uploadContentType(file),
         sizeBytes: file.size,
       })),
     }),
@@ -96,7 +96,7 @@ export async function uploadImages(
           const file = fileList[index]!;
           return {
             uploadTargetId: target.uploadTargetId,
-            contentType: file.type || "image/jpeg",
+            contentType: uploadContentType(file),
             sizeBytes: file.size,
           };
         }),
@@ -140,6 +140,13 @@ function validateExpectedProfileRevision(
     throw new Error("A valid property profile revision is required for hero image uploads.");
   }
   return expectedProfileRevision;
+}
+
+function uploadContentType(file: File): string {
+  if (file.type) return file.type;
+  if (/\.svg$/i.test(file.name)) return "image/svg+xml";
+  if (/\.png$/i.test(file.name)) return "image/png";
+  return "image/jpeg";
 }
 
 function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {
