@@ -186,6 +186,12 @@ Response shape:
 }
 ```
 
+`hotel.images` is the ordered property-gallery projection used by Booking Web. It contains at
+most 10 `gallery_image` items and excludes the separate Booking hero image and property logo.
+The hero remains available through `hotel.branding.heroImage`.
+Migration `0061_public_bookability_gallery_media` rewrites existing untyped Distribution media
+from the canonical Catalog profile so already-published properties adopt this contract at rollout.
+
 ## Quote Endpoint
 
 Recommended route:

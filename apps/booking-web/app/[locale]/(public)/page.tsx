@@ -14,6 +14,7 @@ import RoomCard from "@/components/booking/RoomCard";
 import RoomFiltersBar from "@/components/booking/RoomFiltersBar";
 import RoomMapPanel from "@/components/booking/RoomMapPanel";
 import PublicStructuredData from "@/components/booking/PublicStructuredData";
+import PropertyGallery from "@/components/booking/PropertyGallery";
 import { useHotel, useRooms, useAddons, useSlug } from "@/contexts/HotelContext";
 import { calculateNights, formatDateShort, formatDate, ensureMinOneNight } from "@/lib/utils";
 import { useCurrency } from "@/contexts/CurrencyContext";
@@ -405,6 +406,8 @@ function HomePageContent() {
         <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/30 to-black/60" />
 
         <BookingNavigation />
+
+        <PropertyGallery hotelName={hotel.name} images={hotel.images} />
 
         {/* Hero Content */}
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-4">

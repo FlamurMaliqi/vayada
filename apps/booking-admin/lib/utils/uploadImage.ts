@@ -30,6 +30,91 @@ type FinalizeResponse = {
   }>;
 };
 
+type CanonicalGalleryUploadResponse = {
+  contractVersion: "platform-media-upload.v2";
+  uploadSession: { sessionId: string; status: "signed" | "completed" };
+  uploadTargets: UploadTarget[];
+  mediaObjects?: Array<{
+    mediaObjectId: string;
+    purpose: "property.gallery_image";
+    status: "private_ready";
+  }>;
+};
+
+export async function uploadPropertyGalleryImages(
+  files: File[],
+  propertyId: string,
+): Promise<string[]> {
+  if (files.length === 0) return [];
+  if (files.length > 10) throw new Error("A property gallery accepts at most 10 photos.");
+
+  const token = getAuthKitAccessToken() ?? getAuthBearerToken();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const requestFiles = files.map((file, index) => ({
+    clientFileId: `file_${index + 1}`,
+    filename: file.name || `property-gallery-${index + 1}.jpg`,
+    contentType: file.type || "image/jpeg",
+    sizeBytes: file.size,
+  }));
+  const create = await fetch(`${PLATFORM_MEDIA_API_BASE_URL}/api/media/upload-sessions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      idempotencyKey: `booking.property-gallery.upload:${propertyId}:${crypto.randomUUID()}`,
+      purpose: "property.gallery_image",
+      visibility: "private",
+      resource: {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: propertyId,
+      },
+      files: requestFiles,
+    }),
+  });
+  if (!create.ok) throw new Error(await readMediaError(create, "Upload session failed"));
+  const created = (await create.json()) as CanonicalGalleryUploadResponse;
+  if (created.uploadSession.status === "completed") {
+    return galleryMediaObjectIds(created, files.length);
+  }
+
+  await Promise.all(
+    created.uploadTargets.map(async (target, index) => {
+      const file = files[index];
+      if (!file) throw new Error("Platform media returned an invalid upload target.");
+      if (isDeterministicLocalUploadTarget(target.uploadUrl)) return;
+      const upload = await fetch(target.uploadUrl, {
+        method: target.method,
+        headers: target.headers,
+        body: file,
+      });
+      if (!upload.ok) throw new Error("Upload failed");
+    }),
+  );
+
+  const finalized = await fetch(
+    `${PLATFORM_MEDIA_API_BASE_URL}/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        files: created.uploadTargets.map((target, index) => ({
+          uploadTargetId: target.uploadTargetId,
+          contentType: requestFiles[index]!.contentType,
+          sizeBytes: requestFiles[index]!.sizeBytes,
+        })),
+      }),
+    },
+  );
+  if (!finalized.ok) throw new Error(await readMediaError(finalized, "Upload finalize failed"));
+  return galleryMediaObjectIds(
+    (await finalized.json()) as CanonicalGalleryUploadResponse,
+    files.length,
+  );
+}
+
 export async function uploadImages(
   files: File | File[],
   purpose: BookingMediaPurpose = "property.gallery_image",
@@ -176,4 +261,20 @@ async function readMediaError(response: Response, fallback: string): Promise<str
     /* ignore */
   }
   return fallback;
+}
+
+function galleryMediaObjectIds(response: CanonicalGalleryUploadResponse, count: number): string[] {
+  if (
+    response.contractVersion !== "platform-media-upload.v2" ||
+    response.mediaObjects?.length !== count ||
+    response.mediaObjects.some(
+      (item) =>
+        item.purpose !== "property.gallery_image" ||
+        item.status !== "private_ready" ||
+        !item.mediaObjectId,
+    )
+  ) {
+    throw new Error("Platform media did not return the uploaded property photos.");
+  }
+  return response.mediaObjects.map(({ mediaObjectId }) => mediaObjectId);
 }

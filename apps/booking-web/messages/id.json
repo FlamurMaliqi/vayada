@@ -89,6 +89,14 @@
     "selectThisRate": "Pilih Tarif Ini",
     "selectingRate": "Menyiapkan checkout...",
     "soldOut": "Habis Terjual",
+    "gallery": {
+      "viewPhotos": "Lihat foto ({count})",
+      "dialogLabel": "Galeri properti {hotelName}",
+      "close": "Tutup galeri properti",
+      "photoAlt": "Foto properti {hotelName} {index}",
+      "previous": "Foto properti sebelumnya",
+      "next": "Foto properti berikutnya"
+    },
     "calendar": {
       "checkingAvailability": "Memeriksa ketersediaan",
       "availabilityUnavailable": "Ketersediaan untuk tanggal ini sementara tidak dapat dimuat.",

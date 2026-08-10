@@ -89,6 +89,14 @@
     "selectThisRate": "Select This Rate",
     "selectingRate": "Preparing checkout...",
     "soldOut": "Sold Out",
+    "gallery": {
+      "viewPhotos": "View photos ({count})",
+      "dialogLabel": "{hotelName} property gallery",
+      "close": "Close property gallery",
+      "photoAlt": "{hotelName} property photo {index}",
+      "previous": "Previous property photo",
+      "next": "Next property photo"
+    },
     "calendar": {
       "checkingAvailability": "Checking availability",
       "availabilityUnavailable": "Availability is temporarily unavailable for these dates.",

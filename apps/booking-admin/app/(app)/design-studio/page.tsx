@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { EyeIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { settingsService } from "@/services/settings";
 import { requireSelectedBookingHotelId } from "@/services/api/bookingHotelScope";
@@ -9,11 +9,11 @@ import { publishPublicBookabilityProfile } from "@/services/api/publicBookabilit
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { FeedbackAlert, SaveButton } from "@/components/ui";
-import { uploadSingleImage } from "@/lib/utils/uploadImage";
+import { uploadPropertyGalleryImages, uploadSingleImage } from "@/lib/utils/uploadImage";
 import { generateColorPalette } from "@/lib/utils/colors";
 import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
 
-import MediaTab from "@/components/design-studio/MediaTab";
+import MediaTab, { type PropertyGalleryImage } from "@/components/design-studio/MediaTab";
 import ColorsTab from "@/components/design-studio/ColorsTab";
 import FontsTab from "@/components/design-studio/FontsTab";
 
@@ -42,10 +42,17 @@ export default function DesignStudioPage() {
   const [propertyAddress, setPropertyAddress] = useState("");
   const [propertyPhone, setPropertyPhone] = useState("");
   const [propertyEmail, setPropertyEmail] = useState("");
+  const [galleryImages, setGalleryImages] = useState<PropertyGalleryImage[]>([]);
+  const [galleryBusy, setGalleryBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const designHotelIdRef = useRef<string | null>(null);
   const propertyIdRef = useRef<string | null>(null);
   const profileRevisionRef = useRef<number | null>(null);
+  const galleryOverflowRef = useRef<PropertyGalleryImage[]>([]);
+  const coverAssignmentRef = useRef<{
+    mediaObjectId: string;
+    altText: string | null;
+  } | null>(null);
 
   // Colors state
   const [primaryColor, setPrimaryColor] = useState("#4F46E5");
@@ -60,6 +67,33 @@ export default function DesignStudioPage() {
         location: typeof window === "undefined" ? undefined : window.location,
       })
     : null;
+
+  const applyPublicGallery = useCallback(
+    (profile: Awaited<ReturnType<typeof sharedHotelSetupApi.getPublicPropertyProfile>>) => {
+      profileRevisionRef.current = profile.profileRevision;
+      const media = [...profile.publicProfile.media].sort(
+        (left, right) => left.sortOrder - right.sortOrder,
+      );
+      const cover = media.find(({ mediaType }) => mediaType === "hero_image");
+      coverAssignmentRef.current = cover
+        ? { mediaObjectId: cover.mediaObjectId, altText: cover.altText }
+        : null;
+      const gallery = media
+        .filter(({ mediaType }) => mediaType === "gallery_image")
+        .map(({ mediaObjectId, url, altText }) => ({ mediaObjectId, url, altText }));
+      setGalleryImages(gallery.slice(0, 10));
+      galleryOverflowRef.current = gallery.slice(10);
+    },
+    [],
+  );
+
+  const galleryAssignments = (visibleGallery: PropertyGalleryImage[]) => {
+    const visibleIds = new Set(visibleGallery.map(({ mediaObjectId }) => mediaObjectId));
+    return [
+      ...visibleGallery,
+      ...galleryOverflowRef.current.filter(({ mediaObjectId }) => !visibleIds.has(mediaObjectId)),
+    ];
+  };
 
   // Mirror the live booking engine's palette onto the preview pane so the
   // preview renders with the same shade tokens (bg-primary-600 for CTAs,
@@ -91,11 +125,11 @@ export default function DesignStudioPage() {
       settingsService.getPropertySettings(hotelId).catch(() => null),
       getBookingHotelPropertyLink({ hotelId }).then(async ({ propertyId }) => {
         propertyIdRef.current = propertyId;
-        return sharedHotelSetupApi.getPropertyProfile(propertyId);
+        return sharedHotelSetupApi.getPublicPropertyProfile(propertyId);
       }),
     ])
-      .then(([settings, property, canonicalProfile]) => {
-        profileRevisionRef.current = canonicalProfile.profileRevision;
+      .then(([settings, property, publicProfile]) => {
+        applyPublicGallery(publicProfile);
         if (settings.hero_image) setHeroImage(settings.hero_image);
         if (settings.hero_heading) setHeroHeading(settings.hero_heading);
         if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
@@ -111,9 +145,16 @@ export default function DesignStudioPage() {
         setLoadFailed(true);
       })
       .finally(() => setLoading(false));
-  }, [loadAttempt]);
+  }, [applyPublicGallery, loadAttempt]);
 
   const [uploading, setUploading] = useState(false);
+
+  const refreshCanonicalGallery = async () => {
+    const propertyId = propertyIdRef.current;
+    if (!propertyId) return;
+    const publicProfile = await sharedHotelSetupApi.getPublicPropertyProfile(propertyId);
+    applyPublicGallery(publicProfile);
+  };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -145,6 +186,11 @@ export default function DesignStudioPage() {
       profileRevisionRef.current = expectedProfileRevision + 1;
       URL.revokeObjectURL(previewUrl);
       setHeroImage(s3Url);
+      try {
+        await refreshCanonicalGallery();
+      } catch {
+        profileRevisionRef.current = null;
+      }
 
       try {
         await settingsService.updateDesignSettings({ hero_image: s3Url }, hotelId);
@@ -157,8 +203,7 @@ export default function DesignStudioPage() {
       const propertyId = propertyIdRef.current;
       if (propertyId) {
         try {
-          const canonicalProfile = await sharedHotelSetupApi.getPropertyProfile(propertyId);
-          profileRevisionRef.current = canonicalProfile.profileRevision;
+          await refreshCanonicalGallery();
         } catch {
           profileRevisionRef.current = null;
         }
@@ -174,6 +219,156 @@ export default function DesignStudioPage() {
   const removeHeroImage = () => {
     setHeroImage("");
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const persistGallery = async (
+    nextGallery: PropertyGalleryImage[],
+  ): Promise<{ published: boolean; refreshed: boolean }> => {
+    const propertyId = propertyIdRef.current;
+    const hotelId = designHotelIdRef.current;
+    const expectedProfileRevision = profileRevisionRef.current;
+    if (!propertyId || !hotelId || expectedProfileRevision === null) {
+      throw new Error("The property gallery version is unavailable. Refresh and try again.");
+    }
+    const cover = coverAssignmentRef.current;
+    const sortOffset = cover ? 1 : 0;
+    const response = await sharedHotelSetupApi.replacePropertyPresentationMedia(
+      propertyId,
+      {
+        expectedProfileRevision,
+        assignments: [
+          ...(cover
+            ? [
+                {
+                  mediaObjectId: cover.mediaObjectId,
+                  role: "cover" as const,
+                  altText: cover.altText,
+                  sortOrder: 0,
+                },
+              ]
+            : []),
+          ...galleryAssignments(nextGallery).map((image, index) => ({
+            mediaObjectId: image.mediaObjectId,
+            role: "gallery" as const,
+            altText: image.altText,
+            sortOrder: index + sortOffset,
+          })),
+        ],
+      },
+      `booking.property-gallery.assign:${propertyId}:${crypto.randomUUID()}`,
+    );
+    profileRevisionRef.current = response.profileRevision;
+
+    let refreshed = false;
+    try {
+      applyPublicGallery(await sharedHotelSetupApi.getPublicPropertyProfile(propertyId));
+      refreshed = true;
+    } catch {
+      // Keep the optimistic thumbnails; the assignment itself already succeeded.
+    }
+    let published = true;
+    try {
+      await publishPublicBookabilityProfile(hotelId);
+    } catch {
+      published = false;
+      setFeedback({
+        type: "error",
+        message: "Gallery saved, but the booking preview could not be refreshed. Try again.",
+      });
+    }
+    return { published, refreshed };
+  };
+
+  const addGalleryImages = async (files: File[]) => {
+    const propertyId = propertyIdRef.current;
+    if (!propertyId || galleryBusy || files.length === 0) return;
+    const remaining = Math.max(0, 10 - galleryImages.length);
+    if (files.length > remaining) {
+      setFeedback({
+        type: "error",
+        message: `You can add ${remaining} more ${remaining === 1 ? "photo" : "photos"} to this gallery.`,
+      });
+      return;
+    }
+    if (files.some((file) => !["image/jpeg", "image/png", "image/webp"].includes(file.type))) {
+      setFeedback({ type: "error", message: "Gallery photos must be JPG, PNG, or WebP files." });
+      return;
+    }
+
+    setGalleryBusy(true);
+    setFeedback(null);
+    const previewUrls = files.map((file) => URL.createObjectURL(file));
+    try {
+      const mediaObjectIds = await uploadPropertyGalleryImages(files, propertyId);
+      const nextGallery = [
+        ...galleryImages,
+        ...mediaObjectIds.map((mediaObjectId, index) => ({
+          mediaObjectId,
+          url: previewUrls[index]!,
+          altText: null,
+        })),
+      ];
+      setGalleryImages(nextGallery);
+      const { published, refreshed } = await persistGallery(nextGallery);
+      if (refreshed) previewUrls.forEach(URL.revokeObjectURL);
+      if (published) setFeedback({ type: "success", message: "Property gallery updated" });
+    } catch (error) {
+      previewUrls.forEach(URL.revokeObjectURL);
+      await refreshCanonicalGallery().catch(() => undefined);
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : "Gallery upload failed. Try again.",
+      });
+    } finally {
+      setGalleryBusy(false);
+    }
+  };
+
+  const removeGalleryImage = async (index: number) => {
+    if (galleryBusy) return;
+    const previous = galleryImages;
+    const nextGallery = previous.filter((_, photoIndex) => photoIndex !== index);
+    setGalleryImages(nextGallery);
+    setGalleryBusy(true);
+    setFeedback(null);
+    try {
+      const { published } = await persistGallery(nextGallery);
+      if (published) setFeedback({ type: "success", message: "Property gallery updated" });
+    } catch (error) {
+      setGalleryImages(previous);
+      await refreshCanonicalGallery().catch(() => undefined);
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : "Photo could not be removed.",
+      });
+    } finally {
+      setGalleryBusy(false);
+    }
+  };
+
+  const reorderGalleryImage = async (sourceIndex: number, targetIndex: number) => {
+    if (galleryBusy || sourceIndex === targetIndex) return;
+    const previous = galleryImages;
+    const nextGallery = [...previous];
+    const [moved] = nextGallery.splice(sourceIndex, 1);
+    if (!moved) return;
+    nextGallery.splice(targetIndex, 0, moved);
+    setGalleryImages(nextGallery);
+    setGalleryBusy(true);
+    setFeedback(null);
+    try {
+      const { published } = await persistGallery(nextGallery);
+      if (published) setFeedback({ type: "success", message: "Property gallery order saved" });
+    } catch (error) {
+      setGalleryImages(previous);
+      await refreshCanonicalGallery().catch(() => undefined);
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : "Gallery order could not be saved.",
+      });
+    } finally {
+      setGalleryBusy(false);
+    }
   };
 
   const resetContent = () => {
@@ -323,6 +518,11 @@ export default function DesignStudioPage() {
                 handleImageUpload={handleImageUpload}
                 removeHeroImage={removeHeroImage}
                 resetContent={resetContent}
+                galleryImages={galleryImages}
+                galleryBusy={galleryBusy}
+                addGalleryImages={addGalleryImages}
+                removeGalleryImage={removeGalleryImage}
+                reorderGalleryImage={reorderGalleryImage}
               />
             )}
 
@@ -341,7 +541,7 @@ export default function DesignStudioPage() {
 
           {/* Save button — desktop inline */}
           <div className="hidden lg:block pt-3 shrink-0 border-t border-gray-100">
-            <SaveButton onClick={handleSave} saving={saving} disabled={uploading} />
+            <SaveButton onClick={handleSave} saving={saving} disabled={uploading || galleryBusy} />
           </div>
         </div>
 
@@ -963,7 +1163,7 @@ export default function DesignStudioPage() {
       <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-gray-200 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <button
           onClick={handleSave}
-          disabled={saving || uploading}
+          disabled={saving || uploading || galleryBusy}
           className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 bg-primary-500 text-white text-[14px] font-medium rounded-lg hover:bg-primary-600 disabled:opacity-50 transition-colors"
         >
           {saving ? (

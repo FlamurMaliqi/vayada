@@ -224,6 +224,62 @@ describe("uploadImages", () => {
     ).rejects.toThrow("outside the active organization scope");
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("uploads gallery photos against the canonical property and returns media object IDs", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const propertyId = "55555555-5555-4555-8555-555555555552";
+    const mediaObjectId = "66666666-6666-4666-8666-666666666663";
+    const { uploadPropertyGalleryImages } = await import("./uploadImage");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/api/media/upload-sessions")) {
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            purpose: "property.gallery_image",
+            visibility: "private",
+            resource: {
+              product: "hotel_catalog",
+              resourceType: "property",
+              resourceId: propertyId,
+            },
+          });
+          return jsonResponse({
+            contractVersion: "platform-media-upload.v2",
+            uploadSession: { sessionId: "session_1", status: "signed" },
+            uploadTargets: [
+              {
+                uploadTargetId: "target_1",
+                clientFileId: "file_1",
+                method: "PUT",
+                uploadUrl: "https://uploads.vayada.localhost/target_1",
+                headers: {},
+              },
+            ],
+          });
+        }
+        return jsonResponse({
+          contractVersion: "platform-media-upload.v2",
+          uploadSession: { sessionId: "session_1", status: "completed" },
+          uploadTargets: [],
+          mediaObjects: [
+            {
+              mediaObjectId,
+              purpose: "property.gallery_image",
+              status: "private_ready",
+              publicVariants: [],
+            },
+          ],
+        });
+      }),
+    );
+
+    await expect(
+      uploadPropertyGalleryImages(
+        [new File(["image"], "pool.jpg", { type: "image/jpeg" })],
+        propertyId,
+      ),
+    ).resolves.toEqual([mediaObjectId]);
+  });
 });
 
 function jsonResponse(body: unknown): Response {
