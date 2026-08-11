@@ -169,6 +169,13 @@ export default function CalendarPage() {
     }
   }, [fetchRange, isMobileViewport]);
 
+  const handleMobileMonthChange = useCallback((month: Date) => {
+    latestFetchRef.current += 1;
+    setLoading(true);
+    setLoadError(false);
+    setMobileMonth(month);
+  }, []);
+
   // Restore view mode from session on mount.
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -533,7 +540,7 @@ export default function CalendarPage() {
             roomTypes={data?.roomTypes || []}
             loading={loading}
             loadError={loadError}
-            onMonthChange={setMobileMonth}
+            onMonthChange={handleMobileMonthChange}
             onSelectBooking={(id) => setSelectedBookingId(id)}
             onNewBooking={handleMobileNewBooking}
             onBlockRoom={handleMobileBlockRoom}

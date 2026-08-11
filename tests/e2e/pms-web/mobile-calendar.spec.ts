@@ -43,6 +43,14 @@ test.describe("mobile PMS calendar", () => {
 
     const reservationRanges: Array<{ from: string | null; to: string | null }> = [];
     const blockRanges: Array<{ from: string | null; to: string | null }> = [];
+    let releaseNextMonthRequests!: () => void;
+    const nextMonthRequests = new Promise<void>((resolve) => {
+      releaseNextMonthRequests = resolve;
+    });
+    let releaseStaleRequests!: () => void;
+    const staleRequests = new Promise<void>((resolve) => {
+      releaseStaleRequests = resolve;
+    });
     let releaseFutureRequests!: () => void;
     const futureRequests = new Promise<void>((resolve) => {
       releaseFutureRequests = resolve;
@@ -57,7 +65,11 @@ test.describe("mobile PMS calendar", () => {
         to: url.searchParams.get("stayTo"),
       };
       reservationRanges.push(range);
+      const isNextMonthRange = range.from === "2026-08-31" && range.to === "2026-10-05";
+      const isStaleRange = range.from === "2026-12-28" && range.to === "2027-02-01";
       const isFutureRange = range.from === "2027-02-01" && range.to === "2027-03-01";
+      if (isNextMonthRange) await nextMonthRequests;
+      if (isStaleRange) await staleRequests;
       if (isFutureRange) await futureRequests;
       const items = isFutureRange ? [futureReservation] : [pmsWebReservation];
       await route.fulfill({
@@ -80,7 +92,11 @@ test.describe("mobile PMS calendar", () => {
         to: url.searchParams.get("to"),
       };
       blockRanges.push(range);
+      const isNextMonthRange = range.from === "2026-08-31" && range.to === "2026-10-05";
+      const isStaleRange = range.from === "2026-12-28" && range.to === "2027-02-01";
       const isFutureRange = range.from === "2027-02-01" && range.to === "2027-03-01";
+      if (isNextMonthRange) await nextMonthRequests;
+      if (isStaleRange) await staleRequests;
       if (isFutureRange) await futureRequests;
       await route.fulfill({
         json: {
@@ -96,7 +112,14 @@ test.describe("mobile PMS calendar", () => {
     await expect(page.getByRole("heading", { name: "August", exact: true })).toBeVisible();
     await expect(page.getByText("Loading bookings and blocks...")).toBeHidden();
 
-    for (let month = 0; month < 6; month += 1) {
+    await page.getByRole("button", { name: "Next month" }).click();
+    await expect(page.getByRole("heading", { name: "September", exact: true })).toBeVisible();
+    await expect(page.getByText("Loading bookings and blocks...")).toBeVisible();
+    await expect(page.getByText("No bookings or blocks on this day")).toBeHidden();
+    releaseNextMonthRequests();
+    await expect(page.getByText("Loading bookings and blocks...")).toBeHidden();
+
+    for (let month = 0; month < 5; month += 1) {
       await page.getByRole("button", { name: "Next month" }).click();
     }
 
@@ -124,6 +147,11 @@ test.describe("mobile PMS calendar", () => {
     await expect(
       bookedDay.locator('[class~="w-1"][class~="h-1"][class~="rounded-full"]'),
     ).toHaveCount(1);
+
+    releaseStaleRequests();
+    await page.waitForTimeout(250);
+    await expect(page.getByRole("heading", { name: "February", exact: true })).toBeVisible();
+    await expect(page.getByText("Future Guest")).toBeVisible();
 
     const blockedDay = page.locator('[data-day="2027-02-20"]');
     await blockedDay.click();
