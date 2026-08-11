@@ -8,7 +8,7 @@ import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 import pg from "pg";
 
 import { buildApp, type ApiAuthOptions } from "./app.js";
-import { type ApiConfig, loadConfig } from "./config.js";
+import { type ApiConfig, loadConfig, stripeSubscriptionRuntimeEnabled } from "./config.js";
 import { createPgBookingDesignCatalogEvidenceRepository } from "./domains/bookingDesignCatalogEvidenceRepository.js";
 import { createPgBookingDesignRepository } from "./domains/bookingDesignRepository.js";
 import { createBookingGuestPolicyCatalogCurrentOwnerEvidenceAdapter } from "./domains/bookingGuestPolicyCatalogCurrentOwnerEvidence.js";
@@ -42,6 +42,7 @@ import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
+import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
@@ -55,6 +56,10 @@ import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMa
 import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from "./domains/hotelCatalogOperatingCalendarPropertyProfileEvidence.js";
 import { createPgPmsOperatingCalendarReadModel } from "./domains/pmsOperatingCalendarReadModel.js";
 import { createPgFinancePaymentReadinessReadModel } from "./domains/financePaymentReadinessReadModel.js";
+import { createTargetFinanceBillingConfigReadPort } from "./domains/financeBillingConfigReadModel.js";
+import { createFinanceSubscriptionService } from "./domains/financeSubscriptionService.js";
+import { createPgFinanceSubscriptionStore } from "./domains/financeSubscriptionStore.js";
+import { createStripeFinanceSubscriptionProvider } from "./domains/stripeFinanceSubscriptions.js";
 import { createPgMarketplaceSetupLifecycleStatusRepository } from "./domains/marketplaceSetupLifecycleStatusRepository.js";
 import { createPgBookingSetupLifecycleStatusRepository } from "./domains/bookingSetupLifecycleStatusRepository.js";
 import {
@@ -71,6 +76,10 @@ import { createPropertySetupReviewLifecycleStateProvider } from "./platform/prop
 import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupRouteState.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
+import {
+  runFinanceSubscriptionNotificationJobs,
+  runFinanceSubscriptionWebhookJobs,
+} from "./jobs/financeSubscriptions.js";
 import {
   createPgPropertySetupDraftRetentionStore,
   startPropertySetupDraftRetentionWorker,
@@ -245,6 +254,11 @@ const bookingWebCheckoutAdapter =
     ? createTargetBookingWebCheckoutAdapter({
         connectionString: targetDatabaseUrl,
         inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+        billingConfigReadPortFactory: (executor) =>
+          createTargetFinanceBillingConfigReadPort({
+            connectionString: targetDatabaseUrl,
+            pool: executor,
+          }),
       })
     : undefined;
 
@@ -279,6 +293,26 @@ const financeRepository =
   config.financeSource === "target"
     ? createTargetFinancePropertySettingsRepository({
         connectionString: targetDatabaseUrl,
+      })
+    : undefined;
+
+const stripeSubscriptionProvider = stripeSubscriptionRuntimeEnabled(config)
+  ? createStripeFinanceSubscriptionProvider({
+      secretKey: config.stripeSubscriptions.secretKey!,
+      fixedPlanPriceId: config.stripeSubscriptions.fixedPlanPriceId,
+    })
+  : undefined;
+const financeSubscriptionRoomInventory =
+  config.financeSource === "target"
+    ? createTargetPmsRoomInventoryReadPort({ connectionString: targetDatabaseUrl })
+    : undefined;
+const financeSubscriptionService =
+  config.financeSource === "target"
+    ? createFinanceSubscriptionService({
+        store: createPgFinanceSubscriptionStore({ connectionString: targetDatabaseUrl }),
+        roomInventory: financeSubscriptionRoomInventory!,
+        stripe: stripeSubscriptionProvider,
+        bookingAdminBaseUrl: config.stripeSubscriptions.bookingAdminBaseUrl,
       })
     : undefined;
 
@@ -693,6 +727,7 @@ const app = buildApp({
   pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
   financeRepository,
+  financeSubscriptionService,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
@@ -843,6 +878,60 @@ if (hasProviderWebhookSecret) runChannexReviews();
 app.addHook("onClose", async () => {
   if (channexReviewTimer) clearInterval(channexReviewTimer);
   await activeChannexReviewBatch;
+});
+
+let activeFinanceSubscriptionBatch: Promise<void> | undefined;
+const financeSubscriptionWebhooksEnabled = Boolean(
+  stripeSubscriptionProvider &&
+  financeSubscriptionRoomInventory &&
+  stripeSubscriptionRuntimeEnabled(config),
+);
+const financeSubscriptionJobsEnabled = config.financeSource === "target";
+const runFinanceSubscriptionJobs = () => {
+  if (activeFinanceSubscriptionBatch || !financeSubscriptionJobsEnabled) return;
+  const batches = [
+    runFinanceSubscriptionNotificationJobs(targetDatabaseUrl, (notification) => {
+      app.log.error(
+        notification,
+        "Fixed Plan recurring payment failed; internal follow-up required",
+      );
+    }),
+  ];
+  if (
+    financeSubscriptionWebhooksEnabled &&
+    stripeSubscriptionProvider &&
+    financeSubscriptionRoomInventory
+  ) {
+    batches.push(
+      runFinanceSubscriptionWebhookJobs(
+        targetDatabaseUrl,
+        stripeSubscriptionProvider,
+        financeSubscriptionRoomInventory,
+      ),
+    );
+  }
+  activeFinanceSubscriptionBatch = Promise.all(batches)
+    .then((results) => {
+      const failed = results.reduce((total, result) => total + result.failed, 0);
+      if (failed > 0) {
+        app.log.warn({ failed }, "Finance subscription job processing completed with failures");
+      }
+    })
+    .catch((error: unknown) =>
+      app.log.warn({ err: error }, "Finance subscription job processing failed"),
+    )
+    .finally(() => {
+      activeFinanceSubscriptionBatch = undefined;
+    });
+};
+const financeSubscriptionTimer = financeSubscriptionJobsEnabled
+  ? setInterval(runFinanceSubscriptionJobs, 5_000)
+  : undefined;
+financeSubscriptionTimer?.unref();
+if (financeSubscriptionJobsEnabled) runFinanceSubscriptionJobs();
+app.addHook("onClose", async () => {
+  if (financeSubscriptionTimer) clearInterval(financeSubscriptionTimer);
+  await activeFinanceSubscriptionBatch;
 });
 
 let activeRetryBatch: Promise<void> | undefined;
