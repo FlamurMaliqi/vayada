@@ -10,6 +10,7 @@ import {
   type PublicBookabilityProfileProjection,
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
+import type { BillingConfigReadModel, BillingConfigReadPort } from "@vayada/domain-finance";
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
@@ -1192,6 +1193,7 @@ type TargetPaymentSettingsRow = QueryResultRow & {
 type PgTargetBookingWebCheckoutAdapterConfig = {
   connectionString: string;
   inventoryReservationPort: DirectBookingInventoryReservationPort;
+  billingConfigReadPortFactory?: (executor: Pick<pg.PoolClient, "query">) => BillingConfigReadPort;
   max?: number;
   pool?: pg.Pool;
 };
@@ -1495,6 +1497,11 @@ export function createTargetBookingWebCheckoutAdapter(
           request,
           context.occurredAt,
         );
+        const billingConfigReadPort = config.billingConfigReadPortFactory?.(client);
+        const billingConfig = await billingConfigReadPort?.getBillingConfig(property.propertyId);
+        if (billingConfigReadPort && !billingConfig) {
+          throw createHttpError(409, "Finance billing configuration is not available.");
+        }
         resolveTargetCheckoutAmountSnapshot(request, quote);
         const booking = await createTargetGuestBooking(
           client,
@@ -1504,6 +1511,7 @@ export function createTargetBookingWebCheckoutAdapter(
           context,
           quote,
           guestPhone,
+          billingConfig ?? null,
         );
         await enqueueBankTransferReservedPendingPaymentEmail(
           client,
@@ -2552,6 +2560,7 @@ async function createTargetGuestBooking(
   context: BookingWebCheckoutCommandContext,
   quote: TargetCheckoutQuoteSnapshot,
   guestPhone: string | null,
+  billingConfig: BillingConfigReadModel | null,
 ): Promise<TargetBookingRow> {
   const { totalAmount, balanceAmount } = resolveTargetCheckoutAmountSnapshot(request, quote);
   const publicReference = targetPublicReference("B", [
@@ -2654,6 +2663,9 @@ async function createTargetGuestBooking(
            total_amount,
            balance_amount,
            booking_metadata,
+           billing_plan_snapshot,
+           commission_terms_snapshot,
+           finance_terms_captured_at,
            created_at,
            updated_at
          )
@@ -2674,6 +2686,9 @@ async function createTargetGuestBooking(
          $17::numeric,
          $18::numeric,
          $19::jsonb,
+         $30,
+         $31::jsonb,
+         $20::timestamptz,
          $20::timestamptz,
          $20::timestamptz
        FROM checkout
@@ -2817,6 +2832,17 @@ async function createTargetGuestBooking(
       stringField(request, "specialRequests"),
       JSON.stringify({ requestId: context.requestId, correlationId: context.correlationId }),
       quote.quoteSessionId,
+      billingConfig?.activePlan ?? "commission",
+      JSON.stringify(
+        billingConfig
+          ? {
+              bookingEngineFeePercent: billingConfig.bookingEngineFeePercent,
+              channelManagerFeePercent: billingConfig.channelManagerFeePercent,
+              affiliatePlatformFeePercent: billingConfig.affiliatePlatformFeePercent,
+              financeConfigUpdatedAt: billingConfig.updatedAt,
+            }
+          : {},
+      ),
     ],
   );
   const booking = result.rows[0];
