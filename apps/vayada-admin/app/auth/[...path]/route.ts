@@ -27,6 +27,7 @@ const FORWARDED_RESPONSE_HEADERS = [
 ] as const;
 
 const MAX_AUTH_REQUEST_BODY_BYTES = 256 * 1024;
+const AUTH_GATEWAY_UPSTREAM_TIMEOUT_MS = 10_000;
 
 class AuthRequestBodyTooLargeError extends Error {}
 
@@ -62,6 +63,7 @@ async function proxyAuthRequest(request: Request, context: AuthRouteContext): Pr
   }
 
   let upstreamResponse: Response;
+  const upstreamTimeout = AbortSignal.timeout(AUTH_GATEWAY_UPSTREAM_TIMEOUT_MS);
   try {
     upstreamResponse = await fetch(upstreamUrl, {
       method: request.method,
@@ -69,9 +71,12 @@ async function proxyAuthRequest(request: Request, context: AuthRouteContext): Pr
       ...(body?.byteLength ? { body } : {}),
       cache: "no-store",
       redirect: "manual",
-      signal: request.signal,
+      signal: AbortSignal.any([request.signal, upstreamTimeout]),
     });
   } catch {
+    if (upstreamTimeout.aborted && !request.signal.aborted) {
+      return jsonError(504, "auth_gateway_upstream_timeout");
+    }
     return jsonError(502, "auth_gateway_upstream_unavailable");
   }
 
