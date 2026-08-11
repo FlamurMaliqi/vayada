@@ -46,6 +46,17 @@ export type GuestSettingsPolicies = {
   cancellationPolicyText: string;
 };
 
+export type PropertyLaunchSettings = {
+  defaultCurrency: string;
+  supportedCurrencies: string[];
+  defaultLanguage: string;
+  supportedLanguages: string[];
+  instagram: string;
+  facebook: string;
+  tiktok: string;
+  youtube: string;
+};
+
 export type PaymentMethodChoice = "pay_at_property" | "bank_transfer" | "stripe";
 
 export type FinancePaymentSettings = {
@@ -185,6 +196,36 @@ export const hotelOperationsSetupApi = {
       check_out_time: settings.checkOutTime,
       cancellation_policy_text: settings.cancellationPolicyText.trim(),
     });
+  },
+
+  getPropertyLaunchSettings: async (
+    propertyId: string,
+    signal?: AbortSignal,
+  ): Promise<PropertyLaunchSettings> => {
+    const response = await targetApiClient.get<PropertyLaunchSettings>(
+      `/api/hotel-setup/properties/${encoded(propertyId)}/launch-settings`,
+      signal ? { signal } : undefined,
+    );
+    return {
+      defaultCurrency: stringValue(response.defaultCurrency, "USD"),
+      supportedCurrencies: stringArray(response.supportedCurrencies),
+      defaultLanguage: stringValue(response.defaultLanguage, "en"),
+      supportedLanguages: stringArray(response.supportedLanguages),
+      instagram: stringValue(response.instagram),
+      facebook: stringValue(response.facebook),
+      tiktok: stringValue(response.tiktok),
+      youtube: stringValue(response.youtube),
+    };
+  },
+
+  updatePropertyLaunchSettings: async (
+    propertyId: string,
+    settings: PropertyLaunchSettings,
+  ): Promise<void> => {
+    await targetApiClient.put(
+      `/api/hotel-setup/properties/${encoded(propertyId)}/launch-settings`,
+      settings,
+    );
   },
 
   getPaymentSettings: async (
@@ -501,6 +542,12 @@ function encoded(value: string): string {
 
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
 }
 
 function requiredText(value: string, label: string): string {

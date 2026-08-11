@@ -165,12 +165,6 @@ function buildTargetSettingsUpdate(
   settings: PropertySettings,
 ): TargetSettingsUpdate {
   if (section === "property") {
-    if ((settings.tiktok || "").trim() || (settings.youtube || "").trim()) {
-      return {
-        ok: false,
-        message: "TikTok and YouTube links are not available on next-api yet.",
-      };
-    }
     return {
       ok: true,
       data: {
@@ -183,6 +177,8 @@ function buildTargetSettingsUpdate(
         country: settings.country,
         instagram: settings.instagram,
         facebook: settings.facebook,
+        tiktok: settings.tiktok,
+        youtube: settings.youtube,
       },
     };
   }

@@ -115,6 +115,7 @@ test.describe("marketplace-web shared setup activation", () => {
     let personalMediaRequests = 0;
     let accountProfileWrites = 0;
     let creatorTrackSelected = false;
+    const launchSettingsWrites: unknown[] = [];
     await page.route(/\/api\/hotel-setup\/status/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
@@ -310,6 +311,18 @@ test.describe("marketplace-web shared setup activation", () => {
         });
       },
     );
+    await page.route(
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/launch-settings$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        const payload = route.request().postDataJSON();
+        launchSettingsWrites.push(payload);
+        await route.fulfill({ status: 200, headers: corsHeaders(route), json: payload });
+      },
+    );
 
     await page.goto(setupUrl(baseURL));
 
@@ -426,6 +439,18 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.getByRole("button", { name: "Continue" }).click();
 
+    await expect(page.getByRole("heading", { name: "Set up guest preferences" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /Default currency/ })).toHaveValue("EUR");
+    await expect(page.getByRole("combobox", { name: /Default language/ })).toHaveValue("de");
+    await expect(page.getByRole("checkbox", { name: "English" })).toBeChecked();
+    await expect(page.getByRole("button", { name: "Skip for now, configure later" })).toBeVisible();
+    await page.getByRole("checkbox", { name: "CHF" }).check({ force: true });
+    await page.getByRole("textbox", { name: /Instagram/ }).fill("https://instagram.com/alpenrose");
+    await page.getByRole("textbox", { name: /Facebook/ }).fill("https://facebook.com/alpenrose");
+    await page.getByRole("textbox", { name: /TikTok/ }).fill("https://tiktok.com/@alpenrose");
+    await page.getByRole("textbox", { name: /YouTube/ }).fill("https://youtube.com/@alpenrose");
+    await page.getByRole("button", { name: "Continue" }).click();
+
     await page.getByRole("textbox", { name: /Contact email/ }).fill("owner@alpenrose.example");
     await page.getByRole("textbox", { name: /Phone number/ }).fill("+49 89 123456");
     await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
@@ -454,6 +479,18 @@ test.describe("marketplace-web shared setup activation", () => {
     expect(accountProfileWrites).toBe(0);
     expect(personalMediaRequests).toBe(0);
     expect(publicProfileWrites).toEqual([]);
+    expect(launchSettingsWrites).toEqual([
+      {
+        defaultCurrency: "EUR",
+        supportedCurrencies: ["CHF"],
+        defaultLanguage: "de",
+        supportedLanguages: ["en"],
+        instagram: "https://instagram.com/alpenrose",
+        facebook: "https://facebook.com/alpenrose",
+        tiktok: "https://tiktok.com/@alpenrose",
+        youtube: "https://youtube.com/@alpenrose",
+      },
+    ]);
     const review = page.locator('section[aria-labelledby="setup-review-title"]');
     await expect(review).toBeVisible();
     await expect(
@@ -1656,6 +1693,32 @@ async function mockMarketplaceProfileApis(
     propertyPresentation?: unknown[];
   },
 ) {
+  await page.route(
+    new RegExp(`/api/hotel-setup/properties/${propertyId}/launch-settings$`),
+    async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json:
+          route.request().method() === "PUT"
+            ? route.request().postDataJSON()
+            : {
+                defaultCurrency: "EUR",
+                supportedCurrencies: ["CHF"],
+                defaultLanguage: "de",
+                supportedLanguages: ["en"],
+                instagram: "https://instagram.com/alpenrose",
+                facebook: "https://facebook.com/alpenrose",
+                tiktok: "https://tiktok.com/@alpenrose",
+                youtube: "https://youtube.com/@alpenrose",
+              },
+      });
+    },
+  );
   await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile-status`), {
     profile_complete: false,
     missing_fields: ["profile"],

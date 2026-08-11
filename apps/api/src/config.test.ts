@@ -367,6 +367,22 @@ describe("api config", () => {
     );
   });
 
+  it("requires target Booking settings for the next API runtime", () => {
+    expect(() =>
+      loadConfig({
+        API_RUNTIME: "next",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+        BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
+        PUBLIC_BOOKABILITY_SOURCE: "target",
+        BOOKING_RESERVATIONS_SOURCE: "target",
+        PMS_OPERATIONS_SOURCE: "target",
+        FINANCE_SOURCE: "target",
+        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      }),
+    ).toThrow("API_RUNTIME=next requires target runtime sources: BOOKING_SETTINGS_SOURCE=target");
+  });
+
   it("defaults provider webhook intake modes to observe-only shadow intake", () => {
     expect(loadConfig({}).providerWebhooks).toEqual({
       stripeSecret: undefined,
