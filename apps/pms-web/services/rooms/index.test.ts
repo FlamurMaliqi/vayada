@@ -44,6 +44,33 @@ vi.mock("../api/unsupported", () => ({
 
 import { roomsService } from ".";
 
+function pmsRoomTypeItem(overrides: Record<string, unknown> = {}) {
+  return {
+    roomTypeId: "room-type-1",
+    name: "Alpine Suite",
+    description: "Suite",
+    category: "suite",
+    occupancyLimits: { total: 2 },
+    attributes: {},
+    amenities: [],
+    media: [],
+    roomMediaRevision: 3,
+    baseRate: { amountDecimal: "180.00", currency: "EUR" },
+    active: true,
+    sortOrder: 1,
+    ratePlans: [],
+    rateRulesSummary: {
+      minStayNights: null,
+      maxStayNights: null,
+      closedToArrival: false,
+      closedToDeparture: false,
+      activeRuleCount: 0,
+    },
+    roomCount: 2,
+    ...overrides,
+  };
+}
+
 describe("roomsService.update", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -51,33 +78,15 @@ describe("roomsService.update", () => {
     mocks.patch.mockResolvedValue({
       contractVersion: "pms-operations.v1",
       propertyId: "pms-property-1",
-      item: {
-        roomTypeId: "room-type-1",
-        name: "Alpine Suite",
+      item: pmsRoomTypeItem({
         description: "Suite with mountain view.",
-        category: "suite",
         occupancyLimits: { adults: 2, total: 2 },
         attributes: {
           locationAddress: "Seestrasse 12, Innsbruck",
           latitude: 47.2692,
           longitude: 11.4041,
         },
-        amenities: [],
-        media: [],
-        roomMediaRevision: 3,
-        baseRate: { amountDecimal: "180.00", currency: "EUR" },
-        active: true,
-        sortOrder: 1,
-        ratePlans: [],
-        rateRulesSummary: {
-          minStayNights: null,
-          maxStayNights: null,
-          closedToArrival: false,
-          closedToDeparture: false,
-          activeRuleCount: 0,
-        },
-        roomCount: 2,
-      },
+      }),
       commandMeta: {
         contractVersion: "pms-operations.v1",
         commandId: "cmd",
@@ -128,34 +137,14 @@ describe("roomsService.update", () => {
   });
 
   it("persists changed room media through the revisioned assignment endpoint", async () => {
-    const currentItem = {
-      roomTypeId: "room-type-1",
-      name: "Alpine Suite",
-      description: "Suite",
-      category: "suite",
-      occupancyLimits: { total: 2 },
-      attributes: {},
-      amenities: [],
+    const currentItem = pmsRoomTypeItem({
       media: [
         {
           mediaObjectId: "11111111-1111-4111-8111-111111111111",
           url: "https://cdn.example.com/old.webp",
         },
       ],
-      roomMediaRevision: 3,
-      baseRate: { amountDecimal: "180.00", currency: "EUR" },
-      active: true,
-      sortOrder: 1,
-      ratePlans: [],
-      rateRulesSummary: {
-        minStayNights: null,
-        maxStayNights: null,
-        closedToArrival: false,
-        closedToDeparture: false,
-        activeRuleCount: 0,
-      },
-      roomCount: 2,
-    };
+    });
     mocks.patch.mockResolvedValueOnce({
       contractVersion: "pms-operations.v1",
       propertyId: "pms-property-1",
@@ -245,29 +234,9 @@ describe("roomsService.create", () => {
   it("uploads staged files only after receiving the canonical room UUID", async () => {
     vi.clearAllMocks();
     mocks.resolvePropertyId.mockResolvedValue("pms-property-1");
-    const item = {
-      roomTypeId: "room-type-1",
-      name: "Alpine Suite",
-      description: "Suite",
-      category: "suite",
-      occupancyLimits: { total: 2 },
-      attributes: {},
-      amenities: [],
-      media: [],
+    const item = pmsRoomTypeItem({
       roomMediaRevision: 1,
-      baseRate: { amountDecimal: "180.00", currency: "EUR" },
-      active: true,
-      sortOrder: 1,
-      ratePlans: [],
-      rateRulesSummary: {
-        minStayNights: null,
-        maxStayNights: null,
-        closedToArrival: false,
-        closedToDeparture: false,
-        activeRuleCount: 0,
-      },
-      roomCount: 2,
-    };
+    });
     mocks.post.mockResolvedValue({ propertyId: "pms-property-1", item });
     mocks.uploadImages.mockResolvedValue({
       images: [
