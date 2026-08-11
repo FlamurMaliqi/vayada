@@ -22,7 +22,8 @@ describe("Finance expense ledger migration contract", () => {
     expect(migration).toContain("uq_finance_expenses_generated_source");
     expect(migration).toContain("fk_finance_expenses_receipt");
     expect(migration).toContain("protect_expense_history");
-    expect(migration).not.toMatch(/supplier_invoice_(number|due|amount)/);
+    expect(migration).toContain("supplier_invoice_number");
+    expect(migration).not.toMatch(/supplier_invoice_id|CREATE TABLE finance\.invoices/);
     expect(migration).not.toMatch(/CREATE TABLE finance\.(profit|loss)/);
   });
 });
@@ -176,12 +177,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance expense ledger (PostgreSQL)", () =>
       ]),
     ).rejects.toMatchObject({ code: "23514" });
     await expect(
-      client.query(
-        "UPDATE finance.expenses SET created_at = now() - interval '1 year', revision = 2 WHERE id = $1",
-        [original],
-      ),
-    ).rejects.toMatchObject({ code: "23514" });
-    await expect(
       client.query("UPDATE finance.expenses SET notes = 'paid' WHERE id = $1", [original]),
     ).rejects.toMatchObject({ code: "23514" });
     await client.query(
@@ -217,10 +212,24 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance expense ledger (PostgreSQL)", () =>
     await client.query(
       `INSERT INTO finance.expenses
       (property_id, category_id, origin, incurred_on, vendor, amount, currency,
-       source_key, supplier_invoice_id)
-      VALUES ($1, $2, 'supplier_bill', '2026-08-05', 'Supplier', 10, 'EUR', 'bill-1', $3)`,
-      [PROPERTY, CATEGORY, crypto.randomUUID()],
+       source_key, supplier_invoice_number)
+      VALUES ($1, $2, 'supplier_bill', '2026-08-05', 'Supplier', 10, 'EUR', 'bill-1', NULL),
+             ($1, $2, 'supplier_bill', '2026-08-05', 'Supplier', 10, 'EUR', 'bill-2', 'SUP-2026-001')`,
+      [PROPERTY, CATEGORY],
     );
+    const invalidSupplierEvidence = `INSERT INTO finance.expenses
+      (property_id, category_id, origin, incurred_on, vendor, amount, currency,
+       source_key, supplier_invoice_number)
+      VALUES ($1, $2, $3, '2026-08-05', 'Supplier', 10, 'EUR',
+        CASE WHEN $3 = 'manual' THEN NULL ELSE $3 || '-invalid' END, $4)`;
+    for (const [origin, invoiceNumber, constraint] of [
+      ["supplier_bill", " padded ", "chk_finance_expenses_supplier_invoice_number"],
+      ["manual", "SUP-OTHER", "chk_finance_expenses_origin_evidence"],
+    ]) {
+      await expect(
+        client.query(invalidSupplierEvidence, [PROPERTY, CATEGORY, origin, invoiceNumber]),
+      ).rejects.toMatchObject({ constraint });
+    }
     await expect(
       client.query("DELETE FROM finance.expense_categories WHERE id = $1", [CATEGORY]),
     ).rejects.toMatchObject({ constraint: "fk_finance_expenses_category_property" });

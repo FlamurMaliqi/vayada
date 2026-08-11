@@ -29,7 +29,7 @@ CREATE TABLE finance.expenses (
   reverses_expense_id   UUID,
   guest_booking_id      UUID,
   payment_id            UUID,
-  supplier_invoice_id   UUID,
+  supplier_invoice_number TEXT,
   receipt_media_id      UUID,
   receipt_purpose       TEXT GENERATED ALWAYS AS ('finance.expense.receipt') STORED,
   receipt_product       TEXT GENERATED ALWAYS AS ('finance') STORED,
@@ -60,19 +60,25 @@ CREATE TABLE finance.expenses (
       AND (reverses_expense_id IS NULL OR reverses_expense_id <> id)),
   CONSTRAINT chk_finance_expenses_origin_evidence CHECK (
     (entry_kind <> 'expense' AND recurring_rule_id IS NULL AND guest_booking_id IS NULL
-      AND payment_id IS NULL AND supplier_invoice_id IS NULL)
+      AND payment_id IS NULL AND supplier_invoice_number IS NULL)
     OR (entry_kind = 'expense' AND (
       (origin = 'manual' AND recurring_rule_id IS NULL AND guest_booking_id IS NULL
-        AND payment_id IS NULL AND supplier_invoice_id IS NULL)
+        AND payment_id IS NULL AND supplier_invoice_number IS NULL)
       OR (origin = 'recurring' AND recurring_rule_id IS NOT NULL AND guest_booking_id IS NULL
-        AND payment_id IS NULL AND supplier_invoice_id IS NULL)
+        AND payment_id IS NULL AND supplier_invoice_number IS NULL)
       OR (origin = 'ota_commission' AND recurring_rule_id IS NULL AND guest_booking_id IS NOT NULL
-        AND payment_id IS NULL AND supplier_invoice_id IS NULL)
+        AND payment_id IS NULL AND supplier_invoice_number IS NULL)
       OR (origin = 'platform_fee' AND recurring_rule_id IS NULL AND guest_booking_id IS NULL
-        AND payment_id IS NOT NULL AND supplier_invoice_id IS NULL)
+        AND payment_id IS NOT NULL AND supplier_invoice_number IS NULL)
       OR (origin = 'supplier_bill' AND recurring_rule_id IS NULL AND guest_booking_id IS NULL
-        AND payment_id IS NULL AND supplier_invoice_id IS NOT NULL)
+        AND payment_id IS NULL)
     ))
+  ),
+  CONSTRAINT chk_finance_expenses_supplier_invoice_number CHECK (
+    supplier_invoice_number IS NULL OR (
+      supplier_invoice_number = btrim(supplier_invoice_number)
+      AND char_length(supplier_invoice_number) BETWEEN 1 AND 200
+    )
   ),
   CONSTRAINT fk_finance_expenses_category_property FOREIGN KEY (category_id, property_id)
     REFERENCES finance.expense_categories(id, property_id) ON DELETE RESTRICT,
@@ -99,8 +105,9 @@ CREATE UNIQUE INDEX uq_finance_expenses_generated_source
   ON finance.expenses (property_id, origin, source_key) WHERE source_key IS NOT NULL;
 CREATE UNIQUE INDEX uq_finance_expenses_reverses
   ON finance.expenses (reverses_expense_id) WHERE reverses_expense_id IS NOT NULL;
-CREATE UNIQUE INDEX uq_finance_expenses_supplier_invoice
-  ON finance.expenses (supplier_invoice_id) WHERE supplier_invoice_id IS NOT NULL;
+CREATE INDEX idx_finance_expenses_supplier_invoice_number
+  ON finance.expenses (property_id, supplier_invoice_number)
+  WHERE supplier_invoice_number IS NOT NULL;
 CREATE INDEX idx_finance_expenses_property_date
   ON finance.expenses (property_id, incurred_on DESC, id);
 CREATE INDEX idx_finance_expenses_category ON finance.expenses (category_id, property_id);
@@ -117,11 +124,11 @@ BEGIN
   END IF;
   IF ROW(NEW.id, NEW.property_id, NEW.origin, NEW.entry_kind, NEW.incurred_on, NEW.created_at,
          NEW.source_key, NEW.reverses_expense_id, NEW.recurring_rule_id,
-         NEW.guest_booking_id, NEW.payment_id, NEW.supplier_invoice_id, NEW.receipt_media_id)
+         NEW.guest_booking_id, NEW.payment_id, NEW.supplier_invoice_number, NEW.receipt_media_id)
     IS DISTINCT FROM
      ROW(OLD.id, OLD.property_id, OLD.origin, OLD.entry_kind, OLD.incurred_on, OLD.created_at,
          OLD.source_key, OLD.reverses_expense_id, OLD.recurring_rule_id,
-         OLD.guest_booking_id, OLD.payment_id, OLD.supplier_invoice_id, OLD.receipt_media_id) THEN
+         OLD.guest_booking_id, OLD.payment_id, OLD.supplier_invoice_number, OLD.receipt_media_id) THEN
     RAISE EXCEPTION 'expense accounting evidence is immutable' USING ERRCODE = '23514';
   END IF;
   IF (OLD.origin <> 'manual' OR OLD.entry_kind <> 'expense')
@@ -145,5 +152,5 @@ CREATE TRIGGER trg_finance_expenses_protect_truncate
 BEFORE TRUNCATE ON finance.expenses
 FOR EACH STATEMENT EXECUTE FUNCTION finance.protect_expense_history();
 
-COMMENT ON COLUMN finance.expenses.supplier_invoice_id IS
-  'Reserved Finance invoice aggregate link; VAY-1125 adds the foreign key without copying invoice fields.';
+COMMENT ON COLUMN finance.expenses.supplier_invoice_number IS
+  'External supplier document evidence only; never a Vayada invoice aggregate identifier.';
