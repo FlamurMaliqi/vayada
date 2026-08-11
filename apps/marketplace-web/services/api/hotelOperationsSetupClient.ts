@@ -10,7 +10,6 @@ export type RoomSetupDraft = {
   maxOccupancy: number;
   nightlyRate: number;
   currency: string;
-  minimumStay: number;
 };
 
 export type ExistingRoomSetup = {
@@ -170,6 +169,11 @@ export const hotelOperationsSetupApi = {
     const body = buildRoomSetupRequest(propertyId, draft);
     await targetApiClient.post(`/api/pms/properties/${encoded(propertyId)}/room-types`, body);
     return { status: "created" };
+  },
+
+  addRoomSetup: async (propertyId: string, draft: RoomSetupDraft): Promise<void> => {
+    const body = buildRoomSetupRequest(propertyId, draft, false);
+    await targetApiClient.post(`/api/pms/properties/${encoded(propertyId)}/room-types`, body);
   },
 
   getGuestSettingsPolicies: async (
@@ -429,11 +433,16 @@ async function getRoomSetupState(
   return { status: "empty" };
 }
 
-export function buildRoomSetupRequest(propertyId: string, draft: RoomSetupDraft) {
+export function buildRoomSetupRequest(
+  propertyId: string,
+  draft: RoomSetupDraft,
+  initialSetupOnly = true,
+) {
   const currency = normalizeCurrency(draft.currency);
   const rate = positiveNumber(draft.nightlyRate, "Nightly rate").toFixed(2);
   const payload = {
-    initialSetupOnly: true,
+    onboardingSetup: true,
+    initialSetupOnly,
     name: requiredText(draft.name, "Room type name"),
     totalRooms: positiveInteger(draft.totalRooms, "Number of rooms"),
     maxOccupancy: positiveInteger(draft.maxOccupancy, "Maximum occupancy"),
@@ -450,7 +459,7 @@ export function buildRoomSetupRequest(propertyId: string, draft: RoomSetupDraft)
         from: "01-01",
         to: "12-31",
         rate,
-        minStay: positiveInteger(draft.minimumStay, "Minimum stay"),
+        minStay: 1,
       },
     ],
   };
@@ -532,6 +541,18 @@ export function hotelOperationsErrorMessage(error: unknown, fallback: string): s
     }
   }
   return error instanceof Error && error.message.trim() ? error.message : fallback;
+}
+
+export function hotelOperationsWriteMayHaveCommitted(error: unknown): boolean {
+  return !(error instanceof ApiErrorResponse) || error.status >= 500;
+}
+
+export function isPropertyCurrencyConflict(error: unknown): boolean {
+  return (
+    error instanceof ApiErrorResponse &&
+    error.status === 409 &&
+    error.data.code === "property_currency_conflict"
+  );
 }
 
 function encoded(value: string): string {

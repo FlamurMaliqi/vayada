@@ -10096,6 +10096,82 @@ describe("vayada-api", () => {
     ]);
   });
 
+  it("rejects stale currency before creating an onboarding room", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      settingsRepository: {
+        ...bookingSettingsRepository,
+        async findPropertySettingsByHotelId(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return { id: propertyId, defaultCurrency: "IDR" };
+        },
+      },
+      pmsOperationsCommandRepository: commandRepository,
+    });
+
+    const payload = {
+      commandId: "cmd-onboarding-room-type-create",
+      idempotencyKey: "onboarding-room-type-create",
+      onboardingSetup: true,
+      initialSetupOnly: false,
+      name: "Pool Villa",
+      maxOccupancy: 4,
+      baseRate: "280.00",
+      currency: "USD",
+      operatingPeriods: [{ from: "01-01", to: "12-31" }],
+      seasons: [{ name: "Year-round", rate: "280.00", from: "01-01", to: "12-31", minStay: 1 }],
+      totalRooms: 2,
+    };
+    const staleResponse = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(staleResponse.statusCode).toBe(409);
+    expect(staleResponse.body).toMatchObject({ code: "property_currency_conflict" });
+    expect(commandRepository.roomTypeCreates).toHaveLength(0);
+
+    const currentResponse = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload: {
+        ...payload,
+        commandId: "cmd-onboarding-room-type-create-idr",
+        idempotencyKey: "onboarding-room-type-create-idr",
+        currency: "IDR",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(currentResponse.statusCode).toBe(200);
+    expect(commandRepository.roomTypeCreates).toHaveLength(1);
+    expect(commandRepository.roomTypeCreates[0]).toMatchObject({
+      initialSetupOnly: false,
+      baseRate: { amountDecimal: "280.00", currency: "IDR" },
+      seasons: [
+        expect.objectContaining({
+          rate: { amountDecimal: "280.00", currency: "IDR" },
+          minStayNights: 1,
+        }),
+      ],
+    });
+  });
+
   it("updates and reads back PMS room-type location through the target route", async () => {
     const roomTypes = structuredClone(pmsRoomTypes);
     const commandRepository = createPmsOperationsCommandRepository(roomTypes);

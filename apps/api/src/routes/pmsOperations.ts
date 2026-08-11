@@ -689,6 +689,7 @@ export type PmsOperationsRoutesOptions = {
   repository: PmsOperationsReadRepository;
   checkoutChargeMarkPaidFreezeEnabled?: boolean;
   commandRepository?: PmsOperationsCommandRepository;
+  resolveOnboardingRoomCurrency?: (propertyId: string) => Promise<string | null>;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   allowedOrigins?: string[];
@@ -788,6 +789,7 @@ type PmsOperationsErrorCode =
   | "invalid_guest_pii"
   | "finance_bridge_required"
   | PmsAssignmentCommandConflictCode
+  | "property_currency_conflict"
   | "room_type_conflict"
   | "read_model_unavailable"
   | "room_type_not_found"
@@ -1558,7 +1560,35 @@ export async function registerPmsOperationsRoutes(
         const { propertyId } = request.params;
         if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
 
-        const command = toRoomTypeCreateCommand(propertyId, request);
+        let currencyOverride: string | undefined;
+        const requestBody = objectBody(request.body);
+        if (requestBody?.onboardingSetup === true) {
+          try {
+            currencyOverride =
+              (await options.resolveOnboardingRoomCurrency?.(propertyId)) ?? undefined;
+          } catch (error) {
+            request.log.error({ error, propertyId }, "Onboarding room currency resolution failed");
+          }
+          if (!currencyOverride) {
+            return sendPmsOperationsError(reply, {
+              statusCode: 500,
+              code: "read_model_unavailable",
+              category: "read_model",
+              message: "Property currency is unavailable for onboarding room setup.",
+            });
+          }
+          const submittedCurrency = stringField(requestBody.currency)?.toUpperCase();
+          if (submittedCurrency && submittedCurrency !== currencyOverride.toUpperCase()) {
+            return sendPmsOperationsError(reply, {
+              statusCode: 409,
+              code: "property_currency_conflict",
+              category: "conflict",
+              message: "Property currency changed. Review the nightly rate and try again.",
+            });
+          }
+        }
+
+        const command = toRoomTypeCreateCommand(propertyId, request, currencyOverride);
         if ("error" in command) return sendPmsOperationsError(reply, command.error);
 
         const result = await commandRepository.createRoomType(command.value);
@@ -2296,6 +2326,7 @@ function writePmsOperationsCorsHeaders(
 function toRoomTypeCreateCommand(
   propertyId: string,
   request: FastifyRequest<{ Body: unknown }>,
+  currencyOverride?: string,
 ): { value: PmsRoomTypeCreateCommand } | { error: PmsOperationsError } {
   const raw = objectBody(request.body);
   if (!raw) return { error: invalidBody("Room type create body must be an object.") };
@@ -2310,7 +2341,7 @@ function toRoomTypeCreateCommand(
   const baseRate = roomTypeBaseRate(raw);
   if (!baseRate) return { error: invalidBody("Room type create requires a valid baseRate.") };
 
-  const currency = (stringField(raw.currency) ?? "EUR").toUpperCase();
+  const currency = (currencyOverride ?? stringField(raw.currency) ?? "EUR").toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) {
     return { error: invalidBody("Room type create requires a three-letter currency.") };
   }

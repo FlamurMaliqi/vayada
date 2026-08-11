@@ -231,8 +231,9 @@ const TASK_CONTENT: Record<
     description: "Choose deliverables, compensation, and creator requirements.",
   },
   rooms_rates_availability: {
-    title: "Set up rooms, rates, and availability",
-    description: "Add what guests can book and when it is available.",
+    title: "Add your first room type",
+    description:
+      "Just the basics to get started. You can add more rooms and fine-tune pricing anytime.",
   },
   guest_settings_policies: {
     title: "Review guest settings and policies",

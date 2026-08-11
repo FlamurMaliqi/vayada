@@ -601,9 +601,7 @@ test.describe("marketplace-web shared setup activation", () => {
     });
     await expect(setupProgress).toHaveAttribute("aria-valuemax", "8");
     await expect(setupProgress).toHaveAttribute("aria-valuenow", "2");
-    await expect(
-      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
-    ).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Add your first room type" })).toHaveCount(0);
     expect(page.url()).toBe(inlineSetupUrl);
     expect(handoffRequests).toBe(0);
   });
@@ -631,14 +629,160 @@ test.describe("marketplace-web shared setup activation", () => {
     const inlineSetupUrl = page.url();
     const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
     await expect(
-      currentStep.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
+      currentStep.getByRole("heading", { name: "Add your first room type" }),
+    ).toBeVisible();
+    await expect(
+      currentStep.getByText(
+        "Just the basics to get started. You can add more rooms and fine-tune pricing anytime.",
+      ),
     ).toBeVisible();
     await expect(currentStep.getByLabel("Room type name")).toBeVisible();
-    await expect(currentStep.getByLabel("Number of rooms")).toBeVisible();
+    await expect(currentStep.getByLabel("Room type name")).toHaveAttribute(
+      "placeholder",
+      "e.g. Deluxe Double, Pool Villa, Studio",
+    );
+    await expect(currentStep.getByLabel("Number of rooms/units")).toHaveValue("1");
+    await expect(currentStep.getByText("How many of this room type do you have?")).toBeVisible();
     await expect(currentStep.getByLabel("Nightly rate")).toBeVisible();
-    await expect(currentStep.getByRole("button", { name: "Save rooms and rates" })).toBeVisible();
+    await expect(currentStep.getByLabel("Max guests")).toHaveValue("2");
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("EUR");
+    await expect(currentStep.getByLabel("Currency")).toHaveCount(0);
+    await expect(currentStep.getByLabel("Minimum stay")).toHaveCount(0);
+    await expect(currentStep.getByRole("button", { name: "Save and continue" })).toBeVisible();
     expect(page.url()).toBe(inlineSetupUrl);
     expect(handoffRequests).toBe(0);
+  });
+
+  test("inherits currency and can add another room type before continuing", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    const roomWrites: Record<string, unknown>[] = [];
+    await page.route(/\/api\/hotel-setup\/status/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: sharedRoadmapStatus(
+          roomWrites.length === 2 ? "guest_settings_policies" : "rooms_rates_availability",
+        ),
+      });
+    });
+    await mockOperationsApis(page, "IDR", roomWrites);
+    await routeJson(
+      page,
+      new RegExp(`/api/booking/hotels/${propertyId}/settings/property(?:\\?|$)`),
+      {
+        check_in_time: "15:00",
+        check_out_time: "11:00",
+        cancellation_policy_text: "Free cancellation until 7 days before arrival.",
+      },
+    );
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("IDR");
+    await currentStep.getByLabel("Room type name").fill("Deluxe Double");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    await expect(currentStep.getByRole("button", { name: "Add another room type" })).toBeVisible();
+    await expect(currentStep.getByRole("button", { name: "Continue setup" })).toBeVisible();
+    expect(roomWrites).toHaveLength(1);
+    expect(roomWrites[0]).toMatchObject({
+      initialSetupOnly: true,
+      currency: "IDR",
+      seasons: [expect.objectContaining({ minStay: 1 })],
+    });
+
+    await currentStep.getByRole("button", { name: "Add another room type" }).click();
+    await expect(currentStep.getByLabel("Room type name")).toHaveValue("");
+    await expect(currentStep.getByLabel("Number of rooms/units")).toHaveValue("1");
+    await expect(currentStep.getByLabel("Max guests")).toHaveValue("2");
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("IDR");
+    await currentStep.getByLabel("Room type name").fill("Pool Villa");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    expect(roomWrites).toHaveLength(2);
+    expect(roomWrites[1]).toMatchObject({
+      initialSetupOnly: false,
+      name: "Pool Villa",
+      currency: "IDR",
+      seasons: [expect.objectContaining({ minStay: 1 })],
+    });
+
+    await currentStep.getByRole("button", { name: "Continue setup" }).click();
+    await expect(
+      currentStep.getByRole("heading", { name: "Review guest settings and policies" }),
+    ).toBeVisible();
+  });
+
+  test("requires the nightly rate to be re-entered when property currency changes", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus("rooms_rates_availability"));
+    const roomWrites: Record<string, unknown>[] = [];
+    await mockOperationsApis(page, "USD", roomWrites, { conflictCurrency: "IDR" });
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await currentStep.getByLabel("Room type name").fill("Deluxe Double");
+    await currentStep.getByLabel("Nightly rate").fill("280");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("IDR");
+    await expect(currentStep.getByLabel("Nightly rate")).toHaveValue("");
+    await expect(
+      currentStep.getByText(
+        "Property currency changed to IDR. Review and re-enter the nightly rate.",
+      ),
+    ).toBeVisible();
+    await expect(currentStep.getByText("Room type saved.")).toHaveCount(0);
+    expect(roomWrites).toHaveLength(1);
+    expect(roomWrites[0]).toMatchObject({ currency: "USD" });
+
+    await currentStep.getByLabel("Nightly rate").fill("280");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    expect(roomWrites).toHaveLength(2);
+    expect(roomWrites[1]).toMatchObject({ currency: "IDR" });
+  });
+
+  test("retries an ambiguous additional-room write with the exact same command", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus("rooms_rates_availability"));
+    const roomWrites: Record<string, unknown>[] = [];
+    await mockOperationsApis(page, "EUR", roomWrites, { failFirstAdditional: true });
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await currentStep.getByLabel("Room type name").fill("Deluxe Double");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+    await currentStep.getByRole("button", { name: "Add another room type" }).click();
+    await currentStep.getByLabel("Room type name").fill("Pool Villa");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByRole("button", { name: "Retry save" })).toBeVisible();
+    await expect(currentStep.getByLabel("Room type name")).toBeDisabled();
+    expect(roomWrites).toHaveLength(2);
+
+    await currentStep.getByRole("button", { name: "Retry save" }).click();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    expect(roomWrites).toHaveLength(3);
+    expect(roomWrites[2]).toEqual(roomWrites[1]);
   });
 
   test("does not submit room setup twice when progress refresh fails", async ({
@@ -704,19 +848,24 @@ test.describe("marketplace-web shared setup activation", () => {
         });
       },
     );
+    await mockPropertyLaunchSettings(page);
 
     await page.goto(setupUrl(baseURL));
     const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
     await currentStep.getByLabel("Room type name").fill("Alpine Suite");
-    await currentStep.getByRole("button", { name: "Save rooms and rates" }).click();
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
 
-    await expect(currentStep.getByText("Rooms and rates were saved.")).toBeVisible();
-    const refresh = currentStep.getByRole("button", { name: "Refresh setup progress" });
-    await expect(refresh).toBeVisible();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    const continueSetup = currentStep.getByRole("button", { name: "Continue setup" });
+    await expect(continueSetup).toBeVisible();
     expect(roomPostCount).toBe(1);
 
-    await refresh.click();
-    await expect(currentStep.getByText("Rooms and rates were saved.")).toBeVisible();
+    await continueSetup.click();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    await expect(currentStep.getByText(/setup progress could not be refreshed/i)).toBeVisible();
+    expect(roomPostCount).toBe(1);
+
+    await continueSetup.click();
     expect(roomPostCount).toBe(1);
   });
 
@@ -735,9 +884,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(setupProgress).toHaveAttribute("aria-valuemax", "6");
     await expect(setupProgress.locator('[data-state="reached"]')).toHaveCount(2);
     await expect(setupProgress.locator('[data-state="upcoming"]')).toHaveCount(4);
-    await expect(
-      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add your first room type" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Describe your hotel" })).toHaveCount(0);
     await expect(
       page.getByRole("heading", { name: "Prepare your collaboration offer" }),
@@ -1648,7 +1795,16 @@ async function mockSharedSetupStatus(page: Page, status: AdaptiveHotelSetupStatu
   });
 }
 
-async function mockOperationsApis(page: Page) {
+async function mockOperationsApis(
+  page: Page,
+  currency = "EUR",
+  roomWrites?: Record<string, unknown>[],
+  options?: { conflictCurrency?: string; failFirstAdditional?: boolean },
+) {
+  let additionalAttempts = 0;
+  let currentCurrency = currency;
+  let writeAttempts = 0;
+  await mockPropertyLaunchSettings(page, () => currentCurrency);
   await page.route(
     new RegExp(`/api/pms/properties/${propertyId}/room-types(?:\\?|$)`),
     async (route) => {
@@ -1669,6 +1825,29 @@ async function mockOperationsApis(page: Page) {
         });
         return;
       }
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      roomWrites?.push(payload);
+      if (options?.conflictCurrency && writeAttempts++ === 0) {
+        currentCurrency = options.conflictCurrency;
+        await route.fulfill({
+          status: 409,
+          headers: corsHeaders(route),
+          json: {
+            code: "property_currency_conflict",
+            category: "conflict",
+            message: "Property currency changed. Review the nightly rate and try again.",
+          },
+        });
+        return;
+      }
+      if (
+        payload.initialSetupOnly === false &&
+        options?.failFirstAdditional &&
+        additionalAttempts++ === 0
+      ) {
+        await route.abort("failed");
+        return;
+      }
       await route.fulfill({
         status: 201,
         headers: corsHeaders(route),
@@ -1677,6 +1856,32 @@ async function mockOperationsApis(page: Page) {
           propertyId,
           item: {},
           commandMeta: {},
+        },
+      });
+    },
+  );
+}
+
+async function mockPropertyLaunchSettings(page: Page, currency: string | (() => string) = "EUR") {
+  await page.route(
+    new RegExp(`/api/hotel-setup/properties/${propertyId}/launch-settings(?:\\?|$)`),
+    async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          defaultCurrency: typeof currency === "function" ? currency() : currency,
+          supportedCurrencies: [],
+          defaultLanguage: "en",
+          supportedLanguages: [],
+          instagram: "",
+          facebook: "",
+          tiktok: "",
+          youtube: "",
         },
       });
     },

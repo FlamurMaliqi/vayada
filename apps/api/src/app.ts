@@ -526,6 +526,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.pmsOperationsRepository,
       checkoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
       commandRepository: options.pmsOperationsCommandRepository,
+      resolveOnboardingRoomCurrency: async (propertyId) =>
+        (await options.bookingSettingsRepository?.findPropertySettingsByHotelId?.(propertyId))
+          ?.defaultCurrency ?? null,
       inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
       bookingGuestPiiPort: options.bookingGuestPiiPort,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
