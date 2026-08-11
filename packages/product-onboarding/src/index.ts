@@ -116,6 +116,16 @@ export {
 } from "./returnTo";
 export { availableTimezones } from "./timezones";
 export {
+  BrowserAuthHandoffError,
+  createBrowserAuthHandoff,
+  crossAppReauthenticationUrl,
+  redeemBrowserAuthHandoff,
+  type BrowserAuthHandoffRoutingHints,
+  type BrowserAuthSurface,
+  type RedeemedBrowserAuthHandoff,
+} from "./authHandoff";
+export { useSingleFlightGuard } from "./useSingleFlight";
+export {
   default as PropertyStep,
   type CountryOption,
   type CurrencyOption,

@@ -29,6 +29,7 @@ import { createPgIdentityLifecycleCommandBus } from "./platform/identityLifecycl
 import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
 import { createTargetPublicBookabilityPublicationCommandPort } from "./platform/publicBookabilityPublication.js";
 import { createPgProductAuditSink } from "./platform/productAudit.js";
+import { createPgAuthSessionHandoffRepository } from "./platform/authSessionHandoffs.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
 import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
 import { composePlatformMediaRuntime } from "./platform/platformMediaRuntime.js";
@@ -546,6 +547,11 @@ const creatorPlatformConnectionRuntime = (() => {
   };
 })();
 
+const authSessionHandoffRepository =
+  config.auth && config.authSession
+    ? createPgAuthSessionHandoffRepository({ connectionString: config.auth.databaseUrl })
+    : undefined;
+
 const app = buildApp({
   auth: buildAuthOptions(config.auth),
   browserAllowedOrigins: config.authSession?.authAllowedOrigins ?? [],
@@ -566,6 +572,7 @@ const app = buildApp({
           productAuditSink: createPgProductAuditSink({
             connectionString: config.auth.databaseUrl,
           }),
+          handoffRepository: authSessionHandoffRepository,
           tokenVerifier: createWorkOSVerifier({
             jwksUrl: config.auth.workosJwksUrl,
             issuer: config.auth.workosIssuer,
@@ -971,6 +978,32 @@ const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker
 app.addHook("onClose", async () => {
   await propertySetupDraftRetentionWorker.close();
 });
+
+if (authSessionHandoffRepository) {
+  let activeHandoffCleanup: Promise<void> | undefined;
+  const runHandoffCleanup = () => {
+    if (activeHandoffCleanup) return;
+    const now = new Date();
+    activeHandoffCleanup = authSessionHandoffRepository
+      .scrubExpired({
+        now,
+        deleteBefore: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      })
+      .catch((error: unknown) => {
+        app.log.warn({ err: error }, "Auth session handoff cleanup failed");
+      })
+      .finally(() => {
+        activeHandoffCleanup = undefined;
+      });
+  };
+  const handoffCleanupTimer = setInterval(runHandoffCleanup, 60_000);
+  handoffCleanupTimer.unref();
+  runHandoffCleanup();
+  app.addHook("onClose", async () => {
+    clearInterval(handoffCleanupTimer);
+    await activeHandoffCleanup;
+  });
+}
 
 try {
   await app.listen({ host: config.host, port: config.port });

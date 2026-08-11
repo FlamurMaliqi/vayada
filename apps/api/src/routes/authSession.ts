@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   IdentityLifecycleCommandBus,
   IdentityLifecycleCommandResult,
@@ -16,6 +16,11 @@ import type {
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
 import { mapWorkOSAuthError } from "../platform/workosAuthState.js";
+import type {
+  AuthHandoffRoutingHints,
+  AuthSessionHandoff,
+  AuthSessionHandoffRepository,
+} from "../platform/authSessionHandoffs.js";
 import {
   resolveApprovedPublicProfileImage,
   type ApprovedPublicProfileImageRepository,
@@ -75,6 +80,7 @@ export type AuthKitClient = {
   createPasswordReset(input: { email: string }): Promise<void>;
   resetPassword(input: { token: string; newPassword: string }): Promise<AuthKitUser>;
   authenticateSession(input: { sealedSession: string }): Promise<AuthKitSession | null>;
+  isSessionActive(input: { sessionId: string; workosUserId: string }): Promise<boolean>;
   refreshSession(input: {
     sealedSession: string;
     organizationId?: string;
@@ -163,6 +169,7 @@ export type AuthSessionRouteOptions = {
   legacyMarketplaceJwtSecret?: string;
   profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
   hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
+  handoffRepository?: AuthSessionHandoffRepository;
 };
 
 const SESSION_COOKIE = "vayada_workos_session";
@@ -172,6 +179,7 @@ const OAUTH_STATE_MAX_AGE_SECONDS = 10 * 60;
 const DEFAULT_SURFACE: AuthSurface = "platform-admin";
 const EMAIL_SEND_COOLDOWN_MS = 60_000;
 const EMAIL_SEND_COOLDOWN_MESSAGE = "Please wait before requesting another email.";
+const AUTH_HANDOFF_TTL_MS = 60_000;
 
 type AuthSignupOrganizationContext = {
   workosOrganizationId: string;
@@ -218,6 +226,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
   for (const path of [
     "/email-verification/confirm",
     "/email-verification/resend",
+    "/handoff/create",
+    "/handoff/redeem",
     "/onboarding",
     "/password/login",
     "/password/reset/confirm",
@@ -880,14 +890,14 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     if (!sealedSession) {
-      return reply.code(401).send({ error: "missing_session" });
+      return sendTerminalSessionError(reply, surfacePolicy, options, "missing_session");
     }
     let session = await options.authKitClient.authenticateSession({ sealedSession });
     if (!session) {
       session = await options.authKitClient.refreshSession({ sealedSession });
     }
     if (!session) {
-      return reply.code(401).send({ error: "invalid_session" });
+      return sendTerminalSessionError(reply, surfacePolicy, options, "invalid_session");
     }
     let resolution: IdentityResolution;
     try {
@@ -956,14 +966,14 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     const sealedSession = readCookie(request, SESSION_COOKIE, surfacePolicy);
     if (!sealedSession) {
-      return reply.code(401).send({ error: "missing_session" });
+      return sendTerminalSessionError(reply, surfacePolicy, options, "missing_session");
     }
     const session = await options.authKitClient.refreshSession({
       sealedSession,
       organizationId: body?.organizationId,
     });
     if (!session) {
-      return reply.code(401).send({ error: "invalid_session" });
+      return sendTerminalSessionError(reply, surfacePolicy, options, "invalid_session");
     }
     let resolution: IdentityResolution;
     try {
@@ -1012,6 +1022,257 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           resolution.resourceScope,
         ),
       );
+  });
+
+  app.post("/handoff/create", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({ error: "origin_rejected" });
+    }
+    if (!options.handoffRepository) {
+      return reply.code(503).send({ error: "handoff_unavailable" });
+    }
+    const parsed = parseHandoffCreateBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+
+    const sourcePolicy = findSurfacePolicy(parsed.sourceSurface, options);
+    const targetPolicy = findSurfacePolicy(parsed.targetSurface, options);
+    if (
+      !sourcePolicy ||
+      !targetPolicy ||
+      !sourcePolicy.firstPartySession ||
+      !targetPolicy.firstPartySession ||
+      !sourcePolicy.publicOrigin ||
+      !targetPolicy.publicOrigin
+    ) {
+      return reply.code(409).send({ error: "handoff_not_enabled" });
+    }
+    if (!requestIsBoundToSurface(request, parsed.sourceSurface, options)) {
+      return reply.code(403).send({ error: "origin_rejected" });
+    }
+    if (!passesCsrfCheck(request, options, sourcePolicy)) {
+      return reply.code(403).send({ error: "csrf_rejected" });
+    }
+
+    const sealedSession = readCookie(request, SESSION_COOKIE, sourcePolicy);
+    if (!sealedSession) {
+      return sendTerminalSessionError(reply, sourcePolicy, options, "missing_session");
+    }
+
+    let session: AuthKitSession | null;
+    try {
+      session = await options.authKitClient.authenticateSession({ sealedSession });
+      if (
+        session &&
+        (!session.sessionId ||
+          !(await options.authKitClient.isSessionActive({
+            sessionId: session.sessionId,
+            workosUserId: session.user.id,
+          })))
+      ) {
+        session = null;
+      }
+    } catch (error) {
+      request.log.warn({ error }, "Unable to prepare WorkOS handoff session");
+      return reply.code(503).send({ error: "handoff_retryable" });
+    }
+    if (!session) {
+      return sendTerminalSessionError(reply, sourcePolicy, options, "invalid_session");
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      resolution = await resolveExistingIdentity(
+        session,
+        options,
+        sourcePolicy,
+        organizationAccessOptionsFromRequest(request, sourcePolicy),
+      );
+    } catch (error) {
+      if (error instanceof OrganizationSelectionRequiredError) {
+        return sendOrganizationSelectionSessionResponse(
+          reply,
+          session,
+          error,
+          sourcePolicy,
+          options,
+        );
+      }
+      return reply.code(403).send(toAuthError(error));
+    }
+
+    const routingHints: AuthHandoffRoutingHints = {
+      ...(parsed.routingHints.hotelId ? { hotelId: parsed.routingHints.hotelId } : {}),
+      ...(parsed.routingHints.propertyId ? { propertyId: parsed.routingHints.propertyId } : {}),
+      organizationId: parsed.routingHints.organizationId ?? resolution.organizationId,
+      workosOrganizationId:
+        parsed.routingHints.workosOrganizationId ?? resolution.session.organizationId,
+    };
+    const expiresAt = new Date(Date.now() + AUTH_HANDOFF_TTL_MS);
+    let code: string | null = null;
+    for (let attempt = 0; attempt < 3 && !code; attempt += 1) {
+      const candidate = randomBytes(32).toString("base64url");
+      const stored = await options.handoffRepository.create({
+        codeDigest: digestHandoffCode(candidate),
+        expiresAt,
+        routingHints,
+        sealedSession: resolution.session.sealedSession,
+        sourcePublicOrigin: sourcePolicy.publicOrigin,
+        sourceSurface: parsed.sourceSurface,
+        targetPath: parsed.targetPath,
+        targetPublicOrigin: targetPolicy.publicOrigin,
+        targetSurface: parsed.targetSurface,
+      });
+      if (stored) code = candidate;
+    }
+    if (!code) {
+      return reply.code(503).send({ error: "handoff_unavailable" });
+    }
+
+    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, sourcePolicy, options);
+    const destination = new URL("/handoff", targetPolicy.publicOrigin);
+    destination.hash = new URLSearchParams({ code }).toString();
+    reply.header("Cache-Control", "private, no-store");
+    return reply.send({
+      destination: destination.toString(),
+      expiresInSeconds: AUTH_HANDOFF_TTL_MS / 1000,
+    });
+  });
+
+  app.post("/handoff/redeem", async (request, reply) => {
+    if (!writeCorsHeaders(request, reply, options)) {
+      return reply.code(403).send({ error: "origin_rejected" });
+    }
+    if (!options.handoffRepository) {
+      return reply.code(503).send({ error: "handoff_unavailable" });
+    }
+    const parsed = parseHandoffRedeemBody(request.body);
+    if (!parsed.ok) {
+      return reply.code(400).send(parsed.error);
+    }
+    const targetPolicy = findSurfacePolicy(parsed.targetSurface, options);
+    if (!targetPolicy || !targetPolicy.firstPartySession || !targetPolicy.publicOrigin) {
+      return reply.code(409).send({ error: "handoff_not_enabled" });
+    }
+    if (!requestIsBoundToSurface(request, parsed.targetSurface, options)) {
+      return reply.code(403).send({ error: "origin_rejected" });
+    }
+
+    const redemptionId = randomUUID();
+    let handoff: AuthSessionHandoff | null;
+    try {
+      handoff = await options.handoffRepository.claim({
+        codeDigest: digestHandoffCode(parsed.code),
+        now: new Date(),
+        redemptionId,
+        targetPublicOrigin: targetPolicy.publicOrigin,
+        targetSurface: parsed.targetSurface,
+      });
+    } catch (error) {
+      request.log.warn({ error }, "Unable to claim WorkOS handoff session");
+      return reply.code(503).send({ error: "handoff_retryable" });
+    }
+    if (!handoff) {
+      return sendTerminalHandoffError(reply);
+    }
+
+    let session: AuthKitSession | null;
+    try {
+      session = await options.authKitClient.authenticateSession({
+        sealedSession: handoff.sealedSession,
+      });
+      if (
+        session &&
+        (!session.sessionId ||
+          !(await options.authKitClient.isSessionActive({
+            sessionId: session.sessionId,
+            workosUserId: session.user.id,
+          })))
+      ) {
+        session = null;
+      }
+      if (
+        session &&
+        handoff.routingHints.workosOrganizationId &&
+        session.organizationId !== handoff.routingHints.workosOrganizationId
+      ) {
+        session = await options.authKitClient.refreshSession({
+          sealedSession: handoff.sealedSession,
+          ...(handoff.routingHints.workosOrganizationId
+            ? { organizationId: handoff.routingHints.workosOrganizationId }
+            : {}),
+        });
+      }
+    } catch (error) {
+      await options.handoffRepository.release({ redemptionId });
+      request.log.warn({ error }, "Unable to refresh WorkOS handoff session");
+      return reply.code(503).send({ error: "handoff_retryable" });
+    }
+    if (!session) {
+      await options.handoffRepository.complete({ now: new Date(), redemptionId });
+      return sendTerminalHandoffError(reply);
+    }
+
+    let resolution: IdentityResolution;
+    try {
+      resolution = await resolveExistingIdentity(
+        session,
+        options,
+        targetPolicy,
+        organizationAccessOptionsFromRequest(request, targetPolicy, {
+          explicitOrganizationSelection: Boolean(handoff.routingHints.workosOrganizationId),
+          selectedWorkosOrganizationId:
+            handoff.routingHints.workosOrganizationId ?? session.organizationId ?? null,
+        }),
+      );
+    } catch (error) {
+      if (isTerminalHandoffAuthorizationError(error)) {
+        await options.handoffRepository.complete({ now: new Date(), redemptionId });
+        request.log.info({ error }, "WorkOS handoff is not authorized for target surface");
+        return sendTerminalHandoffError(reply);
+      }
+      await options.handoffRepository.release({ redemptionId });
+      request.log.warn({ error }, "Unable to resolve WorkOS handoff authorization");
+      return reply.code(503).send({ error: "handoff_retryable" });
+    }
+    if (
+      (handoff.routingHints.organizationId &&
+        handoff.routingHints.organizationId !== resolution.organizationId) ||
+      (handoff.routingHints.workosOrganizationId &&
+        handoff.routingHints.workosOrganizationId !== resolution.session.organizationId)
+    ) {
+      await options.handoffRepository.complete({ now: new Date(), redemptionId });
+      return sendTerminalHandoffError(reply);
+    }
+
+    const completed = await options.handoffRepository.complete({
+      now: new Date(),
+      redemptionId,
+    });
+    if (!completed) {
+      return sendTerminalHandoffError(reply);
+    }
+
+    const csrfToken = randomBytes(24).toString("base64url");
+    reply
+      .headers({
+        "Cache-Control": "private, no-store",
+        "set-cookie": authSessionCookieHeaders(
+          resolution.session,
+          csrfToken,
+          targetPolicy,
+          options,
+        ),
+      })
+      .send({
+        routingHints: {
+          ...handoff.routingHints,
+          organizationId: resolution.organizationId,
+          workosOrganizationId: resolution.session.organizationId,
+        },
+        targetPath: handoff.targetPath,
+      });
   });
 
   app.post("/onboarding", async (request, reply) => {
@@ -1350,14 +1611,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
     reply
       .headers({
-        "set-cookie": [
-          ...authCookieHeaders(SESSION_COOKIE, "", 0, surfacePolicy, options),
-          ...authCookieHeaders(CSRF_COOKIE, "", 0, surfacePolicy, options, {
-            httpOnly: surfacePolicy.firstPartySession === true,
-          }),
-          ...authCookieHeaders(OAUTH_STATE_COOKIE, "", 0, surfacePolicy, options),
-          ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
-        ],
+        "set-cookie": clearAllAuthCookieHeaders(surfacePolicy, options),
       })
       .send({ logoutUrl });
   });
@@ -1417,6 +1671,124 @@ function parseSurface(value: string | undefined): AuthSurface {
     return value;
   }
   throw new Error(`Unsupported AuthKit surface: ${value}`);
+}
+
+function parseHandoffCreateBody(body: unknown):
+  | {
+      ok: true;
+      routingHints: AuthHandoffRoutingHints;
+      sourceSurface: AuthSurface;
+      targetPath: string;
+      targetSurface: AuthSurface;
+    }
+  | { ok: false; error: { error: string } } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, error: { error: "invalid_handoff" } };
+  }
+  const input = body as {
+    routingHints?: unknown;
+    sourceSurface?: unknown;
+    targetPath?: unknown;
+    targetSurface?: unknown;
+  };
+  let sourceSurface: AuthSurface;
+  let targetSurface: AuthSurface;
+  try {
+    if (typeof input.sourceSurface !== "string" || typeof input.targetSurface !== "string") {
+      throw new Error("Missing handoff surface");
+    }
+    sourceSurface = parseSurface(input.sourceSurface);
+    targetSurface = parseSurface(input.targetSurface);
+  } catch {
+    return { ok: false, error: { error: "invalid_handoff_surface" } };
+  }
+  if (sourceSurface === targetSurface) {
+    return { ok: false, error: { error: "invalid_handoff_surface" } };
+  }
+  const targetPath = typeof input.targetPath === "string" ? input.targetPath : "/";
+  if (!isSafeHandoffTargetPath(targetPath)) {
+    return { ok: false, error: { error: "invalid_handoff_target" } };
+  }
+  const routingHints = parseHandoffRoutingHints(input.routingHints);
+  if (!routingHints) {
+    return { ok: false, error: { error: "invalid_handoff_hints" } };
+  }
+  return { ok: true, routingHints, sourceSurface, targetPath, targetSurface };
+}
+
+function parseHandoffRedeemBody(
+  body: unknown,
+):
+  | { ok: true; code: string; targetSurface: AuthSurface }
+  | { ok: false; error: { error: string } } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, error: { error: "invalid_handoff" } };
+  }
+  const input = body as { code?: unknown; targetSurface?: unknown };
+  if (
+    typeof input.code !== "string" ||
+    input.code.length < 32 ||
+    input.code.length > 128 ||
+    !/^[A-Za-z0-9_-]+$/.test(input.code) ||
+    typeof input.targetSurface !== "string"
+  ) {
+    return { ok: false, error: { error: "invalid_handoff" } };
+  }
+  try {
+    return {
+      ok: true,
+      code: input.code,
+      targetSurface: parseSurface(input.targetSurface),
+    };
+  } catch {
+    return { ok: false, error: { error: "invalid_handoff_surface" } };
+  }
+}
+
+function parseHandoffRoutingHints(value: unknown): AuthHandoffRoutingHints | null {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (
+    Object.keys(input).some(
+      (key) => !["hotelId", "organizationId", "propertyId", "workosOrganizationId"].includes(key),
+    )
+  ) {
+    return null;
+  }
+  const result: AuthHandoffRoutingHints = {};
+  for (const key of ["hotelId", "organizationId", "propertyId", "workosOrganizationId"] as const) {
+    const candidate = input[key];
+    if (candidate === undefined) continue;
+    if (typeof candidate !== "string") return null;
+    const normalized = candidate.trim();
+    if (!normalized || normalized.length > 256) return null;
+    result[key] = normalized;
+  }
+  return result;
+}
+
+function isSafeHandoffTargetPath(value: string): boolean {
+  if (value.length > 2048 || !value.startsWith("/") || value.startsWith("//")) return false;
+  let decoded = value;
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+    if (!decoded.startsWith("/") || decoded.startsWith("//") || decoded.includes("\\")) {
+      return false;
+    }
+    const url = new URL(decoded, "https://handoff.vayada.local");
+    return url.origin === "https://handoff.vayada.local" && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
+function digestHandoffCode(code: string): string {
+  return createHash("sha256").update(code).digest("hex");
 }
 
 type GoogleOAuthFlow = "login" | "signup";
@@ -1553,6 +1925,21 @@ function readForwardedOrigin(
   } catch {
     return { present: true, origin: null };
   }
+}
+
+function requestIsBoundToSurface(
+  request: FastifyRequest,
+  surface: AuthSurface,
+  options: AuthSessionRouteOptions,
+): boolean {
+  const expectedOrigin = getSurfacePolicy(surface, options).publicOrigin;
+  if (!expectedOrigin || !options.allowedOrigins.includes(expectedOrigin)) return false;
+  const forwardedOrigin = readForwardedOrigin(request);
+  return (
+    request.headers.origin === expectedOrigin &&
+    forwardedOrigin.present &&
+    forwardedOrigin.origin === expectedOrigin
+  );
 }
 
 function firstProxyHeaderValue(value: string | string[] | undefined): string | undefined {
@@ -2173,6 +2560,17 @@ function getSurfacePolicy(
   surface: AuthSurface,
   options: AuthSessionRouteOptions,
 ): AuthSurfacePolicy {
+  const configured = findSurfacePolicy(surface, options);
+  if (!configured) {
+    throw new Error(`AuthKit surface is not configured: ${surface}`);
+  }
+  return configured;
+}
+
+function findSurfacePolicy(
+  surface: AuthSurface,
+  options: AuthSessionRouteOptions,
+): AuthSurfacePolicy | undefined {
   const defaultPlatformPolicy: AuthSurfacePolicy = {
     requiredOrganizationKind: options.requiredOrganizationKind,
     logoutReturnUrl: options.logoutReturnUrl,
@@ -2183,11 +2581,7 @@ function getSurfacePolicy(
   if (surface === DEFAULT_SURFACE) {
     return { ...defaultPlatformPolicy, ...options.surfacePolicies?.[surface] };
   }
-  const configured = options.surfacePolicies?.[surface];
-  if (!configured) {
-    throw new Error(`AuthKit surface is not configured: ${surface}`);
-  }
-  return configured;
+  return options.surfacePolicies?.[surface];
 }
 
 function validateReturnTo(rawReturnTo: string, allowedOrigins: string[]): string {
@@ -2400,7 +2794,7 @@ async function resolveExistingIdentity(
     verified.workosUserId,
   );
   if (!user) {
-    throw new Error(`No internal user for WorkOS user ${verified.workosUserId}`);
+    throw new AuthAuthorizationError(`No internal user for WorkOS user ${verified.workosUserId}`);
   }
   const access = await resolveOrganizationAccess(
     { ...session, organizationId: verified.workosOrgId ?? session.organizationId },
@@ -2452,16 +2846,18 @@ async function resolveOrganizationAccess(
     if (!accessOptions.skipSelection) {
       return resolveSelectableOrganization(session, user, options, surfacePolicy, accessOptions);
     }
-    throw new Error("AuthKit session is missing selected organization");
+    throw new AuthAuthorizationError("AuthKit session is missing selected organization");
   }
   const organization = await options.identityRepository.findOrganizationByWorkosOrgId(
     session.organizationId,
   );
   if (!organization || !organization.workosOrgId) {
-    throw new Error(`No WorkOS-managed organization for ${session.organizationId}`);
+    throw new AuthAuthorizationError(
+      `No WorkOS-managed organization for ${session.organizationId}`,
+    );
   }
   if (organization.status !== "active") {
-    throw new Error(`Organization ${organization.organizationId} is not active`);
+    throw new AuthAuthorizationError(`Organization ${organization.organizationId} is not active`);
   }
   if (!matchesOrganizationKind(organization.kind, surfacePolicy.requiredOrganizationKind)) {
     if (!accessOptions.skipSelection) {
@@ -2475,9 +2871,10 @@ async function resolveOrganizationAccess(
         );
       } catch (error) {
         if (error instanceof OrganizationSelectionRequiredError) throw error;
+        if (!(error instanceof AuthAuthorizationError)) throw error;
       }
     }
-    throw new Error(
+    throw new AuthAuthorizationError(
       `Selected organization must be ${requiredOrganizationKindLabel(
         surfacePolicy.requiredOrganizationKind,
       )}`,
@@ -2488,13 +2885,13 @@ async function resolveOrganizationAccess(
     organization.organizationId,
   );
   if (!membership || membership.status !== "active") {
-    throw new Error("No active membership for selected organization");
+    throw new AuthAuthorizationError("No active membership for selected organization");
   }
   if (
     surfacePolicy.requiredMembershipRoleKey &&
     membership.roleKey !== surfacePolicy.requiredMembershipRoleKey
   ) {
-    throw new Error(
+    throw new AuthAuthorizationError(
       `Selected organization membership must be ${surfacePolicy.requiredMembershipRoleKey}`,
     );
   }
@@ -2512,7 +2909,7 @@ async function resolveOrganizationAccess(
     const links = await options.identityRepository.findLinkedResources(organization.organizationId);
     const matchingLinks = findRequiredResourceLinks(links, surfacePolicy.requiredResourceLink);
     if (matchingLinks.length === 0 && accessOptions.requireResourceLink) {
-      throw new Error(
+      throw new AuthAuthorizationError(
         `Selected organization is missing an active ${surfacePolicy.requiredResourceLink.product}/${surfacePolicy.requiredResourceLink.resourceType} resource link`,
       );
     }
@@ -2550,6 +2947,19 @@ class OrganizationSelectionRequiredError extends Error {
   }
 }
 
+class AuthAuthorizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthAuthorizationError";
+  }
+}
+
+function isTerminalHandoffAuthorizationError(error: unknown): boolean {
+  return (
+    error instanceof AuthAuthorizationError || error instanceof OrganizationSelectionRequiredError
+  );
+}
+
 async function resolveSelectableOrganization(
   session: AuthKitSession,
   user: IdentityUser,
@@ -2576,14 +2986,18 @@ async function resolveSelectableOrganization(
         roleKey: candidate.roleKey,
       });
       if (membership.status && membership.status !== "active") {
-        throw new Error("WorkOS organization membership is not active for selected organization");
+        throw new AuthAuthorizationError(
+          "WorkOS organization membership is not active for selected organization",
+        );
       }
       const retried = await options.authKitClient.refreshSession({
         sealedSession: session.sealedSession,
         organizationId: candidate.workosOrganizationId,
       });
       if (retried?.organizationId !== candidate.workosOrganizationId) {
-        throw new Error("Unable to refresh AuthKit session for selected organization");
+        throw new AuthAuthorizationError(
+          "Unable to refresh AuthKit session for selected organization",
+        );
       }
       return resolveOrganizationAccess(retried, user, options, surfacePolicy, {
         ...accessOptions,
@@ -2604,7 +3018,7 @@ async function resolveSelectableOrganization(
     return { session };
   }
 
-  throw new Error(
+  throw new AuthAuthorizationError(
     `No active ${requiredOrganizationKindLabel(
       surfacePolicy.requiredOrganizationKind,
     )} organization is available for this surface`,
@@ -2758,6 +3172,50 @@ function authSessionCookieHeaders(
     }),
     ...selectedOrganizationCookieHeaders(session, surfacePolicy, options),
   ];
+}
+
+function clearAuthSessionCookieHeaders(
+  surfacePolicy: AuthSurfacePolicy,
+  options: AuthSessionRouteOptions,
+): string[] {
+  return [
+    ...authCookieHeaders(SESSION_COOKIE, "", 0, surfacePolicy, options),
+    ...authCookieHeaders(CSRF_COOKIE, "", 0, surfacePolicy, options, {
+      httpOnly: surfacePolicy.firstPartySession === true,
+    }),
+    ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
+  ];
+}
+
+function clearAllAuthCookieHeaders(
+  surfacePolicy: AuthSurfacePolicy,
+  options: AuthSessionRouteOptions,
+): string[] {
+  return [
+    ...clearAuthSessionCookieHeaders(surfacePolicy, options),
+    ...authCookieHeaders(OAUTH_STATE_COOKIE, "", 0, surfacePolicy, options),
+  ];
+}
+
+function sendTerminalSessionError(
+  reply: FastifyReply,
+  surfacePolicy: AuthSurfacePolicy,
+  options: AuthSessionRouteOptions,
+  error: "invalid_session" | "missing_session",
+) {
+  return reply
+    .code(401)
+    .header("set-cookie", clearAuthSessionCookieHeaders(surfacePolicy, options))
+    .send({ error });
+}
+
+function sendTerminalHandoffError(reply: FastifyReply) {
+  return reply
+    .code(401)
+    .headers({
+      "Cache-Control": "private, no-store",
+    })
+    .send({ error: "invalid_handoff" });
 }
 
 function persistRefreshedSessionCookie(

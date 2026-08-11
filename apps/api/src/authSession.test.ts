@@ -14,6 +14,10 @@ import type {
   AuthSurfacePolicy,
   ProductAuditEvent,
 } from "./routes/authSession.js";
+import type {
+  AuthSessionHandoff,
+  AuthSessionHandoffRepository,
+} from "./platform/authSessionHandoffs.js";
 import type { ApprovedPublicProfileImageRepository } from "./routes/platformMedia.js";
 import type { HotelAccountInviteRepository } from "./routes/hotelAccountInvites.js";
 
@@ -35,6 +39,18 @@ const session: AuthKitSession = {
     email: "f.maliqi@vayada.com",
     emailVerified: true,
     name: "Admin Example",
+  },
+};
+
+const handoffHotelSession: AuthKitSession = {
+  ...session,
+  accessToken: "hotel-workos-access-token",
+  sealedSession: "hotel-sealed-session",
+  organizationId: "org_workos_hotel_group",
+  user: {
+    ...session.user,
+    id: "user_workos_hotel",
+    email: "owner@alpenrose.example",
   },
 };
 
@@ -4226,6 +4242,263 @@ describe("AuthKit session routes", () => {
     },
   );
 
+  it("creates and atomically redeems an audience-bound first-party handoff", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+
+    const created = await createBookingHandoff(app);
+    expect(created.statusCode).toBe(200);
+    expect(created.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_fp_workos_session=hotel-sealed-session"),
+      ]),
+    );
+    const destination = new URL(created.json().destination);
+    expect(`${destination.origin}${destination.pathname}`).toBe(
+      "https://admin.booking.localhost/handoff",
+    );
+    expect(destination.search).toBe("");
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code");
+    expect(code).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const redeemed = await redeemHandoff(app, code!, "booking-admin");
+    expect(redeemed.statusCode).toBe(200);
+    expect(redeemed.json()).toEqual({
+      routingHints: {
+        organizationId: "org_hotel_group",
+        propertyId: "property_alpenrose",
+        workosOrganizationId: "org_workos_hotel_group",
+      },
+      targetPath: "/dashboard?from=marketplace",
+    });
+    expect(redeemed.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_fp_workos_session=hotel-sealed-session"),
+        expect.stringContaining("vayada_fp_auth_csrf="),
+      ]),
+    );
+
+    const replayed = await redeemHandoff(app, code!, "booking-admin");
+    expect(replayed.statusCode).toBe(401);
+    expect(replayed.json()).toEqual({ error: "invalid_handoff" });
+    expect(replayed.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("refuses to mint a target cookie after the provider session was logged out", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    const isSessionActive = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    app = buildAuthSessionApp(
+      handoffAuthOptions(
+        handoffs.repository,
+        createAuthKitClient({
+          async authenticateSession() {
+            return handoffHotelSession;
+          },
+          isSessionActive,
+        }),
+      ),
+    );
+
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+    const response = await redeemHandoff(app, code, "booking-admin");
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "invalid_handoff" });
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(isSessionActive).toHaveBeenNthCalledWith(2, {
+      sessionId: "session_workos",
+      workosUserId: "user_workos_hotel",
+    });
+  });
+
+  it("does not consume a handoff for the wrong audience and rejects expired codes", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+
+    const firstDestination = new URL((await createBookingHandoff(app)).json().destination);
+    const firstCode = new URLSearchParams(firstDestination.hash.slice(1)).get("code")!;
+    const wrongAudience = await redeemHandoff(app, firstCode, "pms-web");
+    expect(wrongAudience.statusCode).toBe(401);
+    expect((await redeemHandoff(app, firstCode, "booking-admin")).statusCode).toBe(200);
+
+    const expiredDestination = new URL((await createBookingHandoff(app)).json().destination);
+    const expiredCode = new URLSearchParams(expiredDestination.hash.slice(1)).get("code")!;
+    handoffs.expireAll();
+    const expired = await redeemHandoff(app, expiredCode, "booking-admin");
+    expect(expired.statusCode).toBe(401);
+    expect(expired.json()).toEqual({ error: "invalid_handoff" });
+  });
+
+  it("requires the exact source gateway origin and a safe relative target path", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+    const baseRequest = {
+      method: "POST" as const,
+      url: "/auth/handoff/create",
+      headers: {
+        cookie: "vayada_fp_workos_session=source-sealed-session; vayada_fp_auth_csrf=source-csrf",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "source-csrf",
+      },
+      payload: {
+        sourceSurface: "marketplace-web",
+        targetPath: "/dashboard",
+        targetSurface: "booking-admin",
+      },
+    };
+
+    const bypassingGateway = await app.inject(baseRequest);
+    expect(bypassingGateway.statusCode).toBe(403);
+    expect(bypassingGateway.json()).toEqual({ error: "origin_rejected" });
+
+    const unsafeTarget = await app.inject({
+      ...baseRequest,
+      headers: {
+        ...baseRequest.headers,
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
+      payload: { ...baseRequest.payload, targetPath: "//evil.example/steal" },
+    });
+    expect(unsafeTarget.statusCode).toBe(400);
+    expect(unsafeTarget.json()).toEqual({ error: "invalid_handoff_target" });
+  });
+
+  it("releases a claimed handoff when WorkOS refresh fails transiently", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    let authenticationCalls = 0;
+    const authKitClient = createAuthKitClient({
+      async authenticateSession() {
+        authenticationCalls += 1;
+        if (authenticationCalls === 2) {
+          throw new Error("temporary WorkOS outage");
+        }
+        return handoffHotelSession;
+      },
+      async refreshSession() {
+        return handoffHotelSession;
+      },
+    });
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository, authKitClient));
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+
+    const transient = await redeemHandoff(app, code, "booking-admin");
+    expect(transient.statusCode).toBe(503);
+    expect(transient.json()).toEqual({ error: "handoff_retryable" });
+    expect(transient.headers["set-cookie"]).toBeUndefined();
+    expect((await redeemHandoff(app, code, "booking-admin")).statusCode).toBe(200);
+  });
+
+  it("returns the retryable handoff contract when claiming storage fails", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    const claim = handoffs.repository.claim.bind(handoffs.repository);
+    let failClaim = false;
+    const repository: AuthSessionHandoffRepository = {
+      ...handoffs.repository,
+      async claim(input) {
+        if (failClaim) throw new Error("temporary database outage");
+        return claim(input);
+      },
+    };
+    app = buildAuthSessionApp(handoffAuthOptions(repository));
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+    failClaim = true;
+
+    const transient = await redeemHandoff(app, code, "booking-admin");
+
+    expect(transient.statusCode).toBe(503);
+    expect(transient.json()).toEqual({ error: "handoff_retryable" });
+    expect(transient.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("rejects handoffs for recognized but unconfigured surfaces", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/handoff/create",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        sourceSurface: "affiliate-dashboard",
+        targetPath: "/dashboard",
+        targetSurface: "booking-admin",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "handoff_not_enabled" });
+  });
+
+  it("releases a claimed handoff when target authorization storage fails transiently", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    let lookupCalls = 0;
+    const options = handoffAuthOptions(handoffs.repository);
+    app = buildAuthSessionApp({
+      ...options,
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => {
+          lookupCalls += 1;
+          if (lookupCalls === 2) throw new Error("temporary database outage");
+          return {
+            userId: "user_hotel_admin",
+            email: "owner@alpenrose.example",
+            status: "active",
+          };
+        },
+        organizationByWorkosOrgId: options.identityRepository.findOrganizationByWorkosOrgId,
+        activeMembership: options.identityRepository.findActiveMembership,
+        linkedResources: options.identityRepository.findLinkedResources,
+      }),
+    });
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+
+    const transient = await redeemHandoff(app, code, "booking-admin");
+    expect(transient.statusCode).toBe(503);
+    expect(transient.json()).toEqual({ error: "handoff_retryable" });
+    expect(transient.headers["set-cookie"]).toBeUndefined();
+    expect((await redeemHandoff(app, code, "booking-admin")).statusCode).toBe(200);
+  });
+
+  it("clears a stale first-party cookie after the provider session is terminal", async () => {
+    app = buildAuthSessionApp({
+      ...handoffAuthOptions(createMemoryHandoffRepository().repository),
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return null;
+        },
+        async refreshSession() {
+          return null;
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=booking-admin",
+      headers: {
+        cookie: "vayada_fp_workos_session=stale-sealed-session",
+        origin: "https://admin.booking.localhost",
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "invalid_session" });
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_fp_workos_session=; Path=/auth; Max-Age=0"),
+        expect.stringContaining("vayada_fp_auth_csrf=; Path=/auth; Max-Age=0"),
+      ]),
+    );
+    expect(response.headers["set-cookie"]).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("vayada_fp_oauth_state=")]),
+    );
+  });
+
   it("rejects refresh when CSRF header is missing", async () => {
     app = buildAuthSessionApp();
 
@@ -4242,6 +4515,194 @@ describe("AuthKit session routes", () => {
     expect(response.json()).toEqual({ error: "csrf_rejected" });
   });
 });
+
+function handoffAuthOptions(
+  handoffRepository: AuthSessionHandoffRepository,
+  authKitClient: AuthKitClient = createAuthKitClient({
+    async authenticateSession() {
+      return handoffHotelSession;
+    },
+    async refreshSession() {
+      return handoffHotelSession;
+    },
+  }),
+) {
+  return {
+    allowedOrigins: [
+      "https://marketplace.localhost",
+      "https://admin.booking.localhost",
+      "https://pms.localhost",
+    ],
+    authKitClient,
+    cookieSecure: true,
+    handoffRepository,
+    identityRepository: createIdentityRepository({
+      userByProviderUserId: async () => ({
+        userId: "user_hotel_admin",
+        email: "owner@alpenrose.example",
+        status: "active",
+      }),
+      organizationByWorkosOrgId: async () => ({
+        organizationId: "org_hotel_group",
+        workosOrgId: "org_workos_hotel_group",
+        name: "Alpenrose Hotel Group",
+        kind: "hotel_group",
+        status: "active",
+      }),
+      activeMembership: async () => ({
+        membershipId: "membership_hotel",
+        status: "active",
+        roleKey: "hotel_owner",
+        workosMembershipId: "om_hotel",
+        workosRoleSlugs: ["hotel_owner"],
+      }),
+      linkedResources: async () => [
+        {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+          relationship: "owner",
+          status: "active",
+        },
+        {
+          product: "pms",
+          resourceType: "pms_property",
+          resourceId: "pms_property_alpenrose",
+          relationship: "owner",
+          status: "active",
+        },
+      ],
+    }),
+    surfacePolicies: {
+      "marketplace-web": {
+        requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        publicOrigin: "https://marketplace.localhost",
+        firstPartySession: true,
+      },
+      "booking-admin": {
+        requiredOrganizationKind: "hotel_group",
+        publicOrigin: "https://admin.booking.localhost",
+        firstPartySession: true,
+        requiredResourceLink: { product: "booking", resourceType: "booking_hotel" },
+      },
+      "pms-web": {
+        requiredOrganizationKind: "hotel_group",
+        publicOrigin: "https://pms.localhost",
+        firstPartySession: true,
+        requiredResourceLink: { product: "pms", resourceType: "pms_property" },
+      },
+    } satisfies Partial<Record<string, AuthSurfacePolicy>>,
+    tokenVerifier: createTokenVerifier(handoffHotelSession),
+  };
+}
+
+function createBookingHandoff(app: ReturnType<typeof buildApp>) {
+  return app.inject({
+    method: "POST",
+    url: "/auth/handoff/create",
+    headers: {
+      cookie: "vayada_fp_workos_session=source-sealed-session; vayada_fp_auth_csrf=source-csrf",
+      origin: "https://marketplace.localhost",
+      "x-forwarded-host": "marketplace.localhost",
+      "x-forwarded-proto": "https",
+      "x-vayada-csrf": "source-csrf",
+    },
+    payload: {
+      routingHints: { propertyId: "property_alpenrose" },
+      sourceSurface: "marketplace-web",
+      targetPath: "/dashboard?from=marketplace",
+      targetSurface: "booking-admin",
+    },
+  });
+}
+
+function redeemHandoff(
+  app: ReturnType<typeof buildApp>,
+  code: string,
+  targetSurface: "booking-admin" | "pms-web",
+) {
+  const origin =
+    targetSurface === "booking-admin" ? "https://admin.booking.localhost" : "https://pms.localhost";
+  return app.inject({
+    method: "POST",
+    url: "/auth/handoff/redeem",
+    headers: {
+      origin,
+      "x-forwarded-host": new URL(origin).host,
+      "x-forwarded-proto": "https",
+    },
+    payload: { code, targetSurface },
+  });
+}
+
+function createMemoryHandoffRepository(): {
+  expireAll(): void;
+  repository: AuthSessionHandoffRepository;
+} {
+  type Record = AuthSessionHandoff & {
+    claimedBy?: string;
+    consumed: boolean;
+    expiresAt: Date;
+  };
+  const records = new Map<string, Record>();
+
+  return {
+    expireAll() {
+      for (const record of records.values()) record.expiresAt = new Date(0);
+    },
+    repository: {
+      async create(input) {
+        if (records.has(input.codeDigest)) return false;
+        records.set(input.codeDigest, {
+          consumed: false,
+          expiresAt: input.expiresAt,
+          routingHints: input.routingHints,
+          sealedSession: input.sealedSession,
+          sourceSurface: input.sourceSurface,
+          targetPath: input.targetPath,
+          targetPublicOrigin: input.targetPublicOrigin,
+          targetSurface: input.targetSurface,
+        });
+        return true;
+      },
+      async claim(input) {
+        const record = records.get(input.codeDigest);
+        if (
+          !record ||
+          record.consumed ||
+          record.claimedBy ||
+          record.expiresAt <= input.now ||
+          record.targetSurface !== input.targetSurface ||
+          record.targetPublicOrigin !== input.targetPublicOrigin
+        ) {
+          return null;
+        }
+        record.claimedBy = input.redemptionId;
+        return record;
+      },
+      async complete(input) {
+        const record = [...records.values()].find(
+          (candidate) => candidate.claimedBy === input.redemptionId && !candidate.consumed,
+        );
+        if (!record) return false;
+        record.consumed = true;
+        delete record.claimedBy;
+        return true;
+      },
+      async release(input) {
+        const record = [...records.values()].find(
+          (candidate) => candidate.claimedBy === input.redemptionId && !candidate.consumed,
+        );
+        if (record) delete record.claimedBy;
+      },
+      async scrubExpired(input) {
+        for (const [digest, record] of records) {
+          if (record.expiresAt < input.deleteBefore) records.delete(digest);
+        }
+      },
+    },
+  };
+}
 
 function buildAuthSessionApp(
   options: {
@@ -4263,6 +4724,7 @@ function buildAuthSessionApp(
     >;
     profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
     hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
+    handoffRepository?: AuthSessionHandoffRepository;
   } = {},
 ) {
   const compatibilityCallbackOrigin =
@@ -4293,6 +4755,7 @@ function buildAuthSessionApp(
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
       profileImageMediaRepository: options.profileImageMediaRepository,
       hotelAccountInviteOnboarding: options.hotelAccountInviteOnboarding,
+      handoffRepository: options.handoffRepository,
     },
   });
 }
@@ -4382,6 +4845,9 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
     },
     async authenticateSession() {
       return session;
+    },
+    async isSessionActive() {
+      return true;
     },
     async refreshSession() {
       return {
