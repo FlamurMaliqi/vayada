@@ -11,6 +11,7 @@ import {
 
 describe("booking admin auth service", () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     clearAuthData();
     vi.restoreAllMocks();
@@ -45,7 +46,7 @@ describe("booking admin auth service", () => {
       accessToken: "fresh-access-token",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/session/refresh",
+      "/auth/session/refresh",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -98,7 +99,9 @@ describe("booking admin auth service", () => {
     authService.startGoogleLogin("/dashboard");
 
     const url = new URL(location.href);
-    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(`${url.origin}${url.pathname}`).toBe(
+      "https://admin.booking.localhost/auth/oauth/google/start",
+    );
     expect(url.searchParams.get("surface")).toBe("booking-admin");
     expect(url.searchParams.get("flow")).toBe("login");
     expect(url.searchParams.get("return_to")).toBe(
@@ -117,7 +120,9 @@ describe("booking admin auth service", () => {
     authService.startGoogleSignup("/dashboard");
 
     const url = new URL(location.href);
-    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(`${url.origin}${url.pathname}`).toBe(
+      "https://admin.booking.localhost/auth/oauth/google/start",
+    );
     expect(url.searchParams.get("surface")).toBe("booking-admin");
     expect(url.searchParams.get("flow")).toBe("signup");
     expect(url.searchParams.get("type")).toBe("hotel");
@@ -150,7 +155,7 @@ describe("booking admin auth service", () => {
     });
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.localhost/auth/password/reset/request",
+      "/auth/password/reset/request",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -159,11 +164,53 @@ describe("booking admin auth service", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.localhost/auth/password/reset/confirm",
+      "/auth/password/reset/confirm",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
         body: JSON.stringify({ token: "reset-token", newPassword: "new-password" }),
+      }),
+    );
+  });
+
+  it("routes password auth, profile refresh, and logout through same-origin auth", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    const session = {
+      accessToken: "workos-access-token",
+      csrfToken: "csrf-token",
+      organizationId: "org_hotel_group",
+      user: {
+        id: "user_hotel",
+        email: "owner@example.test",
+        status: "active",
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(session))
+      .mockResolvedValueOnce(jsonResponse(session))
+      .mockResolvedValueOnce(jsonResponse({ updated: true }))
+      .mockResolvedValueOnce(jsonResponse(session))
+      .mockResolvedValueOnce(jsonResponse({ logoutUrl: "/login" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authService.login({ email: "owner@example.test", password: "secret" });
+    await authService.signup({ email: "new-owner@example.test", password: "secret" });
+    await authService.updateAccountDetails({ firstName: "Hotel", lastName: "Owner" });
+    await authService.logout();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/auth/password/login",
+      "/auth/password/signup",
+      "/auth/profile",
+      "/auth/session/refresh",
+      "/auth/logout",
+    ]);
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({ "x-vayada-csrf": "csrf-token" }),
       }),
     );
   });
