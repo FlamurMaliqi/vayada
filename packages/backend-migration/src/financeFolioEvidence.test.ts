@@ -40,18 +40,12 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
       DROP SCHEMA IF EXISTS pms CASCADE; DROP SCHEMA IF EXISTS hotel_catalog CASCADE;
       CREATE SCHEMA hotel_catalog; CREATE SCHEMA pms; CREATE SCHEMA booking; CREATE SCHEMA finance;
       CREATE TABLE hotel_catalog.properties (id UUID PRIMARY KEY);
-      CREATE TABLE pms.property_pricing_settings (
-        property_id UUID PRIMARY KEY, currency CHAR(3), UNIQUE (property_id, currency));
-      CREATE TABLE booking.guest_bookings (
-        id UUID PRIMARY KEY, property_id UUID, UNIQUE (id, property_id));
-      CREATE TABLE finance.payments (
-        id UUID PRIMARY KEY, property_id UUID NOT NULL, currency CHAR(3) NOT NULL,
-        UNIQUE (id, property_id));
+      CREATE TABLE pms.property_pricing_settings (property_id UUID PRIMARY KEY, currency CHAR(3), UNIQUE (property_id, currency));
+      CREATE TABLE booking.guest_bookings (id UUID PRIMARY KEY, property_id UUID, UNIQUE (id, property_id));
+      CREATE TABLE finance.payments (id UUID PRIMARY KEY, property_id UUID NOT NULL, currency CHAR(3) NOT NULL, UNIQUE (id, property_id));
       INSERT INTO hotel_catalog.properties VALUES ('${PROPERTY_A}'), ('${PROPERTY_B}');
-      INSERT INTO pms.property_pricing_settings VALUES
-        ('${PROPERTY_A}', 'EUR'), ('${PROPERTY_B}', 'USD');
-      INSERT INTO finance.payments VALUES
-        ('${PAYMENT_A}', '${PROPERTY_A}', 'EUR'), ('${PAYMENT_B}', '${PROPERTY_B}', 'USD');
+      INSERT INTO pms.property_pricing_settings VALUES ('${PROPERTY_A}', 'EUR'), ('${PROPERTY_B}', 'USD');
+      INSERT INTO finance.payments VALUES ('${PAYMENT_A}', '${PROPERTY_A}', 'EUR'), ('${PAYMENT_B}', '${PROPERTY_B}', 'USD');
     `);
     await client.query(folios);
     await client.query(evidence);
@@ -59,7 +53,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
 
   afterAll(async () => {
     try {
-      await client.query("ROLLBACK");
       await client.query("DROP SCHEMA IF EXISTS finance CASCADE");
     } finally {
       await client.end();
@@ -100,18 +93,26 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
        VALUES ($1, $2, ${values})`,
       [revisionId, folioId],
     );
+  const addPayment = (
+    folioId: string,
+    revisionId: string,
+    paymentId = PAYMENT_A,
+    amount = "25",
+    connection = client,
+  ) =>
+    connection.query(
+      `INSERT INTO finance.folio_payment_references
+        (folio_revision_id, folio_id, property_id, folio_revision, currency, position,
+         payment_id, amount) VALUES ($1, $2, $3, 1, 'EUR', 1, $4, $5)`,
+      [revisionId, folioId, PROPERTY_A, paymentId, amount],
+    );
 
   it("commits one immutable snapshot with generated totals and payment evidence", async () => {
     const folioId = await createFolio();
     await client.query("BEGIN");
     const revisionId = await addRevision(folioId, "ready", 25);
     await addLine(folioId, revisionId);
-    await client.query(
-      `INSERT INTO finance.folio_payment_references
-        (folio_revision_id, folio_id, property_id, folio_revision, currency, position,
-         payment_id, amount) VALUES ($1, $2, $3, 1, 'EUR', 1, $4, 25)`,
-      [revisionId, folioId, PROPERTY_A, PAYMENT_A],
-    );
+    await addPayment(folioId, revisionId);
     await client.query("COMMIT");
     expect(
       (
@@ -122,7 +123,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
           [revisionId],
         )
       ).rows[0],
-    ).toEqual({ line_total: "25.0000", amount: "25.0000" });
+    ).toEqual({ line_total: "25.0000", amount: "25" });
   });
 
   it("rejects drifted totals and line-less ready revisions at commit", async () => {
@@ -147,17 +148,17 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
   it("requires evidence to be created in the revision transaction", async () => {
     const folioId = await createFolio();
     const revisionId = await addRevision(folioId, "draft", 0);
-    await expect(addLine(folioId, revisionId)).rejects.toMatchObject({
-      constraint: "chk_finance_folio_evidence_creation_transaction",
-    });
-    await expect(
-      client.query(
-        `INSERT INTO finance.folio_payment_references
-          (folio_revision_id, folio_id, property_id, folio_revision, currency, position,
-           payment_id, amount) VALUES ($1, $2, $3, 1, 'EUR', 1, $4, 1)`,
-        [revisionId, folioId, PROPERTY_A, PAYMENT_A],
-      ),
-    ).rejects.toMatchObject({ constraint: "chk_finance_folio_evidence_creation_transaction" });
+    const peer = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await peer.connect();
+    try {
+      await peer.query("BEGIN");
+      await expect(addPayment(folioId, revisionId, PAYMENT_A, "1", peer)).rejects.toMatchObject({
+        constraint: "chk_finance_folio_evidence_creation_transaction",
+      });
+      await peer.query("ROLLBACK");
+    } finally {
+      await peer.end();
+    }
   });
 
   it("rejects malformed, duplicate, and cross-scope evidence", async () => {
@@ -174,9 +175,16 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
     const scopedRevisionId = await addRevision(folioId, "draft", 0);
     const invalidLines = [
       [LINE_VALUES.replace("2.5", "'NaN'"), "chk_finance_folio_lines_quantity"],
+      [LINE_VALUES.replace("2.5", "1.00005"), "chk_finance_folio_lines_quantity"],
       [LINE_VALUES.replace("2026-08-05", "infinity"), "chk_finance_folio_lines_service_on"],
       [LINE_VALUES.replace("booking.night", "Bad Source"), "chk_finance_folio_lines_source_type"],
-      [LINE_VALUES.replace("room-revenue", " "), "chk_finance_folio_lines_accounting_mapping"],
+      [LINE_VALUES.replace("'Stay'", "E'\\t'"), "chk_finance_folio_lines_description"],
+      [LINE_VALUES.replace("'night-1'", "E'\\n'"), "chk_finance_folio_lines_source_id"],
+      [
+        LINE_VALUES.replace("'room-revenue'", "E'\\t'"),
+        "chk_finance_folio_lines_accounting_mapping",
+      ],
+      [LINE_VALUES.replace("'standard'", "E'\\n'"), "chk_finance_folio_lines_tax_treatment"],
       [
         LINE_VALUES.replace(PROPERTY_A, PROPERTY_B).replace("EUR", "USD"),
         "fk_finance_folio_lines_revision_scope",
@@ -189,14 +197,15 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
       });
       await client.query("ROLLBACK TO SAVEPOINT invalid_line");
     }
-    await expect(
-      client.query(
-        `INSERT INTO finance.folio_payment_references
-          (folio_revision_id, folio_id, property_id, folio_revision, currency, position,
-           payment_id, amount) VALUES ($1, $2, $3, 1, 'EUR', 1, $4, 1)`,
-        [scopedRevisionId, folioId, PROPERTY_A, PAYMENT_B],
-      ),
-    ).rejects.toMatchObject({ constraint: "fk_finance_folio_payment_refs_payment_scope" });
+    await expect(addPayment(folioId, scopedRevisionId, PAYMENT_A, "1.00005")).rejects.toMatchObject(
+      {
+        constraint: "chk_finance_folio_payment_refs_amount",
+      },
+    );
+    await client.query("ROLLBACK TO SAVEPOINT invalid_line");
+    await expect(addPayment(folioId, scopedRevisionId, PAYMENT_B)).rejects.toMatchObject({
+      constraint: "fk_finance_folio_payment_refs_payment_scope",
+    });
     await client.query("ROLLBACK");
   });
 
@@ -205,12 +214,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
     await client.query("BEGIN");
     const revisionId = await addRevision(folioId, "ready", 25);
     await addLine(folioId, revisionId);
-    await client.query(
-      `INSERT INTO finance.folio_payment_references
-        (folio_revision_id, folio_id, property_id, folio_revision, currency, position,
-         payment_id, amount) VALUES ($1, $2, $3, 1, 'EUR', 1, $4, 25)`,
-      [revisionId, folioId, PROPERTY_A, PAYMENT_A],
-    );
+    await addPayment(folioId, revisionId);
     await client.query("COMMIT");
     await expect(
       client.query(

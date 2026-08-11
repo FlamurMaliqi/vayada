@@ -3,7 +3,6 @@
 -- See: VAY-1171 and VAY-1240
 
 ALTER TABLE finance.folio_revisions
-  ADD COLUMN evidence_xid XID8 NOT NULL DEFAULT pg_current_xact_id(),
   ADD CONSTRAINT uq_finance_folio_revisions_evidence_scope
     UNIQUE (id, folio_id, property_id, revision, currency);
 
@@ -22,8 +21,8 @@ CREATE TABLE finance.folio_lines (
   kind                   TEXT          NOT NULL
                                            CHECK (kind IN ('room', 'addon', 'fee', 'tax', 'adjustment')),
   description            TEXT          NOT NULL,
-  quantity               NUMERIC(19,4) NOT NULL,
-  unit_amount            NUMERIC(19,4) NOT NULL,
+  quantity               NUMERIC       NOT NULL,
+  unit_amount            NUMERIC       NOT NULL,
   line_total             NUMERIC(19,4)
     GENERATED ALWAYS AS (round(quantity * unit_amount, 4)) STORED,
   service_on             DATE          NOT NULL,
@@ -36,24 +35,24 @@ CREATE TABLE finance.folio_lines (
   CONSTRAINT uq_finance_folio_lines_position UNIQUE (folio_revision_id, position),
   CONSTRAINT chk_finance_folio_lines_position CHECK (position BETWEEN 1 AND 1000),
   CONSTRAINT chk_finance_folio_lines_description
-    CHECK (description = btrim(description) AND char_length(description) BETWEEN 1 AND 500),
+    CHECK (description = btrim(description, E' \t\n\r') AND description !~ '[[:cntrl:]]'
+      AND char_length(description) BETWEEN 1 AND 500),
   CONSTRAINT chk_finance_folio_lines_quantity
-    CHECK (quantity > 0 AND quantity < 'Infinity'::NUMERIC),
+    CHECK (quantity > 0 AND quantity < 1000000000000000 AND scale(quantity) <= 4),
   CONSTRAINT chk_finance_folio_lines_unit_amount
-    CHECK (unit_amount > '-Infinity'::NUMERIC AND unit_amount < 'Infinity'::NUMERIC),
+    CHECK (unit_amount > -1000000000000000 AND unit_amount < 1000000000000000
+      AND scale(unit_amount) <= 4),
   CONSTRAINT chk_finance_folio_lines_service_on CHECK (isfinite(service_on)),
   CONSTRAINT chk_finance_folio_lines_source_type
     CHECK (source_type ~ '^[a-z][a-z0-9_.-]{0,49}$'),
   CONSTRAINT chk_finance_folio_lines_source_id
-    CHECK (source_id = btrim(source_id) AND char_length(source_id) BETWEEN 1 AND 200),
+    CHECK (source_id ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'),
   CONSTRAINT chk_finance_folio_lines_source_revision
     CHECK (source_revision BETWEEN 1 AND 2147483647),
   CONSTRAINT chk_finance_folio_lines_accounting_mapping
-    CHECK (accounting_mapping_ref = btrim(accounting_mapping_ref)
-      AND char_length(accounting_mapping_ref) BETWEEN 1 AND 200),
+    CHECK (accounting_mapping_ref ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'),
   CONSTRAINT chk_finance_folio_lines_tax_treatment
-    CHECK (tax_treatment_ref = btrim(tax_treatment_ref)
-      AND char_length(tax_treatment_ref) BETWEEN 1 AND 200),
+    CHECK (tax_treatment_ref ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'),
   CONSTRAINT fk_finance_folio_lines_revision_scope
     FOREIGN KEY (folio_revision_id, folio_id, property_id, folio_revision, currency)
     REFERENCES finance.folio_revisions(id, folio_id, property_id, revision, currency)
@@ -69,13 +68,13 @@ CREATE TABLE finance.folio_payment_references (
   currency          CHAR(3)       NOT NULL,
   position          INTEGER       NOT NULL,
   payment_id        UUID          NOT NULL,
-  amount            NUMERIC(19,4) NOT NULL,
+  amount            NUMERIC       NOT NULL,
   created_at        TIMESTAMPTZ   NOT NULL DEFAULT now(),
   CONSTRAINT uq_finance_folio_payment_refs_position UNIQUE (folio_revision_id, position),
   CONSTRAINT uq_finance_folio_payment_refs_payment UNIQUE (folio_revision_id, payment_id),
   CONSTRAINT chk_finance_folio_payment_refs_position CHECK (position BETWEEN 1 AND 1000),
   CONSTRAINT chk_finance_folio_payment_refs_amount
-    CHECK (amount > 0 AND amount < 'Infinity'::NUMERIC),
+    CHECK (amount > 0 AND amount < 1000000000000000 AND scale(amount) <= 4),
   CONSTRAINT fk_finance_folio_payment_refs_revision_scope
     FOREIGN KEY (folio_revision_id, folio_id, property_id, folio_revision, currency)
     REFERENCES finance.folio_revisions(id, folio_id, property_id, revision, currency)
@@ -87,14 +86,14 @@ CREATE TABLE finance.folio_payment_references (
 
 CREATE FUNCTION finance.validate_folio_evidence_insert()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE revision_xid XID8;
+DECLARE revision_xid XID;
 BEGIN
-  SELECT evidence_xid INTO revision_xid FROM finance.folio_revisions
+  SELECT xmin INTO revision_xid FROM finance.folio_revisions
   WHERE id = NEW.folio_revision_id AND folio_id = NEW.folio_id
     AND property_id = NEW.property_id AND revision = NEW.folio_revision
     AND currency = NEW.currency;
   IF NOT FOUND THEN RETURN NEW; END IF;
-  IF revision_xid IS DISTINCT FROM pg_current_xact_id() THEN
+  IF revision_xid IS DISTINCT FROM pg_current_xact_id()::TEXT::XID THEN
     RAISE EXCEPTION 'folio evidence must be created with its revision'
       USING ERRCODE = '23514', CONSTRAINT = 'chk_finance_folio_evidence_creation_transaction';
   END IF;
