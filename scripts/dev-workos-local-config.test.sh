@@ -30,6 +30,20 @@ assert_invalid_origin() {
   fi
 }
 
+assert_marketplace_dev_origin() {
+  local origin="$1"
+  local expected_hostname="$2"
+  AUTH_PUBLIC_ORIGIN="$origin" node - \
+    "$ROOT_DIR/apps/marketplace-web/next.config.js" \
+    "$expected_hostname" <<'NODE'
+const [configPath, expectedHostname] = process.argv.slice(2);
+const config = require(configPath);
+if (!config.allowedDevOrigins.includes(expectedHostname)) {
+  throw new Error(`Expected allowedDevOrigins to include '${expectedHostname}'.`);
+}
+NODE
+}
+
 assert_callback \
   "https://marketplace.localhost" \
   "https://marketplace.localhost/auth/oauth/google/callback"
@@ -47,5 +61,9 @@ assert_invalid_origin "" "Missing test origin"
 assert_invalid_origin "https://marketplace.localhost/path" "expected an exact http(s) origin"
 assert_invalid_origin "https://user@marketplace.localhost" "expected an exact http(s) origin"
 assert_invalid_origin "https://marketplace.localhost:65536" "port must be between 1 and 65535"
+
+assert_marketplace_dev_origin \
+  "https://vay-1197-route-marketplace-auth-through-its-own-origin.marketplace.localhost:1355" \
+  "vay-1197-route-marketplace-auth-through-its-own-origin.marketplace.localhost"
 
 echo "WorkOS local auth origin checks passed."
