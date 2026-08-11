@@ -91,6 +91,7 @@ export function stripeSubscriptionRuntimeEnabled(
     config.financeSource === "target" &&
     config.bookingCheckoutCommandSource === "target" &&
     Boolean(config.stripeSubscriptions.secretKey) &&
+    Boolean(config.stripeSubscriptions.fixedPlanPriceId) &&
     Boolean(config.providerWebhooks.stripeSecret) &&
     config.providerWebhooks.stripeMode === "mutating"
   );

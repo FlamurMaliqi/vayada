@@ -428,6 +428,7 @@ describe("api config", () => {
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
       STRIPE_SECRET_KEY: "sk_test_subscription",
+      STRIPE_FIXED_PLAN_PRICE_ID: "price_fixed",
       STRIPE_WEBHOOK_SECRET: "whsec_subscription",
       STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
     };
@@ -436,6 +437,7 @@ describe("api config", () => {
 
     for (const env of [
       { ...stripeRuntimeEnv, STRIPE_SECRET_KEY: undefined },
+      { ...stripeRuntimeEnv, STRIPE_FIXED_PLAN_PRICE_ID: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_SECRET: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
       { ...stripeRuntimeEnv, BOOKING_CHECKOUT_COMMAND_SOURCE: "legacy_proxy" },
