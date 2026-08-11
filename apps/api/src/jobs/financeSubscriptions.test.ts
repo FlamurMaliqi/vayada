@@ -100,6 +100,18 @@ describe("Finance subscription webhook lifecycle", () => {
     expect(fixture.store.entitlement.planKey).toBe("commission");
   });
 
+  it("does not mutate Stripe quantity for a stale upcoming-invoice event", async () => {
+    const fixture = setup("fixed");
+    fixture.store.entitlement.lastProviderEventCreatedAt = new Date(60_000).toISOString();
+
+    await expect(
+      processFinanceSubscriptionWebhook(payload("invoice.upcoming", 50), fixture.dependencies),
+    ).resolves.toBe("ignored_stale");
+
+    expect(fixture.provider.updateRoomQuantity).not.toHaveBeenCalled();
+    expect(fixture.store.entitlement.activeRoomCount).toBe(2);
+  });
+
   it("stores a real SHA-256 digest for internal notification idempotency", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [{ id: "job-1" }] });
     const store = createPgFinanceSubscriptionWebhookStore({ query } as never);
@@ -114,6 +126,7 @@ describe("Finance subscription webhook lifecycle", () => {
         subscriptionRef: "sub_fixed",
         checkoutSessionRef: "cs_fixed",
         activeRoomCount: 2,
+        lastProviderEventCreatedAt: null,
       },
       snapshot: {
         subscriptionId: "sub_fixed",
@@ -154,6 +167,7 @@ describe("Finance subscription webhook lifecycle", () => {
       }),
     ).resolves.toEqual({ processed: 1, failed: 0 });
     expect(notifyInternal).toHaveBeenCalledWith(notification);
+    expect(String(successQuery.mock.calls[0]?.[0])).toContain("locked_at IS NULL");
     expect(String(successQuery.mock.calls[1]?.[0])).toContain("status = 'succeeded'");
 
     const failedQuery = vi
@@ -231,6 +245,7 @@ class MemoryStore implements FinanceSubscriptionWebhookStore {
       subscriptionRef: planKey === "fixed" ? "sub_fixed" : null,
       checkoutSessionRef: "cs_fixed",
       activeRoomCount: 2,
+      lastProviderEventCreatedAt: null,
     };
   }
 
@@ -275,6 +290,9 @@ class MemoryStore implements FinanceSubscriptionWebhookStore {
   private accept(value: FinanceSubscriptionWebhookPayload) {
     if (value.eventCreated < this.lastEventCreated) return false;
     this.lastEventCreated = value.eventCreated;
+    this.entitlement.lastProviderEventCreatedAt = new Date(
+      value.eventCreated * 1_000,
+    ).toISOString();
     return true;
   }
 }

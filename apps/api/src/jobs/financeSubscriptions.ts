@@ -33,6 +33,7 @@ export type FinanceSubscriptionWebhookEntitlement = {
   subscriptionRef: string | null;
   checkoutSessionRef: string | null;
   activeRoomCount: number;
+  lastProviderEventCreatedAt: string | null;
 };
 
 export type FinanceSubscriptionWebhookStore = {
@@ -103,6 +104,9 @@ export async function processFinanceSubscriptionWebhook(
 
   let activeRoomCount = existing.activeRoomCount;
   if (payload.eventType === "invoice.upcoming") {
+    if (isStaleEvent(payload, existing.lastProviderEventCreatedAt)) {
+      return "ignored_stale";
+    }
     const inventory = await dependencies.roomInventory.getRoomInventorySnapshot(
       existing.propertyId,
     );
@@ -271,7 +275,8 @@ export function createPgFinanceSubscriptionWebhookStore(
            entitlement.property_id::text AS "propertyId", entitlement.plan_key AS "planKey",
            entitlement.billing_subscription_ref AS "subscriptionRef",
            entitlement.checkout_session_ref AS "checkoutSessionRef",
-           entitlement.active_room_count AS "activeRoomCount"`,
+           entitlement.active_room_count AS "activeRoomCount",
+           entitlement.last_provider_event_created_at::text AS "lastProviderEventCreatedAt"`,
         [
           payload.checkoutSessionId,
           payload.propertyId,
@@ -333,7 +338,8 @@ export function createPgFinanceSubscriptionWebhookStore(
            entitlement.property_id::text AS "propertyId", entitlement.plan_key AS "planKey",
            entitlement.billing_subscription_ref AS "subscriptionRef",
            entitlement.checkout_session_ref AS "checkoutSessionRef",
-           entitlement.active_room_count AS "activeRoomCount"`,
+           entitlement.active_room_count AS "activeRoomCount",
+           entitlement.last_provider_event_created_at::text AS "lastProviderEventCreatedAt"`,
         [
           snapshot.subscriptionId,
           activatesFixed,
@@ -392,7 +398,8 @@ const ENTITLEMENT_SELECT = `SELECT entitlement.organization_id::text AS "organiz
   entitlement.property_id::text AS "propertyId", entitlement.plan_key AS "planKey",
   entitlement.billing_subscription_ref AS "subscriptionRef",
   entitlement.checkout_session_ref AS "checkoutSessionRef",
-  COALESCE(entitlement.active_room_count, 0)::int AS "activeRoomCount"
+  COALESCE(entitlement.active_room_count, 0)::int AS "activeRoomCount",
+  entitlement.last_provider_event_created_at::text AS "lastProviderEventCreatedAt"
   FROM finance.billing_entitlements entitlement`;
 
 async function claimJob(pool: pg.Pool, workerId: string, queue: string, jobType: string) {
@@ -401,7 +408,8 @@ async function claimJob(pool: pg.Pool, workerId: string, queue: string, jobType:
        locked_at = now(), locked_by = $3
      FROM (SELECT id FROM platform.jobs
        WHERE queue_name = $1 AND job_type = $2
-         AND (status = 'pending' OR (status = 'running' AND locked_at < now() - interval '5 minutes'))
+         AND (status = 'pending' OR (status = 'running'
+           AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')))
          AND run_after <= now() AND attempts_count < max_attempts
        ORDER BY priority DESC, created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) candidate
      WHERE job.id = candidate.id
@@ -515,6 +523,14 @@ function transitionFor(eventType: string): "paid" | "payment_failed" | "sync" | 
 
 function eventCreatedAt(payload: FinanceSubscriptionWebhookPayload): string {
   return new Date(payload.eventCreated * 1_000).toISOString();
+}
+
+function isStaleEvent(
+  payload: FinanceSubscriptionWebhookPayload,
+  lastProviderEventCreatedAt: string | null,
+): boolean {
+  if (!lastProviderEventCreatedAt) return false;
+  return payload.eventCreated * 1_000 < Date.parse(lastProviderEventCreatedAt);
 }
 
 function text(value: unknown): string {
