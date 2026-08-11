@@ -9,7 +9,7 @@ import { publishPublicBookabilityProfile } from "@/services/api/publicBookabilit
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { FeedbackAlert, SaveButton } from "@/components/ui";
-import { uploadSingleImage } from "@/lib/utils/uploadImage";
+import { uploadSingleImage, uploadSingleImageWithMediaReference } from "@/lib/utils/uploadImage";
 import { headerLogoUploadError } from "@/lib/utils/headerLogo";
 import { generateColorPalette } from "@/lib/utils/colors";
 import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
@@ -37,6 +37,7 @@ export default function DesignStudioPage() {
   // Media & Content state
   const [heroImage, setHeroImage] = useState("");
   const [headerLogo, setHeaderLogo] = useState("");
+  const [headerLogoMediaObjectId, setHeaderLogoMediaObjectId] = useState<string | null>(null);
   const [heroHeading, setHeroHeading] = useState("");
   const [heroSubtext, setHeroSubtext] = useState("");
   const [propertyName, setPropertyName] = useState("");
@@ -100,6 +101,7 @@ export default function DesignStudioPage() {
       .then(([settings, property, canonicalProfile]) => {
         profileRevisionRef.current = canonicalProfile.profileRevision;
         setHeaderLogo(settings.header_logo || "");
+        setHeaderLogoMediaObjectId(settings.header_logo_media_object_id);
         if (settings.hero_image) setHeroImage(settings.hero_image);
         if (settings.hero_heading) setHeroHeading(settings.hero_heading);
         if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
@@ -201,18 +203,27 @@ export default function DesignStudioPage() {
     }
 
     const previousLogo = headerLogo;
+    const previousLogoMediaObjectId = headerLogoMediaObjectId;
     const previewUrl = URL.createObjectURL(file);
     setHeaderLogo(previewUrl);
     setFeedback(null);
 
     try {
       setUploadingLogo(true);
-      const publicLogoUrl = await uploadSingleImage(file, "booking.header_logo", hotelId);
+      const uploadedLogo = await uploadSingleImageWithMediaReference(
+        file,
+        "booking.header_logo",
+        hotelId,
+      );
 
       URL.revokeObjectURL(previewUrl);
-      setHeaderLogo(publicLogoUrl);
+      setHeaderLogo(uploadedLogo.publicUrl);
+      setHeaderLogoMediaObjectId(uploadedLogo.mediaObjectId);
       try {
-        await settingsService.updateDesignSettings({ header_logo: publicLogoUrl }, hotelId);
+        await settingsService.updateDesignSettings(
+          { header_logo_media_object_id: uploadedLogo.mediaObjectId },
+          hotelId,
+        );
         await publishPublicBookabilityProfile(hotelId);
       } catch {
         setFeedback({
@@ -225,6 +236,7 @@ export default function DesignStudioPage() {
       console.error("Header logo upload failed:", error);
       URL.revokeObjectURL(previewUrl);
       setHeaderLogo(previousLogo);
+      setHeaderLogoMediaObjectId(previousLogoMediaObjectId);
       setFeedback({ type: "error", message: "Logo upload failed. Please try again." });
     } finally {
       setUploadingLogo(false);
@@ -234,6 +246,7 @@ export default function DesignStudioPage() {
 
   const removeHeaderLogo = () => {
     setHeaderLogo("");
+    setHeaderLogoMediaObjectId(null);
     if (logoInputRef.current) logoInputRef.current.value = "";
   };
 
@@ -250,7 +263,7 @@ export default function DesignStudioPage() {
       setFeedback(null);
       await settingsService.updateDesignSettings(
         {
-          header_logo: headerLogo,
+          header_logo_media_object_id: headerLogoMediaObjectId,
           hero_image: heroImage,
           hero_heading: heroHeading,
           hero_subtext: heroSubtext,

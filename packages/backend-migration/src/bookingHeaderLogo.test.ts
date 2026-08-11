@@ -22,13 +22,17 @@ const mediaUrlExpectedTarget = await readFile(
 describe("Booking header logo migration", () => {
   it("adds a nullable Booking-owned opt-in without changing existing properties", () => {
     expect(migration).toContain("ALTER TABLE booking.booking_settings");
-    expect(migration).toContain("ADD COLUMN header_logo_url TEXT");
+    expect(migration).toContain("ADD COLUMN header_logo_media_object_id UUID");
+    expect(migration).toContain("REFERENCES platform.media_objects(id)");
+    expect(migration).toContain("ON DELETE SET NULL");
     expect(migration).toContain("'booking.header_logo'");
     expect(migration).toContain("THEN media_visibility = 'public'");
     expect(migration).toContain(
       "CREATE OR REPLACE FUNCTION platform.valid_media_purpose_visibility",
     );
+    expect(migration).toContain("platform media reference");
     expect(migration).toContain("NULL preserves the property-name fallback");
+    expect(migration).not.toContain("header_logo_url");
     expect(migration).not.toMatch(/\b(?:UPDATE|INSERT INTO)\s+booking\.booking_settings\b/i);
     expect(migration).not.toContain("NOT NULL");
   });

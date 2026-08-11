@@ -457,6 +457,7 @@ test.describe("booking-admin adaptive setup", () => {
             json: {
               mediaObjects: [
                 {
+                  mediaId: "a1000000-0000-4000-8000-000000000001",
                   variants: [
                     {
                       publicCdnUrl: "https://media.example/approved-hero.webp",
@@ -594,16 +595,22 @@ test.describe("booking-admin adaptive setup", () => {
       "https://media.example/alpenrose-header-logo.webp",
       "https://media.example/alpenrose-header-logo-replacement.webp",
     ];
+    const logoMediaObjectIds = [
+      "a1000000-0000-4000-8000-000000001217",
+      "a1000000-0000-4000-8000-000000001218",
+    ];
     let uploadCount = 0;
 
     await page.route(/\/api\/media\/upload-sessions(?:\/[^/]+\/finalize)?$/, async (route) => {
       const request = route.request();
       if (request.url().endsWith("/finalize")) {
-        const logoUrl = logoUrls[Math.max(0, uploadCount - 1)]!;
+        const logoIndex = Math.max(0, uploadCount - 1);
+        const logoUrl = logoUrls[logoIndex]!;
         await route.fulfill({
           json: {
             mediaObjects: [
               {
+                mediaId: logoMediaObjectIds[logoIndex],
                 purpose: "booking.header_logo",
                 visibility: "public",
                 variants: [{ publicCdnUrl: logoUrl }],
@@ -655,10 +662,12 @@ test.describe("booking-admin adaptive setup", () => {
       .poll(
         () =>
           requests.find(
-            (request) => request.method === "PATCH" && request.body?.headerLogo === logoUrls[0],
-          )?.body?.headerLogo,
+            (request) =>
+              request.method === "PATCH" &&
+              request.body?.headerLogoMediaObjectId === logoMediaObjectIds[0],
+          )?.body?.headerLogoMediaObjectId,
       )
-      .toBe(logoUrls[0]);
+      .toBe(logoMediaObjectIds[0]);
 
     const replacement = await page.evaluateHandle(() => {
       const transfer = new DataTransfer();
@@ -684,8 +693,12 @@ test.describe("booking-admin adaptive setup", () => {
     await expect(page.getByRole("main").getByText("Alpenrose", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Save Changes" }).click();
     await expect
-      .poll(() => requests.filter((request) => request.method === "PATCH").at(-1)?.body?.headerLogo)
-      .toBe("");
+      .poll(
+        () =>
+          requests.filter((request) => request.method === "PATCH").at(-1)?.body
+            ?.headerLogoMediaObjectId,
+      )
+      .toBeNull();
   });
 });
 

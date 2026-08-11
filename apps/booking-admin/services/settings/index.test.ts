@@ -15,6 +15,7 @@ describe("settingsService next-stack bootstrap data", () => {
     const storage = createMemoryStorage();
     let designSettings = {
       headerLogo: "https://cdn.vayada.test/hotels/alpenrose/logo.webp",
+      headerLogoMediaObjectId: "a1000000-0000-4000-8000-000000001217" as string | null,
       heroImage: "https://cdn.vayada.test/hotels/alpenrose/hero.jpg",
       heroHeading: "Stay above the clouds",
       heroSubtext: "An independent alpine escape.",
@@ -143,9 +144,17 @@ describe("settingsService next-stack bootstrap data", () => {
         }
         if (href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/design")) {
           if (init?.method === "PATCH") {
+            const patch = JSON.parse(String(init.body)) as Partial<typeof designSettings>;
             designSettings = {
               ...designSettings,
-              ...(JSON.parse(String(init.body)) as Partial<typeof designSettings>),
+              ...patch,
+              ...(Object.hasOwn(patch, "headerLogoMediaObjectId")
+                ? {
+                    headerLogo: patch.headerLogoMediaObjectId
+                      ? "https://cdn.vayada.test/hotels/alpenrose/new-logo.webp"
+                      : "",
+                  }
+                : {}),
             };
           }
           return new Response(JSON.stringify(designSettings), {
@@ -216,6 +225,7 @@ describe("settingsService next-stack bootstrap data", () => {
   it("loads and saves the design model for an explicit Booking hotel", async () => {
     await expect(settingsService.getDesignSettings(" booking_hotel_alpenrose ")).resolves.toEqual({
       header_logo: "https://cdn.vayada.test/hotels/alpenrose/logo.webp",
+      header_logo_media_object_id: "a1000000-0000-4000-8000-000000001217",
       hero_image: "https://cdn.vayada.test/hotels/alpenrose/hero.jpg",
       hero_heading: "Stay above the clouds",
       hero_subtext: "An independent alpine escape.",
@@ -226,7 +236,7 @@ describe("settingsService next-stack bootstrap data", () => {
     await expect(
       settingsService.updateDesignSettings(
         {
-          header_logo: "https://cdn.vayada.test/hotels/alpenrose/new-logo.webp",
+          header_logo_media_object_id: "a1000000-0000-4000-8000-000000001218",
           hero_image: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
           hero_heading: "Book the mountain directly",
           hero_subtext: "A quieter stay starts here.",
@@ -237,6 +247,7 @@ describe("settingsService next-stack bootstrap data", () => {
       ),
     ).resolves.toEqual({
       header_logo: "https://cdn.vayada.test/hotels/alpenrose/new-logo.webp",
+      header_logo_media_object_id: "a1000000-0000-4000-8000-000000001218",
       hero_image: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
       hero_heading: "Book the mountain directly",
       hero_subtext: "A quieter stay starts here.",
@@ -263,7 +274,7 @@ describe("settingsService next-stack bootstrap data", () => {
         path: "/api/booking/hotels/booking_hotel_alpenrose/settings/design",
         method: "PATCH",
         body: JSON.stringify({
-          headerLogo: "https://cdn.vayada.test/hotels/alpenrose/new-logo.webp",
+          headerLogoMediaObjectId: "a1000000-0000-4000-8000-000000001218",
           heroImage: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
           heroHeading: "Book the mountain directly",
           heroSubtext: "A quieter stay starts here.",

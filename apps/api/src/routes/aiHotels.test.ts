@@ -310,7 +310,8 @@ describe("target public hotel profile security", () => {
       primaryColor: "#3157D5",
       fontPairing: "grand-classic",
     });
-    expect(queries[0]?.text).toContain('booking_branding.header_logo_url AS "bookingHeaderLogo"');
+    expect(queries[0]?.text).toContain('booking_header_logo.public_cdn_url AS "bookingHeaderLogo"');
+    expect(queries[0]?.text).toContain("booking_branding.header_logo_media_object_id");
     expect(queries[0]?.text).toContain('booking_branding.hero_image_url AS "bookingHeroImage"');
     expect(queries[0]?.text).toContain('booking_branding.font_pairing AS "bookingFontPairing"');
     expect(queries[0]?.text).not.toContain("booking_branding.*");

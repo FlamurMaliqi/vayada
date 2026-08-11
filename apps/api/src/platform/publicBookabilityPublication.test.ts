@@ -129,7 +129,10 @@ describe("target public bookability publication", () => {
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'sellable_availability'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'payment_method'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
-      "COALESCE(media.item ->> 'type', media.item ->> 'mediaType') IS DISTINCT FROM 'logo'",
+      "NULLIF(BTRIM(media.item ->> 'type'), '')",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "NULLIF(BTRIM(media.item ->> 'mediaType'), '')",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
       "ELSE 'https://' || input.verified_hostname || '/' || input.locale",
@@ -374,7 +377,8 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
         publicLocationPropertyId,
         JSON.stringify([
           {
-            type: "logo",
+            type: "",
+            mediaType: " logo ",
             url: "https://cdn.vayada.test/property/logo.webp",
             altText: "Property logo",
           },

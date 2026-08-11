@@ -555,7 +555,7 @@ const TARGET_PUBLIC_PROFILE_SELECT = `SELECT
            profile.policies,
            profile.capabilities,
            profile.supported_quote_parameters AS "supportedQuoteParameters",
-           booking_branding.header_logo_url AS "bookingHeaderLogo",
+           booking_header_logo.public_cdn_url AS "bookingHeaderLogo",
            booking_branding.hero_image_url AS "bookingHeroImage",
            booking_branding.hero_heading AS "bookingHeroHeading",
            booking_branding.hero_subtext AS "bookingHeroSubtext",
@@ -572,7 +572,36 @@ const TARGET_PUBLIC_PROFILE_SELECT = `SELECT
            ON catalog_profile.property_id = profile.property_id
           AND catalog_profile.profile_status = 'complete'
          LEFT JOIN booking.booking_settings booking_branding
-           ON booking_branding.property_id = profile.property_id`;
+           ON booking_branding.property_id = profile.property_id
+         LEFT JOIN LATERAL (
+           SELECT variant.public_cdn_url
+           FROM platform.media_objects media
+           JOIN platform.media_variants variant
+             ON variant.media_object_id = media.id
+            AND variant.visibility = 'public'
+            AND variant.public_cdn_url LIKE 'https://%'
+           WHERE media.id = booking_branding.header_logo_media_object_id
+             AND media.purpose = 'booking.header_logo'
+             AND media.visibility = 'public'
+             AND media.public_approved = TRUE
+             AND media.lifecycle_status = 'active'
+             AND media.resource_product = 'booking'
+             AND media.resource_type = 'booking_hotel'
+             AND (
+               media.resource_id = profile.property_id::text
+               OR EXISTS (
+                 SELECT 1
+                 FROM hotel_catalog.property_source_links source_link
+                 WHERE source_link.property_id = profile.property_id
+                   AND source_link.source_system = 'booking'
+                   AND source_link.source_id = media.resource_id
+                   AND source_link.relationship = 'canonical_input'
+                   AND source_link.status = 'active'
+               )
+             )
+           ORDER BY (variant.variant_name = 'original_safe') DESC, variant.created_at, variant.id
+           LIMIT 1
+         ) booking_header_logo ON TRUE`;
 
 function toTargetPublicHotelProfileProjection(
   row: TargetPublicHotelProfileRow,

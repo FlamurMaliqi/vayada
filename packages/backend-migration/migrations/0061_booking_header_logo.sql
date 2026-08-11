@@ -33,9 +33,15 @@ AS $$
 $$;
 
 ALTER TABLE booking.booking_settings
-  ADD COLUMN header_logo_url TEXT;
+  ADD COLUMN header_logo_media_object_id UUID;
 
-COMMENT ON COLUMN booking.booking_settings.header_logo_url IS
-  'Nullable Booking-owned public CDN URL for the Booking Engine header. NULL preserves the property-name fallback.';
+ALTER TABLE booking.booking_settings
+  ADD CONSTRAINT fk_booking_settings_header_logo_media_object
+  FOREIGN KEY (header_logo_media_object_id)
+  REFERENCES platform.media_objects(id)
+  ON DELETE SET NULL;
+
+COMMENT ON COLUMN booking.booking_settings.header_logo_media_object_id IS
+  'Nullable validated Booking-owned platform media reference for the Booking Engine header. NULL preserves the property-name fallback.';
 
 COMMIT;

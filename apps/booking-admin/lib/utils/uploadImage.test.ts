@@ -55,6 +55,7 @@ describe("uploadImages", () => {
       return jsonResponse({
         mediaObjects: [
           {
+            mediaId: "a1000000-0000-4000-8000-000000000001",
             storageKey: "media/room.jpg",
             variants: [{ publicCdnUrl: "https://cdn.vayada.com/media/room.jpg" }],
           },
@@ -145,6 +146,7 @@ describe("uploadImages", () => {
       return jsonResponse({
         mediaObjects: [
           {
+            mediaId: "a1000000-0000-4000-8000-000000000002",
             variants: [{ publicCdnUrl: "https://cdn.vayada.com/media/room.jpg" }],
           },
         ],
@@ -166,7 +168,7 @@ describe("uploadImages", () => {
   it("uploads a Booking-owned SVG header logo without a Catalog profile revision", async () => {
     vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
     const { setAuthKitSession } = await import("@/services/auth/sessionStore");
-    const { uploadSingleImage } = await import("./uploadImage");
+    const { uploadSingleImageWithMediaReference } = await import("./uploadImage");
     setAuthKitSession({
       accessToken: "authkit-token",
       resources: { "booking:booking_hotel": ["booking_hotel_alpenrose"] },
@@ -209,6 +211,7 @@ describe("uploadImages", () => {
       return jsonResponse({
         mediaObjects: [
           {
+            mediaId: "a1000000-0000-4000-8000-000000001218",
             variants: [
               { publicCdnUrl: "https://cdn.vayada.com/media/header-logo/original_safe.webp" },
             ],
@@ -219,12 +222,15 @@ describe("uploadImages", () => {
     vi.stubGlobal("fetch", fetch);
 
     await expect(
-      uploadSingleImage(
+      uploadSingleImageWithMediaReference(
         new File(["<svg/>"], "wordmark.svg"),
         "booking.header_logo",
         "booking_hotel_alpenrose",
       ),
-    ).resolves.toBe("https://cdn.vayada.com/media/header-logo/original_safe.webp");
+    ).resolves.toEqual({
+      mediaObjectId: "a1000000-0000-4000-8000-000000001218",
+      publicUrl: "https://cdn.vayada.com/media/header-logo/original_safe.webp",
+    });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -241,7 +247,15 @@ describe("uploadImages", () => {
       "fetch",
       vi.fn(async (url: string) =>
         url.endsWith("/finalize")
-          ? jsonResponse({ mediaObjects: [{ storageKey: "media/hero.jpg", variants: [] }] })
+          ? jsonResponse({
+              mediaObjects: [
+                {
+                  mediaId: "a1000000-0000-4000-8000-000000000003",
+                  storageKey: "media/hero.jpg",
+                  variants: [],
+                },
+              ],
+            })
           : jsonResponse({
               uploadSession: { sessionId: "session_1" },
               uploadTargets: [

@@ -604,7 +604,10 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         )))
         FROM jsonb_array_elements(input.media) media(item)
         WHERE NULLIF(media.item ->> 'url', '') IS NOT NULL
-          AND COALESCE(media.item ->> 'type', media.item ->> 'mediaType') IS DISTINCT FROM 'logo'
+          AND lower(COALESCE(
+            NULLIF(BTRIM(media.item ->> 'type'), ''),
+            NULLIF(BTRIM(media.item ->> 'mediaType'), '')
+          )) IS DISTINCT FROM 'logo'
       ), '[]'::jsonb),
       input.amenities,
       jsonb_strip_nulls(jsonb_build_object(

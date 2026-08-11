@@ -93,6 +93,7 @@ export type PropertySettingsUpdate = Partial<PropertySettings>;
 
 export interface DesignSettings {
   header_logo: string;
+  header_logo_media_object_id: string | null;
   hero_image: string;
   hero_heading: string;
   hero_subtext: string;
@@ -104,6 +105,7 @@ export type DesignSettingsUpdate = Partial<DesignSettings>;
 
 type BookingDesignSettings = {
   headerLogo: string;
+  headerLogoMediaObjectId: string | null;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -116,6 +118,7 @@ type BookingDesignSettingsUpdate = Partial<BookingDesignSettings>;
 function toDesignSettings(branding: BookingDesignSettings): DesignSettings {
   return {
     header_logo: branding.headerLogo,
+    header_logo_media_object_id: branding.headerLogoMediaObjectId,
     hero_image: branding.heroImage,
     hero_heading: branding.heroHeading,
     hero_subtext: branding.heroSubtext,
@@ -126,7 +129,7 @@ function toDesignSettings(branding: BookingDesignSettings): DesignSettings {
 
 function toBrandingDesignUpdate(data: DesignSettingsUpdate): BookingDesignSettingsUpdate {
   return {
-    headerLogo: data.header_logo,
+    headerLogoMediaObjectId: data.header_logo_media_object_id,
     heroImage: data.hero_image,
     heroHeading: data.hero_heading,
     heroSubtext: data.hero_subtext,
