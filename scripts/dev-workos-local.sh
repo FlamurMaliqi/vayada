@@ -210,9 +210,9 @@ export AUTH_MARKETPLACE_WEB_ORIGIN="$MARKETPLACE_ORIGIN"
 export AUTH_BOOKING_ADMIN_ORIGIN="$BOOKING_ADMIN_ORIGIN"
 export AUTH_PMS_WEB_ORIGIN="$PMS_ORIGIN"
 export AUTH_AFFILIATE_DASHBOARD_ORIGIN="$AFFILIATE_ORIGIN"
-# Marketplace, Booking Admin, PMS, and Affiliate ship first-party gateways in VAY-1197–1200.
+# All five browser surfaces ship first-party gateways in VAY-1197–1201.
 # An explicit empty override still restores the direct API-host compatibility transport.
-export AUTH_FIRST_PARTY_SURFACES="${AUTH_FIRST_PARTY_SURFACES-marketplace-web,booking-admin,pms-web,affiliate-dashboard}"
+export AUTH_FIRST_PARTY_SURFACES="${AUTH_FIRST_PARTY_SURFACES-marketplace-web,booking-admin,pms-web,affiliate-dashboard,platform-admin}"
 export AUTH_BOOKING_ADMIN_LOGOUT_URL="${AUTH_BOOKING_ADMIN_LOGOUT_URL:-${BOOKING_ADMIN_ORIGIN}/login}"
 export AUTH_PMS_WEB_LOGOUT_URL="${AUTH_PMS_WEB_LOGOUT_URL:-${PMS_ORIGIN}/login}"
 export AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL="${AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL:-${AFFILIATE_ORIGIN}/login}"
