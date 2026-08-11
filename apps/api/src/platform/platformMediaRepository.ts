@@ -52,6 +52,7 @@ type CollaborationTargetRow = { collaborationId: string; propertyId: string };
 
 const supportedPurposes = new Set([
   "identity.user.profile_image",
+  "booking.header_logo",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",

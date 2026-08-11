@@ -9,7 +9,7 @@ const PLATFORM_MEDIA_API_BASE_URL =
   process.env.NEXT_PUBLIC_AUTH_API_URL ||
   "https://api.localhost";
 
-type BookingMediaPurpose = "property.hero_image" | "property.gallery_image";
+type BookingMediaPurpose = "property.hero_image" | "property.gallery_image" | "booking.header_logo";
 
 type UploadTarget = {
   uploadTargetId: string;
@@ -26,16 +26,22 @@ type UploadSessionResponse = {
 
 type FinalizeResponse = {
   mediaObjects: Array<{
+    mediaId: string;
     variants: Array<{ publicCdnUrl: string | null; storageKey: string }>;
   }>;
 };
 
-export async function uploadImages(
+export type UploadedImage = {
+  mediaObjectId: string;
+  publicUrl: string;
+};
+
+async function uploadImageRecords(
   files: File | File[],
   purpose: BookingMediaPurpose = "property.gallery_image",
   explicitBookingHotelId?: string,
   expectedProfileRevision?: number,
-): Promise<string[]> {
+): Promise<UploadedImage[]> {
   const fileList = Array.isArray(files) ? files : [files];
   if (fileList.length === 0) return [];
 
@@ -62,7 +68,7 @@ export async function uploadImages(
       files: fileList.map((file, index) => ({
         clientFileId: `file_${index + 1}`,
         filename: file.name || `booking-image-${index + 1}.jpg`,
-        contentType: file.type || "image/jpeg",
+        contentType: uploadContentType(file),
         sizeBytes: file.size,
       })),
     }),
@@ -96,7 +102,7 @@ export async function uploadImages(
           const file = fileList[index]!;
           return {
             uploadTargetId: target.uploadTargetId,
-            contentType: file.type || "image/jpeg",
+            contentType: uploadContentType(file),
             sizeBytes: file.size,
           };
         }),
@@ -107,12 +113,28 @@ export async function uploadImages(
   if (!finalized.ok) throw new Error(await readMediaError(finalized, "Upload finalize failed"));
   const finalizedBody = (await finalized.json()) as FinalizeResponse;
   return finalizedBody.mediaObjects.map((mediaObject) => {
+    if (!mediaObject.mediaId) throw new Error("Platform media did not return a media object ID");
     const publicUrl = mediaObject.variants.find((variant) =>
       variant.publicCdnUrl?.startsWith("https://"),
     )?.publicCdnUrl;
     if (!publicUrl) throw new Error("Platform media did not return a public HTTPS image URL");
-    return publicUrl;
+    return { mediaObjectId: mediaObject.mediaId, publicUrl };
   });
+}
+
+export async function uploadImages(
+  files: File | File[],
+  purpose: BookingMediaPurpose = "property.gallery_image",
+  explicitBookingHotelId?: string,
+  expectedProfileRevision?: number,
+): Promise<string[]> {
+  const images = await uploadImageRecords(
+    files,
+    purpose,
+    explicitBookingHotelId,
+    expectedProfileRevision,
+  );
+  return images.map(({ publicUrl }) => publicUrl);
 }
 
 export async function uploadSingleImage(
@@ -124,6 +146,16 @@ export async function uploadSingleImage(
   const urls = await uploadImages(file, purpose, explicitBookingHotelId, expectedProfileRevision);
   if (!urls[0]) throw new Error("No image URL returned");
   return urls[0];
+}
+
+export async function uploadSingleImageWithMediaReference(
+  file: File,
+  purpose: BookingMediaPurpose,
+  explicitBookingHotelId?: string,
+): Promise<UploadedImage> {
+  const images = await uploadImageRecords(file, purpose, explicitBookingHotelId);
+  if (!images[0]) throw new Error("No image returned");
+  return images[0];
 }
 
 function validateExpectedProfileRevision(
@@ -140,6 +172,13 @@ function validateExpectedProfileRevision(
     throw new Error("A valid property profile revision is required for hero image uploads.");
   }
   return expectedProfileRevision;
+}
+
+function uploadContentType(file: File): string {
+  if (file.type) return file.type;
+  if (/\.svg$/i.test(file.name)) return "image/svg+xml";
+  if (/\.png$/i.test(file.name)) return "image/png";
+  return "image/jpeg";
 }
 
 function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {
