@@ -33,14 +33,17 @@ jobs:
       - name: Architecture boundaries
         run: npm run check:architecture-boundaries
 
-      - name: Booking Web tests
-        run: npm --workspace vayada-booking-engine-frontend run test
-
       - name: Typecheck
         run: npm run typecheck
 
       - name: Lint
         run: npm run lint
+
+      - name: Booking Admin tests
+        run: npm --workspace vayada-booking-engine-frontend-admin run test
+
+      - name: Booking Web tests
+        run: npm --workspace vayada-booking-engine-frontend run test
 
       - name: Build
         run: npm run build

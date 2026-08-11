@@ -69,8 +69,8 @@ describe("PropertyGallery", () => {
     const trigger = button("View photos (2)");
     act(() => trigger.click());
 
-    const close = button("Close property gallery");
-    const next = button("Next property photo");
+    const close = button("Close our photo gallery");
+    const next = button("Next photo of our property");
     expect(document.activeElement).toBe(close);
 
     act(() => {

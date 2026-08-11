@@ -9,7 +9,11 @@ import { publishPublicBookabilityProfile } from "@/services/api/publicBookabilit
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/branding";
 import { FeedbackAlert, SaveButton } from "@/components/ui";
-import { uploadPropertyGalleryImages, uploadSingleImage } from "@/lib/utils/uploadImage";
+import {
+  MAX_PROPERTY_GALLERY_PHOTOS,
+  uploadPropertyGalleryImages,
+  uploadSingleImage,
+} from "@/lib/utils/uploadImage";
 import { generateColorPalette } from "@/lib/utils/colors";
 import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
 
@@ -43,12 +47,15 @@ export default function DesignStudioPage() {
   const [propertyPhone, setPropertyPhone] = useState("");
   const [propertyEmail, setPropertyEmail] = useState("");
   const [galleryImages, setGalleryImages] = useState<PropertyGalleryImage[]>([]);
+  const [galleryOverflowCount, setGalleryOverflowCount] = useState(0);
   const [galleryBusy, setGalleryBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const designHotelIdRef = useRef<string | null>(null);
   const propertyIdRef = useRef<string | null>(null);
   const profileRevisionRef = useRef<number | null>(null);
   const galleryOverflowRef = useRef<PropertyGalleryImage[]>([]);
+  const galleryWriteInFlightRef = useRef(false);
+  const pendingGalleryPreviewUrlsRef = useRef(new Set<string>());
   const coverAssignmentRef = useRef<{
     mediaObjectId: string;
     altText: string | null;
@@ -81,8 +88,11 @@ export default function DesignStudioPage() {
       const gallery = media
         .filter(({ mediaType }) => mediaType === "gallery_image")
         .map(({ mediaObjectId, url, altText }) => ({ mediaObjectId, url, altText }));
-      setGalleryImages(gallery.slice(0, 10));
-      galleryOverflowRef.current = gallery.slice(10);
+      setGalleryImages(gallery.slice(0, MAX_PROPERTY_GALLERY_PHOTOS));
+      galleryOverflowRef.current = gallery.slice(MAX_PROPERTY_GALLERY_PHOTOS);
+      setGalleryOverflowCount(galleryOverflowRef.current.length);
+      pendingGalleryPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      pendingGalleryPreviewUrlsRef.current.clear();
     },
     [],
   );
@@ -94,6 +104,26 @@ export default function DesignStudioPage() {
       ...galleryOverflowRef.current.filter(({ mediaObjectId }) => !visibleIds.has(mediaObjectId)),
     ];
   };
+
+  const beginGalleryWrite = () => {
+    if (galleryWriteInFlightRef.current) return false;
+    galleryWriteInFlightRef.current = true;
+    setGalleryBusy(true);
+    return true;
+  };
+
+  const endGalleryWrite = () => {
+    galleryWriteInFlightRef.current = false;
+    setGalleryBusy(false);
+  };
+
+  useEffect(
+    () => () => {
+      pendingGalleryPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      pendingGalleryPreviewUrlsRef.current.clear();
+    },
+    [],
+  );
 
   // Mirror the live booking engine's palette onto the preview pane so the
   // preview renders with the same shade tokens (bg-primary-600 for CTAs,
@@ -281,8 +311,11 @@ export default function DesignStudioPage() {
 
   const addGalleryImages = async (files: File[]) => {
     const propertyId = propertyIdRef.current;
-    if (!propertyId || galleryBusy || files.length === 0) return;
-    const remaining = Math.max(0, 10 - galleryImages.length);
+    if (!propertyId || files.length === 0) return;
+    const remaining = Math.max(
+      0,
+      MAX_PROPERTY_GALLERY_PHOTOS - galleryImages.length - galleryOverflowRef.current.length,
+    );
     if (files.length > remaining) {
       setFeedback({
         type: "error",
@@ -294,10 +327,11 @@ export default function DesignStudioPage() {
       setFeedback({ type: "error", message: "Gallery photos must be JPG, PNG, or WebP files." });
       return;
     }
+    if (!beginGalleryWrite()) return;
 
-    setGalleryBusy(true);
     setFeedback(null);
     const previewUrls = files.map((file) => URL.createObjectURL(file));
+    previewUrls.forEach((url) => pendingGalleryPreviewUrlsRef.current.add(url));
     try {
       const mediaObjectIds = await uploadPropertyGalleryImages(files, propertyId);
       const nextGallery = [
@@ -310,26 +344,31 @@ export default function DesignStudioPage() {
       ];
       setGalleryImages(nextGallery);
       const { published, refreshed } = await persistGallery(nextGallery);
-      if (refreshed) previewUrls.forEach(URL.revokeObjectURL);
+      if (refreshed) {
+        previewUrls.forEach((url) => pendingGalleryPreviewUrlsRef.current.delete(url));
+      }
       if (published) setFeedback({ type: "success", message: "Property gallery updated" });
     } catch (error) {
-      previewUrls.forEach(URL.revokeObjectURL);
+      previewUrls.forEach((url) => {
+        URL.revokeObjectURL(url);
+        pendingGalleryPreviewUrlsRef.current.delete(url);
+      });
       await refreshCanonicalGallery().catch(() => undefined);
       setFeedback({
         type: "error",
         message: error instanceof Error ? error.message : "Gallery upload failed. Try again.",
       });
     } finally {
-      setGalleryBusy(false);
+      endGalleryWrite();
     }
   };
 
   const removeGalleryImage = async (index: number) => {
-    if (galleryBusy) return;
+    if (!window.confirm("Remove this photo from the property gallery?")) return;
+    if (!beginGalleryWrite()) return;
     const previous = galleryImages;
     const nextGallery = previous.filter((_, photoIndex) => photoIndex !== index);
     setGalleryImages(nextGallery);
-    setGalleryBusy(true);
     setFeedback(null);
     try {
       const { published } = await persistGallery(nextGallery);
@@ -342,19 +381,21 @@ export default function DesignStudioPage() {
         message: error instanceof Error ? error.message : "Photo could not be removed.",
       });
     } finally {
-      setGalleryBusy(false);
+      endGalleryWrite();
     }
   };
 
   const reorderGalleryImage = async (sourceIndex: number, targetIndex: number) => {
-    if (galleryBusy || sourceIndex === targetIndex) return;
+    if (sourceIndex === targetIndex || !beginGalleryWrite()) return;
     const previous = galleryImages;
     const nextGallery = [...previous];
     const [moved] = nextGallery.splice(sourceIndex, 1);
-    if (!moved) return;
+    if (!moved) {
+      endGalleryWrite();
+      return;
+    }
     nextGallery.splice(targetIndex, 0, moved);
     setGalleryImages(nextGallery);
-    setGalleryBusy(true);
     setFeedback(null);
     try {
       const { published } = await persistGallery(nextGallery);
@@ -367,7 +408,7 @@ export default function DesignStudioPage() {
         message: error instanceof Error ? error.message : "Gallery order could not be saved.",
       });
     } finally {
-      setGalleryBusy(false);
+      endGalleryWrite();
     }
   };
 
@@ -519,6 +560,9 @@ export default function DesignStudioPage() {
                 removeHeroImage={removeHeroImage}
                 resetContent={resetContent}
                 galleryImages={galleryImages}
+                galleryAtCapacity={
+                  galleryImages.length + galleryOverflowCount >= MAX_PROPERTY_GALLERY_PHOTOS
+                }
                 galleryBusy={galleryBusy}
                 addGalleryImages={addGalleryImages}
                 removeGalleryImage={removeGalleryImage}

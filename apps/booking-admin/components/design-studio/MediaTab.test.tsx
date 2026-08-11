@@ -18,6 +18,7 @@ function renderMediaTab(galleryImages: PropertyGalleryImage[]) {
       removeHeroImage={vi.fn()}
       resetContent={vi.fn()}
       galleryImages={galleryImages}
+      galleryAtCapacity={galleryImages.length >= 10}
       galleryBusy={false}
       addGalleryImages={vi.fn()}
       removeGalleryImage={vi.fn()}
@@ -55,6 +56,10 @@ describe("MediaTab property gallery", () => {
     expect(markup.match(/COVER/g)).toHaveLength(1);
     expect(markup).toContain("Remove property photo 1");
     expect(markup).toContain("Remove property photo 2");
+    expect(markup).toContain("Move property photo 1 earlier");
+    expect(markup).toContain("Move property photo 1 later");
+    expect(markup).toContain("Move property photo 2 earlier");
+    expect(markup).toContain("Move property photo 2 later");
     expect(markup).toContain(">Add<");
   });
 });

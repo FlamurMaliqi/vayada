@@ -91,11 +91,11 @@
     "soldOut": "Sold Out",
     "gallery": {
       "viewPhotos": "View photos ({count})",
-      "dialogLabel": "{hotelName} property gallery",
-      "close": "Close property gallery",
-      "photoAlt": "{hotelName} property photo {index}",
-      "previous": "Previous property photo",
-      "next": "Next property photo"
+      "dialogLabel": "Our photo gallery for {hotelName}",
+      "close": "Close our photo gallery",
+      "photoAlt": "Our photo {index} of {hotelName}",
+      "previous": "Previous photo of our property",
+      "next": "Next photo of our property"
     },
     "calendar": {
       "checkingAvailability": "Checking availability",

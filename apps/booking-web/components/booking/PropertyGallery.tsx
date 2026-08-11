@@ -16,9 +16,14 @@ type PropertyGalleryProps = {
   images: string[];
 };
 
+const MAX_PROPERTY_GALLERY_PHOTOS = 10;
+
 export default function PropertyGallery({ hotelName, images }: PropertyGalleryProps) {
   const t = useTranslations("home.gallery");
-  const galleryImages = Array.from(new Set(images.filter(Boolean))).slice(0, 10);
+  const galleryImages = Array.from(new Set(images.filter(Boolean))).slice(
+    0,
+    MAX_PROPERTY_GALLERY_PHOTOS,
+  );
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
   const triggerRef = useRef<HTMLButtonElement>(null);

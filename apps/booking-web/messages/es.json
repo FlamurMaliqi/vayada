@@ -91,11 +91,11 @@
     "soldOut": "Agotado",
     "gallery": {
       "viewPhotos": "Ver fotos ({count})",
-      "dialogLabel": "Galería de {hotelName}",
-      "close": "Cerrar la galería",
-      "photoAlt": "Foto {index} de {hotelName}",
-      "previous": "Foto anterior del alojamiento",
-      "next": "Siguiente foto del alojamiento"
+      "dialogLabel": "Nuestra galería de {hotelName}",
+      "close": "Cerrar nuestra galería",
+      "photoAlt": "Nuestra foto {index} de {hotelName}",
+      "previous": "Foto anterior de nuestro alojamiento",
+      "next": "Siguiente foto de nuestro alojamiento"
     },
     "calendar": {
       "checkingAvailability": "Comprobando disponibilidad",

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,22 +28,25 @@ describe("public bookability gallery media migration contract", () => {
 describe.skipIf(!TEST_DATABASE_URL)(
   "public bookability gallery media migration (PostgreSQL)",
   () => {
-    let client: pg.Client;
+    let client: pg.Client | undefined;
+    let catalogSchema = "";
+    let distributionSchema = "";
 
     beforeEach(async () => {
       assertSafeTestDatabase(TEST_DATABASE_URL!);
+      const suffix = randomUUID().replaceAll("-", "");
+      catalogSchema = `gallery_media_catalog_${suffix}`;
+      distributionSchema = `gallery_media_distribution_${suffix}`;
       client = new pg.Client({ connectionString: TEST_DATABASE_URL });
       await client.connect();
       await client.query(`
-      DROP SCHEMA IF EXISTS distribution CASCADE;
-      DROP SCHEMA IF EXISTS hotel_catalog CASCADE;
-      CREATE SCHEMA hotel_catalog;
-      CREATE SCHEMA distribution;
-      CREATE TABLE hotel_catalog.property_public_profile_read_model (
+      CREATE SCHEMA ${catalogSchema};
+      CREATE SCHEMA ${distributionSchema};
+      CREATE TABLE ${catalogSchema}.property_public_profile_read_model (
         property_id UUID PRIMARY KEY,
         media JSONB NOT NULL
       );
-      CREATE TABLE distribution.public_hotel_bookability_profiles (
+      CREATE TABLE ${distributionSchema}.public_hotel_bookability_profiles (
         property_id UUID PRIMARY KEY,
         media JSONB NOT NULL,
         projected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -53,10 +57,13 @@ describe.skipIf(!TEST_DATABASE_URL)(
 
     afterEach(async () => {
       try {
-        await client.query("DROP SCHEMA IF EXISTS distribution CASCADE");
-        await client.query("DROP SCHEMA IF EXISTS hotel_catalog CASCADE");
+        if (client) {
+          await client.query(`DROP SCHEMA IF EXISTS ${distributionSchema} CASCADE`);
+          await client.query(`DROP SCHEMA IF EXISTS ${catalogSchema} CASCADE`);
+        }
       } finally {
-        await client.end();
+        await client?.end();
+        client = undefined;
       }
     });
 
@@ -70,26 +77,37 @@ describe.skipIf(!TEST_DATABASE_URL)(
           altText: index === 0 ? "Pool at sunset" : null,
         })),
       ];
-      await client.query(
-        `INSERT INTO hotel_catalog.property_public_profile_read_model (property_id, media)
+      await client!.query(
+        `INSERT INTO ${catalogSchema}.property_public_profile_read_model (property_id, media)
        VALUES ('30000000-0000-4000-8000-000000000001', $1::jsonb)`,
         [JSON.stringify(canonicalMedia)],
       );
-      await client.query(
-        `INSERT INTO distribution.public_hotel_bookability_profiles (property_id, media)
+      await client!.query(
+        `INSERT INTO ${distributionSchema}.public_hotel_bookability_profiles (property_id, media)
        VALUES (
          '30000000-0000-4000-8000-000000000001',
          '[{"url":"legacy-hero.webp"},{"url":"legacy-gallery.webp"}]'::jsonb
-       )`,
+        )`,
       );
 
-      await client.query(migration);
-      await client.query(migration);
-
-      const result = await client.query<{ media: Array<Record<string, string>> }>(
-        `SELECT media FROM distribution.public_hotel_bookability_profiles
+      const fixtureMigration = migration
+        .replaceAll("hotel_catalog.", `${catalogSchema}.`)
+        .replaceAll("distribution.", `${distributionSchema}.`);
+      await client!.query(fixtureMigration);
+      const afterFirstRun = await client!.query<{ xmin: string }>(
+        `SELECT xmin::text AS xmin FROM ${distributionSchema}.public_hotel_bookability_profiles
        WHERE property_id = '30000000-0000-4000-8000-000000000001'`,
       );
+      await client!.query(fixtureMigration);
+
+      const result = await client!.query<{
+        media: Array<Record<string, string>>;
+        xmin: string;
+      }>(
+        `SELECT media, xmin::text AS xmin FROM ${distributionSchema}.public_hotel_bookability_profiles
+       WHERE property_id = '30000000-0000-4000-8000-000000000001'`,
+      );
+      expect(result.rows[0]?.xmin).toBe(afterFirstRun.rows[0]?.xmin);
       expect(result.rows[0]?.media).toHaveLength(10);
       expect(result.rows[0]?.media[0]).toEqual({
         type: "gallery_image",

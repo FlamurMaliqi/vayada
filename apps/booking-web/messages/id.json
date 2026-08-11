@@ -91,11 +91,11 @@
     "soldOut": "Habis Terjual",
     "gallery": {
       "viewPhotos": "Lihat foto ({count})",
-      "dialogLabel": "Galeri properti {hotelName}",
-      "close": "Tutup galeri properti",
-      "photoAlt": "Foto properti {hotelName} {index}",
-      "previous": "Foto properti sebelumnya",
-      "next": "Foto properti berikutnya"
+      "dialogLabel": "Galeri foto kami untuk {hotelName}",
+      "close": "Tutup galeri foto kami",
+      "photoAlt": "Foto kami {index} untuk {hotelName}",
+      "previous": "Foto properti kami sebelumnya",
+      "next": "Foto properti kami berikutnya"
     },
     "calendar": {
       "checkingAvailability": "Memeriksa ketersediaan",

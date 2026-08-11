@@ -134,6 +134,13 @@ Response shape:
       "longitude": 11.4041
     },
     "summary": "Independent alpine hotel near the old town.",
+    "branding": {
+      "heroImage": "https://cdn.vayada.example/hotels/alpenrose/booking-hero.jpg",
+      "heroHeading": "Stay above the clouds",
+      "heroSubtext": "Book direct for our best available rates.",
+      "primaryColor": "#3157D5",
+      "fontPairing": "grand-classic"
+    },
     "images": [
       {
         "url": "https://cdn.vayada.example/hotels/alpenrose/front.jpg",

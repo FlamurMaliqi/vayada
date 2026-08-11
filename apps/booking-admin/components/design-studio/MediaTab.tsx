@@ -2,12 +2,14 @@
 
 import { type RefObject, useRef, useState } from "react";
 import {
-  Bars3Icon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   PhotoIcon,
   PlusIcon,
   XMarkIcon,
   ArrowPathIcon,
 } from "@heroicons/react/24/outline";
+import { MAX_PROPERTY_GALLERY_PHOTOS } from "@/lib/utils/uploadImage";
 
 export type PropertyGalleryImage = {
   mediaObjectId: string;
@@ -27,6 +29,7 @@ interface MediaTabProps {
   removeHeroImage: () => void;
   resetContent: () => void;
   galleryImages: PropertyGalleryImage[];
+  galleryAtCapacity: boolean;
   galleryBusy: boolean;
   addGalleryImages: (files: File[]) => void;
   removeGalleryImage: (index: number) => void;
@@ -51,6 +54,7 @@ export default function MediaTab({
   removeHeroImage,
   resetContent,
   galleryImages,
+  galleryAtCapacity,
   galleryBusy,
   addGalleryImages,
   removeGalleryImage,
@@ -62,7 +66,8 @@ export default function MediaTab({
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const [draggingPhoto, setDraggingPhoto] = useState<number | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
-  const canAddGalleryImages = galleryImages.length < 10 && !galleryBusy;
+  const canAddGalleryImages =
+    !galleryAtCapacity && galleryImages.length < MAX_PROPERTY_GALLERY_PHOTOS && !galleryBusy;
 
   const chooseGalleryFiles = (files: FileList | null) => {
     if (!files || !canAddGalleryImages) return;
@@ -182,7 +187,7 @@ export default function MediaTab({
             </p>
           </div>
           <span className="shrink-0 text-[11px] font-medium tabular-nums text-gray-400">
-            {galleryImages.length}/10
+            {galleryImages.length}/{MAX_PROPERTY_GALLERY_PHOTOS}
           </span>
         </div>
 
@@ -222,12 +227,26 @@ export default function MediaTab({
               >
                 <XMarkIcon className="h-3.5 w-3.5" />
               </button>
-              <span
-                aria-hidden
-                className="absolute bottom-1.5 right-1.5 flex h-6 w-6 cursor-grab items-center justify-center rounded bg-gray-950/65 text-white opacity-0 transition group-hover:opacity-100"
-              >
-                <Bars3Icon className="h-3.5 w-3.5" />
-              </span>
+              <div className="absolute bottom-1.5 right-1.5 flex overflow-hidden rounded bg-gray-950/75 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100">
+                <button
+                  type="button"
+                  onClick={() => reorderGalleryImage(index, index - 1)}
+                  disabled={galleryBusy || index === 0}
+                  aria-label={`Move property photo ${index + 1} earlier`}
+                  className="flex h-7 w-7 items-center justify-center text-white transition hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeftIcon className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => reorderGalleryImage(index, index + 1)}
+                  disabled={galleryBusy || index === galleryImages.length - 1}
+                  aria-label={`Move property photo ${index + 1} later`}
+                  className="flex h-7 w-7 items-center justify-center text-white transition hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronRightIcon className="h-4 w-4" />
+                </button>
+              </div>
             </div>
           ))}
 
