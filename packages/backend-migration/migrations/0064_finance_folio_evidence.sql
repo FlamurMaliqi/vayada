@@ -166,7 +166,5 @@ CREATE TRIGGER trg_finance_folio_payment_refs_protect_truncate
 BEFORE TRUNCATE ON finance.folio_payment_references
 FOR EACH STATEMENT EXECUTE FUNCTION finance.protect_folio_evidence();
 
-CREATE INDEX idx_finance_folio_lines_revision
-  ON finance.folio_lines (folio_revision_id, position);
 CREATE INDEX idx_finance_folio_payment_refs_payment
   ON finance.folio_payment_references (payment_id, property_id);
