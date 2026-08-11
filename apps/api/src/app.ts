@@ -2,6 +2,7 @@ import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backen
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
 import type { BookingPublicationCommandPort } from "@vayada/domain-booking";
+import type { FinanceSubscriptionService } from "@vayada/domain-finance";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -139,6 +140,7 @@ import {
   type FinanceXenditBankValidator,
   type PmsFinanceCompatibilityRoutesOptions,
 } from "./routes/finance.js";
+import { registerFinanceSubscriptionRoutes } from "./routes/financeSubscriptions.js";
 import {
   registerAffiliateDashboardRoutes,
   type AffiliateDashboardReadRepository,
@@ -252,6 +254,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingWebPublicNow?: BookingWebPublicRoutesOptions["now"];
   affiliateDashboardRepository?: Partial<AffiliateDashboardReadRepository>;
   financeRepository?: FinanceRoutesOptions["repository"];
+  financeSubscriptionService?: FinanceSubscriptionService;
   pmsFinanceCompatibilityRepository?: PmsFinanceCompatibilityRoutesOptions["repository"];
   financeXenditBankValidator?: FinanceXenditBankValidator;
   financePublicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -555,6 +558,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsFinanceCompatibilityRoutes, {
       prefix: "/api",
       repository: options.pmsFinanceCompatibilityRepository,
+    });
+  }
+  if (options.financeSubscriptionService) {
+    app.register(registerFinanceSubscriptionRoutes, {
+      prefix: "/api",
+      service: options.financeSubscriptionService,
     });
   }
   if (options.platformContactIntake) {
