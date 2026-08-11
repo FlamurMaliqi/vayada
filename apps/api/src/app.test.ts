@@ -5872,9 +5872,14 @@ describe("vayada-api", () => {
   it("serves booking reservations from the target read model without the legacy PMS URL", async () => {
     const queries: { text: string; values?: readonly unknown[] }[] = [];
     let poolClosed = false;
-    const targetReservation: BookingReservationReadModelRow = {
+    const targetReservation: BookingReservationReadModelRow & {
+      propertyId: string;
+      guestContactAccepted: boolean;
+    } = {
       ...reservation,
       id: "d6000000-0000-0000-0000-000000000682",
+      propertyId: "d3000000-0000-0000-0000-000000000682",
+      guestContactAccepted: false,
       bookingReference: "B-CHK-682",
       roomTypeId: "f6855000-0000-0000-0000-000000000001",
       roomName: "Alpine Suite",
@@ -5920,7 +5925,10 @@ describe("vayada-api", () => {
         values?: readonly unknown[],
       ): Promise<Pick<QueryResult<T>, "rows">> {
         queries.push({ text, values });
-        if (text.includes("COUNT(*)")) {
+        if (text.includes("SELECT plan_key AS plan")) {
+          return { rows: [{ plan: "fixed" }] as unknown as T[] };
+        }
+        if (text.includes("SELECT COUNT(*)::text AS total")) {
           return { rows: [{ total: "1" }] as unknown as T[] };
         }
 
@@ -6004,7 +6012,7 @@ describe("vayada-api", () => {
       offset: 5,
     });
 
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(3);
     const sql = queries.map((query) => query.text).join("\n");
     expect(sql).toContain("FROM booking.guest_bookings booking");
     expect(sql).toContain("hotel_catalog.property_source_links source");
@@ -6029,6 +6037,8 @@ describe("vayada-api", () => {
       "checked_out",
       "%Mira%",
     ]);
+    expect(queries[2]?.text).toContain("FROM finance.billing_entitlements");
+    expect(queries[2]?.values).toEqual(["d3000000-0000-0000-0000-000000000682"]);
 
     await app.close();
     app = null;
@@ -8001,7 +8011,7 @@ describe("vayada-api", () => {
             rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
           };
         }
-        if (text.includes("FROM finance.billing_entitlements")) {
+        if (text.includes("SELECT plan_key AS plan")) {
           return { rows: [] as T[] };
         }
         return {
@@ -10807,6 +10817,16 @@ describe("vayada-api", () => {
         values?: unknown[],
       ): Promise<QueryResult<T>> {
         queries.push({ text, values });
+        if (text.includes("FROM finance.billing_entitlements")) {
+          expect(values).toEqual([pmsPropertyId]);
+          return {
+            command: "SELECT",
+            rowCount: 1,
+            oid: 0,
+            fields: [],
+            rows: [{ plan: "fixed" }] as unknown as T[],
+          };
+        }
         const isCountQuery = text.includes("COUNT(*)::text AS total");
         if (isCountQuery) {
           expect(values).toEqual([pmsPropertyId, "no_show"]);
@@ -10844,7 +10864,7 @@ describe("vayada-api", () => {
     });
 
     expect(result).toMatchObject({ items: [], total: 0 });
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(3);
   });
 
   it("builds PMS calendar reservation overlap queries without arrival pagination", async () => {

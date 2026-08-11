@@ -91,7 +91,7 @@ import pg, { type QueryResult, type QueryResultRow } from "pg";
 import {
   BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
   guestContactForPropertyPlan,
-  propertyAlwaysHasGuestContactSql,
+  PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL,
 } from "../domains/bookingGuestContactAccess.js";
 import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 import { enqueueBookingLifecycleEmailJob } from "../jobs/bookingEmails.js";
@@ -4687,7 +4687,7 @@ async function loadInvoiceRows(
          guest.email AS "guestEmail",
          guest.phone AS "guestPhone",
          ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
-         ${propertyAlwaysHasGuestContactSql("booking.property_id")} AS "guestContactAlways",
+         ${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL} AS "guestContactAlways",
          booking.check_in AS "checkIn",
          booking.check_out AS "checkOut",
          COALESCE(assignment.assignment_payload ->> 'roomName', room_type.name) AS "roomName",
@@ -4847,7 +4847,7 @@ async function loadPaymentLedgerRows(
          NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
          guest.email AS "guestEmail",
          ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
-         ${propertyAlwaysHasGuestContactSql("booking.property_id")} AS "guestContactAlways",
+         ${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL} AS "guestContactAlways",
          COALESCE(visibility.source_freshness, '{}'::jsonb) AS "sourceFreshness"
        FROM finance.payments payment
        LEFT JOIN finance.payment_provider_accounts account

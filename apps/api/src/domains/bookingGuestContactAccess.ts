@@ -44,21 +44,19 @@ export const BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL = `(
   )
 )`;
 
-export function propertyAlwaysHasGuestContactSql(propertyIdSql: string): string {
-  return `(EXISTS (
+export const PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL = `(EXISTS (
     SELECT 1
     FROM finance.billing_entitlements contact_fixed_plan
-    WHERE contact_fixed_plan.property_id = ${propertyIdSql}
+    WHERE contact_fixed_plan.property_id = booking.property_id
       AND ${activeBookingPlanEntitlementSql("contact_fixed_plan")}
       AND contact_fixed_plan.plan_key = 'fixed'
   ) AND NOT EXISTS (
     SELECT 1
     FROM finance.billing_entitlements contact_other_plan
-    WHERE contact_other_plan.property_id = ${propertyIdSql}
+    WHERE contact_other_plan.property_id = booking.property_id
       AND ${activeBookingPlanEntitlementSql("contact_other_plan")}
       AND contact_other_plan.plan_key <> 'fixed'
   ))`;
-}
 
 export function guestContactForPropertyPlan(
   propertyPlan: PropertyPlanReadModel,

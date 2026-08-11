@@ -12,7 +12,7 @@ import { bookingScopedPropertyCte } from "./bookingDashboard.js";
 import {
   BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
   guestContactForPropertyPlan,
-  propertyAlwaysHasGuestContactSql,
+  PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL,
 } from "../domains/bookingGuestContactAccess.js";
 import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 
@@ -379,7 +379,7 @@ function toTargetReservationWhere(
               OR guest.last_name ILIKE $${params.length}
               OR CONCAT(guest.first_name, ' ', guest.last_name) ILIKE $${params.length}
               OR (
-                (${propertyAlwaysHasGuestContactSql("booking.property_id")}
+                (${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL}
                   OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
                 AND guest.email ILIKE $${params.length}
               )
