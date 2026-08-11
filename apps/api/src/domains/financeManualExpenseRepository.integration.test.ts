@@ -13,10 +13,14 @@ const OTHER_CATEGORY = "12100000-0000-4000-8000-000000000005";
 const ARCHIVED_CATEGORY = "12100000-0000-4000-8000-000000000006";
 const EXPENSE = "12100000-0000-4000-8000-000000000007";
 const RECEIPT = "12100000-0000-4000-8000-000000000008";
+const ACCEPTED_AT = "2026-08-11T00:30:00.000Z";
 
 describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
   const admin = new pg.Client({ connectionString: URL ?? "postgresql://disabled" });
-  const repository = createPgFinanceManualExpenseRepository(URL ?? "postgresql://disabled");
+  const repository = createPgFinanceManualExpenseRepository(
+    URL ?? "postgresql://disabled",
+    () => new Date(ACCEPTED_AT),
+  );
 
   beforeAll(async () => {
     await admin.connect();
@@ -24,6 +28,7 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     await admin.query(`INSERT INTO identity.users (id,email,name,status) VALUES ('${ACTOR}','manual-expense@example.test','Manual expense','active');
       INSERT INTO hotel_catalog.properties (id,public_id,display_name) VALUES ('${PROPERTY}','manual-expense','Manual expense'),
         ('${OTHER_PROPERTY}','manual-expense-other','Manual expense other');
+      INSERT INTO hotel_catalog.property_locations (property_id,timezone) VALUES ('${PROPERTY}','America/Los_Angeles');
       INSERT INTO pms.property_pricing_settings (property_id,currency) VALUES ('${PROPERTY}','EUR'),('${OTHER_PROPERTY}','USD');
       INSERT INTO finance.expense_categories (id,property_id,name,color,archived_at) VALUES ('${CATEGORY}','${PROPERTY}','Operations','#123456',NULL),
         ('${OTHER_CATEGORY}','${OTHER_PROPERTY}','Other','#654321',NULL),
@@ -175,6 +180,124 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     });
   });
 
+  it("archives once on the property-local day and rolls back incomplete evidence", async () => {
+    const expenseId = crypto.randomUUID();
+    await expect(repository.create(command(expenseId, "archive-source"))).resolves.toMatchObject({
+      ok: true,
+      outcome: "created",
+    });
+    await expect(
+      repository.archive(archiveCommand("archive-stale", 2, expenseId)),
+    ).resolves.toEqual({ ok: false, code: "revision_conflict" });
+    for (const [index, timeZone] of ["Foo/Bar", "US/Eastern", null].entries()) {
+      await admin.query(
+        "UPDATE hotel_catalog.property_locations SET timezone=$1 WHERE property_id=$2",
+        [timeZone, PROPERTY],
+      );
+      await expect(
+        repository.archive(archiveCommand(`archive-zone-${index}`, 1, expenseId)),
+      ).resolves.toEqual({ ok: false, code: "evidence_mismatch" });
+    }
+    await admin.query(
+      "UPDATE hotel_catalog.property_locations SET timezone='America/Los_Angeles' WHERE property_id=$1",
+      [PROPERTY],
+    );
+    const attempts = [
+      archiveCommand("archive-a", 1, expenseId),
+      archiveCommand("archive-b", 1, expenseId),
+    ];
+    const raced = await Promise.all(attempts.map((value) => repository.archive(value)));
+    expect(raced.map((value) => (value.ok ? value.outcome : value.code)).sort()).toEqual([
+      "archived",
+      "revision_conflict",
+    ]);
+    const winnerIndex = raced.findIndex((value) => value.ok);
+    const winner = attempts[winnerIndex]!;
+    const archived = raced[winnerIndex]!;
+    expect(archived).toMatchObject({
+      ok: true,
+      outcome: "archived",
+      item: { id: winner.commandId, incurredOn: "2026-08-10", reversesExpenseId: expenseId },
+    });
+    await admin.query("UPDATE finance.expenses SET notes='later',revision=2 WHERE id=$1", [
+      winner.commandId,
+    ]);
+    await expect(repository.archive(winner)).resolves.toMatchObject({
+      ok: true,
+      outcome: "replayed",
+      item: { id: winner.commandId, revision: 1 },
+    });
+    await expect(
+      repository.archive({ ...winner, commandId: crypto.randomUUID() }),
+    ).resolves.toEqual({ ok: false, code: "idempotency_conflict" });
+    await expect(
+      repository.archive(archiveCommand("archive-repeated", 1, expenseId)),
+    ).resolves.toEqual({ ok: false, code: "revision_conflict" });
+
+    const history = await admin.query(
+      `SELECT id::text,entry_kind AS "entryKind",incurred_on::text AS "incurredOn",
+              reverses_expense_id::text AS "reversesExpenseId"
+       FROM finance.expenses WHERE id=$1::uuid OR reverses_expense_id=$1::uuid ORDER BY created_at,id`,
+      [expenseId],
+    );
+    expect(history.rows).toEqual([
+      expect.objectContaining({ id: expenseId, entryKind: "expense", reversesExpenseId: null }),
+      expect.objectContaining({
+        id: winner.commandId,
+        entryKind: "reversal",
+        incurredOn: "2026-08-10",
+        reversesExpenseId: expenseId,
+      }),
+    ]);
+    const audit = await admin.query(
+      `SELECT redacted_payload FROM platform.product_audit_events
+       WHERE property_id=$1 AND action='finance.manual_expense.archive'
+         AND redacted_payload->>'commandId'=$2`,
+      [PROPERTY, winner.commandId],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0].redacted_payload).toMatchObject({
+      acceptedAt: ACCEPTED_AT,
+      propertyTimeZone: "America/Los_Angeles",
+      previous: { id: expenseId, entryKind: "expense" },
+      next: { id: winner.commandId, entryKind: "reversal" },
+    });
+
+    const correctionSource = crypto.randomUUID();
+    const correctionId = crypto.randomUUID();
+    await repository.create(command(correctionSource, "archive-correction-source"));
+    await expect(
+      repository.update({
+        ...mutation("archive-correction", 1, correctionSource, correctionId),
+        incurredOn: "2026-08-11",
+      }),
+    ).resolves.toMatchObject({ ok: true, outcome: "corrected", item: { id: correctionId } });
+    await expect(
+      repository.archive(archiveCommand("archive-current-correction", 1, correctionId)),
+    ).resolves.toMatchObject({
+      ok: true,
+      outcome: "archived",
+      item: { reversesExpenseId: correctionId },
+    });
+
+    const rollbackExpense = crypto.randomUUID();
+    await repository.create(command(rollbackExpense, "archive-rollback-source"));
+    const rollbackArchive = archiveCommand("archive-rollback", 1, rollbackExpense);
+    rollbackArchive.audit.actor.userId = crypto.randomUUID();
+    await expect(repository.archive(rollbackArchive)).rejects.toMatchObject({ code: "23503" });
+    const rollback = await admin.query(
+      `SELECT
+        (SELECT count(*)::int FROM finance.expenses WHERE reverses_expense_id=$1::uuid) AS reversals,
+        (SELECT count(*)::int FROM platform.idempotency_keys
+          WHERE property_id=$2::uuid AND operation='finance.manual_expense.archive'
+            AND correlation_id='correlation-archive-rollback') AS keys,
+        (SELECT count(*)::int FROM platform.product_audit_events
+          WHERE property_id=$2::uuid AND redacted_payload->>'commandId'=$3) AS audits`,
+      [rollbackExpense, PROPERTY, rollbackArchive.commandId],
+    );
+    expect(rollback.rows[0]).toEqual({ reversals: 0, keys: 0, audits: 0 });
+  });
+
   async function cleanup() {
     await admin.query(`BEGIN; SET LOCAL session_replication_role=replica;
       DELETE FROM finance.expenses WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
@@ -184,6 +307,7 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
         AND purpose='finance.expense.receipt';
       DELETE FROM finance.expense_categories WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM pms.property_pricing_settings WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
+      DELETE FROM hotel_catalog.property_locations WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM hotel_catalog.properties WHERE id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM identity.users WHERE id='${ACTOR}'; COMMIT`);
   }
@@ -216,4 +340,21 @@ function mutation(
   commandId = crypto.randomUUID(),
 ) {
   return { ...command(commandId, key), expectedRevision, expenseId };
+}
+
+function archiveCommand(
+  key: string,
+  expectedRevision: number,
+  expenseId: string,
+  commandId = crypto.randomUUID(),
+) {
+  const input = command(commandId, key);
+  return {
+    commandId,
+    idempotencyKey: input.idempotencyKey,
+    propertyId: input.propertyId,
+    expectedRevision,
+    expenseId,
+    audit: input.audit,
+  };
 }
