@@ -3,12 +3,19 @@
 -- See: VAY-1171 and VAY-1240
 
 ALTER TABLE finance.folio_revisions
+  ADD COLUMN evidence_xid XID8 NOT NULL DEFAULT pg_current_xact_id(),
   ADD CONSTRAINT uq_finance_folio_revisions_evidence_scope
     UNIQUE (id, folio_id, property_id, revision, currency);
-
 ALTER TABLE finance.payments
   ADD CONSTRAINT uq_finance_payments_id_property_currency
     UNIQUE (id, property_id, currency);
+
+CREATE FUNCTION finance.pin_folio_revision_evidence_xid()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN NEW.evidence_xid := pg_current_xact_id(); RETURN NEW; END;
+$$;
+CREATE TRIGGER trg_finance_folio_revisions_pin_evidence_xid BEFORE INSERT ON finance.folio_revisions
+FOR EACH ROW EXECUTE FUNCTION finance.pin_folio_revision_evidence_xid();
 
 CREATE TABLE finance.folio_lines (
   id                     UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -31,7 +38,6 @@ CREATE TABLE finance.folio_lines (
   source_revision        BIGINT        NOT NULL,
   accounting_mapping_ref TEXT          NOT NULL,
   tax_treatment_ref      TEXT          NOT NULL,
-  created_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
   CONSTRAINT uq_finance_folio_lines_position UNIQUE (folio_revision_id, position),
   CONSTRAINT chk_finance_folio_lines_position CHECK (position BETWEEN 1 AND 1000),
   CONSTRAINT chk_finance_folio_lines_description
@@ -60,7 +66,6 @@ CREATE TABLE finance.folio_lines (
 );
 
 CREATE TABLE finance.folio_payment_references (
-  id                UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
   folio_revision_id UUID          NOT NULL,
   folio_id          UUID          NOT NULL,
   property_id       UUID          NOT NULL,
@@ -69,7 +74,6 @@ CREATE TABLE finance.folio_payment_references (
   position          INTEGER       NOT NULL,
   payment_id        UUID          NOT NULL,
   amount            NUMERIC       NOT NULL,
-  created_at        TIMESTAMPTZ   NOT NULL DEFAULT now(),
   CONSTRAINT uq_finance_folio_payment_refs_position UNIQUE (folio_revision_id, position),
   CONSTRAINT uq_finance_folio_payment_refs_payment UNIQUE (folio_revision_id, payment_id),
   CONSTRAINT chk_finance_folio_payment_refs_position CHECK (position BETWEEN 1 AND 1000),
@@ -86,28 +90,26 @@ CREATE TABLE finance.folio_payment_references (
 
 CREATE FUNCTION finance.validate_folio_evidence_insert()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE revision_xid XID;
+DECLARE revision_xid XID8;
 BEGIN
-  SELECT xmin INTO revision_xid FROM finance.folio_revisions
+  SELECT evidence_xid INTO revision_xid FROM finance.folio_revisions
   WHERE id = NEW.folio_revision_id AND folio_id = NEW.folio_id
     AND property_id = NEW.property_id AND revision = NEW.folio_revision
     AND currency = NEW.currency;
   IF NOT FOUND THEN RETURN NEW; END IF;
-  IF revision_xid IS DISTINCT FROM pg_current_xact_id()::TEXT::XID THEN
+  IF revision_xid IS DISTINCT FROM pg_current_xact_id() THEN
     RAISE EXCEPTION 'folio evidence must be created with its revision'
       USING ERRCODE = '23514', CONSTRAINT = 'chk_finance_folio_evidence_creation_transaction';
   END IF;
   RETURN NEW;
 END;
 $$;
-
 CREATE TRIGGER trg_finance_folio_lines_validate_insert
 BEFORE INSERT ON finance.folio_lines
 FOR EACH ROW EXECUTE FUNCTION finance.validate_folio_evidence_insert();
 CREATE TRIGGER trg_finance_folio_payment_refs_validate_insert
 BEFORE INSERT ON finance.folio_payment_references
 FOR EACH ROW EXECUTE FUNCTION finance.validate_folio_evidence_insert();
-
 CREATE FUNCTION finance.validate_folio_revision_total()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE target_id UUID; expected_total NUMERIC; actual_total NUMERIC;
@@ -136,14 +138,12 @@ BEGIN
   RETURN NULL;
 END;
 $$;
-
 CREATE CONSTRAINT TRIGGER trg_finance_folio_revisions_validate_total
 AFTER INSERT ON finance.folio_revisions DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION finance.validate_folio_revision_total();
 CREATE CONSTRAINT TRIGGER trg_finance_folio_lines_validate_total
 AFTER INSERT ON finance.folio_lines DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION finance.validate_folio_revision_total();
-
 CREATE FUNCTION finance.protect_folio_evidence()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN

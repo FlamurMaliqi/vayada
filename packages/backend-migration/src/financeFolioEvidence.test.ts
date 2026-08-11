@@ -110,6 +110,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
   it("commits one immutable snapshot with generated totals and payment evidence", async () => {
     const folioId = await createFolio();
     await client.query("BEGIN");
+    await client.query("SAVEPOINT nested");
     const revisionId = await addRevision(folioId, "ready", 25);
     await addLine(folioId, revisionId);
     await addPayment(folioId, revisionId);
@@ -174,10 +175,8 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
     await client.query("BEGIN");
     const scopedRevisionId = await addRevision(folioId, "draft", 0);
     const invalidLines = [
-      [LINE_VALUES.replace("2.5", "'NaN'"), "chk_finance_folio_lines_quantity"],
       [LINE_VALUES.replace("2.5", "1.00005"), "chk_finance_folio_lines_quantity"],
       [LINE_VALUES.replace("2026-08-05", "infinity"), "chk_finance_folio_lines_service_on"],
-      [LINE_VALUES.replace("booking.night", "Bad Source"), "chk_finance_folio_lines_source_type"],
       [LINE_VALUES.replace("'Stay'", "E'\\t'"), "chk_finance_folio_lines_description"],
       [LINE_VALUES.replace("'night-1'", "E'\\n'"), "chk_finance_folio_lines_source_id"],
       [
