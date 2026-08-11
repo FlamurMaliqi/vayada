@@ -21,6 +21,7 @@ CREATE TABLE finance.folio_revisions (
   state                         TEXT          NOT NULL
                                                CHECK (state IN ('draft', 'ready', 'superseded', 'archived')),
   recipient_snapshot_ciphertext BYTEA         NOT NULL,
+  recipient_encryption_scheme   TEXT          NOT NULL,
   recipient_key_version         TEXT          NOT NULL,
   recipient_fingerprint         CHAR(64)      NOT NULL,
   recipient_fingerprint_key_version TEXT      NOT NULL,
@@ -38,6 +39,8 @@ CREATE TABLE finance.folio_revisions (
     CHECK (revision BETWEEN 1 AND 2147483647),
   CONSTRAINT chk_finance_folio_revisions_recipient_ciphertext
     CHECK (octet_length(recipient_snapshot_ciphertext) BETWEEN 29 AND 65536),
+  CONSTRAINT chk_finance_folio_revisions_recipient_encryption
+    CHECK (recipient_encryption_scheme = 'envelope_aead_v1'),
   CONSTRAINT chk_finance_folio_revisions_recipient_key
     CHECK (recipient_key_version = btrim(recipient_key_version)
       AND char_length(recipient_key_version) BETWEEN 1 AND 100),

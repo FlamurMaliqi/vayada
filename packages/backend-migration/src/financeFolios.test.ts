@@ -20,6 +20,7 @@ describe("Finance folio migration contract", () => {
     expect(migration).toContain("CREATE TABLE finance.folios");
     expect(migration).toContain("CREATE TABLE finance.folio_revisions");
     expect(migration).toContain("recipient_snapshot_ciphertext BYTEA");
+    expect(migration).toContain("recipient_encryption_scheme");
     expect(migration).toContain("recipient_fingerprint_key_version");
     expect(migration).toContain("protect_folio_history");
     expect(migration).not.toMatch(/property_invoice_sequences|finance\.invoices|'INV-'/);
@@ -77,10 +78,12 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
     connection.query(
       `INSERT INTO finance.folio_revisions
         (folio_id, property_id, revision, state, recipient_snapshot_ciphertext,
-         recipient_key_version, recipient_fingerprint, recipient_fingerprint_key_version,
+         recipient_encryption_scheme, recipient_key_version, recipient_fingerprint,
+         recipient_fingerprint_key_version,
          service_from, service_to,
          currency, total_amount, source_digest, source_freshness)
-       VALUES ($1, $2, $3, $4, decode(repeat('ab', 32), 'hex'), 'kms-v1', $5, 'hmac-v1',
+       VALUES ($1, $2, $3, $4, decode(repeat('ab', 32), 'hex'), 'envelope_aead_v1',
+         'kms-v1', $5, 'hmac-v1',
          '2026-08-05', '2026-08-06', $6, 125.50, $5, '{"booking":"2026-08-05T00:00:00Z"}')`,
       [
         folioId,
@@ -103,6 +106,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
     await expect(addRevision(client, folioId, 2, { currency: "USD" })).rejects.toMatchObject({
       constraint: "fk_finance_folio_revisions_pricing_currency",
     });
+    await expect(addRevision(client, folioId, 2, { propertyId: PROPERTY_B })).rejects.toMatchObject(
+      {
+        constraint: "fk_finance_folio_revisions_folio_property",
+      },
+    );
     await expect(
       client.query("UPDATE finance.folio_revisions SET total_amount = 1 WHERE folio_id = $1", [
         folioId,
@@ -112,18 +120,59 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
 
   it("rejects malformed protected recipient and source evidence", async () => {
     const folioId = await createFolio();
-    await expect(
-      client.query(
-        `INSERT INTO finance.folio_revisions
+    const invalidCases = [
+      {
+        ciphertext: Buffer.alloc(28),
+        scheme: "envelope_aead_v1",
+        key: "kms-v1",
+        freshness: {},
+        constraint: "chk_finance_folio_revisions_recipient_ciphertext",
+      },
+      {
+        ciphertext: Buffer.alloc(32),
+        scheme: "plaintext",
+        key: "kms-v1",
+        freshness: {},
+        constraint: "chk_finance_folio_revisions_recipient_encryption",
+      },
+      {
+        ciphertext: Buffer.alloc(32),
+        scheme: "envelope_aead_v1",
+        key: " kms-v1 ",
+        freshness: {},
+        constraint: "chk_finance_folio_revisions_recipient_key",
+      },
+      {
+        ciphertext: Buffer.alloc(32),
+        scheme: "envelope_aead_v1",
+        key: "kms-v1",
+        freshness: [],
+        constraint: "chk_finance_folio_revisions_source_freshness",
+      },
+    ];
+    for (const invalid of invalidCases) {
+      await expect(
+        client.query(
+          `INSERT INTO finance.folio_revisions
           (folio_id, property_id, revision, state, recipient_snapshot_ciphertext,
-           recipient_key_version, recipient_fingerprint, recipient_fingerprint_key_version,
+           recipient_encryption_scheme, recipient_key_version, recipient_fingerprint,
+           recipient_fingerprint_key_version,
            service_from, service_to,
            currency, total_amount, source_digest, source_freshness)
-         VALUES ($1, $2, 1, 'draft', ''::bytea, ' kms-v1 ', $3, ' hmac-v1 ',
-           '2026-08-06', '2026-08-05', 'EUR', -1, $3, '[]')`,
-        [folioId, PROPERTY_A, HASH],
-      ),
-    ).rejects.toMatchObject({ code: "23514" });
+         VALUES ($1, $2, 1, 'draft', $3, $4, $5, $6, 'hmac-v1',
+           '2026-08-05', '2026-08-06', 'EUR', 125.50, $6, $7)`,
+          [
+            folioId,
+            PROPERTY_A,
+            invalid.ciphertext,
+            invalid.scheme,
+            invalid.key,
+            HASH,
+            JSON.stringify(invalid.freshness),
+          ],
+        ),
+      ).rejects.toMatchObject({ constraint: invalid.constraint });
+    }
   });
 
   it("requires contiguous immutable revisions", async () => {
@@ -151,7 +200,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
         addRevision(peer, folioId, 1),
       ]);
       expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
-      expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+      const rejected = results.filter(({ status }) => status === "rejected");
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]).toMatchObject({
+        reason: { constraint: "chk_finance_folio_revisions_sequence" },
+      });
     } finally {
       await peer.end();
     }
