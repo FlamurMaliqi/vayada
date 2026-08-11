@@ -36,8 +36,6 @@ CREATE TABLE finance.folio_lines (
   source_type            TEXT          NOT NULL,
   source_id              TEXT          NOT NULL,
   source_revision        BIGINT        NOT NULL,
-  accounting_mapping_ref TEXT          NOT NULL,
-  tax_treatment_ref      TEXT          NOT NULL,
   CONSTRAINT uq_finance_folio_lines_position UNIQUE (folio_revision_id, position),
   CONSTRAINT chk_finance_folio_lines_position CHECK (position BETWEEN 1 AND 1000),
   CONSTRAINT chk_finance_folio_lines_description
@@ -55,10 +53,6 @@ CREATE TABLE finance.folio_lines (
     CHECK (source_id ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'),
   CONSTRAINT chk_finance_folio_lines_source_revision
     CHECK (source_revision BETWEEN 1 AND 2147483647),
-  CONSTRAINT chk_finance_folio_lines_accounting_mapping
-    CHECK (accounting_mapping_ref ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'),
-  CONSTRAINT chk_finance_folio_lines_tax_treatment
-    CHECK (tax_treatment_ref ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'),
   CONSTRAINT fk_finance_folio_lines_revision_scope
     FOREIGN KEY (folio_revision_id, folio_id, property_id, folio_revision, currency)
     REFERENCES finance.folio_revisions(id, folio_id, property_id, revision, currency)

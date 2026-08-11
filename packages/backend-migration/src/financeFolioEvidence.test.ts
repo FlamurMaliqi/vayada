@@ -23,6 +23,7 @@ describe("Finance folio evidence migration contract", () => {
     expect(evidence).toContain("GENERATED ALWAYS AS (round(quantity * unit_amount, 4))");
     expect(evidence).toContain("DEFERRABLE INITIALLY DEFERRED");
     expect(evidence).toContain("chk_finance_folio_evidence_creation_transaction");
+    expect(evidence).not.toMatch(/accounting_mapping_ref|tax_treatment_ref/);
     expect(evidence).not.toMatch(/finance\.invoices|invoice_lines|provider_transaction|allocation/);
   });
 });
@@ -83,13 +84,13 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
     ).rows[0]!.id;
 
   const LINE_VALUES = `'${PROPERTY_A}', 1, 'EUR', 1, 'room', 'Stay', 2.5, 10,
-    '2026-08-05', 'booking.night', 'night-1', 1, 'room-revenue', 'standard'`;
+    '2026-08-05', 'booking.night', 'night-1', 1`;
   const addLine = (folioId: string, revisionId: string, values = LINE_VALUES) =>
     client.query(
       `INSERT INTO finance.folio_lines
         (folio_revision_id, folio_id, property_id, folio_revision, currency, position,
          kind, description, quantity, unit_amount, service_on, source_type, source_id,
-         source_revision, accounting_mapping_ref, tax_treatment_ref)
+         source_revision)
        VALUES ($1, $2, ${values})`,
       [revisionId, folioId],
     );
@@ -179,11 +180,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
       [LINE_VALUES.replace("2026-08-05", "infinity"), "chk_finance_folio_lines_service_on"],
       [LINE_VALUES.replace("'Stay'", "E'\\t'"), "chk_finance_folio_lines_description"],
       [LINE_VALUES.replace("'night-1'", "E'\\n'"), "chk_finance_folio_lines_source_id"],
-      [
-        LINE_VALUES.replace("'room-revenue'", "E'\\t'"),
-        "chk_finance_folio_lines_accounting_mapping",
-      ],
-      [LINE_VALUES.replace("'standard'", "E'\\n'"), "chk_finance_folio_lines_tax_treatment"],
       [
         LINE_VALUES.replace(PROPERTY_A, PROPERTY_B).replace("EUR", "USD"),
         "fk_finance_folio_lines_revision_scope",
