@@ -249,10 +249,6 @@ describe("createWorkOSAuthKitClient", () => {
   });
 
   it("checks the provider session before issuing a cross-app handoff", async () => {
-    const autoPagination = vi.fn().mockResolvedValue([
-      { id: "session_active", status: "active" },
-      { id: "session_revoked", status: "revoked" },
-    ]);
     workosMocks.WorkOS.mockImplementation(function WorkOS() {
       return {
         userManagement: {
@@ -260,7 +256,17 @@ describe("createWorkOSAuthKitClient", () => {
         },
       };
     });
-    workosMocks.listSessions.mockResolvedValue({ autoPagination });
+    workosMocks.listSessions.mockImplementation(async (_userId, options) =>
+      options?.after === "next-page"
+        ? {
+            data: [{ id: "session_revoked", status: "revoked" }],
+            listMetadata: {},
+          }
+        : {
+            data: [{ id: "session_active", status: "active" }],
+            listMetadata: { after: "next-page" },
+          },
+    );
 
     const client = createWorkOSAuthKitClient({
       apiKey: "sk_test",
@@ -280,8 +286,12 @@ describe("createWorkOSAuthKitClient", () => {
         workosUserId: "user_workos_hotel",
       }),
     ).resolves.toBe(false);
-    expect(workosMocks.listSessions).toHaveBeenCalledWith("user_workos_hotel");
-    expect(autoPagination).toHaveBeenCalledTimes(2);
+    expect(workosMocks.listSessions).toHaveBeenCalledWith("user_workos_hotel", { limit: 100 });
+    expect(workosMocks.listSessions).toHaveBeenCalledWith("user_workos_hotel", {
+      after: "next-page",
+      limit: 100,
+    });
+    expect(workosMocks.listSessions).toHaveBeenCalledTimes(3);
   });
 
   it("rethrows unclassified sealed-session errors without refreshing", async () => {

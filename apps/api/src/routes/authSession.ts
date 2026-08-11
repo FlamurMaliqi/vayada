@@ -18,6 +18,7 @@ import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest 
 import { mapWorkOSAuthError } from "../platform/workosAuthState.js";
 import type {
   AuthHandoffRoutingHints,
+  AuthSessionHandoff,
   AuthSessionHandoffRepository,
 } from "../platform/authSessionHandoffs.js";
 import {
@@ -1035,9 +1036,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(400).send(parsed.error);
     }
 
-    const sourcePolicy = getSurfacePolicy(parsed.sourceSurface, options);
-    const targetPolicy = getSurfacePolicy(parsed.targetSurface, options);
+    const sourcePolicy = findSurfacePolicy(parsed.sourceSurface, options);
+    const targetPolicy = findSurfacePolicy(parsed.targetSurface, options);
     if (
+      !sourcePolicy ||
+      !targetPolicy ||
       !sourcePolicy.firstPartySession ||
       !targetPolicy.firstPartySession ||
       !sourcePolicy.publicOrigin ||
@@ -1127,6 +1130,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       return reply.code(503).send({ error: "handoff_unavailable" });
     }
 
+    persistRefreshedSessionCookie(reply, sealedSession, resolution.session, sourcePolicy, options);
     const destination = new URL("/handoff", targetPolicy.publicOrigin);
     destination.hash = new URLSearchParams({ code }).toString();
     reply.header("Cache-Control", "private, no-store");
@@ -1147,8 +1151,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     if (!parsed.ok) {
       return reply.code(400).send(parsed.error);
     }
-    const targetPolicy = getSurfacePolicy(parsed.targetSurface, options);
-    if (!targetPolicy.firstPartySession || !targetPolicy.publicOrigin) {
+    const targetPolicy = findSurfacePolicy(parsed.targetSurface, options);
+    if (!targetPolicy || !targetPolicy.firstPartySession || !targetPolicy.publicOrigin) {
       return reply.code(409).send({ error: "handoff_not_enabled" });
     }
     if (!requestIsBoundToSurface(request, parsed.targetSurface, options)) {
@@ -1156,15 +1160,21 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
 
     const redemptionId = randomUUID();
-    const handoff = await options.handoffRepository.claim({
-      codeDigest: digestHandoffCode(parsed.code),
-      now: new Date(),
-      redemptionId,
-      targetPublicOrigin: targetPolicy.publicOrigin,
-      targetSurface: parsed.targetSurface,
-    });
+    let handoff: AuthSessionHandoff | null;
+    try {
+      handoff = await options.handoffRepository.claim({
+        codeDigest: digestHandoffCode(parsed.code),
+        now: new Date(),
+        redemptionId,
+        targetPublicOrigin: targetPolicy.publicOrigin,
+        targetSurface: parsed.targetSurface,
+      });
+    } catch (error) {
+      request.log.warn({ error }, "Unable to claim WorkOS handoff session");
+      return reply.code(503).send({ error: "handoff_retryable" });
+    }
     if (!handoff) {
-      return sendTerminalHandoffError(reply, targetPolicy, options);
+      return sendTerminalHandoffError(reply);
     }
 
     let session: AuthKitSession | null;
@@ -1201,7 +1211,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
     if (!session) {
       await options.handoffRepository.complete({ now: new Date(), redemptionId });
-      return sendTerminalHandoffError(reply, targetPolicy, options);
+      return sendTerminalHandoffError(reply);
     }
 
     let resolution: IdentityResolution;
@@ -1220,7 +1230,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       if (isTerminalHandoffAuthorizationError(error)) {
         await options.handoffRepository.complete({ now: new Date(), redemptionId });
         request.log.info({ error }, "WorkOS handoff is not authorized for target surface");
-        return sendTerminalHandoffError(reply, targetPolicy, options);
+        return sendTerminalHandoffError(reply);
       }
       await options.handoffRepository.release({ redemptionId });
       request.log.warn({ error }, "Unable to resolve WorkOS handoff authorization");
@@ -1233,7 +1243,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         handoff.routingHints.workosOrganizationId !== resolution.session.organizationId)
     ) {
       await options.handoffRepository.complete({ now: new Date(), redemptionId });
-      return sendTerminalHandoffError(reply, targetPolicy, options);
+      return sendTerminalHandoffError(reply);
     }
 
     const completed = await options.handoffRepository.complete({
@@ -1241,7 +1251,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       redemptionId,
     });
     if (!completed) {
-      return sendTerminalHandoffError(reply, targetPolicy, options);
+      return sendTerminalHandoffError(reply);
     }
 
     const csrfToken = randomBytes(24).toString("base64url");
@@ -1601,7 +1611,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
     reply
       .headers({
-        "set-cookie": clearAuthSessionCookieHeaders(surfacePolicy, options),
+        "set-cookie": clearAllAuthCookieHeaders(surfacePolicy, options),
       })
       .send({ logoutUrl });
   });
@@ -2550,6 +2560,17 @@ function getSurfacePolicy(
   surface: AuthSurface,
   options: AuthSessionRouteOptions,
 ): AuthSurfacePolicy {
+  const configured = findSurfacePolicy(surface, options);
+  if (!configured) {
+    throw new Error(`AuthKit surface is not configured: ${surface}`);
+  }
+  return configured;
+}
+
+function findSurfacePolicy(
+  surface: AuthSurface,
+  options: AuthSessionRouteOptions,
+): AuthSurfacePolicy | undefined {
   const defaultPlatformPolicy: AuthSurfacePolicy = {
     requiredOrganizationKind: options.requiredOrganizationKind,
     logoutReturnUrl: options.logoutReturnUrl,
@@ -2560,11 +2581,7 @@ function getSurfacePolicy(
   if (surface === DEFAULT_SURFACE) {
     return { ...defaultPlatformPolicy, ...options.surfacePolicies?.[surface] };
   }
-  const configured = options.surfacePolicies?.[surface];
-  if (!configured) {
-    throw new Error(`AuthKit surface is not configured: ${surface}`);
-  }
-  return configured;
+  return options.surfacePolicies?.[surface];
 }
 
 function validateReturnTo(rawReturnTo: string, allowedOrigins: string[]): string {
@@ -3166,8 +3183,17 @@ function clearAuthSessionCookieHeaders(
     ...authCookieHeaders(CSRF_COOKIE, "", 0, surfacePolicy, options, {
       httpOnly: surfacePolicy.firstPartySession === true,
     }),
-    ...authCookieHeaders(OAUTH_STATE_COOKIE, "", 0, surfacePolicy, options),
     ...clearSelectedOrganizationCookieHeaders(surfacePolicy, options),
+  ];
+}
+
+function clearAllAuthCookieHeaders(
+  surfacePolicy: AuthSurfacePolicy,
+  options: AuthSessionRouteOptions,
+): string[] {
+  return [
+    ...clearAuthSessionCookieHeaders(surfacePolicy, options),
+    ...authCookieHeaders(OAUTH_STATE_COOKIE, "", 0, surfacePolicy, options),
   ];
 }
 
@@ -3183,16 +3209,11 @@ function sendTerminalSessionError(
     .send({ error });
 }
 
-function sendTerminalHandoffError(
-  reply: FastifyReply,
-  surfacePolicy: AuthSurfacePolicy,
-  options: AuthSessionRouteOptions,
-) {
+function sendTerminalHandoffError(reply: FastifyReply) {
   return reply
     .code(401)
     .headers({
       "Cache-Control": "private, no-store",
-      "set-cookie": clearAuthSessionCookieHeaders(surfacePolicy, options),
     })
     .send({ error: "invalid_handoff" });
 }

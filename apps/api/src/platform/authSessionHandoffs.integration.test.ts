@@ -85,8 +85,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL auth session handoffs", () => {
   it("does not scrub a redemption that was claimed before expiry and is still in flight", async () => {
     const codeDigest = createHash("sha256").update("handoff-active-expiry-race").digest("hex");
     digests.push(codeDigest);
-    await createHandoff(codeDigest, new Date(Date.now() + 1_000));
     const now = new Date();
+    await createHandoff(codeDigest, new Date(now.getTime() + 1_000));
     const redemptionId = "66666666-6666-4666-8666-666666666666";
     await expect(claim(codeDigest, redemptionId, now)).resolves.not.toBeNull();
 

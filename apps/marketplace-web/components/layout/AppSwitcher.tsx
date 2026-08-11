@@ -26,6 +26,7 @@ export function AppSwitcher({
   placement?: "brand" | "nav";
 }) {
   const [open, setOpen] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const [userType, setUserType] = useState<UserType | null>(null);
   const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
     () => new Set<Product>(["marketplace"]),
@@ -79,6 +80,7 @@ export function AppSwitcher({
   if (!canSwitchToHotelApps) return null;
 
   const goTo = async (baseUrl: string, targetSurface: BrowserAuthSurface, targetPath: string) => {
+    setSwitchError(null);
     setOpen(false);
     const csrfToken = getAuthCsrfToken();
     if (csrfToken) {
@@ -94,7 +96,11 @@ export function AppSwitcher({
         // A failed/disabled handoff falls back to normal target-app authentication.
       }
     }
-    window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+    try {
+      window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+    } catch {
+      setSwitchError("We couldn't open that app. Please try again later.");
+    }
   };
 
   return (
@@ -147,6 +153,12 @@ export function AppSwitcher({
           </>
         )}
       </button>
+
+      {switchError && (
+        <p className="px-3 py-2 text-xs text-red-600" role="alert">
+          {switchError}
+        </p>
+      )}
 
       {open && (
         <div

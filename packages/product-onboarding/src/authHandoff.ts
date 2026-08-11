@@ -59,7 +59,7 @@ export async function createBrowserAuthHandoff(input: {
   }
   if (!response.ok) throw await handoffError(response);
 
-  const payload = (await response.json()) as { destination?: unknown };
+  const payload = (await parseSuccessfulHandoffResponse(response)) as { destination?: unknown };
   if (typeof payload.destination !== "string" || !isValidHandoffDestination(payload.destination)) {
     throw new BrowserAuthHandoffError("Authentication handoff returned an invalid target.", false);
   }
@@ -88,7 +88,7 @@ export async function redeemBrowserAuthHandoff(input: {
   }
   if (!response.ok) throw await handoffError(response);
 
-  const payload = (await response.json()) as {
+  const payload = (await parseSuccessfulHandoffResponse(response)) as {
     routingHints?: unknown;
     targetPath?: unknown;
   };
@@ -103,12 +103,29 @@ export async function redeemBrowserAuthHandoff(input: {
 }
 
 export function crossAppReauthenticationUrl(baseUrl: string, returnTo: string): string {
-  const url = new URL("/login", baseUrl);
+  let url: URL;
+  try {
+    url = new URL("/login", baseUrl);
+  } catch {
+    throw invalidReauthenticationTargetError();
+  }
   if (!isSafeRelativeReturnTo(returnTo) || !["http:", "https:"].includes(url.protocol)) {
-    throw new Error("Cross-app reauthentication target is invalid");
+    throw invalidReauthenticationTargetError();
   }
   url.searchParams.set("returnTo", returnTo);
   return url.toString();
+}
+
+async function parseSuccessfulHandoffResponse(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    throw retryableHandoffError();
+  }
+}
+
+function invalidReauthenticationTargetError(): BrowserAuthHandoffError {
+  return new BrowserAuthHandoffError("Cross-app reauthentication target is invalid.", false);
 }
 
 function isValidHandoffDestination(value: string): boolean {

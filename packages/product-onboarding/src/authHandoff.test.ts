@@ -89,12 +89,49 @@ describe("browser auth handoff", () => {
     expect((error as BrowserAuthHandoffError).retryable).toBe(false);
   });
 
+  it.each([
+    [
+      "create",
+      () =>
+        createBrowserAuthHandoff({
+          csrfToken: "csrf-token",
+          sourceSurface: "marketplace-web",
+          targetPath: "/dashboard",
+          targetSurface: "booking-admin",
+          fetcher: async () => new Response("truncated", { status: 200 }),
+        }),
+    ],
+    [
+      "redeem",
+      () =>
+        redeemBrowserAuthHandoff({
+          code: "7_8FkqvJvK_vOS5Ke4iFAScHY6LmDsQUviRLKfS1dCk",
+          targetSurface: "booking-admin",
+          fetcher: async () => new Response("truncated", { status: 200 }),
+        }),
+    ],
+  ])("classifies a malformed successful %s response as retryable", async (_label, request) => {
+    const error = await request().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(BrowserAuthHandoffError);
+    expect((error as BrowserAuthHandoffError).retryable).toBe(true);
+  });
+
   it("builds a safe reauthentication fallback and rejects external return paths", () => {
     expect(crossAppReauthenticationUrl("https://admin.booking.localhost", "/dashboard")).toBe(
       "https://admin.booking.localhost/login?returnTo=%2Fdashboard",
     );
-    expect(() =>
-      crossAppReauthenticationUrl("https://admin.booking.localhost", "https://evil.test"),
-    ).toThrow("invalid");
+    for (const createInvalidUrl of [
+      () => crossAppReauthenticationUrl("https://admin.booking.localhost", "https://evil.test"),
+      () => crossAppReauthenticationUrl("not a URL", "/dashboard"),
+    ]) {
+      try {
+        createInvalidUrl();
+        throw new Error("Expected reauthentication URL construction to fail");
+      } catch (error) {
+        expect(error).toBeInstanceOf(BrowserAuthHandoffError);
+        expect((error as BrowserAuthHandoffError).retryable).toBe(false);
+      }
+    }
   });
 });

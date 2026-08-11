@@ -188,7 +188,10 @@ export default function HandoffPage() {
 
   if (retryable) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50 px-6 text-center">
+      <div
+        className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50 px-6 text-center"
+        role="status"
+      >
         <p className="text-sm font-medium text-gray-700">
           Your session transfer is temporarily unavailable.
         </p>
@@ -205,7 +208,11 @@ export default function HandoffPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="w-6 h-6 border-2 border-gray-300 border-t-gray-900 rounded-full animate-spin" />
+      <div
+        className="w-6 h-6 border-2 border-gray-300 border-t-gray-900 rounded-full animate-spin"
+        role="status"
+        aria-label="Transferring your session"
+      />
     </div>
   );
 }

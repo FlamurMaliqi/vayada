@@ -44,6 +44,7 @@ export function SharedHotelSetupPage({
   const searchParams = useSearchParams();
   const [authorized, setAuthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const [accountName, setAccountName] = useState<string | null>(null);
   const [accountContactEmail, setAccountContactEmail] = useState<string | null>(null);
   const [accountContactPhone, setAccountContactPhone] = useState<string | null>(null);
@@ -113,6 +114,7 @@ export function SharedHotelSetupPage({
     targetPath: string,
     propertyId?: string | null,
   ) => {
+    setHandoffError(null);
     const baseUrl = product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL;
     const targetSurface = product === "booking" ? "booking-admin" : "pms-web";
     const csrfToken = getAuthCsrfToken();
@@ -132,7 +134,11 @@ export function SharedHotelSetupPage({
         // Require target-app authentication when the one-time exchange is unavailable.
       }
     }
-    window.location.replace(crossAppReauthenticationUrl(baseUrl, targetPath));
+    try {
+      window.location.replace(crossAppReauthenticationUrl(baseUrl, targetPath));
+    } catch {
+      setHandoffError("We couldn't open that app. Please check the app URL and try again.");
+    }
   };
 
   const handleContinue = async (input: SharedFirstRunContinueInput) => {
@@ -182,6 +188,27 @@ export function SharedHotelSetupPage({
       >
         <p className="text-sm font-medium text-gray-600">Confirming your setup session…</p>
       </div>
+    );
+  }
+
+  if (handoffError) {
+    return (
+      <main className="flex min-h-[100dvh] items-center justify-center bg-gray-50 px-6 py-12">
+        <div
+          className="w-full max-w-xl rounded-2xl border border-red-200 bg-white px-6 py-8 text-center sm:px-10"
+          role="alert"
+        >
+          <h1 className="text-xl font-semibold text-gray-950">Unable to open the app</h1>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-600">{handoffError}</p>
+          <button
+            type="button"
+            onClick={() => setHandoffError(null)}
+            className="mt-5 min-h-10 rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white outline-none hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+          >
+            Return to setup
+          </button>
+        </div>
+      </main>
     );
   }
 

@@ -50,6 +50,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
     () => new Set<Product>(["booking"]),
   );
@@ -62,6 +63,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     targetSurface: BrowserAuthSurface,
     targetPath: string,
   ) => {
+    setSwitchError(null);
     setShowSwitcher(false);
     const csrfToken = getAuthCsrfToken();
     if (csrfToken) {
@@ -77,7 +79,11 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         // Require target-app authentication when the one-time exchange is unavailable.
       }
     }
-    window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+    try {
+      window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+    } catch {
+      setSwitchError("We couldn't open that app. Please try again later.");
+    }
   };
 
   useEffect(() => {
@@ -165,6 +171,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </>
           )}
         </button>
+
+        {switchError && (
+          <p className="px-3 py-2 text-xs text-red-600" role="alert">
+            {switchError}
+          </p>
+        )}
 
         {showSwitcher && !collapsed && (
           <div className="absolute top-full left-2 right-2 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1.5">

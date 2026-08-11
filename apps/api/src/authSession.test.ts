@@ -4248,6 +4248,11 @@ describe("AuthKit session routes", () => {
 
     const created = await createBookingHandoff(app);
     expect(created.statusCode).toBe(200);
+    expect(created.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_fp_workos_session=hotel-sealed-session"),
+      ]),
+    );
     const destination = new URL(created.json().destination);
     expect(`${destination.origin}${destination.pathname}`).toBe(
       "https://admin.booking.localhost/handoff",
@@ -4276,11 +4281,7 @@ describe("AuthKit session routes", () => {
     const replayed = await redeemHandoff(app, code!, "booking-admin");
     expect(replayed.statusCode).toBe(401);
     expect(replayed.json()).toEqual({ error: "invalid_handoff" });
-    expect(replayed.headers["set-cookie"]).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("vayada_fp_workos_session=; Path=/auth; Max-Age=0"),
-      ]),
-    );
+    expect(replayed.headers["set-cookie"]).toBeUndefined();
   });
 
   it("refuses to mint a target cookie after the provider session was logged out", async () => {
@@ -4304,11 +4305,7 @@ describe("AuthKit session routes", () => {
 
     expect(response.statusCode).toBe(401);
     expect(response.json()).toEqual({ error: "invalid_handoff" });
-    expect(response.headers["set-cookie"]).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("vayada_fp_workos_session=; Path=/auth; Max-Age=0"),
-      ]),
-    );
+    expect(response.headers["set-cookie"]).toBeUndefined();
     expect(isSessionActive).toHaveBeenNthCalledWith(2, {
       sessionId: "session_workos",
       workosUserId: "user_workos_hotel",
@@ -4394,6 +4391,48 @@ describe("AuthKit session routes", () => {
     expect((await redeemHandoff(app, code, "booking-admin")).statusCode).toBe(200);
   });
 
+  it("returns the retryable handoff contract when claiming storage fails", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    const claim = handoffs.repository.claim.bind(handoffs.repository);
+    let failClaim = false;
+    const repository: AuthSessionHandoffRepository = {
+      ...handoffs.repository,
+      async claim(input) {
+        if (failClaim) throw new Error("temporary database outage");
+        return claim(input);
+      },
+    };
+    app = buildAuthSessionApp(handoffAuthOptions(repository));
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+    failClaim = true;
+
+    const transient = await redeemHandoff(app, code, "booking-admin");
+
+    expect(transient.statusCode).toBe(503);
+    expect(transient.json()).toEqual({ error: "handoff_retryable" });
+    expect(transient.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("rejects handoffs for recognized but unconfigured surfaces", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/handoff/create",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        sourceSurface: "affiliate-dashboard",
+        targetPath: "/dashboard",
+        targetSurface: "booking-admin",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "handoff_not_enabled" });
+  });
+
   it("releases a claimed handoff when target authorization storage fails transiently", async () => {
     const handoffs = createMemoryHandoffRepository();
     let lookupCalls = 0;
@@ -4454,6 +4493,9 @@ describe("AuthKit session routes", () => {
         expect.stringContaining("vayada_fp_workos_session=; Path=/auth; Max-Age=0"),
         expect.stringContaining("vayada_fp_auth_csrf=; Path=/auth; Max-Age=0"),
       ]),
+    );
+    expect(response.headers["set-cookie"]).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("vayada_fp_oauth_state=")]),
     );
   });
 
