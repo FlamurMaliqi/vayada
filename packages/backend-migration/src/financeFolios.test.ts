@@ -23,6 +23,7 @@ describe("Finance folio migration contract", () => {
     expect(migration).toContain("recipient_encryption_scheme");
     expect(migration).toContain("recipient_fingerprint_key_version");
     expect(migration).toContain("protect_folio_history");
+    expect(migration).not.toContain("'superseded'");
     expect(migration).not.toMatch(/property_invoice_sequences|finance\.invoices|'INV-'/);
     expect(migration).not.toMatch(/folio_(lines|payment_references|submissions)/);
   });
@@ -99,6 +100,10 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
     const folioId = await createFolio();
     expect(folioId).toMatch(/^[0-9a-f-]{36}$/);
     await addRevision(client, folioId, 1, { state: "ready" });
+
+    await expect(addRevision(client, folioId, 2, { state: "superseded" })).rejects.toMatchObject({
+      code: "23514",
+    });
 
     await expect(createFolio(PROPERTY_A, BOOKING_B)).rejects.toMatchObject({
       constraint: "fk_finance_folios_booking_property",

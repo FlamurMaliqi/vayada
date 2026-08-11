@@ -19,7 +19,7 @@ CREATE TABLE finance.folio_revisions (
   property_id                   UUID          NOT NULL,
   revision                      BIGINT        NOT NULL,
   state                         TEXT          NOT NULL
-                                               CHECK (state IN ('draft', 'ready', 'superseded', 'archived')),
+                                               CHECK (state IN ('draft', 'ready', 'archived')),
   recipient_snapshot_ciphertext BYTEA         NOT NULL,
   recipient_encryption_scheme   TEXT          NOT NULL,
   recipient_key_version         TEXT          NOT NULL,
