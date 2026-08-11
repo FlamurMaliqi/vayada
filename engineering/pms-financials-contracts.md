@@ -34,19 +34,19 @@ out of scope for v1.
 
 ## Ownership
 
-| Fact or behavior                                             | Canonical owner                           | Financials consumption                                 |
-| ------------------------------------------------------------ | ----------------------------------------- | ------------------------------------------------------ |
-| Property pricing currency                                    | PMS                                       | Read-only property context                             |
-| Property timezone and locale                                 | Hotel Catalog/Identity                    | Calendar and presentation context                      |
-| Booking lifecycle, stay dates, nightly charges and source    | Booking, with PMS operational projections | Versioned revenue evidence                             |
-| Add-on definitions, purchases and economic snapshots         | Booking                                   | Own revenue or partner commission evidence             |
-| OTA channel mapping                                          | Distribution/Booking                      | Canonical channel attribution                          |
-| OTA, platform and partner commission rules                   | Finance                                   | Effective-dated rule snapshots                         |
-| Payments, provider fees and refunds                          | Finance                                   | Settlement and fee evidence; not the room-revenue date |
-| Expense categories, rules and expense instances              | Finance                                   | Authoritative expense ledger                           |
-| Operational folios, submissions and external invoice mirrors | Finance                                   | Operational state; official invoice stays external     |
-| Rooms, room types and occupied nights                        | PMS                                       | Room-type and per-occupied-night reporting             |
-| Documents, email jobs, audit and dead letters                | Platform services with Finance handlers   | Durable side effects and evidence                      |
+| Fact or behavior                                            | Canonical owner                           | Financials consumption                                 |
+| ----------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------ |
+| Property pricing currency                                   | PMS                                       | Read-only property context                             |
+| Property timezone and locale                                | Hotel Catalog/Identity                    | Calendar and presentation context                      |
+| Booking lifecycle, stay dates, nightly charges and source   | Booking, with PMS operational projections | Versioned revenue evidence                             |
+| Add-on definitions, purchases and economic snapshots        | Booking                                   | Own revenue or partner commission evidence             |
+| OTA channel mapping                                         | Distribution/Booking                      | Canonical channel attribution                          |
+| OTA, platform and partner commission rules                  | Finance                                   | Effective-dated rule snapshots                         |
+| Payments, provider fees and refunds                         | Finance                                   | Settlement and fee evidence; not the room-revenue date |
+| Expense categories, rules and expense instances             | Finance                                   | Authoritative expense ledger                           |
+| Operational folios, revisions, lines and payment references | Finance                                   | Operational evidence; official invoice stays external  |
+| Rooms, room types and occupied nights                       | PMS                                       | Room-type and per-occupied-night reporting             |
+| Documents, email jobs, audit and dead letters               | Platform services with Finance handlers   | Durable side effects and evidence                      |
 
 Finance application services consume typed projections from Booking and PMS.
 New route adapters must not add unrestricted cross-domain SQL as the permanent
@@ -123,11 +123,11 @@ integration boundary.
 - Provider fees are recorded only from provider evidence. Missing fees are
   reported as incomplete evidence and are never estimated silently.
 
-### Folios and external invoices
+### Folios and accounting handoff
 
-Vayada owns normalized operational folios; the connected accounting system owns
-official invoices. VAY-1240 replaces all local numbering, lifecycle, route,
-document and validation rules in this section through
+Vayada owns normalized operational folios and CSV handoff; a property or its
+accountant owns official invoices outside Vayada. VAY-1240 replaces all local
+official numbering, lifecycle, document and delivery rules through
 [`pms-financials-external-invoice-contract.md`](pms-financials-external-invoice-contract.md).
 
 ## HTTP contract
@@ -139,7 +139,6 @@ document and validation rules in this section through
 type Date = string; type Decimal = string; type Ratio = Decimal; // date: YYYY-MM-DD; ratio: 0..1
 type Money = { amount: Decimal; currency: string }; type Page<T> = { items: T[]; nextCursor: string | null; limit: number };
 type MoneyMetric = { value: Money; absoluteChange: Money; percentChange: Ratio | null };
-type ScalarMetric = { value: Decimal; absoluteChange: Decimal; percentChange: Ratio | null };
 type CountMetric = { value: number; absoluteChange: number; percentChange: Ratio | null };
 type Envelope = { contractVersion: "pms-financials.v1"; propertyId: string; currency: string;
   timeZone: string; generatedAt: string; sourceFreshness: Record<string, string>;
@@ -150,8 +149,10 @@ type DashboardQuery = { asOf?: Date }; type RevenueQuery = Range;
 type ExpenseQuery = Range & Cursor & { categoryId?: string; paymentStatus?: "paid" | "unpaid"; recurring?: boolean;
   origin?: "manual" | "recurring" | "ota_commission" | "platform_fee" | "supplier_bill"; search?: string; sort?: "incurredOn_desc" | "amount_desc" };
 type ProfitLossQuery = { year: number };
-type ExternalInvoiceQuery = Cursor & { from?: Date; to?: Date; syncHealth?: "healthy" | "requires_review" |
-  "manual_reconciliation"; search?: string; sort?: "issuedOn_desc" | "dueOn_asc" | "amount_desc" };
+type FolioState = "draft" | "ready" | "superseded" | "archived";
+type FolioQuery = Cursor & { from?: Date; to?: Date; state?: FolioState; search?: string;
+  sort?: "createdAt_desc" | "serviceFrom_desc" | "amount_desc" };
+type FolioExportQuery = Omit<FolioQuery, "state"> & { state?: "ready" };
 type Category = { id: string; systemKey: string | null; name: string; color: string; sortOrder: number; archived: boolean; revision: number };
 type Expense = { id: string; categoryId: string; origin: ExpenseQuery["origin"];
   incurredOn: Date; paidOn: Date | null; vendor: string; amount: Money;
@@ -167,13 +168,12 @@ type RecurrencePatch = Command & { cadence?: "weekly" | "monthly" | "yearly";
   nextDueOn?: Date; endsOn?: Date };
 type ExportWrite = Command & ({ tab: "dashboard"; filters: DashboardQuery } |
   { tab: "revenue"; filters: RevenueQuery } | { tab: "expenses"; filters: ExpenseQuery } |
-  { tab: "profit_loss"; filters: ProfitLossQuery } | { tab: "invoices"; filters: ExternalInvoiceQuery }) &
+  { tab: "profit_loss"; filters: ProfitLossQuery } | { tab: "folios"; filters: FolioExportQuery }) &
   { format: "csv" };
 type Disposition = { resourceId: string; state: "pending" | "ready" | "failed";
   downloadUrl?: string; expiresAt?: string };
-type DeliveryReceipt = { deliveryId: string; state: "queued" | "sent" | "failed" };
-type DashboardResponse = Envelope & { cards: { revenueToday: MoneyMetric; expensesMtd: MoneyMetric;
-  externalInvoiceOutstanding: MoneyMetric; profitMtd: MoneyMetric };
+type DashboardResponse = Envelope & { cards: { revenueToday: MoneyMetric; revenueMtd: MoneyMetric;
+  expensesMtd: MoneyMetric; profitMtd: MoneyMetric };
   daily: Array<{ date: Date; revenue: Money; expenses: Money }>;
   upcoming: Array<{ date: Date; kind: string; amount: Money; predicted: boolean }> };
 type RevenueResponse = Envelope & { summary: { grossRoom: MoneyMetric; otaCommission: MoneyMetric; netRoom: MoneyMetric;
@@ -188,13 +188,16 @@ type ExpensesResponse = Envelope & { summary: { totalMtd: MoneyMetric; perOccupi
 type ProfitLossResponse = Envelope & { summary: { revenueYtd: MoneyMetric; expensesYtd: MoneyMetric; netProfitYtd: MoneyMetric };
   months: Array<{ month: string; revenue: Money; expenses: Money; netProfit: Money;
   expenseCategories: Record<string, Money> }> };
+type FolioSummary = { folioId: string; bookingId: string | null; revision: number; state: FolioState;
+  serviceFrom: Date; serviceTo: Date; total: Money; createdAt: string };
+type FolioListResponse = Envelope & { page: Page<FolioSummary> };
 type ItemResponse<T> = Envelope & { item: T }; type CommandResponse<T> = ItemResponse<T> & { outcome: "created" | "updated" | "replayed" };
 ```
 
 `from`/`to` are inclusive. Invalid ranges return `400`. Cursors are opaque,
 base64url/versioned filter snapshots; limit defaults to 50 and caps at 200.
-Expense order is `incurredOn DESC, id ASC`; external invoice order is the
-requested sort then `id ASC`. All writes use server audit context. Export filters must exactly
+Expense order is `incurredOn DESC, id ASC`; folio order is the requested sort
+then `id ASC`. All writes use server audit context. Export filters must exactly
 match the named tab's query type after normalization; unknown keys return `400`.
 
 ### Canonical routes
@@ -209,12 +212,11 @@ match the named tab's query type after normalization; unknown keys return `400`.
 | `GET/PATCH/DELETE` | `/expenses/:expenseId`                                      | none / `ExpensePatch` / `Command` → item / `CommandResponse<Expense>`             |
 | `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `CommandResponse<RecurringRule>`    |
 | `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                          |
-| See VAY-1240       | `/folios`, `/invoice-operations`, `/external-invoices`      | Provider-neutral folio, operation and external-document contracts                 |
+| See VAY-1240       | `/folios` and `/folios/:folioId/*`                          | Operational folio list, revision, ready and archive contracts                     |
 | `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `CommandResponse<Disposition>` / item response             |
 
-V1 exports CSV for all five tabs and retrieves confirmed external invoice
-documents. It does not generate an official invoice PDF or promise a PDF
-rendition of Dashboard, Revenue, Expenses or P&L.
+V1 exports CSV for all five tabs. It does not create, retrieve, render, or send
+an official invoice document and does not promise PDF renditions.
 
 P&L is computed from ledger/evidence rows; no second source-of-truth table is
 introduced.
@@ -237,17 +239,16 @@ introduced.
   authorized. `400` is malformed input; `409` is revision/idempotency/lifecycle
   conflict; `422` is a valid command blocked by currency or source evidence.
 - Responses never contain provider secrets, raw provider payloads, bank account
-  numbers, unrestricted object URLs or guest PII outside the required invoice
+  numbers, unrestricted object URLs or guest PII outside the authorized folio
   scope.
 
 ## Target storage and projections
 
 VAY-1124 and VAY-1125 finalize DDL names. Required aggregates are expense
-categories/instances/recurrences; folios/revisions/submissions/external-document
-mirrors/allocations/deliveries; and source keys, revisions and correction state.
-Dashboard, Revenue and P&L models are rebuildable projections, not a second
-ledger. Attachments and fetched documents store protected Platform Media
-references, not blobs or public URLs.
+categories/instances/recurrences; folios/revisions/lines/payment references;
+and source keys, revisions and correction state. Dashboard, Revenue and P&L
+models are rebuildable projections, not a second ledger. Expense attachments
+store protected Platform Media references, not blobs or public URLs.
 
 ## Reset inventory
 
@@ -340,23 +341,23 @@ credentials or disables payment/payout jobs.
    do not synthesize invoices, payments or allocations from bookings.
 4. Seed default categories; do not invent historical manual expenses. Backfill
    OTA commissions only where an effective rate snapshot is provable.
-5. Reconcile totals, counts, source exceptions, folio submission uniqueness,
-   external references and generated expense idempotency in rehearsals.
+5. Reconcile totals, counts, source exceptions, immutable folio revisions and
+   generated expense idempotency in rehearsals.
 6. Ship new routes and UI while `module:financials` remains inactive by default.
 7. Activate per property only after permission, migration, API, export and
    browser gates pass.
 
 Rollback deactivates the module and reverts application traffic. It does not
-delete new ledger rows or replay external email/provider side effects blindly.
-Document and delivery job keys remain stable across retries or rollback.
+delete new ledger rows or repeat successful exports blindly. Export job keys
+remain stable across retries or rollback.
 
 ## Validation gates
 
 - Migrations pass from empty and upgraded databases; financial fixtures reconcile
   by property/date/currency and expose missing evidence.
 - Generated expenses pass replay, concurrency, correction and cancellation tests.
-- External invoice flows pass folio business-uniqueness, uncertain-outcome,
-  issuance, correction, allocation, version and document-delivery tests.
+- Folios pass property isolation, revision sequencing, total integrity,
+  correction, replay, archive and accounting-export tests.
 - Every protected route passes the full authorization and inactive-module matrix.
 - CSV exports match normalized filters and neutralize spreadsheet formulas.
 - Preserved Finance/payment/affiliate suites remain green after reset/activation.
