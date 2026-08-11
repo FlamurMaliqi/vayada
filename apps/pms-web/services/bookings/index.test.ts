@@ -21,7 +21,7 @@ vi.mock("../api/unsupported", () => ({
   unsupportedPmsNextStackFeature: vi.fn(),
 }));
 
-import { bookingsService } from ".";
+import { bookingsService, HIDDEN_GUEST_CONTACT } from ".";
 
 const reservation = {
   guestBookingId: "booking-1",
@@ -114,6 +114,41 @@ describe("PMS target booking projection", () => {
       roomId: "room-101",
       roomNumber: "101",
       nightlyRate: 180,
+    });
+  });
+});
+
+describe("PMS guest contact projection", () => {
+  it("marks masked additional guest contact as read-only", async () => {
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.get.mockResolvedValue({
+      items: [
+        {
+          guestId: "guest-2",
+          guestBookingId: "booking-1",
+          role: "additional_guest",
+          displayName: "Charles Babbage",
+          firstName: "Charles",
+          lastName: "Babbage",
+          email: HIDDEN_GUEST_CONTACT,
+          phone: HIDDEN_GUEST_CONTACT,
+          countryCode: "GB",
+          arrivalTime: null,
+          specialRequests: null,
+        },
+      ],
+    });
+
+    await expect(bookingsService.listAdditionalGuests("booking-1")).resolves.toEqual({
+      guests: [
+        expect.objectContaining({
+          firstName: "Charles",
+          nationality: "GB",
+          email: HIDDEN_GUEST_CONTACT,
+          phone: HIDDEN_GUEST_CONTACT,
+          guestContactHidden: true,
+        }),
+      ],
     });
   });
 });
