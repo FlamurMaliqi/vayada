@@ -169,7 +169,11 @@ export function createPgWorkosWebhookStore(
         );
         await client.query("COMMIT");
       } catch (error) {
-        await client.query("ROLLBACK");
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // Preserve the transaction failure when the connection cannot roll back.
+        }
         throw error;
       } finally {
         client.release();

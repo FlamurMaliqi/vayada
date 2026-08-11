@@ -151,7 +151,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook dead letters", ()
 function assertSafeTestDatabase(connectionString: string): void {
   const url = new URL(connectionString);
   if (
-    !["localhost", "127.0.0.1", "::1"].includes(url.hostname) ||
+    !["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname) ||
     !url.pathname.toLowerCase().includes("test")
   ) {
     throw new Error("Refusing to run WorkOS webhook integration tests on a non-test DB");
