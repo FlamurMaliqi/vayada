@@ -55,6 +55,7 @@ describe("uploadImages", () => {
       return jsonResponse({
         mediaObjects: [
           {
+            mediaId: "a1000000-0000-4000-8000-000000000001",
             storageKey: "media/room.jpg",
             variants: [{ publicCdnUrl: "https://cdn.vayada.com/media/room.jpg" }],
           },
@@ -145,6 +146,7 @@ describe("uploadImages", () => {
       return jsonResponse({
         mediaObjects: [
           {
+            mediaId: "a1000000-0000-4000-8000-000000000002",
             variants: [{ publicCdnUrl: "https://cdn.vayada.com/media/room.jpg" }],
           },
         ],
@@ -163,6 +165,75 @@ describe("uploadImages", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("uploads a Booking-owned SVG header logo without a Catalog profile revision", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const { setAuthKitSession } = await import("@/services/auth/sessionStore");
+    const { uploadSingleImageWithMediaReference } = await import("./uploadImage");
+    setAuthKitSession({
+      accessToken: "authkit-token",
+      resources: { "booking:booking_hotel": ["booking_hotel_alpenrose"] },
+      user: { id: "user_1", email: "owner@example.com", status: "active" },
+    });
+
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/api/media/upload-sessions")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          purpose: "booking.header_logo",
+          visibility: "public",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_alpenrose",
+          },
+          files: [
+            {
+              clientFileId: "file_1",
+              filename: "wordmark.svg",
+              contentType: "image/svg+xml",
+              sizeBytes: 6,
+            },
+          ],
+        });
+        return jsonResponse({
+          uploadSession: { sessionId: "header_logo_session" },
+          uploadTargets: [
+            {
+              uploadTargetId: "header_logo_target",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.vayada.localhost/header_logo_target",
+              headers: { "content-type": "image/svg+xml" },
+            },
+          ],
+        });
+      }
+      expect(url).toContain("/header_logo_session/finalize");
+      return jsonResponse({
+        mediaObjects: [
+          {
+            mediaId: "a1000000-0000-4000-8000-000000001218",
+            variants: [
+              { publicCdnUrl: "https://cdn.vayada.com/media/header-logo/original_safe.webp" },
+            ],
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      uploadSingleImageWithMediaReference(
+        new File(["<svg/>"], "wordmark.svg"),
+        "booking.header_logo",
+        "booking_hotel_alpenrose",
+      ),
+    ).resolves.toEqual({
+      mediaObjectId: "a1000000-0000-4000-8000-000000001218",
+      publicUrl: "https://cdn.vayada.com/media/header-logo/original_safe.webp",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects a finalized image that has no public HTTPS URL", async () => {
     vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
     const { setAuthKitSession } = await import("@/services/auth/sessionStore");
@@ -176,7 +247,15 @@ describe("uploadImages", () => {
       "fetch",
       vi.fn(async (url: string) =>
         url.endsWith("/finalize")
-          ? jsonResponse({ mediaObjects: [{ storageKey: "media/hero.jpg", variants: [] }] })
+          ? jsonResponse({
+              mediaObjects: [
+                {
+                  mediaId: "a1000000-0000-4000-8000-000000000003",
+                  storageKey: "media/hero.jpg",
+                  variants: [],
+                },
+              ],
+            })
           : jsonResponse({
               uploadSession: { sessionId: "session_1" },
               uploadTargets: [

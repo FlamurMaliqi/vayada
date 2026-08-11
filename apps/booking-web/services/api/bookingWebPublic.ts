@@ -27,6 +27,7 @@ export type BookingWebPublicHotelResponse = {
     };
     summary: string | null;
     branding?: {
+      logoUrl?: string | null;
       heroImage: string | null;
       heroHeading: string | null;
       heroSubtext: string | null;
@@ -293,6 +294,7 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     },
     branding: hotel.branding
       ? {
+          logoUrl: hotel.branding.logoUrl || undefined,
           heroImage: hotel.branding.heroImage || undefined,
           heroHeading: hotel.branding.heroHeading || undefined,
           heroSubtext: hotel.branding.heroSubtext || undefined,

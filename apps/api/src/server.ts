@@ -573,15 +573,29 @@ const app = buildApp({
           }),
           logoutReturnUrl: config.authSession.authLogoutUrl,
           allowedOrigins: config.authSession.authAllowedOrigins,
+          compatibilityCallbackOrigin: config.authSession.authCompatibilityCallbackOrigin,
           oauthStateSecret: config.authSession.oauthStateSecret,
           requiredOrganizationKind: "platform",
           surfacePolicies: {
+            "platform-admin": {
+              requiredOrganizationKind: "platform",
+              logoutReturnUrl: config.authSession.authLogoutUrl,
+              legacyJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,
+              legacyJwtUserType: "admin",
+              requiredMembershipRoleKey: "platform_admin",
+              publicOrigin: config.authSession.authSurfaceOrigins["platform-admin"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("platform-admin"),
+            },
             "booking-admin": {
               requiredOrganizationKind: "hotel_group",
               logoutReturnUrl:
                 config.authSession.authBookingAdminLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyBookingJwtSecret,
               legacyJwtUserType: "hotel",
+              publicOrigin: config.authSession.authSurfaceOrigins["booking-admin"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("booking-admin"),
               requiredResourceLink: {
                 product: "booking",
                 resourceType: "booking_hotel",
@@ -593,6 +607,8 @@ const app = buildApp({
                 config.authSession.authPmsWebLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyPmsJwtSecret,
               legacyJwtUserType: "hotel",
+              publicOrigin: config.authSession.authSurfaceOrigins["pms-web"],
+              firstPartySession: config.authSession.authFirstPartySurfaces.includes("pms-web"),
               requireExplicitOrganizationSelection: true,
               selectedOrganizationCookieName: "vayada_pms_selected_org",
               requiredResourceLink: {
@@ -609,6 +625,9 @@ const app = buildApp({
                 config.authSession.authLegacyAffiliatePmsJwtSecret ??
                 config.authSession.authLegacyPmsJwtSecret,
               legacyJwtUserType: "affiliate",
+              publicOrigin: config.authSession.authSurfaceOrigins["affiliate-dashboard"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("affiliate-dashboard"),
               requiredResourceLink: {
                 product: "affiliate",
                 resourceType: "affiliate",
@@ -619,6 +638,9 @@ const app = buildApp({
               allowMissingOrganization: true,
               logoutReturnUrl:
                 config.authSession.authMarketplaceWebLogoutUrl ?? config.authSession.authLogoutUrl,
+              publicOrigin: config.authSession.authSurfaceOrigins["marketplace-web"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("marketplace-web"),
             },
           },
           cookieSecure: config.authSession.authCookieSecure,

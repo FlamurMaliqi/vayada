@@ -16,6 +16,11 @@ function renderMediaTab(galleryImages: PropertyGalleryImage[]) {
       fileInputRef={createRef<HTMLInputElement>()}
       handleImageUpload={vi.fn()}
       removeHeroImage={vi.fn()}
+      headerLogo=""
+      logoInputRef={createRef<HTMLInputElement>()}
+      handleLogoUpload={vi.fn()}
+      removeHeaderLogo={vi.fn()}
+      uploadingLogo={false}
       resetContent={vi.fn()}
       galleryImages={galleryImages}
       galleryAtCapacity={galleryImages.length >= 10}

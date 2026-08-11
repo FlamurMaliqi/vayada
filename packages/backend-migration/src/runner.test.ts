@@ -4723,6 +4723,19 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
            ) AS allowed`,
         ),
       ).resolves.toMatchObject({ rows: [{ allowed: true }] });
+      await expect(
+        verifyClient.query(
+          `SELECT
+             platform.valid_media_purpose_visibility(
+               'booking.header_logo', 'public'
+             ) AS public_allowed,
+             platform.valid_media_purpose_visibility(
+               'booking.header_logo', 'private'
+             ) AS private_allowed`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ public_allowed: true, private_allowed: false }],
+      });
 
       await verifyClient.query(
         `INSERT INTO platform.media_objects

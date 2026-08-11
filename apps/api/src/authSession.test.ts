@@ -87,6 +87,7 @@ describe("AuthKit session routes", () => {
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
+      cookieSecure: true,
       authKitClient: createAuthKitClient({
         async authenticateWithPassword(input) {
           passwordAuthInput = input;
@@ -121,6 +122,8 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
         },
       },
       productAuditSink: {
@@ -171,8 +174,8 @@ describe("AuthKit session routes", () => {
     expect(response.json()).not.toHaveProperty("clientSecret");
     expect(response.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("vayada_workos_session=creator-sealed-session"),
-        expect.stringContaining("vayada_auth_csrf="),
+        expect.stringContaining("vayada_fp_workos_session=creator-sealed-session"),
+        expect.stringContaining("vayada_fp_auth_csrf="),
       ]),
     );
     expect(auditEvents).toEqual([
@@ -191,6 +194,11 @@ describe("AuthKit session routes", () => {
     let authorizationInput: Parameters<AuthKitClient["getAuthorizationUrl"]>[0] | undefined;
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
       authKitClient: createAuthKitClient({
         getAuthorizationUrl(input) {
           authorizationInput = input;
@@ -217,6 +225,373 @@ describe("AuthKit session routes", () => {
     });
   });
 
+  it.each([
+    ["platform-admin", "https://admin.localhost"],
+    ["marketplace-web", "https://marketplace.localhost"],
+    ["booking-admin", "https://admin.booking.localhost"],
+    ["pms-web", "https://pms.localhost"],
+    ["affiliate-dashboard", "https://affiliate.localhost"],
+  ] as const)("uses the configured first-party callback for %s", async (surface, publicOrigin) => {
+    let authorizationInput: Parameters<AuthKitClient["getAuthorizationUrl"]>[0] | undefined;
+    app = buildAuthSessionApp({
+      allowedOrigins: [publicOrigin],
+      cookieSecure: true,
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          authorizationInput = input;
+          return "https://auth.workos.test/google";
+        },
+      }),
+      surfacePolicies: {
+        [surface]: {
+          requiredOrganizationKind: "platform",
+          publicOrigin,
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const url = new URL(publicOrigin);
+    const response = await app.inject({
+      method: "GET",
+      url:
+        `/auth/oauth/google/start?surface=${surface}&flow=login` +
+        `&return_to=${encodeURIComponent(`${publicOrigin}/login?auth=callback`)}` +
+        `&error_return_to=${encodeURIComponent(`${publicOrigin}/login`)}`,
+      headers: {
+        "x-forwarded-host": `${url.host}, attacker.example`,
+        "x-forwarded-proto": `${url.protocol.slice(0, -1)}, http`,
+      },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(authorizationInput?.redirectUri).toBe(`${publicOrigin}/auth/oauth/google/callback`);
+    const stateCookie = (response.headers["set-cookie"] as string[]).find((value) =>
+      value.startsWith("vayada_fp_oauth_state="),
+    );
+    expect(stateCookie).toContain("Path=/auth");
+    expect(stateCookie).toContain("SameSite=Lax");
+    expect(stateCookie).toContain("HttpOnly");
+    expect(stateCookie).toContain("Secure");
+    expect(stateCookie).not.toContain("Domain=");
+  });
+
+  it.each([
+    { host: "attacker.example", proto: "https" },
+    { host: "api.localhost", proto: "javascript" },
+    { host: "attacker.example, api.localhost", proto: "https, http" },
+  ])("rejects untrusted forwarded callback origin $host/$proto", async ({ host, proto }) => {
+    const getAuthorizationUrl = vi.fn(() => "https://auth.workos.test/google");
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({ getAuthorizationUrl }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: { "x-forwarded-host": host, "x-forwarded-proto": proto },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "invalid_callback_origin" });
+    expect(getAuthorizationUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a callback delivered through the wrong public origin", async () => {
+    let state = "";
+    const authenticateWithCode = vi.fn(async () => session);
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return "https://auth.workos.test/google";
+        },
+        authenticateWithCode,
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+    const start = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: {
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: {
+        cookie: cookieHeader(start, "vayada_fp_oauth_state"),
+        "x-forwarded-host": "attacker.example",
+        "x-forwarded-proto": "https",
+      },
+    });
+
+    expect(callback.statusCode).toBe(400);
+    expect(callback.json()).toEqual({ error: "invalid_callback_origin" });
+    expect(authenticateWithCode).not.toHaveBeenCalled();
+  });
+
+  it("uses host-only HttpOnly cookies and response CSRF tokens in first-party mode", async () => {
+    app = buildAuthSessionApp({
+      cookieSecure: true,
+      cookieDomain: ".localhost",
+      surfacePolicies: {
+        "platform-admin": {
+          requiredOrganizationKind: "platform",
+          publicOrigin: "https://admin.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://admin.localhost" },
+      payload: {
+        email: "f.maliqi@vayada.com",
+        password: "correct-password",
+        surface: "platform-admin",
+      },
+    });
+
+    expect(login.statusCode).toBe(200);
+    const csrfToken = login.json().csrfToken as string;
+    expect(csrfToken).toEqual(expect.any(String));
+    const loginCookies = login.headers["set-cookie"] as string[];
+    for (const [activeCookieName, legacyCookieName] of [
+      ["vayada_fp_workos_session", "vayada_workos_session"],
+      ["vayada_fp_auth_csrf", "vayada_auth_csrf"],
+    ]) {
+      const cookie = loginCookies.find(
+        (value) => value.startsWith(`${activeCookieName}=`) && !value.includes("Domain="),
+      );
+      const legacyCleanup = loginCookies.find(
+        (value) => value.startsWith(`${legacyCookieName}=`) && value.includes("Domain=.localhost"),
+      );
+      expect(cookie).toContain("Path=/auth");
+      expect(cookie).toContain("SameSite=Lax");
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+      expect(cookie).not.toContain("Domain=");
+      expect(legacyCleanup).toContain("Max-Age=0");
+    }
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: {
+        cookie: [
+          cookieHeader(login, "vayada_fp_workos_session"),
+          cookieHeader(login, "vayada_fp_auth_csrf"),
+        ].join("; "),
+        origin: "https://admin.localhost",
+        "x-vayada-csrf": csrfToken,
+      },
+      payload: { surface: "platform-admin" },
+    });
+
+    expect(refresh.statusCode).toBe(200);
+    expect(refresh.json().csrfToken).toBe(csrfToken);
+  });
+
+  it("preserves cross-origin cookie attributes in compatibility mode", async () => {
+    app = buildAuthSessionApp({ cookieSecure: true, cookieDomain: ".localhost" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://admin.localhost" },
+      payload: {
+        email: "f.maliqi@vayada.com",
+        password: "correct-password",
+        surface: "platform-admin",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const sessionCookie = (response.headers["set-cookie"] as string[]).find((value) =>
+      value.startsWith("vayada_workos_session="),
+    );
+    const csrfCookie = (response.headers["set-cookie"] as string[]).find((value) =>
+      value.startsWith("vayada_auth_csrf="),
+    );
+    expect(sessionCookie).toContain("SameSite=None");
+    expect(sessionCookie).toContain("HttpOnly");
+    expect(sessionCookie).toContain("Secure");
+    expect(sessionCookie).toContain("Domain=.localhost");
+    expect(csrfCookie).toContain("SameSite=None");
+    expect(csrfCookie).toContain("Secure");
+    expect(csrfCookie).toContain("Domain=.localhost");
+    expect(csrfCookie).not.toContain("HttpOnly");
+  });
+
+  it.each([
+    [
+      "legacy cookies first",
+      "vayada_workos_session=legacy-domain-session; " +
+        "vayada_auth_csrf=legacy-domain-csrf; " +
+        "vayada_fp_workos_session=first-party-session; " +
+        "vayada_fp_auth_csrf=first-party-csrf",
+    ],
+    [
+      "legacy cookies last",
+      "vayada_fp_workos_session=first-party-session; " +
+        "vayada_fp_auth_csrf=first-party-csrf; " +
+        "vayada_workos_session=newer-compatibility-session; " +
+        "vayada_auth_csrf=newer-compatibility-csrf",
+    ],
+  ])("isolates first-party cookies with %s", async (_order, cookie) => {
+    let authenticatedSealedSession = "";
+    app = buildAuthSessionApp({
+      cookieSecure: true,
+      cookieDomain: ".localhost",
+      authKitClient: createAuthKitClient({
+        async authenticateSession(input) {
+          authenticatedSealedSession = input.sealedSession;
+          return { ...session, sealedSession: input.sealedSession };
+        },
+      }),
+      surfacePolicies: {
+        "platform-admin": {
+          requiredOrganizationKind: "platform",
+          publicOrigin: "https://admin.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=platform-admin",
+      headers: {
+        cookie,
+        origin: "https://admin.localhost",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(authenticatedSealedSession).toBe("first-party-session");
+    expect(response.json().csrfToken).toBe("first-party-csrf");
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^vayada_workos_session=;.*Max-Age=0.*Domain=\.localhost/),
+        expect.stringMatching(/^vayada_auth_csrf=;.*Max-Age=0.*Domain=\.localhost/),
+      ]),
+    );
+  });
+
+  it("fails closed when active first-party session or CSRF cookies are duplicated", async () => {
+    app = buildAuthSessionApp({
+      cookieSecure: true,
+      surfacePolicies: {
+        "platform-admin": {
+          requiredOrganizationKind: "platform",
+          publicOrigin: "https://admin.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const duplicateSession = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=platform-admin",
+      headers: {
+        cookie:
+          "vayada_fp_workos_session=first-session; " + "vayada_fp_workos_session=second-session",
+        origin: "https://admin.localhost",
+      },
+    });
+    expect(duplicateSession.statusCode).toBe(401);
+    expect(duplicateSession.json()).toEqual({ error: "missing_session" });
+
+    const duplicateCsrf = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: {
+        cookie:
+          "vayada_fp_workos_session=sealed-session; " +
+          "vayada_fp_auth_csrf=csrf-token; vayada_fp_auth_csrf=csrf-token",
+        origin: "https://admin.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: { surface: "platform-admin" },
+    });
+    expect(duplicateCsrf.statusCode).toBe(403);
+    expect(duplicateCsrf.json()).toEqual({ error: "csrf_rejected" });
+  });
+
+  it("fails closed when the active first-party OAuth-state cookie is duplicated", async () => {
+    let state = "";
+    const authenticateWithCode = vi.fn(async () => session);
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      cookieSecure: true,
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return "https://auth.workos.test/google";
+        },
+        authenticateWithCode,
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+    const forwardedHeaders = {
+      "x-forwarded-host": "marketplace.localhost",
+      "x-forwarded-proto": "https",
+    };
+    const start = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: forwardedHeaders,
+    });
+    const stateCookie = cookieHeader(start, "vayada_fp_oauth_state");
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: {
+        ...forwardedHeaders,
+        cookie: `${stateCookie}; ${stateCookie}`,
+      },
+    });
+
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toContain("auth_error=");
+    expect(authenticateWithCode).not.toHaveBeenCalled();
+  });
+
   it("logs in an existing marketplace account through Google OAuth callback", async () => {
     let state = "";
     const marketplaceSession: AuthKitSession = {
@@ -232,6 +607,8 @@ describe("AuthKit session routes", () => {
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
+      cookieSecure: true,
+      cookieDomain: ".localhost",
       authKitClient: createAuthKitClient({
         getAuthorizationUrl(input) {
           state = input.state;
@@ -266,6 +643,8 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
         },
       },
     });
@@ -276,22 +655,47 @@ describe("AuthKit session routes", () => {
         "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
         "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin%3Fauth%3Dcallback" +
         "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
-      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+      headers: {
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
     });
+    expect(start.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^vayada_oauth_state=;.*Max-Age=0.*Domain=\.localhost/),
+      ]),
+    );
     const callback = await app.inject({
       method: "GET",
       url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
-      headers: { cookie: cookieHeader(start, "vayada_oauth_state") },
+      headers: {
+        cookie: cookieHeader(start, "vayada_fp_oauth_state"),
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
     });
 
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toBe("https://marketplace.localhost/login?auth=callback");
     expect(callback.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("vayada_workos_session=google-sealed-session"),
-        expect.stringContaining("vayada_auth_csrf="),
+        expect.stringContaining("vayada_fp_workos_session=google-sealed-session"),
+        expect.stringContaining("vayada_fp_auth_csrf="),
       ]),
     );
+    const restored = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=marketplace-web",
+      headers: {
+        cookie: [
+          cookieHeader(callback, "vayada_fp_workos_session"),
+          cookieHeader(callback, "vayada_fp_auth_csrf"),
+        ].join("; "),
+        origin: "https://marketplace.localhost",
+      },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().csrfToken).toEqual(expect.any(String));
   });
 
   it("signs up a Google account and redirects to onboarding without product provisioning", async () => {
@@ -3764,11 +4168,15 @@ describe("AuthKit session routes", () => {
         }
       });
       app = buildAuthSessionApp({
+        cookieSecure: true,
+        cookieDomain: ".localhost",
         authKitClient: createAuthKitClient({ authenticateSession, getLogoutUrl }),
         productAuditSink: { record: recordAudit },
         surfacePolicies: {
           "platform-admin": {
             requiredOrganizationKind: "platform",
+            publicOrigin: "https://admin.localhost",
+            firstPartySession: true,
             logoutReturnUrl: "https://admin.localhost/login",
             selectedOrganizationCookieName: "vayada_platform_selected_org",
           },
@@ -3780,8 +4188,8 @@ describe("AuthKit session routes", () => {
         url: "/auth/logout",
         headers: {
           cookie:
-            "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token; " +
-            "vayada_platform_selected_org=org_workos_platform",
+            "vayada_fp_workos_session=sealed-session; vayada_fp_auth_csrf=csrf-token; " +
+            "vayada_fp_platform_selected_org=org_workos_platform",
           origin: "https://admin.localhost",
           "x-vayada-csrf": "csrf-token",
         },
@@ -3796,15 +4204,21 @@ describe("AuthKit session routes", () => {
       });
       const setCookieHeaders = response.headers["set-cookie"];
       expect(Array.isArray(setCookieHeaders)).toBe(true);
-      for (const cookieName of [
-        "vayada_workos_session",
-        "vayada_auth_csrf",
-        "vayada_platform_selected_org",
+      for (const [activeCookieName, legacyCookieName] of [
+        ["vayada_fp_workos_session", "vayada_workos_session"],
+        ["vayada_fp_auth_csrf", "vayada_auth_csrf"],
+        ["vayada_fp_oauth_state", "vayada_oauth_state"],
+        ["vayada_fp_platform_selected_org", "vayada_platform_selected_org"],
       ]) {
-        const expiredCookie = (setCookieHeaders as string[]).find((cookie) =>
-          cookie.startsWith(`${cookieName}=`),
+        const expiredCookie = (setCookieHeaders as string[]).find(
+          (cookie) => cookie.startsWith(`${activeCookieName}=`) && !cookie.includes("Domain="),
         );
         expect(expiredCookie).toContain("Max-Age=0");
+        const expiredDomainCookie = (setCookieHeaders as string[]).find(
+          (cookie) =>
+            cookie.startsWith(`${legacyCookieName}=`) && cookie.includes("Domain=.localhost"),
+        );
+        expect(expiredDomainCookie).toContain("Max-Age=0");
       }
       expect(authenticateSession).toHaveBeenCalledTimes(1);
       expect(recordAudit).toHaveBeenCalledTimes(expectedAuditCalls);
@@ -3838,6 +4252,9 @@ function buildAuthSessionApp(
     tokenVerifier?: TokenVerifier;
     legacyMarketplaceJwtSecret?: string;
     allowedOrigins?: string[];
+    compatibilityCallbackOrigin?: string;
+    cookieSecure?: boolean;
+    cookieDomain?: string;
     surfacePolicies?: Partial<
       Record<
         "platform-admin" | "booking-admin" | "pms-web" | "affiliate-dashboard" | "marketplace-web",
@@ -3848,6 +4265,8 @@ function buildAuthSessionApp(
     hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
   } = {},
 ) {
+  const compatibilityCallbackOrigin =
+    options.compatibilityCallbackOrigin ?? "https://api.localhost";
   return buildApp({
     logger: false,
     authSession: {
@@ -3859,11 +4278,18 @@ function buildAuthSessionApp(
       },
       tokenVerifier: options.tokenVerifier ?? createTokenVerifier(),
       logoutReturnUrl: "https://admin.localhost/login",
-      allowedOrigins: options.allowedOrigins ?? ["https://admin.localhost"],
+      allowedOrigins: [
+        ...new Set([
+          ...(options.allowedOrigins ?? ["https://admin.localhost"]),
+          compatibilityCallbackOrigin,
+        ]),
+      ],
+      compatibilityCallbackOrigin,
       requiredOrganizationKind: "platform",
       surfacePolicies: options.surfacePolicies,
       oauthStateSecret: "test-oauth-state-secret",
-      cookieSecure: false,
+      cookieSecure: options.cookieSecure ?? false,
+      ...(options.cookieDomain ? { cookieDomain: options.cookieDomain } : {}),
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
       profileImageMediaRepository: options.profileImageMediaRepository,
       hotelAccountInviteOnboarding: options.hotelAccountInviteOnboarding,

@@ -1,4 +1,4 @@
--- Migration: 0061_public_bookability_gallery_media
+-- Migration: 0062_public_bookability_gallery_media
 -- Owner: domain-distribution / domain-hotels
 -- See: VAY-1219
 --

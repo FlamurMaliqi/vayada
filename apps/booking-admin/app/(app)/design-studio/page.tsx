@@ -13,7 +13,9 @@ import {
   MAX_PROPERTY_GALLERY_PHOTOS,
   uploadPropertyGalleryImages,
   uploadSingleImage,
+  uploadSingleImageWithMediaReference,
 } from "@/lib/utils/uploadImage";
+import { headerLogoUploadError } from "@/lib/utils/headerLogo";
 import { generateColorPalette } from "@/lib/utils/colors";
 import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
 
@@ -39,6 +41,8 @@ export default function DesignStudioPage() {
 
   // Media & Content state
   const [heroImage, setHeroImage] = useState("");
+  const [headerLogo, setHeaderLogo] = useState("");
+  const [headerLogoMediaObjectId, setHeaderLogoMediaObjectId] = useState<string | null>(null);
   const [heroHeading, setHeroHeading] = useState("");
   const [heroSubtext, setHeroSubtext] = useState("");
   const [propertyName, setPropertyName] = useState("");
@@ -50,6 +54,7 @@ export default function DesignStudioPage() {
   const [galleryOverflowCount, setGalleryOverflowCount] = useState(0);
   const [galleryBusy, setGalleryBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const designHotelIdRef = useRef<string | null>(null);
   const propertyIdRef = useRef<string | null>(null);
   const profileRevisionRef = useRef<number | null>(null);
@@ -158,8 +163,10 @@ export default function DesignStudioPage() {
         return sharedHotelSetupApi.getPublicPropertyProfile(propertyId);
       }),
     ])
-      .then(([settings, property, publicProfile]) => {
-        applyPublicGallery(publicProfile);
+      .then(([settings, property, canonicalProfile]) => {
+        applyPublicGallery(canonicalProfile);
+        setHeaderLogo(settings.header_logo || "");
+        setHeaderLogoMediaObjectId(settings.header_logo_media_object_id);
         if (settings.hero_image) setHeroImage(settings.hero_image);
         if (settings.hero_heading) setHeroHeading(settings.hero_heading);
         if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
@@ -178,6 +185,7 @@ export default function DesignStudioPage() {
   }, [applyPublicGallery, loadAttempt]);
 
   const [uploading, setUploading] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
 
   const refreshCanonicalGallery = async () => {
     const propertyId = propertyIdRef.current;
@@ -412,6 +420,73 @@ export default function DesignStudioPage() {
     }
   };
 
+  const handleLogoUpload = async (file: File) => {
+    const validationError = headerLogoUploadError(file);
+    if (validationError) {
+      setFeedback({ type: "error", message: validationError });
+      if (logoInputRef.current) logoInputRef.current.value = "";
+      return;
+    }
+
+    const hotelId = designHotelIdRef.current;
+    if (!hotelId) {
+      setFeedback({
+        type: "error",
+        message:
+          "The Booking property is unavailable. Refresh Design Studio before uploading a logo.",
+      });
+      if (logoInputRef.current) logoInputRef.current.value = "";
+      return;
+    }
+
+    const previousLogo = headerLogo;
+    const previousLogoMediaObjectId = headerLogoMediaObjectId;
+    const previewUrl = URL.createObjectURL(file);
+    setHeaderLogo(previewUrl);
+    setFeedback(null);
+
+    try {
+      setUploadingLogo(true);
+      const uploadedLogo = await uploadSingleImageWithMediaReference(
+        file,
+        "booking.header_logo",
+        hotelId,
+      );
+
+      URL.revokeObjectURL(previewUrl);
+      setHeaderLogo(uploadedLogo.publicUrl);
+      setHeaderLogoMediaObjectId(uploadedLogo.mediaObjectId);
+      try {
+        await settingsService.updateDesignSettings(
+          { header_logo_media_object_id: uploadedLogo.mediaObjectId },
+          hotelId,
+        );
+        await publishPublicBookabilityProfile(hotelId);
+      } catch {
+        setFeedback({
+          type: "error",
+          message:
+            "Logo uploaded, but the booking header could not be refreshed. Save to try again.",
+        });
+      }
+    } catch (error) {
+      console.error("Header logo upload failed:", error);
+      URL.revokeObjectURL(previewUrl);
+      setHeaderLogo(previousLogo);
+      setHeaderLogoMediaObjectId(previousLogoMediaObjectId);
+      setFeedback({ type: "error", message: "Logo upload failed. Please try again." });
+    } finally {
+      setUploadingLogo(false);
+      if (logoInputRef.current) logoInputRef.current.value = "";
+    }
+  };
+
+  const removeHeaderLogo = () => {
+    setHeaderLogo("");
+    setHeaderLogoMediaObjectId(null);
+    if (logoInputRef.current) logoInputRef.current.value = "";
+  };
+
   const resetContent = () => {
     setHeroHeading("");
     setHeroSubtext("");
@@ -425,6 +500,7 @@ export default function DesignStudioPage() {
       setFeedback(null);
       await settingsService.updateDesignSettings(
         {
+          header_logo_media_object_id: headerLogoMediaObjectId,
           hero_image: heroImage,
           hero_heading: heroHeading,
           hero_subtext: heroSubtext,
@@ -558,6 +634,11 @@ export default function DesignStudioPage() {
                 fileInputRef={fileInputRef}
                 handleImageUpload={handleImageUpload}
                 removeHeroImage={removeHeroImage}
+                headerLogo={headerLogo}
+                logoInputRef={logoInputRef}
+                handleLogoUpload={handleLogoUpload}
+                removeHeaderLogo={removeHeaderLogo}
+                uploadingLogo={uploadingLogo}
                 resetContent={resetContent}
                 galleryImages={galleryImages}
                 galleryAtCapacity={
@@ -585,7 +666,11 @@ export default function DesignStudioPage() {
 
           {/* Save button — desktop inline */}
           <div className="hidden lg:block pt-3 shrink-0 border-t border-gray-100">
-            <SaveButton onClick={handleSave} saving={saving} disabled={uploading || galleryBusy} />
+            <SaveButton
+              onClick={handleSave}
+              saving={saving}
+              disabled={uploading || uploadingLogo || galleryBusy}
+            />
           </div>
         </div>
 
@@ -645,12 +730,20 @@ export default function DesignStudioPage() {
               {/* Navigation */}
               <div className="absolute top-0 left-0 right-0 z-10">
                 <div className="flex items-center justify-between px-4 h-10">
-                  <span
-                    className="text-[11px] font-semibold text-white"
-                    style={{ fontFamily: currentFont.bodyFamily }}
-                  >
-                    {propertyName || "Your Hotel"}
-                  </span>
+                  {headerLogo ? (
+                    <img
+                      src={headerLogo}
+                      alt={`${propertyName || "Property"} logo`}
+                      className="max-h-5 max-w-[150px] object-contain object-left"
+                    />
+                  ) : (
+                    <span
+                      className="text-[11px] font-semibold text-white"
+                      style={{ fontFamily: currentFont.bodyFamily }}
+                    >
+                      {propertyName || "Your Hotel"}
+                    </span>
+                  )}
                   <div className="flex items-center gap-1.5">
                     <span className="px-2.5 py-0.5 text-[9px] font-semibold text-white rounded-full bg-primary-600">
                       Contact
@@ -1207,7 +1300,7 @@ export default function DesignStudioPage() {
       <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-gray-200 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <button
           onClick={handleSave}
-          disabled={saving || uploading || galleryBusy}
+          disabled={saving || uploading || uploadingLogo || galleryBusy}
           className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 bg-primary-500 text-white text-[14px] font-medium rounded-lg hover:bg-primary-600 disabled:opacity-50 transition-colors"
         >
           {saving ? (
