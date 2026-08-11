@@ -3,14 +3,33 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   assertEnabled: vi.fn(),
   get: vi.fn(),
+  post: vi.fn(),
+  put: vi.fn(),
   patch: vi.fn(),
+  uploadImages: vi.fn(),
   resolvePropertyId: vi.fn(),
 }));
 
 vi.mock("../api/pmsOperationsClient", () => ({
   assertPmsOperationsReadModelEnabled: mocks.assertEnabled,
-  pmsOperationsClient: { get: mocks.get, post: vi.fn(), patch: mocks.patch },
+  pmsOperationsClient: {
+    get: mocks.get,
+    post: mocks.post,
+    put: mocks.put,
+    patch: mocks.patch,
+  },
   pmsOperationsRequestOptions: { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
+}));
+
+vi.mock("../upload", () => ({
+  pmsRoomMediaResource: (propertyId: string, roomTypeId?: string) => ({
+    product: "hotel_catalog",
+    resourceType: "property",
+    resourceId: propertyId,
+    propertyId,
+    ...(roomTypeId ? { targetResourceId: roomTypeId } : {}),
+  }),
+  uploadService: { uploadImages: mocks.uploadImages },
 }));
 
 vi.mock("../api/pmsPropertyClient", () => ({
@@ -45,6 +64,7 @@ describe("roomsService.update", () => {
         },
         amenities: [],
         media: [],
+        roomMediaRevision: 3,
         baseRate: { amountDecimal: "180.00", currency: "EUR" },
         active: true,
         sortOrder: 1,
@@ -106,6 +126,89 @@ describe("roomsService.update", () => {
     );
     expect(mocks.patch).not.toHaveBeenCalled();
   });
+
+  it("persists changed room media through the revisioned assignment endpoint", async () => {
+    const currentItem = {
+      roomTypeId: "room-type-1",
+      name: "Alpine Suite",
+      description: "Suite",
+      category: "suite",
+      occupancyLimits: { total: 2 },
+      attributes: {},
+      amenities: [],
+      media: [
+        {
+          mediaObjectId: "11111111-1111-4111-8111-111111111111",
+          url: "https://cdn.example.com/old.webp",
+        },
+      ],
+      roomMediaRevision: 3,
+      baseRate: { amountDecimal: "180.00", currency: "EUR" },
+      active: true,
+      sortOrder: 1,
+      ratePlans: [],
+      rateRulesSummary: {
+        minStayNights: null,
+        maxStayNights: null,
+        closedToArrival: false,
+        closedToDeparture: false,
+        activeRuleCount: 0,
+      },
+      roomCount: 2,
+    };
+    mocks.patch.mockResolvedValueOnce({
+      contractVersion: "pms-operations.v1",
+      propertyId: "pms-property-1",
+      item: currentItem,
+    });
+    mocks.put.mockResolvedValue({
+      propertyId: "pms-property-1",
+      roomTypeId: "room-type-1",
+      roomMediaRevision: 4,
+    });
+    mocks.get.mockResolvedValue({
+      propertyId: "pms-property-1",
+      item: {
+        ...currentItem,
+        media: [
+          {
+            mediaObjectId: "22222222-2222-4222-8222-222222222222",
+            url: "https://cdn.example.com/new.webp",
+          },
+        ],
+        roomMediaRevision: 4,
+      },
+    });
+
+    const updated = await roomsService.update("room-type-1", {
+      images: [
+        {
+          url: "https://cdn.example.com/new.webp",
+          platformMediaObjectId: "22222222-2222-4222-8222-222222222222",
+        },
+      ],
+    });
+
+    expect(mocks.put).toHaveBeenCalledWith(
+      "/api/pms/properties/pms-property-1/room-types/room-type-1/media",
+      {
+        expectedRoomMediaRevision: 3,
+        assignments: [
+          {
+            mediaObjectId: "22222222-2222-4222-8222-222222222222",
+            altText: null,
+            sortOrder: 0,
+          },
+        ],
+      },
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Idempotency-Key": expect.any(String) }),
+      }),
+    );
+    expect(updated.images[0]).toMatchObject({
+      platformMediaObjectId: "22222222-2222-4222-8222-222222222222",
+    });
+  });
 });
 
 describe("roomsService.getPropertyPlan", () => {
@@ -135,5 +238,79 @@ describe("roomsService.getPropertyPlan", () => {
     expect(mocks.get).toHaveBeenCalledWith("/api/pms/properties/pms-property-1/plan-limits", {
       headers: { "X-Vayada-Omit-Hotel-Context": "true" },
     });
+  });
+});
+
+describe("roomsService.create", () => {
+  it("uploads staged files only after receiving the canonical room UUID", async () => {
+    vi.clearAllMocks();
+    mocks.resolvePropertyId.mockResolvedValue("pms-property-1");
+    const item = {
+      roomTypeId: "room-type-1",
+      name: "Alpine Suite",
+      description: "Suite",
+      category: "suite",
+      occupancyLimits: { total: 2 },
+      attributes: {},
+      amenities: [],
+      media: [],
+      roomMediaRevision: 1,
+      baseRate: { amountDecimal: "180.00", currency: "EUR" },
+      active: true,
+      sortOrder: 1,
+      ratePlans: [],
+      rateRulesSummary: {
+        minStayNights: null,
+        maxStayNights: null,
+        closedToArrival: false,
+        closedToDeparture: false,
+        activeRuleCount: 0,
+      },
+      roomCount: 2,
+    };
+    mocks.post.mockResolvedValue({ propertyId: "pms-property-1", item });
+    mocks.uploadImages.mockResolvedValue({
+      images: [
+        {
+          platformMediaObjectId: "22222222-2222-4222-8222-222222222222",
+          url: "https://cdn.example.com/new.webp",
+        },
+      ],
+      total: 1,
+    });
+    mocks.put.mockResolvedValue({ roomMediaRevision: 2 });
+    mocks.get.mockResolvedValue({
+      propertyId: "pms-property-1",
+      item: {
+        ...item,
+        roomMediaRevision: 2,
+        media: [
+          {
+            mediaObjectId: "22222222-2222-4222-8222-222222222222",
+            url: "https://cdn.example.com/new.webp",
+          },
+        ],
+      },
+    });
+    const file = new File([new Uint8Array([1])], "room.jpg", { type: "image/jpeg" });
+
+    await roomsService.create({
+      name: "Alpine Suite",
+      images: [{ url: "blob:room-preview", pendingFile: file }],
+    });
+
+    expect(mocks.post.mock.calls[0]?.[1]).toMatchObject({ images: [] });
+    expect(mocks.uploadImages).toHaveBeenCalledWith([file], {
+      product: "hotel_catalog",
+      resourceType: "property",
+      resourceId: "pms-property-1",
+      propertyId: "pms-property-1",
+      targetResourceId: "room-type-1",
+    });
+    expect(mocks.put).toHaveBeenCalledWith(
+      "/api/pms/properties/pms-property-1/room-types/room-type-1/media",
+      expect.objectContaining({ expectedRoomMediaRevision: 1 }),
+      expect.any(Object),
+    );
   });
 });
