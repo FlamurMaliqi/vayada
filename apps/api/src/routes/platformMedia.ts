@@ -13,6 +13,7 @@ import {
 } from "@vayada/domain-marketplace";
 import {
   PROPERTY_MEDIA_AUTHORIZATION,
+  PROPERTY_MEDIA_PUBLIC_VARIANTS,
   PROPERTY_MEDIA_UPLOAD_PURPOSES,
   type PropertyMediaLibraryItem,
 } from "@vayada/domain-hotels";
@@ -505,7 +506,8 @@ export function isAutoApprovedPublicMediaPurpose(purpose: PlatformMediaPurpose):
   return (
     purpose === "identity.user.profile_image" ||
     purpose === "booking.header_logo" ||
-    purpose === "marketplace.creator.profile_image"
+    purpose === "marketplace.creator.profile_image" ||
+    purpose === "pms.room_type.media"
   );
 }
 
@@ -669,7 +671,8 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     maxFileCount: 20,
     maxImagePixels: defaultMaxImagePixels,
     resizeOversizedPublicImages: true,
-    privateOnly: true,
+    autoApprovePublicOnFinalize: isAutoApprovedPublicMediaPurpose("pms.room_type.media"),
+    privateOnly: false,
     targetResourceProduct: "pms",
     targetResourceType: "room_type",
     requiredVariants: publicImageVariants,
@@ -2341,6 +2344,24 @@ function serializeMediaObject(
   mediaPathPrefix: string,
 ): PlatformMediaObjectRecord | PropertyMediaLibraryItem {
   if (!isCanonicalHotelMediaSession(session)) return mediaObject;
+  if (isAutoApprovedPublicMediaPurpose(session.purpose)) {
+    return {
+      mediaObjectId: mediaObject.mediaId,
+      purpose: mediaObject.purpose as PropertyMediaLibraryItem["purpose"],
+      status: "public_ready",
+      publicVariants: mediaObject.variants
+        .filter(
+          (variant) =>
+            PROPERTY_MEDIA_PUBLIC_VARIANTS.includes(variant.variantName as never) &&
+            variant.publicCdnUrl,
+        )
+        .map((variant) => ({
+          variantName:
+            variant.variantName as PropertyMediaLibraryItem["publicVariants"][number]["variantName"],
+          publicUrl: variant.publicCdnUrl!,
+        })),
+    };
+  }
   if (!isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix })) {
     throw new Error("Property media cannot be exposed before safe variants are persisted");
   }
@@ -2367,7 +2388,11 @@ function reusableCompletedMediaObjects(
     if (
       !expectedMediaIds.delete(mediaObject.mediaId) ||
       mediaObject.purpose !== session.purpose ||
-      !isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix })
+      !(isAutoApprovedPublicMediaPurpose(session.purpose)
+        ? mediaObject.visibility === "public" &&
+          mediaObject.approvalStatus === "approved" &&
+          mediaObject.lifecycleStatus === "active"
+        : isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix }))
     ) {
       return null;
     }

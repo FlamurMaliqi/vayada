@@ -101,7 +101,10 @@ export function createPgPlatformMediaRepository(
       if (
         (isAutoApproved && requestedVisibility !== "public") ||
         (!isAutoApproved && input.policy.purpose !== input.request.purpose) ||
-        (isPropertyMedia && (requestedVisibility !== "private" || !input.policy.privateOnly))
+        (isPropertyMedia &&
+          (isAutoApproved
+            ? requestedVisibility !== "public" || input.policy.privateOnly
+            : requestedVisibility !== "private" || !input.policy.privateOnly))
       ) {
         throw new Error("Persistent platform media policy does not support this upload");
       }
@@ -617,7 +620,7 @@ function mediaObjectFor(
   mediaPathPrefix: string,
   now: string,
 ): PlatformMediaObjectRecord {
-  if (isCanonicalPropertyMediaRequest(session)) {
+  if (isCanonicalPropertyMediaRequest(session) && !isAutoApprovedPublicSession(session)) {
     assertCanonicalPrivatePropertyVariants({
       mediaId: file.sessionFile.mediaId,
       variants,
@@ -721,11 +724,27 @@ function assertCompletedPropertyMediaIsCanonical(
       (mediaObject) =>
         !expectedMediaIds.delete(mediaObject.mediaId) ||
         mediaObject.purpose !== session.purpose ||
-        !isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix }),
+        !(isAutoApprovedPublicSession(session)
+          ? isCanonicalPublicRoomMediaObject(mediaObject)
+          : isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix })),
     )
   ) {
     throw new Error("Completed property media is not reusable");
   }
+}
+
+function isCanonicalPublicRoomMediaObject(mediaObject: PlatformMediaObjectRecord): boolean {
+  return (
+    mediaObject.purpose === "pms.room_type.media" &&
+    mediaObject.visibility === "public" &&
+    mediaObject.requestedVisibility === "public" &&
+    mediaObject.approvalStatus === "approved" &&
+    mediaObject.lifecycleStatus === "active" &&
+    mediaObject.variants.length > 0 &&
+    mediaObject.variants.every(
+      (variant) => variant.visibility === "public" && variant.publicCdnUrl?.startsWith("https://"),
+    )
+  );
 }
 
 async function insertMediaObject(

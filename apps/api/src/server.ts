@@ -49,6 +49,9 @@ import { createPgPropertySetupDraftCommandRepository } from "./domains/propertyS
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
 import { createPgPropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
+import { createPmsRoomAmenityVocabularyValidationPort } from "./domains/pmsRoomAmenityVocabulary.js";
+import { createPgPmsRoomPublicationCommandRepository } from "./domains/pmsRoomPublicationCommandRepository.js";
+import { createPgPmsRoomPublicationReadModel } from "./domains/pmsRoomPublicationReadModel.js";
 import { createPgPropertySetupFinanceOwnerScopePort } from "./domains/propertySetupFinanceOwnerScope.js";
 import { createPgPropertySetupPmsOwnerRepository } from "./domains/propertySetupPmsOwnerRepository.js";
 import { createPgPmsPricingReadModel } from "./domains/pmsPricingReadModel.js";
@@ -503,6 +506,7 @@ const propertySetupPmsRuntime = (() => {
     roomEvidence: { roomFacts, roomCapacity: roomFacts },
   });
   return {
+    roomFacts,
     provider: createPropertySetupPmsStateProvider({
       owner,
       pricing: pmsPricingReadModel,
@@ -528,6 +532,26 @@ const propertySetupPmsRuntime = (() => {
     ],
   };
 })();
+
+const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
+  ? (() => {
+      const amenityVocabulary = createPmsRoomAmenityVocabularyValidationPort();
+      const mediaResolver = createHotelMediaResolutionPort(bookingDesignMediaAdapter);
+      const commandRepository = createPgPmsRoomPublicationCommandRepository({
+        connectionString: targetDatabaseUrl,
+        amenityVocabulary,
+        mediaResolver,
+      });
+      const readModel = createPgPmsRoomPublicationReadModel({
+        connectionString: targetDatabaseUrl,
+        roomFacts: propertySetupPmsRuntime.roomFacts,
+        roomCapacity: propertySetupPmsRuntime.roomFacts,
+        amenityVocabulary,
+        mediaResolver,
+      });
+      return { commandRepository, readModel };
+    })()
+  : undefined;
 
 const bookingGuestPolicyCurrentOwnerEvidence = createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
   booking: bookingGuestPolicyRepository,
@@ -745,6 +769,13 @@ const app = buildApp({
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
+  pmsRoomPublication: pmsRoomPublicationRuntime
+    ? {
+        mediaCommandPort: pmsRoomPublicationRuntime.commandRepository,
+        amenitiesCommandPort: pmsRoomPublicationRuntime.commandRepository,
+        snapshotPort: pmsRoomPublicationRuntime.readModel,
+      }
+    : undefined,
   pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
   financeRepository,
@@ -863,6 +894,8 @@ app.addHook("onClose", async () => {
     bookingDesignRepository.close(),
     bookingDesignCatalogEvidenceRepository?.close(),
     bookingDesignMediaAdapter?.close?.(),
+    pmsRoomPublicationRuntime?.commandRepository.close(),
+    pmsRoomPublicationRuntime?.readModel.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });

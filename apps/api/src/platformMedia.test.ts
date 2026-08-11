@@ -108,7 +108,9 @@ type MediaCreateResponse = {
     headers: Record<string, string>;
     expiresAt: string;
   }>;
-  mediaObjects?: Array<PlatformMediaObjectRecord | PrivateHotelMediaResponse>;
+  mediaObjects?: Array<
+    PlatformMediaObjectRecord | PrivateHotelMediaResponse | PublicRoomMediaResponse
+  >;
   sideEffects?: string[];
 };
 
@@ -132,6 +134,19 @@ type PrivateHotelMediaResponse = {
 type PrivateHotelMediaFinalizeResponse = {
   mediaObject: PrivateHotelMediaResponse;
   mediaObjects: PrivateHotelMediaResponse[];
+  sideEffects: string[];
+};
+
+type PublicRoomMediaResponse = {
+  mediaObjectId: string;
+  purpose: "pms.room_type.media";
+  status: "public_ready";
+  publicVariants: Array<{ variantName: string; publicUrl: string }>;
+};
+
+type PublicRoomMediaFinalizeResponse = {
+  mediaObject: PublicRoomMediaResponse;
+  mediaObjects: PublicRoomMediaResponse[];
   sideEffects: string[];
 };
 
@@ -1894,9 +1909,9 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(pmsRoomTypeMediaCase.expected.finalizeStatus);
-    const finalizeBody = finalize.body as PrivateHotelMediaFinalizeResponse;
+    const finalizeBody = finalize.body as PublicRoomMediaFinalizeResponse;
     expect(finalizeBody.mediaObject).toMatchObject(pmsRoomTypeMediaCase.expected.mediaObject!);
-    expectPrivateHotelMediaResponse(finalizeBody.mediaObject, "pms.room_type.media");
+    expectPublicRoomMediaResponse(finalizeBody.mediaObject);
     expect(
       repository.sessions
         .get(createBody.uploadSession.sessionId)
@@ -1959,8 +1974,8 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(200);
-    const safeMediaObject = (finalize.body as PrivateHotelMediaFinalizeResponse).mediaObject;
-    expectPrivateHotelMediaResponse(safeMediaObject, "pms.room_type.media");
+    const safeMediaObject = (finalize.body as PublicRoomMediaFinalizeResponse).mediaObject;
+    expectPublicRoomMediaResponse(safeMediaObject);
     const mediaObject = repository.sessions.get(
       createBody.uploadSession.sessionId,
     )?.completedMediaObject;
@@ -2598,6 +2613,18 @@ function expectPrivateHotelMediaResponse(
     status: "private_ready",
     publicVariants: [],
   });
+}
+
+function expectPublicRoomMediaResponse(mediaObject: PublicRoomMediaResponse): void {
+  expect(mediaObject).toMatchObject({
+    mediaObjectId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    purpose: "pms.room_type.media",
+    status: "public_ready",
+  });
+  expect(mediaObject.publicVariants).toHaveLength(4);
+  expect(
+    mediaObject.publicVariants.every(({ publicUrl }) => publicUrl.startsWith("https://")),
+  ).toBe(true);
 }
 
 function contractCase(caseId: string): (typeof uploadContractCases.cases)[number] {

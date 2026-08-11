@@ -342,69 +342,67 @@ describe("PostgreSQL platform media repository", () => {
     ["property.gallery_image", null],
     ["property.logo", null],
     ["pms.room_type.media", ROOM_TYPE_ID],
-  ] as const)(
-    "resolves and persists private-staged %s against the canonical property",
-    async (purpose, roomTypeId) => {
-      const database = createFakeDatabase();
-      const repository = repositoryFor(database.pool);
-      const resolved = await repository.resolveTarget({
-        request: {
-          purpose,
-          visibility: "private",
-          resource: {
-            product: "hotel_catalog",
-            resourceType: "property",
-            resourceId: PROPERTY_ID,
-            ...(roomTypeId ? { targetResourceId: roomTypeId } : {}),
-          },
-          files: [],
-        },
-        policy: {
-          targetResourceProduct: roomTypeId ? "pms" : "hotel_catalog",
-          targetResourceType: roomTypeId ? "room_type" : "property",
-        } as never,
-        context: {} as never,
-      });
-      expect(resolved).toEqual({
-        ok: true,
-        target: {
-          resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
-          resourceType: roomTypeId ? "room_type" : "property",
-          resourceId: roomTypeId ?? PROPERTY_ID,
-          propertyId: PROPERTY_ID,
-        },
-      });
-
-      const session = await createSession(repository, purpose);
-      const completed = await repository.completeUploadSession(completionInput(session));
-      expect(completed.mediaObjects[0]).toMatchObject({
+  ] as const)("resolves and persists canonical %s media", async (purpose, roomTypeId) => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const resolved = await repository.resolveTarget({
+      request: {
         purpose,
-        propertyId: PROPERTY_ID,
+        visibility: "private",
+        resource: {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: PROPERTY_ID,
+          ...(roomTypeId ? { targetResourceId: roomTypeId } : {}),
+        },
+        files: [],
+      },
+      policy: {
+        targetResourceProduct: roomTypeId ? "pms" : "hotel_catalog",
+        targetResourceType: roomTypeId ? "room_type" : "property",
+      } as never,
+      context: {} as never,
+    });
+    expect(resolved).toEqual({
+      ok: true,
+      target: {
         resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
         resourceType: roomTypeId ? "room_type" : "property",
         resourceId: roomTypeId ?? PROPERTY_ID,
-        visibility: "private",
-        requestedVisibility: "private",
-        approvalStatus: "private",
-        lifecycleStatus: "staged",
-        variants: expect.arrayContaining([
-          expect.objectContaining({
-            visibility: "private",
-            publicCdnUrl: null,
-          }),
-        ]),
-      });
-      expect(completed.mediaObjects[0]!.variants.map(({ variantName }) => variantName)).toEqual(
-        PROPERTY_MEDIA_PUBLIC_VARIANTS,
-      );
-      expect(
-        database.clientQueries.some(({ text }) => text.includes("hotel_catalog.property_media")),
-      ).toBe(false);
-      expect(database.clientQueries.some(({ text }) => text.includes("profile_revision"))).toBe(
-        false,
-      );
-    },
-  );
+        propertyId: PROPERTY_ID,
+      },
+    });
+
+    const session = await createSession(repository, purpose);
+    const completed = await repository.completeUploadSession(completionInput(session));
+    const publicRoomMedia = purpose === "pms.room_type.media";
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose,
+      propertyId: PROPERTY_ID,
+      resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
+      resourceType: roomTypeId ? "room_type" : "property",
+      resourceId: roomTypeId ?? PROPERTY_ID,
+      visibility: publicRoomMedia ? "public" : "private",
+      requestedVisibility: publicRoomMedia ? "public" : "private",
+      approvalStatus: publicRoomMedia ? "approved" : "private",
+      lifecycleStatus: publicRoomMedia ? "active" : "staged",
+      variants: expect.arrayContaining([
+        expect.objectContaining({
+          visibility: publicRoomMedia ? "public" : "private",
+          publicCdnUrl: publicRoomMedia ? expect.stringMatching(/^https:\/\//) : null,
+        }),
+      ]),
+    });
+    expect(completed.mediaObjects[0]!.variants.map(({ variantName }) => variantName)).toEqual(
+      PROPERTY_MEDIA_PUBLIC_VARIANTS,
+    );
+    expect(
+      database.clientQueries.some(({ text }) => text.includes("hotel_catalog.property_media")),
+    ).toBe(false);
+    expect(database.clientQueries.some(({ text }) => text.includes("profile_revision"))).toBe(
+      false,
+    );
+  });
 
   it.each([
     ["a missing variant", (variants: PlatformMediaObjectRecord["variants"]) => variants.slice(1)],
@@ -659,7 +657,8 @@ async function createSession(
     } as never,
     request: {
       purpose,
-      visibility: visibility ?? (isChat || isPropertyMedia ? "private" : "public"),
+      visibility:
+        visibility ?? (isRoomMedia ? "public" : isChat || isPropertyMedia ? "private" : "public"),
       resource: resourceOverride ?? {
         product,
         resourceType,
@@ -677,8 +676,8 @@ async function createSession(
     },
     policy: {
       purpose,
-      autoApprovePublicOnFinalize: isProfile ? true : undefined,
-      privateOnly: isPropertyMedia || isChat,
+      autoApprovePublicOnFinalize: isProfile || isRoomMedia ? true : undefined,
+      privateOnly: (isPropertyMedia && !isRoomMedia) || isChat,
     } as never,
     target: {
       resourceProduct: isProfile
