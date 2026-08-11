@@ -1,4 +1,4 @@
--- Migration: 0061_auth_session_handoffs
+-- Migration: 0062_auth_session_handoffs
 -- Owner: domain-identity
 -- Opaque, one-time browser-session handoffs between first-party Vayada surfaces.
 
