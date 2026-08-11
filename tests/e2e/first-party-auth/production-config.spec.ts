@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { expect, test } from "@playwright/test";
+import { dirname, resolve } from "node:path";
+import { expect, test, type TestInfo } from "@playwright/test";
 
 const apps = [
   { app: "marketplace-web", auth: "services/auth/auth.ts", workflow: "marketplace-web" },
@@ -9,13 +10,14 @@ const apps = [
   { app: "vayada-admin", auth: "services/auth/auth.ts", workflow: "vayada-admin" },
 ] as const;
 
-test("production auth stays on /auth and gateway upstreams remain server-only", async () => {
+test("production auth stays on /auth and gateway upstreams remain server-only", async ({}, testInfo) => {
+  const root = repositoryRoot(testInfo);
   for (const { app, auth, workflow } of apps) {
     const [authSource, gatewaySource, nextConfig, workflowSource] = await Promise.all([
-      source(`apps/${app}/${auth}`),
-      source(`apps/${app}/app/auth/[...path]/route.ts`),
-      source(`apps/${app}/next.config.js`),
-      source(`.github/workflows/deploy-next-${workflow}.yml`),
+      source(root, `apps/${app}/${auth}`),
+      source(root, `apps/${app}/app/auth/[...path]/route.ts`),
+      source(root, `apps/${app}/next.config.js`),
+      source(root, `.github/workflows/deploy-next-${workflow}.yml`),
     ]);
 
     expect(authSource).toContain('AUTH_BROWSER_BASE_PATH = "/auth"');
@@ -28,7 +30,8 @@ test("production auth stays on /auth and gateway upstreams remain server-only", 
   }
 });
 
-test("ordinary product API clients retain configured service origins", async () => {
+test("ordinary product API clients retain configured service origins", async ({}, testInfo) => {
+  const root = repositoryRoot(testInfo);
   const productClients = [
     {
       client: "packages/marketplace-shared/src/api/client.ts",
@@ -63,7 +66,10 @@ test("ordinary product API clients retain configured service origins", async () 
   ] as const;
 
   for (const { client, env, fallback, workflow } of productClients) {
-    const [clientSource, workflowSource] = await Promise.all([source(client), source(workflow)]);
+    const [clientSource, workflowSource] = await Promise.all([
+      source(root, client),
+      source(root, workflow),
+    ]);
     expect(clientSource, `${client} must read ${env}`).toContain(`process.env.${env}`);
     expect(clientSource, `${client} must retain an absolute local fallback`).toContain(fallback);
     expect(clientSource).not.toMatch(
@@ -76,9 +82,10 @@ test("ordinary product API clients retain configured service origins", async () 
   }
 });
 
-test("all gateway tests lock down cookies, redirects, cache headers, and unsafe headers", async () => {
+test("all gateway tests lock down cookies, redirects, cache headers, and unsafe headers", async ({}, testInfo) => {
+  const root = repositoryRoot(testInfo);
   for (const { app } of apps) {
-    const gatewayTest = await source(`apps/${app}/app/auth/[...path]/route.test.ts`);
+    const gatewayTest = await source(root, `apps/${app}/app/auth/[...path]/route.test.ts`);
     for (const contract of [
       "set-cookie",
       "cache-control",
@@ -93,6 +100,12 @@ test("all gateway tests lock down cookies, redirects, cache headers, and unsafe 
   }
 });
 
-async function source(path: string): Promise<string> {
-  return readFile(path, "utf8");
+function repositoryRoot(testInfo: TestInfo): string {
+  return testInfo.config.configFile
+    ? dirname(testInfo.config.configFile)
+    : resolve(testInfo.config.rootDir, "../..");
+}
+
+async function source(root: string, path: string): Promise<string> {
+  return readFile(resolve(root, path), "utf8");
 }

@@ -104,6 +104,7 @@ export async function mockFirstPartyAuth(
   override?: AuthRouteOverride,
 ): Promise<AuthRequestRecord[]> {
   const records: AuthRequestRecord[] = [];
+  const cookieSuffix = `; Path=/auth; HttpOnly${surface.baseURL.startsWith("https:") ? "; Secure" : ""}; SameSite=Lax`;
   await page.route(`${surface.baseURL}/auth/**`, async (route) => {
     const request = route.request();
     const record = authRequestRecord(request);
@@ -117,7 +118,7 @@ export async function mockFirstPartyAuth(
         headers: {
           "cache-control": "private, no-store",
           "content-type": "application/json",
-          "set-cookie": `${sessionCookieName(surface)}=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0`,
+          "set-cookie": `${sessionCookieName(surface)}=${cookieSuffix}; Max-Age=0`,
           vary: "Cookie",
         },
         json: { logoutUrl: `${surface.baseURL}/login` },
@@ -138,7 +139,7 @@ export async function mockFirstPartyAuth(
           "content-type": "application/json",
           ...(url.pathname.startsWith("/auth/password/")
             ? {
-                "set-cookie": `${sessionCookieName(surface)}=sealed-${surface.key}; Path=/auth; HttpOnly; SameSite=Lax`,
+                "set-cookie": `${sessionCookieName(surface)}=sealed-${surface.key}${cookieSuffix}`,
               }
             : {}),
           vary: "Cookie",

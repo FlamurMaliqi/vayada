@@ -45,6 +45,7 @@ for (const surface of firstPartyAuthSurfaces) {
       httpOnly: true,
       path: "/auth",
       sameSite: "Lax",
+      secure: surface.baseURL.startsWith("https:"),
     });
 
     const statuses = await page.evaluate(
@@ -98,6 +99,7 @@ for (const surface of firstPartyAuthSurfaces.filter(({ key }) =>
         await route.fulfill({
           status: 204,
           headers: {
+            "access-control-allow-credentials": "true",
             "access-control-allow-headers": "authorization, content-type",
             "access-control-allow-methods": "GET, OPTIONS",
             "access-control-allow-origin": origin,
@@ -107,7 +109,11 @@ for (const surface of firstPartyAuthSurfaces.filter(({ key }) =>
       }
       await route.fulfill({
         status: 503,
-        headers: { "access-control-allow-origin": origin, "content-type": "application/json" },
+        headers: {
+          "access-control-allow-credentials": "true",
+          "access-control-allow-origin": origin,
+          "content-type": "application/json",
+        },
         json: { error: "deliberate_signup_guard_failure" },
       });
     });

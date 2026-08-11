@@ -120,6 +120,7 @@ test("cross-app handoff replaces a stale target cookie without sending the sourc
   expect(targetCookie.find(({ name }) => name === sessionCookieName(pms))?.value).toBe(
     "sealed-pms",
   );
+  await expect.poll(() => productRequests.length).toBe(1);
   expect(productRequests).toHaveLength(1);
   expect(new URL(productRequests[0]!).pathname).toMatch(/^\/api\//);
   expect(new URL(productRequests[0]!).origin).not.toBe(pms.baseURL);

@@ -46,6 +46,8 @@ jobs:
     name: First-Party Auth Contracts
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -350,6 +352,7 @@ jobs:
     timeout-minutes: 5
     needs:
       - frontend
+      - first_party_auth
       - api_postgres
       - setup_draft_reset_postgres
       - backend
@@ -358,8 +361,9 @@ jobs:
     steps:
       - name: Verify required jobs
         run: |
-          if [ "${{ needs.frontend.result }}" != "success" ] || [ "${{ needs.api_postgres.result }}" != "success" ] || [ "${{ needs.setup_draft_reset_postgres.result }}" != "success" ] || [ "${{ needs.backend.result }}" != "success" ]; then
+          if [ "${{ needs.frontend.result }}" != "success" ] || [ "${{ needs.first_party_auth.result }}" != "success" ] || [ "${{ needs.api_postgres.result }}" != "success" ] || [ "${{ needs.setup_draft_reset_postgres.result }}" != "success" ] || [ "${{ needs.backend.result }}" != "success" ]; then
             echo "Frontend result: ${{ needs.frontend.result }}"
+            echo "First-party auth result: ${{ needs.first_party_auth.result }}"
             echo "TypeScript API PostgreSQL result: ${{ needs.api_postgres.result }}"
             echo "Setup Draft Reset PostgreSQL result: ${{ needs.setup_draft_reset_postgres.result }}"
             echo "Backend result: ${{ needs.backend.result }}"
