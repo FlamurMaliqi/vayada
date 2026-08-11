@@ -37,6 +37,17 @@ export interface BookingAddonItem {
 
 export interface ListBookingAddonItemsResponse {
   addonItems: BookingAddonItem[];
+  propertyPlan: BookingPropertyPlan;
+}
+
+export interface BookingPropertyPlan {
+  propertyId: string;
+  plan: "commission" | "fixed";
+  limits: {
+    maxRoomPhotosPerType: number;
+    maxAddons: number;
+    guestContactAccess: "after_acceptance" | "always";
+  };
 }
 
 export type CreateBookingAddonItemBody = {
@@ -77,12 +88,18 @@ export async function listBookingAddonItems(
   input: { hotelId: string },
   client: ReadClient = apiClient,
 ): Promise<BookingAddonItem[]> {
+  return (await getBookingAddonItemsContext(input, client)).addonItems;
+}
+
+export async function getBookingAddonItemsContext(
+  input: { hotelId: string },
+  client: ReadClient = apiClient,
+): Promise<ListBookingAddonItemsResponse> {
   try {
-    const response = await client.get<ListBookingAddonItemsResponse>(
+    return await client.get<ListBookingAddonItemsResponse>(
       buildBookingAddonItemsEndpoint(input.hotelId),
       omitHotelContext,
     );
-    return response.addonItems;
   } catch (error) {
     throw toBookingAddonItemsClientError(error, "read");
   }

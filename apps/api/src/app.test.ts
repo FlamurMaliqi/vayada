@@ -771,6 +771,16 @@ const bookingAddonItem: BookingAddonItem = {
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
 
+const commissionPropertyPlan = {
+  propertyId: "property_alpenrose",
+  plan: "commission" as const,
+  limits: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance" as const,
+  },
+};
+
 function addonItemFromBody(
   body: CreateBookingAddonItemBody | UpdateBookingAddonItemBody,
 ): BookingAddonItem {
@@ -795,11 +805,11 @@ function addonItemFromBody(
 const bookingAddonItemsRepository: BookingAddonItemsRepository = {
   async listAddonItemsByHotelId(hotelId) {
     if (hotelId !== "booking_hotel_alpenrose") return null;
-    return [bookingAddonItem];
+    return { addonItems: [bookingAddonItem], propertyPlan: commissionPropertyPlan };
   },
   async createAddonItemByHotelId(hotelId, body) {
     expect(hotelId).toBe("booking_hotel_alpenrose");
-    return addonItemFromBody(body);
+    return { outcome: "created", addonItem: addonItemFromBody(body) };
   },
   async updateAddonItemByHotelId(hotelId, addonItemId, body) {
     expect(hotelId).toBe("booking_hotel_alpenrose");
@@ -4838,6 +4848,7 @@ describe("vayada-api", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toEqual({
       addonItems: [bookingAddonItem],
+      propertyPlan: commissionPropertyPlan,
     });
   });
 
@@ -4935,6 +4946,47 @@ describe("vayada-api", () => {
       publicVisible: false,
       status: "disabled",
       sortOrder: 3,
+    });
+  });
+
+  it("rejects add-on creation when the property plan limit is reached", async () => {
+    app = buildAuthenticatedApp({
+      bookingAddonItemsRepository: {
+        ...bookingAddonItemsRepository,
+        async createAddonItemByHotelId() {
+          return {
+            outcome: "plan_limit_reached",
+            currentCount: 3,
+            propertyPlan: commissionPropertyPlan,
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/addon-items",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        name: "Spa ritual",
+        price: "125.50",
+        currency: "EUR",
+        category: "wellness",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({
+      statusCode: 409,
+      code: "plan_limit_reached",
+      category: "validation",
+      message: "You've reached the 3 add-on limit. Upgrade to the paid plan for up to 9 add-ons.",
+      details: {
+        feature: "addons",
+        plan: "commission",
+        currentCount: 3,
+        maxAllowed: 3,
+      },
     });
   });
 
@@ -7921,6 +7973,9 @@ describe("vayada-api", () => {
             rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
           };
         }
+        if (text.includes("FROM finance.billing_entitlements")) {
+          return { rows: [] as T[] };
+        }
         return {
           rows: [
             {
@@ -7950,38 +8005,48 @@ describe("vayada-api", () => {
 
     const items = await repository.listAddonItemsByHotelId(hotelId);
 
-    expect(items).toEqual([
-      {
-        addonItemId: "0f840001-0000-4000-8000-000000000001",
-        hotelId,
-        propertyId: "d3000000-0000-0000-0000-000000000682",
-        name: "Migrated add-on",
-        description: "",
-        price: "45.00",
-        currency: "EUR",
-        category: "dining",
-        imageUrl: null,
-        duration: null,
-        pricingModel: "per_stay",
-        publicVisible: true,
-        status: "active",
-        sortOrder: 0,
-        createdAt: "2026-06-01T10:00:00.000Z",
-        updatedAt: "2026-06-01T10:00:00.000Z",
+    expect(items).toEqual({
+      addonItems: [
+        {
+          addonItemId: "0f840001-0000-4000-8000-000000000001",
+          hotelId,
+          propertyId: "d3000000-0000-0000-0000-000000000682",
+          name: "Migrated add-on",
+          description: "",
+          price: "45.00",
+          currency: "EUR",
+          category: "dining",
+          imageUrl: null,
+          duration: null,
+          pricingModel: "per_stay",
+          publicVisible: true,
+          status: "active",
+          sortOrder: 0,
+          createdAt: "2026-06-01T10:00:00.000Z",
+          updatedAt: "2026-06-01T10:00:00.000Z",
+        },
+      ],
+      propertyPlan: {
+        ...commissionPropertyPlan,
+        propertyId: canonicalPropertyId,
       },
-    ]);
+    });
     const updated = await repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
       name: "Updated",
     });
 
     expect(updated?.hotelId).toBe(hotelId);
-    expect(queries[1]?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
-    expect(queries[1]?.text).toContain("addon_definitions.status <> 'retired'");
+    const listQuery = queries.find((query) =>
+      query.text.includes("addon_definitions.status <> 'retired'"),
+    );
+    expect(listQuery?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
     expect(queries[0]?.text).toContain("property.id::text = $1");
     expect(queries[0]?.text).toContain("UNION ALL");
     expect(queries[0]?.text).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");
     expect(queries[0]?.values).toEqual([hotelId]);
-    expect(queries[2]?.values).toEqual([hotelId]);
+    expect(queries.filter((query) => query.text.includes("WITH direct_property AS"))).toHaveLength(
+      2,
+    );
     expect(queries.map((query) => query.text).join("\n")).not.toContain("$2::uuid");
   });
 
