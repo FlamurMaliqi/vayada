@@ -14,7 +14,9 @@ interface ImageUploadProps {
   /** Platform media scope for new uploads */
   mediaResource: PlatformMediaResourceScope;
   /** Max number of images */
-  maxImages?: number;
+  maxImages: number | null;
+  /** Current property plan, or null while it loads */
+  plan: "commission" | "fixed" | null;
   /** Max file size in MB */
   maxSizeMB?: number;
   /** Label text */
@@ -27,7 +29,8 @@ export default function ImageUpload({
   images,
   onChange,
   mediaResource,
-  maxImages = 10,
+  maxImages,
+  plan,
   maxSizeMB = 20,
   label = "Room Images",
   compact = false,
@@ -38,6 +41,11 @@ export default function ImageUpload({
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const validImages = useMemo(() => images.filter(isRoomImageReference), [images]);
+  const isAtLimit = maxImages !== null && validImages.length >= maxImages;
+  const canUpload = maxImages !== null && validImages.length < maxImages;
+  const upgradeUrl = `${(
+    process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com"
+  ).replace(/\/$/, "")}/settings?section=billing`;
 
   const handleFileSelect = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -49,8 +57,13 @@ export default function ImageUpload({
       const fileArray = Array.from(files);
 
       // Validate count
+      if (maxImages === null) {
+        setError("Photo limit is still loading. Please try again.");
+        e.target.value = "";
+        return;
+      }
       if (validImages.length + fileArray.length > maxImages) {
-        setError(`Maximum ${maxImages} images allowed`);
+        setError(photoLimitMessage(plan, validImages.length, maxImages));
         e.target.value = "";
         return;
       }
@@ -85,7 +98,7 @@ export default function ImageUpload({
         e.target.value = "";
       }
     },
-    [validImages, onChange, maxImages, maxSizeMB, mediaResource],
+    [validImages, onChange, maxImages, maxSizeMB, mediaResource, plan],
   );
 
   const removeImage = useCallback(
@@ -130,11 +143,20 @@ export default function ImageUpload({
 
   return (
     <div className="space-y-3">
-      {label && (
-        <label className={`block font-medium text-gray-700 ${compact ? "text-[13px]" : "text-sm"}`}>
-          {label}
-        </label>
-      )}
+      <div className="flex items-center justify-between gap-3">
+        {label && (
+          <label
+            className={`block font-medium text-gray-700 ${compact ? "text-[13px]" : "text-sm"}`}
+          >
+            {label}
+          </label>
+        )}
+        <span className={`font-medium text-gray-500 ${compact ? "text-[11px]" : "text-xs"}`}>
+          {maxImages === null
+            ? "Loading photo limit…"
+            : `${validImages.length}/${maxImages} photos`}
+        </span>
+      </div>
 
       {/* Image grid */}
       {validImages.length > 0 && (
@@ -181,7 +203,7 @@ export default function ImageUpload({
       )}
 
       {/* Upload zone */}
-      {validImages.length < maxImages && (
+      {canUpload && (
         <div
           onClick={() => !uploading && fileInputRef.current?.click()}
           className={`
@@ -226,9 +248,41 @@ export default function ImageUpload({
         </div>
       )}
 
+      {isAtLimit && maxImages !== null && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-950">
+          <p>{photoLimitMessage(plan, validImages.length, maxImages)}</p>
+          {plan === "commission" && (
+            <a className="font-semibold text-primary-700 hover:underline" href={upgradeUrl}>
+              Upgrade to show up to 15 photos per room and make a stronger first impression.
+            </a>
+          )}
+        </div>
+      )}
+
+      {!isAtLimit && plan === "commission" && (
+        <a className="block text-xs font-medium text-primary-700 hover:underline" href={upgradeUrl}>
+          Upgrade to show up to 15 photos per room and make a stronger first impression.
+        </a>
+      )}
+
       {error && (
         <p className={`text-red-600 font-medium ${compact ? "text-[11px]" : "text-xs"}`}>{error}</p>
       )}
     </div>
   );
+}
+
+function photoLimitMessage(
+  plan: "commission" | "fixed" | null,
+  currentCount: number,
+  maxImages: number,
+): string {
+  if (currentCount > maxImages) {
+    return plan === "commission"
+      ? "You have more photos than your plan allows. Remove photos to add new ones, or upgrade for up to 15."
+      : "You have more photos than the paid plan allows. Remove photos to add new ones.";
+  }
+  return plan === "commission"
+    ? "You've reached the 10-photo limit. Upgrade to the paid plan for up to 15 photos per room."
+    : "You've reached the 15-photo limit for the paid plan.";
 }

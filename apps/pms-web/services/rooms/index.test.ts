@@ -2,13 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   assertEnabled: vi.fn(),
+  get: vi.fn(),
   patch: vi.fn(),
   resolvePropertyId: vi.fn(),
 }));
 
 vi.mock("../api/pmsOperationsClient", () => ({
   assertPmsOperationsReadModelEnabled: mocks.assertEnabled,
-  pmsOperationsClient: { get: vi.fn(), post: vi.fn(), patch: mocks.patch },
+  pmsOperationsClient: { get: mocks.get, post: vi.fn(), patch: mocks.patch },
   pmsOperationsRequestOptions: { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
 }));
 
@@ -104,5 +105,35 @@ describe("roomsService.update", () => {
       "PMS operations disabled",
     );
     expect(mocks.patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("roomsService.getPropertyPlan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolvePropertyId.mockResolvedValue("pms-property-1");
+    mocks.get.mockResolvedValue({
+      contractVersion: "pms-operations.v1",
+      propertyId: "pms-property-1",
+      propertyPlan: {
+        propertyId: "pms-property-1",
+        plan: "commission",
+        limits: {
+          maxRoomPhotosPerType: 10,
+          maxAddons: 3,
+          guestContactAccess: "after_acceptance",
+        },
+      },
+    });
+  });
+
+  it("reads centralized plan limits for the selected property", async () => {
+    await expect(roomsService.getPropertyPlan()).resolves.toMatchObject({
+      plan: "commission",
+      limits: { maxRoomPhotosPerType: 10 },
+    });
+    expect(mocks.get).toHaveBeenCalledWith("/api/pms/properties/pms-property-1/plan-limits", {
+      headers: { "X-Vayada-Omit-Hotel-Context": "true" },
+    });
   });
 });
