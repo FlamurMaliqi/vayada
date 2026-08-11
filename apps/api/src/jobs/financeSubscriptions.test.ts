@@ -134,29 +134,6 @@ describe("Finance subscription webhook lifecycle", () => {
     );
   });
 
-  it("scopes entitlement lookup and lifecycle updates to the exact Finance entitlement", async () => {
-    const query = vi.fn().mockResolvedValue({ rows: [] });
-    const store = createPgFinanceSubscriptionWebhookStore({ query } as never);
-    const event = payload("invoice.paid", 71);
-    const snapshot = verifiedSnapshot();
-
-    await store.findEntitlement(event);
-    await store.applySubscriptionSnapshot({
-      payload: event,
-      snapshot,
-      transition: "paid",
-      activeRoomCount: 2,
-    });
-
-    const lookupSql = String(query.mock.calls[0]?.[0]);
-    const updateSql = String(query.mock.calls[1]?.[0]);
-    expect(lookupSql).toContain("entitlement.product = 'booking'");
-    expect(lookupSql).toContain("entitlement.entitlement_key = 'direct-booking-finance'");
-    expect(updateSql).toContain("entitlement.billing_subscription_ref = $1");
-    expect(updateSql).not.toContain("OR ($2::text IS NOT NULL");
-    expect(updateSql).toContain("entitlement.product = 'booking'");
-  });
-
   it("delivers durable notifications and marks failed deliveries for retry or dead-letter", async () => {
     const notification = {
       eventId: "evt_notification",

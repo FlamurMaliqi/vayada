@@ -770,7 +770,6 @@ describe("target provider webhook routes", () => {
     const invoicePaid = {
       id: "evt_invoice_paid_fixed",
       type: "invoice.paid",
-      created: 1_786_363_210,
       data: {
         object: {
           id: "in_fixed",
@@ -810,6 +809,7 @@ describe("target provider webhook routes", () => {
         jobType: "finance.subscription-webhook",
         payload: {
           eventType: "invoice.paid",
+          eventCreated: Math.floor(fixedNow.getTime() / 1_000),
           subscriptionId: "sub_fixed",
           propertyId: "property-1",
           organizationId: "organization-1",

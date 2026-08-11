@@ -73,14 +73,36 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance subscription webhook PostgreSQL sco
       subscriptionRef: "sub_vay1120_a",
     });
 
+    await expect(
+      store.applySubscriptionSnapshot({
+        payload: {
+          ...payload,
+          eventType: "invoice.paid",
+          rawEventId: "evt_vay1120_paid_a",
+          eventCreated: payload.eventCreated + 1,
+          objectId: "in_vay1120_a",
+          checkoutSessionId: null,
+        },
+        snapshot: subscriptionSnapshot(),
+        transition: "paid",
+        activeRoomCount: 3,
+      }),
+    ).resolves.toMatchObject({
+      organizationId: organizationA,
+      planKey: "fixed",
+      subscriptionRef: "sub_vay1120_a",
+    });
+
     const rows = await pool.query<{
       organizationId: string;
       product: string;
       entitlementKey: string;
       subscriptionRef: string | null;
+      planKey: string | null;
     }>(
       `SELECT organization_id::text AS "organizationId", product,
-         entitlement_key AS "entitlementKey", billing_subscription_ref AS "subscriptionRef"
+         entitlement_key AS "entitlementKey", billing_subscription_ref AS "subscriptionRef",
+         plan_key AS "planKey"
        FROM finance.billing_entitlements
        WHERE property_id = $1::uuid
        ORDER BY organization_id, product`,
@@ -91,18 +113,21 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance subscription webhook PostgreSQL sco
         organizationId: organizationA,
         product: "booking",
         entitlementKey: "direct-booking-finance",
+        planKey: "fixed",
         subscriptionRef: "sub_vay1120_a",
       },
       {
         organizationId: organizationA,
         product: "pms",
         entitlementKey: "unrelated-finance-entitlement",
+        planKey: "commission",
         subscriptionRef: null,
       },
       {
         organizationId: organizationB,
         product: "booking",
         entitlementKey: "direct-booking-finance",
+        planKey: "commission",
         subscriptionRef: null,
       },
     ]);

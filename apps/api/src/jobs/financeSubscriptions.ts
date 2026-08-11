@@ -148,12 +148,18 @@ export async function runFinanceSubscriptionWebhookJobs(
   } = {},
 ): Promise<{ processed: number; failed: number }> {
   const pool = new pg.Pool({ connectionString, max: 2 });
+  attachPoolErrorLogger(pool, "finance-subscriptions");
   const store = createPgFinanceSubscriptionWebhookStore(pool);
   let processed = 0;
   let failed = 0;
   try {
     for (let index = 0; index < (options.limit ?? 25); index += 1) {
-      const job = await claimJob(pool, options.workerId ?? `finance-subscriptions:${process.pid}`);
+      const job = await claimJob(
+        pool,
+        options.workerId ?? `finance-subscriptions:${process.pid}`,
+        QUEUE,
+        JOB_TYPE,
+      );
       if (!job) break;
       try {
         await processFinanceSubscriptionWebhook(parsePayload(job.payload), {
@@ -183,13 +189,16 @@ export async function runFinanceSubscriptionNotificationJobs(
 ): Promise<{ processed: number; failed: number }> {
   const ownsPool = !options.pool;
   const pool = options.pool ?? new pg.Pool({ connectionString, max: 2 });
+  if (ownsPool) attachPoolErrorLogger(pool, "finance-notifications");
   let processed = 0;
   let failed = 0;
   try {
     for (let index = 0; index < (options.limit ?? 25); index += 1) {
-      const job = await claimNotificationJob(
+      const job = await claimJob(
         pool,
         options.workerId ?? `finance-notifications:${process.pid}`,
+        NOTIFICATION_QUEUE,
+        NOTIFICATION_JOB_TYPE,
       );
       if (!job) break;
       try {
@@ -289,37 +298,37 @@ export function createPgFinanceSubscriptionWebhookStore(
         transition === "deleted" && ["canceled", "incomplete_expired"].includes(snapshot.status);
       const result = await pool.query<FinanceSubscriptionWebhookEntitlement>(
         `UPDATE finance.billing_entitlements entitlement
-         SET plan_key = CASE WHEN $3::boolean THEN 'fixed'
-                             WHEN $4::boolean THEN 'commission'
+         SET plan_key = CASE WHEN $2::boolean THEN 'fixed'
+                             WHEN $3::boolean THEN 'commission'
                              ELSE entitlement.plan_key END,
              billing_status = CASE
-               WHEN $4::boolean THEN 'active'
-               WHEN $5 = 'payment_failed' AND entitlement.plan_key = 'fixed' THEN 'past_due'
-               WHEN $3::boolean OR (entitlement.plan_key = 'fixed' AND $6 = 'active') THEN 'active'
+               WHEN $3::boolean THEN 'active'
+               WHEN $4 = 'payment_failed' AND entitlement.plan_key = 'fixed' THEN 'past_due'
+               WHEN $2::boolean OR (entitlement.plan_key = 'fixed' AND $5 = 'active') THEN 'active'
                ELSE entitlement.billing_status END,
              billing_provider = 'stripe',
-             billing_customer_ref = $7,
-             billing_subscription_ref = $8,
-             provider_subscription_status = $6,
-             billing_period_start_at = $9::timestamptz,
-             billing_period_end_at = $10::timestamptz,
-             billing_period_start = $9::timestamptz::date,
-             billing_period_end = $10::timestamptz::date,
-             cancel_at_period_end = $11,
-             billing_amount_minor = $12,
+             billing_customer_ref = $6,
+             billing_subscription_ref = $7,
+             provider_subscription_status = $5,
+             billing_period_start_at = $8::timestamptz,
+             billing_period_end_at = $9::timestamptz,
+             billing_period_start = $8::timestamptz::date,
+             billing_period_end = $9::timestamptz::date,
+             cancel_at_period_end = $10,
+             billing_amount_minor = $11,
              billing_currency = 'EUR',
-             active_room_count = $13,
-             starts_at = CASE WHEN $3::boolean THEN COALESCE(entitlement.starts_at, now())
+             active_room_count = $12,
+             starts_at = CASE WHEN $2::boolean THEN COALESCE(entitlement.starts_at, now())
                               ELSE entitlement.starts_at END,
-             entitlement_metadata = entitlement.entitlement_metadata || $14::jsonb,
-             last_provider_event_created_at = $15::timestamptz,
-             last_provider_event_id = $16,
+             entitlement_metadata = entitlement.entitlement_metadata || $13::jsonb,
+             last_provider_event_created_at = $14::timestamptz,
+             last_provider_event_id = $15,
              updated_at = now()
          WHERE entitlement.billing_subscription_ref = $1
            AND entitlement.product = 'booking'
            AND entitlement.entitlement_key = 'direct-booking-finance'
            AND (entitlement.last_provider_event_created_at IS NULL
-             OR entitlement.last_provider_event_created_at <= $15::timestamptz)
+             OR entitlement.last_provider_event_created_at <= $14::timestamptz)
          RETURNING entitlement.organization_id::text AS "organizationId",
            entitlement.property_id::text AS "propertyId", entitlement.plan_key AS "planKey",
            entitlement.billing_subscription_ref AS "subscriptionRef",
@@ -327,7 +336,6 @@ export function createPgFinanceSubscriptionWebhookStore(
            entitlement.active_room_count AS "activeRoomCount"`,
         [
           snapshot.subscriptionId,
-          payload.propertyId,
           activatesFixed,
           endsFixed,
           transition,
@@ -387,7 +395,7 @@ const ENTITLEMENT_SELECT = `SELECT entitlement.organization_id::text AS "organiz
   COALESCE(entitlement.active_room_count, 0)::int AS "activeRoomCount"
   FROM finance.billing_entitlements entitlement`;
 
-async function claimJob(pool: pg.Pool, workerId: string) {
+async function claimJob(pool: pg.Pool, workerId: string, queue: string, jobType: string) {
   const result = await pool.query<{ id: string; payload: Record<string, unknown> }>(
     `UPDATE platform.jobs job SET status = 'running', attempts_count = attempts_count + 1,
        locked_at = now(), locked_by = $3
@@ -398,23 +406,7 @@ async function claimJob(pool: pg.Pool, workerId: string) {
        ORDER BY priority DESC, created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) candidate
      WHERE job.id = candidate.id
      RETURNING job.id::text, job.payload`,
-    [QUEUE, JOB_TYPE, workerId],
-  );
-  return result.rows[0] ?? null;
-}
-
-async function claimNotificationJob(pool: pg.Pool, workerId: string) {
-  const result = await pool.query<{ id: string; payload: Record<string, unknown> }>(
-    `UPDATE platform.jobs job SET status = 'running', attempts_count = attempts_count + 1,
-       locked_at = now(), locked_by = $3
-     FROM (SELECT id FROM platform.jobs
-       WHERE queue_name = $1 AND job_type = $2
-         AND (status = 'pending' OR (status = 'running' AND locked_at < now() - interval '5 minutes'))
-         AND run_after <= now() AND attempts_count < max_attempts
-       ORDER BY priority DESC, created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) candidate
-     WHERE job.id = candidate.id
-     RETURNING job.id::text, job.payload`,
-    [NOTIFICATION_QUEUE, NOTIFICATION_JOB_TYPE, workerId],
+    [queue, jobType, workerId],
   );
   return result.rows[0] ?? null;
 }
@@ -433,10 +425,17 @@ async function failJob(pool: pg.Pool, jobId: string, error: unknown): Promise<vo
          THEN 'dead_lettered' ELSE 'pending' END,
        run_after = now() + interval '30 seconds', locked_at = NULL, locked_by = NULL,
        finished_at = CASE WHEN attempts_count >= max_attempts THEN now() ELSE NULL END,
-       job_metadata = job_metadata || jsonb_build_object('lastError', $2::text)
+       job_metadata = COALESCE(job_metadata, '{}'::jsonb)
+         || jsonb_build_object('lastError', $2::text)
      WHERE id = $1::uuid`,
     [jobId, error instanceof Error ? error.message : "Finance subscription webhook failed"],
   );
+}
+
+function attachPoolErrorLogger(pool: pg.Pool, workerName: string): void {
+  pool.on("error", (error) => {
+    process.stderr.write(`[${workerName}] PostgreSQL pool error: ${error.message}\n`);
+  });
 }
 
 function parsePayload(value: Record<string, unknown>): FinanceSubscriptionWebhookPayload {

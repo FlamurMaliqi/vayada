@@ -143,7 +143,11 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       request,
       rawPayload: payload.value,
       store: options.store,
-      normalizedPreview: previewStripeEvent(payload.value, receiptKey),
+      normalizedPreview: previewStripeEvent(
+        payload.value,
+        receiptKey,
+        Math.floor((options.now?.() ?? new Date()).getTime() / 1_000),
+      ),
     });
   });
 
@@ -549,6 +553,7 @@ function channexEventFamily(eventType: string): ChannexEventFamily {
 function previewStripeEvent(
   payload: Record<string, unknown>,
   receiptKey: string,
+  eventCreatedFallback: number,
 ): ProviderWebhookNormalizedPreview {
   const eventType = requiredString(payload, "type", "Stripe event");
   const dataObject = optionalRecord(optionalRecord(payload, "data"), "object") ?? {};
@@ -579,7 +584,7 @@ function previewStripeEvent(
         provider: "stripe",
         eventType,
         rawEventId: eventId,
-        eventCreated: optionalNumber(payload, "created"),
+        eventCreated: optionalNumber(payload, "created") ?? eventCreatedFallback,
         objectId,
         subscriptionId,
         checkoutSessionId: eventType === "checkout.session.completed" ? objectId : null,
