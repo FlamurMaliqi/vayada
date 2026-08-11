@@ -294,6 +294,89 @@ describe("PMS room publication command repository", () => {
     });
   });
 
+  it("preserves a legacy URL snapshot while validating newly assigned media", async () => {
+    const legacyUrl = "https://legacy.example.com/room.webp";
+    const target = commandTarget({
+      roomMediaCount: 1,
+      legacyMediaSnapshot: [{ url: legacyUrl, altText: null, sortOrder: 0 }],
+    });
+    const resolverCalls: unknown[] = [];
+    const repository = createRepository(target, resolvingMediaPort(resolverCalls));
+    const command = mediaCommand({
+      legacyMediaSnapshot: [
+        { mediaObjectId: null, url: legacyUrl, altText: null, sortOrder: 0 },
+        {
+          mediaObjectId,
+          url: "https://untrusted.example.com/spoofed.webp",
+          altText: "Garden suite",
+          sortOrder: 1,
+        },
+      ],
+    });
+
+    await expect(repository.assignRoomTypeMedia(command)).resolves.toMatchObject({ ok: true });
+    expect(target.mediaSnapshot).toEqual([
+      { url: legacyUrl, altText: null, sortOrder: 0 },
+      {
+        mediaObjectId,
+        url: `https://images.vayada.com/media/${mediaObjectId}/original_safe/v1.webp`,
+        altText: "Garden suite",
+        sortOrder: 1,
+      },
+    ]);
+    expect(target.roomMedia).toEqual([{ mediaObjectId, altText: "Garden suite", sortOrder: 0 }]);
+    expect(resolverCalls).toHaveLength(1);
+  });
+
+  it("allows an over-limit legacy room to remove and reorder existing URLs", async () => {
+    const currentSnapshot = Array.from({ length: 12 }, (_, sortOrder) => ({
+      url: `https://legacy.example.com/room-${sortOrder}.webp`,
+      altText: null,
+      sortOrder,
+    }));
+    const target = commandTarget({
+      roomMediaCount: currentSnapshot.length,
+      legacyMediaSnapshot: currentSnapshot,
+    });
+    const repository = createRepository(target, resolvingMediaPort([]));
+    const reduced = [...currentSnapshot]
+      .reverse()
+      .slice(0, 10)
+      .map((item, sortOrder) => ({ ...item, mediaObjectId: null, sortOrder }));
+
+    await expect(
+      repository.assignRoomTypeMedia(
+        mediaCommand({ assignments: [], legacyMediaSnapshot: reduced }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    expect(target.mediaSnapshot).toEqual(
+      reduced.map(({ mediaObjectId: _mediaObjectId, ...item }) => item),
+    );
+    expect(target.roomMediaRevision).toBe(4);
+  });
+
+  it("does not allow the compatibility path to introduce an arbitrary legacy URL", async () => {
+    const target = commandTarget({ roomMediaCount: 1, legacyMediaSnapshot: [] });
+    const repository = createRepository(target, resolvingMediaPort([]));
+
+    await expect(
+      repository.assignRoomTypeMedia(
+        mediaCommand({
+          assignments: [],
+          legacyMediaSnapshot: [
+            {
+              mediaObjectId: null,
+              url: "https://untrusted.example.com/injected.webp",
+              altText: null,
+              sortOrder: 0,
+            },
+          ],
+        }),
+      ),
+    ).resolves.toEqual({ ok: false, error: { code: "legacy_media_not_authorized" } });
+    expect(target.roomMediaRevision).toBe(3);
+  });
+
   it("finalizes deterministic media readiness and vocabulary failures without events", async () => {
     const mediaTarget = commandTarget();
     const mediaRepository = createRepository(mediaTarget, resolvingMediaPort([], "not_ready"));
@@ -435,6 +518,7 @@ function commandTarget(
     roomMediaRevision?: number;
     roomMediaCount?: number;
     roomMediaObjectIds?: string[];
+    legacyMediaSnapshot?: Record<string, unknown>[];
     roomAmenitiesRevision?: number;
   } = {},
 ) {
@@ -448,6 +532,7 @@ function commandTarget(
       altText: null,
       sortOrder,
     })) ?? [];
+  let mediaSnapshot = options.legacyMediaSnapshot?.map((item) => ({ ...item })) ?? [];
   let amenities: string[] = [];
   let transactionSnapshot: ReturnType<typeof snapshot> | null = null;
   let commits = 0;
@@ -464,6 +549,7 @@ function commandTarget(
       roomAmenitiesRevision,
       roomAmenitiesReviewedAt,
       roomMedia: roomMedia.map((item) => ({ ...item })),
+      mediaSnapshot: mediaSnapshot.map((item) => ({ ...item })),
       amenities: [...amenities],
       events: events.map((event) => ({ ...event, payload: { ...event.payload } })),
       audits: audits.map((audit) => ({ ...audit })),
@@ -477,6 +563,7 @@ function commandTarget(
     roomAmenitiesRevision = state.roomAmenitiesRevision;
     roomAmenitiesReviewedAt = state.roomAmenitiesReviewedAt;
     roomMedia = state.roomMedia;
+    mediaSnapshot = state.mediaSnapshot;
     amenities = state.amenities;
     events.splice(0, events.length, ...state.events);
     audits.splice(0, audits.length, ...state.audits);
@@ -565,6 +652,9 @@ function commandTarget(
     if (text.includes('AS "mediaObjectId"') && text.includes("pms.room_type_media")) {
       return rows(roomMedia.map(({ mediaObjectId }) => ({ mediaObjectId }) as unknown as T));
     }
+    if (text.includes('media_snapshot AS "mediaSnapshot"')) {
+      return rows([{ mediaSnapshot } as unknown as T]);
+    }
     if (text.includes('SELECT room_amenities_revision AS "roomAmenitiesRevision"')) {
       return rows([{ roomAmenitiesRevision, roomAmenitiesReviewedAt } as unknown as T]);
     }
@@ -588,8 +678,10 @@ function commandTarget(
       roomMediaCount = roomMedia.length;
       return emptyRows<T>();
     }
-    if (text.includes("SET room_media_revision = room_media_revision + 1")) {
+    if (text.includes("SET media_snapshot = $4::jsonb")) {
       if (Number(values?.[2]) !== roomMediaRevision) return emptyRows<T>();
+      mediaSnapshot = JSON.parse(String(values?.[3])) as Record<string, unknown>[];
+      roomMediaCount = Math.max(roomMedia.length, mediaSnapshot.length);
       roomMediaRevision += 1;
       return rows([{ revision: roomMediaRevision } as unknown as T]);
     }
@@ -659,6 +751,9 @@ function commandTarget(
     },
     get roomMedia() {
       return roomMedia;
+    },
+    get mediaSnapshot() {
+      return mediaSnapshot;
     },
     get amenities() {
       return amenities;

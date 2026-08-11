@@ -167,3 +167,30 @@ describe("target PMS reservation stay dates", () => {
     },
   );
 });
+
+describe("target PMS room media compatibility", () => {
+  it("keeps a legacy URL snapshot authoritative until every photo has a media object ID", async () => {
+    let roomTypeQuery = "";
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+      ): Promise<QueryResult<T>> {
+        roomTypeQuery = text;
+        return { command: "SELECT", rowCount: 0, oid: 0, fields: [], rows: [] };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    await expect(repository.listRoomTypesByPropertyId("property-1")).resolves.toEqual({
+      items: [],
+      sourceFreshness: {},
+    });
+    expect(roomTypeQuery).toContain("jsonb_array_elements(room_type.media_snapshot)");
+    expect(roomTypeQuery).toContain(
+      "jsonb_typeof(legacy_media.item -> 'mediaObjectId') IS DISTINCT FROM 'string'",
+    );
+  });
+});
