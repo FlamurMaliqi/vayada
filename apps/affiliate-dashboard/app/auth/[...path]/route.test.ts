@@ -165,6 +165,36 @@ describe("Affiliate auth gateway", () => {
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
+  it("returns a distinct gateway timeout when the auth upstream stalls", async () => {
+    const timeoutController = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    upstreamFetch.mockImplementation(
+      async (_url: URL, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+
+    try {
+      const responsePromise = GET(
+        new Request("https://affiliate.localhost:1355/auth/session"),
+        routeContext("session"),
+      );
+      await vi.waitFor(() => expect(upstreamFetch).toHaveBeenCalledTimes(1));
+      timeoutController.abort(new DOMException("upstream deadline exceeded", "TimeoutError"));
+
+      const response = await responsePromise;
+
+      expect(response.status).toBe(504);
+      expect(await response.json()).toEqual({ error: "auth_gateway_upstream_timeout" });
+      expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
   it("fails closed for missing configuration and path traversal", async () => {
     vi.stubEnv("AUTH_PUBLIC_ORIGIN", "");
     const missingConfig = await GET(
