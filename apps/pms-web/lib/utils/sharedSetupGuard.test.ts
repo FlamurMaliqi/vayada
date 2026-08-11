@@ -79,6 +79,53 @@ describe("resolvePmsSetupGuard", () => {
       reasonCode: "track_unavailable",
     });
   });
+
+  it("validates an explicit setup-exit property instead of a stale stored selection", async () => {
+    const api = {
+      getStatus: vi.fn(async () =>
+        status({
+          product: "pms",
+          propertyId: "property-exit",
+          decision: "enter",
+          destinationRouteKey: "pms.workspace",
+          withIncompleteTask: true,
+        }),
+      ),
+    };
+    const storage = memoryStorage({
+      selectedHotelId: "property-legacy-stale",
+      selectedSharedPropertyId: "property-stale",
+    });
+
+    await expect(
+      resolvePmsSetupGuard("/dashboard", api, storage, undefined, {
+        propertyId: " property-exit ",
+      }),
+    ).resolves.toMatchObject({ action: "enter_product", propertyId: "property-exit" });
+    expect(api.getStatus).toHaveBeenCalledWith({
+      entryProduct: "pms",
+      propertyId: "property-exit",
+    });
+    expect(storage.getItem("selectedHotelId")).toBe("property-exit");
+    expect(storage.getItem("selectedSharedPropertyId")).toBe("property-exit");
+  });
+
+  it("does not replace an invalid explicit setup-exit property with another property", async () => {
+    const missingPropertyError = Object.assign(new Error("Missing property resource link"), {
+      status: 403,
+      data: { code: "missing_property_resource_link" },
+    });
+    const api = { getStatus: vi.fn(async () => Promise.reject(missingPropertyError)) };
+    const storage = memoryStorage({ selectedSharedPropertyId: "property-stale" });
+
+    await expect(
+      resolvePmsSetupGuard("/dashboard", api, storage, undefined, {
+        propertyId: "property-exit",
+      }),
+    ).rejects.toBe(missingPropertyError);
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    expect(storage.getItem("selectedSharedPropertyId")).toBeNull();
+  });
 });
 
 function status(input: {

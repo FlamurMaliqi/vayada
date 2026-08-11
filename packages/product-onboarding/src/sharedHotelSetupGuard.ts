@@ -64,6 +64,7 @@ export async function resolveSharedHotelSetupGuard(
     propertyId?: string | null;
     setupBaseUrl?: string;
     onInvalidPropertyId?: () => void;
+    fallbackOnInvalidPropertyId?: boolean;
   },
 ): Promise<SharedHotelSetupGuardDecision> {
   let status: AdaptiveHotelSetupStatus;
@@ -75,6 +76,7 @@ export async function resolveSharedHotelSetupGuard(
   } catch (error) {
     if (!input.propertyId || !isMissingPropertyResourceLinkError(error)) throw error;
     input.onInvalidPropertyId?.();
+    if (input.fallbackOnInvalidPropertyId === false) throw error;
     status = await api.getStatus({
       entryProduct: input.entryProduct,
       propertyId: null,
