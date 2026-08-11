@@ -16,9 +16,7 @@ type PropertyPlanRow = {
   plan: FinanceBillingPlan;
 };
 
-export function activeBookingPlanEntitlementSql(
-  alias?: "contact_fixed_plan" | "contact_other_plan",
-): string {
+export function activeBookingPlanEntitlementSql(alias?: string): string {
   const prefix = alias ? `${alias}.` : "";
   return `${prefix}product = 'booking'
        AND ${prefix}entitlement_key = 'direct-booking-finance'

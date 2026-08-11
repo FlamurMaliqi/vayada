@@ -44,27 +44,27 @@ export const BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL = `(
   )
 )`;
 
-export const PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL = `(EXISTS (
-    SELECT 1
-    FROM finance.billing_entitlements contact_fixed_plan
-    WHERE contact_fixed_plan.property_id = booking.property_id
-      AND ${activeBookingPlanEntitlementSql("contact_fixed_plan")}
-      AND contact_fixed_plan.plan_key = 'fixed'
-  ) AND NOT EXISTS (
-    SELECT 1
-    FROM finance.billing_entitlements contact_other_plan
-    WHERE contact_other_plan.property_id = booking.property_id
-      AND ${activeBookingPlanEntitlementSql("contact_other_plan")}
-      AND contact_other_plan.plan_key <> 'fixed'
-  ))`;
+export const PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL = `COALESCE((
+    SELECT COUNT(*) = 1 AND BOOL_AND(plan_key = 'fixed')
+    FROM finance.billing_entitlements
+    WHERE property_id = booking.property_id
+      AND ${activeBookingPlanEntitlementSql()}
+  ), FALSE)`;
 
 export function guestContactForPropertyPlan(
   propertyPlan: PropertyPlanReadModel,
   hasEverBeenAccepted: boolean,
   contact: { email: string | null; phone: string | null },
 ): { email: string | null; phone: string | null } {
-  if (propertyPlan.limits.guestContactAccess === "always" || hasEverBeenAccepted) {
+  if (propertyCanAccessGuestContact(propertyPlan, hasEverBeenAccepted)) {
     return contact;
   }
   return { email: HIDDEN_GUEST_CONTACT, phone: HIDDEN_GUEST_CONTACT };
+}
+
+export function propertyCanAccessGuestContact(
+  propertyPlan: PropertyPlanReadModel,
+  hasEverBeenAccepted: boolean,
+): boolean {
+  return propertyPlan.limits.guestContactAccess === "always" || hasEverBeenAccepted;
 }

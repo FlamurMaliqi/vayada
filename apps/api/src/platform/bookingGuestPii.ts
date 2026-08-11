@@ -17,6 +17,7 @@ import {
   BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
   guestContactForPropertyPlan,
   HIDDEN_GUEST_CONTACT,
+  propertyCanAccessGuestContact,
 } from "../domains/bookingGuestContactAccess.js";
 import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 
@@ -206,7 +207,15 @@ export function createTargetBookingGuestPiiPort(
           await client.query("ROLLBACK");
           return additionalGuestNotFound(command.guestId);
         }
-        const merged = { ...existing, ...definedGuestFields(command.guest) };
+        const canWriteContact = await canPropertyAccessGuestContact(
+          client,
+          command.propertyId,
+          command.guestBookingId,
+        );
+        const merged = {
+          ...existing,
+          ...definedGuestFields(command.guest, canWriteContact),
+        };
         const result = await client.query<BookingGuestPiiRow>(
           `UPDATE booking.booking_guests
            SET first_name = $1,
@@ -414,6 +423,23 @@ async function findAdditionalGuest(
   return result.rows[0] ? toBookingGuestPii(result.rows[0]) : null;
 }
 
+async function canPropertyAccessGuestContact(
+  client: BookingGuestPiiClient,
+  propertyId: string,
+  guestBookingId: string,
+): Promise<boolean> {
+  const propertyPlan = await readPropertyPlan(client, propertyId);
+  if (propertyPlan.limits.guestContactAccess === "always") return true;
+  const result = await client.query<{ guestContactAccepted: boolean }>(
+    `SELECT ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted"
+     FROM booking.guest_bookings booking
+     WHERE booking.property_id = $1::uuid
+       AND booking.id = $2::uuid`,
+    [propertyId, guestBookingId],
+  );
+  return propertyCanAccessGuestContact(propertyPlan, result.rows[0]?.guestContactAccepted === true);
+}
+
 async function insertGuestPiiAuditEvent(
   client: BookingGuestPiiClient,
   command: BookingGuestPiiCommand,
@@ -560,12 +586,14 @@ function validateAdditionalGuestInput(
 
 function definedGuestFields(
   guest: Partial<BookingAdditionalGuestInput>,
+  includeGuestContact = true,
 ): BookingAdditionalGuestInput {
   return Object.fromEntries(
     Object.entries(guest)
       .filter(
         ([key, value]) =>
           value !== undefined &&
+          (includeGuestContact || (key !== "email" && key !== "phone")) &&
           !((key === "email" || key === "phone") && value === HIDDEN_GUEST_CONTACT),
       )
       .map(([key, value]) => [

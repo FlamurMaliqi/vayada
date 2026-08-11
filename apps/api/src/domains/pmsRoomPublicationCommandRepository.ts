@@ -224,10 +224,19 @@ export function createPgPmsRoomPublicationCommandRepository(
           return finalized(mediaFailure({ code: "room_media_revision_conflict", currentRevision }));
         }
         const currentCount = await countRoomMedia(client, command.propertyId, command.roomTypeId);
+        const currentMediaObjectIds = await readRoomMediaObjectIds(
+          client,
+          command.propertyId,
+          command.roomTypeId,
+        );
         const propertyPlan = await readPropertyPlan(client, command.propertyId);
+        const addsMedia = command.assignments.some(
+          ({ mediaObjectId }) => !currentMediaObjectIds.has(mediaObjectId),
+        );
         if (
-          command.assignments.length > propertyPlan.limits.maxRoomPhotosPerType &&
-          command.assignments.length > currentCount
+          (currentCount >= propertyPlan.limits.maxRoomPhotosPerType && addsMedia) ||
+          (command.assignments.length > propertyPlan.limits.maxRoomPhotosPerType &&
+            command.assignments.length > currentCount)
         ) {
           return finalized(
             mediaFailure({
@@ -592,6 +601,21 @@ async function countRoomMedia(
   );
   if (result.rows.length !== 1) throw new Error("PMS room media count returned no row");
   return nonNegativeDatabaseInteger(result.rows[0]!.currentMediaCount);
+}
+
+async function readRoomMediaObjectIds(
+  client: PmsRoomPublicationCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<ReadonlySet<string>> {
+  const result = await client.query<{ mediaObjectId: string }>(
+    `SELECT platform_media_object_id::text AS "mediaObjectId"
+     FROM pms.room_type_media
+     WHERE property_id = $1::uuid
+       AND room_type_id = $2::uuid`,
+    [propertyId, roomTypeId],
+  );
+  return new Set(result.rows.map(({ mediaObjectId }) => mediaObjectId));
 }
 
 async function lockAmenitiesRoom(
