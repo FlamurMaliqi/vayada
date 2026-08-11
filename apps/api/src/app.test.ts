@@ -1148,6 +1148,7 @@ const pmsReservations: PmsOperationalReservation[] = [
       displayName: "Nora Ops",
       email: "nora.ops@example.test",
       phone: "+43111222333",
+      countryCode: "AT",
     },
     assignments: [
       {
@@ -1177,6 +1178,7 @@ const pmsReservations: PmsOperationalReservation[] = [
       displayName: "Una Assigned",
       email: "una@example.test",
       phone: null,
+      countryCode: null,
     },
     assignments: [
       {
