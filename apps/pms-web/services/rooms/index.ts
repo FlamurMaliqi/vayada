@@ -6,7 +6,7 @@ import {
 import { resolveSelectedPmsPropertyId } from "../api/pmsPropertyClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import type { RoomImageReference } from "../upload";
-import { pmsRoomMediaResource, uploadService } from "../upload";
+import { imageReferenceUrl, pmsRoomMediaResource, uploadService } from "../upload";
 
 export interface MonthlyRate {
   baseRate?: number | null;
@@ -473,7 +473,7 @@ export const roomsService = {
     const propertyId = await resolveSelectedPmsPropertyId("updating room type");
     const response = await pmsOperationsRoomsReadService.updateRoomType(propertyId, id, data);
     let updated = toRoomType(response.propertyId, response.item);
-    if (data.images && !sameMediaObjectIds(data.images, updated.images)) {
+    if (data.images && !sameRoomImageOrder(data.images, updated.images)) {
       await replaceRoomTypeMedia(propertyId, updated, data.images);
       const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, id);
       updated = toRoomType(refreshed.propertyId, refreshed.item);
@@ -556,6 +556,12 @@ export const pmsOperationsRoomsReadService = {
     roomTypeId: string,
     expectedRoomMediaRevision: number,
     assignments: { mediaObjectId: string; altText: string | null; sortOrder: number }[],
+    legacyMediaSnapshot?: {
+      mediaObjectId: string | null;
+      url: string;
+      altText: string | null;
+      sortOrder: number;
+    }[],
   ) => {
     assertPmsOperationsReadModelEnabled();
     const commandId = randomCommandId("pms-room-media");
@@ -567,7 +573,11 @@ export const pmsOperationsRoomsReadService = {
       `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(
         roomTypeId,
       )}/media`,
-      { expectedRoomMediaRevision, assignments },
+      {
+        expectedRoomMediaRevision,
+        assignments,
+        ...(legacyMediaSnapshot ? { legacyMediaSnapshot } : {}),
+      },
       {
         ...pmsOperationsRequestOptions,
         headers: {
@@ -584,17 +594,26 @@ async function replaceRoomTypeMedia(
   roomType: RoomType,
   images: RoomImageReference[],
 ): Promise<void> {
-  const assignments = images.flatMap((image, sortOrder) => {
-    if (typeof image === "string" || !image.platformMediaObjectId) return [];
-    return [
-      {
-        mediaObjectId: image.platformMediaObjectId,
-        altText: image.altText?.trim() || null,
+  const assignments = images
+    .filter(
+      (image): image is Exclude<RoomImageReference, string> & { platformMediaObjectId: string } =>
+        typeof image !== "string" && Boolean(image.platformMediaObjectId),
+    )
+    .map((image, sortOrder) => ({
+      mediaObjectId: image.platformMediaObjectId,
+      altText: image.altText?.trim() || null,
+      sortOrder,
+    }));
+  const hasLegacyMedia = assignments.length !== images.length;
+  const legacyMediaSnapshot = hasLegacyMedia
+    ? images.map((image, sortOrder) => ({
+        mediaObjectId: typeof image === "string" ? null : (image.platformMediaObjectId ?? null),
+        url: imageReferenceUrl(image),
+        altText: typeof image === "string" ? null : image.altText?.trim() || null,
         sortOrder,
-      },
-    ];
-  });
-  if (assignments.length !== images.length) {
+      }))
+    : undefined;
+  if (legacyMediaSnapshot?.some(({ url }) => !url.trim())) {
     throw new Error("Every saved room photo must finish uploading before the room can be saved.");
   }
   await pmsOperationsRoomsReadService.replaceRoomTypeMedia(
@@ -602,13 +621,18 @@ async function replaceRoomTypeMedia(
     roomType.id,
     roomType.roomMediaRevision,
     assignments,
+    legacyMediaSnapshot,
   );
 }
 
-function sameMediaObjectIds(left: RoomImageReference[], right: RoomImageReference[]): boolean {
-  const ids = (images: RoomImageReference[]) =>
-    images.map((image) => (typeof image === "string" ? undefined : image.platformMediaObjectId));
-  return JSON.stringify(ids(left)) === JSON.stringify(ids(right));
+function sameRoomImageOrder(left: RoomImageReference[], right: RoomImageReference[]): boolean {
+  const keys = (images: RoomImageReference[]) =>
+    images.map((image) =>
+      typeof image !== "string" && image.platformMediaObjectId
+        ? `media:${image.platformMediaObjectId}`
+        : `url:${imageReferenceUrl(image)}`,
+    );
+  return JSON.stringify(keys(left)) === JSON.stringify(keys(right));
 }
 
 function roomTypeLocationPayload(data: RoomTypeUpdate) {

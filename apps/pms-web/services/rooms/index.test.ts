@@ -22,6 +22,8 @@ vi.mock("../api/pmsOperationsClient", () => ({
 }));
 
 vi.mock("../upload", () => ({
+  imageReferenceUrl: (image: string | { url?: string | null }) =>
+    typeof image === "string" ? image : (image.url ?? ""),
   pmsRoomMediaResource: (propertyId: string, roomTypeId?: string) => ({
     product: "hotel_catalog",
     resourceType: "property",
@@ -196,6 +198,111 @@ describe("roomsService.update", () => {
     );
     expect(updated.images[0]).toMatchObject({
       platformMediaObjectId: "22222222-2222-4222-8222-222222222222",
+    });
+  });
+
+  it("persists reordering and removal for URL-only legacy room photos", async () => {
+    const currentItem = pmsRoomTypeItem({
+      media: [
+        { url: "https://legacy.example.com/first.webp" },
+        { url: "https://legacy.example.com/second.webp" },
+      ],
+    });
+    mocks.patch.mockResolvedValueOnce({
+      contractVersion: "pms-operations.v1",
+      propertyId: "pms-property-1",
+      item: currentItem,
+    });
+    mocks.put.mockResolvedValue({ roomMediaRevision: 4 });
+    mocks.get.mockResolvedValue({
+      propertyId: "pms-property-1",
+      item: {
+        ...currentItem,
+        media: [{ url: "https://legacy.example.com/second.webp" }],
+        roomMediaRevision: 4,
+      },
+    });
+
+    await roomsService.update("room-type-1", {
+      images: [{ url: "https://legacy.example.com/second.webp" }],
+    });
+
+    expect(mocks.put).toHaveBeenCalledWith(
+      "/api/pms/properties/pms-property-1/room-types/room-type-1/media",
+      {
+        expectedRoomMediaRevision: 3,
+        assignments: [],
+        legacyMediaSnapshot: [
+          {
+            mediaObjectId: null,
+            url: "https://legacy.example.com/second.webp",
+            altText: null,
+            sortOrder: 0,
+          },
+        ],
+      },
+      expect.any(Object),
+    );
+  });
+
+  it("preserves legacy photos while adding validated Platform Media", async () => {
+    const currentItem = pmsRoomTypeItem({
+      media: [{ url: "https://legacy.example.com/first.webp" }],
+    });
+    mocks.patch.mockResolvedValueOnce({
+      contractVersion: "pms-operations.v1",
+      propertyId: "pms-property-1",
+      item: currentItem,
+    });
+    mocks.put.mockResolvedValue({ roomMediaRevision: 4 });
+    mocks.get.mockResolvedValue({
+      propertyId: "pms-property-1",
+      item: {
+        ...currentItem,
+        media: [
+          { url: "https://legacy.example.com/first.webp" },
+          {
+            mediaObjectId: "22222222-2222-4222-8222-222222222222",
+            url: "https://cdn.example.com/new.webp",
+          },
+        ],
+        roomMediaRevision: 4,
+      },
+    });
+
+    await roomsService.update("room-type-1", {
+      images: [
+        { url: "https://legacy.example.com/first.webp" },
+        {
+          url: "https://cdn.example.com/new.webp",
+          platformMediaObjectId: "22222222-2222-4222-8222-222222222222",
+        },
+      ],
+    });
+
+    expect(mocks.put.mock.calls[0]?.[1]).toEqual({
+      expectedRoomMediaRevision: 3,
+      assignments: [
+        {
+          mediaObjectId: "22222222-2222-4222-8222-222222222222",
+          altText: null,
+          sortOrder: 0,
+        },
+      ],
+      legacyMediaSnapshot: [
+        {
+          mediaObjectId: null,
+          url: "https://legacy.example.com/first.webp",
+          altText: null,
+          sortOrder: 0,
+        },
+        {
+          mediaObjectId: "22222222-2222-4222-8222-222222222222",
+          url: "https://cdn.example.com/new.webp",
+          altText: null,
+          sortOrder: 1,
+        },
+      ],
     });
   });
 });
