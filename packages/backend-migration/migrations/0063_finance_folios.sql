@@ -49,7 +49,8 @@ CREATE TABLE finance.folio_revisions (
   CONSTRAINT chk_finance_folio_revisions_recipient_fingerprint_key
     CHECK (recipient_fingerprint_key_version = btrim(recipient_fingerprint_key_version)
       AND char_length(recipient_fingerprint_key_version) BETWEEN 1 AND 100),
-  CONSTRAINT chk_finance_folio_revisions_service_dates CHECK (service_from <= service_to),
+  CONSTRAINT chk_finance_folio_revisions_service_dates
+    CHECK (isfinite(service_from) AND isfinite(service_to) AND service_from <= service_to),
   CONSTRAINT chk_finance_folio_revisions_currency CHECK (currency::TEXT ~ '^[A-Z]{3}$'),
   CONSTRAINT chk_finance_folio_revisions_total
     CHECK (total_amount >= 0 AND total_amount < 'Infinity'::NUMERIC),

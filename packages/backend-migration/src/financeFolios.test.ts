@@ -149,6 +149,15 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
         freshness: [],
         constraint: "chk_finance_folio_revisions_source_freshness",
       },
+      {
+        ciphertext: Buffer.alloc(32),
+        scheme: "envelope_aead_v1",
+        key: "kms-v1",
+        freshness: {},
+        serviceFrom: "-infinity",
+        serviceTo: "infinity",
+        constraint: "chk_finance_folio_revisions_service_dates",
+      },
     ];
     for (const invalid of invalidCases) {
       await expect(
@@ -160,7 +169,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
            service_from, service_to,
            currency, total_amount, source_digest, source_freshness)
          VALUES ($1, $2, 1, 'draft', $3, $4, $5, $6, 'hmac-v1',
-           '2026-08-05', '2026-08-06', 'EUR', 125.50, $6, $7)`,
+           $8, $9, 'EUR', 125.50, $6, $7)`,
           [
             folioId,
             PROPERTY_A,
@@ -169,6 +178,8 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folios (PostgreSQL)", () => {
             invalid.key,
             HASH,
             JSON.stringify(invalid.freshness),
+            invalid.serviceFrom ?? "2026-08-05",
+            invalid.serviceTo ?? "2026-08-06",
           ],
         ),
       ).rejects.toMatchObject({ constraint: invalid.constraint });
