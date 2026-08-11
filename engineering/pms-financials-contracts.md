@@ -44,7 +44,7 @@ out of scope for v1.
 | OTA, platform and partner commission rules                   | Finance                                   | Effective-dated rule snapshots                         |
 | Payments, provider fees and refunds                          | Finance                                   | Settlement and fee evidence; not the room-revenue date |
 | Expense categories, rules and expense instances              | Finance                                   | Authoritative expense ledger                           |
-| Guest and supplier invoices, lines, allocations and delivery | Finance                                   | Authoritative invoice lifecycle                        |
+| Operational folios, submissions and external invoice mirrors | Finance                                   | Operational state; official invoice stays external     |
 | Rooms, room types and occupied nights                        | PMS                                       | Room-type and per-occupied-night reporting             |
 | Documents, email jobs, audit and dead letters                | Platform services with Finance handlers   | Durable side effects and evidence                      |
 
@@ -123,27 +123,12 @@ integration boundary.
 - Provider fees are recorded only from provider evidence. Missing fees are
   reported as incomplete evidence and are never estimated silently.
 
-### Invoices
+### Folios and external invoices
 
-- Invoices are persisted records with normalized lines; a booking alone is not
-  an invoice.
-- Each property has a monotonic sequence rendered as `INV-0001`, `INV-0002`,
-  and so on. A number is reserved when the draft is created, never reused and
-  never reset. Gaps are acceptable.
-- Drafts may be edited or archived. Issued invoices are immutable except for
-  lifecycle actions and payment allocations. They are voided, not deleted.
-- Stored lifecycle states are `draft`, `issued` and `voided`. Presentation states
-  `issued`, `sent`, `partial`, `paid` and `overdue` derive from delivery, due date
-  and payment allocations without fabricating an invoice from a booking. The PMS
-  Send action issues and queues delivery together, so normal guest flow does not
-  stop at undelivered `issued`.
-- Line quantity, unit amount and total are decimal-safe server calculations. The
-  server rejects client totals that do not reconcile.
-- An allocation references `finance.payments`; it does not duplicate a payment.
-  New manual settlement creates the payment fact and allocation atomically.
-- A supplier bill creates or links one expense in the same transaction.
-- Every generated PDF is immutable and delivery attempts are durable,
-  idempotent and auditable.
+Vayada owns normalized operational folios; the connected accounting system owns
+official invoices. VAY-1240 replaces all local numbering, lifecycle, route,
+document and validation rules in this section through
+[`pms-financials-external-invoice-contract.md`](pms-financials-external-invoice-contract.md).
 
 ## HTTP contract
 
@@ -165,18 +150,14 @@ type DashboardQuery = { asOf?: Date }; type RevenueQuery = Range;
 type ExpenseQuery = Range & Cursor & { categoryId?: string; paymentStatus?: "paid" | "unpaid"; recurring?: boolean;
   origin?: "manual" | "recurring" | "ota_commission" | "platform_fee" | "supplier_bill"; search?: string; sort?: "incurredOn_desc" | "amount_desc" };
 type ProfitLossQuery = { year: number };
-type InvoiceQuery = Cursor & { from?: Date; to?: Date; status?: "draft" | "issued" | "sent" | "partial" |
-  "paid" | "overdue" | "voided"; search?: string; sort?: "issuedOn_desc" | "dueOn_asc" | "amount_desc" };
+type ExternalInvoiceQuery = Cursor & { from?: Date; to?: Date; syncHealth?: "healthy" | "requires_review" |
+  "manual_reconciliation"; search?: string; sort?: "issuedOn_desc" | "dueOn_asc" | "amount_desc" };
 type Category = { id: string; systemKey: string | null; name: string; color: string; sortOrder: number; archived: boolean; revision: number };
 type Expense = { id: string; categoryId: string; origin: ExpenseQuery["origin"];
   incurredOn: Date; paidOn: Date | null; vendor: string; amount: Money;
   paymentStatus: "paid" | "unpaid"; recurringRuleId: string | null; sourceKey: string | null;
   reversesExpenseId: string | null; revision: number };
 type RecurringRule = { id: string; cadence: "weekly" | "monthly" | "yearly"; nextDueOn: Date; endsOn: Date | null; active: boolean; revision: number };
-type InvoiceLine = { description: string; quantity: Decimal; unitAmount: Money; total: Money };
-type Invoice = { id: string; number: string; bookingId: string | null; recipient: { name: string; email: string | null };
-  issuedOn: Date | null; dueOn: Date | null; status: InvoiceQuery["status"]; lines: InvoiceLine[];
-  total: Money; allocated: Money; outstanding: Money; revision: number };
 type CategoryWrite = Command & { name: string; color: string; sortOrder: number }; type CategoryPatch = Command & Partial<Pick<Category, "name" | "color" | "sortOrder">>;
 type ExpenseWrite = Command & { incurredOn: Date; vendor: string; categoryId: string; amount: Money;
   paymentStatus: "paid" | "unpaid"; paidOn?: Date; notes?: string; supplierInvoiceNumber?: string;
@@ -184,20 +165,15 @@ type ExpenseWrite = Command & { incurredOn: Date; vendor: string; categoryId: st
 type ExpensePatch = Command & Partial<Omit<ExpenseWrite, keyof Command | "recurrence">>;
 type RecurrencePatch = Command & { cadence?: "weekly" | "monthly" | "yearly";
   nextDueOn?: Date; endsOn?: Date };
-type InvoiceWrite = Command & { bookingId?: string; recipient: Invoice["recipient"];
-  dueOn?: Date; lines: Array<Omit<InvoiceLine, "total">> };
-type InvoicePatch = Command & Partial<Omit<InvoiceWrite, keyof Command>>;
-type VoidWrite = Command & { reason: string }; type DeliveryWrite = Command & { to: string };
-type PaymentWrite = Command & { amount: Money; paidOn: Date; method: string; reference?: string };
 type ExportWrite = Command & ({ tab: "dashboard"; filters: DashboardQuery } |
   { tab: "revenue"; filters: RevenueQuery } | { tab: "expenses"; filters: ExpenseQuery } |
-  { tab: "profit_loss"; filters: ProfitLossQuery } | { tab: "invoices"; filters: InvoiceQuery }) &
+  { tab: "profit_loss"; filters: ProfitLossQuery } | { tab: "invoices"; filters: ExternalInvoiceQuery }) &
   { format: "csv" };
 type Disposition = { resourceId: string; state: "pending" | "ready" | "failed";
   downloadUrl?: string; expiresAt?: string };
 type DeliveryReceipt = { deliveryId: string; state: "queued" | "sent" | "failed" };
 type DashboardResponse = Envelope & { cards: { revenueToday: MoneyMetric; expensesMtd: MoneyMetric;
-  outstanding: MoneyMetric; profitMtd: MoneyMetric };
+  externalInvoiceOutstanding: MoneyMetric; profitMtd: MoneyMetric };
   daily: Array<{ date: Date; revenue: Money; expenses: Money }>;
   upcoming: Array<{ date: Date; kind: string; amount: Money; predicted: boolean }> };
 type RevenueResponse = Envelope & { summary: { grossRoom: MoneyMetric; otaCommission: MoneyMetric; netRoom: MoneyMetric;
@@ -212,15 +188,13 @@ type ExpensesResponse = Envelope & { summary: { totalMtd: MoneyMetric; perOccupi
 type ProfitLossResponse = Envelope & { summary: { revenueYtd: MoneyMetric; expensesYtd: MoneyMetric; netProfitYtd: MoneyMetric };
   months: Array<{ month: string; revenue: Money; expenses: Money; netProfit: Money;
   expenseCategories: Record<string, Money> }> };
-type InvoiceListResponse = Envelope & { summary: { outstanding: MoneyMetric; overdue: MoneyMetric;
-  paidThisMonth: MoneyMetric; averageDaysToPay: ScalarMetric }; page: Page<Invoice> };
 type ItemResponse<T> = Envelope & { item: T }; type CommandResponse<T> = ItemResponse<T> & { outcome: "created" | "updated" | "replayed" };
 ```
 
 `from`/`to` are inclusive. Invalid ranges return `400`. Cursors are opaque,
 base64url/versioned filter snapshots; limit defaults to 50 and caps at 200.
-Expense order is `incurredOn DESC, id ASC`; invoice order is the requested sort
-then `id ASC`. All writes use server audit context. Export filters must exactly
+Expense order is `incurredOn DESC, id ASC`; external invoice order is the
+requested sort then `id ASC`. All writes use server audit context. Export filters must exactly
 match the named tab's query type after normalization; unknown keys return `400`.
 
 ### Canonical routes
@@ -235,17 +209,12 @@ match the named tab's query type after normalization; unknown keys return `400`.
 | `GET/PATCH/DELETE` | `/expenses/:expenseId`                                      | none / `ExpensePatch` / `Command` → item / `CommandResponse<Expense>`             |
 | `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `CommandResponse<RecurringRule>`    |
 | `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                          |
-| `GET/POST`         | `/invoices`                                                 | `InvoiceQuery` / `InvoiceWrite` → `InvoiceListResponse` / command response        |
-| `GET/PATCH/DELETE` | `/invoices/:invoiceId`                                      | none / `InvoicePatch` / `Command` → item / `CommandResponse<Invoice>`             |
-| `POST`             | `/invoices/:invoiceId/issue`                                | `Command` → `CommandResponse<Invoice>`                                            |
-| `POST`             | `/invoices/:invoiceId/void`                                 | `VoidWrite` → `CommandResponse<Invoice>`                                          |
-| `POST`             | `/invoices/:invoiceId/payments`                             | `PaymentWrite` → `CommandResponse<Invoice>`                                       |
-| `POST/GET`         | `/invoices/:invoiceId/document`                             | `Command` / none → `CommandResponse<Disposition>` / item response                 |
-| `POST`             | `/invoices/:invoiceId/deliveries`                           | `DeliveryWrite` → `CommandResponse<DeliveryReceipt>`                              |
+| See VAY-1240       | `/folios`, `/invoice-operations`, `/external-invoices`      | Provider-neutral folio, operation and external-document contracts                 |
 | `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `CommandResponse<Disposition>` / item response             |
 
-V1 exports CSV for all five tabs and an individual PDF for each invoice. It does
-not promise a PDF rendition of Dashboard, Revenue, Expenses or P&L.
+V1 exports CSV for all five tabs and retrieves confirmed external invoice
+documents. It does not generate an official invoice PDF or promise a PDF
+rendition of Dashboard, Revenue, Expenses or P&L.
 
 P&L is computed from ledger/evidence rows; no second source-of-truth table is
 introduced.
@@ -274,10 +243,11 @@ introduced.
 ## Target storage and projections
 
 VAY-1124 and VAY-1125 finalize DDL names. Required aggregates are expense
-categories/instances/recurrences; invoices/lines/sequences/allocations/documents/
-deliveries; and source keys, revisions and correction state. Dashboard, Revenue
-and P&L models are rebuildable projections, not a second ledger. Attachments and
-PDFs store Platform Media/document references, not blobs or public URLs.
+categories/instances/recurrences; folios/revisions/submissions/external-document
+mirrors/allocations/deliveries; and source keys, revisions and correction state.
+Dashboard, Revenue and P&L models are rebuildable projections, not a second
+ledger. Attachments and fetched documents store protected Platform Media
+references, not blobs or public URLs.
 
 ## Reset inventory
 
@@ -370,8 +340,8 @@ credentials or disables payment/payout jobs.
    do not synthesize invoices, payments or allocations from bookings.
 4. Seed default categories; do not invent historical manual expenses. Backfill
    OTA commissions only where an effective rate snapshot is provable.
-5. Reconcile totals, counts, source exceptions, invoice sequences and generated
-   expense idempotency in local/staging rehearsals.
+5. Reconcile totals, counts, source exceptions, folio submission uniqueness,
+   external references and generated expense idempotency in rehearsals.
 6. Ship new routes and UI while `module:financials` remains inactive by default.
 7. Activate per property only after permission, migration, API, export and
    browser gates pass.
@@ -385,8 +355,8 @@ Document and delivery job keys remain stable across retries or rollback.
 - Migrations pass from empty and upgraded databases; financial fixtures reconcile
   by property/date/currency and expose missing evidence.
 - Generated expenses pass replay, concurrency, correction and cancellation tests.
-- Invoices pass sequence concurrency, totals, allocation, lifecycle, document
-  rendering and delivery retry tests.
+- External invoice flows pass folio business-uniqueness, uncertain-outcome,
+  issuance, correction, allocation, version and document-delivery tests.
 - Every protected route passes the full authorization and inactive-module matrix.
 - CSV exports match normalized filters and neutralize spreadsheet formulas.
 - Preserved Finance/payment/affiliate suites remain green after reset/activation.
