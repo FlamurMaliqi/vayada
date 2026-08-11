@@ -22,7 +22,7 @@ export type FinanceExpensePage<T> = { items: T[]; nextCursor: string | null; lim
 export type FinanceExpenseIncompleteEvidence = {
   code: string;
   count: number;
-  amount?: FinanceExpenseMoney;
+  amount?: { amount: string; currency: string };
 };
 export type FinanceExpenseEnvelope = {
   contractVersion: typeof PMS_FINANCIALS_CONTRACT_VERSION;
