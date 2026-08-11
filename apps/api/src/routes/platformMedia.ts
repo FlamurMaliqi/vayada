@@ -261,6 +261,25 @@ export class PlatformMediaTargetInvalidError extends Error {
   }
 }
 
+export class PlatformMediaPlanLimitError extends Error {
+  readonly code = "media_plan_limit_reached";
+
+  constructor(
+    readonly plan: "commission" | "fixed",
+    readonly currentCount: number,
+    readonly maxAllowed: number,
+  ) {
+    super(
+      plan === "commission"
+        ? currentCount > maxAllowed
+          ? "You have more photos than your plan allows. Remove photos to add new ones, or upgrade for up to 15."
+          : "You've reached the 10-photo limit. Upgrade to the paid plan for up to 15 photos per room."
+        : "You've reached the 15-photo limit for the paid plan.",
+    );
+    this.name = "PlatformMediaPlanLimitError";
+  }
+}
+
 export class PlatformMediaStagingChangedError extends Error {
   readonly code = "platform_media_staging_changed";
 
@@ -893,34 +912,42 @@ export async function registerPlatformMediaRoutes(
         }),
       );
 
-      const session = await options.repository.createUploadSession({
-        context,
-        sessionId,
-        uploadSessionKey,
-        stagingPrefix,
-        request: normalizedRequest,
-        policy,
-        target: resolvedTarget.target,
-        uploadTargets,
-        now: createdAt,
-        expiresAt,
-        auditEvent: {
-          action: "platform_media.upload_session.created",
-          auditKey: uploadSessionKey,
-          actorUserId: context.actor.internalUserId,
-          organizationId: context.selectedOrganization.organizationId,
-          targetType: "media_upload_session",
-          targetId: sessionId,
-          requestId: context.audit.requestId,
-          metadata: {
-            purpose: request.body.purpose,
-            requestedVisibility,
-            resource: request.body.resource,
-            target: resolvedTarget.target,
-            fileCount: files.length,
+      let session: PlatformMediaSessionRecord;
+      try {
+        session = await options.repository.createUploadSession({
+          context,
+          sessionId,
+          uploadSessionKey,
+          stagingPrefix,
+          request: normalizedRequest,
+          policy,
+          target: resolvedTarget.target,
+          uploadTargets,
+          now: createdAt,
+          expiresAt,
+          auditEvent: {
+            action: "platform_media.upload_session.created",
+            auditKey: uploadSessionKey,
+            actorUserId: context.actor.internalUserId,
+            organizationId: context.selectedOrganization.organizationId,
+            targetType: "media_upload_session",
+            targetId: sessionId,
+            requestId: context.audit.requestId,
+            metadata: {
+              purpose: request.body.purpose,
+              requestedVisibility,
+              resource: request.body.resource,
+              target: resolvedTarget.target,
+              fileCount: files.length,
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (error instanceof PlatformMediaPlanLimitError) {
+          return sendMediaError(reply, 409, error.code, error.message);
+        }
+        throw error;
+      }
 
       if (
         !uploadSessionMatchesRequest(session, {
