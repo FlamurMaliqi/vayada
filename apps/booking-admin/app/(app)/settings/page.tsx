@@ -1453,7 +1453,12 @@ export default function SettingsPage() {
               {financePlanStatus?.plan !== "fixed" && (
                 <button
                   onClick={() => setBillingPlanModal("fixed")}
-                  disabled={billingPlanLoading || billingPlanAction !== null}
+                  disabled={
+                    billingPlanLoading ||
+                    billingPlanAction !== null ||
+                    !billingPropertyId ||
+                    !financePlanStatus
+                  }
                   className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
                 >
                   {financePlanStatus?.checkoutPending ? "Resume payment" : "Switch to Fixed Plan"}
