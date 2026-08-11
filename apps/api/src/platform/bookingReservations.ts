@@ -9,6 +9,12 @@ import {
   type BookingReservationReadModelRow,
 } from "./bookingReservationReadModel.js";
 import { bookingScopedPropertyCte } from "./bookingDashboard.js";
+import {
+  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
+  guestContactForPropertyPlan,
+  propertyAlwaysHasGuestContactSql,
+} from "../domains/bookingGuestContactAccess.js";
+import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 
 type BookingReservationsReadPool = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -18,7 +24,10 @@ type BookingReservationsReadPool = {
   end(): Promise<void>;
 };
 
-type TargetBookingReservationRow = BookingReservationReadModelRow;
+type TargetBookingReservationRow = BookingReservationReadModelRow & {
+  propertyId: string;
+  guestContactAccepted: boolean;
+};
 
 const TARGET_RESERVATION_STATUS_SQL = `CASE
   WHEN primary_assignment.assignment_status IN ('checked_in', 'in_house', 'checked_out')
@@ -62,6 +71,7 @@ export function createTargetBookingReservationsReadRepository(config: {
           `${bookingScopedPropertyCte()}
            SELECT
              booking.id::text AS "id",
+             booking.property_id::text AS "propertyId",
              booking.public_reference AS "bookingReference",
              COALESCE(room_type.id::text, quote.selected_offer_snapshot ->> 'roomTypeId', '') AS "roomTypeId",
              COALESCE(room_type.name, quote.selected_offer_snapshot ->> 'roomName', '') AS "roomName",
@@ -80,6 +90,7 @@ export function createTargetBookingReservationsReadRepository(config: {
              COALESCE(booker.last_name, '') AS "guestLastName",
              COALESCE(booker.email, '') AS "guestEmail",
              COALESCE(booker.phone, '') AS "guestPhone",
+             ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
              booker.country_code AS "guestCountry",
              checkout.guest_input #>> '{booker,gender}' AS "guestGender",
              checkout.guest_input #>> '{booker,dateOfBirth}' AS "guestDateOfBirth",
@@ -316,8 +327,24 @@ export function createTargetBookingReservationsReadRepository(config: {
         ),
       ]);
 
+      const propertyPlan = reservationResult.rows[0]
+        ? await readPropertyPlan(pool, reservationResult.rows[0].propertyId)
+        : null;
       return {
-        reservations: reservationResult.rows.map(toBookingReservationReadModel),
+        reservations: propertyPlan
+          ? reservationResult.rows.map((reservation) => {
+              const contact = guestContactForPropertyPlan(
+                propertyPlan,
+                reservation.guestContactAccepted,
+                { email: reservation.guestEmail, phone: reservation.guestPhone },
+              );
+              return toBookingReservationReadModel({
+                ...reservation,
+                guestEmail: contact.email ?? "",
+                guestPhone: contact.phone ?? "",
+              });
+            })
+          : [],
         total: parseCount(countResult.rows[0]?.total),
       };
     },
@@ -351,7 +378,11 @@ function toTargetReservationWhere(
               guest.first_name ILIKE $${params.length}
               OR guest.last_name ILIKE $${params.length}
               OR CONCAT(guest.first_name, ' ', guest.last_name) ILIKE $${params.length}
-              OR guest.email ILIKE $${params.length}
+              OR (
+                (${propertyAlwaysHasGuestContactSql("booking.property_id")}
+                  OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
+                AND guest.email ILIKE $${params.length}
+              )
             )
         )
         OR EXISTS (

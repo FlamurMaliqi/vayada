@@ -16,6 +16,18 @@ type PropertyPlanRow = {
   plan: FinanceBillingPlan;
 };
 
+export function activeBookingPlanEntitlementSql(
+  alias?: "contact_fixed_plan" | "contact_other_plan",
+): string {
+  const prefix = alias ? `${alias}.` : "";
+  return `${prefix}product = 'booking'
+       AND ${prefix}entitlement_key = 'direct-booking-finance'
+       AND ${prefix}plan_key IN ('fixed', 'commission')
+       AND ${prefix}billing_status IN ('trialing', 'active', 'past_due')
+       AND (${prefix}starts_at IS NULL OR ${prefix}starts_at <= now())
+       AND (${prefix}expires_at IS NULL OR ${prefix}expires_at > now())`;
+}
+
 export type PropertyPlanReadRepository = {
   getPropertyPlan(propertyId: string): Promise<PropertyPlanReadModel>;
   close?(): Promise<void>;
@@ -52,12 +64,7 @@ export async function readPropertyPlan(
     `SELECT plan_key AS plan
      FROM finance.billing_entitlements
      WHERE property_id = $1::uuid
-       AND product = 'booking'
-       AND entitlement_key = 'direct-booking-finance'
-       AND plan_key IN ('fixed', 'commission')
-       AND billing_status IN ('trialing', 'active', 'past_due')
-       AND (starts_at IS NULL OR starts_at <= now())
-       AND (expires_at IS NULL OR expires_at > now())
+       AND ${activeBookingPlanEntitlementSql()}
      ORDER BY updated_at DESC
      LIMIT 2`,
     [propertyId],
