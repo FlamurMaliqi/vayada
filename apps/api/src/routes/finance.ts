@@ -6700,7 +6700,7 @@ function toFinanceCommandError(
   } satisfies FinanceCommandError;
 }
 
-function enforceFinancePropertyReadPolicy(
+export function enforceFinancePropertyReadPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
@@ -6717,7 +6717,7 @@ function enforceFinancePropertyReadPolicy(
   }
 }
 
-function enforceFinancePropertyWritePolicy(
+export function enforceFinancePropertyWritePolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,

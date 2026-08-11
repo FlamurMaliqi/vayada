@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, stripeSubscriptionRuntimeEnabled } from "./config.js";
 
 const completeCreatorMarketplaceEnv = {
   TARGET_DATABASE_URL: "postgresql://target-db",
@@ -406,6 +406,48 @@ describe("api config", () => {
         XENDIT_SECRET_KEY: "xendit-api-secret",
       }).xenditSecretKey,
     ).toBe("xendit-api-secret");
+  });
+
+  it("loads Stripe subscription billing separately from webhook verification", () => {
+    expect(
+      loadConfig({
+        STRIPE_SECRET_KEY: "sk_test_subscription",
+        STRIPE_FIXED_PLAN_PRICE_ID: "price_fixed",
+        BOOKING_ADMIN_BASE_URL: "https://admin.booking.example",
+      }).stripeSubscriptions,
+    ).toEqual({
+      secretKey: "sk_test_subscription",
+      fixedPlanPriceId: "price_fixed",
+      bookingAdminBaseUrl: "https://admin.booking.example",
+    });
+  });
+
+  it("enables Stripe Checkout only when subscription mutation and webhook recovery are ready", () => {
+    const stripeRuntimeEnv = {
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      FINANCE_SOURCE: "target",
+      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      STRIPE_SECRET_KEY: "sk_test_subscription",
+      STRIPE_WEBHOOK_SECRET: "whsec_subscription",
+      STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
+    };
+    const complete = loadConfig(stripeRuntimeEnv);
+    expect(stripeSubscriptionRuntimeEnabled(complete)).toBe(true);
+
+    for (const env of [
+      { ...stripeRuntimeEnv, STRIPE_SECRET_KEY: undefined },
+      { ...stripeRuntimeEnv, STRIPE_WEBHOOK_SECRET: undefined },
+      { ...stripeRuntimeEnv, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
+      { ...stripeRuntimeEnv, BOOKING_CHECKOUT_COMMAND_SOURCE: "legacy_proxy" },
+    ]) {
+      expect(stripeSubscriptionRuntimeEnabled(loadConfig(env))).toBe(false);
+    }
+  });
+
+  it("rejects a non-HTTP Booking Admin return origin", () => {
+    expect(() => loadConfig({ BOOKING_ADMIN_BASE_URL: "ftp://admin.booking.example" })).toThrow(
+      "BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin",
+    );
   });
 
   it("rejects unsupported provider webhook intake modes", () => {

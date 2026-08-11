@@ -75,6 +75,27 @@ export type ProviderWebhookConfig = {
   channexMode: ProviderWebhookIntakeMode;
 };
 
+export type StripeSubscriptionConfig = {
+  secretKey?: string;
+  fixedPlanPriceId?: string;
+  bookingAdminBaseUrl: string;
+};
+
+export function stripeSubscriptionRuntimeEnabled(
+  config: Pick<
+    ApiConfig,
+    "bookingCheckoutCommandSource" | "financeSource" | "providerWebhooks" | "stripeSubscriptions"
+  >,
+): boolean {
+  return (
+    config.financeSource === "target" &&
+    config.bookingCheckoutCommandSource === "target" &&
+    Boolean(config.stripeSubscriptions.secretKey) &&
+    Boolean(config.providerWebhooks.stripeSecret) &&
+    config.providerWebhooks.stripeMode === "mutating"
+  );
+}
+
 export type CreatorPlatformConnectionsConfig = {
   callbackBaseUrl: string;
   webReturnUrl: string;
@@ -137,6 +158,7 @@ export type ApiConfig = {
   pmsInventoryPublicOfferRetryIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
+  stripeSubscriptions: StripeSubscriptionConfig;
   xenditSecretKey?: string;
 };
 
@@ -457,6 +479,34 @@ function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfi
   };
 }
 
+function loadStripeSubscriptionConfig(env: NodeJS.ProcessEnv): StripeSubscriptionConfig {
+  const bookingAdminBaseUrl =
+    readOptionalEnv(env, "BOOKING_ADMIN_BASE_URL") ??
+    readOptionalEnv(env, "AUTH_BOOKING_ADMIN_ORIGIN") ??
+    "https://admin.booking.localhost";
+  let bookingAdminUrl: URL;
+  try {
+    bookingAdminUrl = new URL(bookingAdminBaseUrl);
+  } catch {
+    throw new Error("BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin");
+  }
+  if (
+    !["http:", "https:"].includes(bookingAdminUrl.protocol) ||
+    bookingAdminUrl.username ||
+    bookingAdminUrl.password ||
+    bookingAdminUrl.pathname !== "/" ||
+    bookingAdminUrl.search ||
+    bookingAdminUrl.hash
+  ) {
+    throw new Error("BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin");
+  }
+  return {
+    secretKey: readOptionalEnv(env, "STRIPE_SECRET_KEY"),
+    fixedPlanPriceId: readOptionalEnv(env, "STRIPE_FIXED_PLAN_PRICE_ID"),
+    bookingAdminBaseUrl: bookingAdminUrl.origin,
+  };
+}
+
 function loadCreatorPlatformConnectionsConfig(
   env: NodeJS.ProcessEnv,
 ): CreatorPlatformConnectionsConfig | undefined {
@@ -764,6 +814,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     creatorPlatformConnections,
     providerWebhooks: loadProviderWebhookConfig(env),
+    stripeSubscriptions: loadStripeSubscriptionConfig(env),
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };
 }
