@@ -3,18 +3,46 @@ import {
   type FinanceBillingPlan,
   type PropertyPlanReadModel,
 } from "@vayada/domain-finance";
-import type { QueryResultRow } from "pg";
+import pg, { type QueryResultRow } from "pg";
 
 export type PropertyPlanQueryable = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
-    values?: unknown[],
+    values?: readonly unknown[],
   ): Promise<{ rows: T[] }>;
 };
 
 type PropertyPlanRow = {
   plan: FinanceBillingPlan;
 };
+
+export type PropertyPlanReadRepository = {
+  getPropertyPlan(propertyId: string): Promise<PropertyPlanReadModel>;
+  close?(): Promise<void>;
+};
+
+export function createPgPropertyPlanReadRepository(config: {
+  connectionString: string;
+  max?: number;
+  pool?: PropertyPlanQueryable & { end?(): Promise<void> };
+}): PropertyPlanReadRepository {
+  if (!config.connectionString.trim()) {
+    throw new Error("Property plan read repository connectionString must not be empty");
+  }
+  const ownsPool = !config.pool;
+  const pool =
+    config.pool ??
+    (new pg.Pool({
+      connectionString: config.connectionString,
+      max: config.max,
+    }) as PropertyPlanQueryable & { end(): Promise<void> });
+  return {
+    getPropertyPlan: (propertyId) => readPropertyPlan(pool, propertyId),
+    async close() {
+      if (ownsPool) await pool.end?.();
+    },
+  };
+}
 
 export async function readPropertyPlan(
   queryable: PropertyPlanQueryable,

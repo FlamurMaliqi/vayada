@@ -43,6 +43,7 @@ import {
 } from "./routes/aiHotelQuotes.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import {
   createPgPublicHotelProfileRepository,
   createTargetPublicHotelProfileRepository,
@@ -2284,6 +2285,7 @@ function buildAuthenticatedApp(
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingGuestPiiPort?: BookingGuestPiiPort;
     pmsOperationsAllowedOrigins?: string[];
+    propertyPlanReadRepository?: PropertyPlanReadRepository;
     financeRepository?: FinancePropertyReadRepository;
     pmsFinanceCompatibilityRepository?: FinancePropertyReadRepository;
     browserAllowedOrigins?: string[];
@@ -2300,6 +2302,7 @@ function buildAuthenticatedApp(
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     bookingGuestPiiPort: options.bookingGuestPiiPort,
     pmsOperationsAllowedOrigins: options.pmsOperationsAllowedOrigins,
+    propertyPlanReadRepository: options.propertyPlanReadRepository,
     financeRepository: options.financeRepository,
     pmsFinanceCompatibilityRepository: options.pmsFinanceCompatibilityRepository,
     bookingAddonItemsRepository: options.bookingAddonItemsRepository ?? bookingAddonItemsRepository,
@@ -9636,6 +9639,118 @@ describe("vayada-api", () => {
       expect(JSON.stringify(body)).not.toContain(key);
     }
     expect(body.items.map((item) => item.name)).toEqual(["Alpine Suite", "Garden Room"]);
+  });
+
+  it("returns centralized property plan limits to PMS clients", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      propertyPlanReadRepository: {
+        async getPropertyPlan(propertyId) {
+          return {
+            propertyId,
+            plan: "commission",
+            limits: {
+              maxRoomPhotosPerType: 10,
+              maxAddons: 3,
+              guestContactAccess: "after_acceptance",
+            },
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/plan-limits`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      contractVersion: "pms-operations.v1",
+      propertyId: pmsPropertyId,
+      propertyPlan: {
+        propertyId: pmsPropertyId,
+        plan: "commission",
+        limits: {
+          maxRoomPhotosPerType: 10,
+          maxAddons: 3,
+          guestContactAccess: "after_acceptance",
+        },
+      },
+    });
+  });
+
+  it("uses centralized property plan limits in PMS room photo errors", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+      propertyPlanReadRepository: {
+        async getPropertyPlan(propertyId) {
+          return {
+            propertyId,
+            plan: "commission",
+            limits: {
+              maxRoomPhotosPerType: 1,
+              maxAddons: 3,
+              guestContactAccess: "after_acceptance",
+            },
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload: {
+        commandId: "cmd-room-type-photo-limit",
+        idempotencyKey: "room-type-photo-limit",
+        name: "Loft Suite",
+        baseRate: 240,
+        currency: "EUR",
+        operatingPeriods: [{ from: "01-01", to: "12-31" }],
+        seasons: [{ name: "Default", rate: "240", from: "01-01", to: "12-31", minStay: 1 }],
+        images: [
+          "https://cdn.vayada.example/loft.jpg",
+          "https://cdn.vayada.example/loft-balcony.jpg",
+        ],
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({
+      code: "room_photo_plan_limit_reached",
+      message:
+        "You've reached the 1-photo limit. Upgrade to the paid plan for up to 15 photos per room.",
+    });
+    expect(commandRepository.roomTypeCreates).toHaveLength(0);
   });
 
   it("returns PMS rooms using the P1a route contract fixture", async () => {

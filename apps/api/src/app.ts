@@ -18,6 +18,7 @@ import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrack
 import type { HotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
+import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
 import type { AskAuditRepository, AskRoutesOptions } from "./routes/ask.js";
@@ -189,6 +190,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   pmsOperationsAllowedOrigins?: string[];
+  propertyPlanReadRepository?: PropertyPlanReadRepository;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
@@ -529,6 +531,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
       bookingGuestPiiPort: options.bookingGuestPiiPort,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
+      propertyPlanReadRepository: options.propertyPlanReadRepository,
     });
   }
   if (options.pmsModuleActivationRepository) {

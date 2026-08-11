@@ -47,6 +47,7 @@ import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperations
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
+import { createPgPropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
 import { createPgPropertySetupFinanceOwnerScopePort } from "./domains/propertySetupFinanceOwnerScope.js";
 import { createPgPropertySetupPmsOwnerRepository } from "./domains/propertySetupPmsOwnerRepository.js";
@@ -239,6 +240,10 @@ const bookingCustomDomainRepository = createTargetBookingCustomDomainRepository(
 });
 
 const bookingAddonItemsRepository = createPgTargetBookingAddonItemsRepository({
+  connectionString: targetDatabaseUrl,
+});
+
+const propertyPlanReadRepository = createPgPropertyPlanReadRepository({
   connectionString: targetDatabaseUrl,
 });
 
@@ -736,6 +741,7 @@ const app = buildApp({
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
+  propertyPlanReadRepository,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
