@@ -75,6 +75,7 @@ import {
   type FinanceRoutePaymentProvider,
   type FinanceStripeConnectProvider,
   type IssueStripeOnboardingLinkCommand,
+  type PropertyPlanReadModel,
   type FinanceXenditBankValidationCommand,
   type FinanceXenditBankValidationResponse,
   type FinanceXenditPayoutReconciliationCommand,
@@ -87,6 +88,12 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
+import {
+  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
+  guestContactForPropertyPlan,
+  PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL,
+} from "../domains/bookingGuestContactAccess.js";
+import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 import { enqueueBookingLifecycleEmailJob } from "../jobs/bookingEmails.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
 import { enforceRoutePolicy, type RouteAuthorizationPolicy } from "./policy.js";
@@ -290,6 +297,7 @@ type FinanceInvoiceRow = {
   guestDisplayName: string | null;
   guestEmail: string | null;
   guestPhone: string | null;
+  guestContactAccepted: boolean;
   checkIn: Date | string;
   checkOut: Date | string;
   roomName: string | null;
@@ -1374,8 +1382,11 @@ export function createTargetFinancePropertySettingsRepository(config: {
       return row ? toFinancialSummaryResponseBody(row) : null;
     },
     async listInvoices(propertyId, query) {
-      const rows = await loadInvoiceRows(pool, propertyId, query);
-      return toInvoiceListResponseBody(rows, query);
+      const [rows, propertyPlan] = await Promise.all([
+        loadInvoiceRows(pool, propertyId, query),
+        readPropertyPlan(pool, propertyId),
+      ]);
+      return toInvoiceListResponseBody(rows, query, propertyPlan);
     },
     async getInvoice(propertyId, invoiceId) {
       const rows = await loadInvoiceRows(pool, propertyId, {
@@ -1387,14 +1398,21 @@ export function createTargetFinancePropertySettingsRepository(config: {
       const invoice = rows.find((row) => row.invoiceId === invoiceId);
       if (!invoice) return null;
 
-      const payments = await loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId);
+      const [payments, propertyPlan] = await Promise.all([
+        loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId),
+        readPropertyPlan(pool, propertyId),
+      ]);
+      const contact = guestContactForPropertyPlan(propertyPlan, invoice.guestContactAccepted, {
+        email: invoice.guestEmail,
+        phone: invoice.guestPhone,
+      });
       return {
         invoice: {
-          ...toInvoiceListItem(invoice),
+          ...toInvoiceListItem(invoice, propertyPlan),
           guest: {
             displayName: invoice.guestDisplayName ?? "Guest",
-            email: invoice.guestEmail,
-            phone: invoice.guestPhone,
+            email: contact.email,
+            phone: contact.phone,
           },
           nights: nightsBetween(invoice.checkIn, invoice.checkOut),
           charges: [
@@ -4477,13 +4495,20 @@ async function loadFinanceInvoiceDetail(
   });
   const invoice = rows.find((row) => row.invoiceId === invoiceId);
   if (!invoice) return null;
-  const payments = await loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId);
+  const [payments, propertyPlan] = await Promise.all([
+    loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId),
+    readPropertyPlan(pool, propertyId),
+  ]);
+  const contact = guestContactForPropertyPlan(propertyPlan, invoice.guestContactAccepted, {
+    email: invoice.guestEmail,
+    phone: invoice.guestPhone,
+  });
   return {
-    ...toInvoiceListItem(invoice),
+    ...toInvoiceListItem(invoice, propertyPlan),
     guest: {
       displayName: invoice.guestDisplayName ?? "Guest",
-      email: invoice.guestEmail,
-      phone: invoice.guestPhone,
+      email: contact.email,
+      phone: contact.phone,
     },
     nights: nightsBetween(invoice.checkIn, invoice.checkOut),
     charges: [
@@ -4661,6 +4686,8 @@ async function loadInvoiceRows(
          NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
          guest.email AS "guestEmail",
          guest.phone AS "guestPhone",
+         ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
+         ${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL} AS "guestContactAlways",
          booking.check_in AS "checkIn",
          booking.check_out AS "checkOut",
          COALESCE(assignment.assignment_payload ->> 'roomName', room_type.name) AS "roomName",
@@ -4724,7 +4751,10 @@ async function loadInvoiceRows(
            OR lower("invoiceNumber") LIKE lower($3::text)
            OR lower("bookingReference") LIKE lower($3::text)
            OR lower(COALESCE("guestDisplayName", '')) LIKE lower($3::text)
-           OR lower(COALESCE("guestEmail", '')) LIKE lower($3::text)
+           OR (
+             ("guestContactAlways" OR "guestContactAccepted")
+             AND lower(COALESCE("guestEmail", '')) LIKE lower($3::text)
+           )
          )
      ),
      counts AS (
@@ -4816,6 +4846,8 @@ async function loadPaymentLedgerRows(
          COALESCE(payment.payment_metadata ->> 'reconciliationStatus', 'pending') AS "reconciliationStatus",
          NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
          guest.email AS "guestEmail",
+         ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
+         ${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL} AS "guestContactAlways",
          COALESCE(visibility.source_freshness, '{}'::jsonb) AS "sourceFreshness"
        FROM finance.payments payment
        LEFT JOIN finance.payment_provider_accounts account
@@ -4854,7 +4886,10 @@ async function loadPaymentLedgerRows(
            OR lower(COALESCE("bookingReference", '')) LIKE lower($7::text)
            OR lower(COALESCE(reference, '')) LIKE lower($7::text)
            OR lower(COALESCE("guestDisplayName", '')) LIKE lower($7::text)
-           OR lower(COALESCE("guestEmail", '')) LIKE lower($7::text)
+           OR (
+             ("guestContactAlways" OR "guestContactAccepted")
+             AND lower(COALESCE("guestEmail", '')) LIKE lower($7::text)
+           )
          )
      ),
      counts AS (
@@ -5668,9 +5703,10 @@ function toFinancialSummaryResponseBody(
 function toInvoiceListResponseBody(
   rows: FinanceInvoiceRow[],
   query: FinanceInvoiceListQuery,
+  propertyPlan: PropertyPlanReadModel,
 ): Omit<FinanceInvoiceListResponse, "contractVersion" | "propertyId"> {
   return {
-    invoices: rows.map(toInvoiceListItem),
+    invoices: rows.map((row) => toInvoiceListItem(row, propertyPlan)),
     total: totalFromRows(rows),
     counts: invoiceStatusCounts(rows[0]?.counts),
     limit: query.limit,
@@ -5679,7 +5715,14 @@ function toInvoiceListResponseBody(
   };
 }
 
-function toInvoiceListItem(row: FinanceInvoiceRow): FinanceInvoiceListItem {
+function toInvoiceListItem(
+  row: FinanceInvoiceRow,
+  propertyPlan: PropertyPlanReadModel,
+): FinanceInvoiceListItem {
+  const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, {
+    email: row.guestEmail,
+    phone: row.guestPhone,
+  });
   return {
     invoiceId: row.invoiceId,
     invoiceNumber: row.invoiceNumber,
@@ -5687,7 +5730,7 @@ function toInvoiceListItem(row: FinanceInvoiceRow): FinanceInvoiceListItem {
     bookingReference: row.bookingReference,
     guest: {
       displayName: row.guestDisplayName ?? "Guest",
-      email: row.guestEmail,
+      email: contact.email,
     },
     stay: {
       checkIn: dateOnly(row.checkIn),

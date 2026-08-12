@@ -233,7 +233,12 @@ type PmsOperationalReservation = {
   status: string;
   source: "direct_booking" | "channel" | "manual" | "migration";
   stay: { checkIn: string; checkOut: string; adults: number; children: number };
-  primaryGuest: { displayName: string; email: string | null; phone: string | null };
+  primaryGuest: {
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+    countryCode: string | null;
+  };
   assignments: Array<{
     assignmentId?: string | null;
     roomTypeId: string;
@@ -890,7 +895,7 @@ function toBooking(
     guestLastName,
     guestEmail: reservation.primaryGuest.email ?? "",
     guestPhone: reservation.primaryGuest.phone ?? "",
-    guestCountry: "",
+    guestCountry: reservation.primaryGuest.countryCode ?? "",
     guestGender: "",
     guestDateOfBirth: null,
     guestPassportNumber: "",

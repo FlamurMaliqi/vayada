@@ -1432,6 +1432,69 @@ describe("finance route contracts", () => {
     });
   });
 
+  it.each([
+    {
+      name: "unaccepted commission",
+      plan: undefined,
+      guestContactAccepted: false,
+      expectedEmail: "Hidden until you accept",
+    },
+    {
+      name: "accepted commission",
+      plan: undefined,
+      guestContactAccepted: true,
+      expectedEmail: "finance.guest@example.test",
+    },
+    {
+      name: "fixed",
+      plan: "fixed" as const,
+      guestContactAccepted: false,
+      expectedEmail: "finance.guest@example.test",
+    },
+  ])(
+    "applies guest contact access to $name invoice reads",
+    async ({ plan, guestContactAccepted, expectedEmail }) => {
+      const queries: string[] = [];
+      const repository = createTargetFinancePropertySettingsRepository({
+        connectionString: "postgresql://finance-target",
+        pool: {
+          async query<T extends QueryResultRow = QueryResultRow>(text: string) {
+            queries.push(text);
+            if (text.includes("SELECT plan_key AS plan")) {
+              return { rows: (plan ? [{ plan }] : []) as unknown as T[] };
+            }
+            if (text.includes("WITH invoice_base AS")) {
+              return {
+                rows: [financeInvoiceRowFixture({ guestContactAccepted })] as unknown as T[],
+              };
+            }
+            if (text.includes("FROM finance.payments payment")) return { rows: [] as T[] };
+            throw new Error(`Unexpected query: ${text}`);
+          },
+          async end() {},
+        },
+      });
+
+      const list = await repository.listInvoices!(propertyId, {
+        sort: "issuedAt",
+        limit: 25,
+        offset: 0,
+      });
+      expect(list.invoices[0]?.guest.email).toBe(expectedEmail);
+
+      if (!plan && !guestContactAccepted) {
+        const detail = await repository.getInvoice!(propertyId, "inv_2026_abcd");
+        expect(detail?.invoice.guest).toMatchObject({
+          displayName: "Fi Guest",
+          email: "Hidden until you accept",
+          phone: "Hidden until you accept",
+        });
+      }
+      expect(queries.join("\n")).toContain('AS "guestContactAlways"');
+      expect(queries.join("\n")).toContain("contact_event.actor_type = 'property_user'");
+    },
+  );
+
   it("returns a CSV export disposition instead of streaming a legacy export", async () => {
     app = buildFinanceApp();
 
@@ -2543,6 +2606,7 @@ type FinanceInvoiceRowFixture = {
   guestDisplayName: string | null;
   guestEmail: string | null;
   guestPhone: string | null;
+  guestContactAccepted: boolean;
   checkIn: string;
   checkOut: string;
   roomName: string | null;
@@ -3064,6 +3128,7 @@ function financeInvoiceRowFixture(
     guestDisplayName: "Fi Guest",
     guestEmail: "finance.guest@example.test",
     guestPhone: "+15555550123",
+    guestContactAccepted: false,
     checkIn: "2026-08-01",
     checkOut: "2026-08-05",
     roomName: "Alpine Suite",

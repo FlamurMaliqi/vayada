@@ -29,7 +29,12 @@ const reservation = {
   status: "confirmed",
   source: "direct_booking" as const,
   stay: { checkIn: "2026-07-23", checkOut: "2026-07-24", adults: 2, children: 0 },
-  primaryGuest: { displayName: "Ada Lovelace", email: "ada@example.com", phone: null },
+  primaryGuest: {
+    displayName: "Ada Lovelace",
+    email: "ada@example.com",
+    phone: null,
+    countryCode: "GB",
+  },
   assignments: [],
   checkin: { completedAt: null, pendingFlags: [] },
   checkout: { completedAt: null, pendingFlags: [] },
@@ -69,6 +74,7 @@ describe("PMS target booking projection", () => {
       totalAmount: 155,
       balanceAmount: 155,
       currency: "EUR",
+      guestCountry: "GB",
     });
   });
 
