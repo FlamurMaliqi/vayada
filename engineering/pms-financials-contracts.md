@@ -138,6 +138,10 @@ official numbering, lifecycle, document and delivery rules through
 ```ts
 type Date = string; type Decimal = string; type Ratio = Decimal; // date: YYYY-MM-DD; ratio: 0..1
 type Money = { amount: Decimal; currency: string }; type Page<T> = { items: T[]; nextCursor: string | null; limit: number };
+type ExpenseOrigin = "manual" | "recurring" | "ota_commission" | "platform_fee" | "supplier_bill";
+type ExpensePayment = { paymentStatus: "paid"; paidOn: Date } | { paymentStatus: "unpaid"; paidOn: null };
+type ExpensePaymentWrite = { paymentStatus: "paid"; paidOn: Date } | { paymentStatus: "unpaid"; paidOn?: null };
+type ExpenseSettlementPatch = ExpensePaymentWrite | { paymentStatus?: never; paidOn?: never };
 type MoneyMetric = { value: Money; absoluteChange: Money; percentChange: Ratio | null };
 type CountMetric = { value: number; absoluteChange: number; percentChange: Ratio | null };
 type Envelope = { contractVersion: "pms-financials.v1"; propertyId: string; currency: string;
@@ -147,25 +151,24 @@ type Command = { commandId: string; idempotencyKey: string; expectedRevision?: n
 type Range = { from: Date; to: Date }; type Cursor = { cursor?: string; limit?: number };
 type DashboardQuery = { asOf?: Date }; type RevenueQuery = Range;
 type ExpenseQuery = Range & Cursor & { categoryId?: string; paymentStatus?: "paid" | "unpaid"; recurring?: boolean;
-  origin?: "manual" | "recurring" | "ota_commission" | "platform_fee" | "supplier_bill"; search?: string; sort?: "incurredOn_desc" | "amount_desc" };
+  origin?: ExpenseOrigin; search?: string; sort?: "incurredOn_desc" | "amount_desc" };
 type ProfitLossQuery = { year: number };
 type FolioState = "draft" | "ready" | "superseded" | "archived";
 type FolioQuery = Cursor & { from?: Date; to?: Date; state?: FolioState; search?: string;
   sort?: "createdAt_desc" | "serviceFrom_desc" | "amount_desc" };
 type FolioExportQuery = Omit<FolioQuery, "state"> & { state?: "ready" };
 type Category = { id: string; systemKey: string | null; name: string; color: string; sortOrder: number; archived: boolean; revision: number };
-type Expense = { id: string; categoryId: string; origin: ExpenseQuery["origin"];
-  incurredOn: Date; paidOn: Date | null; vendor: string; amount: Money;
-  paymentStatus: "paid" | "unpaid"; recurringRuleId: string | null; sourceKey: string | null;
-  reversesExpenseId: string | null; revision: number };
-type RecurringRule = { id: string; cadence: "weekly" | "monthly" | "yearly"; nextDueOn: Date; endsOn: Date | null; active: boolean; revision: number };
+type Expense = { id: string; categoryId: string; origin: ExpenseOrigin; incurredOn: Date; vendor: string; amount: Money;
+  recurringRuleId: string | null; sourceKey: string | null; reversesExpenseId: string | null; revision: number } & ExpensePayment;
+type RecurringRule = { id: string; categoryId: string; vendor: string; amount: Money; notes?: string;
+  paymentStatus: "paid" | "unpaid"; cadence: "weekly" | "monthly" | "yearly"; startsOn: Date;
+  nextDueOn: Date; endsOn: Date | null; active: boolean; revision: number };
 type CategoryWrite = Command & { name: string; color: string; sortOrder: number }; type CategoryPatch = Command & Partial<Pick<Category, "name" | "color" | "sortOrder">>;
-type ExpenseWrite = Command & { incurredOn: Date; vendor: string; categoryId: string; amount: Money;
-  paymentStatus: "paid" | "unpaid"; paidOn?: Date; notes?: string; supplierInvoiceNumber?: string;
-  recurrence?: { cadence: "weekly" | "monthly" | "yearly"; startsOn: Date; endsOn?: Date } };
-type ExpensePatch = Command & Partial<Omit<ExpenseWrite, keyof Command | "recurrence">>;
-type RecurrencePatch = Command & { cadence?: "weekly" | "monthly" | "yearly";
-  nextDueOn?: Date; endsOn?: Date };
+type ExpenseWrite = Command & { incurredOn: Date; vendor: string; categoryId: string; amount: Money; notes?: string;
+  supplierInvoiceNumber?: string; recurrence?: { cadence: "weekly" | "monthly" | "yearly"; startsOn: Date; endsOn?: Date } } & ExpensePaymentWrite;
+type ExpensePatch = Command & Partial<Omit<ExpenseWrite, keyof Command | "recurrence" | keyof ExpensePaymentWrite>> & ExpenseSettlementPatch;
+type RecurrencePatch = Command & Partial<Pick<RecurringRule,
+  "categoryId" | "vendor" | "amount" | "notes" | "paymentStatus" | "cadence" | "nextDueOn" | "endsOn">>;
 type ExportWrite = Command & ({ tab: "dashboard"; filters: DashboardQuery } |
   { tab: "revenue"; filters: RevenueQuery } | { tab: "expenses"; filters: ExpenseQuery } |
   { tab: "profit_loss"; filters: ProfitLossQuery } | { tab: "folios"; filters: FolioExportQuery }) &
@@ -192,6 +195,8 @@ type FolioSummary = { folioId: string; bookingId: string | null; revision: numbe
   serviceFrom: Date; serviceTo: Date; total: Money; createdAt: string };
 type FolioListResponse = Envelope & { page: Page<FolioSummary> };
 type ItemResponse<T> = Envelope & { item: T }; type CommandResponse<T> = ItemResponse<T> & { outcome: "created" | "updated" | "replayed" };
+type CommandReceipt = { contractVersion: "pms-financials.v1"; propertyId: string; resourceId: string;
+  outcome: "created" | "updated" | "replayed" }; type WriteResponse<T> = CommandResponse<T> | CommandReceipt;
 ```
 
 `from`/`to` are inclusive. Invalid ranges return `400`. Cursors are opaque,
@@ -202,18 +207,18 @@ match the named tab's query type after normalization; unknown keys return `400`.
 
 ### Canonical routes
 
-| Method             | Path after `/api/finance/properties/:propertyId/financials` | Request → response                                                                |
-| ------------------ | ----------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `GET`              | `/dashboard`                                                | `DashboardQuery` → `DashboardResponse`                                            |
-| `GET`              | `/revenue`                                                  | `RevenueQuery` → `RevenueResponse`                                                |
-| `GET/POST`         | `/expense-categories`                                       | none / `CategoryWrite` → `ItemResponse<Category[]>` / `CommandResponse<Category>` |
-| `PATCH/DELETE`     | `/expense-categories/:categoryId`                           | `CategoryPatch` / `Command` → `CommandResponse<Category>`                         |
-| `GET/POST`         | `/expenses`                                                 | `ExpenseQuery` / `ExpenseWrite` → `ExpensesResponse` / `CommandResponse<Expense>` |
-| `GET/PATCH/DELETE` | `/expenses/:expenseId`                                      | none / `ExpensePatch` / `Command` → item / `CommandResponse<Expense>`             |
-| `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `CommandResponse<RecurringRule>`    |
-| `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                          |
-| See VAY-1240       | `/folios` and `/folios/:folioId/*`                          | Operational folio list, revision, ready and archive contracts                     |
-| `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `CommandResponse<Disposition>` / item response             |
+| Method             | Path after `/api/finance/properties/:propertyId/financials` | Request → response                                                              |
+| ------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `GET`              | `/dashboard`                                                | `DashboardQuery` → `DashboardResponse`                                          |
+| `GET`              | `/revenue`                                                  | `RevenueQuery` → `RevenueResponse`                                              |
+| `GET/POST`         | `/expense-categories`                                       | none / `CategoryWrite` → `ItemResponse<Category[]>` / `WriteResponse<Category>` |
+| `PATCH/DELETE`     | `/expense-categories/:categoryId`                           | `CategoryPatch` / `Command` → `WriteResponse<Category>`                         |
+| `GET/POST`         | `/expenses`                                                 | `ExpenseQuery` / `ExpenseWrite` → `ExpensesResponse` / `WriteResponse<Expense>` |
+| `GET/PATCH/DELETE` | `/expenses/:expenseId`                                      | none / `ExpensePatch` / `Command` → item / `WriteResponse<Expense>`             |
+| `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `WriteResponse<RecurringRule>`    |
+| `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                        |
+| See VAY-1240       | `/folios` and `/folios/:folioId/*`                          | Operational folio list, revision, ready and archive contracts                   |
+| `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `WriteResponse<Disposition>` / item response             |
 
 V1 exports CSV for all five tabs. It does not create, retrieve, render, or send
 an official invoice document and does not promise PDF renditions.
@@ -231,7 +236,8 @@ introduced.
   relationships do not gain Financials access implicitly.
 - `pms.finance.manage` does not imply read. VAY-1138 must grant
   `pms.finance.read` to `finance_manager` as an explicit migration before that
-  relationship is activated.
+  relationship is activated. A resource-bearing `CommandResponse<T>` also
+  requires read authorization; manage-only callers receive `CommandReceipt`.
 - Route adapters call `enforceRoutePolicy` before reads, idempotency lookup or
   validation that could disclose property data.
 - `401` means invalid/missing authentication. `403` covers permission,

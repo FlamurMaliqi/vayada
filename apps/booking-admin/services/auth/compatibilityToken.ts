@@ -5,7 +5,7 @@ import {
   setLegacyCompatibilityToken,
 } from "./sessionStore";
 
-const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
+const AUTH_COMPATIBILITY_TOKEN_PATH = "/auth/compat/booking-admin-token";
 
 type CompatibilityTokenResponse = {
   accessToken: string;
@@ -18,7 +18,7 @@ export async function ensureBookingCompatibilityToken(): Promise<void> {
   const csrfToken = getAuthCsrfToken();
   if (!csrfToken) return;
 
-  const response = await fetch(`${AUTH_API_BASE_URL}/auth/compat/booking-admin-token`, {
+  const response = await fetch(AUTH_COMPATIBILITY_TOKEN_PATH, {
     method: "POST",
     credentials: "include",
     headers: { "x-vayada-csrf": csrfToken },

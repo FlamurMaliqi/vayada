@@ -18,6 +18,7 @@ export type BookingSettingsClientErrorCode =
   | "inactive_entitlement"
   | "missing_resource_access"
   | "invalid_payload"
+  | "plan_limit_reached"
   | "conflict"
   | "not_found"
   | "read_model_unavailable"
@@ -245,6 +246,7 @@ function isBookingSettingsClientErrorCode(value: unknown): value is BookingSetti
     value === "missing_resource_access" ||
     value === "not_found" ||
     value === "invalid_payload" ||
+    value === "plan_limit_reached" ||
     value === "conflict" ||
     value === "read_model_unavailable" ||
     value === "write_model_unavailable"

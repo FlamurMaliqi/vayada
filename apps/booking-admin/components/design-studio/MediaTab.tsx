@@ -13,6 +13,11 @@ interface MediaTabProps {
   fileInputRef: RefObject<HTMLInputElement>;
   handleImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   removeHeroImage: () => void;
+  headerLogo: string;
+  logoInputRef: RefObject<HTMLInputElement>;
+  handleLogoUpload: (file: File) => void;
+  removeHeaderLogo: () => void;
+  uploadingLogo: boolean;
   resetContent: () => void;
   publicationSetup?: {
     localityPublic: boolean;
@@ -32,6 +37,11 @@ export default function MediaTab({
   fileInputRef,
   handleImageUpload,
   removeHeroImage,
+  headerLogo,
+  logoInputRef,
+  handleLogoUpload,
+  removeHeaderLogo,
+  uploadingLogo,
   resetContent,
   publicationSetup = null,
 }: MediaTabProps) {
@@ -114,6 +124,91 @@ export default function MediaTab({
             Replace Image
           </button>
         )}
+      </div>
+
+      {/* Header Logo */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <h2 className="text-[13px] font-semibold text-gray-900">Header Logo</h2>
+        <p className="text-[12px] text-gray-500 mt-0.5">
+          Recommended height: 80px (renders at 40px for retina). Max width: 300px.
+        </p>
+        <p className="text-[11px] text-gray-400 mt-1 mb-2.5">
+          PNG, SVG, or JPEG up to 500 KB. Transparent background recommended.
+        </p>
+
+        {headerLogo ? (
+          <div
+            data-testid="header-logo-dropzone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (uploadingLogo) return;
+              const file = event.dataTransfer.files[0];
+              if (file) handleLogoUpload(file);
+            }}
+            className="flex h-24 items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-100 p-3"
+          >
+            <img
+              src={headerLogo}
+              alt="Header logo preview"
+              className="max-h-10 max-w-full object-contain"
+            />
+          </div>
+        ) : (
+          <button
+            type="button"
+            data-testid="header-logo-dropzone"
+            onClick={() => logoInputRef.current?.click()}
+            disabled={uploadingLogo}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (uploadingLogo) return;
+              const file = event.dataTransfer.files[0];
+              if (file) handleLogoUpload(file);
+            }}
+            className="w-full h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors"
+          >
+            <PhotoIcon className="w-6 h-6" />
+            <span className="text-[12px]">Click or drag to upload</span>
+          </button>
+        )}
+
+        <input
+          ref={logoInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/svg+xml,.svg"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) handleLogoUpload(file);
+          }}
+          className="hidden"
+        />
+
+        {headerLogo && (
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => logoInputRef.current?.click()}
+              disabled={uploadingLogo}
+              className="py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+            >
+              Replace logo
+            </button>
+            <button
+              type="button"
+              onClick={removeHeaderLogo}
+              disabled={uploadingLogo}
+              className="py-1.5 text-[12px] text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors"
+            >
+              Remove logo
+            </button>
+          </div>
+        )}
+
+        <p className="text-[11px] text-gray-400 mt-2">
+          Make sure your logo is visible on your header background color.
+        </p>
       </div>
 
       {/* Text Overrides */}

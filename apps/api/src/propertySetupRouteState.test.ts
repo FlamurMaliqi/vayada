@@ -187,6 +187,87 @@ describe("property setup route state composition", () => {
     }
   });
 
+  it("fails closed when independent owners disagree on a shared current revision", async () => {
+    const providers = makeProviders(selectedTracks);
+    providers.booking = {
+      getOwnerState: vi.fn(async (request: PropertySetupOwnerStateRequest) => ({
+        outcome: "found" as const,
+        facts: request.stepIds.map((stepId) => {
+          const fact = ownerFact(stepId);
+          return stepId === "booking_design"
+            ? {
+                ...fact,
+                currentBaseRevisions: {
+                  ...fact.currentBaseRevisions,
+                  "hotel_catalog.profile": "revision:2",
+                },
+              }
+            : fact;
+        }),
+      })),
+    };
+    const port = createPropertySetupRouteStateReadPort({
+      draftRepository: { getActiveSession: vi.fn(async () => null) },
+      trackRepository: trackRepository(selectedTracks, 4),
+      ownerStateProviders: providers,
+    });
+
+    await expect(port.getPropertySetupRouteState(input(selectedTracks))).resolves.toEqual({
+      outcome: "provider_failure",
+    });
+  });
+
+  it("fails closed for malformed persisted historical drafts", async () => {
+    const session = sessionWithBookingDraft();
+    session.drafts[0]!.baseRevisions = {
+      "booking.design": "design-r1",
+      "hotel_catalog.profile": "profile-r1",
+    } as never;
+    const port = createPropertySetupRouteStateReadPort({
+      draftRepository: { getActiveSession: vi.fn(async () => session) },
+      trackRepository: trackRepository(selectedTracks, 4),
+      ownerStateProviders: makeProviders(selectedTracks),
+    });
+
+    await expect(port.getPropertySetupRouteState(input(selectedTracks))).resolves.toEqual({
+      outcome: "provider_failure",
+    });
+  });
+
+  it("preserves historical track metadata but rejects unauthorized returned progress", async () => {
+    const historical = sessionWithBookingDraft();
+    historical.trackRevision = 3;
+    historical.resumeStepId = null;
+    historical.completedStepIds = ["present_hotel"];
+    historical.drafts = [];
+    const preserved = createPropertySetupRouteStateReadPort({
+      draftRepository: { getActiveSession: vi.fn(async () => historical) },
+      trackRepository: trackRepository(["creator_marketplace"], 4),
+      ownerStateProviders: makeProviders(["creator_marketplace"]),
+    });
+
+    await expect(
+      preserved.getPropertySetupRouteState(input(["creator_marketplace"])),
+    ).resolves.toMatchObject({
+      outcome: "found",
+      session: {
+        selectedTracks: ["hotel_operations", "creator_marketplace"],
+        trackRevision: 3,
+        completedStepIds: ["present_hotel"],
+      },
+    });
+
+    historical.resumeStepId = "booking_design";
+    const unauthorized = createPropertySetupRouteStateReadPort({
+      draftRepository: { getActiveSession: vi.fn(async () => historical) },
+      trackRepository: trackRepository(["creator_marketplace"], 4),
+      ownerStateProviders: makeProviders(["creator_marketplace"]),
+    });
+    await expect(
+      unauthorized.getPropertySetupRouteState(input(["creator_marketplace"])),
+    ).resolves.toEqual({ outcome: "provider_failure" });
+  });
+
   it("returns not found when a canonical owner cannot find the property", async () => {
     const providers = makeProviders(["creator_marketplace"]);
     providers.hotel_catalog = {

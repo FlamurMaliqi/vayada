@@ -1354,6 +1354,19 @@ describe("Booking Web public bootstrap parity", () => {
         adapter: createTargetBookingWebCheckoutAdapter({
           connectionString: "postgres://unused",
           inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+          billingConfigReadPortFactory: (executor) => ({
+            async getBillingConfig() {
+              expect(executor).toBe(pool);
+              return {
+                propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+                activePlan: "fixed",
+                bookingEngineFeePercent: 0,
+                channelManagerFeePercent: 0,
+                affiliatePlatformFeePercent: 7,
+                updatedAt: "2026-06-25T11:59:00.000Z",
+              };
+            },
+          }),
           pool: pool as never,
         }),
         calls,
@@ -1421,6 +1434,16 @@ describe("Booking Web public bootstrap parity", () => {
         checkOut: "2026-09-15",
         roomCount: 1,
       },
+    });
+    expect(
+      optionalPhone.calls.find((text) => text.includes("INSERT INTO booking.guest_bookings")),
+    ).toContain("billing_plan_snapshot");
+    expect(optionalPhone.bookingWriteValues?.[29]).toBe("fixed");
+    expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[30]))).toEqual({
+      bookingEngineFeePercent: 0,
+      channelManagerFeePercent: 0,
+      affiliatePlatformFeePercent: 7,
+      financeConfigUpdatedAt: "2026-06-25T11:59:00.000Z",
     });
     const inventoryReservation = optionalPhone.calls.find((text) =>
       text.includes("UPDATE pms.inventory_days"),
