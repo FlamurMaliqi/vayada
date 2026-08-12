@@ -7,7 +7,11 @@ import {
   type PmsManualBookingCreateResult,
 } from "@vayada/domain-pms";
 
-import type { PmsManualBookingTransaction } from "./pmsManualBookingTransactionPorts.js";
+import type {
+  PmsManualBookingCommandReservation,
+  PmsManualBookingPlatformOwnerPort,
+  PmsManualBookingTransaction,
+} from "./pmsManualBookingTransactionPorts.js";
 
 type IdempotencyRow = {
   id: string;
@@ -18,11 +22,16 @@ type IdempotencyRow = {
   metadata: unknown;
 };
 
-export type ManualBookingReservation = Readonly<{
-  id: string;
-  keyHash: string;
-  requestFingerprint: string;
-}>;
+export function createPgPmsManualBookingPlatformOwnerPort(): PmsManualBookingPlatformOwnerPort {
+  return {
+    findReplay: ({ transaction, command }) => findManualBookingReplay(transaction, command),
+    reserveCommand: ({ transaction, command }) => reserveManualBookingCommand(transaction, command),
+    writeEvidence: ({ transaction, ...input }) =>
+      writeManualBookingPlatformEvidence(transaction, input),
+    completeCommand: ({ transaction, reservation, result, completedAt }) =>
+      completeManualBookingCommand(transaction, reservation, result, completedAt),
+  };
+}
 
 export function manualBookingRequestFingerprint(command: PmsManualBookingCreateCommand): string {
   return sha256(
@@ -81,7 +90,7 @@ export async function findManualBookingReplay(
 export async function reserveManualBookingCommand(
   transaction: PmsManualBookingTransaction,
   command: PmsManualBookingCreateCommand,
-): Promise<ManualBookingReservation | null> {
+): Promise<PmsManualBookingCommandReservation | null> {
   const keyHash = sha256(command.idempotencyKey);
   const requestFingerprint = manualBookingRequestFingerprint(command);
   const inserted = await transaction.query<{ id: string }>(
@@ -105,24 +114,9 @@ export async function reserveManualBookingCommand(
   return inserted.rows[0] ? { id: inserted.rows[0].id, keyHash, requestFingerprint } : null;
 }
 
-export async function assertManualBookingCommandIdUnused(
-  transaction: PmsManualBookingTransaction,
-  commandId: string,
-): Promise<void> {
-  await transaction.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-    `pms.manual-booking.command-id:${commandId}`,
-  ]);
-  const found = await transaction.query(
-    `SELECT id FROM booking.guest_bookings
-     WHERE source_system = 'pms' AND source_booking_id = $1 FOR UPDATE`,
-    [commandId],
-  );
-  if (found.rowCount) throw new PmsManualBookingCreateError("idempotency_conflict");
-}
-
 export async function completeManualBookingCommand(
   transaction: PmsManualBookingTransaction,
-  reservation: ManualBookingReservation,
+  reservation: PmsManualBookingCommandReservation,
   result: PmsManualBookingCreateResult,
   completedAt: string,
 ): Promise<void> {
@@ -145,7 +139,7 @@ export async function writeManualBookingPlatformEvidence(
   input: {
     command: PmsManualBookingCreateCommand;
     result: PmsManualBookingCreateResult;
-    reservation: ManualBookingReservation;
+    reservation: PmsManualBookingCommandReservation;
   },
 ): Promise<void> {
   const { command, result, reservation } = input;

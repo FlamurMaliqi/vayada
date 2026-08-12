@@ -4,6 +4,8 @@ import { PmsManualBookingCreateError as CommandError } from "@vayada/domain-pms"
 import type { ManualBookingPreviewResult } from "../routes/pmsManualBookingPreview.js";
 import type {
   PmsManualBookingAcceptedWrite,
+  PmsManualBookingBookingOwnerPort,
+  PmsManualBookingOperationsOwnerPort,
   PmsManualBookingRoom,
   PmsManualBookingTransaction,
 } from "./pmsManualBookingTransactionPorts.js";
@@ -28,17 +30,49 @@ export async function lockManualBookingRooms(
   return result.rows;
 }
 
-export async function persistManualBookingOwnedFacts(
+export function createPgPmsManualBookingBookingOwnerPort(): PmsManualBookingBookingOwnerPort {
+  return {
+    assertSourceCommandUnused: ({ transaction, commandId }) =>
+      assertManualBookingSourceCommandUnused(transaction, commandId),
+    persistBookingFacts: ({ transaction, ...input }) => persistBookingFacts(transaction, input),
+    markPaid: ({ transaction, guestBookingId }) =>
+      markManualBookingPaid(transaction, guestBookingId),
+  };
+}
+
+export function createPgPmsManualBookingOperationsOwnerPort(): PmsManualBookingOperationsOwnerPort {
+  return {
+    lockRooms: ({ transaction, command }) => lockManualBookingRooms(transaction, command),
+    persistOperationalFacts: ({ transaction, ...input }) =>
+      persistOperationalFacts(transaction, input),
+  };
+}
+
+async function assertManualBookingSourceCommandUnused(
+  transaction: PmsManualBookingTransaction,
+  commandId: string,
+): Promise<void> {
+  await transaction.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `pms.manual-booking.command-id:${commandId}`,
+  ]);
+  const found = await transaction.query(
+    `SELECT id FROM booking.guest_bookings
+     WHERE source_system = 'pms' AND source_booking_id = $1 FOR UPDATE`,
+    [commandId],
+  );
+  if (found.rowCount) throw new CommandError("idempotency_conflict");
+}
+
+async function persistBookingFacts(
   transaction: PmsManualBookingTransaction,
   input: {
     command: PmsManualBookingCreateCommand;
     preview: ManualBookingPreviewResult;
-    rooms: readonly PmsManualBookingRoom[];
     guestBookingId: string;
     bookingReference: string;
   },
 ): Promise<PmsManualBookingAcceptedWrite> {
-  const { command, preview, rooms, guestBookingId, bookingReference } = input;
+  const { command, preview, guestBookingId, bookingReference } = input;
   const checkIn = command.stays.reduce(
     (earliest, stay) => (stay.checkIn < earliest ? stay.checkIn : earliest),
     command.stays[0]!.checkIn,
@@ -79,10 +113,21 @@ export async function persistManualBookingOwnedFacts(
     ],
   );
   await insertGuest(transaction, command, guestBookingId);
-  await insertAssignments(transaction, command, guestBookingId, rooms);
   await insertAddons(transaction, command, guestBookingId, preview);
-  if (command.privateNote) await insertPrivateNote(transaction, command, guestBookingId);
   return { guestBookingId, bookingReference, total, checkIn, checkOut };
+}
+
+async function persistOperationalFacts(
+  transaction: PmsManualBookingTransaction,
+  input: {
+    command: PmsManualBookingCreateCommand;
+    rooms: readonly PmsManualBookingRoom[];
+    guestBookingId: string;
+  },
+): Promise<void> {
+  await insertAssignments(transaction, input.command, input.guestBookingId, input.rooms);
+  if (input.command.privateNote)
+    await insertPrivateNote(transaction, input.command, input.guestBookingId);
 }
 
 export async function markManualBookingPaid(

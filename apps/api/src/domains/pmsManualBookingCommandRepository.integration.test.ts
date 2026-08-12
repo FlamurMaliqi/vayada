@@ -6,7 +6,12 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createFinanceManualBookingSettlementPort } from "./financeManualBookingSettlement.js";
+import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCommandEvidence.js";
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
+import {
+  createPgPmsManualBookingBookingOwnerPort,
+  createPgPmsManualBookingOperationsOwnerPort,
+} from "./pmsManualBookingPersistence.js";
 import type {
   PmsManualBookingTransactionDependencies,
   PmsManualBookingTransactionalPricingPort,
@@ -192,6 +197,31 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     });
   });
 
+  it("rejects a calculated total that exceeds Booking persistence precision", async () => {
+    const basePricing = pricing();
+    const oversized = createPgPmsManualBookingCommandRepository({
+      connectionString: TEST_DATABASE_URL!,
+      now: () => acceptedAt,
+      dependencies: dependencies({
+        pricing: {
+          async calculate(input) {
+            return {
+              ...(await basePricing.calculate(input)),
+              grandTotal: { amountDecimal: "10000000000000.00", currency: "EUR" },
+            };
+          },
+        },
+      }),
+    });
+    await expect(
+      oversized.createManualBooking(
+        command("oversized-total", "unpaid", "cash", "2027-04-10", false),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_body", field: "grandTotal" });
+    await oversized.close();
+    await expect(counts()).resolves.toMatchObject({ booking: "0", commands: "0" });
+  });
+
   it("serializes overlapping room commands so exactly one creates evidence", async () => {
     const first = repository.createManualBooking(
       command("race-one", "unpaid", "cash", "2027-05-01", false),
@@ -243,6 +273,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     override: Partial<PmsManualBookingTransactionDependencies> = {},
   ): PmsManualBookingTransactionDependencies {
     return {
+      booking: createPgPmsManualBookingBookingOwnerPort(),
+      operations: createPgPmsManualBookingOperationsOwnerPort(),
+      platform: createPgPmsManualBookingPlatformOwnerPort(),
       pricing: pricing(),
       financeSettlement: createFinanceManualBookingSettlementPort(),
       attribution: {

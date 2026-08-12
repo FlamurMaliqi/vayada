@@ -11,19 +11,8 @@ import {
   financeManualBookingSettlementTransaction,
   type FinanceManualBookingSettlementPort,
 } from "./financeManualBookingSettlement.js";
-import {
-  assertManualBookingCommandIdUnused,
-  completeManualBookingCommand,
-  findManualBookingReplay,
-  reserveManualBookingCommand,
-  writeManualBookingPlatformEvidence,
-} from "./pmsManualBookingCommandEvidence.js";
-import {
-  lockManualBookingRooms,
-  markManualBookingPaid,
-  persistManualBookingOwnedFacts,
-} from "./pmsManualBookingPersistence.js";
 import type {
+  PmsManualBookingAcceptedWrite,
   PmsManualBookingCommandRepository,
   PmsManualBookingTransactionClient,
   PmsManualBookingTransactionDependencies,
@@ -57,33 +46,49 @@ export function createPgPmsManualBookingCommandRepository(config: {
       const transaction = await pool.connect();
       try {
         await transaction.query("BEGIN");
-        const replay = await findManualBookingReplay(transaction, command);
+        const replay = await config.dependencies.platform.findReplay({ transaction, command });
         if (replay) {
           await rollback(transaction);
           return replay;
         }
-        const reservation = await reserveManualBookingCommand(transaction, command);
+        const reservation = await config.dependencies.platform.reserveCommand({
+          transaction,
+          command,
+        });
         if (!reservation) {
-          const concurrent = await findManualBookingReplay(transaction, command);
+          const concurrent = await config.dependencies.platform.findReplay({
+            transaction,
+            command,
+          });
           await rollback(transaction);
           if (concurrent) return concurrent;
           throw new PmsManualBookingCreateError("idempotency_conflict");
         }
-        await assertManualBookingCommandIdUnused(transaction, command.commandId);
-        const rooms = await lockManualBookingRooms(transaction, command);
+        await config.dependencies.booking.assertSourceCommandUnused({
+          transaction,
+          commandId: command.commandId,
+        });
+        const rooms = await config.dependencies.operations.lockRooms({ transaction, command });
         const preview = await config.dependencies.pricing.calculate({
           transaction,
           command,
           acceptedAt,
         });
+        assertPersistableTotal(preview.grandTotal.amountDecimal);
         const guestBookingId = randomId();
         const bookingReference = publicReference(guestBookingId);
-        const accepted = await persistManualBookingOwnedFacts(transaction, {
+        const accepted = await config.dependencies.booking.persistBookingFacts({
+          transaction,
           command,
           preview,
-          rooms,
           guestBookingId,
           bookingReference,
+        });
+        await config.dependencies.operations.persistOperationalFacts({
+          transaction,
+          command,
+          rooms,
+          guestBookingId,
         });
         await config.dependencies.attribution.recordManualAttribution({
           transaction,
@@ -110,15 +115,21 @@ export function createPgPmsManualBookingCommandRepository(config: {
           accepted.total.currency,
           acceptedAt,
         );
-        if (paymentEvidenceId) await markManualBookingPaid(transaction, guestBookingId);
+        if (paymentEvidenceId)
+          await config.dependencies.booking.markPaid({ transaction, guestBookingId });
         const result = createResult(command, accepted, paymentEvidenceId);
-        await writeManualBookingPlatformEvidence(transaction, { command, result, reservation });
-        await completeManualBookingCommand(
+        await config.dependencies.platform.writeEvidence({
+          transaction,
+          command,
+          result,
+          reservation,
+        });
+        await config.dependencies.platform.completeCommand({
           transaction,
           reservation,
           result,
-          acceptedAt.toISOString(),
-        );
+          completedAt: acceptedAt.toISOString(),
+        });
         await transaction.query("COMMIT");
         return result;
       } catch (error) {
@@ -183,7 +194,7 @@ async function settleIfPaid(
 
 function createResult(
   command: PmsManualBookingCreateCommand,
-  accepted: Awaited<ReturnType<typeof persistManualBookingOwnedFacts>>,
+  accepted: PmsManualBookingAcceptedWrite,
   paymentEvidenceId: string | null,
 ): PmsManualBookingCreateResult {
   const paid = paymentEvidenceId !== null;
@@ -213,6 +224,12 @@ function publicReference(guestBookingId: string): string {
 
 function validDate(value: Date): boolean {
   return value instanceof Date && Number.isFinite(value.valueOf());
+}
+
+function assertPersistableTotal(amountDecimal: string): void {
+  const digits = amountDecimal.match(/^\d+\.\d{2}$/)?.[0].replace(".", "");
+  if (!digits || BigInt(digits) > 999_999_999_999_999n)
+    throw new PmsManualBookingCreateError("invalid_body", "grandTotal");
 }
 
 function commandIdUniqueConflict(value: unknown): boolean {

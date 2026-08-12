@@ -2,6 +2,7 @@ import type { FinanceManualBookingSettlementPort } from "./financeManualBookingS
 import type {
   PmsManualBookingCreateCommand,
   PmsManualBookingCreatePort,
+  PmsManualBookingCreateResult,
   PmsManualBookingMoney,
 } from "@vayada/domain-pms";
 import type { QueryResult, QueryResultRow } from "pg";
@@ -26,6 +27,66 @@ export type PmsManualBookingTransactionPool = {
 };
 
 export type PmsManualBookingRoom = Readonly<{ roomId: string; roomTypeId: string }>;
+
+export type PmsManualBookingCommandReservation = Readonly<{
+  id: string;
+  keyHash: string;
+  requestFingerprint: string;
+}>;
+
+export interface PmsManualBookingBookingOwnerPort {
+  assertSourceCommandUnused(input: {
+    transaction: PmsManualBookingTransaction;
+    commandId: string;
+  }): Promise<void>;
+  persistBookingFacts(input: {
+    transaction: PmsManualBookingTransaction;
+    command: PmsManualBookingCreateCommand;
+    preview: ManualBookingPreviewResult;
+    guestBookingId: string;
+    bookingReference: string;
+  }): Promise<PmsManualBookingAcceptedWrite>;
+  markPaid(input: {
+    transaction: PmsManualBookingTransaction;
+    guestBookingId: string;
+  }): Promise<void>;
+}
+
+export interface PmsManualBookingOperationsOwnerPort {
+  lockRooms(input: {
+    transaction: PmsManualBookingTransaction;
+    command: PmsManualBookingCreateCommand;
+  }): Promise<readonly PmsManualBookingRoom[]>;
+  persistOperationalFacts(input: {
+    transaction: PmsManualBookingTransaction;
+    command: PmsManualBookingCreateCommand;
+    rooms: readonly PmsManualBookingRoom[];
+    guestBookingId: string;
+  }): Promise<void>;
+}
+
+export interface PmsManualBookingPlatformOwnerPort {
+  findReplay(input: {
+    transaction: PmsManualBookingTransaction;
+    command: PmsManualBookingCreateCommand;
+  }): Promise<PmsManualBookingCreateResult | null>;
+  reserveCommand(input: {
+    transaction: PmsManualBookingTransaction;
+    command: PmsManualBookingCreateCommand;
+  }): Promise<PmsManualBookingCommandReservation | null>;
+  writeEvidence(input: {
+    transaction: PmsManualBookingTransaction;
+    command: PmsManualBookingCreateCommand;
+    result: PmsManualBookingCreateResult;
+    reservation: PmsManualBookingCommandReservation;
+  }): Promise<void>;
+  completeCommand(input: {
+    transaction: PmsManualBookingTransaction;
+    reservation: PmsManualBookingCommandReservation;
+    result: PmsManualBookingCreateResult;
+    completedAt: string;
+  }): Promise<void>;
+}
 
 /** VAY-1184 implements this Booking-owned boundary. */
 export interface PmsManualBookingNightlyEvidenceOwnerPort {
@@ -73,6 +134,9 @@ export type PmsManualBookingCurrentPricingEvidence = {
 };
 
 export type PmsManualBookingTransactionDependencies = Readonly<{
+  booking: PmsManualBookingBookingOwnerPort;
+  operations: PmsManualBookingOperationsOwnerPort;
+  platform: PmsManualBookingPlatformOwnerPort;
   nightlyEvidence: PmsManualBookingNightlyEvidenceOwnerPort;
   attribution: PmsManualBookingAttributionOwnerPort;
   financeSettlement: FinanceManualBookingSettlementPort;
