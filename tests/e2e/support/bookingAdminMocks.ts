@@ -21,10 +21,16 @@ export const BOOKING_ADMIN_ROOM_FILTER_SETTINGS_PATH = `/api/booking/hotels/${BO
 export const BOOKING_ADMIN_DESIGN_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/design`;
 export const BOOKING_ADMIN_CUSTOM_DOMAIN_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/custom-domain`;
 export const BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH = `/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/payment-settings`;
+export const BOOKING_ADMIN_FINANCE_PLAN_STATUS_PATH = `/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/plan-status`;
 
 export interface BookingAdminPropertySettingsFixture {
   id: string;
   slug: string;
+  property_name?: string;
+  instagram?: string;
+  facebook?: string;
+  tiktok?: string;
+  youtube?: string;
   default_currency: string;
   default_language: string;
   supported_currencies: string[];
@@ -106,6 +112,8 @@ export interface BookingAdminRoomFilterSettingsFixture {
 }
 
 export interface BookingAdminDesignSettingsFixture {
+  headerLogo: string;
+  headerLogoMediaObjectId: string | null;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -281,6 +289,8 @@ const defaultRoomFilterSettings: BookingAdminRoomFilterSettingsFixture = {
 };
 
 export const defaultBookingAdminDesignSettings: BookingAdminDesignSettingsFixture = {
+  headerLogo: "",
+  headerLogoMediaObjectId: null,
   heroImage: "/hotel-hero.JPG",
   heroHeading: "Stay above the clouds",
   heroSubtext: "An independent alpine escape made for memorable direct stays.",
@@ -395,6 +405,29 @@ export async function mockBookingAdminShellRoutes(
           bookingHotel: true,
           pmsProperty: true,
           financeProperty: true,
+        },
+      },
+    }),
+  );
+  await page.route(`**${BOOKING_ADMIN_FINANCE_PLAN_STATUS_PATH}*`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "finance-subscriptions.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        planStatus: {
+          plan: "commission",
+          status: "commission",
+          currency: "EUR",
+          activeRoomCount: 3,
+          amountMinor: 4_000,
+          currentPeriodStart: null,
+          currentPeriodEnd: null,
+          nextBillingDate: null,
+          cancelAtPeriodEnd: false,
+          checkoutPending: false,
+          customerPortalAvailable: false,
+          activatedAt: null,
+          updatedAt: "2026-08-11T12:00:00.000Z",
         },
       },
     }),

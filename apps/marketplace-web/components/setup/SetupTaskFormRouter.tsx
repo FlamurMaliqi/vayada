@@ -11,7 +11,6 @@ import { RoomsRatesAvailabilityForm } from "./operations/RoomsRatesAvailabilityF
 export function SetupTaskFormRouter({
   task,
   propertyId,
-  selectedTracks,
   onBeforeSave,
   onComplete,
   onBack,
@@ -52,6 +51,7 @@ export function SetupTaskFormRouter({
           <GuestSettingsPoliciesForm
             {...props}
             key={`${propertyId}:${task.taskId}:${task.sourceRevision}`}
+            taskComplete={task.readiness === "complete"}
           />
         );
       case "payment":
@@ -66,7 +66,6 @@ export function SetupTaskFormRouter({
           <DirectBookingPublicationForm
             {...props}
             key={`${propertyId}:${task.taskId}:${task.sourceRevision}`}
-            selectedTracks={selectedTracks}
           />
         );
     }

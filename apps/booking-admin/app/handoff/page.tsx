@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { authService } from "@/services/auth";
 import { isAuthOrganizationSelectionResponse } from "@/services/auth/sessionStore";
 import { settingsService, type HotelSummary } from "@/services/settings";
@@ -9,21 +9,31 @@ import {
   missingOrganizationHandoffLoginPath,
   organizationSelectionLoginPath,
 } from "@vayada/product-onboarding/returnTo";
+import {
+  BrowserAuthHandoffError,
+  redeemBrowserAuthHandoff,
+  useSingleFlightGuard,
+} from "@vayada/product-onboarding";
 
 export default function HandoffPage() {
+  const [retryable, setRetryable] = useState(false);
+  const beginRedemption = useSingleFlightGuard();
+
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!beginRedemption()) return;
 
     // Auth data arrives in the URL hash so it never hits server logs.
     const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const code = hashParams.get("code");
     const token = hashParams.get("token");
     const expiresAt = hashParams.get("expires_at");
     const userData = hashParams.get("user");
-    const handoffHotelId = hashParams.get("hotel_id");
-    const propertyId = hashParams.get("property_id");
-    const organizationId = hashParams.get("organization_id")?.trim() || null;
-    const workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
-    const organizationSelectionPath = organizationSelectionLoginPath(
+    let handoffHotelId = hashParams.get("hotel_id");
+    let propertyId = hashParams.get("property_id");
+    let organizationId = hashParams.get("organization_id")?.trim() || null;
+    let workosOrganizationId = hashParams.get("workos_organization_id")?.trim() || null;
+    let organizationSelectionPath = organizationSelectionLoginPath(
       window.location.pathname,
       window.location.search,
       window.location.hash,
@@ -35,10 +45,47 @@ export default function HandoffPage() {
     const queryParams = new URLSearchParams(window.location.search);
     const redirectParam = queryParams.get("redirect");
     // Only honor same-origin relative paths — never trust an arbitrary URL
-    const safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
+    let safeRedirect = isSafeRelativeReturnTo(redirectParam) ? redirectParam : null;
 
     void (async () => {
-      if (token && expiresAt) {
+      if (code) {
+        try {
+          const handoff = await redeemBrowserAuthHandoff({
+            code,
+            targetSurface: "booking-admin",
+          });
+          window.history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}`,
+          );
+          organizationSelectionPath = organizationSelectionLoginPath(
+            window.location.pathname,
+            window.location.search,
+            "",
+          );
+          handoffHotelId = handoff.routingHints.hotelId ?? null;
+          propertyId = handoff.routingHints.propertyId ?? null;
+          organizationId = handoff.routingHints.organizationId ?? null;
+          workosOrganizationId = handoff.routingHints.workosOrganizationId ?? null;
+          safeRedirect = handoff.targetPath;
+          if (!(await authService.ensureSession())) throw new Error("Handoff session unavailable");
+        } catch (error) {
+          if (error instanceof BrowserAuthHandoffError && error.retryable) {
+            setRetryable(true);
+            return;
+          }
+          window.history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}`,
+          );
+          window.location.replace(
+            organizationSelectionLoginPath(window.location.pathname, window.location.search, ""),
+          );
+          return;
+        }
+      } else if (!authService.isAuthKitEnabled() && token && expiresAt) {
         localStorage.setItem("access_token", token);
         localStorage.setItem("token_expires_at", expiresAt);
       } else if (!authService.isAuthKitEnabled()) {
@@ -105,7 +152,7 @@ export default function HandoffPage() {
         }
       }
 
-      if (token && expiresAt && userData) {
+      if (!authService.isAuthKitEnabled() && token && expiresAt && userData) {
         try {
           const user = JSON.parse(decodeURIComponent(userData));
           localStorage.setItem("isLoggedIn", "true");
@@ -199,11 +246,35 @@ export default function HandoffPage() {
     })().catch(() => {
       window.location.href = organizationSelectionPath;
     });
-  }, []);
+  }, [beginRedemption]);
+
+  if (retryable) {
+    return (
+      <div
+        className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50 px-6 text-center"
+        role="status"
+      >
+        <p className="text-sm font-medium text-gray-700">
+          Your session transfer is temporarily unavailable.
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+      <div
+        className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"
+        role="status"
+        aria-label="Transferring your session"
+      />
     </div>
   );
 }

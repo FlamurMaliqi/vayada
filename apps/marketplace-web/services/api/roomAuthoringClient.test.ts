@@ -48,6 +48,32 @@ describe("roomAuthoringClient", () => {
     vi.clearAllMocks();
   });
 
+  it("loads the centralized room photo plan limit", async () => {
+    calls.get.mockResolvedValue({
+      contractVersion: "pms-operations.v1",
+      propertyId,
+      propertyPlan: {
+        propertyId,
+        plan: "commission",
+        limits: {
+          maxRoomPhotosPerType: 10,
+          maxAddons: 3,
+          guestContactAccess: "after_acceptance",
+        },
+      },
+    });
+    const client = createRoomAuthoringClient(http, mediaHttp, calls.uploadFetch);
+
+    await expect(client.loadPhotoPlan(propertyId)).resolves.toEqual({
+      plan: "commission",
+      maxRoomPhotosPerType: 10,
+    });
+    expect(calls.get).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/plan-limits`,
+      undefined,
+    );
+  });
+
   it("uses one stable create key for a draft room and retains the canonical target", async () => {
     calls.post.mockResolvedValue(createFactsResponse());
     const client = createRoomAuthoringClient(http, mediaHttp, calls.uploadFetch);

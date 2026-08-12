@@ -13,6 +13,13 @@ export type ApiAuthConfig = {
   workosAudience: string;
 };
 
+export type ApiAuthSurface =
+  | "platform-admin"
+  | "booking-admin"
+  | "pms-web"
+  | "affiliate-dashboard"
+  | "marketplace-web";
+
 export type ApiAuthSessionConfig = {
   workosClientId: string;
   workosApiKey: string;
@@ -21,6 +28,9 @@ export type ApiAuthSessionConfig = {
   oauthStateSecret: string;
   authLogoutUrl: string;
   authAllowedOrigins: string[];
+  authCompatibilityCallbackOrigin: string;
+  authSurfaceOrigins: Record<ApiAuthSurface, string>;
+  authFirstPartySurfaces: ApiAuthSurface[];
   authCookieSecure: boolean;
   authCookieDomain?: string;
   authLegacyMarketplaceJwtSecret?: string;
@@ -64,6 +74,28 @@ export type ProviderWebhookConfig = {
   xenditMode: ProviderWebhookIntakeMode;
   channexMode: ProviderWebhookIntakeMode;
 };
+
+export type StripeSubscriptionConfig = {
+  secretKey?: string;
+  fixedPlanPriceId?: string;
+  bookingAdminBaseUrl: string;
+};
+
+export function stripeSubscriptionRuntimeEnabled(
+  config: Pick<
+    ApiConfig,
+    "bookingCheckoutCommandSource" | "financeSource" | "providerWebhooks" | "stripeSubscriptions"
+  >,
+): boolean {
+  return (
+    config.financeSource === "target" &&
+    config.bookingCheckoutCommandSource === "target" &&
+    Boolean(config.stripeSubscriptions.secretKey) &&
+    Boolean(config.stripeSubscriptions.fixedPlanPriceId) &&
+    Boolean(config.providerWebhooks.stripeSecret) &&
+    config.providerWebhooks.stripeMode === "mutating"
+  );
+}
 
 export type CreatorPlatformConnectionsConfig = {
   callbackBaseUrl: string;
@@ -127,6 +159,7 @@ export type ApiConfig = {
   pmsInventoryPublicOfferRetryIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
+  stripeSubscriptions: StripeSubscriptionConfig;
   xenditSecretKey?: string;
 };
 
@@ -220,6 +253,49 @@ function readOptionalCsvEnv(
     : defaultValue;
 }
 
+const AUTH_SURFACE_ORIGIN_KEYS = {
+  "platform-admin": "AUTH_PLATFORM_ADMIN_ORIGIN",
+  "booking-admin": "AUTH_BOOKING_ADMIN_ORIGIN",
+  "pms-web": "AUTH_PMS_WEB_ORIGIN",
+  "affiliate-dashboard": "AUTH_AFFILIATE_DASHBOARD_ORIGIN",
+  "marketplace-web": "AUTH_MARKETPLACE_WEB_ORIGIN",
+} as const satisfies Record<ApiAuthSurface, string>;
+
+const AUTH_SURFACES = Object.keys(AUTH_SURFACE_ORIGIN_KEYS) as ApiAuthSurface[];
+
+function normalizeAuthOrigin(value: string, key: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${key} must be an absolute HTTP(S) origin`);
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(`${key} must be an absolute HTTP(S) origin`);
+  }
+  return url.origin;
+}
+
+function readAuthSurfaceList(env: NodeJS.ProcessEnv): ApiAuthSurface[] {
+  const surfaces = readOptionalCsvEnv(env, "AUTH_FIRST_PARTY_SURFACES");
+  const unsupported = surfaces.filter(
+    (surface): surface is string => !AUTH_SURFACES.includes(surface as ApiAuthSurface),
+  );
+  if (unsupported.length > 0) {
+    throw new Error(
+      `AUTH_FIRST_PARTY_SURFACES contains unsupported surfaces: ${unsupported.join(", ")}`,
+    );
+  }
+  return [...new Set(surfaces)] as ApiAuthSurface[];
+}
+
 function readBooleanEnv(env: NodeJS.ProcessEnv, key: string, defaultValue = false): boolean {
   const value = readOptionalEnv(env, key);
   if (value === undefined) return defaultValue;
@@ -278,6 +354,8 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
     "AUTH_COOKIE_SECRET",
     "AUTH_LOGOUT_URL",
     "AUTH_ALLOWED_ORIGINS",
+    "AUTH_COMPATIBILITY_CALLBACK_ORIGIN",
+    ...Object.values(AUTH_SURFACE_ORIGIN_KEYS),
   ] as const;
   const values = Object.fromEntries(authSessionKeys.map((key) => [key, readOptionalEnv(env, key)]));
   const configuredKeys = authSessionKeys.filter((key) => values[key]);
@@ -291,6 +369,41 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
     throw new Error(`Incomplete auth session config; missing ${missing}`);
   }
 
+  const authAllowedOrigins = readOptionalCsvEnv(env, "AUTH_ALLOWED_ORIGINS").map((origin) =>
+    normalizeAuthOrigin(origin, "AUTH_ALLOWED_ORIGINS"),
+  );
+  const authCompatibilityCallbackOrigin = normalizeAuthOrigin(
+    values["AUTH_COMPATIBILITY_CALLBACK_ORIGIN"]!,
+    "AUTH_COMPATIBILITY_CALLBACK_ORIGIN",
+  );
+  const authSurfaceOrigins = Object.fromEntries(
+    AUTH_SURFACES.map((surface) => {
+      const key = AUTH_SURFACE_ORIGIN_KEYS[surface];
+      return [surface, normalizeAuthOrigin(values[key]!, key)];
+    }),
+  ) as Record<ApiAuthSurface, string>;
+  const callbackOrigins = [authCompatibilityCallbackOrigin, ...Object.values(authSurfaceOrigins)];
+  const untrustedCallbackOrigins = callbackOrigins.filter(
+    (origin) => !authAllowedOrigins.includes(origin),
+  );
+  if (untrustedCallbackOrigins.length > 0) {
+    throw new Error(
+      `Auth callback origins must be included in AUTH_ALLOWED_ORIGINS: ${[
+        ...new Set(untrustedCallbackOrigins),
+      ].join(", ")}`,
+    );
+  }
+  const authFirstPartySurfaces = readAuthSurfaceList(env);
+  const authCookieSecure = readOptionalEnv(env, "AUTH_COOKIE_SECURE") !== "false";
+  const insecureHttpsSurfaces = authFirstPartySurfaces.filter(
+    (surface) => authSurfaceOrigins[surface].startsWith("https://") && !authCookieSecure,
+  );
+  if (insecureHttpsSurfaces.length > 0) {
+    throw new Error(
+      `AUTH_COOKIE_SECURE must be true for HTTPS first-party surfaces: ${insecureHttpsSurfaces.join(", ")}`,
+    );
+  }
+
   return {
     workosClientId: values["WORKOS_CLIENT_ID"]!,
     workosApiKey: values["WORKOS_API_KEY"]!,
@@ -300,8 +413,11 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
       readOptionalEnv(env, "AUTH_OAUTH_STATE_SECRET") ??
       derivePurposeSecret(values["AUTH_COOKIE_SECRET"]!, "vayada.auth.oauth-state.v1"),
     authLogoutUrl: values["AUTH_LOGOUT_URL"]!,
-    authAllowedOrigins: readOptionalCsvEnv(env, "AUTH_ALLOWED_ORIGINS"),
-    authCookieSecure: readOptionalEnv(env, "AUTH_COOKIE_SECURE") !== "false",
+    authAllowedOrigins,
+    authCompatibilityCallbackOrigin,
+    authSurfaceOrigins,
+    authFirstPartySurfaces,
+    authCookieSecure,
     authCookieDomain: readOptionalEnv(env, "AUTH_COOKIE_DOMAIN"),
     authLegacyMarketplaceJwtSecret: readOptionalEnv(env, "AUTH_LEGACY_MARKETPLACE_JWT_SECRET"),
     authBookingAdminLogoutUrl: readOptionalEnv(env, "AUTH_BOOKING_ADMIN_LOGOUT_URL"),
@@ -361,6 +477,34 @@ function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfi
       ["observe_only", "mutating", "ack_only_with_receipt"],
       "observe_only",
     ),
+  };
+}
+
+function loadStripeSubscriptionConfig(env: NodeJS.ProcessEnv): StripeSubscriptionConfig {
+  const bookingAdminBaseUrl =
+    readOptionalEnv(env, "BOOKING_ADMIN_BASE_URL") ??
+    readOptionalEnv(env, "AUTH_BOOKING_ADMIN_ORIGIN") ??
+    "https://admin.booking.localhost";
+  let bookingAdminUrl: URL;
+  try {
+    bookingAdminUrl = new URL(bookingAdminBaseUrl);
+  } catch {
+    throw new Error("BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin");
+  }
+  if (
+    !["http:", "https:"].includes(bookingAdminUrl.protocol) ||
+    bookingAdminUrl.username ||
+    bookingAdminUrl.password ||
+    bookingAdminUrl.pathname !== "/" ||
+    bookingAdminUrl.search ||
+    bookingAdminUrl.hash
+  ) {
+    throw new Error("BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin");
+  }
+  return {
+    secretKey: readOptionalEnv(env, "STRIPE_SECRET_KEY"),
+    fixedPlanPriceId: readOptionalEnv(env, "STRIPE_FIXED_PLAN_PRICE_ID"),
+    bookingAdminBaseUrl: bookingAdminUrl.origin,
   };
 }
 
@@ -671,6 +815,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     creatorPlatformConnections,
     providerWebhooks: loadProviderWebhookConfig(env),
+    stripeSubscriptions: loadStripeSubscriptionConfig(env),
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };
 }
