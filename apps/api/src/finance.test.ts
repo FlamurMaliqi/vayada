@@ -2192,6 +2192,7 @@ type FinanceInvoiceRowFixture = {
   guestDisplayName: string | null;
   guestEmail: string | null;
   guestPhone: string | null;
+  guestContactAccepted: boolean;
   checkIn: string;
   checkOut: string;
   roomName: string | null;
@@ -2713,6 +2714,7 @@ function financeInvoiceRowFixture(
     guestDisplayName: "Fi Guest",
     guestEmail: "finance.guest@example.test",
     guestPhone: "+15555550123",
+    guestContactAccepted: false,
     checkIn: "2026-08-01",
     checkOut: "2026-08-05",
     roomName: "Alpine Suite",
