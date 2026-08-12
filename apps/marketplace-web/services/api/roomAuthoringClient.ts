@@ -61,7 +61,13 @@ export type RoomAuthoringTarget = {
   facts: RoomTypeFacts;
 };
 
+export type RoomPhotoPlan = {
+  plan: "commission" | "fixed";
+  maxRoomPhotosPerType: number;
+};
+
 export type RoomAuthoringClient = {
+  loadPhotoPlan(propertyId: string, options?: RequestInit): Promise<RoomPhotoPlan>;
   loadWorkspace(
     propertyId: string,
     draftRoomIds: readonly string[],
@@ -99,6 +105,19 @@ export function createRoomAuthoringClient(
   mediaHttp: RoomMediaUploadHttpClient,
   uploadFetch: typeof fetch = fetch,
 ): RoomAuthoringClient {
+  const loadPhotoPlan = async (
+    propertyId: string,
+    options?: RequestInit,
+  ): Promise<RoomPhotoPlan> => {
+    const value = await http.get<unknown>(
+      `/api/pms/properties/${encoded(propertyId)}/plan-limits`,
+      options,
+    );
+    const parsed = parseRoomPhotoPlan(value, propertyId);
+    if (!parsed) throw invalidOwnerContract("property plan limits");
+    return parsed;
+  };
+
   const readPublication = async (
     propertyId: string,
     options?: RequestInit,
@@ -466,7 +485,7 @@ export function createRoomAuthoringClient(
         ),
       }),
       purpose: "pms.room_type.media",
-      visibility: "private",
+      visibility: "public",
       resource: {
         product: "hotel_catalog",
         resourceType: "property",
@@ -523,6 +542,7 @@ export function createRoomAuthoringClient(
   };
 
   return {
+    loadPhotoPlan,
     loadWorkspace,
     saveDraft,
     ensureRoomTarget,
@@ -533,6 +553,32 @@ export function createRoomAuthoringClient(
 }
 
 export const roomAuthoringApi = createRoomAuthoringClient(targetApiClient, platformMediaClient);
+
+function parseRoomPhotoPlan(value: unknown, propertyId: string): RoomPhotoPlan | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const response = value as Record<string, unknown>;
+  if (
+    response["contractVersion"] !== "pms-operations.v1" ||
+    response["propertyId"] !== propertyId.toLowerCase()
+  ) {
+    return null;
+  }
+  const rawPlan = response["propertyPlan"];
+  if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) return null;
+  const plan = rawPlan as Record<string, unknown>;
+  const limits = plan["limits"];
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) return null;
+  const maxRoomPhotosPerType = (limits as Record<string, unknown>)["maxRoomPhotosPerType"];
+  if (
+    (plan["plan"] !== "commission" && plan["plan"] !== "fixed") ||
+    plan["propertyId"] !== propertyId.toLowerCase() ||
+    !Number.isSafeInteger(maxRoomPhotosPerType) ||
+    (maxRoomPhotosPerType as number) < 1
+  ) {
+    return null;
+  }
+  return { plan: plan["plan"], maxRoomPhotosPerType: maxRoomPhotosPerType as number };
+}
 
 async function saveFacts(
   http: RoomAuthoringHttpClient,

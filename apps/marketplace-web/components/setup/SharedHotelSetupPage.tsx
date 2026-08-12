@@ -5,10 +5,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   SharedAccountDetailsStep,
   SharedFirstRunPropertySetupWizard,
+  createBrowserAuthHandoff,
+  crossAppReauthenticationUrl,
+  isPmsSetupExitPath,
   isSharedAccountDetailsComplete,
   isSafeSharedHotelSetupReturnTo,
   normalizeSharedAccountName,
   parseSharedHotelSetupEntryProduct,
+  pmsSetupExitPath,
   safeSharedHotelSetupReturnTo,
   type SharedFirstRunContinueInput,
   type SharedHotelSetupEntryProduct,
@@ -21,13 +25,24 @@ import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
-import { getAuthSessionUser } from "@/services/auth/sessionStore";
+import { hotelOperationsSetupApi } from "@/services/api/hotelOperationsSetupClient";
+import {
+  getAuthCsrfToken,
+  getAuthOrganizationId,
+  getAuthSessionUser,
+  getAuthWorkosOrganizationId,
+} from "@/services/auth/sessionStore";
 import { AdaptiveRoomAuthoringSetupController } from "./adaptive/rooms/AdaptiveRoomAuthoringSetupController";
 import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
   process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
+const PROPERTY_LAUNCH_SETTINGS_API = {
+  get: (propertyId: string, options?: RequestInit) =>
+    hotelOperationsSetupApi.getPropertyLaunchSettings(propertyId, options?.signal ?? undefined),
+  update: hotelOperationsSetupApi.updatePropertyLaunchSettings,
+};
 
 export function SharedHotelSetupPage({
   defaultEntryProduct,
@@ -42,6 +57,7 @@ export function SharedHotelSetupPage({
   const searchParams = useSearchParams();
   const [authorized, setAuthorized] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const [accountName, setAccountName] = useState<string | null>(null);
   const [accountContactEmail, setAccountContactEmail] = useState<string | null>(null);
   const [accountContactPhone, setAccountContactPhone] = useState<string | null>(null);
@@ -106,15 +122,62 @@ export function SharedHotelSetupPage({
     });
   };
 
+  const handoffToProduct = async (
+    product: Exclude<SharedHotelSetupEntryProduct, "marketplace">,
+    targetPath: string,
+    propertyId?: string | null,
+  ) => {
+    setHandoffError(null);
+    const baseUrl = product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL;
+    const targetSurface = product === "booking" ? "booking-admin" : "pms-web";
+    const csrfToken = getAuthCsrfToken();
+    if (csrfToken) {
+      try {
+        window.location.replace(
+          await createBrowserAuthHandoff({
+            csrfToken,
+            routingHints: propertyId ? { propertyId } : undefined,
+            sourceSurface: "marketplace-web",
+            targetPath,
+            targetSurface,
+          }),
+        );
+        return;
+      } catch {
+        // Require target-app authentication when the one-time exchange is unavailable.
+      }
+    }
+    try {
+      const reauthenticationReturnTo =
+        propertyId?.trim() || (product === "pms" && isPmsSetupExitPath(targetPath))
+          ? productHandoffReturnTo(targetPath, propertyId?.trim() || null, {
+              organizationId: getAuthOrganizationId(),
+              workosOrganizationId: getAuthWorkosOrganizationId(),
+            })
+          : targetPath;
+      window.location.replace(crossAppReauthenticationUrl(baseUrl, reauthenticationReturnTo));
+    } catch {
+      setHandoffError("We couldn't open that app. Please check the app URL and try again.");
+    }
+  };
+
   const handleContinue = async (input: SharedFirstRunContinueInput) => {
     localStorage.setItem("selectedSharedPropertyId", input.propertyId);
     const requestedReturnTo = input.product === returnProduct ? input.returnTo : null;
     if (input.product === "booking") {
-      window.location.replace(productReturnUrl("booking", requestedReturnTo));
+      await handoffToProduct(
+        "booking",
+        safeSharedHotelSetupReturnTo(requestedReturnTo, "/dashboard"),
+        input.propertyId,
+      );
       return;
     }
     if (input.product === "pms") {
-      window.location.replace(productReturnUrl("pms", requestedReturnTo));
+      await handoffToProduct(
+        "pms",
+        safeSharedHotelSetupReturnTo(requestedReturnTo, "/dashboard"),
+        input.propertyId,
+      );
       return;
     }
     router.replace(
@@ -124,12 +187,9 @@ export function SharedHotelSetupPage({
     );
   };
 
-  const handleExit = () => {
-    if (returnProduct === "marketplace") {
-      router.replace(returnTo);
-      return;
-    }
-    window.location.replace(productReturnUrl(returnProduct, returnTo));
+  const handleExit = (selectedPropertyId?: string | null) => {
+    const propertyId = selectedPropertyId?.trim() || initialPropertyId?.trim() || null;
+    void handoffToProduct("pms", pmsSetupExitPath(propertyId), propertyId);
   };
 
   if (checkingAuth || !authorized) {
@@ -141,6 +201,27 @@ export function SharedHotelSetupPage({
       >
         <p className="text-sm font-medium text-gray-600">Confirming your setup session…</p>
       </div>
+    );
+  }
+
+  if (handoffError) {
+    return (
+      <main className="flex min-h-[100dvh] items-center justify-center bg-gray-50 px-6 py-12">
+        <div
+          className="w-full max-w-xl rounded-2xl border border-red-200 bg-white px-6 py-8 text-center sm:px-10"
+          role="alert"
+        >
+          <h1 className="text-xl font-semibold text-gray-950">Unable to open the app</h1>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-600">{handoffError}</p>
+          <button
+            type="button"
+            onClick={() => setHandoffError(null)}
+            className="mt-5 min-h-10 rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white outline-none hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
+          >
+            Return to setup
+          </button>
+        </div>
+      </main>
     );
   }
 
@@ -207,7 +288,7 @@ export function SharedHotelSetupPage({
           </p>
           <button
             type="button"
-            onClick={handleExit}
+            onClick={() => handleExit()}
             className="mt-5 min-h-10 rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white outline-none hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
           >
             Exit setup
@@ -224,6 +305,7 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
+      propertyLaunchSettingsApi={PROPERTY_LAUNCH_SETTINGS_API}
       onContinue={handleContinue}
       onPropertySelected={handlePropertySelected}
       renderTaskForm={(context: SharedSetupTaskFormContext) => <SetupTaskFormRouter {...context} />}
@@ -232,20 +314,29 @@ export function SharedHotelSetupPage({
   );
 }
 
-function productReturnUrl(
-  product: Exclude<SharedHotelSetupEntryProduct, "marketplace">,
-  returnTo: string | null,
-): string {
-  const safeReturnTo = safeSharedHotelSetupReturnTo(returnTo, "/dashboard");
-  return new URL(
-    safeReturnTo,
-    product === "booking" ? BOOKING_ADMIN_URL : PMS_FRONTEND_URL,
-  ).toString();
-}
-
 export function setupPathForSelectedProperty(query: string, propertyId: string): string {
   const searchParams = new URLSearchParams(query);
   searchParams.set("propertyId", propertyId);
   searchParams.delete("mode");
   return `${ROUTES.SETUP}?${searchParams.toString()}`;
+}
+
+export function productHandoffReturnTo(
+  targetPath: string,
+  propertyId: string | null,
+  organization: {
+    organizationId: string | null;
+    workosOrganizationId: string | null;
+  },
+): string {
+  const query = new URLSearchParams({ redirect: targetPath });
+  const fragment = new URLSearchParams();
+  if (propertyId) fragment.set("property_id", propertyId);
+  if (organization.organizationId) {
+    fragment.set("organization_id", organization.organizationId);
+  }
+  if (organization.workosOrganizationId) {
+    fragment.set("workos_organization_id", organization.workosOrganizationId);
+  }
+  return `/handoff?${query.toString()}${fragment.size > 0 ? `#${fragment.toString()}` : ""}`;
 }

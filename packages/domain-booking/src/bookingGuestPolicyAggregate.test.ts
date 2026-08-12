@@ -9,6 +9,10 @@ import {
   createBookingGuestPolicyNewDraft,
   createBookingGuestPolicyPublicProjection,
   parseBookingGuestPolicyChangedEvent,
+  parseBookingGuestPolicyCommandResult,
+  parseBookingGuestPolicyComposition,
+  parseBookingGuestPolicyPublicProjection,
+  parseBookingGuestPolicySetupAggregate,
   parseUpsertBookingGuestPolicyRequest,
   serializeBookingGuestPolicyCommandFingerprint,
   type BookingGuestPolicyChangedEvent,
@@ -140,6 +144,8 @@ describe("Booking guest-policy aggregate contract", () => {
 
   it("projects only structured public policy and strips guest-form choices and owner revisions", () => {
     const projection = createBookingGuestPolicyPublicProjection(revision());
+    expect(parseBookingGuestPolicyPublicProjection(projection)).toEqual(projection);
+    expect(parseBookingGuestPolicyPublicProjection({ ...projection, private: true })).toBeNull();
     expect(Object.keys(projection)).toEqual([
       "contractVersion",
       "propertyId",
@@ -200,6 +206,53 @@ describe("Booking guest-policy aggregate contract", () => {
         projectionReceipt: { outcome: "applied" } as never,
       }),
     ).toThrow("Booking guest-policy revision is invalid");
+  });
+
+  it("strictly parses setup, composition, and command adapter results", () => {
+    const current = revision();
+    const composition = { outcome: "ready" as const, bundle: current.bundle };
+    const setup = {
+      contractVersion: BOOKING_GUEST_POLICY_CONTRACT_VERSION,
+      organizationId,
+      propertyId,
+      supportedLanguages: ["en", "de", "fr", "es", "id", "nl"] as const,
+      draft: null,
+      current,
+      composition,
+    };
+    expect(parseBookingGuestPolicyComposition(composition)).toEqual(composition);
+    expect(parseBookingGuestPolicySetupAggregate(setup)).toEqual(setup);
+    expect(
+      parseBookingGuestPolicySetupAggregate({
+        ...setup,
+        current: null,
+        draft: createBookingGuestPolicyNewDraft(),
+        composition: null,
+      }),
+    ).not.toBeNull();
+    const request = {
+      ...command(),
+      expectedSourceFingerprint: current.bundle.sourceFingerprint,
+    };
+    expect(
+      parseBookingGuestPolicyCommandResult(
+        { ok: true, outcome: "created", revision: current },
+        {
+          ...request,
+          organizationId: request.organizationId.toUpperCase(),
+          propertyId: request.propertyId.toUpperCase(),
+          choices: Object.fromEntries(
+            Object.entries(request.choices).reverse(),
+          ) as typeof request.choices,
+        },
+      ),
+    ).toEqual({ ok: true, outcome: "created", revision: current });
+    expect(
+      parseBookingGuestPolicyCommandResult(
+        { ok: true, outcome: "created", revision: { ...current, propertyId: revisionId } },
+        request,
+      ),
+    ).toBeNull();
   });
 });
 
