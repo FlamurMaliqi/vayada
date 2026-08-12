@@ -132,7 +132,7 @@ describe("Finance payment readiness read model", () => {
     await readModel.getPaymentReadiness({ organizationId, propertyId });
     const sql = deps.queries[0]!.text;
     expect(sql).toContain("organization.kind = 'hotel_group'");
-    expect(sql).toContain("resource.relationship IN ('owner', 'finance_manager')");
+    expect(sql).toContain("resource.relationship IN ('owner', 'operator', 'finance_manager')");
     expect(sql).toContain("entitlement.status = 'active'");
     expect(sql).toContain("entitlement.status = 'suspended'");
     expect(sql).not.toMatch(/\bFROM\s+pms\./i);

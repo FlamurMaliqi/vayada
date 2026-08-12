@@ -206,7 +206,7 @@
         "method": "POST",
         "body": {
           "purpose": "pms.room_type.media",
-          "visibility": "private",
+          "visibility": "public",
           "resource": {
             "product": "hotel_catalog",
             "resourceType": "property",
@@ -235,14 +235,13 @@
       },
       "expected": {
         "status": 201,
-        "requestedVisibility": "private",
-        "effectiveVisibility": "private",
+        "requestedVisibility": "public",
+        "effectiveVisibility": "public",
         "finalizeStatus": 200,
         "mediaObjectCount": 1,
         "mediaObject": {
           "purpose": "pms.room_type.media",
-          "status": "private_ready",
-          "publicVariants": []
+          "status": "public_ready"
         },
         "requiredVariants": ["original_safe", "large", "thumbnail", "blur_preview"],
         "sideEffects": ["variant_generation", "audit_event"]

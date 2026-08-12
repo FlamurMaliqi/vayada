@@ -1,10 +1,17 @@
 /** @type {import('next').NextConfig} */
 const path = require("path");
 const isDevelopment = process.env.NODE_ENV === "development";
+const authPublicHostname = (() => {
+  try {
+    return process.env.AUTH_PUBLIC_ORIGIN ? new URL(process.env.AUTH_PUBLIC_ORIGIN).hostname : null;
+  } catch {
+    return null;
+  }
+})();
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
-  allowedDevOrigins: ["127.0.0.1"],
+  allowedDevOrigins: ["127.0.0.1", ...(authPublicHostname ? [authPublicHostname] : [])],
   turbopack: {
     root: path.join(__dirname, "../.."),
   },
