@@ -1,4 +1,4 @@
--- Migration: 0074_booking_nightly_revenue_adjustments; owner: domain-booking; see VAY-1182
+-- Migration: 0075_booking_nightly_revenue_adjustments; owner: domain-booking; see VAY-1182
 ALTER TABLE booking.nightly_revenue_evidence
   DROP CONSTRAINT chk_booking_nightly_revenue_evidence_enums,
   DROP CONSTRAINT chk_booking_nightly_revenue_evidence_event;
@@ -8,7 +8,7 @@ ALTER TABLE booking.nightly_revenue_evidence
     AND lifecycle_state IN ('confirmed', 'completed', 'canceled', 'no_show', 'refunded', 'corrected')
     AND source_kind IN ('direct', 'ota', 'manual', 'migration')
     AND evidence_quality IN ('exact', 'inferred', 'missing')
-  ),
+  ) NOT VALID,
   ADD CONSTRAINT chk_booking_nightly_revenue_evidence_event CHECK (
     (economic_event = 'room_night' AND recognized_on = stay_date
       AND occupied_room_nights = 1 AND corrects_evidence_id IS NULL
@@ -34,11 +34,7 @@ ALTER TABLE booking.nightly_revenue_evidence
       AND evidence_quality IN ('exact', 'inferred')
       AND gross_room_amount <> 0 AND corrects_evidence_id IS NOT NULL
       AND lifecycle_state = 'corrected')
-  );
-DROP INDEX booking.uq_booking_nightly_revenue_evidence_room_night_reversal;
-CREATE UNIQUE INDEX uq_booking_nightly_revenue_evidence_occupancy_target
-  ON booking.nightly_revenue_evidence (corrects_evidence_id)
-  WHERE economic_event IN ('room_night_reversal', 'occupancy_adjustment');
+  ) NOT VALID;
 CREATE FUNCTION booking.validate_nightly_revenue_occupancy_change()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE current_occupied INTEGER; current_amount NUMERIC; current_tip UUID;

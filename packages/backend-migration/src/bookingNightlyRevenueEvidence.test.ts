@@ -8,9 +8,12 @@ const migration = await readFile(
   join(import.meta.dirname, "../migrations/0073_booking_nightly_revenue_evidence.sql"),
   "utf8",
 );
-const adjustments = await readFile(
-  join(import.meta.dirname, "../migrations/0074_booking_nightly_revenue_adjustments.sql"),
-  "utf8",
+const adjustmentMigrations = await Promise.all(
+  [
+    "0074_booking_nightly_revenue_adjustment_index.sql",
+    "0075_booking_nightly_revenue_adjustments.sql",
+    "0076_validate_booking_nightly_revenue_adjustments.sql",
+  ].map((file) => readFile(join(import.meta.dirname, "../migrations", file), "utf8")),
 );
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const PROPERTY_A = "20000000-0000-4000-8000-000000000001";
@@ -41,7 +44,9 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
         check_out DATE NOT NULL DEFAULT '2026-09-03', UNIQUE (id, property_id));
     `);
     await client.query(migration);
-    await client.query(adjustments);
+    for (const migrationSql of adjustmentMigrations)
+      for (const statement of migrationSql.split("-- vayada:next-statement"))
+        await client.query(statement);
   });
 
   afterAll(async () => {
