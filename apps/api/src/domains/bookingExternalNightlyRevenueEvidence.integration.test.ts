@@ -115,6 +115,29 @@ describe.skipIf(!TEST_DATABASE_URL)("external nightly revenue evidence (PostgreS
     ]);
   });
 
+  it("accepts the maximum manual-booking room-night set", async () => {
+    const start = Date.parse("2028-01-01T00:00:00Z");
+    const lines = Array.from({ length: 20 * 370 }, (_, index) =>
+      roomNight(
+        new Date(start + Math.floor(index / 20) * 86_400_000).toISOString().slice(0, 10),
+        (index % 20) + 1,
+        "1",
+        "exact",
+      ),
+    );
+    const result = await appendExternalNightlyRevenueEvidence(
+      client,
+      command({
+        guestBookingId: MANUAL_BOOKING,
+        sourceKind: "manual",
+        sourceBookingReference: "manual:booking-8",
+        idempotencyKey: "manual:booking-8:maximum-stay",
+        lines,
+      }),
+    );
+    expect(result.evidenceIds).toHaveLength(20 * 370);
+  });
+
   it("serializes a reused key across different bookings", async () => {
     const peer = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await peer.connect();

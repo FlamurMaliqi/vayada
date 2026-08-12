@@ -61,6 +61,7 @@ type StoredLine = {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/,
   MONEY = /^-?\d{1,15}(?:\.\d{1,4})?$/;
+const MAX_EVIDENCE_LINES = 20 * 370;
 
 /** Must receive the external booking writer's open transaction client. */
 export async function appendExternalNightlyRevenueEvidence(
@@ -163,7 +164,11 @@ function normalizeLines(
   command: AppendExternalRevenueEvidenceCommand,
   prefix: string,
 ): NormalizedLine[] {
-  if (!Array.isArray(command.lines) || command.lines.length < 1 || command.lines.length > 1000) {
+  if (
+    !Array.isArray(command.lines) ||
+    command.lines.length < 1 ||
+    command.lines.length > MAX_EVIDENCE_LINES
+  ) {
     throw new Error("External evidence lines are malformed");
   }
   const lines = command.lines.map((line) => {
