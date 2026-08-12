@@ -287,6 +287,11 @@ maps WorkOS auth states into Vayada auth states, sets the sealed AuthKit session
 cookie, and returns the same first-party session response shape used by
 migrated frontends.
 
+Browser auth traffic reaches `apps/api` through each frontend's application-local
+`/auth/*` gateway. Host-only cookie ownership, callbacks, proxy headers,
+cross-app handoff, logout, staged activation, and rollback are defined in
+[`workos-browser-session-transport.md`](workos-browser-session-transport.md).
+
 Initial email/password entrypoints:
 
 ```text
@@ -431,8 +436,11 @@ Do not create endpoint-by-endpoint WorkOS implementation tickets until these are
 true:
 
 - WorkOS is confirmed as the provider of record for Vayada account login.
-- The first migration surface is selected. Recommended order: Vayada admin,
-  then booking/PMS hotel admin, then marketplace creator/hotel, then affiliate.
+- The first migration surface is selected. The original broad identity rollout
+  recommendation was Vayada Admin, Booking/PMS, Marketplace, then Affiliate.
+  For the narrower first-party browser transport, VAY-1194 supersedes that
+  order: validate the reported failure on Marketplace first, then migrate each
+  remaining surface behind its independent rollout flag.
 - The internal organization kinds and default hotel mapping are accepted. The
   recommended hotel mapping is one `hotel_group` organization owning one or many
   linked product hotel/property resources.

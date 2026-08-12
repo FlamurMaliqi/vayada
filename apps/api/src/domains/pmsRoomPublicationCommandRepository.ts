@@ -28,6 +28,8 @@ import {
 } from "@vayada/domain-pms";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
+import { readPropertyPlan } from "./propertyPlanReadModel.js";
+
 export type PmsRoomPublicationCommandClient = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -221,6 +223,42 @@ export function createPgPmsRoomPublicationCommandRepository(
         if (currentRevision !== command.expectedRoomMediaRevision) {
           return finalized(mediaFailure({ code: "room_media_revision_conflict", currentRevision }));
         }
+        const currentCount = await countRoomMedia(client, command.propertyId, command.roomTypeId);
+        const currentMediaObjectIds = await readRoomMediaObjectIds(
+          client,
+          command.propertyId,
+          command.roomTypeId,
+        );
+        const currentLegacyUrls = await readRoomMediaSnapshotUrls(
+          client,
+          command.propertyId,
+          command.roomTypeId,
+        );
+        const propertyPlan = await readPropertyPlan(client, command.propertyId);
+        const addsMedia = command.assignments.some(
+          ({ mediaObjectId }) => !currentMediaObjectIds.has(mediaObjectId),
+        );
+        const addsLegacyMedia =
+          command.legacyMediaSnapshot?.some(
+            ({ mediaObjectId, url }) => mediaObjectId === null && !currentLegacyUrls.has(url),
+          ) ?? false;
+        if (addsLegacyMedia) {
+          return finalized(mediaFailure({ code: "legacy_media_not_authorized" }));
+        }
+        const targetCount = command.legacyMediaSnapshot?.length ?? command.assignments.length;
+        if (
+          (currentCount >= propertyPlan.limits.maxRoomPhotosPerType && addsMedia) ||
+          (targetCount > propertyPlan.limits.maxRoomPhotosPerType && targetCount > currentCount)
+        ) {
+          return finalized(
+            mediaFailure({
+              code: "room_media_plan_limit_reached",
+              plan: propertyPlan.plan,
+              currentCount,
+              maxAllowed: propertyPlan.limits.maxRoomPhotosPerType,
+            }),
+          );
+        }
 
         const resolved = await config.mediaResolver.resolvePublicMedia({
           ownerOrganizationId: command.organizationId,
@@ -261,7 +299,12 @@ export function createPgPmsRoomPublicationCommandRepository(
         }
 
         await replaceRoomMedia(client, command, acceptedAt);
-        const updatedRevision = await incrementRoomMediaRevision(client, command, acceptedAt);
+        const updatedRevision = await incrementRoomMediaRevision(
+          client,
+          command,
+          roomMediaSnapshot(command, projection),
+          acceptedAt,
+        );
         if (updatedRevision !== nextRevision) {
           throw new Error("PMS room media assignment lost its locked revision");
         }
@@ -551,6 +594,71 @@ async function lockMediaRoom(
   return result.rows[0] ?? null;
 }
 
+async function countRoomMedia(
+  client: PmsRoomPublicationCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<number> {
+  const result = await client.query<{ currentMediaCount: number | string }>(
+    `SELECT GREATEST(
+       CASE
+         WHEN jsonb_typeof(room_type.media_snapshot) = 'array'
+           THEN jsonb_array_length(room_type.media_snapshot)
+         ELSE 0
+       END,
+       (SELECT count(*)::integer
+        FROM pms.room_type_media assignment
+        WHERE assignment.property_id = room_type.property_id
+          AND assignment.room_type_id = room_type.id)
+     ) AS "currentMediaCount"
+     FROM pms.room_types room_type
+     WHERE room_type.property_id = $1::uuid
+       AND room_type.id = $2::uuid`,
+    [propertyId, roomTypeId],
+  );
+  if (result.rows.length !== 1) throw new Error("PMS room media count returned no row");
+  return nonNegativeDatabaseInteger(result.rows[0]!.currentMediaCount);
+}
+
+async function readRoomMediaObjectIds(
+  client: PmsRoomPublicationCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<ReadonlySet<string>> {
+  const result = await client.query<{ mediaObjectId: string }>(
+    `SELECT platform_media_object_id::text AS "mediaObjectId"
+     FROM pms.room_type_media
+     WHERE property_id = $1::uuid
+       AND room_type_id = $2::uuid`,
+    [propertyId, roomTypeId],
+  );
+  return new Set(result.rows.map(({ mediaObjectId }) => mediaObjectId));
+}
+
+async function readRoomMediaSnapshotUrls(
+  client: PmsRoomPublicationCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<ReadonlySet<string>> {
+  const result = await client.query<{ mediaSnapshot: unknown }>(
+    `SELECT media_snapshot AS "mediaSnapshot"
+     FROM pms.room_types
+     WHERE property_id = $1::uuid
+       AND id = $2::uuid`,
+    [propertyId, roomTypeId],
+  );
+  const snapshot = result.rows[0]?.mediaSnapshot;
+  if (!Array.isArray(snapshot)) return new Set();
+  return new Set(
+    snapshot.flatMap((item) => {
+      if (typeof item === "string") return item.trim() ? [item] : [];
+      if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+      const url = (item as Record<string, unknown>)["url"];
+      return typeof url === "string" && url.trim() ? [url] : [];
+    }),
+  );
+}
+
 async function lockAmenitiesRoom(
   client: PmsRoomPublicationCommandClient,
   propertyId: string,
@@ -617,21 +725,57 @@ async function replaceRoomMedia(
 async function incrementRoomMediaRevision(
   client: PmsRoomPublicationCommandClient,
   command: AssignRoomTypeMediaCommand,
+  mediaSnapshot: readonly Record<string, unknown>[],
   at: Date,
 ): Promise<number> {
   const result = await client.query<UpdatedRevisionRow>(
     `UPDATE pms.room_types
-     SET room_media_revision = room_media_revision + 1,
-         updated_at = $4::timestamptz
+     SET media_snapshot = $4::jsonb,
+         room_media_revision = room_media_revision + 1,
+         updated_at = $5::timestamptz
      WHERE property_id = $1::uuid
        AND id = $2::uuid
        AND active
        AND room_media_revision = $3
      RETURNING room_media_revision AS revision`,
-    [command.propertyId, command.roomTypeId, command.expectedRoomMediaRevision, at.toISOString()],
+    [
+      command.propertyId,
+      command.roomTypeId,
+      command.expectedRoomMediaRevision,
+      JSON.stringify(mediaSnapshot),
+      at.toISOString(),
+    ],
   );
   if (result.rowCount !== 1) throw new Error("PMS room media revision update returned no row");
   return positiveDatabaseInteger(result.rows[0]?.revision ?? 0);
+}
+
+function roomMediaSnapshot(
+  command: AssignRoomTypeMediaCommand,
+  projection: NonNullable<ReturnType<typeof createRoomMediaProjectionInput>>,
+): readonly Record<string, unknown>[] {
+  const resolvedById = new Map(
+    projection.assignments.map(({ media }) => [
+      media.mediaObjectId,
+      media.publicVariants.find(({ variantName }) => variantName === "thumbnail")?.publicUrl ??
+        media.publicVariants.find(({ variantName }) => variantName === "large")?.publicUrl ??
+        media.publicVariants[0].publicUrl,
+    ]),
+  );
+  if (command.legacyMediaSnapshot) {
+    return command.legacyMediaSnapshot.map(({ mediaObjectId, url, altText, sortOrder }) => ({
+      ...(mediaObjectId ? { mediaObjectId } : {}),
+      url: mediaObjectId ? (resolvedById.get(mediaObjectId) ?? url) : url,
+      altText,
+      sortOrder,
+    }));
+  }
+  return command.assignments.map(({ mediaObjectId, altText, sortOrder }) => ({
+    mediaObjectId,
+    url: resolvedById.get(mediaObjectId),
+    altText,
+    sortOrder,
+  }));
 }
 
 async function updateRoomAmenities(
@@ -834,7 +978,10 @@ function mediaResultStatus(result: AssignRoomTypeMediaResult): number {
   if (result.error.code === "room_type_not_found" || result.error.code === "media_not_found") {
     return 404;
   }
-  if (result.error.code === "media_not_authorized") {
+  if (
+    result.error.code === "media_not_authorized" ||
+    result.error.code === "legacy_media_not_authorized"
+  ) {
     return 403;
   }
   if (result.error.code === "setup_scope_unavailable") return 404;
@@ -889,6 +1036,14 @@ function positiveDatabaseInteger(value: number | string): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 2_147_483_647) {
     throw new Error("PMS room publication database revision is invalid");
+  }
+  return parsed;
+}
+
+function nonNegativeDatabaseInteger(value: number | string): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 20) {
+    throw new Error("PMS room publication media count is invalid");
   }
   return parsed;
 }

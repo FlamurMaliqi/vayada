@@ -78,6 +78,44 @@ describe("room media command contract", () => {
     }
   });
 
+  it("accepts an ordered compatibility snapshot while legacy URLs remain", () => {
+    const parsed = parseReplaceRoomMediaRequest({
+      expectedRoomMediaRevision: 3,
+      assignments: [{ mediaObjectId: firstMediaId, altText: "New photo", sortOrder: 0 }],
+      legacyMediaSnapshot: [
+        {
+          mediaObjectId: null,
+          url: "https://legacy.example.com/room.webp",
+          altText: null,
+          sortOrder: 0,
+        },
+        {
+          mediaObjectId: firstMediaId,
+          url: "https://cdn.example.com/new.webp",
+          altText: "New photo",
+          sortOrder: 1,
+        },
+      ],
+    });
+
+    expect(parsed?.legacyMediaSnapshot).toHaveLength(2);
+    expect(Object.isFrozen(parsed?.legacyMediaSnapshot)).toBe(true);
+    expect(
+      parseReplaceRoomMediaRequest({
+        expectedRoomMediaRevision: 3,
+        assignments: [{ mediaObjectId: firstMediaId, altText: null, sortOrder: 0 }],
+        legacyMediaSnapshot: [
+          {
+            mediaObjectId: firstMediaId,
+            url: "https://cdn.example.com/new.webp",
+            altText: null,
+            sortOrder: 0,
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it("rejects duplicate media, gaps, oversized sets, and unknown fields", () => {
     expect(
       parseReplaceRoomMediaRequest({

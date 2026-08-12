@@ -61,6 +61,8 @@ export type AdaptiveHotelSetupControllerProps = {
   requestedStepId?: string | null;
   onExit: () => void;
   beforeLeave?: () => void | Promise<void>;
+  recoverStaleDraft?: () => void | Promise<void>;
+  staleRecoveryMode?: () => "refresh" | "reset" | null;
   StepForm?: ComponentType<AdaptiveSetupStepRenderContext>;
 };
 
@@ -69,6 +71,8 @@ export function AdaptiveHotelSetupController({
   requestedStepId,
   onExit,
   beforeLeave,
+  recoverStaleDraft,
+  staleRecoveryMode,
   StepForm,
 }: AdaptiveHotelSetupControllerProps) {
   const router = useRouter();
@@ -76,6 +80,7 @@ export function AdaptiveHotelSetupController({
   const [route, setRoute] = useState<PropertySetupRouteReadModel | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [recoveringStaleDraft, setRecoveringStaleDraft] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeErrorTitle, setRouteErrorTitle] = useState("Setup could not be loaded");
   const [staleDraftMessage, setStaleDraftMessage] = useState<string | null>(null);
@@ -399,6 +404,23 @@ export function AdaptiveHotelSetupController({
     await loadRoute(undefined, "refresh");
   }, [loadRoute]);
 
+  const activeStaleRecoveryMode = recoverStaleDraft ? staleRecoveryMode?.() : null;
+
+  const recoverStale = useCallback(async () => {
+    if (!activeStaleRecoveryMode || !recoverStaleDraft) {
+      await refreshRoute();
+      return;
+    }
+    setRecoveringStaleDraft(true);
+    try {
+      await recoverStaleDraft();
+    } catch (error) {
+      setStaleDraftMessage(routeErrorMessage(error));
+    } finally {
+      setRecoveringStaleDraft(false);
+    }
+  }, [activeStaleRecoveryMode, recoverStaleDraft, refreshRoute]);
+
   const reportRevisionConflict = useCallback((message = STALE_DRAFT_MESSAGE) => {
     retryNavigation.current = null;
     setRouteError(null);
@@ -459,8 +481,9 @@ export function AdaptiveHotelSetupController({
       routeErrorTitle={routeErrorTitle}
       onRetry={handleRetry}
       staleDraftMessage={staleDraftMessage}
-      onRefresh={() => void refreshRoute()}
-      refreshing={refreshing}
+      staleDraftActionLabel={activeStaleRecoveryMode === "reset" ? "Reset saved draft" : "Refresh"}
+      onRefresh={() => void recoverStale()}
+      refreshing={refreshing || recoveringStaleDraft}
     >
       {route && activeStep ? (
         <div

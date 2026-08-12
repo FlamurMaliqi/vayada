@@ -36,6 +36,18 @@ export interface BookingConfirmationContext extends Partial<Booking> {
 
 const GUEST_KEY = "guestDetails";
 const LAST_BOOKING_KEY = "lastBooking";
+const CHECKOUT_ATTEMPT_KEY = "bookingCheckoutAttempt";
+const PENDING_CREATE_RECOVERY_KEY = "pendingBookingCreateRecovery";
+
+export type PendingBookingCreateRecovery<TQuote = unknown, TRequest = unknown> = {
+  slug: string;
+  quote: TQuote;
+  quoteId: string;
+  paymentMethod: string;
+  requestBody: TRequest;
+  createIdempotencyKey: string;
+  draftId?: string;
+};
 
 function safeGet(key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -53,8 +65,103 @@ function safeSet(key: string, value: string): void {
   } catch {}
 }
 
+function safeRemove(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(key);
+  } catch {}
+}
+
 export function saveGuestDetails(draft: GuestDetailsDraft): void {
   safeSet(GUEST_KEY, JSON.stringify(draft));
+  safeSet(CHECKOUT_ATTEMPT_KEY, JSON.stringify({ keys: {} }));
+}
+
+export function savePendingBookingCreate<TQuote, TRequest>(
+  recovery: PendingBookingCreateRecovery<TQuote, TRequest>,
+): void {
+  safeSet(PENDING_CREATE_RECOVERY_KEY, JSON.stringify(recovery));
+}
+
+export function readPendingBookingCreate<TQuote, TRequest = unknown>(
+  slug: string,
+): PendingBookingCreateRecovery<TQuote, TRequest> | null {
+  const raw = safeGet(PENDING_CREATE_RECOVERY_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingBookingCreateRecovery<TQuote, TRequest>>;
+    if (
+      parsed.slug !== slug ||
+      typeof parsed.quote !== "object" ||
+      parsed.quote === null ||
+      typeof parsed.quoteId !== "string" ||
+      !parsed.quoteId ||
+      typeof parsed.paymentMethod !== "string" ||
+      !parsed.paymentMethod ||
+      typeof parsed.requestBody !== "object" ||
+      parsed.requestBody === null ||
+      typeof parsed.createIdempotencyKey !== "string" ||
+      !parsed.createIdempotencyKey ||
+      (parsed.draftId !== undefined && typeof parsed.draftId !== "string")
+    ) {
+      return null;
+    }
+    return parsed as PendingBookingCreateRecovery<TQuote, TRequest>;
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingBookingCreate(): void {
+  safeRemove(PENDING_CREATE_RECOVERY_KEY);
+}
+
+export function getCheckoutIdempotencyKey(operation: string, identity: string): string {
+  const state = checkoutAttemptState();
+  const binding = `${operation}:${identity}`;
+  const existing = state.keys[binding];
+  if (existing && (!existing.expiresAt || existing.expiresAt > Date.now())) return existing.key;
+  const key = `booking-web:${operation}:${randomToken()}`;
+  state.keys[binding] = { key };
+  safeSet(CHECKOUT_ATTEMPT_KEY, JSON.stringify(state));
+  return key;
+}
+
+export function expireCheckoutIdempotencyKeyAt(
+  operation: string,
+  identity: string,
+  expiresAt: string | undefined,
+): void {
+  if (!expiresAt) return;
+  const timestamp = new Date(expiresAt).getTime();
+  if (!Number.isFinite(timestamp)) return;
+  const state = checkoutAttemptState();
+  const binding = `${operation}:${identity}`;
+  const existing = state.keys[binding];
+  if (!existing) return;
+  state.keys[binding] = { ...existing, expiresAt: timestamp };
+  safeSet(CHECKOUT_ATTEMPT_KEY, JSON.stringify(state));
+}
+
+type CheckoutAttemptState = {
+  keys: Record<string, { key: string; expiresAt?: number }>;
+};
+
+function checkoutAttemptState(): CheckoutAttemptState {
+  const raw = safeGet(CHECKOUT_ATTEMPT_KEY);
+  if (!raw) return { keys: {} };
+  try {
+    const parsed = JSON.parse(raw) as Partial<CheckoutAttemptState>;
+    return parsed.keys && typeof parsed.keys === "object" ? { keys: parsed.keys } : { keys: {} };
+  } catch {
+    return { keys: {} };
+  }
+}
+
+function randomToken(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export function readGuestDetails(): GuestDetailsDraft | null {

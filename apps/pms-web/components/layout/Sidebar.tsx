@@ -13,6 +13,12 @@ import {
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { getAuthCsrfToken } from "@/services/auth/sessionStore";
+import {
+  createBrowserAuthHandoff,
+  crossAppReauthenticationUrl,
+  type BrowserAuthSurface,
+} from "@vayada/product-onboarding";
 
 type Product = "booking" | "pms" | "marketplace";
 
@@ -48,11 +54,40 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
     () => new Set<Product>(["pms"]),
   );
   const { t } = useTranslation();
   const switcherRef = useRef<HTMLDivElement>(null);
+
+  const switchApp = async (
+    baseUrl: string,
+    targetSurface: BrowserAuthSurface,
+    targetPath: string,
+  ) => {
+    setSwitchError(null);
+    setShowSwitcher(false);
+    const csrfToken = getAuthCsrfToken();
+    if (csrfToken) {
+      try {
+        window.location.href = await createBrowserAuthHandoff({
+          csrfToken,
+          sourceSurface: "pms-web",
+          targetPath,
+          targetSurface,
+        });
+        return;
+      } catch {
+        // Require target-app authentication when the one-time exchange is unavailable.
+      }
+    }
+    try {
+      window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+    } catch {
+      setSwitchError("We couldn't open that app. Please try again later.");
+    }
+  };
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -154,6 +189,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           )}
         </button>
 
+        {switchError && (
+          <p className="px-3 py-2 text-xs text-red-600" role="alert">
+            {switchError}
+          </p>
+        )}
+
         {showSwitcher && !collapsed && (
           <div className="absolute top-full left-2 right-2 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1.5">
             <p className="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -178,7 +219,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = BOOKING_ADMIN_URL;
+                  void switchApp(BOOKING_ADMIN_URL, "booking-admin", "/dashboard");
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >
@@ -219,7 +260,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = MARKETPLACE_URL;
+                  void switchApp(MARKETPLACE_URL, "marketplace-web", "/marketplace");
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >
