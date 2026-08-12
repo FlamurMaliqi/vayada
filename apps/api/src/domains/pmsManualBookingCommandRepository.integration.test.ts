@@ -146,6 +146,27 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect((await counts()).payment).toBe("5");
   });
 
+  it("rejects changed replay, command reuse, and cross-property rooms without partial facts", async () => {
+    const original = command("conflict", "unpaid", "cash", "2027-03-01", false);
+    await repository.createManualBooking(original);
+    await expect(
+      repository.createManualBooking({
+        ...original,
+        guest: { ...original.guest, lastName: "Changed" },
+      }),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(
+      repository.createManualBooking({ ...original, idempotencyKey: "another-key" }),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(
+      repository.createManualBooking({
+        ...command("cross-property", "unpaid", "cash", "2027-03-05", false),
+        propertyId: otherPropertyId,
+      }),
+    ).rejects.toMatchObject({ code: "room_not_found" });
+    expect((await counts()).booking).toBe("1");
+  });
+
   it("rolls paid Booking, PMS, evidence, command, and Finance facts back together", async () => {
     const failing = createPgPmsManualBookingCommandRepository({
       connectionString: TEST_DATABASE_URL!,
