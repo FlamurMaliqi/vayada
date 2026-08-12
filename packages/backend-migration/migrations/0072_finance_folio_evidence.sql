@@ -1,4 +1,4 @@
--- Migration: 0064_finance_folio_evidence
+-- Migration: 0072_finance_folio_evidence
 -- Owner: domain-finance
 -- See: VAY-1171 and VAY-1240
 
@@ -79,7 +79,7 @@ CREATE TABLE finance.folio_payment_references (
     ON DELETE RESTRICT,
   CONSTRAINT fk_finance_folio_payment_refs_payment_scope
     FOREIGN KEY (payment_id, property_id, currency)
-    REFERENCES finance.payments(id, property_id, currency) ON DELETE RESTRICT
+    REFERENCES finance.payments(id, property_id, currency) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 
 CREATE FUNCTION finance.validate_folio_evidence_insert()
@@ -90,7 +90,10 @@ BEGIN
   WHERE id = NEW.folio_revision_id AND folio_id = NEW.folio_id
     AND property_id = NEW.property_id AND revision = NEW.folio_revision
     AND currency = NEW.currency;
-  IF NOT FOUND THEN RETURN NEW; END IF;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'folio revision is not visible to evidence transaction'
+      USING ERRCODE = '23514', CONSTRAINT = 'chk_finance_folio_evidence_creation_transaction';
+  END IF;
   IF revision_xid IS DISTINCT FROM pg_current_xact_id() THEN
     RAISE EXCEPTION 'folio evidence must be created with its revision'
       USING ERRCODE = '23514', CONSTRAINT = 'chk_finance_folio_evidence_creation_transaction';

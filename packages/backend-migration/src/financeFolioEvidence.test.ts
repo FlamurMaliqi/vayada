@@ -8,8 +8,8 @@ import { assertSafeTestDatabase } from "./testUtils.js";
 const readMigration = (name: string) =>
   readFile(join(import.meta.dirname, `../migrations/${name}`), "utf8");
 const [folios, evidence] = await Promise.all([
-  readMigration("0063_finance_folios.sql"),
-  readMigration("0064_finance_folio_evidence.sql"),
+  readMigration("0071_finance_folios.sql"),
+  readMigration("0072_finance_folio_evidence.sql"),
 ]);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const PROPERTY_A = "20000000-0000-4000-8000-000000000001";
@@ -54,7 +54,8 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
 
   afterAll(async () => {
     try {
-      await client.query("DROP SCHEMA IF EXISTS finance CASCADE");
+      await client.query(`DROP SCHEMA IF EXISTS finance CASCADE; DROP SCHEMA IF EXISTS booking CASCADE;
+        DROP SCHEMA IF EXISTS pms CASCADE; DROP SCHEMA IF EXISTS hotel_catalog CASCADE`);
     } finally {
       await client.end();
     }
@@ -149,15 +150,15 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
 
   it("requires evidence to be created in the revision transaction", async () => {
     const folioId = await createFolio();
+    await client.query("BEGIN");
     const revisionId = await addRevision(folioId, "draft", 0);
     const peer = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await peer.connect();
     try {
-      await peer.query("BEGIN");
       await expect(addPayment(folioId, revisionId, PAYMENT_A, "1", peer)).rejects.toMatchObject({
         constraint: "chk_finance_folio_evidence_creation_transaction",
       });
-      await peer.query("ROLLBACK");
+      await client.query("COMMIT");
     } finally {
       await peer.end();
     }
@@ -182,7 +183,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance folio evidence (PostgreSQL)", () =>
       [LINE_VALUES.replace("'night-1'", "E'\\n'"), "chk_finance_folio_lines_source_id"],
       [
         LINE_VALUES.replace(PROPERTY_A, PROPERTY_B).replace("EUR", "USD"),
-        "fk_finance_folio_lines_revision_scope",
+        "chk_finance_folio_evidence_creation_transaction",
       ],
     ];
     for (const [values, constraint] of invalidLines) {
