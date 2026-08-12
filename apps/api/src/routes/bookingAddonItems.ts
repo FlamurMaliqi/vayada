@@ -305,17 +305,13 @@ export function createPgTargetBookingAddonItemsRepository(config: {
           await client.query("COMMIT");
           return { outcome: "plan_limit_reached", currentCount, propertyPlan };
         }
-        const result = await client.query<AddonItemRow>(
-          `WITH inserted AS (
-             INSERT INTO booking.addon_definitions (
-               property_id, name, description, category, pricing_model,
-               price_amount, currency, public_visible, status, metadata
-             )
-             VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8, $9, $10::jsonb)
-             RETURNING id
+        const insertResult = await client.query<{ addonItemId: string }>(
+          `INSERT INTO booking.addon_definitions (
+             property_id, name, description, category, pricing_model,
+             price_amount, currency, public_visible, status, metadata
            )
-           ${addonItemSelectSql()}
-           JOIN inserted ON inserted.id = addon_definitions.id`,
+           VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8, $9, $10::jsonb)
+           RETURNING id::text AS "addonItemId"`,
           [
             propertyId,
             body.name,
@@ -328,6 +324,15 @@ export function createPgTargetBookingAddonItemsRepository(config: {
             body.status,
             JSON.stringify(metadataFromBody(body)),
           ],
+        );
+        const addonItemId = insertResult.rows[0]?.addonItemId;
+        if (!addonItemId) {
+          throw new Error("Target booking add-on insert did not return an id");
+        }
+        const result = await client.query<AddonItemRow>(
+          `${addonItemSelectSql()}
+           WHERE addon_definitions.id = $1::uuid`,
+          [addonItemId],
         );
         await client.query("COMMIT");
         const row = result.rows[0];
