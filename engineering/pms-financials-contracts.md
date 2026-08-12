@@ -156,7 +156,7 @@ type ProfitLossQuery = { year: number };
 type FolioState = "draft" | "ready" | "superseded" | "archived";
 type FolioQuery = Cursor & { from?: Date; to?: Date; state?: FolioState; search?: string;
   sort?: "createdAt_desc" | "serviceFrom_desc" | "amount_desc" };
-type FolioExportQuery = Omit<FolioQuery, "state"> & { state?: "ready" };
+type FolioExportQuery = Omit<FolioQuery, "state"> & { state: "ready" };
 type Category = { id: string; systemKey: string | null; name: string; color: string; sortOrder: number; archived: boolean; revision: number };
 type Expense = { id: string; categoryId: string; origin: ExpenseOrigin; incurredOn: Date; vendor: string; amount: Money;
   recurringRuleId: string | null; sourceKey: string | null; reversesExpenseId: string | null; revision: number } & ExpensePayment;
@@ -173,8 +173,9 @@ type ExportWrite = Command & ({ tab: "dashboard"; filters: DashboardQuery } |
   { tab: "revenue"; filters: RevenueQuery } | { tab: "expenses"; filters: ExpenseQuery } |
   { tab: "profit_loss"; filters: ProfitLossQuery } | { tab: "folios"; filters: FolioExportQuery }) &
   { format: "csv" };
-type Disposition = { resourceId: string; state: "pending" | "ready" | "failed";
-  downloadUrl?: string; expiresAt?: string };
+type Disposition = { resourceId: string } & (
+  { state: "pending" | "failed"; downloadUrl?: never; expiresAt?: never } |
+  { state: "ready"; downloadUrl: string; expiresAt: string });
 type DashboardResponse = Envelope & { cards: { revenueToday: MoneyMetric; revenueMtd: MoneyMetric;
   expensesMtd: MoneyMetric; profitMtd: MoneyMetric };
   daily: Array<{ date: Date; revenue: Money; expenses: Money }>;
@@ -218,7 +219,7 @@ match the named tab's query type after normalization; unknown keys return `400`.
 | `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `WriteResponse<RecurringRule>`    |
 | `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                        |
 | See VAY-1240       | `/folios` and `/folios/:folioId/*`                          | Operational folio list, revision, ready and archive contracts                   |
-| `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `WriteResponse<Disposition>` / item response             |
+| `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `CommandResponse<Disposition>` / item response           |
 
 V1 exports CSV for all five tabs. It does not create, retrieve, render, or send
 an official invoice document and does not promise PDF renditions.
@@ -228,8 +229,8 @@ introduced.
 
 ### Authorization and errors
 
-- Reads require `pms.finance.read`; writes require `pms.finance.manage`.
-- Both require active PMS `property-management` and `module:financials`
+- Reads and both export routes require `pms.finance.read`; other writes require
+  `pms.finance.manage`. All require active PMS `property-management` and `module:financials`
   entitlements for the selected property.
 - Allowed relationships are `owner` and `finance_manager`. A PMS Manager must be
   mapped to `finance_manager`; generic `operator`, `front_desk` and housekeeping

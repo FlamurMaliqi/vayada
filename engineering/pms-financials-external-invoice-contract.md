@@ -153,8 +153,9 @@ and export audit records do not contain the CSV body.
 
 ## Authorization and errors
 
-- Reads and exports require `pms.finance.read`; folio writes require
-  `pms.finance.manage` and active `module:financials` entitlement.
+- Reads and both export routes require `pms.finance.read`; folio writes require
+  `pms.finance.manage`. All require active PMS `property-management` and
+  `module:financials` entitlements for the selected property.
 - Only `owner` and `finance_manager` relationships are eligible.
 - `enforceRoutePolicy` runs before validation, folio access, or idempotency
   lookup. Authorized property lookup follows the common `401/403/404` boundary.
