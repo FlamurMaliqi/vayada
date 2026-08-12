@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { PropertyPlanReadModel } from "@vayada/domain-finance";
 import pg, { type QueryResultRow } from "pg";
 
+import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 const ADDON_CATEGORIES = new Set(["dining", "experience", "transport", "wellness", "other"]);
@@ -46,12 +48,25 @@ export type CreateBookingAddonItemBody = {
 
 export type UpdateBookingAddonItemBody = Partial<CreateBookingAddonItemBody>;
 
+export type BookingAddonItemsContext = {
+  addonItems: BookingAddonItem[];
+  propertyPlan: PropertyPlanReadModel;
+};
+
+export type CreateBookingAddonItemResult =
+  | { outcome: "created"; addonItem: BookingAddonItem }
+  | {
+      outcome: "plan_limit_reached";
+      currentCount: number;
+      propertyPlan: PropertyPlanReadModel;
+    };
+
 export type BookingAddonItemsRepository = {
-  listAddonItemsByHotelId(hotelId: string): Promise<BookingAddonItem[] | null>;
+  listAddonItemsByHotelId(hotelId: string): Promise<BookingAddonItemsContext | null>;
   createAddonItemByHotelId(
     hotelId: string,
     body: CreateBookingAddonItemBody,
-  ): Promise<BookingAddonItem | null>;
+  ): Promise<CreateBookingAddonItemResult | null>;
   updateAddonItemByHotelId(
     hotelId: string,
     addonItemId: string,
@@ -61,14 +76,22 @@ export type BookingAddonItemsRepository = {
   close?(): Promise<void>;
 };
 
-export type BookingAddonItemsPool = {
+export type BookingAddonItemsQueryable = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     values?: unknown[],
   ): Promise<{
     rows: T[];
   }>;
+};
+
+export type BookingAddonItemsPool = BookingAddonItemsQueryable & {
   end?(): Promise<void>;
+  connect?(): Promise<BookingAddonItemsPoolClient>;
+};
+
+export type BookingAddonItemsPoolClient = BookingAddonItemsQueryable & {
+  release(): void;
 };
 
 type AddonItemsParams = {
@@ -80,7 +103,7 @@ type AddonItemParams = AddonItemsParams & {
 };
 
 type BookingAddonItemsError = {
-  statusCode: 401 | 403 | 404 | 422 | 500;
+  statusCode: 401 | 403 | 404 | 409 | 422 | 500;
   code:
     | "unauthenticated"
     | "missing_permission"
@@ -88,6 +111,7 @@ type BookingAddonItemsError = {
     | "inactive_entitlement"
     | "missing_resource_access"
     | "invalid_payload"
+    | "plan_limit_reached"
     | "not_found"
     | "read_model_unavailable"
     | "write_model_unavailable";
@@ -112,9 +136,9 @@ export async function registerBookingAddonItemRoutes(
     if (accessError) return sendAddonItemsError(reply, accessError);
 
     try {
-      const addonItems = await repository.listAddonItemsByHotelId(hotelId);
-      if (!addonItems) return sendAddonItemsError(reply, readNotFoundError());
-      return { addonItems };
+      const context = await repository.listAddonItemsByHotelId(hotelId);
+      if (!context) return sendAddonItemsError(reply, readNotFoundError());
+      return context;
     } catch {
       return sendAddonItemsError(reply, readUnavailableError());
     }
@@ -131,9 +155,12 @@ export async function registerBookingAddonItemRoutes(
       if (!parsed.ok) return sendInvalidPayload(reply, parsed.details);
 
       try {
-        const addonItem = await repository.createAddonItemByHotelId(hotelId, parsed.value);
-        if (!addonItem) return sendAddonItemsError(reply, writeNotFoundError());
-        return reply.status(201).send(addonItem);
+        const result = await repository.createAddonItemByHotelId(hotelId, parsed.value);
+        if (!result) return sendAddonItemsError(reply, writeNotFoundError());
+        if (result.outcome === "plan_limit_reached") {
+          return sendAddonItemsError(reply, addonLimitError(result));
+        }
+        return reply.status(201).send(result.addonItem);
       } catch {
         return sendAddonItemsError(reply, writeUnavailableError());
       }
@@ -191,15 +218,18 @@ export function createPgTargetBookingAddonItemsRepository(config: {
     throw new Error("Target booking add-on items repository connectionString must not be empty");
   }
 
-  const pool =
+  const pool: BookingAddonItemsPool =
     config.pool ??
-    new pg.Pool({
+    (new pg.Pool({
       connectionString: config.connectionString,
       max: config.max,
-    });
+    }) as BookingAddonItemsPool);
 
-  async function resolvePropertyId(hotelId: string): Promise<string | null> {
-    const result = await pool.query<{ propertyId: string }>(
+  async function resolvePropertyId(
+    queryable: BookingAddonItemsQueryable,
+    hotelId: string,
+  ): Promise<string | null> {
+    const result = await queryable.query<{ propertyId: string }>(
       `WITH direct_property AS (
          SELECT property.id::text AS "propertyId"
          FROM hotel_catalog.properties property
@@ -228,51 +258,94 @@ export function createPgTargetBookingAddonItemsRepository(config: {
 
   return {
     async listAddonItemsByHotelId(hotelId) {
-      const propertyId = await resolvePropertyId(hotelId);
+      const propertyId = await resolvePropertyId(pool, hotelId);
       if (!propertyId) return null;
-      const result = await pool.query<AddonItemRow>(
-        `${addonItemSelectSql()}
+      const [result, propertyPlan] = await Promise.all([
+        pool.query<AddonItemRow>(
+          `${addonItemSelectSql()}
          WHERE addon_definitions.property_id = $1
            AND addon_definitions.status <> 'retired'
          ORDER BY COALESCE((addon_definitions.metadata ->> 'sortOrder')::int, 0),
                   addon_definitions.created_at,
                   addon_definitions.id`,
-        [propertyId],
-      );
-      return result.rows.map((row) => toAddonItem(row, hotelId));
+          [propertyId],
+        ),
+        readPropertyPlan(pool, propertyId),
+      ]);
+      return {
+        addonItems: result.rows.map((row) => toAddonItem(row, hotelId)),
+        propertyPlan,
+      };
     },
     async createAddonItemByHotelId(hotelId, body) {
-      const propertyId = await resolvePropertyId(hotelId);
-      if (!propertyId) return null;
-      const result = await pool.query<AddonItemRow>(
-        `WITH inserted AS (
-           INSERT INTO booking.addon_definitions (
+      if (!pool.connect) {
+        throw new Error("Target booking add-on creation requires transactional pool access");
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const propertyId = await resolvePropertyId(client, hotelId);
+        if (!propertyId) {
+          await client.query("ROLLBACK");
+          return null;
+        }
+        await client.query(
+          `SELECT id FROM hotel_catalog.properties WHERE id = $1::uuid FOR UPDATE`,
+          [propertyId],
+        );
+        const propertyPlan = await readPropertyPlan(client, propertyId);
+        const countResult = await client.query<{ currentCount: string }>(
+          `SELECT count(*)::text AS "currentCount"
+           FROM booking.addon_definitions
+           WHERE property_id = $1::uuid AND status <> 'retired'`,
+          [propertyId],
+        );
+        const currentCount = Number(countResult.rows[0]?.currentCount ?? 0);
+        if (currentCount >= propertyPlan.limits.maxAddons) {
+          await client.query("COMMIT");
+          return { outcome: "plan_limit_reached", currentCount, propertyPlan };
+        }
+        const insertResult = await client.query<{ addonItemId: string }>(
+          `INSERT INTO booking.addon_definitions (
              property_id, name, description, category, pricing_model,
              price_amount, currency, public_visible, status, metadata
            )
            VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8, $9, $10::jsonb)
-           RETURNING id
-         )
-         ${addonItemSelectSql()}
-         JOIN inserted ON inserted.id = addon_definitions.id`,
-        [
-          propertyId,
-          body.name,
-          body.description,
-          body.category,
-          body.pricingModel,
-          body.price,
-          body.currency,
-          body.publicVisible,
-          body.status,
-          JSON.stringify(metadataFromBody(body)),
-        ],
-      );
-      const row = result.rows[0];
-      return row ? toAddonItem(row, hotelId) : null;
+           RETURNING id::text AS "addonItemId"`,
+          [
+            propertyId,
+            body.name,
+            body.description,
+            body.category,
+            body.pricingModel,
+            body.price,
+            body.currency,
+            body.publicVisible,
+            body.status,
+            JSON.stringify(metadataFromBody(body)),
+          ],
+        );
+        const addonItemId = insertResult.rows[0]?.addonItemId;
+        if (!addonItemId) {
+          throw new Error("Target booking add-on insert did not return an id");
+        }
+        const result = await client.query<AddonItemRow>(
+          `${addonItemSelectSql()}
+           WHERE addon_definitions.id = $1::uuid`,
+          [addonItemId],
+        );
+        await client.query("COMMIT");
+        const row = result.rows[0];
+        return row ? { outcome: "created", addonItem: toAddonItem(row, hotelId) } : null;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async updateAddonItemByHotelId(hotelId, addonItemId, body) {
-      const propertyId = await resolvePropertyId(hotelId);
+      const propertyId = await resolvePropertyId(pool, hotelId);
       if (!propertyId) return null;
       const values: unknown[] = [propertyId, addonItemId];
       const sets: string[] = [];
@@ -296,7 +369,7 @@ export function createPgTargetBookingAddonItemsRepository(config: {
         `WITH updated AS (
            UPDATE booking.addon_definitions
            SET ${sets.join(", ")}
-           WHERE property_id = $1 AND id::text = $2
+           WHERE property_id = $1 AND id::text = $2 AND status <> 'retired'
            RETURNING id
          )
          ${addonItemSelectSql()}
@@ -307,7 +380,7 @@ export function createPgTargetBookingAddonItemsRepository(config: {
       return row ? toAddonItem(row, hotelId) : null;
     },
     async retireAddonItemByHotelId(hotelId, addonItemId) {
-      const propertyId = await resolvePropertyId(hotelId);
+      const propertyId = await resolvePropertyId(pool, hotelId);
       if (!propertyId) return false;
       const result = await pool.query<{ id: string }>(
         `UPDATE booking.addon_definitions
@@ -663,6 +736,7 @@ function authorizationCode(
   BookingAddonItemsError["code"],
   | "unauthenticated"
   | "invalid_payload"
+  | "plan_limit_reached"
   | "not_found"
   | "read_model_unavailable"
   | "write_model_unavailable"
@@ -726,6 +800,31 @@ function writeNotFoundError(): BookingAddonItemsError {
     code: "not_found",
     category: "write_model",
     message: "Booking add-on item target not found.",
+  };
+}
+
+function addonLimitError(
+  result: Extract<CreateBookingAddonItemResult, { outcome: "plan_limit_reached" }>,
+): BookingAddonItemsError {
+  const { currentCount, propertyPlan } = result;
+  const maxAllowed = propertyPlan.limits.maxAddons;
+  const message =
+    propertyPlan.plan === "commission"
+      ? currentCount > maxAllowed
+        ? "You have more add-ons than your plan allows. Remove add-ons to add new ones, or upgrade for up to 9."
+        : "You've reached the 3 add-on limit. Upgrade to the paid plan for up to 9 add-ons."
+      : "You've reached the 9 add-on limit for the paid plan.";
+  return {
+    statusCode: 409,
+    code: "plan_limit_reached",
+    category: "validation",
+    message,
+    details: {
+      feature: "addons",
+      plan: propertyPlan.plan,
+      currentCount,
+      maxAllowed,
+    },
   };
 }
 

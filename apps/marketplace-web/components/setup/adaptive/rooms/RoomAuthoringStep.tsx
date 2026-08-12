@@ -30,7 +30,6 @@ import {
   ROOM_CATEGORIES,
   ROOM_DESCRIPTION_MAX_LENGTH,
   ROOM_MEDIA_MAX_FILE_SIZE,
-  ROOM_MEDIA_MAX_ITEMS,
   ROOM_NAME_MAX_LENGTH,
   RoomDraftManifestUnavailableError,
   buildRoomsDraftRequest,
@@ -45,7 +44,11 @@ import {
   type RoomPhotoDraft,
   type RoomValidationErrors,
 } from "./roomAuthoringState";
-import { RoomAuthoringOwnerError, roomAuthoringApi } from "@/services/api/roomAuthoringClient";
+import {
+  RoomAuthoringOwnerError,
+  roomAuthoringApi,
+  type RoomPhotoPlan,
+} from "@/services/api/roomAuthoringClient";
 
 export type RoomAuthoringSessionStore = {
   propertyId?: string;
@@ -65,6 +68,9 @@ type SaveMode = "add" | "continue";
 
 const COMMON_AMENITIES = ROOM_AMENITY_GROUPS[0].items.slice(0, 5);
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const BOOKING_ADMIN_BILLING_URL = `${(
+  process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com"
+).replace(/\/$/, "")}/settings?section=billing`;
 
 export function RoomAuthoringStep({
   route,
@@ -88,6 +94,7 @@ export function RoomAuthoringStep({
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState>("loading");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceReload, setWorkspaceReload] = useState(0);
+  const [photoPlan, setPhotoPlan] = useState<RoomPhotoPlan | null>(null);
   const [errors, setErrors] = useState<RoomValidationErrors>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -183,18 +190,40 @@ export function RoomAuthoringStep({
 
   useEffect(() => {
     const controller = new AbortController();
+    setPhotoPlan(null);
     if (draftManifestMissing) {
-      setWorkspaceState("ready");
+      setWorkspaceState("loading");
       setWorkspaceError(null);
+      void roomAuthoringApi
+        .loadPhotoPlan(propertyId, { signal: controller.signal, cache: "no-store" })
+        .then((plan) => {
+          if (controller.signal.aborted) return;
+          setPhotoPlan(plan);
+          setWorkspaceState("ready");
+        })
+        .catch((error) => {
+          if (controller.signal.aborted) return;
+          setWorkspaceState("error");
+          setWorkspaceError(errorMessage(error));
+        });
       return () => controller.abort();
     }
     setWorkspaceState("loading");
     setWorkspaceError(null);
     const draftIds = roomsRef.current.map(({ draftRoomId }) => draftRoomId);
-    void roomAuthoringApi
-      .loadWorkspace(propertyId, draftIds, { signal: controller.signal, cache: "no-store" })
-      .then((canonical) => {
+    void Promise.all([
+      roomAuthoringApi.loadWorkspace(propertyId, draftIds, {
+        signal: controller.signal,
+        cache: "no-store",
+      }),
+      roomAuthoringApi.loadPhotoPlan(propertyId, {
+        signal: controller.signal,
+        cache: "no-store",
+      }),
+    ])
+      .then(([canonical, plan]) => {
         if (controller.signal.aborted) return;
+        setPhotoPlan(plan);
         const hydrated = hydrateRoomDrafts(step.draft, canonical, { ensureBlank: false });
         const currentById = new Map(roomsRef.current.map((room) => [room.draftRoomId, room]));
         const merged = hydrated.map((room) => {
@@ -248,6 +277,9 @@ export function RoomAuthoringStep({
   );
   const allRoomsComplete = rooms.length > 0 && !firstIncompleteRoom;
   const photoPreparationErrors = activeRoom ? roomCoreValidationErrors(activeRoom, rooms) : {};
+  const photoLimit = photoPlan?.maxRoomPhotosPerType ?? null;
+  const photoLimitReached =
+    activeRoom !== null && photoLimit !== null && activeRoom.photos.length >= photoLimit;
   const photoActionUnavailable =
     draftManifestMissing ||
     workspaceState !== "ready" ||
@@ -408,13 +440,17 @@ export function RoomAuthoringStep({
       focusFirstError(activeRoom, requiredErrors);
       return;
     }
-    const available = ROOM_MEDIA_MAX_ITEMS - activeRoom.photos.length;
+    if (!photoPlan) {
+      setSaveError("Photo limit is still loading. Please try again.");
+      return;
+    }
+    const available = photoPlan.maxRoomPhotosPerType - activeRoom.photos.length;
     const selected = files.slice(0, Math.max(0, available));
     const invalid = selected.find(
       (file) => !ALLOWED_IMAGE_TYPES.has(file.type) || file.size > ROOM_MEDIA_MAX_FILE_SIZE,
     );
     if (files.length > available) {
-      setSaveError(`A room can have at most ${ROOM_MEDIA_MAX_ITEMS} photos.`);
+      setSaveError(roomPhotoLimitMessage(photoPlan, activeRoom.photos.length));
       return;
     }
     if (invalid) {
@@ -1021,6 +1057,11 @@ export function RoomAuthoringStep({
               <p className="mt-1 text-sm text-gray-600">
                 Add at least one clear photo. Three to five is ideal.
               </p>
+              <p className="mt-1 text-xs font-medium tabular-nums text-gray-500">
+                {photoLimit === null
+                  ? "Loading photo limit…"
+                  : `${activeRoom.photos.length}/${photoLimit} photos`}
+              </p>
               {activeRoom.photos.length > 0 && <PhotoGrid photos={activeRoom.photos} compact />}
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
@@ -1053,6 +1094,27 @@ export function RoomAuthoringStep({
                       : "Existing hotel photos cannot be reused here; upload new room photos."}
               </p>
               <FieldError id={`${activeRoom.draftRoomId}-photos-error`} message={errors.photos} />
+              {photoPlan && photoLimitReached && (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-950">
+                  <p>{roomPhotoLimitMessage(photoPlan, activeRoom.photos.length)}</p>
+                  {photoPlan.plan === "commission" && (
+                    <a
+                      className="font-semibold text-primary-700 hover:underline"
+                      href={BOOKING_ADMIN_BILLING_URL}
+                    >
+                      Upgrade to show up to 15 photos per room and make a stronger first impression.
+                    </a>
+                  )}
+                </div>
+              )}
+              {photoPlan?.plan === "commission" && !photoLimitReached && (
+                <a
+                  className="mt-2 block text-xs font-medium text-primary-700 hover:underline"
+                  href={BOOKING_ADMIN_BILLING_URL}
+                >
+                  Upgrade to show up to 15 photos per room and make a stronger first impression.
+                </a>
+              )}
             </fieldset>
 
             <fieldset>
@@ -1267,17 +1329,24 @@ export function RoomAuthoringStep({
               <p className="text-sm leading-6 text-gray-600">
                 Upload JPEG, PNG, or WebP photos up to 10 MB. The first photo is the room cover.
               </p>
-              <label className={`${primaryButtonClass} mt-4 cursor-pointer justify-center`}>
-                <PhotoIcon className="h-4 w-4" aria-hidden="true" /> Upload photos
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  multiple
-                  className="sr-only"
-                  disabled={photoActionUnavailable}
-                  onChange={(event) => void handleFiles(event)}
-                />
-              </label>
+              {!photoLimitReached && (
+                <label className={`${primaryButtonClass} mt-4 cursor-pointer justify-center`}>
+                  <PhotoIcon className="h-4 w-4" aria-hidden="true" /> Upload photos
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    multiple
+                    className="sr-only"
+                    disabled={photoActionUnavailable || photoLimit === null}
+                    onChange={(event) => void handleFiles(event)}
+                  />
+                </label>
+              )}
+              {photoPlan && photoLimitReached && (
+                <p className="mt-4 text-sm text-amber-900">
+                  {roomPhotoLimitMessage(photoPlan, activeRoom.photos.length)}
+                </p>
+              )}
               <div className="mt-5">
                 {activeRoom.photos.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-gray-300 px-5 py-10 text-center text-sm text-gray-600">
@@ -1813,6 +1882,17 @@ function focusable(root: HTMLElement | null): HTMLElement[] {
         ),
       ).filter((item) => item.offsetParent !== null)
     : [];
+}
+
+function roomPhotoLimitMessage(plan: RoomPhotoPlan, currentCount: number): string {
+  if (currentCount > plan.maxRoomPhotosPerType) {
+    return plan.plan === "commission"
+      ? `You have more than the ${plan.maxRoomPhotosPerType}-photo limit your plan allows. Remove photos to add new ones, or upgrade for up to 15.`
+      : `You have more than the ${plan.maxRoomPhotosPerType}-photo limit the paid plan allows. Remove photos to add new ones.`;
+  }
+  return plan.plan === "commission"
+    ? `You've reached the ${plan.maxRoomPhotosPerType}-photo limit. Upgrade to the paid plan for up to 15 photos per room.`
+    : `You've reached the ${plan.maxRoomPhotosPerType}-photo limit for the paid plan.`;
 }
 
 function errorMessage(error: unknown): string {

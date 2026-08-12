@@ -96,6 +96,7 @@
       "privateObjectCount": 5
     },
     "requiredPurposes": [
+      "booking.header_logo",
       "property.hero_image",
       "property.gallery_image",
       "property.logo",

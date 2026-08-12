@@ -97,6 +97,7 @@ const paymentSettings: FinancePaymentSettingsReadModel = {
   depositPolicy: {
     depositPercent: 25,
     summary: "25% deposit due at checkout.",
+    bankTransferInstructions: "IBAN PRIVATE",
   },
   refundPolicy: {
     freeCancellationDays: 7,
@@ -487,6 +488,10 @@ describe("finance route contracts", () => {
     if (!first.ok || !replay.ok) throw new Error("Unexpected Stripe provider-account failure");
     expect(replay.response.providerAccountId).toBe(first.response.providerAccountId);
     expect(provider.createAccountCount).toBe(1);
+    const relinkCalls = target.calls.filter((call) =>
+      call.text.includes("UPDATE finance.payment_settings"),
+    );
+    expect(relinkCalls).toHaveLength(2);
 
     const idempotencyInsert = target.requiredCall("INSERT INTO platform.idempotency_keys");
     expect(idempotencyInsert.text).toMatch(/'finance'/);
@@ -1222,7 +1227,9 @@ describe("finance route contracts", () => {
           text: string,
           values?: readonly unknown[],
         ) {
-          expect(text).toContain('settings.requires_manual_review AS "requiresManualReview"');
+          expect(text).toContain(
+            'COALESCE(settings.requires_manual_review, TRUE) AS "requiresManualReview"',
+          );
           expect(values).toEqual([propertyId]);
           return {
             rows: [
@@ -1268,7 +1275,7 @@ describe("finance route contracts", () => {
       payload: {
         paymentsEnabled: true,
         paymentProvider: "vayada",
-        acceptedMethods: ["card", "pay_at_property"],
+        acceptedMethods: ["card", "pay_at_property", "manual_card"],
         defaultCurrency: "EUR",
         supportedCurrencies: ["EUR"],
         requiresManualReview: false,
@@ -1317,6 +1324,116 @@ describe("finance route contracts", () => {
       `finance.payment-settings.audit.property.${propertyId}.key.${keyHash}.v1`,
     );
     expect(auditInsert.values?.[2]).toBe(propertyId);
+  });
+
+  it("reads the editable Booking property currency when Finance settings do not exist yet", async () => {
+    const target = targetPaymentSettingsPool({ canonicalCurrency: "IDR" });
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+    });
+
+    await expect(repository.getPaymentSettings(propertyId)).resolves.toMatchObject({
+      paymentsEnabled: false,
+      defaultCurrency: "IDR",
+      supportedCurrencies: ["IDR"],
+    });
+    expect(target.requiredCall("booking.booking_settings booking_settings")).toBeDefined();
+  });
+
+  it.each([
+    {
+      method: "bank_transfer" as const,
+      depositPolicy: { bankName: "", accountHolder: "Host", accountNumber: "DE123" },
+      message: "Bank Transfer requires bank name.",
+    },
+    {
+      method: "paypal" as const,
+      depositPolicy: { paypalEmail: "not-an-email" },
+      message: "PayPal requires a valid email address.",
+    },
+  ])("rejects incomplete $method details in the canonical Finance repository", async (fixture) => {
+    const target = targetPaymentSettingsPool();
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+    });
+
+    await expect(
+      repository.updatePaymentSettings!(
+        paymentSettingsTargetCommand({
+          payload: {
+            paymentsEnabled: true,
+            paymentProvider: fixture.method === "bank_transfer" ? "bank_transfer" : "manual",
+            acceptedMethods: [fixture.method],
+            depositPolicy: fixture.depositPolicy as unknown as Record<string, string>,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      statusCode: 400,
+      code: "invalid_command",
+      message: fixture.message,
+    });
+    expect(
+      target.calls.some((call) => call.text.includes("INSERT INTO finance.payment_settings")),
+    ).toBe(false);
+  });
+
+  it("rejects payment settings with every public method disabled", async () => {
+    const target = targetPaymentSettingsPool();
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+    });
+
+    await expect(
+      repository.updatePaymentSettings!(
+        paymentSettingsTargetCommand({
+          payload: {
+            paymentsEnabled: false,
+            paymentProvider: "manual",
+            acceptedMethods: [],
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      statusCode: 400,
+      code: "invalid_command",
+      message: "Choose at least one payment method.",
+    });
+    expect(
+      target.calls.some((call) => call.text.includes("INSERT INTO finance.payment_settings")),
+    ).toBe(false);
+  });
+
+  it("rejects stale payment currency before writing settings", async () => {
+    const target = targetPaymentSettingsPool({ canonicalCurrency: "IDR" });
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+    });
+
+    await expect(
+      repository.updatePaymentSettings!(
+        paymentSettingsTargetCommand({
+          payload: {
+            paymentsEnabled: true,
+            acceptedMethods: ["cash"],
+            defaultCurrency: "EUR",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      statusCode: 409,
+      code: "property_currency_conflict",
+    });
+    expect(
+      target.calls.some((call) => call.text.includes("INSERT INTO finance.payment_settings")),
+    ).toBe(false);
   });
 
   it("maps property payouts from the target Finance payout read model without destination secrets", async () => {
@@ -1964,7 +2081,7 @@ type QueryCall = {
   values?: readonly unknown[];
 };
 
-function targetPaymentSettingsPool(): {
+function targetPaymentSettingsPool(options: { canonicalCurrency?: string } = {}): {
   calls: QueryCall[];
   providerAccountId: string;
   pool: {
@@ -2023,10 +2140,35 @@ function targetPaymentSettingsPool(): {
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") {
       return { rows: [] as T[], rowCount: 0 };
     }
-    if (text.includes("FROM finance.payment_settings settings")) {
-      const row = targetPaymentSettingsRow(state.settings, state.providerAccount);
-      const rows = row ? [row as unknown as T] : [];
-      return { rows, rowCount: rows.length };
+    if (
+      text.includes('AS "paymentsEnabled"') &&
+      text.includes("FROM hotel_catalog.properties property")
+    ) {
+      const row =
+        targetPaymentSettingsRow(state.settings, state.providerAccount) ??
+        targetPaymentSettingsRow(
+          {
+            paymentsEnabled: false,
+            acceptedMethods: [],
+            defaultCurrency: options.canonicalCurrency ?? "EUR",
+            depositPolicy: {},
+            refundPolicy: {},
+            taxPolicy: {},
+            statementDescriptor: null,
+            requiresManualReview: true,
+            updatedAt: "2026-06-12T12:00:00.000Z",
+          },
+          state.providerAccount,
+        );
+      if (row) row.defaultCurrency = options.canonicalCurrency ?? "EUR";
+      return { rows: [row as unknown as T], rowCount: 1 };
+    }
+    if (text.includes("FROM hotel_catalog.properties property")) {
+      expect(text).toContain("booking.booking_settings settings");
+      return {
+        rows: [{ currency: options.canonicalCurrency ?? "EUR" } as unknown as T],
+        rowCount: 1,
+      };
     }
     if (text.includes("INSERT INTO platform.idempotency_keys")) {
       const idempotencyKey = String(values?.[0]);
@@ -2280,6 +2422,16 @@ function fakeStripeConnectProvider(): FinanceStripeConnectProvider & {
     async createOnboardingLink(request) {
       return `https://connect.stripe.test/onboard/${request.providerAccountRef}/2`;
     },
+    async retrieveAccount(request) {
+      return {
+        providerAccountRef: request.providerAccountRef,
+        chargesEnabled: true,
+        payoutsEnabled: true,
+        detailsSubmitted: true,
+        cardPaymentsStatus: "active",
+        defaultCurrency: "eur",
+      };
+    },
     async compensateAccountCreation() {
       compensationCount += 1;
     },
@@ -2363,7 +2515,7 @@ function paymentSettingsTargetCommand(
     payload: options.payload ?? {
       paymentsEnabled: true,
       paymentProvider: "vayada",
-      acceptedMethods: ["card", "pay_at_property"],
+      acceptedMethods: ["card", "pay_at_property", "manual_card"],
       defaultCurrency: "EUR",
       supportedCurrencies: ["EUR"],
       requiresManualReview: false,

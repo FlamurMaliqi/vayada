@@ -6,6 +6,7 @@ import Header from "@/components/layout/Header";
 import Sidebar from "@/components/layout/Sidebar";
 import { authService } from "@/services/auth";
 import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
+import { pmsSetupExitPropertyId } from "@vayada/product-onboarding";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -37,9 +38,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         typeof window === "undefined"
           ? "/dashboard"
           : `${window.location.pathname}${window.location.search}`;
+      const setupExitPropertyId = pmsSetupExitPropertyId(returnTo);
       let decision: Awaited<ReturnType<typeof resolvePmsSetupGuard>>;
       try {
-        decision = await resolvePmsSetupGuard(returnTo);
+        decision = await resolvePmsSetupGuard(returnTo, undefined, undefined, undefined, {
+          propertyId: setupExitPropertyId,
+        });
       } catch (error) {
         console.error("Failed to verify PMS setup:", error);
         if (!cancelled) {
