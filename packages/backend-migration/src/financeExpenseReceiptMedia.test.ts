@@ -7,10 +7,11 @@ import { assertSafeTestDatabase } from "./testUtils.js";
 
 const readMigration = (name: string) =>
   readFile(join(import.meta.dirname, `../migrations/${name}`), "utf8");
-const [mediaRegistry, restoredPurposes, migration] = await Promise.all([
+const [mediaRegistry, restoredPurposes, migration, validation] = await Promise.all([
   readMigration("0015_platform_media_registry.sql"),
   readMigration("0033_restore_identity_profile_media_purpose.sql"),
-  readMigration("0061_finance_expense_receipt_media.sql"),
+  readMigration("0068_finance_expense_receipt_media.sql"),
+  readMigration("0069_validate_finance_expense_receipt_media.sql"),
 ]);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const PROPERTY_ID = "20000000-0000-4000-8000-000000000001";
@@ -22,10 +23,13 @@ describe("Finance expense receipt media migration contract", () => {
     expect(migration).toContain("resource_product = 'finance'");
     expect(migration).toContain("resource_type = 'expense'");
     expect(migration).toContain("property_id IS NOT NULL");
+    expect(migration.match(/NOT VALID/g)).toHaveLength(4);
+    expect(validation.match(/VALIDATE CONSTRAINT/g)).toHaveLength(4);
   });
 
   it("preserves every existing purpose and resource product", () => {
     for (const purpose of [
+      "booking.header_logo",
       "identity.user.profile_image",
       "property.hero_image",
       "property.gallery_image",
@@ -74,6 +78,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance expense receipt media (PostgreSQL)"
     await client.query(mediaRegistry);
     await client.query(restoredPurposes);
     await client.query(migration);
+    await client.query(validation);
   });
 
   afterEach(async () => {
@@ -86,18 +91,23 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance expense receipt media (PostgreSQL)"
     }
   });
 
-  it("accepts a private Finance receipt and existing private media", async () => {
+  it("accepts a private Finance receipt and existing media", async () => {
     await client.query(
       `INSERT INTO platform.media_objects
-         (bucket, storage_key, visibility, purpose, property_id, resource_product, resource_type)
+         (bucket, storage_key, visibility, purpose, property_id, resource_product, resource_type,
+          lifecycle_status, public_approved)
        VALUES
-         ('private', 'receipt-1', 'private', 'finance.expense.receipt', $1, 'finance', 'expense'),
-         ('private', 'source-1', 'private', 'pms.import.source_image', $1, 'pms', 'import')`,
+         ('private', 'receipt-1', 'private', 'finance.expense.receipt', $1, 'finance', 'expense',
+          'staged', FALSE),
+         ('private', 'source-1', 'private', 'pms.import.source_image', $1, 'pms', 'import',
+          'staged', FALSE),
+         ('public', 'header-1', 'public', 'booking.header_logo', $1, 'booking', 'property',
+          'active', TRUE)`,
       [PROPERTY_ID],
     );
     expect(
       (await client.query("SELECT count(*)::int AS count FROM platform.media_objects")).rows[0],
-    ).toEqual({ count: 2 });
+    ).toEqual({ count: 3 });
   });
 
   it("rejects public receipts and mismatched product ownership", async () => {
@@ -148,6 +158,19 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance expense receipt media (PostgreSQL)"
     ).rejects.toMatchObject({
       code: "23514",
       constraint: "chk_platform_media_upload_sessions_purpose_visibility",
+    });
+    await expect(
+      client.query(
+        `INSERT INTO platform.media_upload_sessions
+           (upload_session_key, requested_purpose, requested_visibility, property_id,
+            resource_product, resource_type, staging_prefix, expires_at)
+         VALUES ('receipt-pms', 'finance.expense.receipt', 'private', $1,
+                 'pms', 'expense', 'staging/receipt-pms', now() + interval '1 hour')`,
+        [PROPERTY_ID],
+      ),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "chk_platform_media_upload_sessions_finance_expense_receipt",
     });
   });
 });

@@ -208,6 +208,7 @@ export type PublicBookabilitySupportedQuoteParameters = {
 };
 
 export type PublicBookabilityBranding = {
+  logoUrl?: string | null;
   heroImage: string | null;
   heroHeading: string | null;
   heroSubtext: string | null;

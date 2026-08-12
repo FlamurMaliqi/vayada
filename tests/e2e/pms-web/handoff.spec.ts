@@ -1,8 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import {
-  createSharedHotelSetupStatusMock,
-  sharedHotelSetupProduct,
-} from "../support/sharedHotelSetupMocks";
+import { createAdaptiveHotelSetupStatusMock } from "../support/sharedHotelSetupMocks";
 import { PMS_WEB_PROPERTY_ID, mockPmsWebTargetRoutes } from "../support/pmsWebMocks";
 
 const TARGET_ORGANIZATION_ID = "org_target_hotel_group";
@@ -12,9 +9,170 @@ const OTHER_WORKOS_ORGANIZATION_ID = "org_workos_other_hotel_group";
 const OTHER_PROPERTY_ID = "f6853000-0000-0000-0000-000000000002";
 
 test.describe("pms-web handoff", () => {
-  test("selects the hinted organization and opens Rooms for incomplete PMS setup", async ({
+  test("opens the dashboard with a saved-progress notice after exiting setup", async ({ page }) => {
+    await mockPmsWebTargetRoutes(page);
+    await page.route("**/api/hotel-setup/status**", (route) => {
+      const requestedPropertyId = new URL(route.request().url()).searchParams.get("propertyId");
+      const setupStatus = createAdaptiveHotelSetupStatusMock({
+        entryProduct: "pms",
+        organizationId: TARGET_ORGANIZATION_ID,
+        organizationDisplayName: "Target Hotel Group",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        taskOverrides: {
+          rooms_rates_availability: {
+            ownerProgress: "in_progress",
+            readiness: "actionable",
+            actionableBy: "owner",
+            reasonCodes: ["rooms_missing"],
+          },
+        },
+      });
+      return route.fulfill({
+        json: {
+          ...setupStatus,
+          propertySelection: {
+            state: "multiple_properties",
+            selectedPropertyId: requestedPropertyId ?? PMS_WEB_PROPERTY_ID,
+            availableProperties: [
+              ...setupStatus.propertySelection.availableProperties,
+              {
+                propertyId: OTHER_PROPERTY_ID,
+                publicId: `public-${OTHER_PROPERTY_ID}`,
+                displayName: "Other Hotel",
+                locationSummary: "Vienna, AT",
+              },
+            ],
+          },
+        },
+      });
+    });
+
+    await page.goto(
+      `/handoff?redirect=${encodeURIComponent(`/dashboard?setup=incomplete&propertyId=${PMS_WEB_PROPERTY_ID}`)}#property_id=${PMS_WEB_PROPERTY_ID}`,
+    );
+
+    await expect(page).toHaveURL(
+      new RegExp(`/dashboard\\?setup=incomplete&propertyId=${PMS_WEB_PROPERTY_ID}$`),
+    );
+    await expect(
+      page.getByText("Your property setup isn't complete. Your progress is saved."),
+    ).toBeVisible();
+    await expect(page.getByRole("link", { name: "Resume setup" })).toHaveAttribute(
+      "href",
+      `/setup?entryProduct=pms&returnTo=%2Fdashboard&propertyId=${PMS_WEB_PROPERTY_ID}`,
+    );
+  });
+
+  test("opens the property picker when setup is exited before a property exists", async ({
     page,
   }) => {
+    await mockPmsWebTargetRoutes(page);
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({
+        json: createAdaptiveHotelSetupStatusMock({
+          entryProduct: "pms",
+          organizationId: TARGET_ORGANIZATION_ID,
+          organizationDisplayName: "Target Hotel Group",
+          propertyId: null,
+        }),
+      }),
+    );
+
+    await page.goto(`/handoff?redirect=${encodeURIComponent("/choose-property?setup=incomplete")}`);
+
+    await expect(page).toHaveURL(/\/choose-property\?setup=incomplete$/);
+    await expect(
+      page.getByText("No property has been created yet. Start or resume setup when you're ready."),
+    ).toBeVisible();
+  });
+
+  test("keeps a setup exit in PMS when the property list is temporarily unavailable", async ({
+    page,
+  }) => {
+    await mockPmsWebTargetRoutes(page);
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({ status: 503, json: { detail: "Temporarily unavailable" } }),
+    );
+
+    await page.goto(
+      `/handoff?redirect=${encodeURIComponent(`/dashboard?setup=incomplete&propertyId=${PMS_WEB_PROPERTY_ID}`)}#property_id=${PMS_WEB_PROPERTY_ID}`,
+    );
+
+    await expect(page).toHaveURL(/\/handoff\?redirect=/);
+    await expect(page.getByText("Your session transfer is temporarily unavailable.")).toBeVisible();
+  });
+
+  test("does not substitute another property for an invalid setup-exit property", async ({
+    page,
+  }) => {
+    await mockPmsWebTargetRoutes(page);
+    await page.route("**/api/hotel-setup/status**", (route) =>
+      route.fulfill({
+        json: createAdaptiveHotelSetupStatusMock({
+          entryProduct: "pms",
+          organizationId: TARGET_ORGANIZATION_ID,
+          organizationDisplayName: "Target Hotel Group",
+          propertyId: OTHER_PROPERTY_ID,
+        }),
+      }),
+    );
+
+    await page.goto(
+      `/handoff?redirect=${encodeURIComponent(`/dashboard?setup=incomplete&propertyId=${PMS_WEB_PROPERTY_ID}`)}#property_id=${PMS_WEB_PROPERTY_ID}`,
+    );
+
+    await expect(page).toHaveURL(/\/handoff\?redirect=/);
+    await expect(
+      page.getByText(
+        "The property you were setting up is no longer available in this hotel group.",
+      ),
+    ).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("selectedSharedPropertyId"))).toBeNull();
+  });
+
+  test("rejects conflicting setup-exit and session-transfer property hints", async ({ page }) => {
+    await mockPmsWebTargetRoutes(page);
+    await page.addInitScript((propertyId) => {
+      localStorage.setItem("selectedHotelId", propertyId);
+      localStorage.setItem("selectedSharedPropertyId", propertyId);
+    }, OTHER_PROPERTY_ID);
+
+    await page.goto(
+      `/handoff?redirect=${encodeURIComponent(`/dashboard?setup=incomplete&propertyId=${PMS_WEB_PROPERTY_ID}`)}#property_id=${OTHER_PROPERTY_ID}`,
+    );
+
+    await expect(page).toHaveURL(/\/handoff\?redirect=/);
+    await expect(
+      page.getByText("The setup exit does not match the property from your session transfer."),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(() => [
+        localStorage.getItem("selectedHotelId"),
+        localStorage.getItem("selectedSharedPropertyId"),
+      ]),
+    ).toEqual([null, null]);
+  });
+
+  test("rejects a property hint for a no-property setup exit", async ({ page }) => {
+    await mockPmsWebTargetRoutes(page);
+
+    await page.goto(
+      `/handoff?redirect=${encodeURIComponent("/choose-property?setup=incomplete")}#property_id=${PMS_WEB_PROPERTY_ID}`,
+    );
+
+    await expect(page).toHaveURL(/\/handoff\?redirect=/);
+    await expect(
+      page.getByText("The setup exit does not match the property from your session transfer."),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(() => [
+        localStorage.getItem("selectedHotelId"),
+        localStorage.getItem("selectedSharedPropertyId"),
+      ]),
+    ).toEqual([null, null]);
+  });
+
+  test("selects the hinted organization and opens PMS for incomplete setup", async ({ page }) => {
     await mockPmsWebTargetRoutes(page);
     await page.route("**/api/hotel-setup/status**", (route) =>
       route.fulfill({ json: pmsSetupStatus(PMS_WEB_PROPERTY_ID, "selected_incomplete") }),
@@ -25,7 +183,7 @@ test.describe("pms-web handoff", () => {
       `/handoff#organization_id=${TARGET_ORGANIZATION_ID}&property_id=${PMS_WEB_PROPERTY_ID}`,
     );
 
-    await expect(page).toHaveURL(/\/rooms$/);
+    await expect(page).toHaveURL(/\/dashboard$/);
     expect(refreshRequests).toEqual([
       { organizationId: TARGET_WORKOS_ORGANIZATION_ID, surface: "pms-web" },
     ]);
@@ -133,15 +291,19 @@ test.describe("pms-web handoff", () => {
     const targetStatus = pmsSetupStatus(PMS_WEB_PROPERTY_ID, "active");
     await page.route("**/api/hotel-setup/status**", (route) => {
       const requestedPropertyId = new URL(route.request().url()).searchParams.get("propertyId");
-      const status = requestedPropertyId === PMS_WEB_PROPERTY_ID ? targetStatus : firstStatus;
+      const selectedPropertyId = requestedPropertyId ?? PMS_WEB_PROPERTY_ID;
+      const status = selectedPropertyId === PMS_WEB_PROPERTY_ID ? targetStatus : firstStatus;
       return route.fulfill({
         json: {
           ...status,
-          selection: {
+          propertySelection: {
             state: "multiple_properties",
-            selectedPropertyId: requestedPropertyId,
+            selectedPropertyId,
+            availableProperties: [
+              ...firstStatus.propertySelection.availableProperties,
+              ...targetStatus.propertySelection.availableProperties,
+            ],
           },
-          properties: [firstStatus.properties[0], targetStatus.properties[0]],
         },
       });
     });
@@ -310,44 +472,24 @@ function authenticatedSession(
 }
 
 function pmsSetupStatus(propertyId: string, status: "active" | "selected_incomplete") {
-  const missingSteps = status === "selected_incomplete" ? ["roomTypes", "rooms", "ratePlans"] : [];
-  const result = createSharedHotelSetupStatusMock({
+  return createAdaptiveHotelSetupStatusMock({
     entryProduct: "pms",
-    returnTo: "/dashboard",
     organizationId: TARGET_ORGANIZATION_ID,
     organizationDisplayName: "Target Hotel Group",
     propertyId,
     publicId: `public-${propertyId}`,
     propertyDisplayName: "Target Hotel",
     locationSummary: "Munich, DE",
-    products: {
-      booking: sharedHotelSetupProduct("booking", "not_selected"),
-      pms: {
-        ...sharedHotelSetupProduct("pms", status),
-        missingSteps,
-        statusReasons: status === "active" ? [] : ["pms_activation_incomplete"],
-      },
-      marketplace: sharedHotelSetupProduct("marketplace", "not_selected"),
-    },
-    nextAction:
-      status === "active"
+    taskOverrides:
+      status === "selected_incomplete"
         ? {
-            action: "enter_product",
-            propertyId,
-            product: "pms",
-            returnTo: "/dashboard",
-            reasonCodes: ["ready"],
+            rooms_rates_availability: {
+              ownerProgress: "in_progress",
+              readiness: "actionable",
+              actionableBy: "owner",
+              reasonCodes: ["rooms_missing"],
+            },
           }
-        : {
-            action: "complete_product_activation",
-            propertyId,
-            product: "pms",
-            returnTo: "/dashboard",
-            reasonCodes: ["entry_product_activation_incomplete"],
-          },
+        : undefined,
   });
-  return {
-    ...result,
-    hotelGroup: { ...result.hotelGroup, selectedProducts: ["pms"] },
-  };
 }

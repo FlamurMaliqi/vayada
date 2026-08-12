@@ -43,7 +43,12 @@ import type {
   SetupTrack,
   UpdatePropertyProfileRequest,
 } from "@vayada/domain-hotels";
-import { COUNTRY_OPTIONS } from "@vayada/locale-constants";
+import {
+  COUNTRY_OPTIONS,
+  CURRENCY_OPTIONS,
+  LANGUAGE_OPTIONS,
+  POPULAR_LANGUAGE_CODES,
+} from "@vayada/locale-constants";
 
 import { HotelIcon } from "./HotelIcon";
 import GoogleAddressMap from "./GoogleAddressMap";
@@ -67,6 +72,13 @@ import {
   writePendingPropertyLogo,
   type PendingPropertyLogoAssignment,
 } from "./sharedPropertyLogo";
+import {
+  ONBOARDING_POPULAR_CURRENCY_CODES,
+  propertyLaunchSettingsDefaults,
+  validatePropertyLaunchSettings,
+  type PropertyLaunchSettings,
+  type PropertyLaunchSettingsApi,
+} from "./propertyLaunchSettings";
 
 type ProductLabels = Record<SetupComponentProduct, string>;
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
@@ -88,8 +100,9 @@ export type SharedFirstRunPropertySetupWizardProps = {
   productLabels?: Partial<ProductLabels>;
   onContinue: (input: SharedFirstRunContinueInput) => void | Promise<void>;
   renderTaskForm: (context: SharedSetupTaskFormContext) => ReactNode;
+  propertyLaunchSettingsApi?: PropertyLaunchSettingsApi;
   onPropertySelected?: (propertyId: string) => void | Promise<void>;
-  onExit?: () => void;
+  onExit?: (propertyId: string | null) => void;
 };
 
 export type SharedSetupTaskFormContext = {
@@ -218,20 +231,25 @@ const TASK_CONTENT: Record<
     description: "Choose deliverables, compensation, and creator requirements.",
   },
   rooms_rates_availability: {
-    title: "Set up rooms, rates, and availability",
-    description: "Add what guests can book and when it is available.",
+    title: "Add your first room type",
+    description:
+      "Just the basics to get started. You can add more rooms and fine-tune pricing anytime.",
   },
   guest_settings_policies: {
     title: "Review guest settings and policies",
     description: "Set check-in details, booking preferences, and cancellation terms.",
   },
+  billing_plan: {
+    title: "Choose your plan",
+    description: "How you pay for vayada.",
+  },
   payment: {
-    title: "Configure payment",
-    description: "Choose how guests can pay for direct bookings.",
+    title: "How guests can pay",
+    description: "Choose which payment options to offer. You can enable multiple.",
   },
   direct_booking_publication: {
-    title: "Publish direct booking",
-    description: "Review bookability and make your direct booking page available.",
+    title: "Design your booking page",
+    description: "Set up the look and feel of your direct booking site.",
   },
 };
 
@@ -260,7 +278,7 @@ export function blockInlineSetupUnload(
   event.returnValue = "";
 }
 
-const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
+const BASE_PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
   ["displayName", "propertyType", "logo"],
   [
     "location.streetAddress",
@@ -271,7 +289,27 @@ const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
   ],
   ["contactEmail", "phone", "website"],
 ];
-const PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
+const LAUNCH_SETTINGS_STEP_FIELDS = [
+  "defaultCurrency",
+  "defaultLanguage",
+  "instagram",
+  "facebook",
+  "tiktok",
+  "youtube",
+] as const;
+const BASE_PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
+const PROFILE_STEP_FIELDS_WITH_LAUNCH: ReadonlyArray<ReadonlyArray<string>> = [
+  BASE_PROFILE_STEP_FIELDS[0],
+  BASE_PROFILE_STEP_FIELDS[1],
+  LAUNCH_SETTINGS_STEP_FIELDS,
+  BASE_PROFILE_STEP_FIELDS[2],
+];
+const PROFILE_STEP_TITLES_WITH_LAUNCH = [
+  "About your hotel",
+  "Location",
+  "Guest preferences",
+  "Hotel contact",
+] as const;
 
 const PROPERTY_TYPE_ICONS = new Map<string, IconComponent>([
   ["hotel", HotelIcon],
@@ -299,6 +337,7 @@ export default function SharedFirstRunPropertySetupWizard({
   productLabels,
   onContinue,
   renderTaskForm,
+  propertyLaunchSettingsApi,
   onPropertySelected,
   onExit,
 }: SharedFirstRunPropertySetupWizardProps) {
@@ -315,6 +354,11 @@ export default function SharedFirstRunPropertySetupWizard({
     null,
   );
   const [draft, setDraft] = useState<ProfileDraft>(() => newPropertyDraft());
+  const [launchSettings, setLaunchSettings] = useState<PropertyLaunchSettings>(() =>
+    propertyLaunchSettingsDefaults(""),
+  );
+  const [launchSettingsTouched, setLaunchSettingsTouched] = useState(false);
+  const [skipLaunchSettings, setSkipLaunchSettings] = useState(false);
   const [selectedTracks, setSelectedTracks] = useState<SetupTrack[]>([]);
   const [saving, setSaving] = useState(false);
   const [selectedPlanTaskId, setSelectedPlanTaskId] = useState<SetupTaskId | null>(null);
@@ -396,8 +440,11 @@ export default function SharedFirstRunPropertySetupWizard({
       propertyId
         ? api.getPublicPropertyProfile(propertyId)
         : Promise.resolve<PublicPropertyProfileResponse | null>(null),
+      propertyId && propertyLaunchSettingsApi
+        ? propertyLaunchSettingsApi.get(propertyId)
+        : Promise.resolve<PropertyLaunchSettings | null>(null),
     ])
-      .then(([catalog, nextProfile, publicProfile]) => {
+      .then(([catalog, nextProfile, publicProfile, existingLaunchSettings]) => {
         if (cancelled) return;
         setPropertyTypeOptions(propertyTypeOptionsFromCatalog(catalog.propertyTypes));
         setLoadedProfile(nextProfile);
@@ -425,6 +472,12 @@ export default function SharedFirstRunPropertySetupWizard({
             ? draftFromProfile(nextProfile, publicProfile, unconfirmedPendingLogo)
             : newPropertyDraft(),
         );
+        setLaunchSettings(
+          existingLaunchSettings ??
+            propertyLaunchSettingsDefaults(nextProfile?.profile.location.countryCode ?? ""),
+        );
+        setLaunchSettingsTouched(Boolean(existingLaunchSettings));
+        setSkipLaunchSettings(false);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -436,7 +489,14 @@ export default function SharedFirstRunPropertySetupWizard({
     return () => {
       cancelled = true;
     };
-  }, [api, profileReloadToken, view.profileMode, view.screen, view.selectedPropertyId]);
+  }, [
+    api,
+    profileReloadToken,
+    propertyLaunchSettingsApi,
+    view.profileMode,
+    view.screen,
+    view.selectedPropertyId,
+  ]);
 
   const reloadStatus = async (propertyId?: string | null) => {
     const nextStatus = await api.getStatus({ entryProduct, propertyId });
@@ -464,6 +524,9 @@ export default function SharedFirstRunPropertySetupWizard({
     setError("");
     setFieldErrors({});
     const nextFieldErrors = validateProfileDraft(draft);
+    if (propertyLaunchSettingsApi && !skipLaunchSettings) {
+      Object.assign(nextFieldErrors, validatePropertyLaunchSettings(launchSettings));
+    }
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors);
       return;
@@ -500,6 +563,12 @@ export default function SharedFirstRunPropertySetupWizard({
         assignmentKey: logoAssignmentKey,
       });
       setLoadedProfile(saved);
+      if (propertyLaunchSettingsApi && !skipLaunchSettings) {
+        await propertyLaunchSettingsApi.update(
+          saved.propertyId,
+          normalizedPropertyLaunchSettings(launchSettings),
+        );
+      }
       setForceCreateProperty(false);
       setEditPropertyProfile(false);
       await reloadStatus(saved.propertyId);
@@ -658,6 +727,9 @@ export default function SharedFirstRunPropertySetupWizard({
           onSelect={handleSelectProperty}
           onAdd={() => {
             setDraft(newPropertyDraft());
+            setLaunchSettings(propertyLaunchSettingsDefaults(""));
+            setLaunchSettingsTouched(false);
+            setSkipLaunchSettings(false);
             setLoadedProfile(null);
             setForceCreateProperty(true);
           }}
@@ -680,6 +752,9 @@ export default function SharedFirstRunPropertySetupWizard({
           loading={!propertyTypeOptions}
           saving={saving}
           fieldErrors={fieldErrors}
+          launchSettings={propertyLaunchSettingsApi ? launchSettings : null}
+          skipLaunchSettings={skipLaunchSettings}
+          launchSettingsTouched={launchSettingsTouched}
           propertyTypeOptions={propertyTypeOptions ?? []}
           pageHeadingRef={profileHeading}
           onChange={(nextDraft) => {
@@ -691,6 +766,18 @@ export default function SharedFirstRunPropertySetupWizard({
             setDraft(nextDraft);
           }}
           onFieldErrors={setFieldErrors}
+          onLaunchSettingsChange={(nextSettings) => {
+            setLaunchSettings(nextSettings);
+            setLaunchSettingsTouched(true);
+            setSkipLaunchSettings(false);
+          }}
+          onPrepareLaunchSettings={(countryCode) => {
+            if (!launchSettingsTouched) {
+              setLaunchSettings(propertyLaunchSettingsDefaults(countryCode));
+            }
+          }}
+          onConfirmLaunchSettings={() => setSkipLaunchSettings(false)}
+          onSkipLaunchSettings={() => setSkipLaunchSettings(true)}
           onStepChange={setProfileStep}
           onCancel={
             editPropertyProfile
@@ -739,7 +826,7 @@ export default function SharedFirstRunPropertySetupWizard({
           selectedTaskId={selectedPlanTaskId}
           onSelectTask={setSelectedPlanTaskId}
           onEditHotelBasics={() => setEditPropertyProfile(true)}
-          onExit={onExit}
+          onExit={onExit ? () => onExit(view.selectedPropertyId) : undefined}
           onEnterProduct={entryContinueInput ? () => onContinue(entryContinueInput) : undefined}
           onAddTrack={
             status.organization.selectedTracks.length < 2 && status.organization.canManageTracks
@@ -997,6 +1084,9 @@ function HotelFacadeIllustration() {
 
 function ProfileForm({
   draft,
+  launchSettings,
+  skipLaunchSettings,
+  launchSettingsTouched,
   step,
   mode,
   embedded,
@@ -1006,6 +1096,10 @@ function ProfileForm({
   propertyTypeOptions,
   pageHeadingRef,
   onChange,
+  onLaunchSettingsChange,
+  onPrepareLaunchSettings,
+  onConfirmLaunchSettings,
+  onSkipLaunchSettings,
   onFieldErrors,
   onStepChange,
   onCancel,
@@ -1013,6 +1107,9 @@ function ProfileForm({
   onSave,
 }: {
   draft: ProfileDraft;
+  launchSettings: PropertyLaunchSettings | null;
+  skipLaunchSettings: boolean;
+  launchSettingsTouched: boolean;
   step: number;
   mode: "create" | "update";
   embedded: boolean;
@@ -1022,12 +1119,24 @@ function ProfileForm({
   propertyTypeOptions: SharedPropertyTypeOption[];
   pageHeadingRef: RefObject<HTMLHeadingElement>;
   onChange: (draft: ProfileDraft) => void;
+  onLaunchSettingsChange: (settings: PropertyLaunchSettings) => void;
+  onPrepareLaunchSettings: (countryCode: string) => void;
+  onConfirmLaunchSettings: () => void;
+  onSkipLaunchSettings: () => void;
   onFieldErrors: (errors: Record<string, string[]>) => void;
   onStepChange: (step: number) => void;
   onCancel?: () => void;
   cancelLabel?: string;
   onSave: () => void;
 }) {
+  const profileStepFields = launchSettings
+    ? PROFILE_STEP_FIELDS_WITH_LAUNCH
+    : BASE_PROFILE_STEP_FIELDS;
+  const profileStepTitles = launchSettings
+    ? PROFILE_STEP_TITLES_WITH_LAUNCH
+    : BASE_PROFILE_STEP_TITLES;
+  const contactStep = launchSettings ? 3 : 2;
+  const finalStep = profileStepFields.length - 1;
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
   const LocationHeading = embedded ? "h2" : "h1";
   const [showAddressFields, setShowAddressFields] = useState(
@@ -1047,7 +1156,7 @@ function ProfileForm({
   const timezoneWasAutoDetected = useRef(false);
 
   useEffect(() => {
-    const errorStep = PROFILE_STEP_FIELDS.findIndex((fields) =>
+    const errorStep = profileStepFields.findIndex((fields) =>
       fields.some((field) => fieldErrors[field]),
     );
     if (errorStep >= 0 && errorStep !== step) {
@@ -1056,10 +1165,10 @@ function ProfileForm({
         (errorStep === 1 ? pageHeadingRef.current : stepHeading.current)?.focus(),
       );
     }
-  }, [fieldErrors, onStepChange, pageHeadingRef, step]);
+  }, [fieldErrors, onStepChange, pageHeadingRef, profileStepFields, step]);
 
   useEffect(() => {
-    if (PROFILE_STEP_FIELDS[1].some((field) => fieldErrors[field])) {
+    if (BASE_PROFILE_STEP_FIELDS[1].some((field) => fieldErrors[field])) {
       setShowAddressFields(true);
       requestAnimationFrame(() =>
         addressFields.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
@@ -1121,12 +1230,24 @@ function ProfileForm({
     );
   };
   const continueToNextStep = () => {
-    const currentFields = new Set(PROFILE_STEP_FIELDS[step]);
+    const currentFields = new Set(profileStepFields[step]);
+    const allErrors = {
+      ...validateProfileDraft(draft),
+      ...(launchSettings && (step === 2 || !skipLaunchSettings)
+        ? validatePropertyLaunchSettings(launchSettings)
+        : {}),
+    };
     const currentErrors = Object.fromEntries(
-      Object.entries(validateProfileDraft(draft)).filter(([field]) => currentFields.has(field)),
+      Object.entries(allErrors).filter(([field]) => currentFields.has(field)),
     );
     onFieldErrors(currentErrors);
-    if (Object.keys(currentErrors).length === 0) changeStep(step + 1);
+    if (Object.keys(currentErrors).length === 0) {
+      if (step === 1 && launchSettings && mode === "create" && !launchSettingsTouched) {
+        onPrepareLaunchSettings(draft.countryCode);
+      }
+      if (step === 2 && launchSettings) onConfirmLaunchSettings();
+      changeStep(step + 1);
+    }
   };
   const visiblePropertyTypeOptions =
     draft.propertyType && !propertyTypeOptions.some(({ value }) => value === draft.propertyType)
@@ -1151,16 +1272,15 @@ function ProfileForm({
         className={`shrink-0 font-semibold text-gray-500 ${step === 1 ? "text-xs" : "text-sm"}`}
         aria-live="polite"
       >
-        Step {step + 1} of {PROFILE_STEP_FIELDS.length}
-        {step !== 1 && ` · ${PROFILE_STEP_TITLES[step]}`}
+        Step {step + 1} of {profileStepFields.length}
+        {step !== 1 && ` · ${profileStepTitles[step]}`}
       </p>
       <ol
-        className={`grid w-full grid-cols-3 ${
-          step === 1 ? "max-w-10 gap-1" : "max-w-[12rem] gap-2"
-        }`}
+        className={`grid w-full ${step === 1 ? "max-w-10 gap-1" : "max-w-[12rem] gap-2"}`}
+        style={{ gridTemplateColumns: `repeat(${profileStepTitles.length}, minmax(0, 1fr))` }}
         aria-label="Hotel setup progress"
       >
-        {PROFILE_STEP_TITLES.map((title, index) => {
+        {profileStepTitles.map((title, index) => {
           const isCurrent = index === step;
           const isComplete = index < step;
 
@@ -1202,25 +1322,21 @@ function ProfileForm({
       )}
       <button
         type="submit"
-        disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
+        disabled={step === finalStep && saving}
         className={`inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto ${
           step === 1 ? "sm:min-w-32" : ""
         }`}
       >
-        {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
+        {step === finalStep && saving && (
           <span
             className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
             aria-hidden="true"
           />
         )}
         <span>
-          {step === PROFILE_STEP_FIELDS.length - 1
-            ? saving
-              ? "Saving..."
-              : "Save and continue"
-            : "Continue"}
+          {step === finalStep ? (saving ? "Saving..." : "Save and continue") : "Continue"}
         </span>
-        {!(step === PROFILE_STEP_FIELDS.length - 1 && saving) && (
+        {!(step === finalStep && saving) && (
           <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
         )}
       </button>
@@ -1233,7 +1349,7 @@ function ProfileForm({
       aria-busy={saving}
       onSubmit={(event) => {
         event.preventDefault();
-        if (step === PROFILE_STEP_FIELDS.length - 1) onSave();
+        if (step === finalStep) onSave();
         else continueToNextStep();
       }}
       className={`mx-auto ${step === 1 ? "max-w-none" : "max-w-7xl space-y-8"}`}
@@ -1302,11 +1418,11 @@ function ProfileForm({
         </aside>
       </section>
 
-      <section aria-busy={saving} className={step === 2 ? "block" : "hidden"}>
+      <section aria-busy={saving} className={step === contactStep ? "block" : "hidden"}>
         <div className="mx-auto max-w-3xl rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-8">
           <div className="mb-4">
             <h3
-              ref={step === 2 ? stepHeading : undefined}
+              ref={step === contactStep ? stepHeading : undefined}
               tabIndex={-1}
               className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
@@ -1349,6 +1465,149 @@ function ProfileForm({
           </div>
         </div>
       </section>
+
+      {launchSettings && (
+        <section aria-busy={saving} className={step === 2 ? "block" : "hidden"}>
+          <div className="mx-auto max-w-4xl rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-8">
+            <div className="mb-6">
+              <h3
+                ref={step === 2 ? stepHeading : undefined}
+                tabIndex={-1}
+                className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+              >
+                Set up guest preferences
+              </h3>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-500">
+                We suggested a currency and language from your location. You can change these now or
+                later in Booking settings.
+              </p>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="space-y-5 rounded-2xl border border-gray-100 p-4 sm:p-5">
+                <SelectField
+                  label="Default currency"
+                  value={launchSettings.defaultCurrency}
+                  placeholder="Select a currency"
+                  required
+                  error={fieldErrors.defaultCurrency?.[0]}
+                  options={CURRENCY_OPTIONS.map((option) => ({
+                    value: option.code,
+                    label: `${option.flag} ${option.code} · ${option.name}`,
+                  }))}
+                  onChange={(defaultCurrency) =>
+                    onLaunchSettingsChange({
+                      ...launchSettings,
+                      defaultCurrency,
+                      supportedCurrencies: launchSettings.supportedCurrencies.filter(
+                        (code) => code !== defaultCurrency,
+                      ),
+                    })
+                  }
+                />
+                <MultiChoiceField
+                  label="Additional currencies"
+                  helper="Guests can view prices in these currencies."
+                  values={launchSettings.supportedCurrencies}
+                  options={visibleChoiceCodes(
+                    ONBOARDING_POPULAR_CURRENCY_CODES,
+                    launchSettings.supportedCurrencies,
+                    launchSettings.defaultCurrency,
+                  ).map((code) => ({ value: code, label: code }))}
+                  onChange={(supportedCurrencies) =>
+                    onLaunchSettingsChange({ ...launchSettings, supportedCurrencies })
+                  }
+                />
+              </div>
+
+              <div className="space-y-5 rounded-2xl border border-gray-100 p-4 sm:p-5">
+                <SelectField
+                  label="Default language"
+                  value={launchSettings.defaultLanguage}
+                  placeholder="Select a language"
+                  required
+                  error={fieldErrors.defaultLanguage?.[0]}
+                  options={LANGUAGE_OPTIONS.map((option) => ({
+                    value: option.code,
+                    label: `${option.flag} ${option.name} · ${option.nativeName}`,
+                  }))}
+                  onChange={(defaultLanguage) =>
+                    onLaunchSettingsChange({
+                      ...launchSettings,
+                      defaultLanguage,
+                      supportedLanguages: launchSettings.supportedLanguages.filter(
+                        (code) => code !== defaultLanguage,
+                      ),
+                    })
+                  }
+                />
+                <MultiChoiceField
+                  label="Additional languages"
+                  helper="Add languages you can support for international guests."
+                  values={launchSettings.supportedLanguages}
+                  options={visibleChoiceCodes(
+                    POPULAR_LANGUAGE_CODES,
+                    launchSettings.supportedLanguages,
+                    launchSettings.defaultLanguage,
+                  ).map((code) => ({
+                    value: code,
+                    label: LANGUAGE_OPTIONS.find((option) => option.code === code)?.name ?? code,
+                  }))}
+                  onChange={(supportedLanguages) =>
+                    onLaunchSettingsChange({ ...launchSettings, supportedLanguages })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-gray-100 p-4 sm:p-5">
+              <h4 className="text-base font-semibold text-gray-950">Social media</h4>
+              <p className="mt-1 text-sm text-gray-500">
+                Optional links help guests and creators discover your hotel.
+              </p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                {(
+                  [
+                    ["instagram", "Instagram", "https://instagram.com/yourhotel"],
+                    ["facebook", "Facebook", "https://facebook.com/yourhotel"],
+                    ["tiktok", "TikTok", "https://tiktok.com/@yourhotel"],
+                    ["youtube", "YouTube", "https://youtube.com/@yourhotel"],
+                  ] as const
+                ).map(([field, label, placeholder]) => (
+                  <TextField
+                    key={field}
+                    label={label}
+                    value={launchSettings[field]}
+                    placeholder={placeholder}
+                    type="url"
+                    error={fieldErrors[field]?.[0]}
+                    onChange={(value) =>
+                      onLaunchSettingsChange({ ...launchSettings, [field]: value })
+                    }
+                  />
+                ))}
+              </div>
+              <p className="mt-4 text-xs leading-5 text-gray-500">
+                You can add, remove, or update these links later in Booking settings.
+              </p>
+            </div>
+
+            <div className="mt-6 text-center">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => {
+                  onSkipLaunchSettings();
+                  changeStep(3);
+                }}
+                className="text-sm font-semibold text-gray-600 underline decoration-gray-300 underline-offset-4 transition hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Skip for now, configure later
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section aria-busy={saving} className={step === 1 ? "block" : "hidden"}>
         <div className="relative isolate min-h-[100dvh] overflow-hidden bg-slate-100 text-left">
@@ -1976,7 +2235,11 @@ function SetupPlan({
       )}
 
       <div className="min-w-0" onChangeCapture={() => setHasUnsavedChanges(true)}>
-        <div className="mx-auto max-w-3xl">
+        <div
+          className={`mx-auto ${
+            currentTask?.taskId === "direct_booking_publication" ? "max-w-5xl" : "max-w-3xl"
+          }`}
+        >
           {currentTask ? (
             <InlineSetupTaskStep
               key={currentTask.taskId}
@@ -2746,6 +3009,57 @@ function SelectField({
   );
 }
 
+function MultiChoiceField({
+  label,
+  helper,
+  values,
+  options,
+  onChange,
+}: {
+  label: string;
+  helper: string;
+  values: string[];
+  options: Array<{ value: string; label: string }>;
+  onChange: (values: string[]) => void;
+}) {
+  return (
+    <fieldset>
+      <legend className="text-sm font-medium text-gray-700">
+        {label}
+        <span aria-hidden="true" className="ml-2 text-xs text-gray-400">
+          Optional
+        </span>
+      </legend>
+      <p className="mt-1 text-xs text-gray-500">{helper}</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {options.map((option) => {
+          const checked = values.includes(option.value);
+          return (
+            <label key={option.value} className="cursor-pointer">
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() =>
+                  onChange(
+                    checked
+                      ? values.filter((value) => value !== option.value)
+                      : [...values, option.value],
+                  )
+                }
+                className="peer sr-only"
+              />
+              <span className="inline-flex min-h-9 items-center rounded-full border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-primary-300 peer-checked:border-primary-500 peer-checked:bg-primary-50 peer-checked:text-primary-800 peer-focus-visible:ring-2 peer-focus-visible:ring-primary-600 peer-focus-visible:ring-offset-2">
+                {checked && <CheckIcon className="mr-1.5 h-4 w-4" aria-hidden="true" />}
+                {option.label}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 function draftFromProfile(
   response: PropertyProfileResponse,
   publicResponse: PublicPropertyProfileResponse | null,
@@ -2854,6 +3168,35 @@ function newPropertyDraft(timezone = ""): ProfileDraft {
     logoMediaObjectId: null,
     logoPublicUrl: "",
   };
+}
+
+function normalizedPropertyLaunchSettings(
+  settings: PropertyLaunchSettings,
+): PropertyLaunchSettings {
+  return {
+    defaultCurrency: settings.defaultCurrency,
+    supportedCurrencies: Array.from(new Set(settings.supportedCurrencies)).filter(
+      (code) => code !== settings.defaultCurrency,
+    ),
+    defaultLanguage: settings.defaultLanguage,
+    supportedLanguages: Array.from(new Set(settings.supportedLanguages)).filter(
+      (code) => code !== settings.defaultLanguage,
+    ),
+    instagram: settings.instagram.trim(),
+    facebook: settings.facebook.trim(),
+    tiktok: settings.tiktok.trim(),
+    youtube: settings.youtube.trim(),
+  };
+}
+
+function visibleChoiceCodes(
+  popularCodes: readonly string[],
+  selectedCodes: readonly string[],
+  defaultCode: string,
+): string[] {
+  return Array.from(new Set([...selectedCodes, ...popularCodes])).filter(
+    (code) => code !== defaultCode,
+  );
 }
 
 function isHttpUrl(value: string): boolean {

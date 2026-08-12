@@ -79,6 +79,7 @@ const marketplaceCreatorProfileCase = contractCase("marketplace-creator-profile-
 const marketplaceOfferMediaCase = contractCase("marketplace-offer-media-upload-session");
 const allMediaPurposes: readonly PlatformMediaPurpose[] = [
   "identity.user.profile_image",
+  "booking.header_logo",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",
@@ -107,7 +108,9 @@ type MediaCreateResponse = {
     headers: Record<string, string>;
     expiresAt: string;
   }>;
-  mediaObjects?: Array<PlatformMediaObjectRecord | PrivateHotelMediaResponse>;
+  mediaObjects?: Array<
+    PlatformMediaObjectRecord | PrivateHotelMediaResponse | PublicRoomMediaResponse
+  >;
   sideEffects?: string[];
 };
 
@@ -131,6 +134,19 @@ type PrivateHotelMediaResponse = {
 type PrivateHotelMediaFinalizeResponse = {
   mediaObject: PrivateHotelMediaResponse;
   mediaObjects: PrivateHotelMediaResponse[];
+  sideEffects: string[];
+};
+
+type PublicRoomMediaResponse = {
+  mediaObjectId: string;
+  purpose: "pms.room_type.media";
+  status: "public_ready";
+  publicVariants: Array<{ variantName: string; publicUrl: string }>;
+};
+
+type PublicRoomMediaFinalizeResponse = {
+  mediaObject: PublicRoomMediaResponse;
+  mediaObjects: PublicRoomMediaResponse[];
   sideEffects: string[];
 };
 
@@ -1543,6 +1559,105 @@ describe("platform media upload routes", () => {
     });
   });
 
+  it("publishes Booking-scoped SVG header logos within the 500 KB limit", async () => {
+    const app = buildMediaApp({
+      permissions: ["booking.settings.manage"],
+      resources: [
+        {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+          relationship: "owner",
+        },
+      ],
+    });
+    const resource = {
+      product: "booking",
+      resourceType: "booking_hotel",
+      resourceId: "booking_hotel_alpenrose",
+    };
+    const files = [
+      {
+        clientFileId: "logo",
+        filename: "logo.svg",
+        contentType: "image/svg+xml",
+        sizeBytes: 1024,
+      },
+    ];
+
+    const created = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { purpose: "booking.header_logo", visibility: "public", resource, files },
+    });
+    expect(created.statusCode).toBe(201);
+    const upload = created.body as MediaCreateResponse;
+
+    const finalized = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${upload.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: [
+          {
+            uploadTargetId: upload.uploadTargets[0]!.uploadTargetId,
+            contentType: "image/svg+xml",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    });
+    expect(finalized.statusCode).toBe(200);
+    expect(finalized.body).toMatchObject({
+      mediaObject: {
+        purpose: "booking.header_logo",
+        visibility: "public",
+        approvalStatus: "approved",
+        lifecycleStatus: "active",
+        variants: expect.arrayContaining([
+          expect.objectContaining({ publicCdnUrl: expect.stringMatching(/^https:\/\//) }),
+        ]),
+      },
+    });
+
+    const oversized = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "booking.header_logo",
+        visibility: "public",
+        resource,
+        files: [{ ...files[0], sizeBytes: 500 * 1024 + 1 }],
+      },
+    });
+
+    expect(oversized.statusCode).toBe(400);
+    expect(oversized.body).toMatchObject({ code: "media_file_too_large" });
+
+    const unsupportedWebp = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "booking.header_logo",
+        visibility: "public",
+        resource,
+        files: [
+          {
+            clientFileId: "logo",
+            filename: "logo.webp",
+            contentType: "image/webp",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    });
+    expect(unsupportedWebp.statusCode).toBe(400);
+    expect(unsupportedWebp.body).toMatchObject({ code: "unsupported_media_type" });
+  });
+
   it.each(["property.hero_image", "property.logo"] as const)(
     "finalizes %s as a private-ready library item and rejects public staging",
     async (purpose) => {
@@ -1794,9 +1909,9 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(pmsRoomTypeMediaCase.expected.finalizeStatus);
-    const finalizeBody = finalize.body as PrivateHotelMediaFinalizeResponse;
+    const finalizeBody = finalize.body as PublicRoomMediaFinalizeResponse;
     expect(finalizeBody.mediaObject).toMatchObject(pmsRoomTypeMediaCase.expected.mediaObject!);
-    expectPrivateHotelMediaResponse(finalizeBody.mediaObject, "pms.room_type.media");
+    expectPublicRoomMediaResponse(finalizeBody.mediaObject);
     expect(
       repository.sessions
         .get(createBody.uploadSession.sessionId)
@@ -1859,8 +1974,8 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(200);
-    const safeMediaObject = (finalize.body as PrivateHotelMediaFinalizeResponse).mediaObject;
-    expectPrivateHotelMediaResponse(safeMediaObject, "pms.room_type.media");
+    const safeMediaObject = (finalize.body as PublicRoomMediaFinalizeResponse).mediaObject;
+    expectPublicRoomMediaResponse(safeMediaObject);
     const mediaObject = repository.sessions.get(
       createBody.uploadSession.sessionId,
     )?.completedMediaObject;
@@ -2498,6 +2613,18 @@ function expectPrivateHotelMediaResponse(
     status: "private_ready",
     publicVariants: [],
   });
+}
+
+function expectPublicRoomMediaResponse(mediaObject: PublicRoomMediaResponse): void {
+  expect(mediaObject).toMatchObject({
+    mediaObjectId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    purpose: "pms.room_type.media",
+    status: "public_ready",
+  });
+  expect(mediaObject.publicVariants).toHaveLength(4);
+  expect(
+    mediaObject.publicVariants.every(({ publicUrl }) => publicUrl.startsWith("https://")),
+  ).toBe(true);
 }
 
 function contractCase(caseId: string): (typeof uploadContractCases.cases)[number] {
