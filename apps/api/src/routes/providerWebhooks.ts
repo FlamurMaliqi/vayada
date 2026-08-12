@@ -134,6 +134,7 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
     const eventId = requiredString(payload.value, "id", "Stripe event");
     const eventType = requiredString(payload.value, "type", "Stripe event");
     const receiptKey = `webhook:stripe:${eventId}`;
+    const persistedPayload = redactStripeWebhookPayload(payload.value);
     return handleAuthenticatedProviderWebhook({
       provider: "stripe",
       eventType,
@@ -141,9 +142,13 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       receiptKey,
       reply,
       request,
-      rawPayload: payload.value,
+      rawPayload: persistedPayload,
       store: options.store,
-      normalizedPreview: previewStripeEvent(payload.value, receiptKey),
+      normalizedPreview: previewStripeEvent(
+        persistedPayload,
+        receiptKey,
+        Math.floor((options.now?.() ?? new Date()).getTime() / 1_000),
+      ),
     });
   });
 
@@ -301,6 +306,24 @@ async function handleAuthenticatedProviderWebhook(input: {
     auditEventIds: promotion.auditEventIds ?? [],
   });
 }
+
+export function redactStripeWebhookPayload(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return redactSensitiveStripeValue(value) as Record<string, unknown>;
+}
+
+function redactSensitiveStripeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitiveStripeValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !STRIPE_SECRET_FIELDS.has(key.toLowerCase()))
+      .map(([key, nested]) => [key, redactSensitiveStripeValue(nested)]),
+  );
+}
+
+const STRIPE_SECRET_FIELDS = new Set(["client_secret", "secret", "access_token", "refresh_token"]);
 
 function modeFor(options: ProviderWebhookRoutesOptions, provider: ProviderWebhookProvider) {
   return options.modes?.[provider] ?? "observe_only";
@@ -549,10 +572,47 @@ function channexEventFamily(eventType: string): ChannexEventFamily {
 function previewStripeEvent(
   payload: Record<string, unknown>,
   receiptKey: string,
+  eventCreatedFallback: number,
 ): ProviderWebhookNormalizedPreview {
   const eventType = requiredString(payload, "type", "Stripe event");
   const dataObject = optionalRecord(optionalRecord(payload, "data"), "object") ?? {};
   const objectId = optionalString(dataObject, "id") ?? receiptKey;
+  const eventId = requiredString(payload, "id", "Stripe event");
+  if (STRIPE_SUBSCRIPTION_EVENT_TYPES.has(eventType)) {
+    const subscriptionId = stripeSubscriptionId(eventType, dataObject);
+    const metadata = stripeSubscriptionMetadata(eventType, dataObject);
+    const propertyId =
+      optionalString(metadata, "vayada_property_id") ??
+      optionalString(dataObject, "client_reference_id");
+    const organizationId = optionalString(metadata, "vayada_organization_id");
+    const customer = dataObject["customer"];
+    const customerId =
+      typeof customer === "string"
+        ? customer
+        : optionalString(optionalRecord(dataObject, "customer"), "id");
+    return {
+      domainEventKey: `finance.subscription.provider-event:stripe:${eventId}:v1`,
+      domainEventType: "finance.subscription.provider-event",
+      resourceProduct: "finance",
+      resourceType: "billing_subscription",
+      resourceId: subscriptionId ?? objectId,
+      jobKey: `finance.subscription-webhook:stripe:${eventId}:v1`,
+      queueName: "finance.subscriptions",
+      jobType: "finance.subscription-webhook",
+      payload: {
+        provider: "stripe",
+        eventType,
+        rawEventId: eventId,
+        eventCreated: optionalNumber(payload, "created") ?? eventCreatedFallback,
+        objectId,
+        subscriptionId,
+        checkoutSessionId: eventType === "checkout.session.completed" ? objectId : null,
+        propertyId,
+        organizationId,
+        customerId,
+      },
+    };
+  }
   const amount =
     optionalNumber(dataObject, "amount_received") ?? optionalNumber(dataObject, "amount") ?? 0;
 
@@ -591,21 +651,33 @@ function previewStripeEvent(
     });
   }
   if (eventType === "account.updated") {
+    const eventId = requiredString(payload, "id", "Stripe event");
     const chargesEnabled = optionalBoolean(dataObject, "charges_enabled") ?? false;
+    const payoutsEnabled = optionalBoolean(dataObject, "payouts_enabled") ?? false;
+    const detailsSubmitted = optionalBoolean(dataObject, "details_submitted") ?? false;
+    const cardPaymentsStatus = optionalString(
+      optionalRecord(dataObject, "capabilities"),
+      "card_payments",
+    );
     return {
-      domainEventKey: `finance.provider-account.updated:stripe:${objectId}:${chargesEnabled}:v1`,
+      domainEventKey: `finance.provider-account.updated:stripe:${objectId}:${eventId}:v1`,
       domainEventType: "finance.provider-account.updated",
       resourceProduct: "finance",
       resourceType: "provider_account",
       resourceId: objectId,
-      jobKey: `finance.reconcile-provider-account:provider_account:${objectId}:stripe-account-updated:v1`,
+      jobKey: `finance.reconcile-provider-account:provider_account:${objectId}:${eventId}:v1`,
       queueName: "finance.webhooks",
       jobType: "finance.reconcile-provider-account",
       payload: {
         provider: "stripe",
         providerAccountId: objectId,
         chargesEnabled,
-        rawEventId: requiredString(payload, "id", "Stripe event"),
+        payoutsEnabled,
+        detailsSubmitted,
+        cardPaymentsStatus,
+        defaultCurrency: optionalString(dataObject, "default_currency"),
+        rawEventId: eventId,
+        eventCreated: optionalNumber(payload, "created") ?? eventCreatedFallback,
       },
     };
   }
@@ -620,6 +692,46 @@ function previewStripeEvent(
     });
   }
   return fallbackPreview("stripe", receiptKey, eventType, payload);
+}
+
+const STRIPE_SUBSCRIPTION_EVENT_TYPES = new Set([
+  "checkout.session.completed",
+  "invoice.paid",
+  "invoice.payment_failed",
+  "invoice.upcoming",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+]);
+
+function stripeSubscriptionId(
+  eventType: string,
+  dataObject: Record<string, unknown>,
+): string | undefined {
+  if (eventType.startsWith("customer.subscription.")) return optionalString(dataObject, "id");
+  const subscription = dataObject["subscription"];
+  if (typeof subscription === "string" && subscription.trim()) return subscription.trim();
+  const parent = optionalRecord(dataObject, "parent");
+  const subscriptionDetails =
+    optionalRecord(parent, "subscription_details") ??
+    optionalRecord(dataObject, "subscription_details");
+  return optionalString(subscriptionDetails, "subscription");
+}
+
+function stripeSubscriptionMetadata(
+  eventType: string,
+  dataObject: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    eventType === "checkout.session.completed" ||
+    eventType.startsWith("customer.subscription.")
+  ) {
+    return optionalRecord(dataObject, "metadata") ?? {};
+  }
+  const parent = optionalRecord(dataObject, "parent");
+  const subscriptionDetails =
+    optionalRecord(parent, "subscription_details") ??
+    optionalRecord(dataObject, "subscription_details");
+  return optionalRecord(subscriptionDetails, "metadata") ?? {};
 }
 
 function previewXenditEvent(
@@ -768,6 +880,10 @@ function paymentPreview(input: {
       provider: input.provider,
       paymentId: input.paymentId,
       amount: input.amount,
+      currency: optionalString(
+        optionalRecord(optionalRecord(input.rawPayload, "data"), "object") ?? input.rawPayload,
+        "currency",
+      ),
       financeStatus,
       rawPayload: input.rawPayload,
     },

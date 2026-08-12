@@ -31,7 +31,7 @@ describe("PMS AuthKit session refresh", () => {
   it("keeps the AuthKit session when the first-run PMS compatibility token is unavailable", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/auth/session?surface=pms-web")) {
+      if (url === "/auth/session?surface=pms-web") {
         return jsonResponse({
           accessToken: "authkit-token",
           csrfToken: "csrf-token",
@@ -43,7 +43,7 @@ describe("PMS AuthKit session refresh", () => {
           },
         });
       }
-      if (url.endsWith("/auth/compat/pms-web-token")) {
+      if (url === "/auth/compat/pms-web-token") {
         return jsonResponse({ error: "missing_pms_property_link" }, 403);
       }
       throw new Error(`Unexpected fetch URL: ${url}`);
@@ -68,7 +68,7 @@ describe("PMS AuthKit session refresh", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/auth/session?surface=pms-web")) {
+      if (url === "/auth/session?surface=pms-web") {
         return jsonResponse({
           accessToken: "workos-access-token",
           csrfToken: "csrf-token",
@@ -80,7 +80,7 @@ describe("PMS AuthKit session refresh", () => {
           },
         });
       }
-      if (url.endsWith("/auth/compat/pms-web-token")) {
+      if (url === "/auth/compat/pms-web-token") {
         return jsonResponse({
           accessToken: "new-compatibility-token",
           expiresIn: 3600,
@@ -142,7 +142,7 @@ describe("PMS AuthKit session refresh", () => {
       accessToken: "fresh-access-token",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/session/refresh",
+      "/auth/session/refresh",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -255,7 +255,7 @@ describe("PMS AuthKit session refresh", () => {
       accessToken: "verified-workos-access-token",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/email-verification/confirm",
+      "/auth/email-verification/confirm",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -270,6 +270,30 @@ describe("PMS AuthKit session refresh", () => {
     );
     expect(getAuthBearerToken()).toBe("verified-workos-access-token");
     expect(getPendingEmailVerification()).toBeNull();
+  });
+
+  it("resends verification through same-origin auth", async () => {
+    mockBrowserStorage();
+    expect(
+      storePendingEmailVerification({
+        pendingAuthenticationToken: "pending-email-token",
+        emailVerificationId: "email_verification_123",
+      }),
+    ).toBe(true);
+    const fetchMock = vi.fn(async () => jsonResponse({ message: "Verification code resent." }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authService.resendEmailVerification()).resolves.toEqual({
+      message: "Verification code resent.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/auth/email-verification/resend",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({ emailVerificationId: "email_verification_123" }),
+      }),
+    );
   });
 
   it("clears the selected shared property when the AuthKit organization changes", () => {
@@ -365,7 +389,7 @@ describe("PMS AuthKit session refresh", () => {
     authService.startGoogleLogin("/dashboard");
 
     const url = new URL(location.href);
-    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(`${url.origin}${url.pathname}`).toBe("https://pms.localhost/auth/oauth/google/start");
     expect(url.searchParams.get("surface")).toBe("pms-web");
     expect(url.searchParams.get("flow")).toBe("login");
     expect(url.searchParams.get("return_to")).toBe(
@@ -386,7 +410,7 @@ describe("PMS AuthKit session refresh", () => {
     authService.startGoogleSignup("/dashboard");
 
     const url = new URL(location.href);
-    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(`${url.origin}${url.pathname}`).toBe("https://pms.localhost/auth/oauth/google/start");
     expect(url.searchParams.get("surface")).toBe("pms-web");
     expect(url.searchParams.get("flow")).toBe("signup");
     expect(url.searchParams.get("type")).toBe("hotel");
@@ -419,7 +443,7 @@ describe("PMS AuthKit session refresh", () => {
     });
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.localhost/auth/password/reset/request",
+      "/auth/password/reset/request",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -428,13 +452,48 @@ describe("PMS AuthKit session refresh", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.localhost/auth/password/reset/confirm",
+      "/auth/password/reset/confirm",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
         body: JSON.stringify({ token: "reset-token", newPassword: "new-password" }),
       }),
     );
+  });
+
+  it("routes password auth, profile refresh, and logout through same-origin auth", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    const session = {
+      accessToken: "workos-access-token",
+      csrfToken: "csrf-token",
+      organizationId: "org_hotel_group",
+      user: {
+        id: "user_hotel_admin",
+        email: "hotel@example.com",
+        status: "active",
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(session))
+      .mockResolvedValueOnce(jsonResponse(session))
+      .mockResolvedValueOnce(jsonResponse({ updated: true }))
+      .mockResolvedValueOnce(jsonResponse(session))
+      .mockResolvedValueOnce(jsonResponse({ logoutUrl: "/login" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authService.login({ email: "hotel@example.com", password: "secret" });
+    await authService.signup({ email: "new-hotel@example.com", password: "secret" });
+    await authService.updateAccountDetails({ firstName: "Hotel", lastName: "Owner" });
+    await authService.logout();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/auth/password/login",
+      "/auth/password/signup",
+      "/auth/profile",
+      "/auth/session/refresh",
+      "/auth/logout",
+    ]);
   });
 });
 

@@ -12,6 +12,8 @@ import type {
   BookingGuestPiiProjection,
 } from "@vayada/domain-booking";
 import type { PmsInventoryPublicOfferProjectionPort } from "@vayada/domain-distribution";
+import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
+import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
 import type {
   PmsCalendarDay,
   PmsOperationsReadRepository,
@@ -65,6 +67,12 @@ export type PmsRoomTypeDetailResponse = {
   sourceFreshness: PmsSourceFreshness;
 };
 
+export type PmsPropertyPlanResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  propertyPlan: PropertyPlanReadModel;
+};
+
 export type PmsCalendarResponse = {
   contractVersion: PmsOperationsContractVersion;
   propertyId: string;
@@ -107,6 +115,7 @@ export type PmsOperationsCommandSideEffect =
   | "calendar_refresh"
   | "ari_changed"
   | "distribution_refresh"
+  | "guest_notification"
   | "audit_event";
 export type PmsAssignmentCommandSideEffect = "calendar_refresh" | "ari_changed" | "audit_event";
 export type PmsPrivateNoteSource = "pms" | "migration" | "system";
@@ -266,6 +275,14 @@ export type PmsNoShowCommand = {
   idempotencyKey: string;
   expectedVersion?: string;
   reason?: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsBookingLifecycleCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
   audit: PmsOperationsCommandAudit;
 };
 
@@ -658,6 +675,8 @@ export type PmsOperationsCommandRepository = {
   ): Promise<PmsOperationalCommandResult>;
   executeCheckInCommand(command: PmsCheckInCommand): Promise<PmsOperationalCommandResult>;
   executeNoShowCommand(command: PmsNoShowCommand): Promise<PmsOperationalCommandResult>;
+  acceptBooking(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
+  markBookingPaid(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   listPrivateNotes(propertyId: string, guestBookingId: string): Promise<PmsPrivateNote[] | null>;
   createPrivateNote(command: PmsPrivateNoteCreateCommand): Promise<PmsPrivateNoteCommandResult>;
   deletePrivateNote(command: PmsPrivateNoteDeleteCommand): Promise<PmsPrivateNoteDeleteResult>;
@@ -689,9 +708,11 @@ export type PmsOperationsRoutesOptions = {
   repository: PmsOperationsReadRepository;
   checkoutChargeMarkPaidFreezeEnabled?: boolean;
   commandRepository?: PmsOperationsCommandRepository;
+  resolveOnboardingRoomCurrency?: (propertyId: string) => Promise<string | null>;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   allowedOrigins?: string[];
+  propertyPlanReadRepository?: PropertyPlanReadRepository;
 };
 
 type PmsPropertyParams = {
@@ -788,7 +809,9 @@ type PmsOperationsErrorCode =
   | "invalid_guest_pii"
   | "finance_bridge_required"
   | PmsAssignmentCommandConflictCode
+  | "property_currency_conflict"
   | "room_type_conflict"
+  | "room_photo_plan_limit_reached"
   | "read_model_unavailable"
   | "room_type_not_found"
   | "reservation_not_found"
@@ -819,6 +842,7 @@ export async function registerPmsOperationsRoutes(
     await repository.close?.();
     await commandRepository?.close?.();
     await bookingGuestPiiPort?.close?.();
+    await options.propertyPlanReadRepository?.close?.();
   });
 
   for (const path of [
@@ -826,6 +850,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/rooms",
     "/properties/:propertyId/room-types",
     "/properties/:propertyId/room-types/:roomTypeId",
+    "/properties/:propertyId/plan-limits",
     "/properties/:propertyId/calendar",
     "/properties/:propertyId/room-blocks",
     "/properties/:propertyId/payment-settings",
@@ -850,6 +875,8 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/reservations/:guestBookingId/assignments",
     "/properties/:propertyId/reservations/:guestBookingId/status",
     "/properties/:propertyId/reservations/:guestBookingId/check-in",
+    "/properties/:propertyId/reservations/:guestBookingId/accept",
+    "/properties/:propertyId/reservations/:guestBookingId/mark-paid",
     "/properties/:propertyId/reservations/:guestBookingId/no-show",
   ]) {
     app.options(path, async (request, reply) => {
@@ -881,6 +908,40 @@ export async function registerPmsOperationsRoutes(
       readModelUnavailable("PMS property summary read model is unavailable."),
     );
   });
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/plan-limits",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+        return sendPmsOperationsError(reply, {
+          statusCode: 403,
+          code: "missing_permission",
+          category: "authorization",
+          message: "PMS operations origin is not allowed.",
+        });
+      }
+      const { propertyId } = request.params;
+      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (!options.propertyPlanReadRepository) {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Property plan read model is unavailable."),
+        );
+      }
+      try {
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          propertyPlan: await options.propertyPlanReadRepository.getPropertyPlan(propertyId),
+        } satisfies PmsPropertyPlanResponse;
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Property plan read model is unavailable."),
+        );
+      }
+    },
+  );
 
   app.get<{ Params: PmsPropertyParams }>(
     "/properties/:propertyId/rooms",
@@ -1558,8 +1619,59 @@ export async function registerPmsOperationsRoutes(
         const { propertyId } = request.params;
         if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
 
-        const command = toRoomTypeCreateCommand(propertyId, request);
+        let currencyOverride: string | undefined;
+        const requestBody = objectBody(request.body);
+        if (requestBody?.onboardingSetup === true) {
+          try {
+            currencyOverride =
+              (await options.resolveOnboardingRoomCurrency?.(propertyId)) ?? undefined;
+          } catch (error) {
+            request.log.error({ error, propertyId }, "Onboarding room currency resolution failed");
+          }
+          if (!currencyOverride) {
+            return sendPmsOperationsError(reply, {
+              statusCode: 500,
+              code: "read_model_unavailable",
+              category: "read_model",
+              message: "Property currency is unavailable for onboarding room setup.",
+            });
+          }
+          const submittedCurrency = stringField(requestBody.currency)?.toUpperCase();
+          if (submittedCurrency && submittedCurrency !== currencyOverride.toUpperCase()) {
+            return sendPmsOperationsError(reply, {
+              statusCode: 409,
+              code: "property_currency_conflict",
+              category: "conflict",
+              message: "Property currency changed. Review the nightly rate and try again.",
+            });
+          }
+        }
+
+        const command = toRoomTypeCreateCommand(propertyId, request, currencyOverride);
         if ("error" in command) return sendPmsOperationsError(reply, command.error);
+
+        if (options.propertyPlanReadRepository) {
+          try {
+            const propertyPlan =
+              await options.propertyPlanReadRepository.getPropertyPlan(propertyId);
+            if (command.value.media.length > propertyPlan.limits.maxRoomPhotosPerType) {
+              return sendPmsOperationsError(reply, {
+                statusCode: 409,
+                code: "room_photo_plan_limit_reached",
+                category: "conflict",
+                message:
+                  propertyPlan.plan === "commission"
+                    ? `You've reached the ${propertyPlan.limits.maxRoomPhotosPerType}-photo limit. Upgrade to the paid plan for up to ${PROPERTY_FEATURE_LIMITS.fixed.maxRoomPhotosPerType} photos per room.`
+                    : `You've reached the ${propertyPlan.limits.maxRoomPhotosPerType}-photo limit for the paid plan.`,
+              });
+            }
+          } catch {
+            return sendPmsOperationsError(
+              reply,
+              readModelUnavailable("Property plan read model is unavailable."),
+            );
+          }
+        }
 
         const result = await commandRepository.createRoomType(command.value);
         if (!result.ok) return sendPmsRoomTypeCommandError(reply, result);
@@ -2005,6 +2117,68 @@ export async function registerPmsOperationsRoutes(
     );
 
     app.post<{ Params: PmsReservationParams; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/accept",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        }
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toBookingLifecycleCommand(
+          propertyId,
+          guestBookingId,
+          request,
+          "Accept booking",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.acceptBooking(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/mark-paid",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        }
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toBookingLifecycleCommand(
+          propertyId,
+          guestBookingId,
+          request,
+          "Mark booking paid",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.markBookingPaid(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Body: unknown }>(
       "/properties/:propertyId/reservations/:guestBookingId/check-in",
       async (request, reply) => {
         if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
@@ -2296,6 +2470,7 @@ function writePmsOperationsCorsHeaders(
 function toRoomTypeCreateCommand(
   propertyId: string,
   request: FastifyRequest<{ Body: unknown }>,
+  currencyOverride?: string,
 ): { value: PmsRoomTypeCreateCommand } | { error: PmsOperationsError } {
   const raw = objectBody(request.body);
   if (!raw) return { error: invalidBody("Room type create body must be an object.") };
@@ -2310,7 +2485,7 @@ function toRoomTypeCreateCommand(
   const baseRate = roomTypeBaseRate(raw);
   if (!baseRate) return { error: invalidBody("Room type create requires a valid baseRate.") };
 
-  const currency = (stringField(raw.currency) ?? "EUR").toUpperCase();
+  const currency = (currencyOverride ?? stringField(raw.currency) ?? "EUR").toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) {
     return { error: invalidBody("Room type create requires a three-letter currency.") };
   }
@@ -3292,6 +3467,25 @@ function toOperationalStatusCommand(
       ...metadata.value,
       status,
       audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Update PMS status"),
+    },
+  };
+}
+
+function toBookingLifecycleCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+  action: string,
+): { value: PmsBookingLifecycleCommand } | { error: PmsOperationsError } {
+  const metadata = toOperationalCommandMetadata(request.body, `${action} command`);
+  if ("error" in metadata) return metadata;
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      commandId: metadata.value.commandId,
+      idempotencyKey: metadata.value.idempotencyKey,
+      audit: pmsOperationsCommandAudit(request, metadata.value.commandId, action),
     },
   };
 }
