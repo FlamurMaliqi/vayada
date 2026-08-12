@@ -86,9 +86,9 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
       const updated = await roomsService.update(id, form);
       setRoom(updated);
       setForm(toRoomTypeUpdateForm(updated));
-      setSuccess("Room type location saved.");
+      setSuccess("Room type changes saved.");
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Failed to save room type location.");
+      setError(error instanceof Error ? error.message : "Failed to save room type changes.");
     } finally {
       setSaving(false);
     }
@@ -145,7 +145,7 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
         saving={saving}
         error={error}
         success={success}
-        submitLabel="Save Location"
+        submitLabel="Save Changes"
         cancelHref="/rooms"
         mode="edit"
         roomTypeId={id}
