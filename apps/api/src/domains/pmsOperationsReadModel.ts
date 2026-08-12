@@ -207,7 +207,7 @@ export type PmsOperationsReadPool = {
   query<T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
     values?: readonly unknown[],
-  ): Promise<pg.QueryResult<T>>;
+  ): Promise<Pick<pg.QueryResult<T>, "rows" | "rowCount">>;
   end?(): Promise<void>;
 };
 
