@@ -3,6 +3,8 @@ import { propertyEndpoint, resolveSelectedPmsPropertyId } from "../api/pmsProper
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import type { CheckinStepType } from "@/services/settings";
 
+export const HIDDEN_GUEST_CONTACT = "Hidden until you accept";
+
 export interface AssignedRoom {
   assignmentId: string | null;
   roomId: string | null;
@@ -204,6 +206,8 @@ function toAdditionalGuest(guest: PmsBookingGuestPii, position: number): Booking
     dateOfBirth: null,
     email: guest.email ?? "",
     phone: guest.phone ?? "",
+    guestContactHidden:
+      guest.email === HIDDEN_GUEST_CONTACT && guest.phone === HIDDEN_GUEST_CONTACT,
     passportNumber: "",
     roomPosition: null,
     createdAt: "",
@@ -367,6 +371,7 @@ export interface BookingAdditionalGuest {
   dateOfBirth: string | null;
   email: string;
   phone: string;
+  guestContactHidden: boolean;
   passportNumber: string;
   /** Which of the booking's rooms this guest is assigned to.
    * 0 = primary room, 1..N-1 = extras, null = unassigned. */
@@ -376,7 +381,10 @@ export interface BookingAdditionalGuest {
 }
 
 export type BookingAdditionalGuestPayload = Partial<
-  Omit<BookingAdditionalGuest, "id" | "bookingId" | "position" | "createdAt" | "updatedAt">
+  Omit<
+    BookingAdditionalGuest,
+    "id" | "bookingId" | "position" | "createdAt" | "updatedAt" | "guestContactHidden"
+  >
 >;
 
 export interface BookingChangeRequest {
