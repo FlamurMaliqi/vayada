@@ -637,7 +637,8 @@ async function updateBookingLifecycleStatus(
             OR (
               payment_status = 'unpaid'
               AND booking_metadata ->> 'paymentMethod' = 'bank_transfer'
-              AND booking_metadata ->> 'acceptedPaymentDeadlineAt' = $11
+              AND NULLIF(booking_metadata ->> 'acceptedPaymentDeadlineAt', '')::timestamptz
+                    = $11::timestamptz
             )
           )
         RETURNING id::text AS "guestBookingId", $6::text AS "fromStatus",

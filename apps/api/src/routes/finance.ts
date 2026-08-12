@@ -75,6 +75,7 @@ import {
   type FinanceRoutePaymentProvider,
   type FinanceStripeConnectProvider,
   type IssueStripeOnboardingLinkCommand,
+  type PropertyPlanReadModel,
   type FinanceXenditBankValidationCommand,
   type FinanceXenditBankValidationResponse,
   type FinanceXenditPayoutReconciliationCommand,
@@ -97,6 +98,12 @@ import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 import { enqueueBookingLifecycleEmailJob } from "../jobs/bookingEmails.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
 import { enforceRoutePolicy, type RouteAuthorizationPolicy } from "./policy.js";
+
+const MANUAL_PAYMENT_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = [
+  "audit_event",
+  "booking_projection_refresh",
+  "pms_projection_refresh",
+];
 
 const XENDIT_BANK_VALIDATION_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = [
   "provider_validation",
@@ -292,6 +299,7 @@ type FinanceInvoiceRow = {
   guestDisplayName: string | null;
   guestEmail: string | null;
   guestPhone: string | null;
+  guestContactAccepted: boolean;
   checkIn: Date | string;
   checkOut: Date | string;
   roomName: string | null;
@@ -335,6 +343,7 @@ type FinancePaymentLedgerRow = {
   provider: string | null;
   providerStatus: string | null;
   reconciliationStatus: string | null;
+  guestContactAccepted: boolean;
   total: string | number;
   counts: unknown;
   sourceFreshness: unknown;
@@ -1383,8 +1392,11 @@ export function createTargetFinancePropertySettingsRepository(config: {
       return row ? toFinancialSummaryResponseBody(row) : null;
     },
     async listInvoices(propertyId, query) {
-      const rows = await loadInvoiceRows(pool, propertyId, query);
-      return toInvoiceListResponseBody(rows, query);
+      const [rows, propertyPlan] = await Promise.all([
+        loadInvoiceRows(pool, propertyId, query),
+        readPropertyPlan(pool, propertyId),
+      ]);
+      return toInvoiceListResponseBody(rows, query, propertyPlan);
     },
     async getInvoice(propertyId, invoiceId) {
       const rows = await loadInvoiceRows(pool, propertyId, {
@@ -1396,14 +1408,21 @@ export function createTargetFinancePropertySettingsRepository(config: {
       const invoice = rows.find((row) => row.invoiceId === invoiceId);
       if (!invoice) return null;
 
-      const payments = await loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId);
+      const [payments, propertyPlan] = await Promise.all([
+        loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId),
+        readPropertyPlan(pool, propertyId),
+      ]);
+      const contact = guestContactForPropertyPlan(propertyPlan, invoice.guestContactAccepted, {
+        email: invoice.guestEmail,
+        phone: invoice.guestPhone,
+      });
       return {
         invoice: {
-          ...toInvoiceListItem(invoice),
+          ...toInvoiceListItem(invoice, propertyPlan),
           guest: {
             displayName: invoice.guestDisplayName ?? "Guest",
-            email: invoice.guestEmail,
-            phone: invoice.guestPhone,
+            email: contact.email,
+            phone: contact.phone,
           },
           nights: nightsBetween(invoice.checkIn, invoice.checkOut),
           charges: [
@@ -4036,6 +4055,211 @@ function xenditPayoutReconciliationWindow(
   return `key-${sha256(command.idempotencyKey).slice(0, 12)}`;
 }
 
+function manualPaymentScopedPersistenceKey(
+  propertyId: string,
+  keyHash: string,
+  purpose: "payment" | "domain-event" | "booking-projection" | "pms-projection" | "audit",
+): string {
+  return `finance.manual-payment.${purpose}.property.${propertyId}.key.${keyHash}.v1`;
+}
+
+function manualPaymentAuditKey(propertyId: string, keyHash: string): string {
+  return manualPaymentScopedPersistenceKey(propertyId, keyHash, "audit");
+}
+
+function buildManualPaymentProjectionJobIdempotencyKey(input: {
+  propertyId: string;
+  jobType: "booking.projection-refresh" | "pms.projection-refresh";
+  guestBookingId: string;
+  paymentIdempotencyKeyHash: string;
+}): string {
+  return `${input.jobType}:property:${input.propertyId}:booking:${input.guestBookingId}:finance-payment:${input.paymentIdempotencyKeyHash}:v1`;
+}
+
+async function recordManualPaymentDomainEvent(
+  client: FinancePropertySettingsWriteClient,
+  command: FinanceManualPaymentRecordCommand,
+  guestBookingId: string,
+  paymentId: string,
+  keyHash: string,
+  recordedAt: string,
+): Promise<string> {
+  const result = await client.query<{ eventId: string }>(
+    `WITH inserted AS (
+       INSERT INTO platform.domain_events (
+         source_system,
+         event_key,
+         event_type,
+         event_version,
+         occurred_at,
+         tenant_scope,
+         organization_id,
+         property_id,
+         resource_product,
+         resource_type,
+         resource_id,
+         actor_type,
+         actor_user_id,
+         correlation_id,
+         causation_id,
+         idempotency_key_hash,
+         payload,
+         event_metadata,
+         privacy_scope
+       )
+       VALUES (
+         'finance',
+         $1,
+         'finance.manual_payment.recorded',
+         1,
+         $2::timestamptz,
+         'property',
+         NULL,
+         $3::uuid,
+         'finance',
+         'payment',
+         $4,
+         $5,
+         $6::uuid,
+         $7,
+         $8,
+         $9,
+         $10::jsonb,
+         $11::jsonb,
+         'confidential'
+       )
+       ON CONFLICT (source_system, event_key) DO NOTHING
+       RETURNING id::text AS "eventId"
+     )
+     SELECT "eventId" FROM inserted
+     UNION ALL
+     SELECT id::text AS "eventId"
+     FROM platform.domain_events
+     WHERE source_system = 'finance'
+       AND event_key = $1
+       AND tenant_scope = 'property'
+       AND property_id = $3::uuid
+     LIMIT 1`,
+    [
+      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "domain-event"),
+      recordedAt,
+      command.propertyId,
+      paymentId,
+      command.audit.actor.kind,
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      command.audit.correlationId ?? command.audit.requestId,
+      command.commandId,
+      keyHash,
+      JSON.stringify({
+        propertyId: command.propertyId,
+        invoiceId: command.payload.invoiceId,
+        guestBookingId,
+        paymentId,
+        amount: command.payload.amount,
+        currency: command.payload.currency,
+        paymentMethod: command.payload.paymentMethod,
+      }),
+      JSON.stringify({ contractVersion: FINANCE_ROUTE_CONTRACT_VERSION }),
+    ],
+  );
+  return result.rows[0]!.eventId;
+}
+
+async function enqueueManualPaymentOutboxEvents(
+  client: FinancePropertySettingsWriteClient,
+  command: FinanceManualPaymentRecordCommand,
+  guestBookingId: string,
+  paymentId: string,
+  domainEventId: string,
+  keyHash: string,
+): Promise<{ booking: string; pms: string }> {
+  const result = await client.query<{ destination: string; outboxEventId: string }>(
+    `WITH outbox AS (
+       INSERT INTO platform.outbox_events (
+         domain_event_id,
+         outbox_key,
+         destination,
+         event_type,
+         tenant_scope,
+         organization_id,
+         property_id,
+         resource_product,
+         resource_type,
+         resource_id,
+         correlation_id,
+         idempotency_key_hash,
+         payload,
+         outbox_metadata
+       )
+       VALUES
+         (
+           $1::uuid,
+           $2,
+           'booking.projection-refresh',
+           'booking.finance_payment_projection.refresh_requested',
+           'property',
+           NULL,
+           $3::uuid,
+           'booking',
+           'guest_booking',
+           $4,
+           $5,
+           $6,
+           $7::jsonb,
+           $8::jsonb
+         ),
+         (
+           $1::uuid,
+           $9,
+           'pms.projection-refresh',
+           'pms.finance_payment_projection.refresh_requested',
+           'property',
+           NULL,
+           $3::uuid,
+           'pms',
+           'operational_booking',
+           $4,
+           $5,
+           $6,
+           $7::jsonb,
+           $8::jsonb
+         )
+       ON CONFLICT (destination, outbox_key) DO NOTHING
+       RETURNING destination, id::text AS "outboxEventId"
+     )
+     SELECT destination, "outboxEventId" FROM outbox
+     UNION ALL
+     SELECT destination, id::text AS "outboxEventId"
+     FROM platform.outbox_events
+     WHERE (destination, outbox_key) IN (
+       ('booking.projection-refresh', $2),
+       ('pms.projection-refresh', $9)
+     )
+       AND tenant_scope = 'property'
+       AND property_id = $3::uuid`,
+    [
+      domainEventId,
+      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "booking-projection"),
+      command.propertyId,
+      guestBookingId,
+      command.audit.correlationId ?? command.audit.requestId,
+      keyHash,
+      JSON.stringify({
+        propertyId: command.propertyId,
+        guestBookingId,
+        invoiceId: command.payload.invoiceId,
+        paymentId,
+      }),
+      JSON.stringify({ commandId: command.commandId }),
+      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "pms-projection"),
+    ],
+  );
+  return {
+    booking: result.rows.find((row) => row.destination === "booking.projection-refresh")!
+      .outboxEventId,
+    pms: result.rows.find((row) => row.destination === "pms.projection-refresh")!.outboxEventId,
+  };
+}
 async function recordXenditPayoutReconciliationAuditEvent(
   client: FinancePropertySettingsWriteClient,
   command: FinanceXenditPayoutReconciliationCommand,
@@ -4392,13 +4616,20 @@ async function loadFinanceInvoiceDetail(
   });
   const invoice = rows.find((row) => row.invoiceId === invoiceId);
   if (!invoice) return null;
-  const payments = await loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId);
+  const [payments, propertyPlan] = await Promise.all([
+    loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId),
+    readPropertyPlan(pool, propertyId),
+  ]);
+  const contact = guestContactForPropertyPlan(propertyPlan, invoice.guestContactAccepted, {
+    email: invoice.guestEmail,
+    phone: invoice.guestPhone,
+  });
   return {
-    ...toInvoiceListItem(invoice),
+    ...toInvoiceListItem(invoice, propertyPlan),
     guest: {
       displayName: invoice.guestDisplayName ?? "Guest",
-      email: invoice.guestEmail,
-      phone: invoice.guestPhone,
+      email: contact.email,
+      phone: contact.phone,
     },
     nights: nightsBetween(invoice.checkIn, invoice.checkOut),
     charges: [
@@ -4580,6 +4811,8 @@ async function loadInvoiceRows(
          NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
          guest.email AS "guestEmail",
          guest.phone AS "guestPhone",
+         ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
+         ${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL} AS "guestContactAlways",
          booking.check_in AS "checkIn",
          booking.check_out AS "checkOut",
          COALESCE(assignment.assignment_payload ->> 'roomName', room_type.name) AS "roomName",
@@ -4645,7 +4878,10 @@ async function loadInvoiceRows(
            OR lower("invoiceNumber") LIKE lower($3::text)
            OR lower("bookingReference") LIKE lower($3::text)
            OR lower(COALESCE("guestDisplayName", '')) LIKE lower($3::text)
-           OR lower(COALESCE("guestEmail", '')) LIKE lower($3::text)
+           OR (
+             ("guestContactAlways" OR "guestContactAccepted")
+             AND lower(COALESCE("guestEmail", '')) LIKE lower($3::text)
+           )
          )
      ),
      counts AS (
@@ -4737,6 +4973,8 @@ async function loadPaymentLedgerRows(
          COALESCE(payment.payment_metadata ->> 'reconciliationStatus', 'pending') AS "reconciliationStatus",
          NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
          guest.email AS "guestEmail",
+         ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
+         ${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL} AS "guestContactAlways",
          COALESCE(visibility.source_freshness, '{}'::jsonb) AS "sourceFreshness"
        FROM finance.payments payment
        LEFT JOIN finance.payment_provider_accounts account
@@ -4775,7 +5013,10 @@ async function loadPaymentLedgerRows(
            OR lower(COALESCE("bookingReference", '')) LIKE lower($7::text)
            OR lower(COALESCE(reference, '')) LIKE lower($7::text)
            OR lower(COALESCE("guestDisplayName", '')) LIKE lower($7::text)
-           OR lower(COALESCE("guestEmail", '')) LIKE lower($7::text)
+           OR (
+             ("guestContactAlways" OR "guestContactAccepted")
+             AND lower(COALESCE("guestEmail", '')) LIKE lower($7::text)
+           )
          )
      ),
      counts AS (
@@ -5589,9 +5830,10 @@ function toFinancialSummaryResponseBody(
 function toInvoiceListResponseBody(
   rows: FinanceInvoiceRow[],
   query: FinanceInvoiceListQuery,
+  propertyPlan: PropertyPlanReadModel,
 ): Omit<FinanceInvoiceListResponse, "contractVersion" | "propertyId"> {
   return {
-    invoices: rows.map(toInvoiceListItem),
+    invoices: rows.map((row) => toInvoiceListItem(row, propertyPlan)),
     total: totalFromRows(rows),
     counts: invoiceStatusCounts(rows[0]?.counts),
     limit: query.limit,
@@ -5600,7 +5842,14 @@ function toInvoiceListResponseBody(
   };
 }
 
-function toInvoiceListItem(row: FinanceInvoiceRow): FinanceInvoiceListItem {
+function toInvoiceListItem(
+  row: FinanceInvoiceRow,
+  propertyPlan: PropertyPlanReadModel,
+): FinanceInvoiceListItem {
+  const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, {
+    email: row.guestEmail,
+    phone: row.guestPhone,
+  });
   return {
     invoiceId: row.invoiceId,
     invoiceNumber: row.invoiceNumber,
@@ -5608,7 +5857,7 @@ function toInvoiceListItem(row: FinanceInvoiceRow): FinanceInvoiceListItem {
     bookingReference: row.bookingReference,
     guest: {
       displayName: row.guestDisplayName ?? "Guest",
-      email: row.guestEmail,
+      email: contact.email,
     },
     stay: {
       checkIn: dateOnly(row.checkIn),

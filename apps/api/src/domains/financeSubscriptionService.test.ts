@@ -334,7 +334,10 @@ class MemoryStore implements FinanceSubscriptionStore {
     };
   }
 
-  async withPlanMutationLock<T>(_propertyId: string, action: () => Promise<T>): Promise<T> {
+  async withPlanMutationLock<T>(
+    _propertyId: string,
+    action: (store: FinanceSubscriptionStore) => Promise<T>,
+  ): Promise<T> {
     const previous = this.checkoutLock;
     let release: () => void = () => {};
     this.checkoutLock = new Promise<void>((resolve) => {
@@ -342,7 +345,7 @@ class MemoryStore implements FinanceSubscriptionStore {
     });
     await previous;
     try {
-      return await action();
+      return await action(this);
     } finally {
       release();
     }

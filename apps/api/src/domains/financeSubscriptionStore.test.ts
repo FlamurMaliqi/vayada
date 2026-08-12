@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createPgFinanceSubscriptionStore } from "./financeSubscriptionStore.js";
 
 describe("Finance subscription store", () => {
-  it("holds a property advisory lock across Fixed Checkout creation", async () => {
+  it("holds a session-scoped property advisory lock without an outer transaction", async () => {
     const calls: string[] = [];
     const client = {
       async query(text: string) {
@@ -29,12 +29,48 @@ describe("Finance subscription store", () => {
     });
 
     expect(calls).toEqual([
-      "BEGIN",
-      expect.stringContaining("pg_advisory_xact_lock"),
+      expect.stringContaining("pg_advisory_lock"),
       "ACTION",
-      "COMMIT",
+      expect.stringContaining("pg_advisory_unlock"),
       "RELEASE",
     ]);
+  });
+
+  it("reuses the locked connection for the plan mutation transaction", async () => {
+    const calls: string[] = [];
+    let connectCount = 0;
+    const client = {
+      async query(text: string) {
+        calls.push(text);
+        if (text.includes("INSERT INTO platform.idempotency_keys")) {
+          return { rows: [{ id: "idem-1" }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      release() {
+        calls.push("RELEASE");
+      },
+    };
+    const store = createPgFinanceSubscriptionStore({
+      connectionString: "postgres://unused",
+      pool: {
+        query: client.query,
+        async connect() {
+          connectCount += 1;
+          return client;
+        },
+      } as never,
+    });
+
+    await store.withPlanMutationLock("property-1", (lockedStore) =>
+      lockedStore.recordCommissionSelection(commissionCommand(), commissionResult()),
+    );
+
+    expect(connectCount).toBe(1);
+    expect(calls).toContain("BEGIN");
+    expect(calls).toContain("COMMIT");
+    expect(calls.at(-2)).toContain("pg_advisory_unlock");
+    expect(calls.at(-1)).toBe("RELEASE");
   });
 
   it("provisions the canonical 5% booking commission rule with a new plan selection", async () => {
@@ -53,38 +89,7 @@ describe("Finance subscription store", () => {
       pool: pool as never,
     });
 
-    await store.recordCommissionSelection(
-      {
-        commandId: "commission-1",
-        idempotencyKey: "commission-property-1",
-        propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
-        organizationId: "b9fccec2-eb4c-4c35-bfd3-02a748c2e117",
-        audit: {
-          actor: { kind: "system", service: "test" },
-          requestId: "request-1",
-          reason: "test",
-          requestedAt: "2026-09-01T10:00:00.000Z",
-        },
-      },
-      {
-        planStatus: {
-          propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
-          plan: "commission",
-          status: "commission",
-          currency: "EUR",
-          activeRoomCount: 1,
-          amountMinor: 3_000,
-          currentPeriodStart: null,
-          currentPeriodEnd: null,
-          nextBillingDate: null,
-          cancelAtPeriodEnd: false,
-          checkoutPending: false,
-          customerPortalAvailable: false,
-          activatedAt: null,
-          updatedAt: "2026-09-01T10:00:00.000Z",
-        },
-      },
-    );
+    await store.recordCommissionSelection(commissionCommand(), commissionResult());
 
     const rule = calls.find(({ text }) => text.includes("INSERT INTO finance.commission_rules"));
     expect(rule?.text).toContain("'percentage', 5");
@@ -101,3 +106,39 @@ describe("Finance subscription store", () => {
     ]);
   });
 });
+
+function commissionCommand() {
+  return {
+    commandId: "commission-1",
+    idempotencyKey: "commission-property-1",
+    propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+    organizationId: "b9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+    audit: {
+      actor: { kind: "system" as const, service: "test" },
+      requestId: "request-1",
+      reason: "test",
+      requestedAt: "2026-09-01T10:00:00.000Z",
+    },
+  };
+}
+
+function commissionResult() {
+  return {
+    planStatus: {
+      propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      plan: "commission" as const,
+      status: "commission" as const,
+      currency: "EUR" as const,
+      activeRoomCount: 1,
+      amountMinor: 3_000,
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+      nextBillingDate: null,
+      cancelAtPeriodEnd: false,
+      checkoutPending: false,
+      customerPortalAvailable: false,
+      activatedAt: null,
+      updatedAt: "2026-09-01T10:00:00.000Z",
+    },
+  };
+}

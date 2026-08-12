@@ -143,6 +143,9 @@ describe("booking lifecycle scheduler jobs", () => {
       toStatus: "canceled",
     });
     expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
+    expect(fixture.calls.find((sql) => sql.includes("WITH updated AS"))).toContain(
+      "NULLIF(booking_metadata ->> 'acceptedPaymentDeadlineAt', '')::timestamptz",
+    );
   });
 
   it("does not cancel an accepted bank booking that was paid after candidate selection", async () => {
