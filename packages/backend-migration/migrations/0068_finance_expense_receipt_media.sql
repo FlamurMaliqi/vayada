@@ -1,4 +1,4 @@
--- Migration: 0061_finance_expense_receipt_media
+-- Migration: 0068_finance_expense_receipt_media
 -- Owner: platform-media, domain-finance
 -- See: VAY-1124, engineering/pms-financials-contracts.md
 
@@ -8,7 +8,7 @@ ALTER TABLE platform.media_objects
     CHECK (resource_product IN (
       'hotel_catalog', 'booking', 'pms', 'finance', 'marketplace',
       'distribution', 'platform', 'migration'
-    ));
+    )) NOT VALID;
 
 ALTER TABLE platform.media_upload_sessions
   DROP CONSTRAINT media_upload_sessions_resource_product_check,
@@ -16,7 +16,7 @@ ALTER TABLE platform.media_upload_sessions
     CHECK (resource_product IN (
       'hotel_catalog', 'booking', 'pms', 'finance', 'marketplace',
       'distribution', 'platform', 'migration'
-    ));
+    )) NOT VALID;
 
 CREATE OR REPLACE FUNCTION platform.valid_media_purpose_visibility(
   media_purpose TEXT,
@@ -27,6 +27,8 @@ LANGUAGE SQL
 IMMUTABLE
 AS $$
   SELECT CASE
+    WHEN media_purpose = 'booking.header_logo'
+      THEN media_visibility = 'public'
     WHEN media_purpose IN (
       'identity.user.profile_image',
       'property.hero_image',
@@ -59,7 +61,7 @@ ALTER TABLE platform.media_objects
         AND resource_type = 'expense'
         AND property_id IS NOT NULL
       )
-    );
+    ) NOT VALID;
 
 ALTER TABLE platform.media_upload_sessions
   ADD CONSTRAINT chk_platform_media_upload_sessions_finance_expense_receipt
@@ -74,4 +76,4 @@ ALTER TABLE platform.media_upload_sessions
         AND resource_type = 'expense'
         AND property_id IS NOT NULL
       )
-    );
+    ) NOT VALID;

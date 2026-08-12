@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { useHotel } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { useTranslations, useLocale } from "next-intl";
-import { useRouter, usePathname } from "@/i18n/navigation";
+import { Link, useRouter, usePathname } from "@/i18n/navigation";
 import ReferModal from "@/components/affiliate/ReferModal";
 
 const LANGUAGES = [
@@ -232,6 +232,7 @@ export default function BookingNavigation() {
   const [referOpen, setReferOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [currOpen, setCurrOpen] = useState(false);
+  const logoUrl = hotel.branding?.logoUrl;
 
   const availableLanguages = useMemo(() => {
     const codes = new Set<string>(hotel?.supportedLanguages ?? []);
@@ -272,10 +273,29 @@ export default function BookingNavigation() {
       <nav className="absolute top-0 left-0 right-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            {/* Left - Hotel Name (hidden on mobile) */}
-            <a href="/" className="hidden md:flex items-center gap-2">
-              <span className="text-lg font-semibold text-white">{hotel.name}</span>
-            </a>
+            {/* The existing mobile text fallback stays hidden; an uploaded logo gets
+                a constrained slot that cannot shrink the action controls. */}
+            <Link
+              href="/"
+              aria-label={hotel.name}
+              className={`${logoUrl ? "flex" : "hidden"} min-w-0 flex-1 items-center overflow-hidden pr-2 md:flex md:flex-none`}
+            >
+              {logoUrl ? (
+                // Dynamic CDN logos retain their intrinsic aspect ratio and must not
+                // reserve a fixed next/image box that could displace mobile controls.
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={logoUrl}
+                  alt={`${hotel.name} logo`}
+                  loading="eager"
+                  fetchPriority="high"
+                  decoding="async"
+                  className="max-h-8 max-w-full object-contain object-left md:max-h-10 md:max-w-[300px]"
+                />
+              ) : (
+                <span className="text-lg font-semibold text-white">{hotel.name}</span>
+              )}
+            </Link>
 
             {/* Right - Actions (always visible on mobile, full nav on desktop) */}
             <div className="hidden md:flex items-center gap-2">
@@ -387,7 +407,7 @@ export default function BookingNavigation() {
             </div>
 
             {/* Mobile inline actions */}
-            <div className="md:hidden flex items-center gap-1.5 ml-auto">
+            <div className="md:hidden flex shrink-0 items-center gap-1.5 ml-auto">
               {hotel.referAGuestEnabled && (
                 <button
                   onClick={() => {

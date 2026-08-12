@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   BOOKING_LIFECYCLE_QUEUE,
   buildBookingLifecycleJobKey,
   buildBookingLifecycleSweepKey,
+  createPgBookingLifecycleStore,
   runBookingLifecycleSchedulerJobs,
   type BookingLifecycleAction,
   type BookingLifecycleCandidate,
@@ -106,7 +107,245 @@ describe("booking lifecycle scheduler jobs", () => {
       "booking.lifecycle-sweep:booking:book_123:pending-expiry:2026-09-01T09:55:00.000Z:v1",
     );
   });
+
+  it("releases PMS inventory when an unpaid manual booking expires", async () => {
+    const fixture = pgLifecycleFixture("pending_payment");
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+    });
+
+    await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
+  });
+
+  it("cancels an accepted unpaid bank booking at its post-acceptance deadline", async () => {
+    const fixture = pgLifecycleFixture("confirmed");
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(result.runs[0]?.mutations[0]).toMatchObject({
+      action: "accepted-payment-expiry",
+      fromStatus: "confirmed",
+      toStatus: "canceled",
+    });
+    expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
+    expect(fixture.calls.find((sql) => sql.includes("WITH updated AS"))).toContain(
+      "NULLIF(booking_metadata ->> 'acceptedPaymentDeadlineAt', '')::timestamptz",
+    );
+  });
+
+  it("does not cancel an accepted bank booking that was paid after candidate selection", async () => {
+    const fixture = pgLifecycleFixture("confirmed", { paidBeforeMutation: true });
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(result.runs[0]?.mutations[0]?.applied).toBe(false);
+    expect(fixture.inventoryReservationPort.release).not.toHaveBeenCalled();
+    expect(fixture.calls.find((sql) => sql.includes("WITH updated AS"))).toContain(
+      "payment_status = 'unpaid'",
+    );
+  });
+
+  it("cancels an open Stripe intent and releases inventory before deleting its draft", async () => {
+    const fixture = pgLifecycleFixture("draft");
+    const stripePaymentProvider = {
+      retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("requires_action")),
+      cancelPaymentIntent: vi.fn().mockResolvedValue(stripeIntent("canceled")),
+      createPaymentIntent: vi.fn(),
+    };
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+      stripePaymentProvider,
+    });
+
+    await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["expiredDraftCleanup"],
+    });
+
+    expect(stripePaymentProvider.cancelPaymentIntent).toHaveBeenCalledWith(
+      "pi_expiring",
+      expect.stringContaining("booking-card-expire"),
+    );
+    expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
+    expect(fixture.calls.some((sql) => sql.includes("DELETE FROM booking.guest_bookings"))).toBe(
+      true,
+    );
+  });
+
+  it("settles a succeeded Stripe intent instead of deleting the booking after response loss", async () => {
+    const fixture = pgLifecycleFixture("draft");
+    const stripePaymentProvider = {
+      retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("succeeded")),
+      cancelPaymentIntent: vi.fn(),
+      createPaymentIntent: vi.fn(),
+    };
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+      stripePaymentProvider,
+    });
+
+    await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["expiredDraftCleanup"],
+    });
+
+    expect(stripePaymentProvider.cancelPaymentIntent).not.toHaveBeenCalled();
+    expect(fixture.calls.some((sql) => sql.includes("UPDATE finance.payments"))).toBe(true);
+    expect(fixture.calls.some((sql) => sql.includes("DELETE FROM booking.guest_bookings"))).toBe(
+      false,
+    );
+    expect(fixture.calls.some((sql) => sql.includes("'pms-reservation-handoff'"))).toBe(true);
+  });
 });
+
+function pgLifecycleFixture(
+  status: "pending_payment" | "confirmed" | "draft",
+  options: { paidBeforeMutation?: boolean } = {},
+) {
+  const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
+  const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e117";
+  const bookingMetadata = {
+    inventoryReservation: {
+      contractVersion: "pms.inventory-reservation.v1",
+      owner: "pms",
+      source: "booking_engine",
+      quoteSessionId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      propertyId,
+      roomTypeId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      publicOfferKey: "deluxe:flexible",
+      checkIn: "2026-09-12",
+      checkOut: "2026-09-15",
+      roomCount: 1,
+    },
+  };
+  const calls: string[] = [];
+  const query = vi.fn(async (sql: string) => {
+    calls.push(sql);
+    if (sql.includes("WITH raw_deadlines") && sql.includes(`lifecycle_status = '${status}'`)) {
+      return {
+        rows: [
+          {
+            guestBookingId,
+            propertyId,
+            lifecycleStatus: status,
+            paymentStatus: "unpaid",
+            createdAt: "2026-09-01T09:00:00.000Z",
+            updatedAt: "2026-09-01T09:00:00.000Z",
+            deadlineOrWindow: "2026-09-01T09:30:00.000Z",
+            checkoutContextId: "e9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+            ...(status === "draft"
+              ? {
+                  providerPaymentIntentId: "pi_expiring",
+                  providerAccountRef: "acct_property",
+                  publicReference: "B-EXPIRING",
+                }
+              : {}),
+          },
+        ],
+      };
+    }
+    if (sql.includes("WITH updated AS")) {
+      if (options.paidBeforeMutation) return { rows: [] };
+      return {
+        rows: [
+          {
+            guestBookingId,
+            fromStatus: status,
+            toStatus: status === "confirmed" ? "canceled" : "expired",
+            bookingMetadata,
+          },
+        ],
+      };
+    }
+    if (sql.includes("FOR UPDATE OF payment, booking")) {
+      return {
+        rows: [
+          {
+            paymentId: "payment-1",
+            paymentStatus: "requires_action",
+            propertyId,
+            guestBookingId,
+            amount: "600.00",
+            currency: "EUR",
+            lifecycleStatus: "draft",
+            bookingPaymentStatus: "unpaid",
+            publicReference: "B-EXPIRING",
+            checkIn: "2026-09-12",
+            checkOut: "2026-09-15",
+            adults: 2,
+            children: 0,
+            roomCount: 1,
+            totalAmount: "600.00",
+          },
+        ],
+      };
+    }
+    if (sql.startsWith("UPDATE booking.guest_bookings")) return { rows: [{ id: guestBookingId }] };
+    if (sql.startsWith("SELECT id FROM booking.guest_bookings"))
+      return { rows: [{ id: guestBookingId }] };
+    if (sql.includes('SELECT booking_metadata AS "bookingMetadata"')) {
+      return { rows: [{ bookingMetadata }] };
+    }
+    if (sql.includes("WITH deleted AS")) return { rows: [{ guestBookingId, fromStatus: "draft" }] };
+    if (sql.includes("INSERT INTO platform.idempotency_keys")) return { rows: [{ id: "idem-1" }] };
+    if (sql.includes("INSERT INTO platform.domain_events")) return { rows: [{ id: "event-1" }] };
+    if (sql.includes("INSERT INTO platform.jobs")) return { rows: [{ id: "job-1" }] };
+    return { rows: [] };
+  });
+  const client = { query, release() {} };
+  const pool = {
+    query,
+    async connect() {
+      return client;
+    },
+    async end() {},
+  };
+  const inventoryReservationPort = {
+    reserve: vi.fn(),
+    release: vi.fn().mockResolvedValue(undefined),
+  };
+  return { pool, inventoryReservationPort, calls };
+}
+
+function stripeIntent(status: string) {
+  return {
+    paymentIntentId: "pi_expiring",
+    clientSecret: null,
+    status,
+    amountMinor: 60_000,
+    currency: "EUR",
+    propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+    bookingReference: "B-EXPIRING",
+    providerAccountRef: "acct_property",
+  };
+}
 
 type FixtureBooking = BookingLifecycleCandidate & {
   deleted?: boolean;

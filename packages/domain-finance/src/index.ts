@@ -25,6 +25,7 @@
 export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
 export * from "./paymentReadinessSnapshot.js";
+export * from "./subscriptions.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
@@ -49,6 +50,35 @@ export const FINANCE_ROUTE_CONTRACT_VERSION =
 export const FINANCE_BILLING_PLANS = ["fixed", "commission"] as const;
 
 export type FinanceBillingPlan = (typeof FINANCE_BILLING_PLANS)[number];
+
+export type PropertyFeatureLimits = {
+  maxRoomPhotosPerType: number;
+  maxAddons: number;
+  guestContactAccess: "after_acceptance" | "always";
+};
+
+export const PROPERTY_FEATURE_LIMITS = {
+  commission: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance",
+  },
+  fixed: {
+    maxRoomPhotosPerType: 15,
+    maxAddons: 9,
+    guestContactAccess: "always",
+  },
+} as const satisfies Record<FinanceBillingPlan, PropertyFeatureLimits>;
+
+export type PropertyPlanReadModel = {
+  propertyId: FinancePropertyId;
+  plan: FinanceBillingPlan;
+  limits: PropertyFeatureLimits;
+};
+
+export function propertyFeatureLimitsFor(plan: FinanceBillingPlan): PropertyFeatureLimits {
+  return PROPERTY_FEATURE_LIMITS[plan];
+}
 
 // ---------------------------------------------------------------------------
 // Payment method tokens
@@ -93,6 +123,7 @@ export const FINANCE_ROUTE_PAYMENT_METHODS = [
   "xendit",
   "cash",
   "bank_transfer",
+  "paypal",
   "manual_card",
   "wallet",
   "other",
@@ -252,7 +283,12 @@ export type FinancePaymentSettingsPatchResult =
   | {
       ok: false;
       statusCode: 400 | 404 | 409 | 500;
-      code: "invalid_command" | "property_not_found" | "idempotency_conflict" | "write_unavailable";
+      code:
+        | "invalid_command"
+        | "property_not_found"
+        | "property_currency_conflict"
+        | "idempotency_conflict"
+        | "write_unavailable";
       message: string;
     };
 
@@ -488,6 +524,7 @@ export type FinanceProviderAccountOwner =
 export type CreateStripeProviderAccountPayload = {
   email: string;
   country: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type CreateStripePropertyAccountCommand = FinanceCommandBase<
@@ -509,6 +546,7 @@ export type CreateStripeProviderAccountCommand =
 
 export type IssueStripeOnboardingLinkPayload = {
   providerAccountId: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type IssueStripePropertyOnboardingLinkCommand = FinanceCommandBase<
@@ -566,12 +604,14 @@ export type StripeConnectAccountCreateRequest = {
   email: string;
   country: string;
   idempotencyKey: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type StripeConnectOnboardingLinkRequest = {
   owner: FinanceProviderAccountOwner;
   providerAccountRef: string;
   idempotencyKey: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type StripeConnectCompensationRequest = {
@@ -586,9 +626,21 @@ export type StripeConnectProviderAccount = {
   onboardingUrl: string;
 };
 
+export type StripeConnectProviderAccountSnapshot = {
+  providerAccountRef: string;
+  chargesEnabled: boolean;
+  payoutsEnabled: boolean;
+  detailsSubmitted: boolean;
+  cardPaymentsStatus: string | null;
+  defaultCurrency: string | null;
+};
+
 export type FinanceStripeConnectProvider = {
   createAccount(request: StripeConnectAccountCreateRequest): Promise<StripeConnectProviderAccount>;
   createOnboardingLink(request: StripeConnectOnboardingLinkRequest): Promise<string>;
+  retrieveAccount(request: {
+    providerAccountRef: string;
+  }): Promise<StripeConnectProviderAccountSnapshot>;
   compensateAccountCreation?(request: StripeConnectCompensationRequest): Promise<void>;
 };
 
@@ -795,6 +847,7 @@ export type ManualCheckoutChargePaymentMethod =
   | "card"
   | "pay_at_property"
   | "bank_transfer"
+  | "paypal"
   | "manual_card"
   | "xendit"
   | "other";
@@ -1085,8 +1138,22 @@ function publicPaymentMethods(
   return settings.acceptedMethods.filter((method) => {
     if (method === "card" || method === "wallet") return canChargeOnline;
     if (method === "xendit") return canChargeOnline && settings.paymentProvider === "xendit";
+    if (method === "bank_transfer") {
+      return hasPublicPaymentInstruction(settings.depositPolicy["bankTransferInstructions"]);
+    }
+    if (method === "paypal") {
+      return validPublicPaymentEmail(settings.depositPolicy["paypalEmail"]);
+    }
     return true;
   });
+}
+
+function hasPublicPaymentInstruction(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validPublicPaymentEmail(value: unknown): boolean {
+  return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 function financeProviderCanCharge(settings: FinancePaymentSettingsReadModel): boolean {

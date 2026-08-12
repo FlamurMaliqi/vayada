@@ -34,6 +34,9 @@ ENV NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=${NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED}
 ENV NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=${NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED}
 
 # Build the application
+# @vayada/product-onboarding consumes the compiled @vayada/domain-hotels entrypoint.
+RUN npm --workspace @vayada/domain-hotels run build
+
 WORKDIR /app/apps/pms-web
 RUN npm run build
 

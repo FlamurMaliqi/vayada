@@ -1,4 +1,4 @@
--- Migration: 0060_finance_expense_categories
+-- Migration: 0067_finance_expense_categories
 -- Owner: domain-finance
 -- See: VAY-1124, engineering/pms-financials-contracts.md
 
@@ -76,7 +76,7 @@ CREATE TABLE finance.recurring_expense_rules (
   id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
   property_id     UUID          NOT NULL REFERENCES hotel_catalog.properties(id) ON DELETE RESTRICT,
   category_id     UUID          NOT NULL,
-  cadence         TEXT          NOT NULL CHECK (cadence IN ('weekly', 'monthly', 'yearly')),
+  cadence         TEXT          NOT NULL,
   starts_on       DATE          NOT NULL,
   next_due_on     DATE          NOT NULL,
   ends_on         DATE,
@@ -84,8 +84,7 @@ CREATE TABLE finance.recurring_expense_rules (
   description     TEXT,
   amount          NUMERIC(19,4) NOT NULL,
   currency        CHAR(3)       NOT NULL,
-  payment_status  TEXT          NOT NULL DEFAULT 'unpaid'
-                                  CHECK (payment_status IN ('paid', 'unpaid')),
+  payment_status  TEXT          NOT NULL DEFAULT 'unpaid',
   notes           TEXT,
   active          BOOLEAN       NOT NULL DEFAULT TRUE,
   required_category_active BOOLEAN
@@ -94,8 +93,13 @@ CREATE TABLE finance.recurring_expense_rules (
   created_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
   CONSTRAINT uq_finance_recurring_expense_rules_id_property UNIQUE (id, property_id),
+  CONSTRAINT chk_finance_recurring_expense_rules_cadence
+    CHECK (cadence IN ('weekly', 'monthly', 'yearly')),
   CONSTRAINT chk_finance_recurring_expense_rules_dates
     CHECK (
+      isfinite(starts_on) AND isfinite(next_due_on)
+      AND (ends_on IS NULL OR isfinite(ends_on))
+      AND
       next_due_on >= starts_on
       AND (ends_on IS NULL OR (ends_on >= starts_on AND next_due_on <= ends_on))
     ),
@@ -105,6 +109,8 @@ CREATE TABLE finance.recurring_expense_rules (
     CHECK (amount > 0 AND amount < 'Infinity'::NUMERIC),
   CONSTRAINT chk_finance_recurring_expense_rules_currency
     CHECK (currency::TEXT ~ '^[A-Z]{3}$'),
+  CONSTRAINT chk_finance_recurring_expense_rules_payment_status
+    CHECK (payment_status IN ('paid', 'unpaid')),
   CONSTRAINT chk_finance_recurring_expense_rules_revision
     CHECK (revision BETWEEN 1 AND 2147483647),
   CONSTRAINT fk_finance_recurring_expense_rules_category_property
