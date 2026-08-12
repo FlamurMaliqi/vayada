@@ -82,7 +82,7 @@ export async function persistManualBookingOwnedFacts(
   await insertAssignments(transaction, command, guestBookingId, rooms);
   await insertAddons(transaction, command, guestBookingId, preview);
   if (command.privateNote) await insertPrivateNote(transaction, command, guestBookingId);
-  return { guestBookingId, bookingReference, rooms, preview, total, checkIn, checkOut };
+  return { guestBookingId, bookingReference, total, checkIn, checkOut };
 }
 
 export async function markManualBookingPaid(
