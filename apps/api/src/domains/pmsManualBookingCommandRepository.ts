@@ -122,6 +122,8 @@ export function createPgPmsManualBookingCommandRepository(config: {
         return result;
       } catch (error) {
         await rollback(transaction);
+        if (commandIdUniqueConflict(error))
+          throw new PmsManualBookingCreateError("idempotency_conflict");
         throw error;
       } finally {
         transaction.release();
@@ -208,6 +210,17 @@ function publicReference(guestBookingId: string): string {
 
 function validDate(value: Date): boolean {
   return value instanceof Date && Number.isFinite(value.valueOf());
+}
+
+function commandIdUniqueConflict(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "code" in value &&
+    value.code === "23505" &&
+    "constraint" in value &&
+    value.constraint === "uq_guest_bookings_source"
+  );
 }
 
 async function rollback(transaction: PmsManualBookingTransactionClient): Promise<void> {

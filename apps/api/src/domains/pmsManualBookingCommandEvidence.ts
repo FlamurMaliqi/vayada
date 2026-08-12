@@ -100,6 +100,9 @@ export async function assertManualBookingCommandIdUnused(
   transaction: PmsManualBookingTransaction,
   commandId: string,
 ): Promise<void> {
+  await transaction.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `pms.manual-booking.command-id:${commandId}`,
+  ]);
   const found = await transaction.query(
     `SELECT id FROM booking.guest_bookings
      WHERE source_system = 'pms' AND source_booking_id = $1 FOR UPDATE`,
