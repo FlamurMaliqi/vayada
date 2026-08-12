@@ -169,6 +169,10 @@ import {
   type PmsManualBookingPreviewRoutesOptions,
 } from "./routes/pmsManualBookingPreview.js";
 import {
+  registerPmsManualBookingCreateRoutes,
+  type PmsManualBookingCreateRoutesOptions,
+} from "./routes/pmsManualBookingCreate.js";
+import {
   registerPmsModuleActivationRoutes,
   type PmsModuleActivationRepository,
 } from "./routes/pmsModuleActivations.js";
@@ -192,6 +196,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
+  pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
   pmsReviewRepository?: PmsReviewRepository;
   pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
@@ -557,6 +562,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsManualBookingPreviewRoutes, {
       prefix: "/api/pms",
       ...options.pmsManualBookingPreview,
+    });
+  }
+  if (options.pmsManualBookingCreate) {
+    app.register(registerPmsManualBookingCreateRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsManualBookingCreate,
     });
   }
   if (options.pmsModuleActivationRepository) {

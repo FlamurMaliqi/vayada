@@ -66,7 +66,7 @@ export async function registerPmsManualBookingPreviewRoutes(
         return reply.send(
           await calculateManualBookingPreview(
             authorize(request),
-            parseCommand(request.body),
+            parseManualBookingPreviewCommand(request.body),
             ports,
           ),
         );
@@ -92,7 +92,7 @@ export async function registerPmsManualBookingPreviewRoutes(
   );
 }
 
-function parseCommand(value: unknown): ManualBookingPreviewCommand {
+export function parseManualBookingPreviewCommand(value: unknown): ManualBookingPreviewCommand {
   const parsed = commandInput.safeParse(value);
   if (!parsed.success) {
     if (parsed.error.issues.some((issue) => issue.code === "unrecognized_keys"))
