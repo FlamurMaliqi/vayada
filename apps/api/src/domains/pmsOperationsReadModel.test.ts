@@ -29,6 +29,7 @@ describe("target PMS reservation stay dates", () => {
                 primaryGuestDisplayName: "Ada Lovelace",
                 primaryGuestEmail: "ada@example.com",
                 primaryGuestPhone: null,
+                primaryGuestCountryCode: "GB",
                 guestContactAccepted: false,
                 assignments: [],
                 checkinCompletedAt: null,
@@ -84,6 +85,7 @@ describe("target PMS reservation stay dates", () => {
         displayName: "Ada Lovelace",
         email: "Hidden until you accept",
         phone: "Hidden until you accept",
+        countryCode: "GB",
       },
       bookedOffer: {
         roomTypeId: "room-type-1",
@@ -118,6 +120,7 @@ describe("target PMS reservation stay dates", () => {
               primaryGuestDisplayName: "Ada Lovelace",
               primaryGuestEmail: "ada@example.com",
               primaryGuestPhone: null,
+              primaryGuestCountryCode: "GB",
               guestContactAccepted: true,
               assignments: [],
               checkinCompletedAt: null,

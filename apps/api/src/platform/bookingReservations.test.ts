@@ -26,7 +26,9 @@ function createHarness(total = "0") {
     ): Promise<Pick<QueryResult<T>, "rows">> {
       queries.push({ text, values });
       return {
-        rows: (text.includes("COUNT(*)") ? [{ total }] : []) as unknown as T[],
+        rows: (text.includes("SELECT COUNT(*)::text AS total")
+          ? [{ total }]
+          : []) as unknown as T[],
       };
     },
     async end() {
@@ -134,7 +136,8 @@ describe("target Booking reservations property scope", () => {
     expect(listQuery.values?.slice(0, -2)).toEqual(countQuery.values);
     expect(countQuery.values).toEqual([propertyId, "confirmed", "%Ada%"]);
     expect(listQuery.values).toEqual([propertyId, "confirmed", "%Ada%", 25, 5]);
-    expect(listQuery.text).toContain("contact_fixed_plan.plan_key = 'fixed'");
+    expect(listQuery.text).toContain("entitlement_key = 'direct-booking-finance'");
+    expect(listQuery.text).toContain("COUNT(*) = 1");
     expect(listQuery.text).toContain("contact_event.actor_type = 'property_user'");
 
     await harness.repository.close?.();

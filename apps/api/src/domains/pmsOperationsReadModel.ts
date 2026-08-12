@@ -131,7 +131,12 @@ export type PmsOperationalReservation = {
   status: string;
   source: PmsReservationSource;
   stay: { checkIn: PmsDate; checkOut: PmsDate; adults: number; children: number };
-  primaryGuest: { displayName: string; email: string | null; phone: string | null };
+  primaryGuest: {
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+    countryCode: string | null;
+  };
   assignments: PmsOperationalAssignment[];
   checkin: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
   checkout: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
@@ -495,6 +500,7 @@ type TargetPmsOperationalReservationRow = {
   primaryGuestDisplayName: string | null;
   primaryGuestEmail: string | null;
   primaryGuestPhone: string | null;
+  primaryGuestCountryCode: string | null;
   guestContactAccepted: boolean;
   assignments: unknown;
   checkinCompletedAt: Date | string | null;
@@ -549,6 +555,7 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   ) AS "primaryGuestDisplayName",
   primary_guest.email AS "primaryGuestEmail",
   primary_guest.phone AS "primaryGuestPhone",
+  primary_guest.country_code AS "primaryGuestCountryCode",
   ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
   COALESCE(
     NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
@@ -584,7 +591,7 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) primary_assignment ON TRUE
 LEFT JOIN LATERAL (
-  SELECT guest.first_name, guest.last_name, guest.email, guest.phone
+  SELECT guest.first_name, guest.last_name, guest.email, guest.phone, guest.country_code
   FROM booking.booking_guests guest
   WHERE guest.guest_booking_id = booking.id
   ORDER BY
@@ -825,6 +832,7 @@ function toPmsOperationalReservation(
       displayName: row.primaryGuestDisplayName ?? "",
       email: contact.email,
       phone: contact.phone,
+      countryCode: row.primaryGuestCountryCode,
     },
     assignments: toOperationalAssignments(row.assignments),
     checkin: {
