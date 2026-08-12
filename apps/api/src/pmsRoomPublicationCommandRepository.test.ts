@@ -216,6 +216,84 @@ describe("PMS room publication command repository", () => {
     expect(target.commits).toBe(1);
   });
 
+  it("blocks room media expansion above the commission limit but permits reductions", async () => {
+    const target = commandTarget({ roomMediaCount: 10 });
+    const resolverCalls: unknown[] = [];
+    const repository = createRepository(target, resolvingMediaPort(resolverCalls));
+    const assignments = Array.from({ length: 11 }, (_, index) => ({
+      mediaObjectId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      altText: null,
+      sortOrder: index,
+    }));
+
+    const result = await repository.assignRoomTypeMedia(mediaCommand({ assignments }));
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "room_media_plan_limit_reached",
+        plan: "commission",
+        currentCount: 10,
+        maxAllowed: 10,
+      },
+    });
+    expect(resolverCalls).toHaveLength(0);
+    expect(target.roomMediaRevision).toBe(3);
+    expect(target.audits).toHaveLength(1);
+    expect(target.commits).toBe(1);
+
+    const overLimitTarget = commandTarget({
+      roomMediaObjectIds: Array.from(
+        { length: 12 },
+        (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      ),
+    });
+    const overLimitRepository = createRepository(overLimitTarget, resolvingMediaPort([]));
+    await expect(
+      overLimitRepository.assignRoomTypeMedia(
+        mediaCommand({ assignments: assignments.slice(0, 10) }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    expect(overLimitTarget.roomMedia).toHaveLength(10);
+  });
+
+  it("allows reordering at the limit but rejects same-count replacement", async () => {
+    const currentIds = Array.from(
+      { length: 10 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const reorderedAssignments = [...currentIds].reverse().map((id, sortOrder) => ({
+      mediaObjectId: id,
+      altText: null,
+      sortOrder,
+    }));
+    const reorderTarget = commandTarget({ roomMediaObjectIds: currentIds });
+    const reorderRepository = createRepository(reorderTarget, resolvingMediaPort([]));
+
+    await expect(
+      reorderRepository.assignRoomTypeMedia(mediaCommand({ assignments: reorderedAssignments })),
+    ).resolves.toMatchObject({ ok: true });
+
+    const replacementTarget = commandTarget({ roomMediaObjectIds: currentIds });
+    const replacementRepository = createRepository(replacementTarget, resolvingMediaPort([]));
+    const replacementAssignments = reorderedAssignments.map((assignment, index) =>
+      index === 0 ? { ...assignment, mediaObjectId } : assignment,
+    );
+    await expect(
+      replacementRepository.assignRoomTypeMedia(
+        mediaCommand({ assignments: replacementAssignments }),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "room_media_plan_limit_reached",
+        plan: "commission",
+        currentCount: 10,
+        maxAllowed: 10,
+      },
+    });
+  });
+
   it("finalizes deterministic media readiness and vocabulary failures without events", async () => {
     const mediaTarget = commandTarget();
     const mediaRepository = createRepository(mediaTarget, resolvingMediaPort([], "not_ready"));
@@ -355,13 +433,21 @@ function commandTarget(
   options: {
     authorized?: boolean;
     roomMediaRevision?: number;
+    roomMediaCount?: number;
+    roomMediaObjectIds?: string[];
     roomAmenitiesRevision?: number;
   } = {},
 ) {
   let roomMediaRevision = options.roomMediaRevision ?? 3;
+  let roomMediaCount = options.roomMediaCount ?? options.roomMediaObjectIds?.length ?? 0;
   let roomAmenitiesRevision = options.roomAmenitiesRevision ?? 1;
   let roomAmenitiesReviewedAt: string | null = null;
-  let roomMedia: { mediaObjectId: string; altText: string | null; sortOrder: number }[] = [];
+  let roomMedia: { mediaObjectId: string; altText: string | null; sortOrder: number }[] =
+    options.roomMediaObjectIds?.map((id, sortOrder) => ({
+      mediaObjectId: id,
+      altText: null,
+      sortOrder,
+    })) ?? [];
   let amenities: string[] = [];
   let transactionSnapshot: ReturnType<typeof snapshot> | null = null;
   let commits = 0;
@@ -374,6 +460,7 @@ function commandTarget(
   function snapshot() {
     return {
       roomMediaRevision,
+      roomMediaCount,
       roomAmenitiesRevision,
       roomAmenitiesReviewedAt,
       roomMedia: roomMedia.map((item) => ({ ...item })),
@@ -386,6 +473,7 @@ function commandTarget(
 
   function restore(state: ReturnType<typeof snapshot>) {
     roomMediaRevision = state.roomMediaRevision;
+    roomMediaCount = state.roomMediaCount;
     roomAmenitiesRevision = state.roomAmenitiesRevision;
     roomAmenitiesReviewedAt = state.roomAmenitiesReviewedAt;
     roomMedia = state.roomMedia;
@@ -471,11 +559,18 @@ function commandTarget(
     if (text.includes('SELECT room_media_revision AS "roomMediaRevision"')) {
       return rows([{ roomMediaRevision } as unknown as T]);
     }
+    if (text.includes('AS "currentMediaCount"')) {
+      return rows([{ currentMediaCount: roomMediaCount } as unknown as T]);
+    }
+    if (text.includes('AS "mediaObjectId"') && text.includes("pms.room_type_media")) {
+      return rows(roomMedia.map(({ mediaObjectId }) => ({ mediaObjectId }) as unknown as T));
+    }
     if (text.includes('SELECT room_amenities_revision AS "roomAmenitiesRevision"')) {
       return rows([{ roomAmenitiesRevision, roomAmenitiesReviewedAt } as unknown as T]);
     }
     if (text.includes("DELETE FROM pms.room_type_media")) {
       roomMedia = [];
+      roomMediaCount = 0;
       return emptyRows<T>();
     }
     if (text.includes("INSERT INTO pms.room_type_media")) {
@@ -490,6 +585,7 @@ function commandTarget(
         altText: assignment.alt_text,
         sortOrder: assignment.sort_order,
       }));
+      roomMediaCount = roomMedia.length;
       return emptyRows<T>();
     }
     if (text.includes("SET room_media_revision = room_media_revision + 1")) {

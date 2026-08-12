@@ -466,7 +466,7 @@ export function createRoomAuthoringClient(
         ),
       }),
       purpose: "pms.room_type.media",
-      visibility: "private",
+      visibility: "public",
       resource: {
         product: "hotel_catalog",
         resourceType: "property",
