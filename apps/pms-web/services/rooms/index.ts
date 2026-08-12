@@ -613,7 +613,12 @@ async function replaceRoomTypeMedia(
         sortOrder,
       }))
     : undefined;
-  if (legacyMediaSnapshot?.some(({ url }) => !url.trim())) {
+  if (
+    legacyMediaSnapshot?.some(({ url }) => {
+      const resolvedUrl = url.trim();
+      return !resolvedUrl || resolvedUrl.startsWith("blob:");
+    })
+  ) {
     throw new Error("Every saved room photo must finish uploading before the room can be saved.");
   }
   await pmsOperationsRoomsReadService.replaceRoomTypeMedia(

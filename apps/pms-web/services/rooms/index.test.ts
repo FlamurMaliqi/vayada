@@ -245,6 +245,23 @@ describe("roomsService.update", () => {
     );
   });
 
+  it("rejects unfinished blob previews before replacing room media", async () => {
+    mocks.patch.mockResolvedValueOnce({
+      contractVersion: "pms-operations.v1",
+      propertyId: "pms-property-1",
+      item: pmsRoomTypeItem(),
+    });
+
+    await expect(
+      roomsService.update("room-type-1", {
+        images: [{ url: "blob:room-preview" }],
+      }),
+    ).rejects.toThrow(
+      "Every saved room photo must finish uploading before the room can be saved.",
+    );
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
   it("preserves legacy photos while adding validated Platform Media", async () => {
     const currentItem = pmsRoomTypeItem({
       media: [{ url: "https://legacy.example.com/first.webp" }],
