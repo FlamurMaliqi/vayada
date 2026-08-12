@@ -1,4 +1,4 @@
--- Migration: 0069_booking_nightly_revenue_evidence
+-- Migration: 0071_booking_nightly_revenue_evidence
 -- Owner: domain-booking; see VAY-1178 and engineering/pms-financials-contracts.md
 ALTER TABLE booking.guest_bookings ADD CONSTRAINT uq_guest_bookings_id_property_currency UNIQUE (id, property_id, currency);
 CREATE TABLE booking.nightly_revenue_evidence (

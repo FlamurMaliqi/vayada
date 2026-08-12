@@ -1,4 +1,4 @@
--- Migration: 0070_booking_nightly_revenue_adjustments
+-- Migration: 0072_booking_nightly_revenue_adjustments
 ALTER TABLE booking.nightly_revenue_evidence DROP CONSTRAINT chk_booking_nightly_revenue_evidence_enums, DROP CONSTRAINT chk_booking_nightly_revenue_evidence_event;
 ALTER TABLE booking.nightly_revenue_evidence
   ADD CONSTRAINT chk_booking_nightly_revenue_evidence_enums CHECK (economic_event IN
