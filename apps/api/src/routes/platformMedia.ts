@@ -33,6 +33,7 @@ export const PLATFORM_MEDIA_IMPORT_CONTRACT_VERSION = "platform-media-import.v1"
 
 export type PlatformMediaPurpose =
   | "identity.user.profile_image"
+  | "booking.header_logo"
   | "property.hero_image"
   | "property.gallery_image"
   | "property.logo"
@@ -260,6 +261,25 @@ export class PlatformMediaTargetInvalidError extends Error {
   }
 }
 
+export class PlatformMediaPlanLimitError extends Error {
+  readonly code = "media_plan_limit_reached";
+
+  constructor(
+    readonly plan: "commission" | "fixed",
+    readonly currentCount: number,
+    readonly maxAllowed: number,
+  ) {
+    super(
+      plan === "commission"
+        ? currentCount > maxAllowed
+          ? "You have more photos than your plan allows. Remove photos to add new ones, or upgrade for up to 15."
+          : "You've reached the 10-photo limit. Upgrade to the paid plan for up to 15 photos per room."
+        : "You've reached the 15-photo limit for the paid plan.",
+    );
+    this.name = "PlatformMediaPlanLimitError";
+  }
+}
+
 export class PlatformMediaStagingChangedError extends Error {
   readonly code = "platform_media_staging_changed";
 
@@ -473,6 +493,8 @@ export type PlatformMediaPurposePolicy = {
 
 const imageContentTypes = ["image/jpeg", "image/png", "image/webp"] as const;
 const imageExtensions = [".jpg", ".jpeg", ".png", ".webp"] as const;
+const bookingHeaderLogoContentTypes = ["image/jpeg", "image/png", "image/svg+xml"] as const;
+const bookingHeaderLogoExtensions = [".jpg", ".jpeg", ".png", ".svg"] as const;
 const heicConversionMessage =
   "HEIC and HEIF profile photos are not supported yet. Convert the photo to JPG, PNG, or WebP and try again.";
 const publicImageVariants = ["original_safe", "large", "thumbnail", "blur_preview"] as const;
@@ -481,7 +503,9 @@ const defaultMaxImagePixels = 60_000_000;
 
 export function isAutoApprovedPublicMediaPurpose(purpose: PlatformMediaPurpose): boolean {
   return (
-    purpose === "identity.user.profile_image" || purpose === "marketplace.creator.profile_image"
+    purpose === "identity.user.profile_image" ||
+    purpose === "booking.header_logo" ||
+    purpose === "marketplace.creator.profile_image"
   );
 }
 
@@ -500,6 +524,22 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     privateOnly: false,
     targetResourceProduct: "platform",
     targetResourceType: "user_profile",
+    requiredVariants: publicImageVariants,
+  },
+  "booking.header_logo": {
+    purpose: "booking.header_logo",
+    permission: "booking.settings.manage",
+    allowedRelationships: ["owner", "operator"],
+    allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
+    allowedContentTypes: bookingHeaderLogoContentTypes,
+    allowedExtensions: bookingHeaderLogoExtensions,
+    maxFileSizeBytes: 500 * 1024,
+    maxFileCount: 1,
+    maxImagePixels: defaultMaxImagePixels,
+    autoApprovePublicOnFinalize: isAutoApprovedPublicMediaPurpose("booking.header_logo"),
+    privateOnly: false,
+    targetResourceProduct: "booking",
+    targetResourceType: "booking_hotel",
     requiredVariants: publicImageVariants,
   },
   "property.hero_image": {
@@ -872,34 +912,42 @@ export async function registerPlatformMediaRoutes(
         }),
       );
 
-      const session = await options.repository.createUploadSession({
-        context,
-        sessionId,
-        uploadSessionKey,
-        stagingPrefix,
-        request: normalizedRequest,
-        policy,
-        target: resolvedTarget.target,
-        uploadTargets,
-        now: createdAt,
-        expiresAt,
-        auditEvent: {
-          action: "platform_media.upload_session.created",
-          auditKey: uploadSessionKey,
-          actorUserId: context.actor.internalUserId,
-          organizationId: context.selectedOrganization.organizationId,
-          targetType: "media_upload_session",
-          targetId: sessionId,
-          requestId: context.audit.requestId,
-          metadata: {
-            purpose: request.body.purpose,
-            requestedVisibility,
-            resource: request.body.resource,
-            target: resolvedTarget.target,
-            fileCount: files.length,
+      let session: PlatformMediaSessionRecord;
+      try {
+        session = await options.repository.createUploadSession({
+          context,
+          sessionId,
+          uploadSessionKey,
+          stagingPrefix,
+          request: normalizedRequest,
+          policy,
+          target: resolvedTarget.target,
+          uploadTargets,
+          now: createdAt,
+          expiresAt,
+          auditEvent: {
+            action: "platform_media.upload_session.created",
+            auditKey: uploadSessionKey,
+            actorUserId: context.actor.internalUserId,
+            organizationId: context.selectedOrganization.organizationId,
+            targetType: "media_upload_session",
+            targetId: sessionId,
+            requestId: context.audit.requestId,
+            metadata: {
+              purpose: request.body.purpose,
+              requestedVisibility,
+              resource: request.body.resource,
+              target: resolvedTarget.target,
+              fileCount: files.length,
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (error instanceof PlatformMediaPlanLimitError) {
+          return sendMediaError(reply, 409, error.code, error.message);
+        }
+        throw error;
+      }
 
       if (
         !uploadSessionMatchesRequest(session, {
@@ -2027,6 +2075,7 @@ function normalizeUploadContentType(filename: string, contentType: string): stri
   const normalized = normalizeContentType(contentType);
   if (normalized) return normalized;
   const extension = filenameExtension(filename);
+  if (extension === ".svg") return "image/svg+xml";
   if (extension === ".png") return "image/png";
   if (extension === ".webp") return "image/webp";
   if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
@@ -2528,6 +2577,8 @@ function contentTypeAllowsExtension(contentType: string, extension: string): boo
       return extension === ".webp";
     case "image/gif":
       return extension === ".gif";
+    case "image/svg+xml":
+      return extension === ".svg";
     case "image/heic":
       return extension === ".heic";
     case "image/heif":

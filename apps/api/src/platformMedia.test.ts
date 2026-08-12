@@ -79,6 +79,7 @@ const marketplaceCreatorProfileCase = contractCase("marketplace-creator-profile-
 const marketplaceOfferMediaCase = contractCase("marketplace-offer-media-upload-session");
 const allMediaPurposes: readonly PlatformMediaPurpose[] = [
   "identity.user.profile_image",
+  "booking.header_logo",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",
@@ -1541,6 +1542,105 @@ describe("platform media upload routes", () => {
         effectiveVisibility: "private",
       },
     });
+  });
+
+  it("publishes Booking-scoped SVG header logos within the 500 KB limit", async () => {
+    const app = buildMediaApp({
+      permissions: ["booking.settings.manage"],
+      resources: [
+        {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+          relationship: "owner",
+        },
+      ],
+    });
+    const resource = {
+      product: "booking",
+      resourceType: "booking_hotel",
+      resourceId: "booking_hotel_alpenrose",
+    };
+    const files = [
+      {
+        clientFileId: "logo",
+        filename: "logo.svg",
+        contentType: "image/svg+xml",
+        sizeBytes: 1024,
+      },
+    ];
+
+    const created = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: { purpose: "booking.header_logo", visibility: "public", resource, files },
+    });
+    expect(created.statusCode).toBe(201);
+    const upload = created.body as MediaCreateResponse;
+
+    const finalized = await injectJson(app, {
+      method: "POST",
+      url: `/api/media/upload-sessions/${upload.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: [
+          {
+            uploadTargetId: upload.uploadTargets[0]!.uploadTargetId,
+            contentType: "image/svg+xml",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    });
+    expect(finalized.statusCode).toBe(200);
+    expect(finalized.body).toMatchObject({
+      mediaObject: {
+        purpose: "booking.header_logo",
+        visibility: "public",
+        approvalStatus: "approved",
+        lifecycleStatus: "active",
+        variants: expect.arrayContaining([
+          expect.objectContaining({ publicCdnUrl: expect.stringMatching(/^https:\/\//) }),
+        ]),
+      },
+    });
+
+    const oversized = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "booking.header_logo",
+        visibility: "public",
+        resource,
+        files: [{ ...files[0], sizeBytes: 500 * 1024 + 1 }],
+      },
+    });
+
+    expect(oversized.statusCode).toBe(400);
+    expect(oversized.body).toMatchObject({ code: "media_file_too_large" });
+
+    const unsupportedWebp = await injectJson(app, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        purpose: "booking.header_logo",
+        visibility: "public",
+        resource,
+        files: [
+          {
+            clientFileId: "logo",
+            filename: "logo.webp",
+            contentType: "image/webp",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    });
+    expect(unsupportedWebp.statusCode).toBe(400);
+    expect(unsupportedWebp.body).toMatchObject({ code: "unsupported_media_type" });
   });
 
   it.each(["property.hero_image", "property.logo"] as const)(

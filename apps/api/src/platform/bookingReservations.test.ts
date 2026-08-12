@@ -134,6 +134,8 @@ describe("target Booking reservations property scope", () => {
     expect(listQuery.values?.slice(0, -2)).toEqual(countQuery.values);
     expect(countQuery.values).toEqual([propertyId, "confirmed", "%Ada%"]);
     expect(listQuery.values).toEqual([propertyId, "confirmed", "%Ada%", 25, 5]);
+    expect(listQuery.text).toContain("contact_fixed_plan.plan_key = 'fixed'");
+    expect(listQuery.text).toContain("contact_event.actor_type = 'property_user'");
 
     await harness.repository.close?.();
     expect(harness.wasClosed()).toBe(true);
@@ -152,5 +154,7 @@ describe("target Booking reservations property scope", () => {
     );
     expect(listQuery?.text).toContain('booking.check_in::text AS "checkIn"');
     expect(listQuery?.text).toContain('booking.check_out::text AS "checkOut"');
+    expect(listQuery?.text).toContain('AS "guestContactAccepted"');
+    expect(listQuery?.text).toContain("contact_event.actor_type = 'property_user'");
   });
 });

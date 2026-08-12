@@ -1,4 +1,11 @@
+import type { PropertyPlanReadModel } from "@vayada/domain-finance";
 import pg from "pg";
+
+import {
+  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
+  guestContactForPropertyPlan,
+} from "./bookingGuestContactAccess.js";
+import { readPropertyPlan } from "./propertyPlanReadModel.js";
 
 export type PmsDecimalAmount = string;
 export type PmsCurrencyCode = string;
@@ -183,7 +190,7 @@ export type PmsOperationsReadRepository = {
 export type PmsOperationsReadPool = {
   query<T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
-    values?: unknown[],
+    values?: readonly unknown[],
   ): Promise<pg.QueryResult<T>>;
   end?(): Promise<void>;
 };
@@ -330,7 +337,8 @@ export function createTargetPmsOperationsReadRepository(config: {
     },
 
     async listReservationsByPropertyId(propertyId, filters) {
-      const { whereSql, params } = toReservationWhere(propertyId, filters);
+      const propertyPlan = await readPropertyPlan(pool, propertyId);
+      const { whereSql, params } = toReservationWhere(propertyId, filters, propertyPlan);
       const listParams = [...params, filters.limit, filters.offset];
       const limitParam = params.length + 1;
       const offsetParam = params.length + 2;
@@ -374,7 +382,7 @@ export function createTargetPmsOperationsReadRepository(config: {
       ]);
 
       return {
-        items: reservationResult.rows.map(toPmsOperationalReservation),
+        items: reservationResult.rows.map((row) => toPmsOperationalReservation(row, propertyPlan)),
         total: toInteger(countResult.rows[0]?.total ?? 0),
         sourceFreshness: {},
       };
@@ -390,8 +398,11 @@ export function createTargetPmsOperationsReadRepository(config: {
         [propertyId, range.to, range.from],
       );
 
+      const propertyPlan = result.rows.length ? await readPropertyPlan(pool, propertyId) : null;
       return {
-        items: result.rows.map(toPmsOperationalReservation),
+        items: propertyPlan
+          ? result.rows.map((row) => toPmsOperationalReservation(row, propertyPlan))
+          : [],
         total: result.rows.length,
         sourceFreshness: {},
       };
@@ -405,7 +416,9 @@ export function createTargetPmsOperationsReadRepository(config: {
         [propertyId, guestBookingId],
       );
 
-      return result.rows[0] ? toPmsOperationalReservation(result.rows[0]) : null;
+      if (!result.rows[0]) return null;
+      const propertyPlan = await readPropertyPlan(pool, propertyId);
+      return toPmsOperationalReservation(result.rows[0], propertyPlan);
     },
 
     async close() {
@@ -482,6 +495,7 @@ type TargetPmsOperationalReservationRow = {
   primaryGuestDisplayName: string | null;
   primaryGuestEmail: string | null;
   primaryGuestPhone: string | null;
+  guestContactAccepted: boolean;
   assignments: unknown;
   checkinCompletedAt: Date | string | null;
   checkinPendingFlags: unknown;
@@ -535,6 +549,7 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   ) AS "primaryGuestDisplayName",
   primary_guest.email AS "primaryGuestEmail",
   primary_guest.phone AS "primaryGuestPhone",
+  ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
   COALESCE(
     NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
     NULLIF(booking.booking_metadata #>> '{selectedOffer,roomTypeId}', ''),
@@ -786,9 +801,14 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
 
 function toPmsOperationalReservation(
   row: TargetPmsOperationalReservationRow,
+  propertyPlan: PropertyPlanReadModel,
 ): PmsOperationalReservation {
   const bookedRoomTypeId = row.bookedRoomTypeId.trim();
   const bookedRoomName = row.bookedRoomName.trim();
+  const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, {
+    email: row.primaryGuestEmail,
+    phone: row.primaryGuestPhone,
+  });
 
   return {
     guestBookingId: row.guestBookingId,
@@ -803,8 +823,8 @@ function toPmsOperationalReservation(
     },
     primaryGuest: {
       displayName: row.primaryGuestDisplayName ?? "",
-      email: row.primaryGuestEmail,
-      phone: row.primaryGuestPhone,
+      email: contact.email,
+      phone: contact.phone,
     },
     assignments: toOperationalAssignments(row.assignments),
     checkin: {
@@ -914,6 +934,7 @@ function toRoomBlockWhere(
 function toReservationWhere(
   propertyId: string,
   filters: PmsReservationListFilters,
+  propertyPlan: PropertyPlanReadModel,
 ): { whereSql: string; params: unknown[] } {
   const params: unknown[] = [propertyId];
   const conditions = ["booking.property_id = $1"];
@@ -940,8 +961,14 @@ function toReservationWhere(
         OR primary_guest.first_name ILIKE $${params.length}
         OR primary_guest.last_name ILIKE $${params.length}
         OR CONCAT(primary_guest.first_name, ' ', primary_guest.last_name) ILIKE $${params.length}
-        OR primary_guest.email ILIKE $${params.length}
-        OR primary_guest.phone ILIKE $${params.length}
+        OR (
+          (${propertyPlan.limits.guestContactAccess === "always"}
+            OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
+          AND (
+            primary_guest.email ILIKE $${params.length}
+            OR primary_guest.phone ILIKE $${params.length}
+          )
+        )
         OR EXISTS (
           SELECT 1
           FROM pms.operational_booking_assignments assignment_search
