@@ -133,6 +133,30 @@ describe("target provider webhook routes", () => {
     await app.close();
   });
 
+  it("removes Stripe client secrets before receipt, event, and job persistence", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { stripe: "whsec_stripe_test" },
+        modes: { stripe: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const payload = providerFixture("stripe").payload;
+    const object = (payload.data as { object: Record<string, unknown> }).object;
+    object.client_secret = "pi_secret_must_not_persist";
+
+    const response = await postProviderPayload(app, "stripe", payload);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.stringify(store.receipts)).not.toContain("pi_secret_must_not_persist");
+    expect(JSON.stringify(store.domainEvents)).not.toContain("pi_secret_must_not_persist");
+    expect(JSON.stringify(store.jobs)).not.toContain("pi_secret_must_not_persist");
+    expect(JSON.stringify(store.receipts)).not.toContain("client_secret");
+    await app.close();
+  });
+
   it("uses actual Channex message payload ids for receipt and domain event keys", async () => {
     const store = createMemoryProviderWebhookStore();
     const app = buildApp({
@@ -738,6 +762,89 @@ describe("target provider webhook routes", () => {
     expect(store.domainEvents).toHaveLength(1);
     expect(store.jobs).toHaveLength(1);
     await mutatingApp.close();
+  });
+
+  it("normalizes Stripe subscription lifecycle events into the durable Finance queue", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { stripe: "whsec_stripe_test" },
+        modes: { stripe: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const checkout = {
+      id: "evt_checkout_fixed",
+      type: "checkout.session.completed",
+      created: 1_786_363_200,
+      data: {
+        object: {
+          id: "cs_fixed",
+          subscription: "sub_fixed",
+          customer: "cus_fixed",
+          client_reference_id: "property-1",
+          metadata: {
+            vayada_property_id: "property-1",
+            vayada_organization_id: "organization-1",
+          },
+        },
+      },
+    };
+    const invoicePaid = {
+      id: "evt_invoice_paid_fixed",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_fixed",
+          customer: "cus_fixed",
+          parent: {
+            subscription_details: {
+              subscription: "sub_fixed",
+              metadata: {
+                vayada_property_id: "property-1",
+                vayada_organization_id: "organization-1",
+              },
+            },
+          },
+        },
+      },
+    };
+
+    await postProviderPayload(app, "stripe", checkout);
+    await postProviderPayload(app, "stripe", invoicePaid);
+
+    expect(store.receipts.map((receipt) => receipt.normalizedPreview)).toMatchObject([
+      {
+        resourceProduct: "finance",
+        queueName: "finance.subscriptions",
+        jobType: "finance.subscription-webhook",
+        payload: {
+          eventType: "checkout.session.completed",
+          subscriptionId: "sub_fixed",
+          checkoutSessionId: "cs_fixed",
+          propertyId: "property-1",
+          organizationId: "organization-1",
+        },
+      },
+      {
+        resourceProduct: "finance",
+        queueName: "finance.subscriptions",
+        jobType: "finance.subscription-webhook",
+        payload: {
+          eventType: "invoice.paid",
+          eventCreated: Math.floor(fixedNow.getTime() / 1_000),
+          subscriptionId: "sub_fixed",
+          propertyId: "property-1",
+          organizationId: "organization-1",
+        },
+      },
+    ]);
+    expect(store.jobs.map((job) => job.jobKey)).toEqual([
+      "finance.subscription-webhook:stripe:evt_checkout_fixed:v1",
+      "finance.subscription-webhook:stripe:evt_invoice_paid_fixed:v1",
+    ]);
+    await app.close();
   });
 });
 

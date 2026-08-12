@@ -121,6 +121,69 @@ unexposed and covers the custom password login/signup/session contracts:
 npm --workspace vayada-api run test -- src/authSession.test.ts
 ```
 
+## First-Party Auth Regressions
+
+`tests/e2e/first-party-auth` is the focused regression suite for the five
+migrated browser surfaces. It covers password login, signup and recovery where
+available, session refresh, CSRF, logout, app-local Google callback state,
+Marketplace signup-to-onboarding, cross-app handoff, stale-cookie cleanup, and
+production routing guards. Chromium runs with third-party-cookie phaseout
+enabled, and the browser flows assert that auth requests and cookies stay on
+the current frontend origin.
+
+Run against the full portless stack:
+
+```bash
+npm run dev:workos-local
+npm run e2e:first-party-auth
+```
+
+Run with isolated plain-port frontend servers and mocked auth responses:
+
+```bash
+E2E_FIRST_PARTY_AUTH_ONLY=1 E2E_START_SERVERS=1 npm run e2e:first-party-auth
+```
+
+The PR workflow runs the isolated browser suite plus every frontend gateway
+unit test. Those unit tests lock down multiple `Set-Cookie` values,
+`Cache-Control: private, no-store`, `Vary: Cookie`, redirect status and
+`Location`, and the request/response header allowlists. Real WorkOS and Google
+credentials are never stored in the repository or Playwright artifacts.
+
+The deterministic Google cases simulate the external redirect while exercising
+the real frontend login/signup code and exact app-local callback shape. For a
+live WorkOS sandbox check, first start `npm run dev:workos-local` with staging
+WorkOS credentials in `apps/api/.env`. In a second terminal, resolve the same
+worktree-qualified Marketplace origin and pass it to Playwright:
+
+```bash
+E2E_MARKETPLACE_BASE_URL="$(portless get marketplace)" \
+  E2E_WORKOS_SANDBOX_GOOGLE=1 npm run e2e:first-party-auth:live -- --headed
+```
+
+Complete Google sign-in in the headed browser with a sandbox-only account. The
+test waits for the callback and verifies `/auth/session` returns 200 instead of
+`missing_session`. The dedicated live project disables traces, screenshots, and
+video so provider credentials and session material are not retained in test
+artifacts.
+
+WorkOS must register `<origin returned by portless get>/auth/oauth/google/callback`
+for the active worktree. For a canonical root checkout, the five exact callback
+URIs are:
+
+```text
+https://marketplace.localhost/auth/oauth/google/callback
+https://admin.booking.localhost/auth/oauth/google/callback
+https://pms.localhost/auth/oauth/google/callback
+https://affiliate.localhost/auth/oauth/google/callback
+https://admin.localhost/auth/oauth/google/callback
+```
+
+Google account interaction remains intentionally manual because provider login
+challenges are not stable or appropriate for unattended CI. The callback,
+cookie, state, session, and `missing_session` regression assertions remain
+automated.
+
 ## Shared Hotel Setup Smoke
 
 The focused first-run setup smoke lives in `tests/e2e/pms-web/setup.spec.ts`.

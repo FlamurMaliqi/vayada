@@ -1,6 +1,131 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { toConfirmationBooking, type BookingConfirmationSource } from "./bookingDraft";
+import {
+  clearPendingBookingCreate,
+  expireCheckoutIdempotencyKeyAt,
+  getCheckoutIdempotencyKey,
+  readPendingBookingCreate,
+  saveGuestDetails,
+  savePendingBookingCreate,
+  toConfirmationBooking,
+  type BookingConfirmationSource,
+} from "./bookingDraft";
+
+describe("booking create recovery", () => {
+  const values = new Map<string, string>();
+
+  beforeEach(() => {
+    values.clear();
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("retains the original create command without depending on the current room lookup", () => {
+    saveGuestDetails({
+      roomTypeId: "room-1",
+      guestFirstName: "Ada",
+      guestLastName: "Lovelace",
+      guestEmail: "ada@example.com",
+      guestPhone: "+4912345",
+    });
+    const quoteIdentity = "hotel|room-1|card";
+    const firstQuoteKey = getCheckoutIdempotencyKey("quote", quoteIdentity);
+    expireCheckoutIdempotencyKeyAt("quote", quoteIdentity, "2020-01-01T00:00:00.000Z");
+    expect(getCheckoutIdempotencyKey("quote", quoteIdentity)).not.toBe(firstQuoteKey);
+
+    const createKey = getCheckoutIdempotencyKey("create", "quote-original");
+    const quote = { quoteId: "quote-original", expiresAt: "2020-01-01T00:15:00.000Z" };
+    const requestBody = {
+      roomTypeId: "room-1",
+      guestFirstName: "Ada",
+      guestLastName: "Lovelace",
+      guestEmail: "ada@example.com",
+      guestPhone: "+4912345",
+      checkIn: "2026-08-20",
+      checkOut: "2026-08-22",
+      adults: 2,
+      children: 0,
+      paymentMethod: "card",
+      addonIds: ["breakfast"],
+      quoteId: quote.quoteId,
+    };
+    savePendingBookingCreate({
+      slug: "recovery-hotel",
+      quote,
+      quoteId: quote.quoteId,
+      paymentMethod: "card",
+      requestBody,
+      createIdempotencyKey: createKey,
+    });
+    saveGuestDetails({
+      roomTypeId: "room-2",
+      guestFirstName: "Ada",
+      guestLastName: "Lovelace",
+      guestEmail: "ada@example.com",
+      guestPhone: "+4912345",
+      addonIds: ["dinner"],
+    });
+
+    // A response can be lost before the draft id is known. Reload recovery
+    // must still replay the original create command instead of a new quote or
+    // details submission until the original payment reaches a terminal state.
+    expect(readPendingBookingCreate<typeof quote>("recovery-hotel")).toEqual({
+      slug: "recovery-hotel",
+      quote,
+      quoteId: "quote-original",
+      paymentMethod: "card",
+      requestBody,
+      createIdempotencyKey: createKey,
+    });
+
+    clearPendingBookingCreate();
+    expect(readPendingBookingCreate("recovery-hotel")).toBeNull();
+  });
+
+  it.each(["pay_at_property", "paypal"])(
+    "preserves a %s create attempt after its quote expires",
+    (paymentMethod) => {
+      const quote = { quoteId: `quote-${paymentMethod}`, expiresAt: "2020-01-01T00:15:00.000Z" };
+      const createIdempotencyKey = getCheckoutIdempotencyKey("create", quote.quoteId);
+      const requestBody = {
+        roomTypeId: "room-1",
+        guestFirstName: "Ada",
+        guestLastName: "Lovelace",
+        guestEmail: "ada@example.com",
+        guestPhone: "+4912345",
+        checkIn: "2026-08-20",
+        checkOut: "2026-08-22",
+        adults: 2,
+        children: 0,
+        paymentMethod,
+        quoteId: quote.quoteId,
+      };
+      savePendingBookingCreate({
+        slug: "manual-hotel",
+        quote,
+        quoteId: quote.quoteId,
+        paymentMethod,
+        requestBody,
+        createIdempotencyKey,
+      });
+
+      expect(readPendingBookingCreate<typeof quote>("manual-hotel")).toMatchObject({
+        quoteId: quote.quoteId,
+        paymentMethod,
+        requestBody,
+        createIdempotencyKey,
+      });
+    },
+  );
+});
 
 describe("toConfirmationBooking", () => {
   it("adapts the compact target booking response with checkout display details", () => {

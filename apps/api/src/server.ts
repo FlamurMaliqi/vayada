@@ -5,11 +5,17 @@ import {
 } from "@vayada/backend-authorization";
 import { createBookingDesignReadinessProvider } from "@vayada/domain-booking";
 import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
+import pg from "pg";
 
 import { buildApp, type ApiAuthOptions } from "./app.js";
-import { type ApiConfig, loadConfig } from "./config.js";
+import { type ApiConfig, loadConfig, stripeSubscriptionRuntimeEnabled } from "./config.js";
 import { createPgBookingDesignCatalogEvidenceRepository } from "./domains/bookingDesignCatalogEvidenceRepository.js";
 import { createPgBookingDesignRepository } from "./domains/bookingDesignRepository.js";
+import { createBookingGuestPolicyCatalogCurrentOwnerEvidenceAdapter } from "./domains/bookingGuestPolicyCatalogCurrentOwnerEvidence.js";
+import { createBookingGuestPolicyCurrentOwnerEvidenceAdapter } from "./domains/bookingGuestPolicyCurrentOwnerEvidence.js";
+import { createPgBookingGuestPolicyRepository } from "./domains/bookingGuestPolicyRepository.js";
+import { createPgBookingGuestPolicyScopeAuthorizationPort } from "./domains/bookingGuestPolicyScopeAuthorization.js";
+import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCatalogCurrentOwnerEvidence.js";
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
 import { createPgHotelMediaResolutionPort } from "./platform/hotelMediaResolver.js";
@@ -23,6 +29,7 @@ import { createPgIdentityLifecycleCommandBus } from "./platform/identityLifecycl
 import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
 import { createTargetPublicBookabilityPublicationCommandPort } from "./platform/publicBookabilityPublication.js";
 import { createPgProductAuditSink } from "./platform/productAudit.js";
+import { createPgAuthSessionHandoffRepository } from "./platform/authSessionHandoffs.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
 import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
 import { composePlatformMediaRuntime } from "./platform/platformMediaRuntime.js";
@@ -35,11 +42,58 @@ import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
+import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
+import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
+import { createPgPropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
+import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
+import { createPmsRoomAmenityVocabularyValidationPort } from "./domains/pmsRoomAmenityVocabulary.js";
+import { createPgPmsRoomPublicationCommandRepository } from "./domains/pmsRoomPublicationCommandRepository.js";
+import { createPgPmsRoomPublicationReadModel } from "./domains/pmsRoomPublicationReadModel.js";
+import { createPgPropertySetupFinanceOwnerScopePort } from "./domains/propertySetupFinanceOwnerScope.js";
+import { createPgPropertySetupPmsOwnerRepository } from "./domains/propertySetupPmsOwnerRepository.js";
+import { createPgPmsPricingReadModel } from "./domains/pmsPricingReadModel.js";
+import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
+import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
+import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from "./domains/hotelCatalogOperatingCalendarPropertyProfileEvidence.js";
+import { createPgPmsOperatingCalendarReadModel } from "./domains/pmsOperatingCalendarReadModel.js";
+import { createPgFinancePaymentReadinessReadModel } from "./domains/financePaymentReadinessReadModel.js";
+import { createTargetFinanceBillingConfigReadPort } from "./domains/financeBillingConfigReadModel.js";
+import { createFinanceSubscriptionService } from "./domains/financeSubscriptionService.js";
+import { createPgFinanceSubscriptionStore } from "./domains/financeSubscriptionStore.js";
+import { createStripeFinanceSubscriptionProvider } from "./domains/stripeFinanceSubscriptions.js";
+import { createStripeBookingPaymentProvider } from "./domains/stripeBookingPayments.js";
+import { createStripeConnectProvider } from "./domains/stripeConnect.js";
+import { createPgMarketplaceSetupLifecycleStatusRepository } from "./domains/marketplaceSetupLifecycleStatusRepository.js";
+import { createPgBookingSetupLifecycleStatusRepository } from "./domains/bookingSetupLifecycleStatusRepository.js";
+import {
+  createPropertySetupHotelCatalogStateProvider,
+  createPropertySetupMarketplaceStateProvider,
+} from "./platform/propertySetupCatalogMarketplaceState.js";
+import { createPropertySetupBookingStateProvider } from "./platform/propertySetupBookingState.js";
+import {
+  createPropertySetupBookingGuestPolicyPmsCurrentOwnerEvidenceAdapter,
+  createPropertySetupPmsStateProvider,
+} from "./platform/propertySetupPmsState.js";
+import { createPropertySetupFinanceStateProvider } from "./platform/propertySetupFinanceState.js";
+import { createPropertySetupReviewLifecycleStateProvider } from "./platform/propertySetupReviewLifecycleState.js";
+import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupRouteState.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
+import {
+  createPgBookingLifecycleStore,
+  runBookingLifecycleSchedulerJobs,
+} from "./jobs/bookingLifecycle.js";
+import {
+  createResendBookingEmailDelivery,
+  runBookingEmailDeliveryJobs,
+} from "./jobs/bookingEmailDelivery.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
+import {
+  runFinanceSubscriptionNotificationJobs,
+  runFinanceSubscriptionWebhookJobs,
+} from "./jobs/financeSubscriptions.js";
 import {
   createPgPropertySetupDraftRetentionStore,
   startPropertySetupDraftRetentionWorker,
@@ -139,6 +193,21 @@ const bookingSettingsRepository =
           connectionString: config.bookingDatabaseUrl,
         })
       : undefined;
+const findPropertyLaunchSettings = bookingSettingsRepository?.findPropertySettingsByHotelId;
+const updatePropertyLaunchSettings = bookingSettingsRepository?.updatePropertySettingsByHotelId;
+if (
+  config.bookingSettingsSource === "target" &&
+  (!findPropertyLaunchSettings || !updatePropertyLaunchSettings)
+) {
+  throw new Error("Target property launch settings repository is unavailable");
+}
+const propertyLaunchSettingsRepository =
+  config.bookingSettingsSource === "target"
+    ? {
+        findPropertySettingsByHotelId: findPropertyLaunchSettings!,
+        updatePropertySettingsByHotelId: updatePropertyLaunchSettings!,
+      }
+    : undefined;
 
 const publicBookabilityPublisher =
   config.bookingSettingsSource === "target"
@@ -187,6 +256,10 @@ const bookingAddonItemsRepository = createPgTargetBookingAddonItemsRepository({
   connectionString: targetDatabaseUrl,
 });
 
+const propertyPlanReadRepository = createPgPropertyPlanReadRepository({
+  connectionString: targetDatabaseUrl,
+});
+
 const bookingPromoCodesRepository = createPgTargetBookingPromoCodesRepository({
   connectionString: targetDatabaseUrl,
 });
@@ -209,11 +282,21 @@ const bookingDashboardMetricsReadPort =
       })
     : undefined;
 
+const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
+  ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })
+  : undefined;
+
 const bookingWebCheckoutAdapter =
   config.bookingCheckoutCommandSource === "target"
     ? createTargetBookingWebCheckoutAdapter({
         connectionString: targetDatabaseUrl,
         inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+        billingConfigReadPortFactory: (executor) =>
+          createTargetFinanceBillingConfigReadPort({
+            connectionString: targetDatabaseUrl,
+            pool: executor,
+          }),
+        stripePaymentProvider: stripeBookingPaymentProvider,
       })
     : undefined;
 
@@ -244,10 +327,48 @@ const pmsModuleActivationRepository = config.auth
     })
   : undefined;
 
+const stripeConnectProvider = config.stripeSubscriptions.secretKey
+  ? createStripeConnectProvider({
+      secretKey: config.stripeSubscriptions.secretKey,
+      returnBaseUrls: {
+        marketplace:
+          config.authSession?.authSurfaceOrigins["marketplace-web"] ??
+          config.stripeSubscriptions.bookingAdminBaseUrl,
+        bookingAdmin: config.stripeSubscriptions.bookingAdminBaseUrl,
+      },
+    })
+  : undefined;
+
 const financeRepository =
   config.financeSource === "target"
     ? createTargetFinancePropertySettingsRepository({
         connectionString: targetDatabaseUrl,
+        stripeConnectProvider,
+      })
+    : undefined;
+
+const stripeSubscriptionProvider = stripeSubscriptionRuntimeEnabled(config)
+  ? createStripeFinanceSubscriptionProvider({
+      secretKey: config.stripeSubscriptions.secretKey!,
+      fixedPlanPriceId: config.stripeSubscriptions.fixedPlanPriceId,
+    })
+  : undefined;
+const financeSubscriptionRoomInventory =
+  config.financeSource === "target"
+    ? createTargetPmsRoomInventoryReadPort({ connectionString: targetDatabaseUrl })
+    : undefined;
+const financeSubscriptionService =
+  config.financeSource === "target"
+    ? createFinanceSubscriptionService({
+        store: createPgFinanceSubscriptionStore({ connectionString: targetDatabaseUrl }),
+        roomInventory: financeSubscriptionRoomInventory!,
+        stripe: stripeSubscriptionProvider,
+        bookingAdminBaseUrl: config.stripeSubscriptions.bookingAdminBaseUrl,
+        afterPlanChange: publicBookabilityPublisher
+          ? async (propertyId) => {
+              await publicBookabilityPublisher.publish({ propertyId });
+            }
+          : undefined,
       })
     : undefined;
 
@@ -283,6 +404,12 @@ const hotelAccountInviteRepository = createPgHotelAccountInviteRepository({
   connectionString: targetDatabaseUrl,
 });
 const propertySetupDraftCommandRepository = createPgPropertySetupDraftCommandRepository({
+  connectionString: targetDatabaseUrl,
+});
+const propertySetupDraftRepository = createPgPropertySetupDraftRepository({
+  connectionString: targetDatabaseUrl,
+});
+const pmsPricingReadModel = createPgPmsPricingReadModel({
   connectionString: targetDatabaseUrl,
 });
 
@@ -363,6 +490,134 @@ const platformMediaRuntime = composePlatformMediaRuntime({
   allowedOrigins: config.authSession?.authAllowedOrigins,
 });
 
+const marketplaceSetupLifecycleStatusRepository = createPgMarketplaceSetupLifecycleStatusRepository(
+  { connectionString: targetDatabaseUrl },
+);
+const bookingSetupLifecycleStatusRepository = createPgBookingSetupLifecycleStatusRepository({
+  connectionString: targetDatabaseUrl,
+});
+const financePaymentReadinessReadModel = createPgFinancePaymentReadinessReadModel({
+  connectionString: targetDatabaseUrl,
+  pricingReadPort: pmsPricingReadModel,
+});
+const propertySetupOwnerPool = new pg.Pool({
+  connectionString: targetDatabaseUrl,
+  connectionTimeoutMillis: 5_000,
+  max: 5,
+});
+const hotelCatalogCurrentOwnerEvidence = createPgHotelCatalogCurrentOwnerEvidencePorts({
+  pool: propertySetupOwnerPool,
+});
+const bookingGuestPolicyRepository = createPgBookingGuestPolicyRepository({
+  connectionString: targetDatabaseUrl,
+  pool: propertySetupOwnerPool,
+  scopeAuthorization: createPgBookingGuestPolicyScopeAuthorizationPort({
+    pool: propertySetupOwnerPool,
+  }),
+});
+const bookingGuestPolicyCatalogCurrentOwnerEvidence =
+  createBookingGuestPolicyCatalogCurrentOwnerEvidenceAdapter({
+    location: hotelCatalogCurrentOwnerEvidence.location,
+    policy: hotelCatalogCurrentOwnerEvidence.policy,
+  });
+
+const propertySetupPmsRuntime = (() => {
+  const roomFacts = createPgPmsRoomFactsReadModel({ connectionString: targetDatabaseUrl });
+  const owner = createPgPropertySetupPmsOwnerRepository({ connectionString: targetDatabaseUrl });
+  const recurringPricing = createPgPmsRecurringPricingReadModel({
+    connectionString: targetDatabaseUrl,
+  });
+  const mandatoryCharges = createPgPmsMandatoryChargeConfirmationReadModel({
+    connectionString: targetDatabaseUrl,
+  });
+  const propertyProfileEvidence = createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort({
+    connectionString: targetDatabaseUrl,
+  });
+  const operatingCalendar = createPgPmsOperatingCalendarReadModel({
+    connectionString: targetDatabaseUrl,
+    propertyProfileEvidence,
+    roomEvidence: { roomFacts, roomCapacity: roomFacts },
+  });
+  return {
+    roomFacts,
+    provider: createPropertySetupPmsStateProvider({
+      owner,
+      pricing: pmsPricingReadModel,
+      recurringPricing,
+      mandatoryCharges,
+      operatingCalendar,
+      calendarRegistry: propertyProfileEvidence,
+      catalogLocation: hotelCatalogCurrentOwnerEvidence.location,
+    }),
+    bookingGuestPolicyEvidence: createPropertySetupBookingGuestPolicyPmsCurrentOwnerEvidenceAdapter(
+      {
+        owner,
+        pricing: pmsPricingReadModel,
+      },
+    ),
+    resources: [
+      roomFacts,
+      owner,
+      recurringPricing,
+      mandatoryCharges,
+      propertyProfileEvidence,
+      operatingCalendar,
+    ],
+  };
+})();
+
+const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
+  ? (() => {
+      const amenityVocabulary = createPmsRoomAmenityVocabularyValidationPort();
+      const mediaResolver = createHotelMediaResolutionPort(bookingDesignMediaAdapter);
+      const commandRepository = createPgPmsRoomPublicationCommandRepository({
+        connectionString: targetDatabaseUrl,
+        amenityVocabulary,
+        mediaResolver,
+      });
+      const readModel = createPgPmsRoomPublicationReadModel({
+        connectionString: targetDatabaseUrl,
+        roomFacts: propertySetupPmsRuntime.roomFacts,
+        roomCapacity: propertySetupPmsRuntime.roomFacts,
+        amenityVocabulary,
+        mediaResolver,
+      });
+      return { commandRepository, readModel };
+    })()
+  : undefined;
+
+const bookingGuestPolicyCurrentOwnerEvidence = createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
+  booking: bookingGuestPolicyRepository,
+  pms: propertySetupPmsRuntime.bookingGuestPolicyEvidence,
+  catalog: bookingGuestPolicyCatalogCurrentOwnerEvidence,
+});
+
+const propertySetupRouteStateReadPort = createPropertySetupRouteStateReadPort({
+  draftRepository: propertySetupDraftRepository,
+  trackRepository: hotelSetupTrackCommandRepository,
+  ownerStateProviders: {
+    hotel_catalog: createPropertySetupHotelCatalogStateProvider(hotelCatalogStep1Repository),
+    marketplace: createPropertySetupMarketplaceStateProvider(
+      marketplaceHotelCollaborationPreferencesRepository,
+    ),
+    booking: createPropertySetupBookingStateProvider({
+      design: bookingDesignRepository,
+      catalog: hotelCatalogStep1Repository,
+      guestPolicy: bookingGuestPolicyCurrentOwnerEvidence,
+    }),
+    pms: propertySetupPmsRuntime.provider,
+    finance: createPropertySetupFinanceStateProvider({
+      scope: createPgPropertySetupFinanceOwnerScopePort({ pool: propertySetupOwnerPool }),
+      finance: financePaymentReadinessReadModel,
+      pricing: pmsPricingReadModel,
+    }),
+    review_lifecycle: createPropertySetupReviewLifecycleStateProvider({
+      marketplace: marketplaceSetupLifecycleStatusRepository,
+      booking: bookingSetupLifecycleStatusRepository,
+    }),
+  },
+});
+
 const marketplaceCreatorSelfServiceRepository = createPgMarketplaceCreatorSelfServiceRepository({
   connectionString: targetDatabaseUrl,
 });
@@ -403,6 +658,11 @@ const creatorPlatformConnectionRuntime = (() => {
   };
 })();
 
+const authSessionHandoffRepository =
+  config.auth && config.authSession
+    ? createPgAuthSessionHandoffRepository({ connectionString: config.auth.databaseUrl })
+    : undefined;
+
 const app = buildApp({
   auth: buildAuthOptions(config.auth),
   browserAllowedOrigins: config.authSession?.authAllowedOrigins ?? [],
@@ -423,6 +683,7 @@ const app = buildApp({
           productAuditSink: createPgProductAuditSink({
             connectionString: config.auth.databaseUrl,
           }),
+          handoffRepository: authSessionHandoffRepository,
           tokenVerifier: createWorkOSVerifier({
             jwksUrl: config.auth.workosJwksUrl,
             issuer: config.auth.workosIssuer,
@@ -430,15 +691,29 @@ const app = buildApp({
           }),
           logoutReturnUrl: config.authSession.authLogoutUrl,
           allowedOrigins: config.authSession.authAllowedOrigins,
+          compatibilityCallbackOrigin: config.authSession.authCompatibilityCallbackOrigin,
           oauthStateSecret: config.authSession.oauthStateSecret,
           requiredOrganizationKind: "platform",
           surfacePolicies: {
+            "platform-admin": {
+              requiredOrganizationKind: "platform",
+              logoutReturnUrl: config.authSession.authLogoutUrl,
+              legacyJwtSecret: config.authSession.authLegacyMarketplaceJwtSecret,
+              legacyJwtUserType: "admin",
+              requiredMembershipRoleKey: "platform_admin",
+              publicOrigin: config.authSession.authSurfaceOrigins["platform-admin"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("platform-admin"),
+            },
             "booking-admin": {
               requiredOrganizationKind: "hotel_group",
               logoutReturnUrl:
                 config.authSession.authBookingAdminLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyBookingJwtSecret,
               legacyJwtUserType: "hotel",
+              publicOrigin: config.authSession.authSurfaceOrigins["booking-admin"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("booking-admin"),
               requiredResourceLink: {
                 product: "booking",
                 resourceType: "booking_hotel",
@@ -450,6 +725,8 @@ const app = buildApp({
                 config.authSession.authPmsWebLogoutUrl ?? config.authSession.authLogoutUrl,
               legacyJwtSecret: config.authSession.authLegacyPmsJwtSecret,
               legacyJwtUserType: "hotel",
+              publicOrigin: config.authSession.authSurfaceOrigins["pms-web"],
+              firstPartySession: config.authSession.authFirstPartySurfaces.includes("pms-web"),
               requireExplicitOrganizationSelection: true,
               selectedOrganizationCookieName: "vayada_pms_selected_org",
               requiredResourceLink: {
@@ -466,6 +743,9 @@ const app = buildApp({
                 config.authSession.authLegacyAffiliatePmsJwtSecret ??
                 config.authSession.authLegacyPmsJwtSecret,
               legacyJwtUserType: "affiliate",
+              publicOrigin: config.authSession.authSurfaceOrigins["affiliate-dashboard"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("affiliate-dashboard"),
               requiredResourceLink: {
                 product: "affiliate",
                 resourceType: "affiliate",
@@ -476,6 +756,9 @@ const app = buildApp({
               allowMissingOrganization: true,
               logoutReturnUrl:
                 config.authSession.authMarketplaceWebLogoutUrl ?? config.authSession.authLogoutUrl,
+              publicOrigin: config.authSession.authSurfaceOrigins["marketplace-web"],
+              firstPartySession:
+                config.authSession.authFirstPartySurfaces.includes("marketplace-web"),
             },
           },
           cookieSecure: config.authSession.authCookieSecure,
@@ -506,6 +789,7 @@ const app = buildApp({
         },
         store: createPgProviderWebhookStore({
           connectionString: targetDatabaseUrl,
+          stripeConnectProvider,
         }),
       }
     : undefined,
@@ -515,12 +799,21 @@ const app = buildApp({
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
+  propertyPlanReadRepository,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
+  pmsRoomPublication: pmsRoomPublicationRuntime
+    ? {
+        mediaCommandPort: pmsRoomPublicationRuntime.commandRepository,
+        amenitiesCommandPort: pmsRoomPublicationRuntime.commandRepository,
+        snapshotPort: pmsRoomPublicationRuntime.readModel,
+      }
+    : undefined,
   pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
   financeRepository,
+  financeSubscriptionService,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
@@ -537,6 +830,7 @@ const app = buildApp({
   pmsOperationsAllowedOrigins: config.pmsOperationsAllowedOrigins,
   bookingSettingsRepository,
   bookingSettingsWriteRepository: bookingSettingsRepository,
+  propertyLaunchSettingsRepository,
   publicBookabilityPublisher: routePublicBookabilityPublisher,
   bookingCustomDomainRepository,
   marketplaceDiscoveryRepository,
@@ -570,6 +864,7 @@ const app = buildApp({
   sharedHotelSetupStatusRepository,
   hotelSetupTrackCommandRepository,
   propertySetupDraftCommandRepository,
+  propertySetupRouteStateReadPort,
   propertyMediaCommandRepository: platformMediaRuntime?.propertyMediaCommands,
   hotelCatalogStep1: platformMediaRuntime
     ? {
@@ -633,6 +928,8 @@ app.addHook("onClose", async () => {
     bookingDesignRepository.close(),
     bookingDesignCatalogEvidenceRepository?.close(),
     bookingDesignMediaAdapter?.close?.(),
+    pmsRoomPublicationRuntime?.commandRepository.close(),
+    pmsRoomPublicationRuntime?.readModel.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });
@@ -652,11 +949,85 @@ const runChannexReviews = () => {
 const channexReviewTimer = hasProviderWebhookSecret
   ? setInterval(runChannexReviews, 5_000)
   : undefined;
+
+app.addHook("onClose", async () => {
+  await Promise.all([
+    pmsPricingReadModel.close(),
+    financePaymentReadinessReadModel.close(),
+    marketplaceSetupLifecycleStatusRepository.close(),
+    bookingSetupLifecycleStatusRepository.close(),
+    bookingGuestPolicyRepository.close(),
+    propertySetupOwnerPool.end(),
+    propertySetupDraftRepository.close(),
+    ...propertySetupPmsRuntime.resources.map((resource) => resource.close?.()),
+  ]);
+});
 channexReviewTimer?.unref();
 if (hasProviderWebhookSecret) runChannexReviews();
 app.addHook("onClose", async () => {
   if (channexReviewTimer) clearInterval(channexReviewTimer);
   await activeChannexReviewBatch;
+});
+
+let activeFinanceSubscriptionBatch: Promise<void> | undefined;
+const financeSubscriptionWebhooksEnabled = Boolean(
+  stripeSubscriptionProvider &&
+  financeSubscriptionRoomInventory &&
+  stripeSubscriptionRuntimeEnabled(config),
+);
+const financeSubscriptionJobsEnabled = config.financeSource === "target";
+const runFinanceSubscriptionJobs = () => {
+  if (activeFinanceSubscriptionBatch || !financeSubscriptionJobsEnabled) return;
+  const batches = [
+    runFinanceSubscriptionNotificationJobs(targetDatabaseUrl, (notification) => {
+      app.log.error(
+        notification,
+        "Fixed Plan recurring payment failed; internal follow-up required",
+      );
+    }),
+  ];
+  if (
+    financeSubscriptionWebhooksEnabled &&
+    stripeSubscriptionProvider &&
+    financeSubscriptionRoomInventory
+  ) {
+    batches.push(
+      runFinanceSubscriptionWebhookJobs(
+        targetDatabaseUrl,
+        stripeSubscriptionProvider,
+        financeSubscriptionRoomInventory,
+        {
+          refreshPublicBookability: publicBookabilityPublisher
+            ? async (propertyId) => {
+                await publicBookabilityPublisher.publish({ propertyId });
+              }
+            : undefined,
+        },
+      ),
+    );
+  }
+  activeFinanceSubscriptionBatch = Promise.all(batches)
+    .then((results) => {
+      const failed = results.reduce((total, result) => total + result.failed, 0);
+      if (failed > 0) {
+        app.log.warn({ failed }, "Finance subscription job processing completed with failures");
+      }
+    })
+    .catch((error: unknown) =>
+      app.log.warn({ err: error }, "Finance subscription job processing failed"),
+    )
+    .finally(() => {
+      activeFinanceSubscriptionBatch = undefined;
+    });
+};
+const financeSubscriptionTimer = financeSubscriptionJobsEnabled
+  ? setInterval(runFinanceSubscriptionJobs, 5_000)
+  : undefined;
+financeSubscriptionTimer?.unref();
+if (financeSubscriptionJobsEnabled) runFinanceSubscriptionJobs();
+app.addHook("onClose", async () => {
+  if (financeSubscriptionTimer) clearInterval(financeSubscriptionTimer);
+  await activeFinanceSubscriptionBatch;
 });
 
 let activeRetryBatch: Promise<void> | undefined;
@@ -779,6 +1150,60 @@ if (platformMediaRuntime) {
   });
 }
 
+const bookingLifecycleStore =
+  config.bookingCheckoutCommandSource === "target"
+    ? createPgBookingLifecycleStore({
+        connectionString: targetDatabaseUrl,
+        inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+        stripePaymentProvider: stripeBookingPaymentProvider,
+      })
+    : undefined;
+let activeBookingLifecycleRun: Promise<void> | undefined;
+const runBookingLifecycle = () => {
+  if (!bookingLifecycleStore || activeBookingLifecycleRun) return;
+  activeBookingLifecycleRun = runBookingLifecycleSchedulerJobs(bookingLifecycleStore)
+    .then(() => undefined)
+    .catch((error: unknown) => app.log.warn({ err: error }, "Booking lifecycle sweep failed"))
+    .finally(() => {
+      activeBookingLifecycleRun = undefined;
+    });
+};
+const bookingLifecycleTimer = bookingLifecycleStore
+  ? setInterval(runBookingLifecycle, 60_000)
+  : undefined;
+bookingLifecycleTimer?.unref();
+if (bookingLifecycleStore) runBookingLifecycle();
+
+const bookingEmailDelivery = config.bookingEmailDelivery
+  ? createResendBookingEmailDelivery(config.bookingEmailDelivery)
+  : undefined;
+let activeBookingEmailDelivery: Promise<void> | undefined;
+const runBookingEmailDelivery = () => {
+  if (!bookingEmailDelivery || activeBookingEmailDelivery) return;
+  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(targetDatabaseUrl, bookingEmailDelivery)
+    .then((result) => {
+      if (result.failed > 0) {
+        app.log.warn({ failed: result.failed }, "Booking email delivery completed with failures");
+      }
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Booking email delivery failed"))
+    .finally(() => {
+      activeBookingEmailDelivery = undefined;
+    });
+};
+const bookingEmailDeliveryTimer = bookingEmailDelivery
+  ? setInterval(runBookingEmailDelivery, 5_000)
+  : undefined;
+bookingEmailDeliveryTimer?.unref();
+if (bookingEmailDelivery) runBookingEmailDelivery();
+app.addHook("onClose", async () => {
+  if (bookingLifecycleTimer) clearInterval(bookingLifecycleTimer);
+  if (bookingEmailDeliveryTimer) clearInterval(bookingEmailDeliveryTimer);
+  await activeBookingLifecycleRun;
+  await activeBookingEmailDelivery;
+  await bookingLifecycleStore?.close();
+});
+
 const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker({
   store: createPgPropertySetupDraftRetentionStore({
     connectionString: targetDatabaseUrl,
@@ -792,6 +1217,32 @@ const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker
 app.addHook("onClose", async () => {
   await propertySetupDraftRetentionWorker.close();
 });
+
+if (authSessionHandoffRepository) {
+  let activeHandoffCleanup: Promise<void> | undefined;
+  const runHandoffCleanup = () => {
+    if (activeHandoffCleanup) return;
+    const now = new Date();
+    activeHandoffCleanup = authSessionHandoffRepository
+      .scrubExpired({
+        now,
+        deleteBefore: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      })
+      .catch((error: unknown) => {
+        app.log.warn({ err: error }, "Auth session handoff cleanup failed");
+      })
+      .finally(() => {
+        activeHandoffCleanup = undefined;
+      });
+  };
+  const handoffCleanupTimer = setInterval(runHandoffCleanup, 60_000);
+  handoffCleanupTimer.unref();
+  runHandoffCleanup();
+  app.addHook("onClose", async () => {
+    clearInterval(handoffCleanupTimer);
+    await activeHandoffCleanup;
+  });
+}
 
 try {
   await app.listen({ host: config.host, port: config.port });

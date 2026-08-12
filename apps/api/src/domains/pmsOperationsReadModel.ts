@@ -1,4 +1,11 @@
+import type { PropertyPlanReadModel } from "@vayada/domain-finance";
 import pg from "pg";
+
+import {
+  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
+  guestContactForPropertyPlan,
+} from "./bookingGuestContactAccess.js";
+import { readPropertyPlan } from "./propertyPlanReadModel.js";
 
 export type PmsDecimalAmount = string;
 export type PmsCurrencyCode = string;
@@ -44,6 +51,7 @@ export type PmsRateRulesSummary = {
 };
 
 export type PmsRoomTypeMedia = {
+  mediaObjectId?: string;
   url: string;
   altText?: string | null;
 };
@@ -57,6 +65,7 @@ export type PmsRoomType = {
   attributes: PmsJsonRecord;
   amenities: string[];
   media: PmsRoomTypeMedia[];
+  roomMediaRevision?: number;
   baseRate: PmsMoney;
   active: boolean;
   sortOrder: number;
@@ -124,7 +133,12 @@ export type PmsOperationalReservation = {
   status: string;
   source: PmsReservationSource;
   stay: { checkIn: PmsDate; checkOut: PmsDate; adults: number; children: number };
-  primaryGuest: { displayName: string; email: string | null; phone: string | null };
+  primaryGuest: {
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+    countryCode: string | null;
+  };
   assignments: PmsOperationalAssignment[];
   checkin: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
   checkout: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
@@ -133,6 +147,8 @@ export type PmsOperationalReservation = {
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsMoney; balanceAmount: PmsMoney };
+  payment?: { method: string | null; status: string };
+  hostResponseDeadlineAt?: PmsUtcDateTime | null;
 };
 
 export type PmsReservationListFilters = {
@@ -183,7 +199,7 @@ export type PmsOperationsReadRepository = {
 export type PmsOperationsReadPool = {
   query<T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
-    values?: unknown[],
+    values?: readonly unknown[],
   ): Promise<pg.QueryResult<T>>;
   end?(): Promise<void>;
 };
@@ -330,7 +346,8 @@ export function createTargetPmsOperationsReadRepository(config: {
     },
 
     async listReservationsByPropertyId(propertyId, filters) {
-      const { whereSql, params } = toReservationWhere(propertyId, filters);
+      const propertyPlan = await readPropertyPlan(pool, propertyId);
+      const { whereSql, params } = toReservationWhere(propertyId, filters, propertyPlan);
       const listParams = [...params, filters.limit, filters.offset];
       const limitParam = params.length + 1;
       const offsetParam = params.length + 2;
@@ -374,7 +391,7 @@ export function createTargetPmsOperationsReadRepository(config: {
       ]);
 
       return {
-        items: reservationResult.rows.map(toPmsOperationalReservation),
+        items: reservationResult.rows.map((row) => toPmsOperationalReservation(row, propertyPlan)),
         total: toInteger(countResult.rows[0]?.total ?? 0),
         sourceFreshness: {},
       };
@@ -390,8 +407,11 @@ export function createTargetPmsOperationsReadRepository(config: {
         [propertyId, range.to, range.from],
       );
 
+      const propertyPlan = result.rows.length ? await readPropertyPlan(pool, propertyId) : null;
       return {
-        items: result.rows.map(toPmsOperationalReservation),
+        items: propertyPlan
+          ? result.rows.map((row) => toPmsOperationalReservation(row, propertyPlan))
+          : [],
         total: result.rows.length,
         sourceFreshness: {},
       };
@@ -405,7 +425,9 @@ export function createTargetPmsOperationsReadRepository(config: {
         [propertyId, guestBookingId],
       );
 
-      return result.rows[0] ? toPmsOperationalReservation(result.rows[0]) : null;
+      if (!result.rows[0]) return null;
+      const propertyPlan = await readPropertyPlan(pool, propertyId);
+      return toPmsOperationalReservation(result.rows[0], propertyPlan);
     },
 
     async close() {
@@ -433,6 +455,7 @@ type TargetPmsRoomTypeRow = {
   attributes: unknown;
   amenities: unknown;
   media: unknown;
+  roomMediaRevision: string | number;
   baseRateAmount: string | number;
   currency: string;
   active: boolean;
@@ -482,6 +505,8 @@ type TargetPmsOperationalReservationRow = {
   primaryGuestDisplayName: string | null;
   primaryGuestEmail: string | null;
   primaryGuestPhone: string | null;
+  primaryGuestCountryCode: string | null;
+  guestContactAccepted: boolean;
   assignments: unknown;
   checkinCompletedAt: Date | string | null;
   checkinPendingFlags: unknown;
@@ -495,6 +520,9 @@ type TargetPmsOperationalReservationRow = {
   totalAmount: string | number;
   balanceAmount: string | number;
   currency: string;
+  paymentMethod: string | null;
+  paymentStatus: string;
+  hostResponseDeadlineAt: string | null;
 };
 
 const PMS_OPERATIONAL_RESERVATION_STATUS_SQL = `CASE
@@ -535,6 +563,8 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   ) AS "primaryGuestDisplayName",
   primary_guest.email AS "primaryGuestEmail",
   primary_guest.phone AS "primaryGuestPhone",
+  primary_guest.country_code AS "primaryGuestCountryCode",
+  ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
   COALESCE(
     NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
     NULLIF(booking.booking_metadata #>> '{selectedOffer,roomTypeId}', ''),
@@ -549,6 +579,13 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   booking.total_amount AS "totalAmount",
   booking.balance_amount AS "balanceAmount",
   booking.currency,
+  booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
+  booking.payment_status AS "paymentStatus",
+  COALESCE(
+    booking.booking_metadata ->> 'acceptedPaymentDeadlineAt',
+    booking.booking_metadata ->> 'hostResponseDeadlineAt',
+    booking.booking_metadata ->> 'pendingExpiresAt'
+  ) AS "hostResponseDeadlineAt",
   COALESCE(assignments.items, '[]'::jsonb) AS "assignments",
   checkin.completed_at AS "checkinCompletedAt",
   COALESCE(checkin.pending_flags, '[]'::jsonb) AS "checkinPendingFlags",
@@ -569,7 +606,7 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) primary_assignment ON TRUE
 LEFT JOIN LATERAL (
-  SELECT guest.first_name, guest.last_name, guest.email, guest.phone
+  SELECT guest.first_name, guest.last_name, guest.email, guest.phone, guest.country_code
   FROM booking.booking_guests guest
   WHERE guest.guest_booking_id = booking.id
   ORDER BY
@@ -651,7 +688,18 @@ async function listRoomTypes(
        room_type.occupancy_limits AS "occupancyLimits",
        room_type.room_attributes AS "attributes",
        room_type.amenities_snapshot AS "amenities",
-       room_type.media_snapshot AS "media",
+       CASE
+         WHEN jsonb_typeof(room_type.media_snapshot) = 'array'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(room_type.media_snapshot) legacy_media(item)
+            WHERE jsonb_typeof(legacy_media.item) <> 'object'
+               OR jsonb_typeof(legacy_media.item -> 'mediaObjectId') IS DISTINCT FROM 'string'
+          )
+           THEN room_type.media_snapshot
+         ELSE COALESCE(room_media.items, room_type.media_snapshot)
+       END AS "media",
+       room_type.room_media_revision AS "roomMediaRevision",
        room_type.base_rate_amount AS "baseRateAmount",
        room_type.currency,
        room_type.active,
@@ -664,6 +712,41 @@ async function listRoomTypes(
        COALESCE(rate_rules.active_rule_count, 0) AS "activeRuleCount",
        COALESCE(room_counts.room_count, 0) AS "roomCount"
      FROM pms.room_types room_type
+     LEFT JOIN LATERAL (
+       SELECT jsonb_agg(
+                jsonb_build_object(
+                  'mediaObjectId', assignment.platform_media_object_id::text,
+                  'url', variant.public_cdn_url,
+                  'altText', assignment.alt_text
+                )
+                ORDER BY assignment.sort_order, assignment.platform_media_object_id
+              ) AS items
+       FROM pms.room_type_media assignment
+       JOIN platform.media_objects media_object
+         ON media_object.id = assignment.platform_media_object_id
+        AND media_object.property_id = assignment.property_id
+        AND media_object.visibility = 'public'
+        AND media_object.lifecycle_status = 'active'
+        AND media_object.public_approved = TRUE
+       JOIN LATERAL (
+         SELECT media_variant.public_cdn_url
+         FROM platform.media_variants media_variant
+         WHERE media_variant.media_object_id = media_object.id
+           AND media_variant.visibility = 'public'
+           AND media_variant.public_cdn_url IS NOT NULL
+         ORDER BY
+           CASE media_variant.variant_name
+             WHEN 'thumbnail' THEN 0
+             WHEN 'large' THEN 1
+             WHEN 'original_safe' THEN 2
+             ELSE 3
+           END,
+           media_variant.id
+         LIMIT 1
+       ) variant ON TRUE
+       WHERE assignment.property_id = room_type.property_id
+         AND assignment.room_type_id = room_type.id
+     ) room_media ON TRUE
      LEFT JOIN LATERAL (
        SELECT jsonb_agg(
                 jsonb_build_object(
@@ -738,6 +821,7 @@ function toPmsRoomType(row: TargetPmsRoomTypeRow): PmsRoomType {
     attributes: toJsonRecord(row.attributes),
     amenities: toStringArray(row.amenities),
     media: toMediaArray(row.media),
+    roomMediaRevision: toInteger(row.roomMediaRevision),
     baseRate: {
       amountDecimal: toDecimalString(row.baseRateAmount),
       currency: row.currency,
@@ -786,9 +870,14 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
 
 function toPmsOperationalReservation(
   row: TargetPmsOperationalReservationRow,
+  propertyPlan: PropertyPlanReadModel,
 ): PmsOperationalReservation {
   const bookedRoomTypeId = row.bookedRoomTypeId.trim();
   const bookedRoomName = row.bookedRoomName.trim();
+  const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, {
+    email: row.primaryGuestEmail,
+    phone: row.primaryGuestPhone,
+  });
 
   return {
     guestBookingId: row.guestBookingId,
@@ -803,8 +892,9 @@ function toPmsOperationalReservation(
     },
     primaryGuest: {
       displayName: row.primaryGuestDisplayName ?? "",
-      email: row.primaryGuestEmail,
-      phone: row.primaryGuestPhone,
+      email: contact.email,
+      phone: contact.phone,
+      countryCode: row.primaryGuestCountryCode,
     },
     assignments: toOperationalAssignments(row.assignments),
     checkin: {
@@ -831,6 +921,8 @@ function toPmsOperationalReservation(
         currency: row.currency,
       },
     },
+    payment: { method: row.paymentMethod, status: row.paymentStatus },
+    hostResponseDeadlineAt: toIsoDateTimeOrNull(row.hostResponseDeadlineAt),
   };
 }
 
@@ -914,6 +1006,7 @@ function toRoomBlockWhere(
 function toReservationWhere(
   propertyId: string,
   filters: PmsReservationListFilters,
+  propertyPlan: PropertyPlanReadModel,
 ): { whereSql: string; params: unknown[] } {
   const params: unknown[] = [propertyId];
   const conditions = ["booking.property_id = $1"];
@@ -940,8 +1033,14 @@ function toReservationWhere(
         OR primary_guest.first_name ILIKE $${params.length}
         OR primary_guest.last_name ILIKE $${params.length}
         OR CONCAT(primary_guest.first_name, ' ', primary_guest.last_name) ILIKE $${params.length}
-        OR primary_guest.email ILIKE $${params.length}
-        OR primary_guest.phone ILIKE $${params.length}
+        OR (
+          (${propertyPlan.limits.guestContactAccess === "always"}
+            OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
+          AND (
+            primary_guest.email ILIKE $${params.length}
+            OR primary_guest.phone ILIKE $${params.length}
+          )
+        )
         OR EXISTS (
           SELECT 1
           FROM pms.operational_booking_assignments assignment_search
@@ -995,19 +1094,23 @@ function toStringArray(value: unknown): string[] {
 
 function toMediaArray(value: unknown): PmsRoomTypeMedia[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-    .map((item) => {
-      const url = typeof item.url === "string" ? item.url : "";
-      const altText =
-        typeof item.altText === "string"
-          ? item.altText
-          : typeof item.alt === "string"
-            ? item.alt
-            : null;
-      return { url, altText };
-    })
-    .filter((item) => item.url.length > 0);
+  return value.flatMap((item) => {
+    if (typeof item === "string") return item.length > 0 ? [{ url: item, altText: null }] : [];
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const raw = item as Record<string, unknown>;
+    const url = typeof raw.url === "string" ? raw.url : "";
+    if (!url) return [];
+    const mediaObjectId = typeof raw.mediaObjectId === "string" ? raw.mediaObjectId : undefined;
+    const altText =
+      typeof raw.altText === "string" ? raw.altText : typeof raw.alt === "string" ? raw.alt : null;
+    return [
+      {
+        ...(mediaObjectId ? { mediaObjectId } : {}),
+        url,
+        altText,
+      },
+    ];
+  });
 }
 
 function toRatePlans(value: unknown): PmsRatePlan[] {

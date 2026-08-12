@@ -39,7 +39,6 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
              AND profile.freshness_status = 'fresh'
              AND profile.public_setup_completeness ->> 'status' = 'ready'
              AND (profile.expires_at IS NULL OR profile.expires_at > $8::timestamptz)
-             AND COALESCE((profile.capabilities ->> 'payAtProperty')::boolean, FALSE)
              AND offer.public_visibility = 'public_safe'
              AND offer.currency = $7
              AND offer.sellable_publicly = TRUE
