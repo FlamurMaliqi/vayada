@@ -7,10 +7,12 @@ import {
   SharedFirstRunPropertySetupWizard,
   createBrowserAuthHandoff,
   crossAppReauthenticationUrl,
+  isPmsSetupExitPath,
   isSharedAccountDetailsComplete,
   isSafeSharedHotelSetupReturnTo,
   normalizeSharedAccountName,
   parseSharedHotelSetupEntryProduct,
+  pmsSetupExitPath,
   safeSharedHotelSetupReturnTo,
   type SharedFirstRunContinueInput,
   type SharedHotelSetupEntryProduct,
@@ -24,7 +26,12 @@ import {
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
 import { hotelOperationsSetupApi } from "@/services/api/hotelOperationsSetupClient";
-import { getAuthCsrfToken, getAuthSessionUser } from "@/services/auth/sessionStore";
+import {
+  getAuthCsrfToken,
+  getAuthOrganizationId,
+  getAuthSessionUser,
+  getAuthWorkosOrganizationId,
+} from "@/services/auth/sessionStore";
 import { AdaptiveRoomAuthoringSetupController } from "./adaptive/rooms/AdaptiveRoomAuthoringSetupController";
 import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 
@@ -141,7 +148,14 @@ export function SharedHotelSetupPage({
       }
     }
     try {
-      window.location.replace(crossAppReauthenticationUrl(baseUrl, targetPath));
+      const reauthenticationReturnTo =
+        propertyId?.trim() || (product === "pms" && isPmsSetupExitPath(targetPath))
+          ? productHandoffReturnTo(targetPath, propertyId?.trim() || null, {
+              organizationId: getAuthOrganizationId(),
+              workosOrganizationId: getAuthWorkosOrganizationId(),
+            })
+          : targetPath;
+      window.location.replace(crossAppReauthenticationUrl(baseUrl, reauthenticationReturnTo));
     } catch {
       setHandoffError("We couldn't open that app. Please check the app URL and try again.");
     }
@@ -173,16 +187,9 @@ export function SharedHotelSetupPage({
     );
   };
 
-  const handleExit = () => {
-    if (returnProduct === "marketplace") {
-      router.replace(returnTo);
-      return;
-    }
-    void handoffToProduct(
-      returnProduct,
-      returnTo,
-      localStorage.getItem("selectedSharedPropertyId"),
-    );
+  const handleExit = (selectedPropertyId?: string | null) => {
+    const propertyId = selectedPropertyId?.trim() || initialPropertyId?.trim() || null;
+    void handoffToProduct("pms", pmsSetupExitPath(propertyId), propertyId);
   };
 
   if (checkingAuth || !authorized) {
@@ -281,7 +288,7 @@ export function SharedHotelSetupPage({
           </p>
           <button
             type="button"
-            onClick={handleExit}
+            onClick={() => handleExit()}
             className="mt-5 min-h-10 rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white outline-none hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
           >
             Exit setup
@@ -312,4 +319,24 @@ export function setupPathForSelectedProperty(query: string, propertyId: string):
   searchParams.set("propertyId", propertyId);
   searchParams.delete("mode");
   return `${ROUTES.SETUP}?${searchParams.toString()}`;
+}
+
+export function productHandoffReturnTo(
+  targetPath: string,
+  propertyId: string | null,
+  organization: {
+    organizationId: string | null;
+    workosOrganizationId: string | null;
+  },
+): string {
+  const query = new URLSearchParams({ redirect: targetPath });
+  const fragment = new URLSearchParams();
+  if (propertyId) fragment.set("property_id", propertyId);
+  if (organization.organizationId) {
+    fragment.set("organization_id", organization.organizationId);
+  }
+  if (organization.workosOrganizationId) {
+    fragment.set("workos_organization_id", organization.workosOrganizationId);
+  }
+  return `/handoff?${query.toString()}${fragment.size > 0 ? `#${fragment.toString()}` : ""}`;
 }

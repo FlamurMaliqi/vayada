@@ -17,12 +17,15 @@ import {
 } from "@vayada/product-onboarding/returnTo";
 import {
   BrowserAuthHandoffError,
+  isPmsSetupExitPath,
+  pmsSetupExitPropertyId,
   redeemBrowserAuthHandoff,
   useSingleFlightGuard,
 } from "@vayada/product-onboarding";
 
 export default function HandoffPage() {
   const [retryable, setRetryable] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const beginRedemption = useSingleFlightGuard();
 
   useEffect(() => {
@@ -174,19 +177,31 @@ export default function HandoffPage() {
         }
       }
 
+      const routingPropertyId = propertyId?.trim() || handoffHotelId?.trim() || null;
+      const setupExit = Boolean(safeRedirect && isPmsSetupExitPath(safeRedirect));
+      const setupExitPropertyId = safeRedirect ? pmsSetupExitPropertyId(safeRedirect) : null;
+      if (routingPropertyId && setupExit && routingPropertyId !== setupExitPropertyId) {
+        clearStoredPmsPropertyId();
+        setHandoffError("The setup exit does not match the property from your session transfer.");
+        return;
+      }
+
       let properties: PmsPropertySummary[];
       try {
         properties = await listPmsProperties();
       } catch {
+        if (safeRedirect && isPmsSetupExitPath(safeRedirect)) {
+          setRetryable(true);
+          return;
+        }
         localStorage.setItem("pmsSetupComplete", "false");
-        const requestedPropertyId = propertyId?.trim() || handoffHotelId?.trim();
-        window.location.href = requestedPropertyId
-          ? `/setup?entryProduct=pms&propertyId=${encodeURIComponent(requestedPropertyId)}`
+        window.location.href = routingPropertyId
+          ? `/setup?entryProduct=pms&propertyId=${encodeURIComponent(routingPropertyId)}`
           : "/setup";
         return;
       }
 
-      const explicitPropertyId = propertyId?.trim() || handoffHotelId?.trim() || null;
+      const explicitPropertyId = routingPropertyId || setupExitPropertyId;
       const requestedPropertyId = explicitPropertyId || getStoredPmsPropertyId();
       let selected = requestedPropertyId
         ? (properties.find((property) => property.id === requestedPropertyId) ?? null)
@@ -202,13 +217,27 @@ export default function HandoffPage() {
         storeSelectedPmsPropertyId(selected.id);
       }
 
-      if (isExplicitSetupRedirect(safeRedirect)) {
+      if (safeRedirect && isExplicitSetupRedirect(safeRedirect)) {
         window.location.href = safeRedirect;
         return;
       }
       if (explicitPropertyId && !selected) {
         localStorage.setItem("pmsSetupComplete", "false");
+        if (safeRedirect && isPmsSetupExitPath(safeRedirect)) {
+          setHandoffError(
+            "The property you were setting up is no longer available in this hotel group.",
+          );
+          return;
+        }
         window.location.href = `/setup?entryProduct=pms&propertyId=${encodeURIComponent(explicitPropertyId)}`;
+        return;
+      }
+      if (
+        safeRedirect &&
+        isPmsSetupExitPath(safeRedirect) &&
+        (selected || safeRedirect.startsWith("/choose-property?"))
+      ) {
+        window.location.href = safeRedirect;
         return;
       }
       if (properties.length === 0) {
@@ -229,6 +258,10 @@ export default function HandoffPage() {
       localStorage.setItem("pmsSetupComplete", "true");
       window.location.href = "/dashboard";
     })().catch(() => {
+      if (safeRedirect && isPmsSetupExitPath(safeRedirect)) {
+        setRetryable(true);
+        return;
+      }
       localStorage.setItem("pmsSetupComplete", "false");
       window.location.href = "/setup";
     });
@@ -254,6 +287,20 @@ export default function HandoffPage() {
     );
   }
 
+  if (handoffError) {
+    return (
+      <div
+        className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50 px-6 text-center"
+        role="alert"
+      >
+        <p className="max-w-md text-sm font-medium text-gray-700">{handoffError}</p>
+        <a href="/choose-property" className="text-sm font-semibold text-primary-600 underline">
+          Choose another property
+        </a>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div
@@ -265,6 +312,6 @@ export default function HandoffPage() {
   );
 }
 
-function isExplicitSetupRedirect(path: string | null): path is string {
+function isExplicitSetupRedirect(path: string | null): boolean {
   return path === "/setup" || path?.startsWith("/setup?") === true;
 }
