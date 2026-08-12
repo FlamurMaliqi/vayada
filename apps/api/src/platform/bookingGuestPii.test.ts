@@ -62,6 +62,57 @@ function createPool(input: { plan?: "fixed"; guestContactAccepted: boolean }) {
   return { pool, queries };
 }
 
+function createProjectionFailurePool() {
+  const queries: string[] = [];
+  let released = false;
+  const guest = {
+    guestId: "f3000000-0000-0000-0000-000000000682",
+    guestBookingId: "e3000000-0000-0000-0000-000000000682",
+    role: "additional_guest",
+    firstName: "Charles",
+    lastName: "Babbage",
+    email: "charles@example.com",
+    phone: "+4954321",
+    countryCode: "GB",
+    arrivalTime: null,
+    specialRequests: null,
+  };
+  const pool: BookingGuestPiiPool = {
+    async connect() {
+      return {
+        async query<T extends QueryResultRow = QueryResultRow>(text: string) {
+          queries.push(text);
+          const query = text.trimStart();
+          if (query === "BEGIN" || query === "ROLLBACK") {
+            return { rows: [] as T[], rowCount: 0 };
+          }
+          if (query.startsWith("SELECT 1")) {
+            return { rows: [{}] as T[], rowCount: 1 };
+          }
+          if (query.includes("finance.billing_entitlements")) {
+            throw new Error("projection failed");
+          }
+          if (query.includes("FOR UPDATE") || query.startsWith("UPDATE booking.booking_guests")) {
+            return { rows: [guest] as unknown as T[], rowCount: 1 };
+          }
+          if (query.startsWith("DELETE FROM booking.booking_guests")) {
+            return { rows: [{ guestId: guest.guestId }] as unknown as T[], rowCount: 1 };
+          }
+          if (query.startsWith("INSERT INTO platform.product_audit_events")) {
+            return { rows: [] as T[], rowCount: 1 };
+          }
+          throw new Error(`Unexpected query: ${text}`);
+        },
+        release() {
+          released = true;
+        },
+      };
+    },
+    async end() {},
+  };
+  return { pool, queries, wasReleased: () => released };
+}
+
 describe("target booking guest PII contact access", () => {
   it("hides primary and additional guest contact for an unaccepted commission booking", async () => {
     const { pool, queries } = createPool({ guestContactAccepted: false });
@@ -108,4 +159,44 @@ describe("target booking guest PII contact access", () => {
     expect(projection?.primaryGuest?.email).toBe("ada@example.com");
     expect(projection?.additionalGuests[0]?.phone).toBe("+4954321");
   });
+});
+
+describe("target booking guest PII transaction handling", () => {
+  it.each(["update", "delete"] as const)(
+    "rolls back and releases when the %s projection read fails",
+    async (operation) => {
+      const { pool, queries, wasReleased } = createProjectionFailurePool();
+      const port = createTargetBookingGuestPiiPort({
+        connectionString: "postgresql://target-db",
+        pool,
+      });
+      const command = {
+        propertyId: "d3000000-0000-0000-0000-000000000682",
+        guestBookingId: "e3000000-0000-0000-0000-000000000682",
+        guestId: "f3000000-0000-0000-0000-000000000682",
+        commandId: "command-1",
+        idempotencyKey: "idempotency-1",
+        audit: {
+          actorUserId: "a3000000-0000-0000-0000-000000000682",
+          actorOrganizationId: "b3000000-0000-0000-0000-000000000682",
+          requestId: "request-1",
+          source: "pms_operations" as const,
+          reason: "test",
+        },
+      };
+
+      const result =
+        operation === "update"
+          ? port.updateAdditionalGuestForPmsOperations({
+              ...command,
+              guest: { email: "new@example.com" },
+            })
+          : port.deleteAdditionalGuestForPmsOperations(command);
+
+      await expect(result).rejects.toThrow("projection failed");
+      expect(queries.at(-1)).toBe("ROLLBACK");
+      expect(queries).not.toContain("COMMIT");
+      expect(wasReleased()).toBe(true);
+    },
+  );
 });

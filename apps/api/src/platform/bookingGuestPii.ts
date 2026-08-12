@@ -267,6 +267,9 @@ export function createTargetBookingGuestPiiPort(
           projection,
           commandMeta,
         };
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
       } finally {
         client.release();
       }
@@ -308,6 +311,9 @@ export function createTargetBookingGuestPiiPort(
         );
         await client.query("COMMIT");
         return { ok: true, guestId, projection, commandMeta };
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
       } finally {
         client.release();
       }
