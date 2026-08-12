@@ -84,11 +84,20 @@ export default function ImageUpload({
 
       setUploading(true);
       try {
+        if (!mediaResource.targetResourceId) {
+          onChange([
+            ...validImages,
+            ...fileArray.map((file) => ({
+              url: URL.createObjectURL(file),
+              pendingFile: file,
+            })),
+          ]);
+          return;
+        }
         const result = await uploadService.uploadImages(fileArray, mediaResource);
         const newImages = result.images.map((img: UploadedImage) => ({
           url: img.url,
           platformMediaObjectId: img.platformMediaObjectId,
-          storageKey: img.storageKey,
         }));
         onChange([...validImages, ...newImages]);
       } catch (err: any) {
@@ -103,6 +112,10 @@ export default function ImageUpload({
 
   const removeImage = useCallback(
     (index: number) => {
+      const removed = validImages[index];
+      if (typeof removed !== "string" && removed?.pendingFile && removed.url?.startsWith("blob:")) {
+        URL.revokeObjectURL(removed.url);
+      }
       const updated = validImages.filter((_, i) => i !== index);
       onChange(updated);
     },
