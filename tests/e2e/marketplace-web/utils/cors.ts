@@ -5,7 +5,7 @@ export function corsHeaders(route: Route) {
   return {
     "access-control-allow-credentials": "true",
     "access-control-allow-headers": "authorization, content-type, x-vayada-csrf",
-    "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PUT, PATCH, OPTIONS",
     "access-control-allow-origin": origin,
     "content-type": "application/json",
   };

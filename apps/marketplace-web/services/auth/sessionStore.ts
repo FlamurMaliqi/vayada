@@ -147,6 +147,10 @@ export function getAuthSessionUser(): AuthUser | null {
   return authKitSession?.user ?? null;
 }
 
+export function getAuthOrganizationId(): string | null {
+  return authKitSession?.organizationId ?? null;
+}
+
 export function getAuthWorkosOrganizationId(): string | null {
   return authKitSession?.workosOrganizationId ?? null;
 }

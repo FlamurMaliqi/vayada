@@ -29,6 +29,8 @@ describe("target PMS reservation stay dates", () => {
                 primaryGuestDisplayName: "Ada Lovelace",
                 primaryGuestEmail: "ada@example.com",
                 primaryGuestPhone: null,
+                primaryGuestCountryCode: "GB",
+                guestContactAccepted: false,
                 assignments: [],
                 checkinCompletedAt: null,
                 checkinPendingFlags: [],
@@ -60,15 +62,19 @@ describe("target PMS reservation stay dates", () => {
     });
 
     const result = await repository.listReservationsByPropertyId("property-1", {
+      search: "Ada",
       limit: 25,
       offset: 0,
     });
 
-    const listQuery = queries.find((query) => !query.includes("SELECT COUNT(*)::text AS total"));
+    const listQuery = queries.find((query) => query.includes('AS "guestContactAccepted"'));
     expect(listQuery).toContain('booking.check_in::text AS "checkIn"');
     expect(listQuery).toContain('booking.check_out::text AS "checkOut"');
     expect(listQuery).toContain("quote.selected_offer_snapshot ->> 'roomName'");
     expect(listQuery).toContain("booking.booking_metadata #>> '{selectedOffer,roomName}'");
+    expect(listQuery).toContain('AS "guestContactAccepted"');
+    expect(listQuery).toContain("contact_event.actor_type = 'property_user'");
+    expect(listQuery).toContain("booking.booking_metadata ->> 'acceptedPaymentDeadlineAt'");
     expect(result.items[0]?.stay).toEqual({
       checkIn: "2026-07-23",
       checkOut: "2026-07-24",
@@ -76,6 +82,12 @@ describe("target PMS reservation stay dates", () => {
       children: 0,
     });
     expect(result.items[0]).toMatchObject({
+      primaryGuest: {
+        displayName: "Ada Lovelace",
+        email: "Hidden until you accept",
+        phone: "Hidden until you accept",
+        countryCode: "GB",
+      },
       bookedOffer: {
         roomTypeId: "room-type-1",
         roomName: "Munich Booking Room",
@@ -109,6 +121,8 @@ describe("target PMS reservation stay dates", () => {
               primaryGuestDisplayName: "Ada Lovelace",
               primaryGuestEmail: "ada@example.com",
               primaryGuestPhone: null,
+              primaryGuestCountryCode: "GB",
+              guestContactAccepted: true,
               assignments: [],
               checkinCompletedAt: null,
               checkinPendingFlags: [],
@@ -153,4 +167,31 @@ describe("target PMS reservation stay dates", () => {
       expect(found).not.toHaveProperty("bookedOffer");
     },
   );
+});
+
+describe("target PMS room media compatibility", () => {
+  it("keeps a legacy URL snapshot authoritative until every photo has a media object ID", async () => {
+    let roomTypeQuery = "";
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+      ): Promise<QueryResult<T>> {
+        roomTypeQuery = text;
+        return { command: "SELECT", rowCount: 0, oid: 0, fields: [], rows: [] };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    await expect(repository.listRoomTypesByPropertyId("property-1")).resolves.toEqual({
+      items: [],
+      sourceFreshness: {},
+    });
+    expect(roomTypeQuery).toContain("jsonb_array_elements(room_type.media_snapshot)");
+    expect(roomTypeQuery).toContain(
+      "jsonb_typeof(legacy_media.item -> 'mediaObjectId') IS DISTINCT FROM 'string'",
+    );
+  });
 });

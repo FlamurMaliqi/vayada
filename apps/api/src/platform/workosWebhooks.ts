@@ -58,7 +58,9 @@ export function createWorkosWebhookVerifier(config: {
   };
 }
 
-export function createPgWorkosWebhookStore(config: PgWorkosWebhookStoreConfig): WorkosWebhookStore {
+export function createPgWorkosWebhookStore(
+  config: PgWorkosWebhookStoreConfig,
+): WorkosWebhookStore & { close(): Promise<void> } {
   const pool = new pg.Pool({
     connectionString: config.connectionString,
     max: config.max,
@@ -100,39 +102,82 @@ export function createPgWorkosWebhookStore(config: PgWorkosWebhookStoreConfig): 
       return result.rows[0]?.exists ?? false;
     },
     async deadLetterReceipt(input) {
-      await pool.query(
-        `INSERT INTO platform.dead_letter_events
-           (
-             source_kind,
-             webhook_event_id,
-             tenant_scope,
-             resource_product,
-             resource_type,
-             resource_id,
-             reason_code,
-             failure_summary,
-             failure_payload
-           )
-         VALUES
-           ('webhook', $1, 'external', 'identity', 'workos_webhook', $1, $2, $3, $4)
-         ON CONFLICT DO NOTHING`,
-        [
-          input.receiptId,
-          input.reasonCode,
-          input.failureSummary,
-          JSON.stringify(input.failurePayload),
-        ],
-      );
-      await pool.query(
-        `INSERT INTO identity.auth_reconciliation_events
-           (event_type, provider, provider_event_id, payload, error, processed_at)
-         VALUES ('workos.webhook.dead_lettered', 'workos', $1, $2, $3, now())`,
-        [
-          input.receiptId,
-          JSON.stringify(input.failurePayload),
-          `${input.reasonCode}: ${input.failureSummary}`,
-        ],
-      );
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const receipt = await client.query(
+          `SELECT id
+           FROM platform.external_webhook_events
+           WHERE id = $1::uuid
+           FOR UPDATE`,
+          [input.receiptId],
+        );
+        if (receipt.rowCount !== 1) {
+          throw new Error(`WorkOS webhook receipt ${input.receiptId} does not exist`);
+        }
+
+        await client.query(
+          `INSERT INTO platform.dead_letter_events
+             (
+               source_kind,
+               webhook_event_id,
+               tenant_scope,
+               resource_product,
+               resource_type,
+               resource_id,
+               reason_code,
+               failure_summary,
+               failure_payload
+             )
+           SELECT
+             'webhook', receipt.id, 'external', 'identity', 'workos_webhook',
+             receipt.id::text, $2, $3, $4
+           FROM platform.external_webhook_events AS receipt
+           WHERE receipt.id = $1::uuid
+             AND NOT EXISTS (
+               SELECT 1
+               FROM platform.dead_letter_events AS existing
+               WHERE existing.source_kind = 'webhook'
+                 AND existing.webhook_event_id = receipt.id
+                 AND existing.reason_code = $2
+             )`,
+          [
+            input.receiptId,
+            input.reasonCode,
+            input.failureSummary,
+            JSON.stringify(input.failurePayload),
+          ],
+        );
+        await client.query(
+          `INSERT INTO identity.auth_reconciliation_events
+             (event_type, provider, provider_event_id, payload, error, processed_at)
+           SELECT 'workos.webhook.dead_lettered', 'workos', receipt.id::text, $2, $3, now()
+           FROM platform.external_webhook_events AS receipt
+           WHERE receipt.id = $1::uuid
+             AND NOT EXISTS (
+               SELECT 1
+               FROM identity.auth_reconciliation_events AS existing
+               WHERE existing.provider = 'workos'
+                 AND existing.event_type = 'workos.webhook.dead_lettered'
+                 AND existing.provider_event_id = receipt.id::text
+             )`,
+          [
+            input.receiptId,
+            JSON.stringify(input.failurePayload),
+            `${input.reasonCode}: ${input.failureSummary}`,
+          ],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // Preserve the transaction failure when the connection cannot roll back.
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async findUserIdByWorkosUserId(workosUserId) {
       return findUserIdByWorkosUserId(pool, workosUserId);
@@ -223,6 +268,9 @@ export function createPgWorkosWebhookStore(config: PgWorkosWebhookStoreConfig): 
         userId: row?.user_id,
         organizationId: row?.organization_id,
       };
+    },
+    async close() {
+      await pool.end();
     },
   };
 }

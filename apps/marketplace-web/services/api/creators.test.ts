@@ -170,7 +170,7 @@ describe("creator target self-service client", () => {
     const controller = new AbortController();
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
-      if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+      if (href === "/auth/session?surface=marketplace-web") {
         expect(init?.signal).toBe(controller.signal);
         return jsonResponse({
           accessToken: "workos-access-token",
@@ -207,7 +207,7 @@ describe("creator target self-service client", () => {
     const controller = new AbortController();
     const fetchMock = vi.fn(
       async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-        expect(String(url)).toBe("https://api.localhost/auth/session?surface=marketplace-web");
+        expect(String(url)).toBe("/auth/session?surface=marketplace-web");
         expect(init?.signal).toBe(controller.signal);
         return new Promise((_, reject) => {
           init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {

@@ -4,7 +4,8 @@
 > summary, synthetic invoice, invoice CSV, invoice-scoped manual payment and PMS
 > payment-ledger presentation contracts. See
 > [`pms-financials-contracts.md`](pms-financials-contracts.md). Payment settings,
-> provider onboarding, payment facts, payouts and reconciliation remain active.
+> provider onboarding, payment facts, payouts and reconciliation remain active;
+> superseded route rows below are historical compatibility references only.
 
 _VAY-795 contract record. Covers F1 from
 [`booking-pms-route-migration-inventory.md`](booking-pms-route-migration-inventory.md)
@@ -212,6 +213,7 @@ Invoice list query rules:
 
 Representative read models:
 
+<!-- prettier-ignore -->
 ```ts
 type FinanceInvoiceListResponse = {
   contractVersion: "finance-route-contracts.v1";
@@ -352,6 +354,7 @@ Property and affiliate payouts are finance-owned. Payout reads must expose
 provider status and retry/disposition state without returning destination
 account numbers or provider secrets.
 
+<!-- prettier-ignore -->
 ```ts
 type FinancePayout = {
   payoutId: string;
@@ -631,6 +634,33 @@ The fixture set must cover:
 - F1a checkout-charge settlement bridge and freeze fallback;
 - authorization denial matrix;
 - scheduler freeze and no dual provider transfer/polling.
+
+## Fixed Plan subscription routes
+
+Booking Admin uses the target Finance source of truth for plan switching:
+
+| Method | Route                                                      | Behavior                                                                                                           |
+| ------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/api/finance/properties/:propertyId/plan-status`          | Current Commission/Fixed state, active-room price, exact 30-day period, next billing date, and cancellation state. |
+| `POST` | `/api/finance/properties/:propertyId/fixed-plan/checkout`  | Creates an idempotent hosted Stripe subscription Checkout. It does not activate Fixed.                             |
+| `POST` | `/api/finance/properties/:propertyId/customer-portal`      | Creates a short-lived Stripe Customer Portal URL.                                                                  |
+| `POST` | `/api/finance/properties/:propertyId/switch-to-commission` | Schedules Stripe cancellation at the current period end without proration.                                         |
+
+Stripe `invoice.paid` is the activation boundary. Webhook receipts are durable
+and idempotent; a delayed event cannot overwrite a newer provider event.
+`invoice.payment_failed` keeps the Fixed entitlement, leaves retries to Stripe,
+and enqueues one internal Finance notification. `invoice.upcoming` snapshots the
+current active-room count and updates subscription quantity with no proration so
+the change appears on the next invoice. A terminal subscription deletion moves
+the property back to Commission.
+
+Every new booking stores its Finance plan and commission terms at creation.
+Later plan or rate changes never rewrite that booking snapshot.
+
+Checkout is exposed only when target Finance, target Booking checkout, the
+Stripe API secret, a verified webhook secret, and mutating Stripe intake are all
+configured. The API derives Checkout email from the authenticated actor rather
+than accepting a browser-supplied address.
 
 ## Reads-Before-Writes Slice Order
 
