@@ -194,8 +194,8 @@ export default function AddonsTab({
         await onCreateAddon(normalized);
       }
       closeEditor();
-    } catch {
-      setItemError("Failed to save add-on.");
+    } catch (error) {
+      setItemError(error instanceof Error ? error.message : "Failed to save add-on.");
     } finally {
       setSavingItem(false);
     }

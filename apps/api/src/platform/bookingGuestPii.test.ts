@@ -113,6 +113,83 @@ function createProjectionFailurePool() {
   return { pool, queries, wasReleased: () => released };
 }
 
+function createUpdatePool() {
+  const updateValues: unknown[][] = [];
+  const guestRow = {
+    guestId: "f6855800-0000-0000-0000-000000000002",
+    guestBookingId: "e3000000-0000-0000-0000-000000000682",
+    role: "additional_guest",
+    firstName: "Charles",
+    lastName: "Babbage",
+    email: "original@example.com",
+    phone: "+4911111",
+    countryCode: "GB",
+    arrivalTime: null,
+    specialRequests: null,
+  };
+  const pool: BookingGuestPiiPool = {
+    async connect() {
+      return {
+        async query<T extends QueryResultRow = QueryResultRow>(
+          text: string,
+          values: readonly unknown[] = [],
+        ) {
+          if (["BEGIN", "COMMIT", "ROLLBACK"].includes(text)) {
+            return { rows: [] as T[], rowCount: 0 };
+          }
+          if (text.trimStart().startsWith("SELECT 1")) {
+            return { rows: [{}] as T[], rowCount: 1 };
+          }
+          if (text.includes("FOR UPDATE")) {
+            return { rows: [guestRow] as unknown as T[], rowCount: 1 };
+          }
+          if (text.includes("finance.billing_entitlements")) {
+            return { rows: [] as T[], rowCount: 0 };
+          }
+          if (
+            text.includes('AS "guestContactAccepted"') &&
+            !text.includes("booking_guests guest")
+          ) {
+            return {
+              rows: [{ guestContactAccepted: false }] as unknown as T[],
+              rowCount: 1,
+            };
+          }
+          if (text.includes("UPDATE booking.booking_guests")) {
+            updateValues.push([...values]);
+            return {
+              rows: [
+                {
+                  ...guestRow,
+                  firstName: values[0],
+                  email: values[2],
+                  phone: values[3],
+                },
+              ] as unknown as T[],
+              rowCount: 1,
+            };
+          }
+          if (text.includes("INSERT INTO platform.product_audit_events")) {
+            return { rows: [] as T[], rowCount: 1 };
+          }
+          if (text.includes("booking_guests guest")) {
+            return {
+              rows: [
+                { ...guestRow, firstName: "Updated", guestContactAccepted: false },
+              ] as unknown as T[],
+              rowCount: 1,
+            };
+          }
+          throw new Error(`Unexpected query: ${text}`);
+        },
+        release() {},
+      };
+    },
+    async end() {},
+  };
+  return { pool, updateValues };
+}
+
 describe("target booking guest PII contact access", () => {
   it("hides primary and additional guest contact for an unaccepted commission booking", async () => {
     const { pool, queries } = createPool({ guestContactAccepted: false });
@@ -158,6 +235,42 @@ describe("target booking guest PII contact access", () => {
 
     expect(projection?.primaryGuest?.email).toBe("ada@example.com");
     expect(projection?.additionalGuests[0]?.phone).toBe("+4954321");
+  });
+
+  it("ignores hidden contact mutations while allowing non-contact guest updates", async () => {
+    const { pool, updateValues } = createUpdatePool();
+    const port = createTargetBookingGuestPiiPort({
+      connectionString: "postgresql://target-db",
+      pool,
+    });
+
+    const result = await port.updateAdditionalGuestForPmsOperations({
+      propertyId: "d3000000-0000-0000-0000-000000000682",
+      guestBookingId: "e3000000-0000-0000-0000-000000000682",
+      guestId: "f6855800-0000-0000-0000-000000000002",
+      commandId: "command-1",
+      idempotencyKey: "idempotency-1",
+      guest: {
+        firstName: "Updated",
+        email: "replacement@example.com",
+        phone: "+4922222",
+      },
+      audit: {
+        actorUserId: "a6855800-0000-0000-0000-000000000002",
+        actorOrganizationId: "b6855800-0000-0000-0000-000000000002",
+        requestId: "request-1",
+        source: "pms_operations",
+        reason: "Update additional guest",
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(updateValues[0]?.slice(0, 4)).toEqual([
+      "Updated",
+      "Babbage",
+      "original@example.com",
+      "+4911111",
+    ]);
   });
 });
 

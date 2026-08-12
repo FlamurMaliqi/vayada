@@ -4,6 +4,8 @@ import {
   BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
   guestContactForPropertyPlan,
   HIDDEN_GUEST_CONTACT,
+  PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL,
+  propertyCanAccessGuestContact,
 } from "./bookingGuestContactAccess.js";
 
 const commissionPlan = {
@@ -53,5 +55,16 @@ describe("guestContactForPropertyPlan", () => {
   it("does not treat payment confirmation as host acceptance", () => {
     expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).toContain("actor_type = 'property_user'");
     expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).not.toContain("payment_status");
+  });
+
+  it("fails closed when more than one active booking plan entitlement exists", () => {
+    expect(PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL).toContain("COUNT(*) = 1");
+    expect(PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL).toContain("BOOL_AND(plan_key = 'fixed')");
+  });
+
+  it("does not grant commission properties write access before acceptance", () => {
+    expect(propertyCanAccessGuestContact(commissionPlan, false)).toBe(false);
+    expect(propertyCanAccessGuestContact(commissionPlan, true)).toBe(true);
+    expect(propertyCanAccessGuestContact(fixedPlan, false)).toBe(true);
   });
 });

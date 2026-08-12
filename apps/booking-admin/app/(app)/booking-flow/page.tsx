@@ -24,6 +24,7 @@ import {
   updateBookingAddonSettings,
 } from "@/services/api/bookingAddonSettingsClient";
 import {
+  BookingAddonItemsClientError,
   createBookingAddonItem,
   deleteBookingAddonItem,
   getBookingAddonItemsContext,
@@ -503,9 +504,24 @@ export default function BookingFlowPage() {
       });
       setAddons((current) => orderAddons([...current, toSettingsAddonItem(saved)]));
       showFeedback("success", t("bookingFlow.addons.feedback.createSuccess"));
-    } catch {
-      showFeedback("error", t("bookingFlow.addons.feedback.saveError"));
-      throw new Error("Failed to save add-on.");
+    } catch (error) {
+      const message =
+        error instanceof BookingAddonItemsClientError
+          ? error.detail
+          : t("bookingFlow.addons.feedback.saveError");
+      showFeedback("error", message);
+      if (error instanceof BookingAddonItemsClientError && error.statusCode === 409) {
+        try {
+          const context = await getBookingAddonItemsContext({
+            hotelId: getBookingHotelIdForSave(),
+          });
+          setAddons(orderAddons(context.addonItems.map(toSettingsAddonItem)));
+          setPropertyPlan(context.propertyPlan);
+        } catch {
+          // Preserve the authoritative create error when a best-effort refresh also fails.
+        }
+      }
+      throw error;
     }
   };
 
@@ -522,9 +538,13 @@ export default function BookingFlowPage() {
         ),
       );
       showFeedback("success", t("bookingFlow.addons.feedback.updateSuccess"));
-    } catch {
-      showFeedback("error", t("bookingFlow.addons.feedback.saveError"));
-      throw new Error("Failed to save add-on.");
+    } catch (error) {
+      const message =
+        error instanceof BookingAddonItemsClientError
+          ? error.detail
+          : t("bookingFlow.addons.feedback.saveError");
+      showFeedback("error", message);
+      throw error;
     }
   };
 
