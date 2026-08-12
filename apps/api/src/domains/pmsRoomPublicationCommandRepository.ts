@@ -28,6 +28,8 @@ import {
 } from "@vayada/domain-pms";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
+import { readPropertyPlan } from "./propertyPlanReadModel.js";
+
 export type PmsRoomPublicationCommandClient = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -220,6 +222,30 @@ export function createPgPmsRoomPublicationCommandRepository(
         const currentRevision = positiveDatabaseInteger(current.roomMediaRevision);
         if (currentRevision !== command.expectedRoomMediaRevision) {
           return finalized(mediaFailure({ code: "room_media_revision_conflict", currentRevision }));
+        }
+        const currentCount = await countRoomMedia(client, command.propertyId, command.roomTypeId);
+        const currentMediaObjectIds = await readRoomMediaObjectIds(
+          client,
+          command.propertyId,
+          command.roomTypeId,
+        );
+        const propertyPlan = await readPropertyPlan(client, command.propertyId);
+        const addsMedia = command.assignments.some(
+          ({ mediaObjectId }) => !currentMediaObjectIds.has(mediaObjectId),
+        );
+        if (
+          (currentCount >= propertyPlan.limits.maxRoomPhotosPerType && addsMedia) ||
+          (command.assignments.length > propertyPlan.limits.maxRoomPhotosPerType &&
+            command.assignments.length > currentCount)
+        ) {
+          return finalized(
+            mediaFailure({
+              code: "room_media_plan_limit_reached",
+              plan: propertyPlan.plan,
+              currentCount,
+              maxAllowed: propertyPlan.limits.maxRoomPhotosPerType,
+            }),
+          );
         }
 
         const resolved = await config.mediaResolver.resolvePublicMedia({
@@ -549,6 +575,47 @@ async function lockMediaRoom(
   );
   if (result.rows.length > 1) throw new Error("PMS room media lock returned duplicate rows");
   return result.rows[0] ?? null;
+}
+
+async function countRoomMedia(
+  client: PmsRoomPublicationCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<number> {
+  const result = await client.query<{ currentMediaCount: number | string }>(
+    `SELECT GREATEST(
+       CASE
+         WHEN jsonb_typeof(room_type.media_snapshot) = 'array'
+           THEN jsonb_array_length(room_type.media_snapshot)
+         ELSE 0
+       END,
+       (SELECT count(*)::integer
+        FROM pms.room_type_media assignment
+        WHERE assignment.property_id = room_type.property_id
+          AND assignment.room_type_id = room_type.id)
+     ) AS "currentMediaCount"
+     FROM pms.room_types room_type
+     WHERE room_type.property_id = $1::uuid
+       AND room_type.id = $2::uuid`,
+    [propertyId, roomTypeId],
+  );
+  if (result.rows.length !== 1) throw new Error("PMS room media count returned no row");
+  return nonNegativeDatabaseInteger(result.rows[0]!.currentMediaCount);
+}
+
+async function readRoomMediaObjectIds(
+  client: PmsRoomPublicationCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<ReadonlySet<string>> {
+  const result = await client.query<{ mediaObjectId: string }>(
+    `SELECT platform_media_object_id::text AS "mediaObjectId"
+     FROM pms.room_type_media
+     WHERE property_id = $1::uuid
+       AND room_type_id = $2::uuid`,
+    [propertyId, roomTypeId],
+  );
+  return new Set(result.rows.map(({ mediaObjectId }) => mediaObjectId));
 }
 
 async function lockAmenitiesRoom(
@@ -889,6 +956,14 @@ function positiveDatabaseInteger(value: number | string): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 2_147_483_647) {
     throw new Error("PMS room publication database revision is invalid");
+  }
+  return parsed;
+}
+
+function nonNegativeDatabaseInteger(value: number | string): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 20) {
+    throw new Error("PMS room publication media count is invalid");
   }
   return parsed;
 }

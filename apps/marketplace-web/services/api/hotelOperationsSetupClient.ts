@@ -10,7 +10,6 @@ export type RoomSetupDraft = {
   maxOccupancy: number;
   nightlyRate: number;
   currency: string;
-  minimumStay: number;
 };
 
 export type ExistingRoomSetup = {
@@ -43,7 +42,19 @@ export type RoomSetupSaveResult =
 export type GuestSettingsPolicies = {
   checkInTime: string;
   checkOutTime: string;
+  termsAndConditions: string;
   cancellationPolicyText: string;
+};
+
+export type PropertyLaunchSettings = {
+  defaultCurrency: string;
+  supportedCurrencies: string[];
+  defaultLanguage: string;
+  supportedLanguages: string[];
+  instagram: string;
+  facebook: string;
+  tiktok: string;
+  youtube: string;
 };
 
 export type PaymentMethodChoice = "pay_at_property" | "bank_transfer" | "stripe";
@@ -87,8 +98,10 @@ export type PublicBookabilityPublication = {
 };
 
 type BookingPropertySettingsResponse = {
+  property_name?: unknown;
   check_in_time?: unknown;
   check_out_time?: unknown;
+  terms_text?: unknown;
   cancellation_policy_text?: unknown;
 };
 
@@ -161,9 +174,15 @@ export const hotelOperationsSetupApi = {
     return { status: "created" };
   },
 
+  addRoomSetup: async (propertyId: string, draft: RoomSetupDraft): Promise<void> => {
+    const body = buildRoomSetupRequest(propertyId, draft, false);
+    await targetApiClient.post(`/api/pms/properties/${encoded(propertyId)}/room-types`, body);
+  },
+
   getGuestSettingsPolicies: async (
     propertyId: string,
     signal?: AbortSignal,
+    seedDefaultTerms = false,
   ): Promise<GuestSettingsPolicies> => {
     const response = await targetApiClient.get<BookingPropertySettingsResponse>(
       `/api/booking/hotels/${encoded(propertyId)}/settings/property`,
@@ -172,6 +191,8 @@ export const hotelOperationsSetupApi = {
     return {
       checkInTime: stringValue(response.check_in_time, "15:00"),
       checkOutTime: stringValue(response.check_out_time, "11:00"),
+      termsAndConditions:
+        stringValue(response.terms_text) || (seedDefaultTerms ? defaultTermsAndConditions() : ""),
       cancellationPolicyText: stringValue(response.cancellation_policy_text),
     };
   },
@@ -183,8 +204,39 @@ export const hotelOperationsSetupApi = {
     await targetApiClient.patch(`/api/booking/hotels/${encoded(propertyId)}/settings/property`, {
       check_in_time: settings.checkInTime,
       check_out_time: settings.checkOutTime,
+      terms_text: settings.termsAndConditions.trim(),
       cancellation_policy_text: settings.cancellationPolicyText.trim(),
     });
+  },
+
+  getPropertyLaunchSettings: async (
+    propertyId: string,
+    signal?: AbortSignal,
+  ): Promise<PropertyLaunchSettings> => {
+    const response = await targetApiClient.get<PropertyLaunchSettings>(
+      `/api/hotel-setup/properties/${encoded(propertyId)}/launch-settings`,
+      signal ? { signal } : undefined,
+    );
+    return {
+      defaultCurrency: stringValue(response.defaultCurrency, "USD"),
+      supportedCurrencies: stringArray(response.supportedCurrencies),
+      defaultLanguage: stringValue(response.defaultLanguage, "en"),
+      supportedLanguages: stringArray(response.supportedLanguages),
+      instagram: stringValue(response.instagram),
+      facebook: stringValue(response.facebook),
+      tiktok: stringValue(response.tiktok),
+      youtube: stringValue(response.youtube),
+    };
+  },
+
+  updatePropertyLaunchSettings: async (
+    propertyId: string,
+    settings: PropertyLaunchSettings,
+  ): Promise<void> => {
+    await targetApiClient.put(
+      `/api/hotel-setup/properties/${encoded(propertyId)}/launch-settings`,
+      settings,
+    );
   },
 
   getPaymentSettings: async (
@@ -332,6 +384,13 @@ export const hotelOperationsSetupApi = {
     ),
 };
 
+function defaultTermsAndConditions(): string {
+  return `These Terms & Conditions govern your booking made through the vayada platform ("vayada"). By completing this booking, you ("Guest") enter into a direct agreement with us for our accommodation services. vayada acts solely as an intermediary platform that facilitates bookings and payment processing between you and us. vayada is not a party to the accommodation agreement and is not the provider of our accommodation services.
+
+1. Booking Confirmation
+Your booking is confirmed immediately upon submission and successful payment. You will receive a confirmation email with your booking details shortly after completing checkout. Your card will be charged the full booking amount shown at checkout.`;
+}
+
 async function getExistingRoomSetup(
   propertyId: string,
   signal?: AbortSignal,
@@ -388,11 +447,16 @@ async function getRoomSetupState(
   return { status: "empty" };
 }
 
-export function buildRoomSetupRequest(propertyId: string, draft: RoomSetupDraft) {
+export function buildRoomSetupRequest(
+  propertyId: string,
+  draft: RoomSetupDraft,
+  initialSetupOnly = true,
+) {
   const currency = normalizeCurrency(draft.currency);
   const rate = positiveNumber(draft.nightlyRate, "Nightly rate").toFixed(2);
   const payload = {
-    initialSetupOnly: true,
+    onboardingSetup: true,
+    initialSetupOnly,
     name: requiredText(draft.name, "Room type name"),
     totalRooms: positiveInteger(draft.totalRooms, "Number of rooms"),
     maxOccupancy: positiveInteger(draft.maxOccupancy, "Maximum occupancy"),
@@ -409,7 +473,7 @@ export function buildRoomSetupRequest(propertyId: string, draft: RoomSetupDraft)
         from: "01-01",
         to: "12-31",
         rate,
-        minStay: positiveInteger(draft.minimumStay, "Minimum stay"),
+        minStay: 1,
       },
     ],
   };
@@ -493,6 +557,18 @@ export function hotelOperationsErrorMessage(error: unknown, fallback: string): s
   return error instanceof Error && error.message.trim() ? error.message : fallback;
 }
 
+export function hotelOperationsWriteMayHaveCommitted(error: unknown): boolean {
+  return !(error instanceof ApiErrorResponse) || error.status >= 500;
+}
+
+export function isPropertyCurrencyConflict(error: unknown): boolean {
+  return (
+    error instanceof ApiErrorResponse &&
+    error.status === 409 &&
+    error.data.code === "property_currency_conflict"
+  );
+}
+
 function encoded(value: string): string {
   const normalized = value.trim();
   if (!normalized) throw new Error("Property id is required.");
@@ -501,6 +577,12 @@ function encoded(value: string): string {
 
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
 }
 
 function requiredText(value: string, label: string): string {

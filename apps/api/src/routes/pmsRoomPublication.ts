@@ -38,10 +38,7 @@ export type PmsRoomPublicationRoutesOptions = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * VAY-1061 owner adapter. It remains unmounted until the coordinated PMS API
- * composition cutover; registering this factory alone cannot activate public content.
- */
+/** VAY-1061 owner adapter for canonical room media and amenity publication. */
 export async function registerPmsRoomPublicationRoutes(
   app: FastifyInstance,
   options: PmsRoomPublicationRoutesOptions,
