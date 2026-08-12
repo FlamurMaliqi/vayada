@@ -161,6 +161,10 @@ import {
 } from "./routes/platform/admin/dashboard/bookingCompatible.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
 import {
+  registerPmsRoomPublicationRoutes,
+  type PmsRoomPublicationRoutesOptions,
+} from "./routes/pmsRoomPublication.js";
+import {
   registerPmsModuleActivationRoutes,
   type PmsModuleActivationRepository,
 } from "./routes/pmsModuleActivations.js";
@@ -191,6 +195,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingGuestPiiPort?: BookingGuestPiiPort;
   pmsOperationsAllowedOrigins?: string[];
   propertyPlanReadRepository?: PropertyPlanReadRepository;
+  pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
@@ -535,6 +540,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       bookingGuestPiiPort: options.bookingGuestPiiPort,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
       propertyPlanReadRepository: options.propertyPlanReadRepository,
+    });
+  }
+  if (options.pmsRoomPublication) {
+    app.register(registerPmsRoomPublicationRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsRoomPublication,
     });
   }
   if (options.pmsModuleActivationRepository) {

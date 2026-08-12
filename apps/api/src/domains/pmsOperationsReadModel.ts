@@ -51,6 +51,7 @@ export type PmsRateRulesSummary = {
 };
 
 export type PmsRoomTypeMedia = {
+  mediaObjectId?: string;
   url: string;
   altText?: string | null;
 };
@@ -64,6 +65,7 @@ export type PmsRoomType = {
   attributes: PmsJsonRecord;
   amenities: string[];
   media: PmsRoomTypeMedia[];
+  roomMediaRevision?: number;
   baseRate: PmsMoney;
   active: boolean;
   sortOrder: number;
@@ -451,6 +453,7 @@ type TargetPmsRoomTypeRow = {
   attributes: unknown;
   amenities: unknown;
   media: unknown;
+  roomMediaRevision: string | number;
   baseRateAmount: string | number;
   currency: string;
   active: boolean;
@@ -673,7 +676,8 @@ async function listRoomTypes(
        room_type.occupancy_limits AS "occupancyLimits",
        room_type.room_attributes AS "attributes",
        room_type.amenities_snapshot AS "amenities",
-       room_type.media_snapshot AS "media",
+       COALESCE(room_media.items, room_type.media_snapshot) AS "media",
+       room_type.room_media_revision AS "roomMediaRevision",
        room_type.base_rate_amount AS "baseRateAmount",
        room_type.currency,
        room_type.active,
@@ -686,6 +690,41 @@ async function listRoomTypes(
        COALESCE(rate_rules.active_rule_count, 0) AS "activeRuleCount",
        COALESCE(room_counts.room_count, 0) AS "roomCount"
      FROM pms.room_types room_type
+     LEFT JOIN LATERAL (
+       SELECT jsonb_agg(
+                jsonb_build_object(
+                  'mediaObjectId', assignment.platform_media_object_id::text,
+                  'url', variant.public_cdn_url,
+                  'altText', assignment.alt_text
+                )
+                ORDER BY assignment.sort_order, assignment.platform_media_object_id
+              ) AS items
+       FROM pms.room_type_media assignment
+       JOIN platform.media_objects media_object
+         ON media_object.id = assignment.platform_media_object_id
+        AND media_object.property_id = assignment.property_id
+        AND media_object.visibility = 'public'
+        AND media_object.lifecycle_status = 'active'
+        AND media_object.public_approved = TRUE
+       JOIN LATERAL (
+         SELECT media_variant.public_cdn_url
+         FROM platform.media_variants media_variant
+         WHERE media_variant.media_object_id = media_object.id
+           AND media_variant.visibility = 'public'
+           AND media_variant.public_cdn_url IS NOT NULL
+         ORDER BY
+           CASE media_variant.variant_name
+             WHEN 'thumbnail' THEN 0
+             WHEN 'large' THEN 1
+             WHEN 'original_safe' THEN 2
+             ELSE 3
+           END,
+           media_variant.id
+         LIMIT 1
+       ) variant ON TRUE
+       WHERE assignment.property_id = room_type.property_id
+         AND assignment.room_type_id = room_type.id
+     ) room_media ON TRUE
      LEFT JOIN LATERAL (
        SELECT jsonb_agg(
                 jsonb_build_object(
@@ -760,6 +799,7 @@ function toPmsRoomType(row: TargetPmsRoomTypeRow): PmsRoomType {
     attributes: toJsonRecord(row.attributes),
     amenities: toStringArray(row.amenities),
     media: toMediaArray(row.media),
+    roomMediaRevision: toInteger(row.roomMediaRevision),
     baseRate: {
       amountDecimal: toDecimalString(row.baseRateAmount),
       currency: row.currency,
@@ -1034,13 +1074,14 @@ function toMediaArray(value: unknown): PmsRoomTypeMedia[] {
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
     .map((item) => {
       const url = typeof item.url === "string" ? item.url : "";
+      const mediaObjectId = typeof item.mediaObjectId === "string" ? item.mediaObjectId : undefined;
       const altText =
         typeof item.altText === "string"
           ? item.altText
           : typeof item.alt === "string"
             ? item.alt
             : null;
-      return { url, altText };
+      return { ...(mediaObjectId ? { mediaObjectId } : {}), url, altText };
     })
     .filter((item) => item.url.length > 0);
 }
