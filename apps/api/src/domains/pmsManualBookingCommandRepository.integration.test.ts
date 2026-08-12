@@ -219,6 +219,26 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect((await counts()).booking).toBe("1");
   });
 
+  it("serializes simultaneous command-id reuse across different keys and rooms", async () => {
+    const first = command("command-id-race", "unpaid", "cash", "2027-07-01", false);
+    const second = {
+      ...first,
+      idempotencyKey: "different-key-same-command",
+      stays: [{ ...first.stays[0]!, roomId: roomIds[1]! }],
+    };
+    const settled = await Promise.allSettled([
+      repository.createManualBooking(first),
+      repository.createManualBooking(second),
+    ]);
+    expect(settled.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter(({ status }) => status === "rejected")).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({ code: "idempotency_conflict" }),
+      }),
+    ]);
+    expect((await counts()).booking).toBe("1");
+  });
+
   function dependencies(
     override: Partial<PmsManualBookingTransactionDependencies> = {},
   ): PmsManualBookingTransactionDependencies {
