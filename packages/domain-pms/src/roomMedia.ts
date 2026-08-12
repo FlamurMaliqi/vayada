@@ -7,9 +7,18 @@ export type RoomMediaAssignment = {
   sortOrder: number;
 };
 
+/** Transitional snapshot used while a room still contains pre-Platform-Media URLs. */
+export type LegacyRoomMediaSnapshotItem = {
+  mediaObjectId: string | null;
+  url: string;
+  altText: string | null;
+  sortOrder: number;
+};
+
 export type ReplaceRoomMediaRequest = {
   expectedRoomMediaRevision: number;
   assignments: RoomMediaAssignment[];
+  legacyMediaSnapshot?: LegacyRoomMediaSnapshotItem[];
 };
 
 export type RoomMediaCommandResponse = {
@@ -27,8 +36,14 @@ export type RoomMediaCommandError =
     };
 
 export function parseReplaceRoomMediaRequest(value: unknown): ReplaceRoomMediaRequest | null {
+  const hasLegacySnapshot = isPlainDataRecord(value) && Object.hasOwn(value, "legacyMediaSnapshot");
   if (
-    !isExactDataRecord(value, ["expectedRoomMediaRevision", "assignments"]) ||
+    !isExactDataRecord(
+      value,
+      hasLegacySnapshot
+        ? ["expectedRoomMediaRevision", "assignments", "legacyMediaSnapshot"]
+        : ["expectedRoomMediaRevision", "assignments"],
+    ) ||
     !isPositiveRevision(value["expectedRoomMediaRevision"]) ||
     !isDensePlainArray(value["assignments"]) ||
     value["assignments"].length > ROOM_MEDIA_MAX_ITEMS
@@ -44,11 +59,16 @@ export function parseReplaceRoomMediaRequest(value: unknown): ReplaceRoomMediaRe
   ) {
     return null;
   }
+  const legacyMediaSnapshot = hasLegacySnapshot
+    ? parseLegacyMediaSnapshot(value["legacyMediaSnapshot"], assignments)
+    : undefined;
+  if (hasLegacySnapshot && !legacyMediaSnapshot) return null;
   return Object.freeze({
     expectedRoomMediaRevision: value["expectedRoomMediaRevision"] as number,
     assignments: Object.freeze(
       assignments as RoomMediaAssignment[],
     ) as unknown as RoomMediaAssignment[],
+    ...(legacyMediaSnapshot ? { legacyMediaSnapshot } : {}),
   });
 }
 
@@ -121,6 +141,55 @@ function parseAssignment(value: unknown): RoomMediaAssignment | null {
     altText: value["altText"],
     sortOrder: value["sortOrder"],
   });
+}
+
+function parseLegacyMediaSnapshot(
+  value: unknown,
+  assignments: readonly (RoomMediaAssignment | null)[],
+): LegacyRoomMediaSnapshotItem[] | null {
+  if (!isDensePlainArray(value) || value.length > ROOM_MEDIA_MAX_ITEMS) return null;
+  const items = value.map((item, index): LegacyRoomMediaSnapshotItem | null => {
+    if (
+      !isExactDataRecord(item, ["mediaObjectId", "url", "altText", "sortOrder"]) ||
+      (item["mediaObjectId"] !== null && !isUuid(item["mediaObjectId"])) ||
+      !isSafeHttpUrl(item["url"]) ||
+      !isValidAltText(item["altText"]) ||
+      item["sortOrder"] !== index
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      mediaObjectId: item["mediaObjectId"] === null ? null : item["mediaObjectId"].toLowerCase(),
+      url: item["url"],
+      altText: item["altText"],
+      sortOrder: index,
+    });
+  });
+  if (items.some((item) => item === null)) return null;
+  const parsed = items as LegacyRoomMediaSnapshotItem[];
+  if (!parsed.some(({ mediaObjectId }) => mediaObjectId === null)) return null;
+  const canonicalItems = parsed.filter(({ mediaObjectId }) => mediaObjectId !== null);
+  if (
+    canonicalItems.length !== assignments.length ||
+    canonicalItems.some(
+      (item, index) =>
+        item.mediaObjectId !== assignments[index]?.mediaObjectId ||
+        item.altText !== assignments[index]?.altText,
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze(parsed) as unknown as LegacyRoomMediaSnapshotItem[];
+}
+
+function isSafeHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 4_096) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
 }
 
 function isUniqueUuidArray(value: unknown): value is string[] {

@@ -103,6 +103,7 @@ describe("platform media runtime composition", () => {
     expect(runtime.routes).toMatchObject({
       enabledPurposes: [
         "identity.user.profile_image",
+        "booking.header_logo",
         "property.hero_image",
         "property.gallery_image",
         "marketplace.creator.profile_image",

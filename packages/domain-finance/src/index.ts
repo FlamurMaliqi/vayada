@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
 export * from "./paymentReadinessSnapshot.js";
+export * from "./subscriptions.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
@@ -52,6 +53,35 @@ export const FINANCE_ROUTE_CONTRACT_VERSION =
 export const FINANCE_BILLING_PLANS = ["fixed", "commission"] as const;
 
 export type FinanceBillingPlan = (typeof FINANCE_BILLING_PLANS)[number];
+
+export type PropertyFeatureLimits = {
+  maxRoomPhotosPerType: number;
+  maxAddons: number;
+  guestContactAccess: "after_acceptance" | "always";
+};
+
+export const PROPERTY_FEATURE_LIMITS = {
+  commission: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance",
+  },
+  fixed: {
+    maxRoomPhotosPerType: 15,
+    maxAddons: 9,
+    guestContactAccess: "always",
+  },
+} as const satisfies Record<FinanceBillingPlan, PropertyFeatureLimits>;
+
+export type PropertyPlanReadModel = {
+  propertyId: FinancePropertyId;
+  plan: FinanceBillingPlan;
+  limits: PropertyFeatureLimits;
+};
+
+export function propertyFeatureLimitsFor(plan: FinanceBillingPlan): PropertyFeatureLimits {
+  return PROPERTY_FEATURE_LIMITS[plan];
+}
 
 // ---------------------------------------------------------------------------
 // Payment method tokens

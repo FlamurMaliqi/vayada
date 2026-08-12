@@ -282,6 +282,58 @@ describe("AdaptiveHotelSetupController", () => {
 
     await act(async () => renderer?.unmount());
   });
+
+  it("saves the active draft before exiting setup", async () => {
+    const beforeLeave = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const onExit = vi.fn();
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(AdaptiveHotelSetupController, {
+          propertyId,
+          requestedStepId: "pricing",
+          onExit,
+          beforeLeave,
+        }),
+      );
+    });
+
+    await act(async () => {
+      currentShell().onExit();
+    });
+
+    expect(beforeLeave).toHaveBeenCalledOnce();
+    expect(onExit).toHaveBeenCalledOnce();
+
+    renderer?.unmount();
+  });
+
+  it("stays in setup when the active draft cannot be saved before exit", async () => {
+    const beforeLeave = vi.fn<() => Promise<void>>().mockRejectedValue(new Error("Save failed"));
+    const onExit = vi.fn();
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(AdaptiveHotelSetupController, {
+          propertyId,
+          requestedStepId: "pricing",
+          onExit,
+          beforeLeave,
+        }),
+      );
+    });
+
+    await act(async () => {
+      currentShell().onExit();
+    });
+
+    expect(beforeLeave).toHaveBeenCalledOnce();
+    expect(onExit).not.toHaveBeenCalled();
+
+    renderer?.unmount();
+  });
 });
 
 function currentShell(): CapturedShellProps {

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/workos-local-config.sh"
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.portless.yml)
 BACKEND_SERVICES=(
   marketplace-postgres
@@ -106,7 +107,10 @@ ensure_workos_redirect() {
   if workos_config_has redirect "$url"; then
     return
   fi
-  WORKOS_MODE=agent workos config redirect add "$url" --json >/dev/null
+  if ! WORKOS_MODE=agent workos config redirect add "$url" --json >/dev/null; then
+    echo "Failed to register WorkOS redirect URI '$url'." >&2
+    return 1
+  fi
 }
 
 ensure_workos_cors() {
@@ -114,15 +118,18 @@ ensure_workos_cors() {
   if workos_config_has cors "$origin"; then
     return
   fi
-  WORKOS_MODE=agent workos config cors add "$origin" --json >/dev/null
+  if ! WORKOS_MODE=agent workos config cors add "$origin" --json >/dev/null; then
+    echo "Failed to register WorkOS CORS origin '$origin'." >&2
+    return 1
+  fi
 }
 
 get_portless_origin() {
   local name="$1"
   local origin
   origin="$(portless get "$name" 2>/dev/null || true)"
-  if [[ ! "$origin" =~ ^https?://[^/]+$ ]]; then
-    echo "Could not resolve the portless URL for '$name'." >&2
+  if ! workos_local_validate_origin "portless '$name'" "$origin"; then
+    echo "Could not resolve a valid portless URL for '$name'." >&2
     return 1
   fi
   printf '%s\n' "$origin"
@@ -174,7 +181,8 @@ PMS_API_ORIGIN="$(get_portless_origin api.pms)"
 # Keep media canonical because Next image allowlists use this exact local host.
 MEDIA_CDN_ORIGIN="https://media.localhost${PORT_SUFFIX}"
 BOOKING_PORTLESS_HOST="${BOOKING_ORIGIN#*://}"
-GOOGLE_OAUTH_CALLBACK_URL="${API_ORIGIN}/auth/oauth/google/callback"
+unset AUTH_GATEWAY_UPSTREAM_ORIGIN AUTH_PUBLIC_ORIGIN
+AUTH_GATEWAY_UPSTREAM_ORIGIN="http://127.0.0.1:8003"
 
 export AUTH_COOKIE_SECRET="${AUTH_COOKIE_SECRET:-local-dev-auth-cookie-secret-0123456789abcdef}"
 export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-${AUTH_DATABASE_URL:-}}"
@@ -194,8 +202,17 @@ export HOTEL_SETUP_MARKETPLACE_ORIGIN="${HOTEL_SETUP_MARKETPLACE_ORIGIN:-${MARKE
 export HOTEL_SETUP_BOOKING_ADMIN_ORIGIN="${HOTEL_SETUP_BOOKING_ADMIN_ORIGIN:-${BOOKING_ADMIN_ORIGIN}}"
 export HOTEL_SETUP_PMS_ORIGIN="${HOTEL_SETUP_PMS_ORIGIN:-${PMS_ORIGIN}}"
 export AUTH_LOGOUT_URL="${AUTH_LOGOUT_URL:-${ADMIN_ORIGIN}/login}"
-export AUTH_ALLOWED_ORIGINS="${AUTH_ALLOWED_ORIGINS:-${API_ORIGIN},${ADMIN_ORIGIN},${BOOKING_ADMIN_ORIGIN},${BOOKING_ORIGIN},${PMS_ORIGIN},${MARKETPLACE_ORIGIN},${AFFILIATE_ORIGIN},${LANDING_ORIGIN}}"
-export AUTH_COOKIE_SECURE="${AUTH_COOKIE_SECURE:-true}"
+export AUTH_ALLOWED_ORIGINS="${API_ORIGIN},${ADMIN_ORIGIN},${BOOKING_ADMIN_ORIGIN},${BOOKING_ORIGIN},${PMS_ORIGIN},${MARKETPLACE_ORIGIN},${AFFILIATE_ORIGIN},${LANDING_ORIGIN}"
+export AUTH_COOKIE_SECURE=true
+export AUTH_COMPATIBILITY_CALLBACK_ORIGIN="$API_ORIGIN"
+export AUTH_PLATFORM_ADMIN_ORIGIN="$ADMIN_ORIGIN"
+export AUTH_MARKETPLACE_WEB_ORIGIN="$MARKETPLACE_ORIGIN"
+export AUTH_BOOKING_ADMIN_ORIGIN="$BOOKING_ADMIN_ORIGIN"
+export AUTH_PMS_WEB_ORIGIN="$PMS_ORIGIN"
+export AUTH_AFFILIATE_DASHBOARD_ORIGIN="$AFFILIATE_ORIGIN"
+# All five browser surfaces ship first-party gateways in VAY-1197–1201.
+# An explicit empty override still restores the direct API-host compatibility transport.
+export AUTH_FIRST_PARTY_SURFACES="${AUTH_FIRST_PARTY_SURFACES-marketplace-web,booking-admin,pms-web,affiliate-dashboard,platform-admin}"
 export AUTH_BOOKING_ADMIN_LOGOUT_URL="${AUTH_BOOKING_ADMIN_LOGOUT_URL:-${BOOKING_ADMIN_ORIGIN}/login}"
 export AUTH_PMS_WEB_LOGOUT_URL="${AUTH_PMS_WEB_LOGOUT_URL:-${PMS_ORIGIN}/login}"
 export AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL="${AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL:-${AFFILIATE_ORIGIN}/login}"
@@ -214,7 +231,15 @@ export AWS_SECRET_ACCESS_KEY="minioadmin"
 export AWS_ENDPOINT_URL_S3="http://127.0.0.1:9000"
 
 echo "==> Ensuring WorkOS local app URLs are registered"
-ensure_workos_redirect "$GOOGLE_OAUTH_CALLBACK_URL"
+for origin in \
+  "$API_ORIGIN" \
+  "$ADMIN_ORIGIN" \
+  "$BOOKING_ADMIN_ORIGIN" \
+  "$PMS_ORIGIN" \
+  "$MARKETPLACE_ORIGIN" \
+  "$AFFILIATE_ORIGIN"; do
+  ensure_workos_redirect "$(workos_local_callback_url "WorkOS callback" "$origin")"
+done
 for origin in \
   "$API_ORIGIN" \
   "$ADMIN_ORIGIN" \
@@ -295,16 +320,33 @@ echo "    Stop with Ctrl-C. Stop Docker services with: npm run dev:workos-local 
 echo
 
 start_api
-start_app apps/marketplace-web 3000 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${MARKETPLACE_API_ORIGIN}"
-start_app apps/vayada-admin 3001 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
+start_app apps/marketplace-web 3000 "${COMMON_FRONTEND_ENV[@]}" \
+  "AUTH_PUBLIC_ORIGIN=${MARKETPLACE_ORIGIN}" \
+  "AUTH_GATEWAY_UPSTREAM_ORIGIN=${AUTH_GATEWAY_UPSTREAM_ORIGIN}" \
+  "NEXT_PUBLIC_API_URL=${MARKETPLACE_API_ORIGIN}"
+start_app apps/vayada-admin 3001 "${COMMON_FRONTEND_ENV[@]}" \
+  "AUTH_PUBLIC_ORIGIN=${ADMIN_ORIGIN}" \
+  "AUTH_GATEWAY_UPSTREAM_ORIGIN=${AUTH_GATEWAY_UPSTREAM_ORIGIN}" \
+  "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
 start_app apps/booking-web 3002 "${COMMON_FRONTEND_ENV[@]}" \
   "NEXT_PUBLIC_BOOKING_WEB_API_URL=${API_ORIGIN}" \
   "NEXT_PUBLIC_API_URL=${BOOKING_API_ORIGIN}" \
   "BOOKING_WEB_API_URL=http://127.0.0.1:8003" \
   "BOOKING_API_URL=http://127.0.0.1:8001"
-start_app apps/booking-admin 3003 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${API_ORIGIN}" "NEXT_PUBLIC_PMS_API_URL=${PMS_API_ORIGIN}"
-start_app apps/pms-web 3004 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_PMS_API_URL=${PMS_API_ORIGIN}" "NEXT_PUBLIC_PMS_OPERATIONS_API_URL=${API_ORIGIN}"
-start_app apps/affiliate-dashboard 3005 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
+start_app apps/booking-admin 3003 "${COMMON_FRONTEND_ENV[@]}" \
+  "AUTH_PUBLIC_ORIGIN=${BOOKING_ADMIN_ORIGIN}" \
+  "AUTH_GATEWAY_UPSTREAM_ORIGIN=${AUTH_GATEWAY_UPSTREAM_ORIGIN}" \
+  "NEXT_PUBLIC_API_URL=${API_ORIGIN}" \
+  "NEXT_PUBLIC_PMS_API_URL=${PMS_API_ORIGIN}"
+start_app apps/pms-web 3004 "${COMMON_FRONTEND_ENV[@]}" \
+  "AUTH_PUBLIC_ORIGIN=${PMS_ORIGIN}" \
+  "AUTH_GATEWAY_UPSTREAM_ORIGIN=${AUTH_GATEWAY_UPSTREAM_ORIGIN}" \
+  "NEXT_PUBLIC_PMS_API_URL=${PMS_API_ORIGIN}" \
+  "NEXT_PUBLIC_PMS_OPERATIONS_API_URL=${API_ORIGIN}"
+start_app apps/affiliate-dashboard 3005 "${COMMON_FRONTEND_ENV[@]}" \
+  "AUTH_PUBLIC_ORIGIN=${AFFILIATE_ORIGIN}" \
+  "AUTH_GATEWAY_UPSTREAM_ORIGIN=${AUTH_GATEWAY_UPSTREAM_ORIGIN}" \
+  "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
 start_app apps/landing 3006 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${MARKETPLACE_API_ORIGIN}"
 
 wait
