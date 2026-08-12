@@ -165,6 +165,22 @@ export interface Room {
 
 export type PmsOperationsContractVersion = "pms-operations.v1";
 
+export interface PropertyPlan {
+  propertyId: string;
+  plan: "commission" | "fixed";
+  limits: {
+    maxRoomPhotosPerType: number;
+    maxAddons: number;
+    guestContactAccess: "after_acceptance" | "always";
+  };
+}
+
+export interface PmsPropertyPlanResponse {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  propertyPlan: PropertyPlan;
+}
+
 export interface PmsOperationsMoney {
   amountDecimal: string;
   currency: string;
@@ -393,6 +409,12 @@ export const benefitsService = {
 };
 
 export const roomsService = {
+  getPropertyPlan: async () => {
+    const propertyId = await resolveSelectedPmsPropertyId("loading property plan");
+    const response = await pmsOperationsRoomsReadService.getPropertyPlan(propertyId);
+    return response.propertyPlan;
+  },
+
   list: async () => {
     const propertyId = await resolveSelectedPmsPropertyId("loading room types");
     const response = await pmsOperationsRoomsReadService.listRoomTypes(propertyId);
@@ -423,6 +445,14 @@ export const roomsService = {
 };
 
 export const pmsOperationsRoomsReadService = {
+  getPropertyPlan: (propertyId: string) => {
+    assertPmsOperationsReadModelEnabled();
+    return pmsOperationsClient.get<PmsPropertyPlanResponse>(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/plan-limits`,
+      pmsOperationsRequestOptions,
+    );
+  },
+
   listRooms: (propertyId: string) => {
     assertPmsOperationsReadModelEnabled();
     return pmsOperationsClient.get<PmsOperationsListResponse<PmsOperationsRoom>>(
