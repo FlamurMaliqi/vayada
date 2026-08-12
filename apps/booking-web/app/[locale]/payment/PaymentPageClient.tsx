@@ -872,18 +872,21 @@ function PaymentPageContent() {
                 </button>
                 <span className="text-sm text-gray-700 leading-relaxed">
                   {(() => {
-                    const renderTermsLink = (chunks: ReactNode) => (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setPolicyModal("terms");
-                        }}
-                        className="text-primary-600 underline font-medium hover:text-primary-700"
-                      >
-                        {chunks}
-                      </button>
-                    );
+                    const renderTermsLink = (chunks: ReactNode) =>
+                      termsText.trim() ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setPolicyModal("terms");
+                          }}
+                          className="text-primary-600 underline font-medium hover:text-primary-700"
+                        >
+                          {chunks}
+                        </button>
+                      ) : (
+                        chunks
+                      );
                     const renderCancellationLink = (chunks: ReactNode) => (
                       <button
                         type="button"

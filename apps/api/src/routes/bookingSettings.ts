@@ -267,6 +267,7 @@ export type BookingPropertySettingsReadModel = {
   specialRequestsEnabled?: boolean | null;
   arrivalTimeEnabled?: boolean | null;
   guestCountEnabled?: boolean | null;
+  termsAndConditions?: string | null;
   cancellationPolicyText?: string | null;
   acceptedPaymentMethods?: unknown;
 };
@@ -399,6 +400,7 @@ export type UpdateBookingPropertySettingsBody = {
   specialRequestsEnabled?: boolean;
   arrivalTimeEnabled?: boolean;
   guestCountEnabled?: boolean;
+  termsAndConditions?: string | null;
   cancellationPolicyText?: string | null;
   acceptedPaymentMethods?: string[];
 };
@@ -896,6 +898,7 @@ type TargetBookingPropertySettingsRow = TargetBookingSettingsRow & {
   youtube: string | null;
   check_in_time: string | null;
   check_out_time: string | null;
+  terms_and_conditions: string | null;
   cancellation_policy_text: string | null;
   accepted_payment_methods: unknown;
 };
@@ -1046,6 +1049,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     location.country_code AS country,
     to_char(policy.check_in_time, 'HH24:MI') AS check_in_time,
     to_char(policy.check_out_time, 'HH24:MI') AS check_out_time,
+    policy.terms_and_conditions,
     policy.cancellation_summary AS cancellation_policy_text,
     settings.show_addons_step,
     settings.group_addons_by_category,
@@ -1427,6 +1431,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       property_id,
       check_in_time,
       check_out_time,
+      terms_and_conditions,
       cancellation_summary,
       policy_source_owner,
       updated_at
@@ -1436,12 +1441,14 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       NULLIF($3::text, '')::time,
       NULLIF($4::text, '')::time,
       $5,
+      $6,
       'booking',
       now()
     FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
     SET check_in_time = EXCLUDED.check_in_time,
         check_out_time = EXCLUDED.check_out_time,
+        terms_and_conditions = EXCLUDED.terms_and_conditions,
         cancellation_summary = EXCLUDED.cancellation_summary,
         policy_source_owner = EXCLUDED.policy_source_owner,
         updated_at = now()
@@ -1461,13 +1468,13 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     )
     SELECT
       writable_target.property_id,
+      $8,
       $7,
-      $6,
-      $8::text[],
       $9::text[],
-      $10,
+      $10::text[],
       $11,
       $12,
+      $13,
       now()
     FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
@@ -1607,6 +1614,7 @@ function toTargetPropertySettings(
     specialRequestsEnabled: row.special_requests_enabled,
     arrivalTimeEnabled: row.arrival_time_enabled,
     guestCountEnabled: row.guest_count_enabled,
+    termsAndConditions: row.terms_and_conditions,
     cancellationPolicyText: row.cancellation_policy_text,
     acceptedPaymentMethods: row.accepted_payment_methods,
   };
@@ -1632,6 +1640,11 @@ function targetPropertySettingsWriteValues(
     JSON.stringify(contacts),
     nullableText(update.checkInTime !== undefined ? update.checkInTime : current.checkInTime),
     nullableText(update.checkOutTime !== undefined ? update.checkOutTime : current.checkOutTime),
+    nullableText(
+      update.termsAndConditions !== undefined
+        ? update.termsAndConditions
+        : current.termsAndConditions,
+    ),
     nullableText(
       update.cancellationPolicyText !== undefined
         ? update.cancellationPolicyText
@@ -3057,6 +3070,7 @@ function parsePropertySettingsWriteBody(
   assignOptionalBoolean(value, "specialRequestsEnabled", body, "special_requests_enabled", details);
   assignOptionalBoolean(value, "arrivalTimeEnabled", body, "arrival_time_enabled", details);
   assignOptionalBoolean(value, "guestCountEnabled", body, "guest_count_enabled", details);
+  assignOptionalNullableString(value, "termsAndConditions", body, "terms_text", details);
   assignOptionalNullableString(
     value,
     "cancellationPolicyText",
@@ -3543,7 +3557,7 @@ export function toPropertySettingsResponse(
     payout_account_number: "",
     payout_bank_name: "",
     payout_swift: "",
-    terms_text: "",
+    terms_text: settings.termsAndConditions ?? "",
     cancellation_policy_text: settings.cancellationPolicyText ?? "",
     show_room_detail_map: false,
     points_of_interest: [],
@@ -3706,6 +3720,7 @@ type NullablePropertySettingsStringKey =
   | "facebook"
   | "tiktok"
   | "youtube"
+  | "termsAndConditions"
   | "cancellationPolicyText";
 
 type BooleanPropertySettingsKey =

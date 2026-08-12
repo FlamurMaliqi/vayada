@@ -678,8 +678,10 @@ test.describe("marketplace-web shared setup activation", () => {
       page,
       new RegExp(`/api/booking/hotels/${propertyId}/settings/property(?:\\?|$)`),
       {
+        property_name: "Hotel Alpenrose",
         check_in_time: "15:00",
         check_out_time: "11:00",
+        terms_text: "",
         cancellation_policy_text: "Free cancellation until 7 days before arrival.",
       },
     );
@@ -720,6 +722,23 @@ test.describe("marketplace-web shared setup activation", () => {
     await currentStep.getByRole("button", { name: "Continue setup" }).click();
     await expect(
       currentStep.getByRole("heading", { name: "Review guest settings and policies" }),
+    ).toBeVisible();
+    const terms = currentStep.getByRole("textbox", { name: "Terms & Conditions", exact: true });
+    await expect(terms).toHaveValue(/direct agreement with us for our accommodation services/);
+    await expect(terms).toHaveAttribute(
+      "placeholder",
+      "Enter your Terms & Conditions. These are shown to guests before they confirm a booking.",
+    );
+    await terms.fill("");
+    await expect(
+      currentStep.getByText(
+        "Without Terms & Conditions, guests won't see a T&C link on the payment page. We recommend keeping at least the default.",
+      ),
+    ).toBeVisible();
+    await expect(
+      currentStep.getByText(
+        "Guests see these policies before they confirm a booking. They must agree to your Terms & Conditions and Cancellation Policy on the payment page.",
+      ),
     ).toBeVisible();
   });
 
