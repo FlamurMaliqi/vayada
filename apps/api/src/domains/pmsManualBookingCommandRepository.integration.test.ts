@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createFinanceManualBookingSettlementPort } from "./financeManualBookingSettlement.js";
 import { createBookingPmsManualAttributionOwner } from "./bookingPmsManualAttribution.js";
+import { createBookingPmsManualNightlyRevenueEvidenceOwner } from "./bookingPmsManualNightlyRevenueEvidence.js";
 import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCommandEvidence.js";
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
 import {
@@ -129,7 +130,6 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       metadata: {
         contractVersion: "pms-manual-booking.v1",
         commandId: input.commandId,
-        nightlyEvidence: true,
       },
     });
     const financeAttribution = await admin.query(
@@ -138,8 +138,23 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       [created.guestBookingId],
     );
     expect(financeAttribution.rows[0]).toEqual({ channel: "direct", source: "email" });
+    const nightly = await admin.query(
+      `SELECT stay_date::text AS date, line_position AS position,
+         gross_room_amount::text AS amount, source_kind AS source,
+         evidence_quality AS quality
+       FROM booking.nightly_revenue_evidence
+       WHERE guest_booking_id = $1::uuid ORDER BY stay_date, line_position`,
+      [created.guestBookingId],
+    );
+    expect(nightly.rows).toEqual([
+      { date: "2027-01-01", position: 1, amount: "100.0000", source: "manual", quality: "exact" },
+      { date: "2027-01-02", position: 1, amount: "100.0000", source: "manual", quality: "exact" },
+      { date: "2027-01-02", position: 2, amount: "100.0000", source: "manual", quality: "exact" },
+      { date: "2027-01-03", position: 2, amount: "100.0000", source: "manual", quality: "exact" },
+    ]);
     await expect(counts()).resolves.toMatchObject({
       booking: "1",
+      nightly: "4",
       payment: "0",
       outbox: "4",
       audit: "1",
@@ -243,6 +258,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     await failing.close();
     await expect(counts()).resolves.toMatchObject({
       booking: "0",
+      nightly: "0",
       payment: "0",
       outbox: "0",
       audit: "0",
@@ -273,6 +289,32 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     ).rejects.toMatchObject({ code: "invalid_body", field: "grandTotal" });
     await oversized.close();
     await expect(counts()).resolves.toMatchObject({ booking: "0", commands: "0" });
+  });
+
+  it("rolls the booking back when exact nightly coverage is incomplete", async () => {
+    const basePricing = pricing();
+    const incomplete = createPgPmsManualBookingCommandRepository({
+      connectionString: TEST_DATABASE_URL!,
+      now: () => acceptedAt,
+      dependencies: dependencies({
+        pricing: {
+          async calculate(input) {
+            const preview = await basePricing.calculate(input);
+            return {
+              ...preview,
+              stays: preview.stays.map((stay) => ({ ...stay, nightly: stay.nightly.slice(0, 1) })),
+            };
+          },
+        },
+      }),
+    });
+    await expect(
+      incomplete.createManualBooking(
+        command("incomplete-nightly", "unpaid", "cash", "2027-04-20", false),
+      ),
+    ).rejects.toThrow("Manual booking nightly evidence is incomplete");
+    await incomplete.close();
+    await expect(counts()).resolves.toMatchObject({ booking: "0", nightly: "0", commands: "0" });
   });
 
   it("serializes overlapping room commands so exactly one creates evidence", async () => {
@@ -354,16 +396,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       pricing: pricing(),
       financeSettlement: createFinanceManualBookingSettlementPort(),
       attribution: createBookingPmsManualAttributionOwner(),
-      nightlyEvidence: {
-        async appendExactNightlyEvidence({ transaction, guestBookingId }) {
-          await transaction.query(
-            `UPDATE booking.guest_bookings
-             SET booking_metadata = booking_metadata || '{"nightlyEvidence":true}'::jsonb
-             WHERE id = $1::uuid`,
-            [guestBookingId],
-          );
-        },
-      },
+      nightlyEvidence: createBookingPmsManualNightlyRevenueEvidenceOwner(),
       ...override,
     };
   }
@@ -420,6 +453,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     const result = await admin.query(
       `SELECT
         (SELECT count(*)::text FROM booking.guest_bookings WHERE property_id = $1::uuid) AS booking,
+        (SELECT count(*)::text FROM booking.nightly_revenue_evidence
+          WHERE property_id = $1::uuid) AS nightly,
         (SELECT count(*)::text FROM finance.payments WHERE property_id = $1::uuid) AS payment,
         (SELECT count(*)::text FROM platform.outbox_events WHERE property_id = $1::uuid) AS outbox,
         (SELECT count(*)::text FROM platform.product_audit_events WHERE property_id = $1::uuid) AS audit,
@@ -443,6 +478,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         "DELETE FROM pms.booking_notes_private WHERE property_id = $1::uuid",
         "DELETE FROM pms.operational_booking_assignments WHERE property_id = $1::uuid",
         "DELETE FROM booking.booking_addon_selections WHERE property_id = $1::uuid",
+        "DELETE FROM booking.nightly_revenue_evidence WHERE property_id = $1::uuid",
         "DELETE FROM booking.booking_guests WHERE guest_booking_id IN (SELECT id FROM booking.guest_bookings WHERE property_id = $1::uuid)",
         "DELETE FROM booking.guest_bookings WHERE property_id = $1::uuid",
       ])
