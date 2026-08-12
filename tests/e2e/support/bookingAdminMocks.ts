@@ -26,6 +26,11 @@ export const BOOKING_ADMIN_FINANCE_PLAN_STATUS_PATH = `/api/finance/properties/$
 export interface BookingAdminPropertySettingsFixture {
   id: string;
   slug: string;
+  property_name?: string;
+  instagram?: string;
+  facebook?: string;
+  tiktok?: string;
+  youtube?: string;
   default_currency: string;
   default_language: string;
   supported_currencies: string[];

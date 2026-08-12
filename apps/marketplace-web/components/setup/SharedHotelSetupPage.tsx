@@ -23,6 +23,7 @@ import {
   sharedAccountProfileImageUploader,
   sharedHotelSetupApi,
 } from "@/services/api/sharedHotelSetupClient";
+import { hotelOperationsSetupApi } from "@/services/api/hotelOperationsSetupClient";
 import { getAuthCsrfToken, getAuthSessionUser } from "@/services/auth/sessionStore";
 import { AdaptiveRoomAuthoringSetupController } from "./adaptive/rooms/AdaptiveRoomAuthoringSetupController";
 import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
@@ -30,6 +31,11 @@ import { SetupTaskFormRouter } from "./SetupTaskFormRouter";
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_URL || "https://pms.vayada.com";
 const BOOKING_ADMIN_URL =
   process.env.NEXT_PUBLIC_BOOKING_ADMIN_URL || "https://admin.booking.vayada.com";
+const PROPERTY_LAUNCH_SETTINGS_API = {
+  get: (propertyId: string, options?: RequestInit) =>
+    hotelOperationsSetupApi.getPropertyLaunchSettings(propertyId, options?.signal ?? undefined),
+  update: hotelOperationsSetupApi.updatePropertyLaunchSettings,
+};
 
 export function SharedHotelSetupPage({
   defaultEntryProduct,
@@ -292,6 +298,7 @@ export function SharedHotelSetupPage({
       initialPropertyId={initialPropertyId}
       returnTo={returnTo}
       initialAddProperty={initialAddProperty}
+      propertyLaunchSettingsApi={PROPERTY_LAUNCH_SETTINGS_API}
       onContinue={handleContinue}
       onPropertySelected={handlePropertySelected}
       renderTaskForm={(context: SharedSetupTaskFormContext) => <SetupTaskFormRouter {...context} />}

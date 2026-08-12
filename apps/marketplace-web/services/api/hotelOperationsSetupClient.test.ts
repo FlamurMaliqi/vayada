@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   patch: vi.fn(),
   post: vi.fn(),
+  put: vi.fn(),
   getStatus: vi.fn(),
   getPropertyProfile: vi.fn(),
   updatePropertyProfile: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("./targetClient", () => ({
     get: mocks.get,
     patch: mocks.patch,
     post: mocks.post,
+    put: mocks.put,
   },
 }));
 
@@ -399,6 +401,62 @@ describe("hotel operations setup client", () => {
         check_in_time: "15:00",
         check_out_time: "11:00",
         cancellation_policy_text: "Free until 7 days before arrival.",
+      },
+    );
+  });
+
+  it("reads and writes launch settings through the property-owned setup endpoint", async () => {
+    mocks.get.mockResolvedValue({
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF", "GBP", 7],
+      defaultLanguage: "de",
+      supportedLanguages: ["en", "fr"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "https://facebook.com/alpenrose",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "https://youtube.com/@alpenrose",
+    });
+    mocks.put.mockResolvedValue({});
+
+    await expect(
+      hotelOperationsSetupApi.getPropertyLaunchSettings("property / one"),
+    ).resolves.toEqual({
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF", "GBP"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en", "fr"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "https://facebook.com/alpenrose",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "https://youtube.com/@alpenrose",
+    });
+
+    await hotelOperationsSetupApi.updatePropertyLaunchSettings("property / one", {
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "",
+    });
+
+    expect(mocks.get).toHaveBeenCalledWith(
+      "/api/hotel-setup/properties/property%20%2F%20one/launch-settings",
+      undefined,
+    );
+    expect(mocks.put).toHaveBeenCalledWith(
+      "/api/hotel-setup/properties/property%20%2F%20one/launch-settings",
+      {
+        defaultCurrency: "EUR",
+        supportedCurrencies: ["CHF"],
+        defaultLanguage: "de",
+        supportedLanguages: ["en"],
+        instagram: "https://instagram.com/alpenrose",
+        facebook: "",
+        tiktok: "https://tiktok.com/@alpenrose",
+        youtube: "",
       },
     );
   });

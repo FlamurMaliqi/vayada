@@ -5,6 +5,8 @@ import {
   BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH,
   BOOKING_ADMIN_HOTEL_ID,
   BOOKING_ADMIN_PROPERTY_ID,
+  BOOKING_ADMIN_PROPERTY_SETTINGS_PATH,
+  defaultBookingAdminPropertySettings,
   defaultCustomDomain,
   mockBookingAdminAuthenticatedSession,
   mockBookingAdminShellRoutes,
@@ -16,6 +18,64 @@ import { watchPageHealth } from "../support/pageHealth";
 const PROD = process.env.E2E_BOOKING_ADMIN_PROD === "1";
 
 test.describe("booking-admin settings no-legacy guard", () => {
+  test("shows onboarding social links in Property settings and keeps all four editable", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    const assertHealthy = watchPageHealth(page, testInfo);
+    await mockBookingAdminAuthenticatedSession(page);
+    const persisted = {
+      ...defaultBookingAdminPropertySettings,
+      property_name: "Alpenrose",
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "https://facebook.com/alpenrose",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "https://youtube.com/@alpenrose",
+    };
+    await mockBookingAdminShellRoutes(page, { propertySettings: persisted });
+    const writes: unknown[] = [];
+    await page.route(`**${BOOKING_ADMIN_PROPERTY_SETTINGS_PATH}*`, async (route) => {
+      if (route.request().method() === "PATCH") {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        writes.push(body);
+        Object.assign(persisted, body);
+      }
+      await route.fulfill({ json: persisted });
+    });
+
+    await page.goto("/settings");
+
+    await expect(page.getByPlaceholder("https://instagram.com/yourhotel")).toHaveValue(
+      "https://instagram.com/alpenrose",
+    );
+    await expect(page.getByPlaceholder("https://facebook.com/yourhotel")).toHaveValue(
+      "https://facebook.com/alpenrose",
+    );
+    await expect(page.getByPlaceholder("https://www.tiktok.com/@yourhotel")).toHaveValue(
+      "https://tiktok.com/@alpenrose",
+    );
+    await expect(page.getByPlaceholder("https://youtube.com/@yourhotel")).toHaveValue(
+      "https://youtube.com/@alpenrose",
+    );
+
+    await page
+      .getByPlaceholder("https://www.tiktok.com/@yourhotel")
+      .fill("https://tiktok.com/@alpenrose-hotel");
+    await page.getByRole("button", { name: "Save Changes", exact: true }).click();
+
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0]).toMatchObject({
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "https://facebook.com/alpenrose",
+      tiktok: "https://tiktok.com/@alpenrose-hotel",
+      youtube: "https://youtube.com/@alpenrose",
+    });
+    await assertHealthy();
+  });
+
   test("loads migrated settings surfaces without helper calls", async ({ page }, testInfo) => {
     test.skip(
       !PROD,

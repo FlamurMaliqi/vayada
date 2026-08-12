@@ -538,6 +538,8 @@ const bookingSettingsRepository: BookingSettingsReadRepository = {
       country: "AT",
       instagram: "https://instagram.com/alpenrose",
       facebook: "https://facebook.com/alpenrose",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "https://youtube.com/@alpenrose",
       defaultCurrency: "CHF",
       defaultLanguage: "de",
       supportedCurrencies: ["CHF", "EUR"],
@@ -655,6 +657,8 @@ const bookingSettingsWriteRepository: BookingSettingsWriteRepository = {
       country: settings.country ?? "AT",
       instagram: settings.instagram ?? "https://instagram.com/alpenrose",
       facebook: settings.facebook ?? "https://facebook.com/alpenrose",
+      tiktok: settings.tiktok ?? "https://tiktok.com/@alpenrose",
+      youtube: settings.youtube ?? "https://youtube.com/@alpenrose",
       defaultCurrency: settings.defaultCurrency ?? "CHF",
       defaultLanguage: settings.defaultLanguage ?? "de",
       supportedCurrencies: settings.supportedCurrencies ?? ["CHF", "EUR"],
@@ -3769,6 +3773,8 @@ describe("vayada-api", () => {
         country: "AT",
         instagram: "https://instagram.com/updated-alpenrose",
         facebook: "https://facebook.com/updated-alpenrose",
+        tiktok: "https://tiktok.com/@updated-alpenrose",
+        youtube: "https://youtube.com/@updated-alpenrose",
         default_currency: " eur ",
         default_language: "en-US",
         supported_currencies: ["CHF", "EUR"],
@@ -3799,6 +3805,10 @@ describe("vayada-api", () => {
       address: "Updated street 1",
       city: "Innsbruck",
       country: "AT",
+      instagram: "https://instagram.com/updated-alpenrose",
+      facebook: "https://facebook.com/updated-alpenrose",
+      tiktok: "https://tiktok.com/@updated-alpenrose",
+      youtube: "https://youtube.com/@updated-alpenrose",
       default_currency: "EUR",
       default_language: "en-US",
       supported_currencies: ["CHF"],
@@ -3829,6 +3839,7 @@ describe("vayada-api", () => {
         property_name: " ",
         default_currency: "euro",
         check_in_time: "25:00",
+        instagram: "@alpenrose",
       },
     });
 
@@ -7149,6 +7160,8 @@ describe("vayada-api", () => {
       country: string | null;
       instagram: string | null;
       facebook: string | null;
+      tiktok: string | null;
+      youtube: string | null;
       check_in_time: string | null;
       check_out_time: string | null;
       cancellation_policy_text: string | null;
@@ -7167,6 +7180,8 @@ describe("vayada-api", () => {
       country: "AT",
       instagram: null as string | null,
       facebook: null as string | null,
+      tiktok: null as string | null,
+      youtube: null as string | null,
       check_in_time: "15:00",
       check_out_time: "11:00",
       cancellation_policy_text: "Free cancellation until seven days before arrival.",
@@ -7242,6 +7257,8 @@ describe("vayada-api", () => {
             if (contact.channel_type === "whatsapp") propertyState.whatsapp_number = value;
             if (contact.channel_type === "instagram") propertyState.instagram = value;
             if (contact.channel_type === "facebook") propertyState.facebook = value;
+            if (contact.channel_type === "tiktok") propertyState.tiktok = value;
+            if (contact.channel_type === "youtube") propertyState.youtube = value;
           }
           propertyState.check_in_time = values?.[2] as string;
           propertyState.check_out_time = values?.[3] as string;
@@ -7467,6 +7484,8 @@ describe("vayada-api", () => {
         country: "AT",
         instagram: "https://instagram.com/target-alpenrose",
         facebook: "https://facebook.com/target-alpenrose",
+        tiktok: "https://tiktok.com/@target-alpenrose",
+        youtube: "https://youtube.com/@target-alpenrose",
         check_in_time: "14:00",
         check_out_time: "10:00",
         cancellation_policy_text: "Target cancellation policy.",
@@ -7485,6 +7504,10 @@ describe("vayada-api", () => {
       reservation_email: "target@alpenrose.example",
       address: "Alpenweg 1, Innsbruck, AT",
       city: "Innsbruck",
+      instagram: "https://instagram.com/target-alpenrose",
+      facebook: "https://facebook.com/target-alpenrose",
+      tiktok: "https://tiktok.com/@target-alpenrose",
+      youtube: "https://youtube.com/@target-alpenrose",
       default_currency: "EUR",
       default_language: "en-US",
       supported_currencies: ["CHF"],
@@ -7846,6 +7869,8 @@ describe("vayada-api", () => {
               country: null,
               instagram: null,
               facebook: null,
+              tiktok: null,
+              youtube: null,
               check_in_time: null,
               check_out_time: null,
               cancellation_policy_text: null,

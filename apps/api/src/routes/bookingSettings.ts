@@ -256,6 +256,8 @@ export type BookingPropertySettingsReadModel = {
   country?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
   defaultCurrency?: string | null;
   defaultLanguage?: string | null;
   supportedCurrencies?: unknown;
@@ -386,6 +388,8 @@ export type UpdateBookingPropertySettingsBody = {
   country?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
   defaultCurrency?: string;
   defaultLanguage?: string;
   supportedCurrencies?: string[];
@@ -888,6 +892,8 @@ type TargetBookingPropertySettingsRow = TargetBookingSettingsRow & {
   country: string | null;
   instagram: string | null;
   facebook: string | null;
+  tiktok: string | null;
+  youtube: string | null;
   check_in_time: string | null;
   check_out_time: string | null;
   cancellation_policy_text: string | null;
@@ -1020,6 +1026,8 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     contact.whatsapp_number,
     contact.instagram,
     contact.facebook,
+    contact.tiktok,
+    contact.youtube,
     COALESCE(
       NULLIF(location.raw_marketplace_location, ''),
       NULLIF(
@@ -1114,7 +1122,15 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
       COALESCE(
         max(value) FILTER (WHERE channel_type = 'facebook' AND source_system = 'booking'),
         max(value) FILTER (WHERE channel_type = 'facebook')
-      ) AS facebook
+      ) AS facebook,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'tiktok' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'tiktok')
+      ) AS tiktok,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'youtube' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'youtube')
+      ) AS youtube
     FROM hotel_catalog.property_contact_channels
     WHERE property_id = property.id
       AND is_public = TRUE
@@ -1580,6 +1596,8 @@ function toTargetPropertySettings(
     country: row.country,
     instagram: row.instagram,
     facebook: row.facebook,
+    tiktok: row.tiktok,
+    youtube: row.youtube,
     defaultCurrency: row.default_currency,
     defaultLanguage: row.default_language,
     supportedCurrencies: row.supported_currencies,
@@ -1635,6 +1653,8 @@ function targetPropertyContactInputs(input: {
   whatsappNumber?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
 }): { channel_type: string; value: string }[] {
   const contacts: [keyof typeof input, string][] = [
     ["reservationEmail", "email"],
@@ -1642,6 +1662,8 @@ function targetPropertyContactInputs(input: {
     ["whatsappNumber", "whatsapp"],
     ["instagram", "instagram"],
     ["facebook", "facebook"],
+    ["tiktok", "tiktok"],
+    ["youtube", "youtube"],
   ];
 
   return contacts.flatMap(([field, channelType]) => {
@@ -2986,6 +3008,19 @@ function parsePropertySettingsWriteBody(
   assignOptionalNullableString(value, "city", body, "city", details);
   assignOptionalNullableString(value, "instagram", body, "instagram", details);
   assignOptionalNullableString(value, "facebook", body, "facebook", details);
+  assignOptionalNullableString(value, "tiktok", body, "tiktok", details);
+  assignOptionalNullableString(value, "youtube", body, "youtube", details);
+  for (const [field, bodyField] of [
+    ["instagram", "instagram"],
+    ["facebook", "facebook"],
+    ["tiktok", "tiktok"],
+    ["youtube", "youtube"],
+  ] as const) {
+    const socialUrl = value[field];
+    if (socialUrl && !isHttpUrl(socialUrl)) {
+      details.push(`${bodyField} must be an http or https URL.`);
+    }
+  }
 
   const country = expectOptionalNullableString(body, "country", details);
   if (country !== undefined) {
@@ -3468,8 +3503,8 @@ export function toPropertySettingsResponse(
     country: settings.country ?? "",
     instagram: settings.instagram ?? "",
     facebook: settings.facebook ?? "",
-    tiktok: "",
-    youtube: "",
+    tiktok: settings.tiktok ?? "",
+    youtube: settings.youtube ?? "",
     default_currency: localization.defaultCurrency,
     default_language: localization.defaultLanguage,
     supported_currencies: localization.supportedCurrencies,
@@ -3669,6 +3704,8 @@ type NullablePropertySettingsStringKey =
   | "city"
   | "instagram"
   | "facebook"
+  | "tiktok"
+  | "youtube"
   | "cancellationPolicyText";
 
 type BooleanPropertySettingsKey =

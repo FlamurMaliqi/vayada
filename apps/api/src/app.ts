@@ -90,6 +90,7 @@ import {
 import {
   registerSharedHotelSetupStatusRoutes,
   type SharedHotelSetupStatusRepository,
+  type SharedPropertyLaunchSettingsRepository,
 } from "./routes/sharedHotelSetupStatus.js";
 import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
 import { registerHotelCatalogStep1Routes } from "./routes/hotelCatalogStep1.js";
@@ -212,6 +213,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
+  propertyLaunchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
   hotelCatalogStep1?: {
@@ -428,6 +430,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
+      launchSettingsRepository: options.propertyLaunchSettingsRepository,
     });
   }
   if (options.propertySetupRouteStateReadPort) {

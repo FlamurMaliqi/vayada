@@ -179,6 +179,21 @@ const bookingSettingsRepository =
           connectionString: config.bookingDatabaseUrl,
         })
       : undefined;
+const findPropertyLaunchSettings = bookingSettingsRepository?.findPropertySettingsByHotelId;
+const updatePropertyLaunchSettings = bookingSettingsRepository?.updatePropertySettingsByHotelId;
+if (
+  config.bookingSettingsSource === "target" &&
+  (!findPropertyLaunchSettings || !updatePropertyLaunchSettings)
+) {
+  throw new Error("Target property launch settings repository is unavailable");
+}
+const propertyLaunchSettingsRepository =
+  config.bookingSettingsSource === "target"
+    ? {
+        findPropertySettingsByHotelId: findPropertyLaunchSettings!,
+        updatePropertySettingsByHotelId: updatePropertyLaunchSettings!,
+      }
+    : undefined;
 
 const publicBookabilityPublisher =
   config.bookingSettingsSource === "target"
@@ -744,6 +759,7 @@ const app = buildApp({
   pmsOperationsAllowedOrigins: config.pmsOperationsAllowedOrigins,
   bookingSettingsRepository,
   bookingSettingsWriteRepository: bookingSettingsRepository,
+  propertyLaunchSettingsRepository,
   publicBookabilityPublisher: routePublicBookabilityPublisher,
   bookingCustomDomainRepository,
   marketplaceDiscoveryRepository,
