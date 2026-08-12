@@ -27,9 +27,7 @@ import {
   type FinanceCommandAudit,
   type FinanceCommandMeta,
   type FinanceFinancialSummaryResponse,
-  type FinanceInvoiceCsvExportResponse,
   type FinanceInvoiceDetail,
-  type FinanceInvoiceDetailResponse,
   type FinanceInvoiceListItem,
   type FinanceInvoiceListQuery,
   type FinanceInvoiceListResponse,
@@ -196,10 +194,6 @@ type FinancePropertyParams = {
 
 type FinanceAffiliateParams = {
   affiliateId: string;
-};
-
-type FinanceInvoiceParams = FinancePropertyParams & {
-  invoiceId: string;
 };
 
 type FinanceProviderAccountParams = FinancePropertyParams & {
@@ -1207,61 +1201,6 @@ export function createTargetFinancePropertySettingsRepository(config: {
         if (ownsTransaction) client.release?.();
       }
     },
-    async getFinancialSummary(propertyId) {
-      const row = await loadFinancialSummaryRow(pool, propertyId);
-      return row ? toFinancialSummaryResponseBody(row) : null;
-    },
-    async listInvoices(propertyId, query) {
-      const [rows, propertyPlan] = await Promise.all([
-        loadInvoiceRows(pool, propertyId, query),
-        readPropertyPlan(pool, propertyId),
-      ]);
-      return toInvoiceListResponseBody(rows, query, propertyPlan);
-    },
-    async getInvoice(propertyId, invoiceId) {
-      const rows = await loadInvoiceRows(pool, propertyId, {
-        sort: "issuedAt",
-        limit: 500,
-        offset: 0,
-        search: invoiceId,
-      });
-      const invoice = rows.find((row) => row.invoiceId === invoiceId);
-      if (!invoice) return null;
-
-      const [payments, propertyPlan] = await Promise.all([
-        loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId),
-        readPropertyPlan(pool, propertyId),
-      ]);
-      const contact = guestContactForPropertyPlan(propertyPlan, invoice.guestContactAccepted, {
-        email: invoice.guestEmail,
-        phone: invoice.guestPhone,
-      });
-      return {
-        invoice: {
-          ...toInvoiceListItem(invoice, propertyPlan),
-          guest: {
-            displayName: invoice.guestDisplayName ?? "Guest",
-            email: contact.email,
-            phone: contact.phone,
-          },
-          nights: nightsBetween(invoice.checkIn, invoice.checkOut),
-          charges: [
-            {
-              description: "Stay",
-              detail: `${dateOnly(invoice.checkIn)} to ${dateOnly(invoice.checkOut)}`,
-              amount: decimalString(invoice.totalAmount),
-            },
-          ],
-          payments: payments.map(toInvoicePayment),
-          subtotal: decimalString(invoice.totalAmount),
-        },
-        sourceFreshness: financeJsonObject(invoice.sourceFreshness),
-      };
-    },
-    async listPayments(propertyId, query) {
-      const rows = await loadPaymentLedgerRows(pool, propertyId, query);
-      return toPaymentLedgerResponseBody(rows, query);
-    },
     async listPayouts(propertyId, query) {
       const result = await loadPayoutRows(pool, propertyId, query);
       return toPayoutListResponseBody(result, query);
@@ -1293,24 +1232,6 @@ export function createTargetFinancePropertySettingsRepository(config: {
     async listReconciliationItems(propertyId, view, query) {
       const result = await loadReconciliationRows(pool, propertyId, view, query);
       return toReconciliationViewResponseBody(result, query);
-    },
-    async getInvoiceCsvExportDisposition(propertyId) {
-      return {
-        export: {
-          status: "queued",
-          disposition: "durable_export_job",
-          filename: `finance-invoices-${propertyId}.csv`,
-          contentType: "text/csv",
-          downloadUrl: null,
-          jobId: null,
-          message: "Invoice CSV export runs through the Finance read-model export job.",
-        },
-        sourceFreshness: {
-          finance: {
-            status: "fresh",
-          },
-        },
-      };
     },
     async createStripeProviderAccount(command) {
       if (!config.stripeConnectProvider) {
@@ -4809,61 +4730,6 @@ function toReconciliationItem(row: FinanceReconciliationRow): FinanceReconciliat
   };
 }
 
-function emptyFinancialSummary(
-  propertyId: string,
-): Omit<FinanceFinancialSummaryResponse, "contractVersion" | "propertyId"> {
-  return {
-    summary: {
-      currency: "EUR",
-      periodStart: null,
-      periodEnd: null,
-      grossPaymentAmount: "0.00",
-      netPaymentAmount: "0.00",
-      payoutAmount: "0.00",
-      commissionAmount: "0.00",
-      outstandingBalanceAmount: "0.00",
-      paymentCount: 0,
-      payoutCount: 0,
-      failedPaymentCount: 0,
-      invoiceCounts: invoiceStatusCounts(),
-      paymentCounts: paymentStatusCounts(),
-      projectedAt: null,
-    },
-    sourceFreshness: {
-      finance: {
-        status: "empty",
-        propertyId,
-      },
-    },
-  };
-}
-
-function emptyInvoiceList(
-  query: FinanceInvoiceListQuery,
-): Omit<FinanceInvoiceListResponse, "contractVersion" | "propertyId"> {
-  return {
-    invoices: [],
-    total: 0,
-    counts: invoiceStatusCounts(),
-    limit: query.limit,
-    offset: query.offset,
-    sourceFreshness: { finance: { status: "empty" } },
-  };
-}
-
-function emptyPaymentLedger(
-  query: FinancePaymentLedgerQuery,
-): Omit<FinancePaymentLedgerResponse, "contractVersion" | "propertyId"> {
-  return {
-    payments: [],
-    total: 0,
-    counts: paymentStatusCounts(),
-    limit: query.limit,
-    offset: query.offset,
-    sourceFreshness: { finance: { status: "empty" } },
-  };
-}
-
 function emptyPayoutList(
   query: FinancePayoutListQuery,
 ): Omit<FinancePayoutListResponse, "contractVersion" | "propertyId"> {
@@ -4889,74 +4755,6 @@ function emptyReconciliationView(
       jobsFreshAt: null,
       deadLettersFreshAt: null,
     },
-  };
-}
-
-function emptyInvoiceCsvExportDisposition(
-  propertyId: string,
-): Omit<FinanceInvoiceCsvExportResponse, "contractVersion" | "propertyId"> {
-  return {
-    export: {
-      status: "unsupported",
-      disposition: "not_available",
-      filename: `finance-invoices-${propertyId}.csv`,
-      contentType: "text/csv",
-      downloadUrl: null,
-      jobId: null,
-      message: "No Finance invoice read model is available to export yet.",
-    },
-    sourceFreshness: { finance: { status: "empty" } },
-  };
-}
-
-function parseInvoiceListQuery(query: unknown): FinanceInvoiceListQuery | FinanceValidationError {
-  const params = queryRecord(query);
-  const status = optionalEnum(params.status, FINANCE_INVOICE_STATUSES);
-  if (params.status && !status) {
-    return invalidQuery("invalid_query", "Invalid invoice status filter.");
-  }
-  const sort = optionalEnum(params.sort, ["issuedAt", "guest", "amount"] as const) ?? "issuedAt";
-  return {
-    status,
-    search: cleanSearch(params.search),
-    sort,
-    limit: clampLimit(params.limit),
-    offset: parseOffset(params.offset),
-  };
-}
-
-function parsePaymentLedgerQuery(
-  query: unknown,
-): FinancePaymentLedgerQuery | FinanceValidationError {
-  const params = queryRecord(query);
-  const status = optionalEnum(params.status, FINANCE_PAYMENT_STATUSES);
-  if (params.status && !status) {
-    return invalidQuery("invalid_query", "Invalid payment status filter.");
-  }
-  const provider = optionalEnum(params.provider, FINANCE_ROUTE_PAYMENT_PROVIDERS);
-  if (params.provider && !provider) {
-    return invalidQuery("invalid_provider", "Invalid payment provider filter.");
-  }
-  const rawMethod = optionalEnum(params.method, FINANCE_ROUTE_PAYMENT_METHODS);
-  if (params.method && (!rawMethod || rawMethod === "wallet")) {
-    return invalidQuery("invalid_payment_method", "Invalid payment method filter.");
-  }
-  const method: FinancePaymentLedgerQuery["method"] =
-    rawMethod && rawMethod !== "wallet" ? rawMethod : undefined;
-  const from = parseUtcBound(params.from);
-  const to = parseUtcBound(params.to);
-  if ((params.from && !from) || (params.to && !to) || (from && to && from > to)) {
-    return invalidQuery("invalid_date_range", "Invalid payment ledger date range.");
-  }
-  return {
-    status,
-    provider,
-    method,
-    from,
-    to,
-    search: cleanSearch(params.search),
-    limit: clampLimit(params.limit),
-    offset: parseOffset(params.offset),
   };
 }
 
@@ -6436,10 +6234,6 @@ function optionalEnum<const T extends readonly string[]>(
   return (allowed as readonly string[]).includes(value) ? (value as T[number]) : undefined;
 }
 
-function cleanSearch(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim().slice(0, 120) : undefined;
-}
-
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -6458,12 +6252,6 @@ function parseOffset(value: unknown): number {
   const parsed = typeof value === "string" ? Number(value) : NaN;
   if (!Number.isInteger(parsed) || parsed < 0) return 0;
   return parsed;
-}
-
-function parseUtcBound(value: unknown): string | undefined {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
 }
 
 function invalidQuery(

@@ -1076,69 +1076,6 @@ describe("finance route contracts", () => {
     expect(repository.writeCount).toBe(0);
   });
 
-  it.each([
-    {
-      name: "unaccepted commission",
-      plan: undefined,
-      guestContactAccepted: false,
-      expectedEmail: "Hidden until you accept",
-    },
-    {
-      name: "accepted commission",
-      plan: undefined,
-      guestContactAccepted: true,
-      expectedEmail: "finance.guest@example.test",
-    },
-    {
-      name: "fixed",
-      plan: "fixed" as const,
-      guestContactAccepted: false,
-      expectedEmail: "finance.guest@example.test",
-    },
-  ])(
-    "applies guest contact access to $name invoice reads",
-    async ({ plan, guestContactAccepted, expectedEmail }) => {
-      const queries: string[] = [];
-      const repository = createTargetFinancePropertySettingsRepository({
-        connectionString: "postgresql://finance-target",
-        pool: {
-          async query<T extends QueryResultRow = QueryResultRow>(text: string) {
-            queries.push(text);
-            if (text.includes("SELECT plan_key AS plan")) {
-              return { rows: (plan ? [{ plan }] : []) as unknown as T[] };
-            }
-            if (text.includes("WITH invoice_base AS")) {
-              return {
-                rows: [financeInvoiceRowFixture({ guestContactAccepted })] as unknown as T[],
-              };
-            }
-            if (text.includes("FROM finance.payments payment")) return { rows: [] as T[] };
-            throw new Error(`Unexpected query: ${text}`);
-          },
-          async end() {},
-        },
-      });
-
-      const list = await repository.listInvoices!(propertyId, {
-        sort: "issuedAt",
-        limit: 25,
-        offset: 0,
-      });
-      expect(list.invoices[0]?.guest.email).toBe(expectedEmail);
-
-      if (!plan && !guestContactAccepted) {
-        const detail = await repository.getInvoice!(propertyId, "inv_2026_abcd");
-        expect(detail?.invoice.guest).toMatchObject({
-          displayName: "Fi Guest",
-          email: "Hidden until you accept",
-          phone: "Hidden until you accept",
-        });
-      }
-      expect(queries.join("\n")).toContain('AS "guestContactAlways"');
-      expect(queries.join("\n")).toContain("contact_event.actor_type = 'property_user'");
-    },
-  );
-
   it("preserves empty payout and reconciliation reads", async () => {
     app = buildFinanceApp({ repository: emptyFinanceRepository });
 
@@ -2180,31 +2117,6 @@ type QueryCall = {
   values?: readonly unknown[];
 };
 
-type FinanceInvoiceRowFixture = {
-  invoiceId: string;
-  invoiceNumber: string;
-  guestBookingId: string;
-  bookingReference: string;
-  propertyName: string | null;
-  guestDisplayName: string | null;
-  guestEmail: string | null;
-  guestPhone: string | null;
-  guestContactAccepted: boolean;
-  checkIn: string;
-  checkOut: string;
-  roomName: string | null;
-  roomNumber: string | null;
-  currency: string;
-  totalAmount: string;
-  amountPaid: string;
-  balanceDue: string;
-  status: string;
-  issuedAt: string;
-  total: number;
-  counts: unknown;
-  sourceFreshness: unknown;
-};
-
 function targetPaymentSettingsPool(): {
   calls: QueryCall[];
   providerAccountId: string;
@@ -2574,36 +2486,6 @@ function stripePropertyOnboardingLinkTargetCommand(
       requestedAt: "2026-06-12T12:00:00.000Z",
     },
     payload: { providerAccountId },
-  };
-}
-
-function financeInvoiceRowFixture(
-  overrides: Partial<FinanceInvoiceRowFixture> = {},
-): FinanceInvoiceRowFixture {
-  return {
-    invoiceId: "inv_2026_abcd",
-    invoiceNumber: "INV-2026-0002",
-    guestBookingId: invoiceDetails[0]!.guestBookingId,
-    bookingReference: "B-FIN-686",
-    propertyName: "Hotel Alpenrose",
-    guestDisplayName: "Fi Guest",
-    guestEmail: "finance.guest@example.test",
-    guestPhone: "+15555550123",
-    guestContactAccepted: false,
-    checkIn: "2026-08-01",
-    checkOut: "2026-08-05",
-    roomName: "Alpine Suite",
-    roomNumber: "201",
-    currency: "EUR",
-    totalAmount: "1200.00",
-    amountPaid: "350.00",
-    balanceDue: "850.00",
-    status: "partial",
-    issuedAt: "2026-06-12T10:00:00.000Z",
-    total: 1,
-    counts: { partial: 1 },
-    sourceFreshness: {},
-    ...overrides,
   };
 }
 
