@@ -38,10 +38,7 @@ export type PmsRoomPublicationRoutesOptions = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * VAY-1061 owner adapter. It remains unmounted until the coordinated PMS API
- * composition cutover; registering this factory alone cannot activate public content.
- */
+/** VAY-1061 owner adapter for canonical room media and amenity publication. */
 export async function registerPmsRoomPublicationRoutes(
   app: FastifyInstance,
   options: PmsRoomPublicationRoutesOptions,
@@ -61,7 +58,18 @@ export async function registerPmsRoomPublicationRoutes(
       if (!roomTypeId) return reply;
       const idempotencyKey = readIdempotencyKey(request);
       if (!idempotencyKey) return invalidRequest(reply, "A single Idempotency-Key is required.");
-      if (!isExactObject(request.body, ["expectedRoomMediaRevision", "assignments"])) {
+      const hasLegacySnapshot =
+        typeof request.body === "object" &&
+        request.body !== null &&
+        Object.hasOwn(request.body, "legacyMediaSnapshot");
+      if (
+        !isExactObject(
+          request.body,
+          hasLegacySnapshot
+            ? ["expectedRoomMediaRevision", "assignments", "legacyMediaSnapshot"]
+            : ["expectedRoomMediaRevision", "assignments"],
+        )
+      ) {
         return invalidRequest(reply, "The room media assignment body is invalid.");
       }
       const command = parseAssignRoomTypeMediaCommand({
@@ -70,6 +78,7 @@ export async function registerPmsRoomPublicationRoutes(
         roomTypeId,
         expectedRoomMediaRevision: request.body["expectedRoomMediaRevision"],
         assignments: request.body["assignments"],
+        ...(hasLegacySnapshot ? { legacyMediaSnapshot: request.body["legacyMediaSnapshot"] } : {}),
         idempotencyKey,
         audit: commandAudit(scope.context),
       });
@@ -586,7 +595,9 @@ function sendMediaError(reply: FastifyReply, error: AssignRoomTypeMediaError): F
   ) {
     return reply.status(404).send(error);
   }
-  if (error.code === "media_not_authorized") return reply.status(403).send(error);
+  if (error.code === "media_not_authorized" || error.code === "legacy_media_not_authorized") {
+    return reply.status(403).send(error);
+  }
   if (error.code === "media_not_ready") return reply.status(422).send(error);
   return reply.status(409).send(error);
 }

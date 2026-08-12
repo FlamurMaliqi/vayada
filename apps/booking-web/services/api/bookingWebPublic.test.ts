@@ -58,6 +58,23 @@ function publicHotelResponse(
 }
 
 describe("Booking Web public hotel adapter", () => {
+  it("maps the Booking header logo without changing the image fallback", () => {
+    const response = publicHotelResponse();
+    response.hotel.branding = {
+      logoUrl: "https://cdn.vayada.example/alpenrose/logo.webp",
+      heroImage: null,
+      heroHeading: null,
+      heroSubtext: null,
+      primaryColor: null,
+      fontPairing: null,
+    };
+
+    const hotel = toLegacyHotel(response);
+
+    expect(hotel.branding?.logoUrl).toBe("https://cdn.vayada.example/alpenrose/logo.webp");
+    expect(hotel.heroImage).toBe("/vayada-logo.png");
+  });
+
   it("maps public contacts and uses only public city/region/country for the address", () => {
     const hotel = toLegacyHotel(
       publicHotelResponse([
