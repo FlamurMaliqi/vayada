@@ -60,8 +60,8 @@ describe.skipIf(!TEST_DATABASE_URL)("external nightly revenue evidence (PostgreS
     if (!/test/i.test(database)) throw new Error(`Refusing non-test database ${database}`);
     await client.connect();
     const [schema, adjustments] = await Promise.all([
-      migration("0069_booking_nightly_revenue_evidence.sql"),
-      migration("0070_booking_nightly_revenue_adjustments.sql"),
+      migration("0071_booking_nightly_revenue_evidence.sql"),
+      migration("0072_booking_nightly_revenue_adjustments.sql"),
     ]);
     await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto; DROP SCHEMA IF EXISTS booking CASCADE;
       CREATE SCHEMA booking; CREATE TABLE booking.guest_bookings (
