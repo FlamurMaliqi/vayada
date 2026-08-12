@@ -864,7 +864,12 @@ describe("hotel operations setup client", () => {
     ]);
     mocks.loadPresentation.mockResolvedValue({
       displayName: "Hotel One",
-      profile: { media: { coverMediaObjectId: null, galleryMediaObjectIds: [] } },
+      profile: {
+        media: {
+          coverMediaObjectId: null,
+          galleryMediaObjectIds: ["55555555-5555-4555-8555-555555555555"],
+        },
+      },
     });
     mocks.replacePropertyPresentationMedia.mockResolvedValue({ profileRevision: 4 });
     mocks.patch.mockRejectedValueOnce(new Error("connection lost"));
@@ -902,6 +907,20 @@ describe("hotel operations setup client", () => {
       "property-1",
       file,
       3,
+    );
+    expect(mocks.replacePropertyPresentationMedia).toHaveBeenCalledWith(
+      "property-1",
+      expect.objectContaining({
+        assignments: [
+          expect.objectContaining({ role: "cover", sortOrder: 0 }),
+          expect.objectContaining({
+            mediaObjectId: "55555555-5555-4555-8555-555555555555",
+            role: "gallery",
+            sortOrder: 1,
+          }),
+        ],
+      }),
+      expect.any(String),
     );
     await expect(
       hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {

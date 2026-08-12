@@ -427,7 +427,9 @@ export const hotelOperationsSetupApi = {
     const galleryAssignments = createHotelCatalogStep1MediaAssignments(
       presentation.profile.media,
       presentation.displayName,
-    ).filter(({ role }) => role === "gallery");
+    )
+      .filter(({ role }) => role === "gallery")
+      .map((assignment, index) => ({ ...assignment, sortOrder: index + 1 }));
     await sharedHotelSetupApi.replacePropertyPresentationMedia(
       propertyId,
       {

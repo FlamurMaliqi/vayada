@@ -694,7 +694,11 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(currentStep.getByRole("heading", { name: "Choose your plan" })).toBeVisible();
     await expect(currentStep.getByText("5% per direct booking")).toBeVisible();
     await expect(currentStep.getByText("€35 / 30 days")).toBeVisible();
+    const commissionRequest = page.waitForRequest(
+      (request) => request.method() === "POST" && request.url().endsWith(`/select-commission`),
+    );
     await currentStep.getByRole("button", { name: "Continue to payment methods" }).click();
+    await commissionRequest;
 
     expect(commissionSelection).toMatchObject({
       commandId: expect.stringContaining("finance-plan-commission"),
@@ -763,7 +767,11 @@ test.describe("marketplace-web shared setup activation", () => {
     await currentStep.getByLabel("Account number / IBAN").fill("1234567890");
     await currentStep.getByRole("button", { name: /PayPal/ }).click();
     await currentStep.getByLabel("PayPal email").fill("payments@alpenrose.test");
+    const paymentSettingsRequest = page.waitForRequest(
+      (request) => request.method() === "PATCH" && request.url().endsWith(`/payment-settings`),
+    );
     await currentStep.getByRole("button", { name: "Save and continue" }).click();
+    await paymentSettingsRequest;
 
     expect(paymentWrite).toMatchObject({
       paymentSettings: {
