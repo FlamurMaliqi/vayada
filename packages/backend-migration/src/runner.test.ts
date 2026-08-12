@@ -1214,12 +1214,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "billing_entitlements",
         "commission_rate_changes",
         "commission_rules",
+        "expense_categories",
         "finance_visibility_read_model",
         "payment_provider_accounts",
         "payment_settings",
         "payments",
         "payout_settings",
         "payouts",
+        "recurring_expense_rules",
       ]);
 
       const { rows: financeIntegrityConstraints } = await verifyClient.query<{
