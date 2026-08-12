@@ -676,7 +676,17 @@ async function listRoomTypes(
        room_type.occupancy_limits AS "occupancyLimits",
        room_type.room_attributes AS "attributes",
        room_type.amenities_snapshot AS "amenities",
-       COALESCE(room_media.items, room_type.media_snapshot) AS "media",
+       CASE
+         WHEN jsonb_typeof(room_type.media_snapshot) = 'array'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(room_type.media_snapshot) legacy_media(item)
+            WHERE jsonb_typeof(legacy_media.item) <> 'object'
+               OR jsonb_typeof(legacy_media.item -> 'mediaObjectId') IS DISTINCT FROM 'string'
+          )
+           THEN room_type.media_snapshot
+         ELSE COALESCE(room_media.items, room_type.media_snapshot)
+       END AS "media",
        room_type.room_media_revision AS "roomMediaRevision",
        room_type.base_rate_amount AS "baseRateAmount",
        room_type.currency,
@@ -1070,20 +1080,23 @@ function toStringArray(value: unknown): string[] {
 
 function toMediaArray(value: unknown): PmsRoomTypeMedia[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-    .map((item) => {
-      const url = typeof item.url === "string" ? item.url : "";
-      const mediaObjectId = typeof item.mediaObjectId === "string" ? item.mediaObjectId : undefined;
-      const altText =
-        typeof item.altText === "string"
-          ? item.altText
-          : typeof item.alt === "string"
-            ? item.alt
-            : null;
-      return { ...(mediaObjectId ? { mediaObjectId } : {}), url, altText };
-    })
-    .filter((item) => item.url.length > 0);
+  return value.flatMap((item) => {
+    if (typeof item === "string") return item.length > 0 ? [{ url: item, altText: null }] : [];
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const raw = item as Record<string, unknown>;
+    const url = typeof raw.url === "string" ? raw.url : "";
+    if (!url) return [];
+    const mediaObjectId = typeof raw.mediaObjectId === "string" ? raw.mediaObjectId : undefined;
+    const altText =
+      typeof raw.altText === "string" ? raw.altText : typeof raw.alt === "string" ? raw.alt : null;
+    return [
+      {
+        ...(mediaObjectId ? { mediaObjectId } : {}),
+        url,
+        altText,
+      },
+    ];
+  });
 }
 
 function toRatePlans(value: unknown): PmsRatePlan[] {
