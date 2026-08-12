@@ -52,6 +52,7 @@ export function SetupTaskFormRouter({
           <GuestSettingsPoliciesForm
             {...props}
             key={`${propertyId}:${task.taskId}:${task.sourceRevision}`}
+            taskComplete={task.readiness === "complete"}
           />
         );
       case "payment":

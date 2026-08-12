@@ -42,6 +42,7 @@ export type RoomSetupSaveResult =
 export type GuestSettingsPolicies = {
   checkInTime: string;
   checkOutTime: string;
+  termsAndConditions: string;
   cancellationPolicyText: string;
 };
 
@@ -97,8 +98,10 @@ export type PublicBookabilityPublication = {
 };
 
 type BookingPropertySettingsResponse = {
+  property_name?: unknown;
   check_in_time?: unknown;
   check_out_time?: unknown;
+  terms_text?: unknown;
   cancellation_policy_text?: unknown;
 };
 
@@ -179,6 +182,7 @@ export const hotelOperationsSetupApi = {
   getGuestSettingsPolicies: async (
     propertyId: string,
     signal?: AbortSignal,
+    seedDefaultTerms = false,
   ): Promise<GuestSettingsPolicies> => {
     const response = await targetApiClient.get<BookingPropertySettingsResponse>(
       `/api/booking/hotels/${encoded(propertyId)}/settings/property`,
@@ -187,6 +191,11 @@ export const hotelOperationsSetupApi = {
     return {
       checkInTime: stringValue(response.check_in_time, "15:00"),
       checkOutTime: stringValue(response.check_out_time, "11:00"),
+      termsAndConditions:
+        stringValue(response.terms_text) ||
+        (seedDefaultTerms
+          ? defaultTermsAndConditions(stringValue(response.property_name, "the property"))
+          : ""),
       cancellationPolicyText: stringValue(response.cancellation_policy_text),
     };
   },
@@ -198,6 +207,7 @@ export const hotelOperationsSetupApi = {
     await targetApiClient.patch(`/api/booking/hotels/${encoded(propertyId)}/settings/property`, {
       check_in_time: settings.checkInTime,
       check_out_time: settings.checkOutTime,
+      terms_text: settings.termsAndConditions.trim(),
       cancellation_policy_text: settings.cancellationPolicyText.trim(),
     });
   },
@@ -376,6 +386,14 @@ export const hotelOperationsSetupApi = {
       `/api/booking/hotels/${encoded(propertyId)}/public-bookability`,
     ),
 };
+
+function defaultTermsAndConditions(propertyName: string): string {
+  const hostName = propertyName.trim() || "the property";
+  return `These Terms & Conditions govern your booking made through the vayada platform ("vayada"). By completing this booking, you ("Guest") enter into a direct agreement with ${hostName} ("Host") for the accommodation services. vayada acts solely as an intermediary platform that facilitates bookings and payment processing between the Guest and the Host. vayada is not a party to the accommodation agreement and is not the provider of the accommodation services.
+
+1. Booking Confirmation
+Your booking is confirmed immediately upon submission and successful payment. You will receive a confirmation email with your booking details shortly after completing checkout. Your card will be charged the full booking amount shown at checkout.`;
+}
 
 async function getExistingRoomSetup(
   propertyId: string,
