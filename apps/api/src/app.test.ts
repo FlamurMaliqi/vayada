@@ -10959,6 +10959,55 @@ describe("vayada-api", () => {
     expect(queries).toHaveLength(3);
   });
 
+  it("checks command-wide physical-room availability against exact stay windows", async () => {
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<T>> {
+        expect(text).toContain(
+          "COALESCE(assignment.check_in, booking.check_in) < requested.check_out",
+        );
+        expect(text).toContain(
+          "COALESCE(assignment.check_out, booking.check_out) > requested.check_in",
+        );
+        expect(text).toContain("assignment.assignment_status NOT IN ('canceled', 'released')");
+        expect(text).toContain("room.operational_label_status = 'verified'");
+        expect(text).toContain("room.room_number IS NOT NULL");
+        expect(text).toContain("FROM pms.inventory_days inventory");
+        expect(text).toContain("inventory.status <> 'closed'");
+        expect(text).toContain("inventory.effective_sellable_limit_count IS NOT NULL");
+        expect(text).toContain("inventory.available_count >= (");
+        expect(text).toContain("FROM requested sibling");
+        expect(values).toEqual([
+          pmsPropertyId,
+          JSON.stringify([
+            { roomId: pmsRooms[0].roomId, checkIn: "2027-07-01", checkOut: "2027-07-03" },
+            { roomId: pmsRooms[1].roomId, checkIn: "2027-07-02", checkOut: "2027-07-04" },
+          ]),
+        ]);
+        return {
+          command: "SELECT",
+          rowCount: 1,
+          oid: 0,
+          fields: [],
+          rows: [{ available: true }, { available: false }] as unknown as T[],
+        };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    await expect(
+      repository.getPhysicalRoomAvailability(pmsPropertyId, [
+        { roomId: pmsRooms[0].roomId, checkIn: "2027-07-01", checkOut: "2027-07-03" },
+        { roomId: pmsRooms[1].roomId, checkIn: "2027-07-02", checkOut: "2027-07-04" },
+      ]),
+    ).resolves.toEqual([true, false]);
+  });
+
   it("builds PMS calendar reservation overlap queries without arrival pagination", async () => {
     const pool: PmsOperationsReadPool = {
       async query<T extends QueryResultRow = QueryResultRow>(

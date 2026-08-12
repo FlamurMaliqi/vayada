@@ -196,6 +196,13 @@ export type PmsOperationsReadRepository = {
   close?(): Promise<void>;
 };
 
+export type PmsManualBookingAvailabilityReadPort = {
+  getPhysicalRoomAvailability(
+    propertyId: string,
+    stays: readonly { roomId: string; checkIn: PmsDate; checkOut: PmsDate }[],
+  ): Promise<readonly (boolean | null)[]>;
+};
+
 export type PmsOperationsReadPool = {
   query<T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
@@ -208,7 +215,7 @@ export function createTargetPmsOperationsReadRepository(config: {
   connectionString: string;
   max?: number;
   pool?: PmsOperationsReadPool;
-}): PmsOperationsReadRepository {
+}): PmsOperationsReadRepository & PmsManualBookingAvailabilityReadPort {
   if (!config.connectionString.trim()) {
     throw new Error("PMS operations repository connectionString must not be empty");
   }
@@ -248,6 +255,66 @@ export function createTargetPmsOperationsReadRepository(config: {
 
     async listRoomTypesByPropertyId(propertyId) {
       return listRoomTypes(pool, propertyId);
+    },
+
+    async getPhysicalRoomAvailability(propertyId, stays) {
+      const result = await pool.query<{ available: boolean | null }>(
+        `WITH requested AS (
+           SELECT position::integer,
+                  (value->>'roomId')::uuid AS room_id,
+                  (value->>'checkIn')::date AS check_in,
+                  (value->>'checkOut')::date AS check_out
+           FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS input(value, position)
+         )
+         SELECT CASE WHEN room.id IS NULL THEN NULL ELSE
+         room.status = 'available'
+         AND room.operational_label_status = 'verified'
+         AND room.room_number IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM pms.room_blocks block
+           WHERE block.property_id = room.property_id AND block.room_id = room.id
+             AND block.status = 'active'
+             AND block.starts_on < requested.check_out AND block.ends_on >= requested.check_in
+         ) AND NOT EXISTS (
+           SELECT 1 FROM pms.operational_booking_assignments assignment
+           JOIN booking.guest_bookings booking
+             ON booking.id = assignment.guest_booking_id
+            AND booking.property_id = assignment.property_id
+           WHERE assignment.property_id = room.property_id AND assignment.room_id = room.id
+             AND assignment.assignment_status NOT IN ('canceled', 'released')
+             AND COALESCE(assignment.check_in, booking.check_in) < requested.check_out
+             AND COALESCE(assignment.check_out, booking.check_out) > requested.check_in
+         ) AND NOT EXISTS (
+           SELECT 1
+           FROM generate_series(
+             requested.check_in, requested.check_out - 1, interval '1 day'
+           ) AS dates(stay_date)
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM pms.inventory_days inventory
+             WHERE inventory.property_id = room.property_id
+               AND inventory.room_type_id = room.room_type_id
+               AND inventory.stay_date = stay_date
+               AND inventory.status <> 'closed'
+               AND inventory.effective_sellable_limit_count IS NOT NULL
+               AND inventory.available_count >= (
+                 SELECT COUNT(*)
+                 FROM requested sibling
+                 JOIN pms.rooms sibling_room
+                   ON sibling_room.property_id = room.property_id
+                  AND sibling_room.id = sibling.room_id
+                  AND sibling_room.room_type_id = room.room_type_id
+                 WHERE sibling.check_in <= stay_date AND sibling.check_out > stay_date
+               )
+           )
+         ) END AS available
+         FROM requested
+         LEFT JOIN pms.rooms room
+           ON room.property_id = $1::uuid AND room.id = requested.room_id
+         ORDER BY requested.position`,
+        [propertyId, JSON.stringify(stays)],
+      );
+      return result.rows.map((row) => row.available);
     },
 
     async findRoomTypeById(propertyId, roomTypeId) {
