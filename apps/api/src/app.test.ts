@@ -550,6 +550,7 @@ const bookingSettingsRepository: BookingSettingsReadRepository = {
       specialRequestsEnabled: false,
       arrivalTimeEnabled: true,
       guestCountEnabled: true,
+      termsAndConditions: "Alpenrose booking terms.",
       cancellationPolicyText: "Free cancellation until seven days before arrival.",
       acceptedPaymentMethods: ["pay_at_property", "cash", "card", "bank_transfer"],
     };
@@ -669,6 +670,7 @@ const bookingSettingsWriteRepository: BookingSettingsWriteRepository = {
       specialRequestsEnabled: settings.specialRequestsEnabled ?? false,
       arrivalTimeEnabled: settings.arrivalTimeEnabled ?? true,
       guestCountEnabled: settings.guestCountEnabled ?? true,
+      termsAndConditions: settings.termsAndConditions ?? "Alpenrose booking terms.",
       cancellationPolicyText:
         settings.cancellationPolicyText ?? "Free cancellation until seven days before arrival.",
       acceptedPaymentMethods: settings.acceptedPaymentMethods ?? [
@@ -3763,6 +3765,7 @@ describe("vayada-api", () => {
       special_requests_enabled: false,
       arrival_time_enabled: true,
       guest_count_enabled: true,
+      terms_text: "Alpenrose booking terms.",
       cancellation_policy_text: "Free cancellation until seven days before arrival.",
     });
   });
@@ -3797,6 +3800,7 @@ describe("vayada-api", () => {
         special_requests_enabled: true,
         arrival_time_enabled: false,
         guest_count_enabled: false,
+        terms_text: "Updated Alpenrose booking terms.",
         cancellation_policy_text: "Free cancellation until one day before arrival.",
         pay_at_property_enabled: true,
         pay_at_hotel_methods: ["cash", "card"],
@@ -3835,6 +3839,7 @@ describe("vayada-api", () => {
       special_requests_enabled: true,
       arrival_time_enabled: false,
       guest_count_enabled: false,
+      terms_text: "Updated Alpenrose booking terms.",
       cancellation_policy_text: "Free cancellation until one day before arrival.",
     });
   });
@@ -7219,6 +7224,7 @@ describe("vayada-api", () => {
       youtube: string | null;
       check_in_time: string | null;
       check_out_time: string | null;
+      terms_and_conditions: string | null;
       cancellation_policy_text: string | null;
       accepted_payment_methods: string[];
     } = {
@@ -7239,6 +7245,7 @@ describe("vayada-api", () => {
       youtube: null as string | null,
       check_in_time: "15:00",
       check_out_time: "11:00",
+      terms_and_conditions: "Hotel Alpenrose booking terms.",
       cancellation_policy_text: "Free cancellation until seven days before arrival.",
       accepted_payment_methods: ["pay_at_property", "manual_card"],
     };
@@ -7317,14 +7324,15 @@ describe("vayada-api", () => {
           }
           propertyState.check_in_time = values?.[2] as string;
           propertyState.check_out_time = values?.[3] as string;
-          propertyState.cancellation_policy_text = values?.[4] as string;
-          state.default_language = values?.[5] as string;
-          state.default_currency = values?.[6] as string;
-          state.supported_currencies = values?.[7] as string[];
-          state.supported_languages = values?.[8] as string[];
-          state.special_requests_enabled = values?.[9] as boolean;
-          state.arrival_time_enabled = values?.[10] as boolean;
-          state.guest_count_enabled = values?.[11] as boolean;
+          propertyState.terms_and_conditions = values?.[4] as string;
+          propertyState.cancellation_policy_text = values?.[5] as string;
+          state.default_language = values?.[6] as string;
+          state.default_currency = values?.[7] as string;
+          state.supported_currencies = values?.[8] as string[];
+          state.supported_languages = values?.[9] as string[];
+          state.special_requests_enabled = values?.[10] as boolean;
+          state.arrival_time_enabled = values?.[11] as boolean;
+          state.guest_count_enabled = values?.[12] as boolean;
           return {
             rows: [
               {
@@ -7543,6 +7551,7 @@ describe("vayada-api", () => {
         youtube: "https://youtube.com/@target-alpenrose",
         check_in_time: "14:00",
         check_out_time: "10:00",
+        terms_text: "Target booking terms.",
         cancellation_policy_text: "Target cancellation policy.",
         default_currency: "EUR",
         default_language: "en-US",
@@ -7571,6 +7580,7 @@ describe("vayada-api", () => {
       pay_at_hotel_methods: ["card"],
       online_card_payment: false,
       bank_transfer: false,
+      terms_text: "Target booking terms.",
       cancellation_policy_text: "Target cancellation policy.",
     });
     const propertyUpdateQuery = queries.find(
@@ -7928,6 +7938,7 @@ describe("vayada-api", () => {
               youtube: null,
               check_in_time: null,
               check_out_time: null,
+              terms_and_conditions: null,
               cancellation_policy_text: null,
               accepted_payment_methods: [],
               show_addons_step: true,

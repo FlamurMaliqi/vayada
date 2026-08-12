@@ -102,7 +102,7 @@ export type SharedFirstRunPropertySetupWizardProps = {
   renderTaskForm: (context: SharedSetupTaskFormContext) => ReactNode;
   propertyLaunchSettingsApi?: PropertyLaunchSettingsApi;
   onPropertySelected?: (propertyId: string) => void | Promise<void>;
-  onExit?: () => void;
+  onExit?: (propertyId: string | null) => void;
 };
 
 export type SharedSetupTaskFormContext = {
@@ -822,7 +822,7 @@ export default function SharedFirstRunPropertySetupWizard({
           selectedTaskId={selectedPlanTaskId}
           onSelectTask={setSelectedPlanTaskId}
           onEditHotelBasics={() => setEditPropertyProfile(true)}
-          onExit={onExit}
+          onExit={onExit ? () => onExit(view.selectedPropertyId) : undefined}
           onEnterProduct={entryContinueInput ? () => onContinue(entryContinueInput) : undefined}
           onAddTrack={
             status.organization.selectedTracks.length < 2 && status.organization.canManageTracks

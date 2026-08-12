@@ -184,20 +184,16 @@ function buildTargetSettingsUpdate(
   }
 
   if (section === "booking") {
-    if (
-      (settings.terms_text || "").trim() ||
-      settings.map_view_enabled ||
-      settings.refer_a_guest_enabled
-    ) {
+    if (settings.map_view_enabled || settings.refer_a_guest_enabled) {
       return {
         ok: false,
-        message:
-          "Terms text, map view, and refer-a-guest settings are not available on next-api yet.",
+        message: "Map view and refer-a-guest settings are not available on next-api yet.",
       };
     }
     return {
       ok: true,
       data: {
+        terms_text: settings.terms_text,
         cancellation_policy_text: settings.cancellation_policy_text,
       },
     };

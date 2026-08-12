@@ -1071,6 +1071,8 @@ type TargetCheckoutConfigRow = QueryResultRow & {
   phoneRequired: boolean | null;
   adultAgeThreshold: number | null;
   childrenEnabled: boolean | null;
+  termsText: string | null;
+  cancellationPolicyText: string | null;
   paymentsEnabled: boolean | null;
   acceptedMethods: string[] | null;
   depositPolicy: unknown;
@@ -1953,6 +1955,8 @@ async function loadTargetCheckoutConfig(
        bs.phone_required AS "phoneRequired",
        bs.adult_age_threshold AS "adultAgeThreshold",
        bs.children_enabled AS "childrenEnabled",
+       policy.terms_and_conditions AS "termsText",
+       policy.cancellation_summary AS "cancellationPolicyText",
        fs.payments_enabled AS "paymentsEnabled",
        fs.accepted_methods AS "acceptedMethods",
        fs.deposit_policy AS "depositPolicy",
@@ -1960,6 +1964,7 @@ async function loadTargetCheckoutConfig(
        fs.requires_manual_review AS "requiresManualReview"
      FROM hotel_catalog.properties p
      LEFT JOIN booking.booking_settings bs ON bs.property_id = p.id
+     LEFT JOIN hotel_catalog.property_policy_summaries policy ON policy.property_id = p.id
      LEFT JOIN finance.payment_settings fs ON fs.property_id = p.id
      WHERE p.id = $1::uuid
      LIMIT 1`,
@@ -1992,6 +1997,8 @@ function serializeTargetCheckoutConfig(
     phoneRequired: row?.phoneRequired ?? true,
     adultAgeThreshold: row?.adultAgeThreshold ?? 18,
     childrenEnabled: row?.childrenEnabled ?? true,
+    termsText: row?.termsText ?? "",
+    cancellationPolicyText: row?.cancellationPolicyText ?? "",
     benefits: Array.isArray(row?.benefits) ? row?.benefits : [],
     cancellationSummary: stringValue(refundPolicy["summary"]),
     depositSummary: stringValue(depositPolicy["summary"]),

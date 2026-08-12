@@ -263,6 +263,7 @@ test.describe("booking-admin adaptive setup", () => {
       if (destination.taskId === "guest_settings_policies") {
         await expect(page.getByLabel("Check-in time")).toHaveValue("");
         await expect(page.getByLabel("Check-out time")).toHaveValue("");
+        await expect(page.getByLabel("Terms & Conditions")).toHaveValue("");
         await expect(page.getByLabel("Cancellation Policy")).toHaveValue("");
 
         await page.getByRole("button", { name: "Save and return to setup", exact: true }).click();
@@ -276,6 +277,7 @@ test.describe("booking-admin adaptive setup", () => {
 
         await page.getByLabel("Check-in time").fill("16:00");
         await page.getByLabel("Check-out time").fill("10:00");
+        await page.getByLabel("Terms & Conditions").fill("Hotel Alpenrose booking terms.");
         await page
           .getByLabel("Cancellation Policy")
           .fill("Free cancellation until seven days before arrival.");
@@ -321,6 +323,7 @@ test.describe("booking-admin adaptive setup", () => {
           {
             check_in_time: "16:00",
             check_out_time: "10:00",
+            terms_text: "Hotel Alpenrose booking terms.",
             cancellation_policy_text: "Free cancellation until seven days before arrival.",
           },
         ]);

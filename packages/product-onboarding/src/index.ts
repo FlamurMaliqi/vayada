@@ -132,6 +132,7 @@ export {
   type RedeemedBrowserAuthHandoff,
 } from "./authHandoff";
 export { useSingleFlightGuard } from "./useSingleFlight";
+export { isPmsSetupExitPath, pmsSetupExitPath, pmsSetupExitPropertyId } from "./setupExit";
 export {
   default as PropertyStep,
   type CountryOption,

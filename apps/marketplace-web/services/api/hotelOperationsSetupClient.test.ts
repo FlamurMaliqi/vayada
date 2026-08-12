@@ -403,8 +403,10 @@ describe("hotel operations setup client", () => {
 
   it("uses canonical property IDs for Booking guest-policy reads and writes", async () => {
     mocks.get.mockResolvedValue({
+      property_name: "Hotel Alpenrose",
       check_in_time: "16:00",
       check_out_time: "10:30",
+      terms_text: "Existing terms.",
       cancellation_policy_text: "Free until 5 days before arrival.",
     });
     mocks.patch.mockResolvedValue({});
@@ -414,11 +416,13 @@ describe("hotel operations setup client", () => {
     ).resolves.toEqual({
       checkInTime: "16:00",
       checkOutTime: "10:30",
+      termsAndConditions: "Existing terms.",
       cancellationPolicyText: "Free until 5 days before arrival.",
     });
     await hotelOperationsSetupApi.updateGuestSettingsPolicies("property / one", {
       checkInTime: "15:00",
       checkOutTime: "11:00",
+      termsAndConditions: " Custom terms. ",
       cancellationPolicyText: " Free until 7 days before arrival. ",
     });
 
@@ -431,9 +435,40 @@ describe("hotel operations setup client", () => {
       {
         check_in_time: "15:00",
         check_out_time: "11:00",
+        terms_text: "Custom terms.",
         cancellation_policy_text: "Free until 7 days before arrival.",
       },
     );
+  });
+
+  it("seeds terms only before the policy task has been completed", async () => {
+    mocks.get.mockResolvedValue({ property_name: "Green Poya Resort" });
+
+    const seeded = await hotelOperationsSetupApi.getGuestSettingsPolicies(
+      "property-1",
+      undefined,
+      true,
+    );
+    await hotelOperationsSetupApi.updateGuestSettingsPolicies("property-1", {
+      ...seeded,
+      termsAndConditions: "",
+    });
+    const revisited = await hotelOperationsSetupApi.getGuestSettingsPolicies(
+      "property-1",
+      undefined,
+      false,
+    );
+
+    expect(seeded.termsAndConditions).toContain(
+      "direct agreement with us for our accommodation services",
+    );
+    expect(revisited.termsAndConditions).toBe("");
+    expect(mocks.patch).toHaveBeenCalledWith(
+      "/api/booking/hotels/property-1/settings/property",
+      expect.objectContaining({ terms_text: "" }),
+    );
+    expect(seeded.checkInTime).toBe("15:00");
+    expect(seeded.checkOutTime).toBe("11:00");
   });
 
   it("reads and writes launch settings through the property-owned setup endpoint", async () => {
