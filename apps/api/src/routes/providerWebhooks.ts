@@ -134,6 +134,7 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
     const eventId = requiredString(payload.value, "id", "Stripe event");
     const eventType = requiredString(payload.value, "type", "Stripe event");
     const receiptKey = `webhook:stripe:${eventId}`;
+    const persistedPayload = redactStripeWebhookPayload(payload.value);
     return handleAuthenticatedProviderWebhook({
       provider: "stripe",
       eventType,
@@ -141,10 +142,10 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       receiptKey,
       reply,
       request,
-      rawPayload: payload.value,
+      rawPayload: persistedPayload,
       store: options.store,
       normalizedPreview: previewStripeEvent(
-        payload.value,
+        persistedPayload,
         receiptKey,
         Math.floor((options.now?.() ?? new Date()).getTime() / 1_000),
       ),
@@ -305,6 +306,24 @@ async function handleAuthenticatedProviderWebhook(input: {
     auditEventIds: promotion.auditEventIds ?? [],
   });
 }
+
+export function redactStripeWebhookPayload(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return redactSensitiveStripeValue(value) as Record<string, unknown>;
+}
+
+function redactSensitiveStripeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitiveStripeValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !STRIPE_SECRET_FIELDS.has(key.toLowerCase()))
+      .map(([key, nested]) => [key, redactSensitiveStripeValue(nested)]),
+  );
+}
+
+const STRIPE_SECRET_FIELDS = new Set(["client_secret", "secret", "access_token", "refresh_token"]);
 
 function modeFor(options: ProviderWebhookRoutesOptions, provider: ProviderWebhookProvider) {
   return options.modes?.[provider] ?? "observe_only";
@@ -632,21 +651,33 @@ function previewStripeEvent(
     });
   }
   if (eventType === "account.updated") {
+    const eventId = requiredString(payload, "id", "Stripe event");
     const chargesEnabled = optionalBoolean(dataObject, "charges_enabled") ?? false;
+    const payoutsEnabled = optionalBoolean(dataObject, "payouts_enabled") ?? false;
+    const detailsSubmitted = optionalBoolean(dataObject, "details_submitted") ?? false;
+    const cardPaymentsStatus = optionalString(
+      optionalRecord(dataObject, "capabilities"),
+      "card_payments",
+    );
     return {
-      domainEventKey: `finance.provider-account.updated:stripe:${objectId}:${chargesEnabled}:v1`,
+      domainEventKey: `finance.provider-account.updated:stripe:${objectId}:${eventId}:v1`,
       domainEventType: "finance.provider-account.updated",
       resourceProduct: "finance",
       resourceType: "provider_account",
       resourceId: objectId,
-      jobKey: `finance.reconcile-provider-account:provider_account:${objectId}:stripe-account-updated:v1`,
+      jobKey: `finance.reconcile-provider-account:provider_account:${objectId}:${eventId}:v1`,
       queueName: "finance.webhooks",
       jobType: "finance.reconcile-provider-account",
       payload: {
         provider: "stripe",
         providerAccountId: objectId,
         chargesEnabled,
-        rawEventId: requiredString(payload, "id", "Stripe event"),
+        payoutsEnabled,
+        detailsSubmitted,
+        cardPaymentsStatus,
+        defaultCurrency: optionalString(dataObject, "default_currency"),
+        rawEventId: eventId,
+        eventCreated: optionalNumber(payload, "created") ?? eventCreatedFallback,
       },
     };
   }
@@ -849,6 +880,10 @@ function paymentPreview(input: {
       provider: input.provider,
       paymentId: input.paymentId,
       amount: input.amount,
+      currency: optionalString(
+        optionalRecord(optionalRecord(input.rawPayload, "data"), "object") ?? input.rawPayload,
+        "currency",
+      ),
       financeStatus,
       rawPayload: input.rawPayload,
     },

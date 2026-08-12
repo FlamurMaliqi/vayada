@@ -24,8 +24,10 @@ import type {
 } from "./bookingWebAffiliate.js";
 import {
   createTargetBookingWebCheckoutAdapter,
+  createUnavailableBookingWebCheckoutAdapter,
   recordTargetCheckoutCommand,
   resolveTargetCheckoutAmountSnapshot,
+  targetCardPaymentIdempotencyKey,
   type BookingWebCalendarProjection,
   type BookingWebCalendarRepository,
   type BookingWebCalendarReadPool,
@@ -114,6 +116,16 @@ const ACCEPTED_BOOTSTRAP_PARITY_DIFFERENCES = [
       "These fields are not required by the read-only bootstrap adapters and remain outside this public-safe parity slice.",
   },
 ] as const;
+
+it("namespaces Stripe idempotency by property without exposing the public key", () => {
+  const publicKey = "guest-controlled-retry-key";
+  const first = targetCardPaymentIdempotencyKey("a9fccec2-eb4c-4c35-bfd3-02a748c2e117", publicKey);
+  const second = targetCardPaymentIdempotencyKey("b9fccec2-eb4c-4c35-bfd3-02a748c2e952", publicKey);
+
+  expect(first).not.toBe(second);
+  expect(first).not.toContain(publicKey);
+  expect(second).not.toContain(publicKey);
+});
 
 const legacyHotel: LegacyHotelResponse = {
   id: "booking_hotel_alpenrose",
@@ -926,6 +938,52 @@ describe("Booking Web public bootstrap parity", () => {
     expect(closed).toBe(1);
   });
 
+  it("keeps one checkout attempt replayable while distinct attempt tokens create distinct quotes", async () => {
+    const keys: string[] = [];
+    const checkoutAdapter: BookingWebCheckoutAdapter = {
+      ...createUnavailableBookingWebCheckoutAdapter(),
+      async quoteBooking(_slug, _request, context) {
+        if (!context) throw new Error("Missing checkout command context");
+        keys.push(context.idempotencyKey);
+        return {
+          quoteId: context.idempotencyKey === "quote-attempt-a" ? "Q-A" : "Q-B",
+          roomTypeId: "room-deluxe",
+          paymentMethod: "pay_at_property",
+          totalAmount: 100,
+          currency: "EUR",
+        };
+      },
+    };
+    const app = buildApp({
+      logger: false,
+      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: checkoutAdapter,
+    });
+    const request = {
+      method: "POST" as const,
+      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/quote",
+      payload: {
+        roomTypeId: "room-deluxe",
+        checkIn: "2026-09-12",
+        checkOut: "2026-09-15",
+      },
+    };
+
+    const responses = await Promise.all([
+      app.inject({ ...request, headers: { "Idempotency-Key": "quote-attempt-a" } }),
+      app.inject({ ...request, headers: { "Idempotency-Key": "quote-attempt-a" } }),
+      app.inject({ ...request, headers: { "Idempotency-Key": "quote-attempt-b" } }),
+    ]);
+
+    expect(responses.map((response) => [response.statusCode, response.json()])).toEqual([
+      [200, expect.objectContaining({ quoteId: "Q-A" })],
+      [200, expect.objectContaining({ quoteId: "Q-A" })],
+      [200, expect.objectContaining({ quoteId: "Q-B" })],
+    ]);
+    expect(keys).toEqual(["quote-attempt-a", "quote-attempt-a", "quote-attempt-b"]);
+    await app.close();
+  });
+
   it("completes reserved checkout idempotency rows with response fields", async () => {
     const calls: Array<{ text: string; values: unknown[] | undefined }> = [];
     const pool = {
@@ -985,6 +1043,29 @@ describe("Booking Web public bootstrap parity", () => {
         }
         if (text.includes("FROM hotel_catalog.properties p")) {
           return { rows: [{ phoneRequired: false, acceptedMethods: ["pay_at_property"] }] };
+        }
+        if (text.includes("FROM booking.guest_bookings booking")) {
+          return {
+            rows: [
+              {
+                guestBookingId: "b9fccec2-eb4c-4c35-bfd3-02a748c2e952",
+                propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+                publicReference: "B-PAYPAL-1",
+                lifecycleStatus: "pending_payment",
+                paymentStatus: "unpaid",
+                checkIn: "2026-09-12",
+                checkOut: "2026-09-15",
+                adults: 2,
+                children: 0,
+                roomCount: 1,
+                currency: "EUR",
+                totalAmount: "600.00",
+                balanceAmount: "600.00",
+                bookingMetadata: { paymentMethod: "paypal" },
+                createdAt: "2026-09-01T10:00:00.000Z",
+              },
+            ],
+          };
         }
         if (text.includes("INSERT INTO platform.idempotency_keys")) return { rows: [] };
         if (text.includes("FROM platform.idempotency_keys")) {
@@ -1177,7 +1258,10 @@ describe("Booking Web public bootstrap parity", () => {
       "profile.public_setup_completeness ->> 'status' = 'ready'",
     );
     expect(propertyRead?.text).not.toContain("profile.capabilities ->> 'onlinePayment'");
-    expect(propertyRead?.text).toContain("profile.capabilities ->> 'payAtProperty'");
+    expect(propertyRead?.text).not.toContain("profile.capabilities ->> 'payAtProperty'");
+    expect(propertyRead?.text).toContain(
+      "jsonb_array_length(profile.capabilities -> 'paymentMethods') > 0",
+    );
     const offerRead = calls.find((call) =>
       call.text.includes("FROM distribution.public_room_offer_snapshots"),
     );
@@ -1205,6 +1289,7 @@ describe("Booking Web public bootstrap parity", () => {
   it("exposes target checkout phone required settings", async () => {
     const calls: string[] = [];
     let termsText: string | null = "Hotel Alpenrose booking terms.";
+    let paypalConfigured = true;
     const pool = {
       async query(text: string) {
         calls.push(text);
@@ -1235,10 +1320,44 @@ describe("Booking Web public bootstrap parity", () => {
                   "wallet",
                   "manual_card",
                   "bank_transfer",
+                  "paypal",
                   "pay_at_property",
-                ],
-                depositPolicy: {},
+                ].filter((method) => paypalConfigured || method !== "paypal"),
+                depositPolicy: {
+                  bankTransferInstructions: "Bank: Vayada Bank\nIBAN: DE123",
+                  paypalEmail: paypalConfigured ? "payments@alpenrose.test" : "",
+                  paypalPaymentWindowHours: 48,
+                },
                 refundPolicy: {},
+              },
+            ],
+          };
+        }
+        if (text.includes("FROM booking.guest_bookings b")) {
+          return {
+            rows: [
+              {
+                guestBookingId: "booking-paypal-1",
+                propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+                publicReference: "B-PAYPAL-1",
+                lifecycleStatus: "pending_payment",
+                paymentStatus: "unpaid",
+                checkIn: "2026-09-12",
+                checkOut: "2026-09-15",
+                adults: 2,
+                children: 0,
+                roomCount: 1,
+                currency: "EUR",
+                totalAmount: "600.00",
+                balanceAmount: "600.00",
+                bookingMetadata: {
+                  paymentMethod: "paypal",
+                  paymentInstructions: {
+                    paypalEmail: "payments@alpenrose.test",
+                    paypalPaymentWindowHours: 48,
+                  },
+                },
+                createdAt: "2026-09-01T10:00:00.000Z",
               },
             ],
           };
@@ -1258,8 +1377,20 @@ describe("Booking Web public bootstrap parity", () => {
       termsText: "Hotel Alpenrose booking terms.",
       cancellationPolicyText: "Free cancellation until seven days before arrival.",
       paymentsEnabled: true,
-      acceptedPaymentMethods: ["pay_at_property"],
-      bankTransfer: false,
+      acceptedPaymentMethods: ["bank_transfer", "paypal", "pay_at_property"],
+      bankTransfer: true,
+      paypalEnabled: true,
+      paypalPaymentWindowHours: 48,
+    });
+    paypalConfigured = false;
+    await expect(
+      adapter.getPaymentInstructions("hotel-alpenrose", "B-PAYPAL-1"),
+    ).resolves.toMatchObject({
+      paypal: {
+        enabled: true,
+        email: "payments@alpenrose.test",
+        paymentWindowHours: 48,
+      },
     });
     termsText = null;
     await expect(adapter.getCheckoutConfig("hotel-alpenrose")).resolves.toMatchObject({
@@ -1326,7 +1457,8 @@ describe("Booking Web public bootstrap parity", () => {
                   propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
                   defaultCurrency: "EUR",
                   phoneRequired,
-                  acceptedMethods: ["pay_at_property"],
+                  paymentsEnabled: true,
+                  acceptedMethods: ["pay_at_property", "cash"],
                   depositPolicy: {},
                   refundPolicy: {},
                 },
@@ -1918,7 +2050,7 @@ describe("Booking Web public bootstrap parity", () => {
     );
   });
 
-  it("rejects unsupported bank-transfer checkout without trusting a guest payment status", async () => {
+  it("creates a pending bank-transfer booking without emailing details before host acceptance", async () => {
     const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
     const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e951";
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
@@ -1958,6 +2090,25 @@ describe("Booking Web public bootstrap parity", () => {
             ],
           };
         }
+        if (text.includes("WITH inventory_lock AS")) {
+          return { rows: [{ reserved: true }] };
+        }
+        if (text.includes("FROM hotel_catalog.properties p")) {
+          return {
+            rows: [
+              {
+                propertyId,
+                defaultCurrency: "EUR",
+                phoneRequired: true,
+                paymentsEnabled: true,
+                acceptedMethods: ["bank_transfer"],
+                depositPolicy: {
+                  bankTransferInstructions: "IBAN: DE89370400440532013000",
+                },
+              },
+            ],
+          };
+        }
         if (text.includes("INSERT INTO booking.guest_bookings")) {
           return {
             rows: [
@@ -1975,21 +2126,8 @@ describe("Booking Web public bootstrap parity", () => {
                 currency: "EUR",
                 totalAmount: "600.00",
                 balanceAmount: "600.00",
-                bookingMetadata: {},
+                bookingMetadata: { paymentMethod: "bank_transfer" },
                 createdAt: "2026-09-01T10:00:00.000Z",
-              },
-            ],
-          };
-        }
-        if (text.includes('accepted_methods AS "acceptedMethods"')) {
-          return {
-            rows: [
-              {
-                acceptedMethods: ["bank_transfer"],
-                depositPolicy: {
-                  bankTransferInstructions:
-                    "Account holder: Hotel Alpenrose GmbH\nIBAN: DE89370400440532013000",
-                },
               },
             ],
           };
@@ -2009,6 +2147,18 @@ describe("Booking Web public bootstrap parity", () => {
     const adapter = createTargetBookingWebCheckoutAdapter({
       connectionString: "postgres://unused",
       inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+      billingConfigReadPortFactory: () => ({
+        async getBillingConfig() {
+          return {
+            propertyId,
+            activePlan: "commission",
+            bookingEngineFeePercent: 5,
+            channelManagerFeePercent: 0,
+            affiliatePlatformFeePercent: 0,
+            updatedAt: "2026-09-01T10:00:00.000Z",
+          };
+        },
+      }),
       pool: pool as never,
     });
 
@@ -2041,18 +2191,311 @@ describe("Booking Web public bootstrap parity", () => {
           occurredAt: new Date("2026-09-01T10:00:00.000Z"),
         },
       ),
-    ).rejects.toThrow("online payment authorization");
+    ).resolves.toMatchObject({
+      booking: {
+        id: guestBookingId,
+        paymentMethod: "bank_transfer",
+        status: "pending",
+      },
+    });
 
     const quoteRead = calls.find((call) => call.text.includes("FROM booking.quote_sessions"));
     expect(quoteRead?.text).toContain("profile.freshness_status = 'fresh'");
     expect(quoteRead?.text).toContain("profile.public_setup_completeness ->> 'status' = 'ready'");
     expect(quoteRead?.text).not.toContain("profile.capabilities ->> 'onlinePayment'");
-    expect(quoteRead?.text).toContain("profile.capabilities ->> 'payAtProperty'");
+    expect(quoteRead?.text).not.toContain("profile.capabilities ->> 'payAtProperty'");
     expect(quoteRead?.values?.[2]).toBe("2026-09-01T10:00:00.000Z");
     expect(calls.some((call) => call.text.includes("INSERT INTO booking.guest_bookings"))).toBe(
-      false,
+      true,
     );
-    expect(calls.some((call) => call.text.includes("INSERT INTO platform.jobs"))).toBe(false);
+    const bookingInsert = calls.find((call) =>
+      call.text.includes("INSERT INTO booking.guest_bookings"),
+    );
+    expect(JSON.parse(String(bookingInsert?.values?.[18]))).toMatchObject({
+      paymentMethod: "bank_transfer",
+      pendingExpiresAt: "2026-09-02T10:00:00.000Z",
+      paymentInstructions: {
+        bankTransferDetails: "IBAN: DE89370400440532013000",
+      },
+    });
+    expect(
+      calls.some((call) => call.values?.includes("email.booking-reserved-pending-payment")),
+    ).toBe(false);
+  });
+
+  it("creates and settles a target Stripe Connect card booking", async () => {
+    const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
+    const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e952";
+    let lifecycleStatus = "draft";
+    let paymentStatus = "unpaid";
+    let balanceAmount = "600.00";
+    let retrievedIntentStatus = "canceled";
+    let cardPaymentInput: Record<string, unknown> | null = null;
+    let createCommandReserved = false;
+    let completedCreateBody: unknown;
+    const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
+    const booking = () => ({
+      guestBookingId,
+      propertyId,
+      publicReference: "B-CARD952",
+      lifecycleStatus,
+      paymentStatus,
+      checkIn: "2026-09-12",
+      checkOut: "2026-09-15",
+      adults: 2,
+      children: 0,
+      roomCount: 1,
+      currency: "EUR",
+      totalAmount: "600.00",
+      balanceAmount,
+      bookingMetadata: { paymentMethod: "card" },
+      createdAt: "2026-09-01T10:00:00.000Z",
+    });
+    const pool = {
+      async query(text: string, values?: readonly unknown[]) {
+        calls.push({ text, values });
+        if (text.includes("FROM hotel_catalog.property_slugs")) {
+          return { rows: [{ propertyId, displayName: "Hotel Alpenrose", defaultLocale: "en" }] };
+        }
+        if (text.trimStart().startsWith("INSERT INTO platform.idempotency_keys")) {
+          if (values?.[0] === "booking-create" && createCommandReserved) return { rows: [] };
+          if (values?.[0] === "booking-create") createCommandReserved = true;
+          return { rows: [{ id: "999e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
+        }
+        if (text.includes("FROM platform.idempotency_keys")) {
+          return {
+            rows: [
+              {
+                requestFingerprintHash: "2".repeat(64),
+                status: "completed",
+                idempotencyMetadata: { responseBody: completedCreateBody },
+              },
+            ],
+          };
+        }
+        if (text.includes("WITH upserted_key AS")) {
+          if (values?.[0] === "booking-create") {
+            completedCreateBody = JSON.parse(String(values[10])).responseBody;
+          }
+          return { rows: [] };
+        }
+        if (text.includes("FROM hotel_catalog.properties p")) {
+          return {
+            rows: [
+              {
+                propertyId,
+                defaultCurrency: "EUR",
+                phoneRequired: true,
+                paymentsEnabled: true,
+                acceptedMethods: ["card"],
+                depositPolicy: {},
+                providerAccountId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e952",
+                providerAccountRef: "acct_property_952",
+                providerReady: true,
+              },
+            ],
+          };
+        }
+        if (text.trimStart().startsWith("SELECT") && text.includes("FROM booking.quote_sessions")) {
+          return {
+            rows: [
+              {
+                quoteSessionId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e952",
+                publicQuoteReference: "Q-CARD952",
+                requestedCheckIn: "2026-09-12",
+                requestedCheckOut: "2026-09-15",
+                adults: 2,
+                children: 0,
+                roomCount: 1,
+                currency: "EUR",
+                status: "active",
+                selectedOfferSnapshot: {
+                  roomTypeId: "room_deluxe",
+                  publicOfferKey: "room_deluxe:flexible",
+                  paymentMethod: "card",
+                },
+                totals: { totalAmount: "600.00", balanceAmount: "600.00" },
+                policySnapshot: {},
+                expiresAt: "2026-09-01T10:15:00.000Z",
+              },
+            ],
+          };
+        }
+        if (text.includes("WITH inventory_lock AS")) return { rows: [{ reserved: true }] };
+        if (text.includes("INSERT INTO booking.guest_bookings")) return { rows: [booking()] };
+        if (text.includes('account.provider_account_id AS "providerAccountRef"')) {
+          return {
+            rows: [
+              {
+                paymentId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e952",
+                providerPaymentIntentId: "pi_card_952",
+                providerAccountRef: "acct_property_952",
+              },
+            ],
+          };
+        }
+        if (text.includes("FOR UPDATE OF payment, booking")) {
+          return {
+            rows: [
+              {
+                paymentId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e952",
+                paymentStatus: "requires_action",
+                propertyId,
+                guestBookingId,
+                amount: "600.00",
+                currency: "EUR",
+                lifecycleStatus,
+                bookingPaymentStatus: paymentStatus,
+                publicReference: "B-CARD952",
+                checkIn: "2026-09-12",
+                checkOut: "2026-09-15",
+                adults: 2,
+                children: 0,
+                roomCount: 1,
+                totalAmount: "600.00",
+              },
+            ],
+          };
+        }
+        if (text.startsWith("UPDATE booking.guest_bookings") && text.includes("RETURNING id")) {
+          lifecycleStatus = "confirmed";
+          paymentStatus = "paid";
+          balanceAmount = "0.00";
+          return { rows: [{ id: guestBookingId }] };
+        }
+        if (text.includes("WITH payment AS") && text.includes("guest_booking.payment_received")) {
+          lifecycleStatus = "confirmed";
+          paymentStatus = "paid";
+          balanceAmount = "0.00";
+          return { rows: [{ guestBookingId }] };
+        }
+        if (text.includes("FROM booking.guest_bookings booking")) return { rows: [booking()] };
+        if (text.includes("INSERT INTO platform.domain_events")) {
+          return { rows: [{ eventId: "e9fccec2-eb4c-4c35-bfd3-02a748c2e952" }] };
+        }
+        if (text.includes("INSERT INTO platform.jobs") && text.includes("source_domain_event_id")) {
+          return { rows: [{ jobId: "f9fccec2-eb4c-4c35-bfd3-02a748c2e952", replay: false }] };
+        }
+        return { rows: [] };
+      },
+      async end() {},
+    };
+    const stripePaymentProvider = {
+      async createPaymentIntent(input: Record<string, unknown>) {
+        cardPaymentInput = input;
+        return {
+          paymentIntentId: "pi_card_952",
+          clientSecret: "pi_card_952_secret_test",
+          status: "requires_payment_method",
+          amountMinor: 60_000,
+          currency: "EUR",
+          propertyId,
+          bookingReference: "B-CARD952",
+          providerAccountRef: "acct_property_952",
+        };
+      },
+      async retrievePaymentIntent() {
+        return {
+          paymentIntentId: "pi_card_952",
+          clientSecret: "pi_card_952_secret_test",
+          status: retrievedIntentStatus,
+          amountMinor: 60_000,
+          currency: "EUR",
+          propertyId,
+          bookingReference: "B-CARD952",
+          providerAccountRef: "acct_property_952",
+        };
+      },
+      async cancelPaymentIntent() {
+        throw new Error("not used");
+      },
+    };
+    const adapter = createTargetBookingWebCheckoutAdapter({
+      connectionString: "postgres://unused",
+      inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+      stripePaymentProvider,
+      billingConfigReadPortFactory: () => ({
+        async getBillingConfig() {
+          return {
+            propertyId,
+            activePlan: "commission",
+            bookingEngineFeePercent: 5,
+            channelManagerFeePercent: 5,
+            affiliatePlatformFeePercent: 0,
+            updatedAt: "2026-09-01T09:00:00.000Z",
+          };
+        },
+      }),
+      pool: pool as never,
+    });
+
+    const createRequest = {
+      quoteId: "Q-CARD952",
+      roomTypeId: "room_deluxe",
+      checkIn: "2026-09-12",
+      checkOut: "2026-09-15",
+      adults: 2,
+      children: 0,
+      numberOfRooms: 1,
+      paymentMethod: "card",
+      expectedTotalAmount: 600,
+      totalAmount: 600,
+      balanceAmount: 600,
+      guestEmail: "guest@example.test",
+      phone: "+491701234567",
+    };
+    const createContext = {
+      operation: "booking-create" as const,
+      requestId: "req-card-create-952",
+      correlationId: "corr-card-952",
+      idempotencyKey: "idem-card-create-952",
+      fingerprint: "2".repeat(64),
+      occurredAt: new Date("2026-09-01T10:00:00.000Z"),
+    };
+    const created = await adapter.createBooking("hotel-alpenrose", createRequest, createContext);
+    expect(created).toMatchObject({
+      clientSecret: "pi_card_952_secret_test",
+      draftId: guestBookingId,
+      booking: { id: guestBookingId, status: "draft", paymentMethod: "card" },
+    });
+    expect(calls.some((call) => call.text.includes("INSERT INTO finance.payments"))).toBe(true);
+    expect(cardPaymentInput).toMatchObject({
+      propertyId,
+      amountMinor: 60_000,
+      applicationFeeAmountMinor: 3_000,
+      idempotencyKey: expect.stringMatching(new RegExp(`^booking-card:${propertyId}:`)),
+    });
+    const cardPropertyRead = calls.find((call) =>
+      call.text.includes("FROM hotel_catalog.property_slugs"),
+    );
+    expect(cardPropertyRead?.text).not.toContain("profile.capabilities ->> 'payAtProperty'");
+    expect(cardPropertyRead?.text).toContain(
+      "jsonb_array_length(profile.capabilities -> 'paymentMethods') > 0",
+    );
+    const paymentInsert = calls.find((call) => call.text.includes("INSERT INTO finance.payments"));
+    expect(paymentInsert?.values?.slice(4, 7)).toEqual(["600.00", "30.00", "570.00"]);
+    expect(calls.some((call) => call.text.includes("'pms-reservation-handoff'"))).toBe(false);
+
+    await expect(
+      adapter.createBooking("hotel-alpenrose", createRequest, createContext),
+    ).resolves.toMatchObject({
+      authorizationExpired: true,
+      authorizationComplete: false,
+      clientSecret: null,
+      draftId: guestBookingId,
+    });
+    expect(lifecycleStatus).toBe("draft");
+
+    retrievedIntentStatus = "succeeded";
+    await expect(
+      adapter.createBooking("hotel-alpenrose", createRequest, createContext),
+    ).resolves.toMatchObject({
+      authorizationComplete: true,
+      clientSecret: null,
+      booking: { id: guestBookingId, status: "confirmed", paymentStatus: "paid" },
+    });
+    expect(calls.some((call) => call.text.includes("guest_booking.payment_received"))).toBe(true);
+    expect(calls.some((call) => call.text.includes("'pms-reservation-handoff'"))).toBe(true);
   });
 
   it("reports actionable parity mismatches by fixture case and field", () => {

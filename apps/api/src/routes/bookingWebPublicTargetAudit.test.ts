@@ -266,7 +266,18 @@ function bookingCollisionHarness(propertyId: string) {
         return { rows: [{ id: "899e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
       }
       if (text.includes("FROM hotel_catalog.properties p")) {
-        return { rows: [{ phoneRequired: false, acceptedMethods: ["pay_at_property"] }] };
+        return {
+          rows: [
+            {
+              defaultCurrency: "EUR",
+              phoneRequired: false,
+              paymentsEnabled: true,
+              acceptedMethods: ["pay_at_property", "cash"],
+              depositPolicy: {},
+              providerReady: false,
+            },
+          ],
+        };
       }
       if (text.trimStart().startsWith("SELECT") && text.includes("FROM booking.quote_sessions")) {
         return {

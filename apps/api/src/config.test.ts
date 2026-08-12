@@ -450,10 +450,14 @@ describe("api config", () => {
     };
     const complete = loadConfig(stripeRuntimeEnv);
     expect(stripeSubscriptionRuntimeEnabled(complete)).toBe(true);
+    expect(
+      stripeSubscriptionRuntimeEnabled(
+        loadConfig({ ...stripeRuntimeEnv, STRIPE_FIXED_PLAN_PRICE_ID: undefined }),
+      ),
+    ).toBe(true);
 
     for (const env of [
       { ...stripeRuntimeEnv, STRIPE_SECRET_KEY: undefined },
-      { ...stripeRuntimeEnv, STRIPE_FIXED_PLAN_PRICE_ID: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_SECRET: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
       { ...stripeRuntimeEnv, BOOKING_CHECKOUT_COMMAND_SOURCE: "legacy_proxy" },
@@ -761,6 +765,57 @@ describe("api config", () => {
 
     expect(config.bookingCheckoutCommandSource).toBe("target");
     expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
+  });
+
+  it("requires booking email delivery for target checkout in production", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      }),
+    ).toThrow("requires RESEND_API_KEY and BOOKING_EMAIL_FROM");
+
+    expect(
+      loadConfig({
+        NODE_ENV: "production",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+        RESEND_API_KEY: "re_test",
+        BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
+        FINANCE_SOURCE: "target",
+        STRIPE_SECRET_KEY: "sk_test",
+        STRIPE_WEBHOOK_SECRET: "whsec_test",
+        STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
+      }).bookingEmailDelivery,
+    ).toEqual({
+      provider: "resend",
+      apiKey: "re_test",
+      from: "Vayada <bookings@example.test>",
+    });
+  });
+
+  it("requires the Stripe mutation and recovery runtime for target checkout in production", () => {
+    const complete = {
+      NODE_ENV: "production",
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      FINANCE_SOURCE: "target",
+      RESEND_API_KEY: "re_test",
+      BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
+      STRIPE_SECRET_KEY: "sk_test",
+      STRIPE_WEBHOOK_SECRET: "whsec_test",
+      STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
+    };
+    expect(loadConfig(complete).bookingCheckoutCommandSource).toBe("target");
+    for (const env of [
+      { ...complete, STRIPE_SECRET_KEY: undefined },
+      { ...complete, STRIPE_WEBHOOK_SECRET: undefined },
+      { ...complete, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
+      { ...complete, FINANCE_SOURCE: "legacy" },
+    ]) {
+      expect(() => loadConfig(env)).toThrow("requires STRIPE_SECRET_KEY");
+    }
   });
 
   it("requires target database config for target Booking Web checkout commands", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense, type ReactNode } from "react";
+import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
@@ -16,15 +16,24 @@ import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { useHotel, useRooms, useAddons, useSlug } from "@/contexts/HotelContext";
 import { formatDate } from "@/lib/utils";
 import { useCurrency } from "@/contexts/CurrencyContext";
-import { bookingService, type BookingQuote } from "@/services/api/booking";
+import {
+  bookingService,
+  type BookingCreateRequest,
+  type BookingQuote,
+} from "@/services/api/booking";
 import { ApiError } from "@/services/api/client";
 import { getFreeCancellationDays } from "@/lib/constants/booking";
 import { usePricing } from "@/lib/hooks/usePricing";
 import { useBookingSteps } from "@/lib/hooks/useBookingSteps";
 import {
+  clearPendingBookingCreate,
+  expireCheckoutIdempotencyKeyAt,
+  getCheckoutIdempotencyKey,
   GuestDetailsDraft,
   readGuestDetails,
+  readPendingBookingCreate,
   saveLastBooking,
+  savePendingBookingCreate,
   toConfirmationBooking,
 } from "@/lib/storage/bookingDraft";
 
@@ -103,7 +112,6 @@ function PaymentPageContent() {
   const [xenditPaymentsEnabled, setXenditPaymentsEnabled] = useState(false);
   const [bankTransferEnabled, setBankTransferEnabled] = useState(false);
   const [paypalEnabled, setPaypalEnabled] = useState(false);
-  const [paypalEmail, setPaypalEmail] = useState("");
   const [paypalPaymentWindowHours, setPaypalPaymentWindowHours] = useState(24);
   const [payAtHotelMethods, setPayAtHotelMethods] = useState<string[]>(["cash", "card"]);
   const [termsText, setTermsText] = useState("");
@@ -123,6 +131,15 @@ function PaymentPageContent() {
   // VAY-388: draft id returned for card payments — passed to
   // confirmAuthorization once Stripe authorizes the card.
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [pendingCreateRecovery, setPendingCreateRecovery] = useState<{
+    quote: BookingQuote;
+    quoteId: string;
+    paymentMethod: "card" | "pay_at_property" | "xendit" | "bank_transfer" | "paypal";
+    requestBody: BookingCreateRequest;
+    createIdempotencyKey: string;
+    draftId?: string;
+  } | null>(null);
+  const resumedCreateAttempt = useRef<string | null>(null);
 
   // Load guest details from the booking draft (set by /book on submit)
   useEffect(() => {
@@ -130,6 +147,21 @@ function PaymentPageContent() {
     if (draft) setGuestDetails(draft);
     else router.push("/book");
   }, [router]);
+
+  useEffect(() => {
+    if (!slug) return;
+    const recovery = readPendingBookingCreate<BookingQuote, BookingCreateRequest>(slug);
+    if (
+      !recovery ||
+      !["card", "pay_at_property", "xendit", "bank_transfer", "paypal"].includes(
+        recovery.paymentMethod,
+      )
+    )
+      return;
+    setPaymentMethod(recovery.paymentMethod as typeof paymentMethod);
+    setCheckoutQuote(recovery.quote);
+    setPendingCreateRecovery(recovery as typeof pendingCreateRecovery);
+  }, [slug]);
 
   // Per-rate allow-list from the room. When null, every hotel-enabled method is
   // offered (pre-Bug-2 behavior). When set, only methods in the list for the
@@ -165,8 +197,7 @@ function PaymentPageContent() {
         setCancellationPolicyText(settings.cancellationPolicyText || "");
         // Default to first available payment method, honoring the rate-level
         // allow-list if one is set on this room.
-        setPaypalEnabled(!!settings.paypalEnabled && !!settings.paypalEmail);
-        setPaypalEmail(settings.paypalEmail || "");
+        setPaypalEnabled(!!settings.paypalEnabled);
         setPaypalPaymentWindowHours(settings.paypalPaymentWindowHours || 24);
         const preference: ("card" | "pay_at_property" | "paypal" | "bank_transfer" | "xendit")[] = [
           "card",
@@ -178,7 +209,7 @@ function PaymentPageContent() {
         const hotelEnabled: Record<string, boolean> = {
           card: !!settings.onlineCardPayment,
           pay_at_property: !!settings.payAtPropertyEnabled && !depositRequired,
-          paypal: !!settings.paypalEnabled && !!settings.paypalEmail,
+          paypal: !!settings.paypalEnabled,
           bank_transfer: !!settings.bankTransfer,
           xendit: !!settings.xenditPaymentsEnabled,
         };
@@ -194,31 +225,58 @@ function PaymentPageContent() {
   }, [slug, rateType, room?.id]);
 
   useEffect(() => {
+    if (pendingCreateRecovery) {
+      setCheckoutQuote(pendingCreateRecovery.quote);
+      setQuoteLoading(false);
+      setQuoteError("");
+      return;
+    }
     if (!guestDetails || !room || !slug || !quoteReady) {
       setCheckoutQuote(null);
       return;
     }
 
     let cancelled = false;
+    const quoteIdentity = [
+      slug,
+      room.id,
+      checkIn,
+      checkOut,
+      adultsParam,
+      childrenParam,
+      roomsParam,
+      paymentMethod,
+      rateType,
+      selectedAddonIdsKey,
+      addonQuantitiesKey,
+      addonDatesKey,
+      promoCodeParam,
+    ].join("|");
+    const quoteIdempotencyKey = getCheckoutIdempotencyKey("quote", quoteIdentity);
     setQuoteLoading(true);
     setQuoteError("");
 
     bookingService
-      .quote(slug, {
-        ...guestDetails,
-        checkIn,
-        checkOut,
-        adults: adultsParam,
-        children: childrenParam,
-        numberOfRooms: roomsParam,
-        paymentMethod,
-        rateType,
-        addonIds: selectedAddonIds,
-        addonQuantities,
-        addonDates,
-        promoCode: promoCodeParam || undefined,
-      })
+      .quote(
+        slug,
+        {
+          ...guestDetails,
+          checkIn,
+          checkOut,
+          adults: adultsParam,
+          children: childrenParam,
+          numberOfRooms: roomsParam,
+          paymentMethod,
+          rateType,
+          addonIds: selectedAddonIds,
+          addonQuantities,
+          addonDates,
+          promoCode: promoCodeParam || undefined,
+        },
+        quoteIdempotencyKey,
+      )
       .then((quote) => {
+        expireCheckoutIdempotencyKeyAt("quote", quoteIdentity, quote.expiresAt);
         if (!cancelled) setCheckoutQuote(quote);
       })
       .catch((err: unknown) => {
@@ -252,6 +310,7 @@ function PaymentPageContent() {
     addonDatesKey,
     promoCodeParam,
     quoteReady,
+    pendingCreateRecovery,
   ]);
 
   const quotedCurrency = checkoutQuote?.currency || selectedCurrency;
@@ -264,13 +323,15 @@ function PaymentPageContent() {
   const quotedDepositAmount = checkoutQuote?.depositAmount ?? depositAmount;
   const quotedRemainingBalance = checkoutQuote?.balanceAmount ?? remainingBalance;
 
-  const handleSubmit = async () => {
-    if (!guestDetails || !room) return;
-    if (!agreedToTerms) {
+  const submitBooking = async (recovery = pendingCreateRecovery) => {
+    if (!guestDetails || (!recovery && !room)) return;
+    if (!recovery && !agreedToTerms) {
       setError(t("termsRequired"));
       return;
     }
-    if (!quoteReady || quoteLoading || !checkoutQuote) {
+    const quote = recovery?.quote ?? checkoutQuote;
+    const selectedPaymentMethod = recovery?.paymentMethod ?? paymentMethod;
+    if ((!recovery && (!quoteReady || quoteLoading)) || !quote) {
       setError(tc("pricingUpdating"));
       return;
     }
@@ -279,84 +340,148 @@ function PaymentPageContent() {
     setError("");
     setSoldOut(false);
 
+    const createIdempotencyKey =
+      recovery?.createIdempotencyKey ??
+      getCheckoutIdempotencyKey("create", quote.quoteId ?? "missing-quote");
+    const requestBody: BookingCreateRequest = recovery?.requestBody ?? {
+      ...guestDetails,
+      checkIn,
+      checkOut,
+      adults: adultsParam,
+      children: childrenParam,
+      numberOfRooms: roomsParam,
+      paymentMethod: selectedPaymentMethod,
+      rateType,
+      addonIds: selectedAddonIds,
+      addonQuantities,
+      addonDates,
+      promoCode: promoCodeParam || undefined,
+      quoteId: quote.quoteId,
+      expectedTotalAmount: quote.totalAmount,
+      balanceAmount: quote.balanceAmount,
+    };
+    const pendingAttempt = quote.quoteId
+      ? {
+          slug,
+          quote,
+          quoteId: quote.quoteId,
+          paymentMethod: selectedPaymentMethod,
+          requestBody,
+          createIdempotencyKey,
+          draftId: recovery?.draftId,
+        }
+      : null;
+    if (pendingAttempt) savePendingBookingCreate(pendingAttempt);
+
     try {
-      const result = await bookingService.create(slug, {
-        ...guestDetails,
-        checkIn,
-        checkOut,
-        adults: adultsParam,
-        children: childrenParam,
-        numberOfRooms: roomsParam,
-        paymentMethod,
-        rateType,
-        addonIds: selectedAddonIds,
-        addonQuantities,
-        addonDates,
-        promoCode: promoCodeParam || undefined,
-        quoteId: checkoutQuote.quoteId,
-        expectedTotalAmount: checkoutQuote.totalAmount,
-        balanceAmount: checkoutQuote.balanceAmount,
-      });
+      const result = await bookingService.create(slug, requestBody, createIdempotencyKey);
+
+      if (selectedPaymentMethod === "card" && result.authorizationExpired) {
+        clearPendingBookingCreate();
+        setPendingCreateRecovery(null);
+        resumedCreateAttempt.current = null;
+        setCheckoutQuote(null);
+        setSubmitting(false);
+        setError(t("paymentExpiredRetry"));
+        return;
+      }
 
       const booking = toConfirmationBooking(result.booking, {
         hotelName: hotel.name,
-        roomName: room.name,
-        guestFirstName: guestDetails.guestFirstName,
-        guestLastName: guestDetails.guestLastName,
-        guestEmail: guestDetails.guestEmail,
-        checkIn,
-        checkOut,
-        nights,
-        adults: adultsParam,
-        children: childrenParam,
-        numberOfRooms: roomsParam,
-        nightlyRate: quotedNightlyRate,
-        totalAmount: quotedGrandTotal,
-        depositRequired: quotedDepositRequired,
-        depositPercentage: quotedDepositPercentage,
-        depositAmount: quotedDepositAmount,
-        balanceAmount: quotedRemainingBalance,
-        addonTotal: checkoutQuote.addonTotal,
-        addonIds: selectedAddonIds,
-        addonNames: selectedAddonIds.map(
+        roomName: quote.roomName,
+        guestFirstName: requestBody.guestFirstName,
+        guestLastName: requestBody.guestLastName,
+        guestEmail: requestBody.guestEmail,
+        checkIn: requestBody.checkIn,
+        checkOut: requestBody.checkOut,
+        adults: requestBody.adults,
+        children: requestBody.children,
+        numberOfRooms: requestBody.numberOfRooms,
+        nightlyRate: quote.nightlyRate,
+        totalAmount: quote.totalAmount,
+        depositRequired: quote.depositRequired,
+        depositPercentage: quote.depositPercentage ?? 0,
+        depositAmount: quote.depositAmount,
+        balanceAmount: quote.balanceAmount,
+        addonTotal: quote.addonTotal,
+        addonIds: requestBody.addonIds,
+        addonNames: (requestBody.addonIds ?? []).map(
           (addonId) => addons.find((addon) => addon.id === addonId)?.name || addonId,
         ),
-        addonQuantities,
-        addonDates,
-        currency: quotedCurrency,
-        paymentMethod,
+        addonQuantities: requestBody.addonQuantities,
+        addonDates: requestBody.addonDates,
+        currency: quote.currency,
+        paymentMethod: selectedPaymentMethod,
       });
 
-      if (paymentMethod === "card" && result.clientSecret) {
+      if (selectedPaymentMethod === "card" && result.authorizationComplete) {
+        clearPendingBookingCreate();
+        saveLastBooking(booking);
+        router.push(`/booking/${booking.bookingReference}`);
+      } else if (selectedPaymentMethod === "card" && result.clientSecret) {
         // VAY-388: `booking` is a draft preview here, not a persisted row.
         // We hold the draftId so StripeConfirmStep can materialize the
         // booking after Stripe authorizes the card.
+        if (quote.quoteId) {
+          const cardAttempt = {
+            slug,
+            quote,
+            quoteId: quote.quoteId,
+            paymentMethod: selectedPaymentMethod,
+            requestBody,
+            createIdempotencyKey,
+            draftId: result.draftId || recovery?.draftId,
+          };
+          savePendingBookingCreate(cardAttempt);
+          setPendingCreateRecovery(cardAttempt);
+        }
         setPendingBooking(booking);
         setClientSecret(result.clientSecret);
         setDraftId(result.draftId || null);
-      } else if (paymentMethod === "xendit" && result.xenditInvoiceUrl) {
+      } else if (selectedPaymentMethod === "xendit" && result.xenditInvoiceUrl) {
         // Redirect to Xendit payment page (QRIS, e-wallets, VA)
+        clearPendingBookingCreate();
         saveLastBooking(booking);
         window.location.href = result.xenditInvoiceUrl;
       } else {
         // Pay at property — redirect to confirmation
+        clearPendingBookingCreate();
         saveLastBooking(booking);
         router.push(`/booking/${booking.bookingReference}`);
       }
     } catch (err: any) {
-      // VAY-402: never show the raw "API error: POST 422". Classify the
-      // failure and map it to friendly, localized copy.
       const blob =
         err instanceof ApiError
           ? `${err.message ?? ""} ${typeof err.detail === "string" ? err.detail : JSON.stringify(err.detail ?? "")}`.toLowerCase()
           : "";
+      const ambiguousReplayFailure = /idempoten|in[_ -]?progress|already (?:used|processing)/.test(
+        blob,
+      );
+      if (
+        err instanceof ApiError &&
+        err.status >= 400 &&
+        err.status < 500 &&
+        !ambiguousReplayFailure
+      ) {
+        clearPendingBookingCreate();
+        setPendingCreateRecovery(null);
+        resumedCreateAttempt.current = null;
+      } else if (pendingAttempt) {
+        setPendingCreateRecovery(pendingAttempt);
+        resumedCreateAttempt.current = createIdempotencyKey;
+      }
+      // VAY-402: never show the raw "API error: POST 422". Classify the
+      // failure and map it to friendly, localized copy.
       const availabilityGone =
         err instanceof ApiError &&
+        !ambiguousReplayFailure &&
         (err.status === 409 ||
           ([400, 409, 422].includes(err.status) &&
             /not enough rooms|no longer available|not available|sold ?out|availab/.test(blob)));
 
-      if (blob.includes("same-day bookings are no longer available")) {
+      if (ambiguousReplayFailure) {
+        setError(t("recoveryInProgress"));
+      } else if (blob.includes("same-day bookings are no longer available")) {
         setSoldOut(true);
         setError(t("errorSameDaySoldOut"));
       } else if (availabilityGone) {
@@ -382,51 +507,100 @@ function PaymentPageContent() {
     }
   };
 
-  if (!guestDetails || !room) {
+  const handleSubmit = () => {
+    void submitBooking();
+  };
+
+  useEffect(() => {
+    if (!pendingCreateRecovery || !guestDetails || resumedCreateAttempt.current) return;
+    resumedCreateAttempt.current = pendingCreateRecovery.createIdempotencyKey;
+    void submitBooking(pendingCreateRecovery);
+    // Recovery deliberately replays the original quote and create command,
+    // even after the quote's display expiry, so a committed booking or settled
+    // card payment cannot be duplicated by a new checkout attempt after reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCreateRecovery, guestDetails]);
+
+  if (!guestDetails || (!room && !pendingCreateRecovery)) {
     return <div className="min-h-screen bg-gray-50" />;
+  }
+
+  if (pendingCreateRecovery && !room && !clientSecret) {
+    if (submitting) return <div className="min-h-screen bg-gray-50" aria-busy="true" />;
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+        <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 text-center">
+          <p className="text-sm text-gray-700">{error || t("errorGeneric")}</p>
+          <button
+            type="button"
+            onClick={() => void submitBooking(pendingCreateRecovery)}
+            className="mt-4 rounded-full bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-primary-700"
+          >
+            {t("recoveryRetry")}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // If we have a client secret, render the Stripe payment form
   if (clientSecret && pendingBooking) {
+    const paymentRequest = pendingCreateRecovery?.requestBody;
+    const paymentQuote = pendingCreateRecovery?.quote ?? checkoutQuote;
+    const paymentCheckIn = paymentRequest?.checkIn ?? checkIn;
+    const paymentCheckOut = paymentRequest?.checkOut ?? checkOut;
+    const paymentNights = Math.max(
+      1,
+      Math.round(
+        (new Date(`${paymentCheckOut}T00:00:00.000Z`).getTime() -
+          new Date(`${paymentCheckIn}T00:00:00.000Z`).getTime()) /
+          86_400_000,
+      ),
+    );
+    const paymentRooms = paymentRequest?.numberOfRooms ?? roomsParam;
+    const paymentCurrency = paymentQuote?.currency ?? quotedCurrency;
+    const paymentNightlyRate = paymentQuote?.nightlyRate ?? quotedNightlyRate;
+    const paymentRoomTotal = paymentQuote?.roomTotal ?? quotedRoomTotal;
+    const paymentGrandTotal = paymentQuote?.totalAmount ?? quotedGrandTotal;
+    const paymentDepositRequired = paymentQuote?.depositRequired ?? quotedDepositRequired;
+    const paymentDepositPercentage = paymentQuote?.depositPercentage ?? quotedDepositPercentage;
+    const paymentDepositAmount = paymentQuote?.depositAmount ?? quotedDepositAmount;
+    const paymentBalance = paymentQuote?.balanceAmount ?? quotedRemainingBalance;
     return (
       <StripeProvider clientSecret={clientSecret}>
         <StripeConfirmStep
           hotel={hotel}
-          room={room}
-          checkIn={checkIn}
-          checkOut={checkOut}
-          nights={nights}
-          adults={adultsParam}
-          roomTotal={quotedRoomTotal}
-          roomRateBreakdown={
-            checkoutQuote
-              ? `${formatPrice(quotedNightlyRate * roomsParam, quotedCurrency)} × ${nights}`
-              : variableNightlyRates
-                ? roomRateBreakdown
-                : `${formatPrice(nightlyRate * roomsParam, selectedCurrency)} × ${nights}`
-          }
+          roomName={paymentQuote?.roomName ?? room?.name ?? ""}
+          checkIn={paymentCheckIn}
+          checkOut={paymentCheckOut}
+          nights={paymentNights}
+          adults={paymentRequest?.adults ?? adultsParam}
+          roomTotal={paymentRoomTotal}
+          roomRateBreakdown={`${formatPrice(paymentNightlyRate * paymentRooms, paymentCurrency)} × ${paymentNights}`}
           addons={addons}
-          selectedAddonIds={selectedAddonIds}
-          addonQuantities={addonQuantities}
-          addonDates={addonDates}
-          grandTotal={quotedGrandTotal}
+          selectedAddonIds={paymentRequest?.addonIds ?? selectedAddonIds}
+          addonQuantities={paymentRequest?.addonQuantities ?? addonQuantities}
+          addonDates={paymentRequest?.addonDates ?? addonDates}
+          grandTotal={paymentGrandTotal}
           booking={pendingBooking}
           draftId={draftId}
           slug={slug}
           formatPrice={formatPrice}
           formatDate={formatDate}
           locale={locale}
-          roomsParam={roomsParam}
-          selectedCurrency={quotedCurrency}
+          roomsParam={paymentRooms}
+          selectedCurrency={paymentCurrency}
           convertAndRound={convertAndRound}
-          depositRequired={quotedDepositRequired}
-          depositPercentage={quotedDepositPercentage || 0}
-          depositAmount={quotedDepositAmount}
-          remainingBalance={quotedRemainingBalance}
+          depositRequired={paymentDepositRequired}
+          depositPercentage={paymentDepositPercentage || 0}
+          depositAmount={paymentDepositAmount}
+          remainingBalance={paymentBalance}
         />
       </StripeProvider>
     );
   }
+
+  if (!room) return <div className="min-h-screen bg-gray-50" />;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -545,7 +719,7 @@ function PaymentPageContent() {
                         </div>
                         <p className="text-xs text-gray-500 ml-7">
                           {t("cardAuthNote") ||
-                            "Secure payment via Stripe. Your card will be authorized when we confirm."}
+                            "Secure payment via Stripe. Your card will be charged now."}
                         </p>
                       </div>
                       <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -774,7 +948,7 @@ function PaymentPageContent() {
                     {quotedDepositRequired
                       ? `You will be charged ${formatPrice(quotedDepositAmount, quotedCurrency)} now. The remaining ${formatPrice(quotedRemainingBalance, quotedCurrency)} is due at the property.`
                       : t("cardAuthExplanation") ||
-                        "Your card will be authorized but not charged until we accept your booking. The hold will be released if the booking is declined or expires."}
+                        `Your card will be charged ${formatPrice(quotedGrandTotal, quotedCurrency)} now to confirm the booking.`}
                   </div>
                   <div className="flex items-center gap-2 p-3 bg-accent rounded-xl text-sm text-gray-600">
                     <svg
@@ -816,22 +990,6 @@ function PaymentPageContent() {
                 <div className="space-y-3">
                   <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
                     {t("paypalInstructions", { hours: paypalPaymentWindowHours })}
-                  </div>
-                  <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
-                    <p className="text-sm text-gray-700">
-                      <strong>{t("paypalEmailLabel")}:</strong> {paypalEmail}
-                    </p>
-                    <p className="text-sm text-gray-700">
-                      <strong>{t("amountLabel")}:</strong>{" "}
-                      {formatPrice(quotedGrandTotal, quotedCurrency)}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => navigator.clipboard?.writeText(paypalEmail)}
-                      className="text-xs font-semibold text-primary-600 hover:text-primary-700"
-                    >
-                      {t("copyEmail")}
-                    </button>
                   </div>
                 </div>
               ) : (

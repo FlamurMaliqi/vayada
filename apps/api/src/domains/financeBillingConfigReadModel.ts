@@ -36,12 +36,25 @@ export function createTargetFinanceBillingConfigReadPort(config: {
              commission.updated_at
            ) AS "updatedAt"
          FROM hotel_catalog.properties property
-         LEFT JOIN LATERAL (
+         JOIN LATERAL (
            SELECT plan_key, updated_at
            FROM finance.billing_entitlements
            WHERE property_id = property.id
              AND product = 'booking'
              AND entitlement_key = 'direct-booking-finance'
+             AND billing_status IN ('trialing', 'active')
+             AND (starts_at IS NULL OR starts_at <= now())
+             AND (expires_at IS NULL OR expires_at > now())
+             AND (
+               (
+                 plan_key = 'commission'
+                 AND NULLIF(entitlement_metadata ->> 'planSelectedAt', '') IS NOT NULL
+               )
+               OR (
+                 plan_key = 'fixed'
+                 AND provider_subscription_status IN ('trialing', 'active')
+               )
+             )
            LIMIT 1
            FOR SHARE
          ) entitlement ON TRUE
@@ -50,6 +63,10 @@ export function createTargetFinanceBillingConfigReadPort(config: {
            FROM finance.commission_rules
            WHERE property_id = property.id
              AND product = 'booking'
+             AND source_system = 'finance'
+             AND source_rule_id = 'onboarding-booking:' || property.id::text
+             AND commission_type = 'percentage'
+             AND percentage_rate = 5
              AND status = 'active'
              AND starts_at <= now()
              AND (ends_at IS NULL OR ends_at > now())

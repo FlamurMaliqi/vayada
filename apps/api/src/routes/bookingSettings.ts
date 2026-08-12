@@ -2863,6 +2863,20 @@ export async function registerBookingSettingsRoutes(
         parseBody: parseLocalizationSettingsWriteBody,
         write: (hotelId, settings) =>
           writeRepository.updateLocalizationSettingsByHotelId(hotelId, settings),
+        afterWrite: publicBookabilityPublisher
+          ? async (hotelId) => {
+              const propertyLink = await repository.findPropertyLinkByHotelId?.(hotelId);
+              if (!propertyLink) {
+                throw new Error("Booking hotel canonical property link is unavailable.");
+              }
+              const publication = await publicBookabilityPublisher.publish({
+                propertyId: propertyLink.propertyId,
+              });
+              if (!publication) {
+                throw new Error("Canonical property was not found for publication.");
+              }
+            }
+          : undefined,
         toResponse: toLocalizationSettingsResponse,
       }),
   );
@@ -2998,7 +3012,17 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
     });
   }
 
-  await input.afterWrite?.(hotelId, parsed.value, stored, input.request);
+  try {
+    await input.afterWrite?.(hotelId, parsed.value, stored, input.request);
+  } catch (error) {
+    input.request.log.error({ err: error, hotelId }, "Booking settings projection failed");
+    return sendBookingSettingsWriteError(input.reply, {
+      statusCode: 500,
+      code: "write_model_unavailable",
+      category: "write_model",
+      message: "Booking settings were saved, but the public projection could not be refreshed.",
+    });
+  }
 
   return input.toResponse(stored);
 }

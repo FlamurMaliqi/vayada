@@ -81,6 +81,12 @@ export type StripeSubscriptionConfig = {
   bookingAdminBaseUrl: string;
 };
 
+export type BookingEmailDeliveryConfig = {
+  provider: "resend";
+  apiKey: string;
+  from: string;
+};
+
 export function stripeSubscriptionRuntimeEnabled(
   config: Pick<
     ApiConfig,
@@ -91,7 +97,6 @@ export function stripeSubscriptionRuntimeEnabled(
     config.financeSource === "target" &&
     config.bookingCheckoutCommandSource === "target" &&
     Boolean(config.stripeSubscriptions.secretKey) &&
-    Boolean(config.stripeSubscriptions.fixedPlanPriceId) &&
     Boolean(config.providerWebhooks.stripeSecret) &&
     config.providerWebhooks.stripeMode === "mutating"
   );
@@ -160,6 +165,7 @@ export type ApiConfig = {
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
   stripeSubscriptions: StripeSubscriptionConfig;
+  bookingEmailDelivery?: BookingEmailDeliveryConfig;
   xenditSecretKey?: string;
 };
 
@@ -572,6 +578,16 @@ function loadCreatorPlatformConnectionsConfig(
   };
 }
 
+function loadBookingEmailDeliveryConfig(
+  env: NodeJS.ProcessEnv,
+): BookingEmailDeliveryConfig | undefined {
+  const config = readCompleteConfigGroup(env, "booking email delivery", {
+    apiKey: "RESEND_API_KEY",
+    from: "BOOKING_EMAIL_FROM",
+  });
+  return config ? { provider: "resend", ...config } : undefined;
+}
+
 function readCompleteConfigGroup<T extends Record<string, string>>(
   env: NodeJS.ProcessEnv,
   label: string,
@@ -683,6 +699,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
   const creatorPlatformConnections = loadCreatorPlatformConnectionsConfig(env);
+  const bookingEmailDelivery = loadBookingEmailDeliveryConfig(env);
   const platformMediaServing = loadPlatformMediaServingConfig(env, {
     incomplete: targetDatabaseUrl && auth ? "error" : "disabled",
   });
@@ -743,6 +760,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (creatorPlatformConnections && (!targetDatabaseUrl || !auth)) {
     throw new Error(
       "Creator platform connections require TARGET_DATABASE_URL and complete auth config",
+    );
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    bookingCheckoutCommandSource === "target" &&
+    !bookingEmailDelivery
+  ) {
+    throw new Error(
+      "BOOKING_CHECKOUT_COMMAND_SOURCE=target requires RESEND_API_KEY and BOOKING_EMAIL_FROM in production",
+    );
+  }
+  const prospectiveConfig = {
+    financeSource,
+    bookingCheckoutCommandSource,
+    stripeSubscriptions: loadStripeSubscriptionConfig(env),
+    providerWebhooks: loadProviderWebhookConfig(env),
+  };
+  if (
+    env.NODE_ENV === "production" &&
+    bookingCheckoutCommandSource === "target" &&
+    !stripeSubscriptionRuntimeEnabled(prospectiveConfig)
+  ) {
+    throw new Error(
+      "BOOKING_CHECKOUT_COMMAND_SOURCE=target requires STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_WEBHOOK_INTAKE_MODE=mutating, and FINANCE_SOURCE=target in production",
     );
   }
 
@@ -814,8 +855,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       30_000,
     ),
     creatorPlatformConnections,
-    providerWebhooks: loadProviderWebhookConfig(env),
-    stripeSubscriptions: loadStripeSubscriptionConfig(env),
+    providerWebhooks: prospectiveConfig.providerWebhooks,
+    stripeSubscriptions: prospectiveConfig.stripeSubscriptions,
+    bookingEmailDelivery,
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };
 }

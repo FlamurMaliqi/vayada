@@ -28,6 +28,28 @@ export async function registerFinanceSubscriptionRoutes(
   );
 
   app.post<{ Params: PropertyParams; Body: CommandBody }>(
+    "/finance/properties/:propertyId/select-commission",
+    async (request, reply) => {
+      const { propertyId } = request.params;
+      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      const command = subscriptionCommand(request, propertyId, "Select Commission Plan");
+      if (!command) {
+        return reply.code(400).send({
+          code: "invalid_command",
+          message: "commandId and idempotencyKey are required.",
+        });
+      }
+      const result = await options.service.selectCommissionPlan(command);
+      if (!result.ok) return reply.code(result.statusCode).send(result);
+      return reply.code(result.status === "created" ? 201 : 200).send({
+        contractVersion: "finance-subscriptions.v1",
+        propertyId,
+        planStatus: toFinancePlanStatusResponse(result.value.planStatus).planStatus,
+      });
+    },
+  );
+
+  app.post<{ Params: PropertyParams; Body: CommandBody }>(
     "/finance/properties/:propertyId/fixed-plan/checkout",
     async (request, reply) => {
       const { propertyId } = request.params;

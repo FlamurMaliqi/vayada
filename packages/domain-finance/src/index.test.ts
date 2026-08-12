@@ -506,6 +506,23 @@ describe("finance route projections", () => {
 
     expect(projection.paymentMethods).toEqual(["pay_at_property", "bank_transfer"]);
   });
+
+  it("does not advertise manual methods without guest payment instructions", () => {
+    const policy = cancellationPolicyFromRefundPolicy(settings.refundPolicy, settings.updatedAt);
+    const projection = toPublicPaymentCapabilityProjection(
+      {
+        ...settings,
+        acceptedMethods: ["pay_at_property", "bank_transfer", "paypal"],
+        depositPolicy: {
+          bankTransferInstructions: " ",
+          paypalEmail: "",
+        },
+      },
+      policy,
+    );
+
+    expect(projection.paymentMethods).toEqual(["pay_at_property"]);
+  });
 });
 
 describe("BillingConfigReadPort", () => {

@@ -10,6 +10,7 @@ import {
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import type {
   PmsAssignmentCommand,
+  PmsBookingLifecycleCommand,
   PmsCheckInCommand,
   PmsCheckOutCommand,
   PmsCheckOutRecord,
@@ -242,6 +243,25 @@ function baseNoShowCommand(overrides: Partial<PmsNoShowCommand> = {}): PmsNoShow
   };
 }
 
+function baseBookingLifecycleCommand(
+  overrides: Partial<PmsBookingLifecycleCommand> = {},
+): PmsBookingLifecycleCommand {
+  return {
+    propertyId,
+    guestBookingId,
+    commandId: "cmd-booking-accept-001",
+    idempotencyKey: "pms-booking-accept-001",
+    audit: {
+      actor: { kind: "user", userId, organizationId },
+      requestId: "req-booking-accept-001",
+      correlationId: "corr-booking-accept-001",
+      reason: "Accept booking",
+      requestedAt: "2026-08-15T15:45:00.000Z",
+    },
+    ...overrides,
+  };
+}
+
 function baseCheckOutCommand(overrides: Partial<PmsCheckOutCommand> = {}): PmsCheckOutCommand {
   return {
     propertyId,
@@ -435,6 +455,284 @@ function successfulCheckoutHandler(
 }
 
 describe("target PMS operations command repository", () => {
+  it("sends bank details only inside the host acceptance transaction", async () => {
+    const { client, repository } = createRepository((text) => {
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) {
+        return ok([{ id: "idem" }], 1);
+      }
+      if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
+        return ok([
+          {
+            guestBookingId,
+            propertyId,
+            publicReference: "BK-BANK-001",
+            lifecycleStatus: "pending_payment",
+            paymentStatus: "unpaid",
+            paymentMethod: "bank_transfer",
+            checkIn: "2026-08-20",
+            checkOut: "2026-08-23",
+            totalAmount: "600.00",
+            balanceAmount: "600.00",
+            currency: "EUR",
+            guestEmail: "guest@example.test",
+            guestName: "Alex Guest",
+            propertyName: "Hotel Alpenrose",
+            acceptedMethods: [],
+            depositPolicy: {},
+            paymentInstructions: {
+              bankTransferDetails: "IBAN: DE89370400440532013000",
+            },
+          },
+        ]);
+      }
+      if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
+      if (text.includes("INSERT INTO platform.domain_events")) {
+        return ok([{ eventId: "f6855900-0000-0000-0000-000000000001" }], 1);
+      }
+      if (text.includes("INSERT INTO platform.jobs")) {
+        return ok([{ jobId: "f6855900-0000-0000-0000-000000000002", replay: false }], 1);
+      }
+      if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
+      if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
+      throw new Error(`Unhandled SQL: ${text}`);
+    });
+
+    const result = await repository.acceptBooking(baseBookingLifecycleCommand());
+
+    expect(result.ok).toBe(true);
+    const acceptanceIndex = client.calls.findIndex(({ text }) =>
+      text.includes("WITH booking_update AS"),
+    );
+    const emailIndex = client.calls.findIndex(({ text }) =>
+      text.includes("INSERT INTO platform.jobs"),
+    );
+    expect(acceptanceIndex).toBeGreaterThan(-1);
+    expect(emailIndex).toBeGreaterThan(acceptanceIndex);
+    expect(requiredCall(client, "WITH booking_update AS").values[3]).toBe("property_user");
+    expect(requiredCall(client, "WITH booking_update AS").text).toContain(
+      "acceptedPaymentDeadlineAt",
+    );
+    expect(requiredCall(client, "WITH booking_update AS").values[6]).toBe(
+      "2026-08-16T15:45:00.000Z",
+    );
+    const email = requiredCall(client, "INSERT INTO platform.jobs");
+    expect(JSON.parse(String(email.values[8]))).toMatchObject({
+      bookingReference: "BK-BANK-001",
+      bankTransferDetails: "IBAN: DE89370400440532013000",
+      paymentDeadlineAt: "2026-08-16T15:45:00.000Z",
+    });
+  });
+
+  it("rejects bank acceptance after the canonical pending-payment deadline", async () => {
+    const { client, repository } = createRepository((text) => {
+      if (text === "BEGIN" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+      if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
+        return ok([
+          {
+            guestBookingId,
+            propertyId,
+            publicReference: "BK-BANK-EXPIRED",
+            lifecycleStatus: "pending_payment",
+            paymentStatus: "unpaid",
+            paymentMethod: "bank_transfer",
+            pendingExpiresAt: "2026-08-15T15:44:59.000Z",
+            acceptedPaymentDeadlineAt: null,
+            paymentInstructions: { bankTransferDetails: "IBAN: DE89370400440532013000" },
+          },
+        ]);
+      }
+      throw new Error(`Unhandled SQL: ${text}`);
+    });
+
+    await expect(repository.acceptBooking(baseBookingLifecycleCommand())).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_status_transition",
+    });
+    expect(client.calls.some(({ text }) => text.includes("WITH booking_update AS"))).toBe(false);
+    expect(client.calls.some(({ text }) => text.includes("INSERT INTO platform.jobs"))).toBe(false);
+  });
+
+  it.each([
+    {
+      method: "paypal",
+      lifecycleStatus: "pending_payment",
+      pendingExpiresAt: "2026-08-15T15:45:00.000Z",
+      acceptedPaymentDeadlineAt: null,
+    },
+    {
+      method: "bank_transfer",
+      lifecycleStatus: "confirmed",
+      pendingExpiresAt: null,
+      acceptedPaymentDeadlineAt: "2026-08-15T15:45:00.000Z",
+    },
+  ])("rejects expired $method settlement before the Finance ledger write", async (row) => {
+    const { client, repository } = createRepository((text) => {
+      if (text === "BEGIN" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+      if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
+        return ok([
+          {
+            ...row,
+            guestBookingId,
+            propertyId,
+            publicReference: "BK-MANUAL-EXPIRED",
+            paymentStatus: "unpaid",
+          },
+        ]);
+      }
+      throw new Error(`Unhandled SQL: ${text}`);
+    });
+
+    await expect(repository.markBookingPaid(baseBookingLifecycleCommand())).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_status_transition",
+    });
+    expect(client.calls.some(({ text }) => text.includes("INSERT INTO finance.payments"))).toBe(
+      false,
+    );
+  });
+
+  it.each([
+    { method: "paypal", lifecycleStatus: "pending_payment" },
+    { method: "pay_at_property", lifecycleStatus: "confirmed" },
+  ] as const)(
+    "records commission-aware $method settlement",
+    async ({ method, lifecycleStatus }) => {
+      const { client, repository } = createRepository((text, values) => {
+        if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+        if (text.includes("FROM platform.idempotency_keys")) return ok();
+        if (
+          text.includes("INSERT INTO platform.idempotency_keys") &&
+          text.includes("manual_payment_record")
+        ) {
+          return ok([{ status: "in_progress", requestFingerprintHash: values[1] as string }], 1);
+        }
+        if (text.includes("INSERT INTO platform.idempotency_keys")) {
+          return ok([{ id: "idem" }], 1);
+        }
+        if (
+          text.includes("FROM booking.guest_bookings booking") &&
+          text.includes("FOR UPDATE") &&
+          !text.includes("booking.commission_terms_snapshot")
+        ) {
+          return ok([
+            {
+              guestBookingId,
+              propertyId,
+              publicReference: "BK-PAYPAL-001",
+              invoiceId: "INV-PAYPAL-001",
+              lifecycleStatus,
+              paymentStatus: "unpaid",
+              paymentMethod: method,
+              checkIn: "2026-08-20",
+              checkOut: "2026-08-23",
+              totalAmount: "600.00",
+              balanceAmount: "600.00",
+              currency: "EUR",
+              guestEmail: "guest@example.test",
+              guestName: "Alex Guest",
+              propertyName: "Hotel Alpenrose",
+              acceptedMethods: [method],
+              depositPolicy: { paypalEmail: "host@example.test" },
+            },
+          ]);
+        }
+        if (text.includes("booking.commission_terms_snapshot")) {
+          return ok([
+            {
+              guestBookingId,
+              currency: "EUR",
+              balanceDue: "600.00",
+              lifecycleStatus,
+              paymentStatus: "unpaid",
+              billingPlanSnapshot: "commission",
+              commissionTermsSnapshot: { bookingEngineFeePercent: 5 },
+            },
+          ]);
+        }
+        if (text.includes("pg_advisory_xact_lock")) return { rows: [], rowCount: 1 };
+        if (text.includes("FROM finance.billing_entitlements")) {
+          return ok([{ plan: "commission" }]);
+        }
+        if (text.includes("INSERT INTO finance.payments")) {
+          return ok([{ paymentId: "f6855900-0000-0000-0000-000000000005", replay: false }], 1);
+        }
+        if (
+          text.includes('SELECT id::text AS "paymentId"') &&
+          text.includes("FROM finance.payments")
+        ) {
+          return ok();
+        }
+        if (text.includes("INSERT INTO platform.outbox_events")) {
+          return ok([
+            {
+              destination: "booking.projection-refresh",
+              outboxEventId: "f6855900-0000-0000-0000-000000000006",
+            },
+            {
+              destination: "pms.projection-refresh",
+              outboxEventId: "f6855900-0000-0000-0000-000000000007",
+            },
+          ]);
+        }
+        if (text.includes("FROM finance.payments payment") && text.includes("recordedAt")) {
+          return ok([
+            {
+              paymentId: "f6855900-0000-0000-0000-000000000005",
+              method,
+              amount: "600.00",
+              currency: "EUR",
+              reference: `PMS ${method} confirmation`,
+              status: "paid",
+              recordedAt: "2026-08-01T10:00:00.000Z",
+            },
+          ]);
+        }
+        if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
+        if (text.includes("INSERT INTO platform.domain_events")) {
+          return ok([{ eventId: "f6855900-0000-0000-0000-000000000003" }], 1);
+        }
+        if (text.includes("INSERT INTO platform.jobs")) {
+          return ok([{ jobId: "f6855900-0000-0000-0000-000000000004", replay: false }], 1);
+        }
+        if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
+        if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
+        throw new Error(`Unhandled SQL: ${text}`);
+      });
+
+      const result = await repository.markBookingPaid(
+        baseBookingLifecycleCommand({
+          commandId: "cmd-booking-paid-001",
+          idempotencyKey: "pms-booking-paid-001",
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      const mutation = requiredCall(client, "WITH booking_update AS");
+      expect(mutation.text).toContain("payment_status = 'paid'");
+      expect(mutation.text).toContain("balance_amount = 0");
+      expect(mutation.values[4]).toBe("property_user");
+      const financePayment = requiredCall(client, "INSERT INTO finance.payments");
+      expect(financePayment.values).toContain(method);
+      expect(financePayment.values).toContain("600.00");
+      expect(financePayment.values).toContain("30.00");
+      expect(financePayment.values).toContain("570.00");
+      expect(client.calls.indexOf(financePayment)).toBeLessThan(client.calls.indexOf(mutation));
+      expect(
+        client.calls.some(
+          (call) =>
+            call.text.includes("INSERT INTO platform.jobs") &&
+            call.values.includes("email.booking-final-confirmation"),
+        ),
+      ).toBe(true);
+    },
+  );
+
   it.each(["assign", "move"] as const)(
     "serializes %s before accepting a verified operational room",
     async (action) => {

@@ -147,6 +147,8 @@ export type PmsOperationalReservation = {
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsMoney; balanceAmount: PmsMoney };
+  payment?: { method: string | null; status: string };
+  hostResponseDeadlineAt?: PmsUtcDateTime | null;
 };
 
 export type PmsReservationListFilters = {
@@ -518,6 +520,9 @@ type TargetPmsOperationalReservationRow = {
   totalAmount: string | number;
   balanceAmount: string | number;
   currency: string;
+  paymentMethod: string | null;
+  paymentStatus: string;
+  hostResponseDeadlineAt: string | null;
 };
 
 const PMS_OPERATIONAL_RESERVATION_STATUS_SQL = `CASE
@@ -574,6 +579,13 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   booking.total_amount AS "totalAmount",
   booking.balance_amount AS "balanceAmount",
   booking.currency,
+  booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
+  booking.payment_status AS "paymentStatus",
+  COALESCE(
+    booking.booking_metadata ->> 'acceptedPaymentDeadlineAt',
+    booking.booking_metadata ->> 'hostResponseDeadlineAt',
+    booking.booking_metadata ->> 'pendingExpiresAt'
+  ) AS "hostResponseDeadlineAt",
   COALESCE(assignments.items, '[]'::jsonb) AS "assignments",
   checkin.completed_at AS "checkinCompletedAt",
   COALESCE(checkin.pending_flags, '[]'::jsonb) AS "checkinPendingFlags",
@@ -909,6 +921,8 @@ function toPmsOperationalReservation(
         currency: row.currency,
       },
     },
+    payment: { method: row.paymentMethod, status: row.paymentStatus },
+    hostResponseDeadlineAt: toIsoDateTimeOrNull(row.hostResponseDeadlineAt),
   };
 }
 

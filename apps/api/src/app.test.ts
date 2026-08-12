@@ -107,6 +107,7 @@ import {
 import type {
   PmsAssignmentCommand,
   PmsAssignmentCommandResult,
+  PmsBookingLifecycleCommand,
   PmsCheckInCommand,
   PmsNoShowCommand,
   PmsOperationalCommandResult,
@@ -1383,6 +1384,7 @@ function createPmsOperationsCommandRepository(
     | PmsOperationalStatusCommand
     | PmsCheckInCommand
     | PmsNoShowCommand
+    | PmsBookingLifecycleCommand
     | PmsCheckOutCommand
   >;
   checkOutCommands: PmsCheckOutCommand[];
@@ -1402,6 +1404,7 @@ function createPmsOperationsCommandRepository(
     | PmsOperationalStatusCommand
     | PmsCheckInCommand
     | PmsNoShowCommand
+    | PmsBookingLifecycleCommand
     | PmsCheckOutCommand
   > = [];
   const checkOutCommands: PmsCheckOutCommand[] = [];
@@ -1942,6 +1945,47 @@ function createPmsOperationsCommandRepository(
         auditEvents,
         reservationForNoShowCommand,
       );
+    },
+    async acceptBooking(command) {
+      commands.push(command);
+      return bookingLifecycleTestResult(command, "confirmed", "unpaid");
+    },
+    async markBookingPaid(command) {
+      commands.push(command);
+      return bookingLifecycleTestResult(command, "confirmed", "paid");
+    },
+  };
+}
+
+function bookingLifecycleTestResult(
+  command: PmsBookingLifecycleCommand,
+  status: string,
+  paymentStatus: string,
+): PmsOperationalCommandResult {
+  const reservation = pmsReservations.find(
+    (candidate) => candidate.guestBookingId === command.guestBookingId,
+  );
+  if (!reservation) {
+    return {
+      ok: false,
+      statusCode: 404,
+      code: "reservation_not_found",
+      message: "PMS reservation not found.",
+    };
+  }
+  return {
+    ok: true,
+    reservation: {
+      ...structuredClone(reservation),
+      status,
+      payment: { method: "bank_transfer", status: paymentStatus },
+    },
+    commandMeta: {
+      contractVersion: "pms-operations.v1",
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+      acceptedAt: "2026-08-14T17:10:00.000Z",
+      sideEffects: ["guest_notification", "audit_event"],
     },
   };
 }
@@ -4186,6 +4230,41 @@ describe("vayada-api", () => {
       expect(response.body).toEqual(writeCase.expected);
     });
   }
+
+  it("refreshes public Distribution after the canonical booking currency changes", async () => {
+    const published: string[] = [];
+    app = buildAuthenticatedApp({
+      publicBookabilityPublisher: {
+        async publish({ propertyId }) {
+          published.push(propertyId);
+          return {
+            propertyId,
+            canonicalSlug: "hotel-alpenrose",
+            canonicalUrl: "https://hotel-alpenrose.booking.localhost/en",
+            bookingBaseUrl: "https://hotel-alpenrose.booking.localhost",
+            profileStatus: "public",
+            freshnessStatus: "fresh",
+            missingReadiness: [],
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/localization",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        defaultCurrency: "USD",
+        defaultLanguage: "en",
+        supportedCurrencies: ["USD"],
+        supportedLanguages: ["en"],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(published).toEqual([pmsPropertyId]);
+  });
 
   it("preserves guest-form phoneRequired when older clients save five-field payloads", async () => {
     let written: unknown;
@@ -12004,6 +12083,39 @@ describe("vayada-api", () => {
       reason: "guest did not arrive",
     });
     expect(commandRepository.auditEvents).toHaveLength(3);
+  });
+
+  it("accepts manual-payment bookings and marks received payments through target PMS commands", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const baseUrl = `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}`;
+
+    for (const action of ["accept", "mark-paid"] as const) {
+      const response = await injectJson(app, {
+        method: "POST",
+        url: `${baseUrl}/${action}`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          commandId: `cmd-${action}-001`,
+          idempotencyKey: `idem-${action}-001`,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toMatchObject({
+        contractVersion: "pms-operations.v1",
+        propertyId: pmsPropertyId,
+        commandMeta: { sideEffects: ["guest_notification", "audit_event"] },
+      });
+    }
+
+    expect(commandRepository.commands.slice(-2)).toMatchObject([
+      { commandId: "cmd-accept-001", audit: { actor: { kind: "user" } } },
+      { commandId: "cmd-mark-paid-001", audit: { actor: { kind: "user" } } },
+    ]);
   });
 
   it("rejects assignment-scoped PMS no-show commands", async () => {

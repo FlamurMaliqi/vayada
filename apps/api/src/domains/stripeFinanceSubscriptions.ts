@@ -23,6 +23,7 @@ export function createStripeFinanceSubscriptionProvider(config: {
   const endpoint = config.endpoint ?? "https://api.stripe.com/v1";
   const fetchImpl = config.fetch ?? globalThis.fetch;
   let fixedPriceId = config.fixedPlanPriceId;
+  let fixedPriceVerified = false;
 
   const request = async (
     method: "GET" | "POST",
@@ -51,8 +52,20 @@ export function createStripeFinanceSubscriptionProvider(config: {
     return payload;
   };
 
+  const verifyFixedPrice = async (priceId: string): Promise<void> => {
+    const price = await request("GET", `/prices/${encodeURIComponent(priceId)}`, [
+      ["expand[]", "tiers"],
+    ]);
+    assertCanonicalFixedPrice(price, priceId);
+  };
+
   const ensureFixedPrice = async (): Promise<string> => {
-    if (fixedPriceId) return fixedPriceId;
+    if (fixedPriceId && fixedPriceVerified) return fixedPriceId;
+    if (fixedPriceId) {
+      await verifyFixedPrice(fixedPriceId);
+      fixedPriceVerified = true;
+      return fixedPriceId;
+    }
     const existing = await request("GET", "/prices", [
       ["lookup_keys[]", FIXED_PRICE_LOOKUP_KEY],
       ["active", "true"],
@@ -61,7 +74,9 @@ export function createStripeFinanceSubscriptionProvider(config: {
     const existingPrice = objectArray(existing["data"])[0];
     const existingId = text(existingPrice?.["id"]);
     if (existingId) {
+      await verifyFixedPrice(existingId);
       fixedPriceId = existingId;
+      fixedPriceVerified = true;
       return existingId;
     }
 
@@ -71,7 +86,6 @@ export function createStripeFinanceSubscriptionProvider(config: {
       [
         ["currency", FINANCE_FIXED_PLAN_CURRENCY.toLowerCase()],
         ["product_data[name]", "Vayada Fixed"],
-        ["product_data[description]", "Vayada Fixed Plan billed every 30 days"],
         ["recurring[interval]", "day"],
         ["recurring[interval_count]", String(FINANCE_FIXED_PLAN_INTERVAL_DAYS)],
         ["billing_scheme", "tiered"],
@@ -87,7 +101,9 @@ export function createStripeFinanceSubscriptionProvider(config: {
     );
     const createdId = text(created["id"]);
     if (!createdId) throw new Error("Stripe did not return a fixed-plan Price ID.");
+    await verifyFixedPrice(createdId);
     fixedPriceId = createdId;
+    fixedPriceVerified = true;
     return createdId;
   };
 
@@ -119,6 +135,15 @@ export function createStripeFinanceSubscriptionProvider(config: {
       const checkoutSessionId = requiredText(session, "id");
       const checkoutUrl = requiredText(session, "url");
       return { checkoutSessionId, checkoutUrl };
+    },
+
+    async expireFixedPlanCheckout(input) {
+      await request(
+        "POST",
+        `/checkout/sessions/${encodeURIComponent(input.checkoutSessionId)}/expire`,
+        [],
+        input.idempotencyKey,
+      );
     },
 
     async createCustomerPortal(input) {
@@ -171,6 +196,31 @@ export function createStripeFinanceSubscriptionProvider(config: {
       return subscriptionSnapshot(subscription, priceId);
     },
   };
+}
+
+function assertCanonicalFixedPrice(price: StripeObject, expectedId: string): void {
+  const recurring = asObject(price["recurring"]);
+  const metadata = asObject(price["metadata"]);
+  const tiers = objectArray(price["tiers"]);
+  const firstTier = tiers[0] ?? {};
+  const extraTier = tiers[1] ?? {};
+  const valid =
+    text(price["id"]) === expectedId &&
+    price["active"] !== false &&
+    text(price["currency"])?.toUpperCase() === FINANCE_FIXED_PLAN_CURRENCY &&
+    text(price["billing_scheme"]) === "tiered" &&
+    text(price["tiers_mode"]) === "graduated" &&
+    text(price["lookup_key"]) === FIXED_PRICE_LOOKUP_KEY &&
+    text(metadata["vayada_plan"]) === "fixed" &&
+    text(recurring["interval"]) === "day" &&
+    Number(recurring["interval_count"]) === FINANCE_FIXED_PLAN_INTERVAL_DAYS &&
+    Number(firstTier["up_to"]) === 1 &&
+    Number(firstTier["unit_amount"]) === FINANCE_FIXED_PLAN_BASE_AMOUNT_MINOR &&
+    (extraTier["up_to"] === null || text(extraTier["up_to"]) === "inf") &&
+    Number(extraTier["unit_amount"]) === FINANCE_FIXED_PLAN_EXTRA_ROOM_AMOUNT_MINOR;
+  if (!valid) {
+    throw new Error("Stripe Fixed Plan Price does not match the canonical Vayada billing terms.");
+  }
 }
 
 function subscriptionSnapshot(

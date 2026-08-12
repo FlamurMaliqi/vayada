@@ -112,6 +112,14 @@ function commandMetadata(prefix: string): { commandId: string; idempotencyKey: s
   return { commandId, idempotencyKey: commandId };
 }
 
+function bookingLifecycleCommand(
+  action: "accept" | "mark-paid",
+  guestBookingId: string,
+): { commandId: string; idempotencyKey: string } {
+  const commandId = `pms.booking.${action}:${encodeURIComponent(guestBookingId)}:v1`;
+  return { commandId, idempotencyKey: commandId };
+}
+
 function bookingChangeDecisionCommand(
   decision: "accept" | "decline",
   guestBookingId: string,
@@ -252,6 +260,8 @@ type PmsOperationalReservation = {
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsOperationsMoney; balanceAmount: PmsOperationsMoney };
+  payment?: { method: string | null; status: string };
+  hostResponseDeadlineAt?: string | null;
 };
 
 type PmsOperationsListResponse<T> = {
@@ -511,8 +521,10 @@ export const bookingsService = {
     }>,
   ) => unsupportedPmsNextStackFeature<Booking>("Booking detail updates"),
 
-  updateStatus: (_id: string, _status: "confirmed" | "cancelled") =>
-    unsupportedPmsNextStackFeature<Booking>("Booking confirmation or cancellation"),
+  updateStatus: (id: string, status: "confirmed" | "cancelled") =>
+    status === "confirmed"
+      ? bookingsService.acceptBooking(id)
+      : unsupportedPmsNextStackFeature<Booking>("Booking cancellation"),
 
   completeCheckIn: async (
     id: string,
@@ -596,12 +608,26 @@ export const bookingsService = {
     return refreshBooking(id);
   },
 
-  markPaid: (_id: string) => unsupportedPmsNextStackFeature<Booking>("Booking payment marking"),
+  markPaid: async (id: string) => {
+    await pmsOperationsClient.post<PmsOperationsCommandResponse>(
+      await reservationEndpoint(id, "/mark-paid"),
+      bookingLifecycleCommand("mark-paid", id),
+      pmsOperationsRequestOptions,
+    );
+    return refreshBooking(id);
+  },
 
   addArrivalCharge: (_id: string, _amount: number, _description?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Arrival charges"),
 
-  acceptBooking: (_id: string) => unsupportedPmsNextStackFeature<Booking>("Booking acceptance"),
+  acceptBooking: async (id: string) => {
+    await pmsOperationsClient.post<PmsOperationsCommandResponse>(
+      await reservationEndpoint(id, "/accept"),
+      bookingLifecycleCommand("accept", id),
+      pmsOperationsRequestOptions,
+    );
+    return refreshBooking(id);
+  },
 
   rejectBooking: (_id: string, _reason?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Booking rejection"),
@@ -925,12 +951,12 @@ function toBooking(
       position: assignment.position,
     })),
     channel: primaryAssignment?.channel ?? reservationSource(reservation.source),
-    paymentMethod: null,
-    paymentStatus: null,
+    paymentMethod: reservation.payment?.method ?? null,
+    paymentStatus: reservation.payment?.status ?? null,
     checkInPendingFlags: reservation.checkin.pendingFlags,
     checkedInAt: reservation.checkin.completedAt,
     checkedOutAt: reservation.checkout.completedAt,
-    hostResponseDeadline: null,
+    hostResponseDeadline: reservation.hostResponseDeadlineAt ?? null,
     platformFeeAmount: null,
     affiliateCommissionAmount: null,
     propertyPayoutAmount: null,
@@ -1004,6 +1030,8 @@ function reservationSource(source: PmsOperationalReservation["source"]): string 
 function toBookingStatus(status: string): Booking["status"] {
   switch (status) {
     case "pending":
+    case "pending_payment":
+      return "pending";
     case "confirmed":
     case "checked_in":
     case "in_house":

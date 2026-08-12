@@ -466,7 +466,7 @@ function adaptiveSetupStatus(
           planRevision: "plan-1",
           tasks: hotelOperationsTasks(selectedPropertyId),
           recommendedTaskId: null,
-          ownerProgress: { complete: 5, total: 5 },
+          ownerProgress: { complete: 6, total: 6 },
           launchReadiness: {
             operationsUse: "ready",
             directBookingPublish: "ready",
@@ -501,6 +501,7 @@ function hotelOperationsTasks(propertyId: string) {
       "booking.guest_settings_policies",
       propertyId,
     ),
+    setupTask("billing_plan", "hotel_operations", "finance", "finance.billing_plan", propertyId),
     setupTask("payment", "hotel_operations", "finance", "finance.payment", propertyId),
     setupTask(
       "direct_booking_publication",

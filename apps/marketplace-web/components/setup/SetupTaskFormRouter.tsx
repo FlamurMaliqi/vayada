@@ -4,6 +4,7 @@ import type { SharedSetupTaskFormContext } from "@vayada/product-onboarding";
 
 import { MarketplaceSetupTaskForm } from "./MarketplaceSetupTaskForm";
 import { DirectBookingPublicationForm } from "./operations/DirectBookingPublicationForm";
+import { BillingPlanSetupForm } from "./operations/BillingPlanSetupForm";
 import { GuestSettingsPoliciesForm } from "./operations/GuestSettingsPoliciesForm";
 import { PaymentSetupForm } from "./operations/PaymentSetupForm";
 import { RoomsRatesAvailabilityForm } from "./operations/RoomsRatesAvailabilityForm";
@@ -33,6 +34,7 @@ export function SetupTaskFormRouter({
   if (
     task.taskId === "rooms_rates_availability" ||
     task.taskId === "guest_settings_policies" ||
+    task.taskId === "billing_plan" ||
     task.taskId === "payment" ||
     task.taskId === "direct_booking_publication"
   ) {
@@ -49,6 +51,14 @@ export function SetupTaskFormRouter({
       case "guest_settings_policies":
         return (
           <GuestSettingsPoliciesForm
+            {...props}
+            key={`${propertyId}:${task.taskId}:${task.sourceRevision}`}
+            taskComplete={task.readiness === "complete"}
+          />
+        );
+      case "billing_plan":
+        return (
+          <BillingPlanSetupForm
             {...props}
             key={`${propertyId}:${task.taskId}:${task.sourceRevision}`}
             taskComplete={task.readiness === "complete"}

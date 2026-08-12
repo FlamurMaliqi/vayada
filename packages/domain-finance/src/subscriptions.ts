@@ -69,6 +69,12 @@ export type ScheduleCommissionPlanResult = {
   planStatus: FinancePlanStatusReadModel;
 };
 
+export type SelectCommissionPlanCommand = FinanceSubscriptionCommandContext;
+
+export type SelectCommissionPlanResult = {
+  planStatus: FinancePlanStatusReadModel;
+};
+
 export type FinanceSubscriptionCommandError = {
   statusCode: 400 | 404 | 409 | 502 | 503;
   code:
@@ -92,6 +98,9 @@ export type FinanceSubscriptionService = {
   createFixedPlanCheckout(
     command: CreateFixedPlanCheckoutCommand,
   ): Promise<FinanceSubscriptionCommandResult<CreateFixedPlanCheckoutResult>>;
+  selectCommissionPlan(
+    command: SelectCommissionPlanCommand,
+  ): Promise<FinanceSubscriptionCommandResult<SelectCommissionPlanResult>>;
   openCustomerPortal(
     command: OpenFinanceCustomerPortalCommand,
   ): Promise<FinanceSubscriptionCommandResult<OpenFinanceCustomerPortalResult>>;
@@ -130,6 +139,10 @@ export type StripeFinanceSubscriptionProvider = {
     checkoutSessionId: string;
     checkoutUrl: string;
   }>;
+  expireFixedPlanCheckout(input: {
+    checkoutSessionId: string;
+    idempotencyKey: string;
+  }): Promise<void>;
   createCustomerPortal(input: {
     customerId: string;
     returnUrl: string;

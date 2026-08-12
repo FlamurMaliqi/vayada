@@ -8,6 +8,7 @@ import {
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
   updateFinancePaymentSettings,
+  payAtHotelMethodsFromFinance,
 } from "@/services/api/financePaymentSettingsClient";
 import {
   createFixedPlanCheckout,
@@ -102,6 +103,22 @@ function toSettingsPaymentProvider(
 ): "stripe" | "xendit" | "vayada" {
   if (provider === "xendit" || provider === "vayada") return provider;
   return "stripe";
+}
+
+function paymentPolicyText(policy: unknown, key: string): string {
+  const value =
+    policy && typeof policy === "object" && !Array.isArray(policy)
+      ? (policy as Record<string, unknown>)[key]
+      : undefined;
+  return typeof value === "string" ? value : "";
+}
+
+function paymentPolicyNumber(policy: unknown, key: string, fallback: number): number {
+  const value =
+    policy && typeof policy === "object" && !Array.isArray(policy)
+      ? (policy as Record<string, unknown>)[key]
+      : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 const hasValidCoordinatePair = (latitude: number, longitude: number) =>
@@ -361,8 +378,11 @@ export default function SettingsPage() {
         setStripeAccountId(stripeAccountId);
         setStripeOnboarded(
           providerAccount.provider === "stripe" &&
-            (providerAccount.onboardingStatus === "completed" ||
-              (providerAccount.chargesEnabled && providerAccount.payoutsEnabled)),
+            providerAccount.status === "active" &&
+            providerAccount.onboardingStatus === "completed" &&
+            providerAccount.chargesEnabled &&
+            providerAccount.payoutsEnabled &&
+            providerAccount.capabilities.includes("card_payments"),
         );
         setPaymentProvider(toSettingsPaymentProvider(ps.paymentProvider));
         setXenditChannelCode("ID_BCA");
@@ -371,9 +391,22 @@ export default function SettingsPage() {
         setSettings((prev) => ({
           ...prev,
           pay_at_property_enabled: ps.acceptedMethods.includes("pay_at_property"),
+          pay_at_hotel_methods: payAtHotelMethodsFromFinance(ps.acceptedMethods),
           online_card_payment:
             ps.acceptedMethods.includes("card") || ps.acceptedMethods.includes("xendit"),
           bank_transfer: ps.acceptedMethods.includes("bank_transfer"),
+          paypal_enabled: ps.acceptedMethods.includes("paypal"),
+          paypal_email: paymentPolicyText(ps.depositPolicy, "paypalEmail"),
+          paypal_payment_window_hours: paymentPolicyNumber(
+            ps.depositPolicy,
+            "paypalPaymentWindowHours",
+            24,
+          ),
+          payout_bank_name: paymentPolicyText(ps.depositPolicy, "bankName"),
+          payout_account_holder: paymentPolicyText(ps.depositPolicy, "accountHolder"),
+          payout_account_type: "account_number",
+          payout_account_number: paymentPolicyText(ps.depositPolicy, "accountNumber"),
+          payout_swift: paymentPolicyText(ps.depositPolicy, "bicSwift"),
         }));
         setPaymentSettingsLoaded(true);
       })
@@ -386,11 +419,18 @@ export default function SettingsPage() {
 
   const handleCreateStripeAccount = async () => {
     if (!connectEmail) return;
+    const stripeTab = window.open("about:blank", "vayada-stripe-connect");
+    if (!stripeTab) {
+      setPaymentError("Allow pop-ups to continue to Stripe setup.");
+      return;
+    }
+    stripeTab.opener = null;
     setCreatingAccount(true);
     setPaymentError("");
     try {
       const hotelId = readBookingHotelId(settings);
       if (!hotelId) {
+        stripeTab.close();
         setPaymentError("Select a hotel before creating a Stripe account.");
         return;
       }
@@ -402,8 +442,9 @@ export default function SettingsPage() {
         commandPrefix: `settings-stripe-account-${hotelId}`,
       });
       setStripeAccountId(result.providerAccountId);
-      window.open(result.onboardingUrl, "_blank");
+      stripeTab.location.assign(result.onboardingUrl);
     } catch (err: unknown) {
+      stripeTab.close();
       const msg =
         err instanceof TypeError
           ? t("settings.billing.errorPaymentServerUnreachable")
@@ -415,9 +456,16 @@ export default function SettingsPage() {
   };
 
   const handleOnboarding = async () => {
+    const stripeTab = window.open("about:blank", "vayada-stripe-connect");
+    if (!stripeTab) {
+      setPaymentError("Allow pop-ups to continue to Stripe setup.");
+      return;
+    }
+    stripeTab.opener = null;
     try {
       const hotelId = readBookingHotelId(settings);
       if (!hotelId || !stripeAccountId) {
+        stripeTab.close();
         setPaymentError("Select a hotel and create a Stripe account before onboarding.");
         return;
       }
@@ -427,8 +475,9 @@ export default function SettingsPage() {
         providerAccountId: stripeAccountId,
         commandPrefix: `settings-stripe-onboarding-${hotelId}`,
       });
-      window.open(link.onboardingUrl, "_blank");
+      stripeTab.location.assign(link.onboardingUrl);
     } catch (err: unknown) {
+      stripeTab.close();
       setPaymentError(errorMessage(err, t("settings.billing.errorOnboardingLink")));
     }
   };
@@ -446,8 +495,8 @@ export default function SettingsPage() {
         fail("Payment settings did not load. Refresh before saving payments.");
         return false;
       }
-      if (paymentProvider === "xendit") {
-        fail("Xendit account details are not saved by this payment settings flow yet.");
+      if (paymentProvider === "xendit" || paymentProvider === "vayada") {
+        fail(`${paymentProvider === "xendit" ? "Xendit" : "vayada Payments"} is coming soon.`);
         return false;
       }
       const hotelId = readBookingHotelId(settings);
@@ -463,6 +512,9 @@ export default function SettingsPage() {
           payAtHotelMethods: settings.pay_at_hotel_methods,
           onlineCardPayment: settings.online_card_payment ?? false,
           bankTransfer: settings.bank_transfer ?? false,
+          paypalEnabled: settings.paypal_enabled ?? false,
+          paypalEmail: settings.paypal_email,
+          paypalPaymentWindowHours: settings.paypal_payment_window_hours,
           payoutAccountHolder: settings.payout_account_holder,
           payoutAccountType: settings.payout_account_type,
           payoutIban: settings.payout_iban,
@@ -1780,8 +1832,7 @@ export default function SettingsPage() {
                         className="w-full rounded-lg border border-gray-200 px-3 py-2 text-[12px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
                       />
                       <p className="mt-1 text-[10px] text-gray-500">
-                        Bookings will be auto-cancelled if PayPal payment isn&apos;t confirmed
-                        within this window.
+                        Guests are asked to pay within this window. Confirm receipt manually in PMS.
                       </p>
                     </div>
                   </div>
@@ -2223,8 +2274,8 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
                   <button
                     type="button"
-                    onClick={() => setPaymentProvider("vayada")}
-                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left ${
+                    disabled
+                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left opacity-55 cursor-not-allowed ${
                       paymentProvider === "vayada"
                         ? "border-primary-500 bg-primary-50/30"
                         : "border-gray-200 hover:border-gray-300"
@@ -2293,8 +2344,8 @@ export default function SettingsPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setPaymentProvider("xendit")}
-                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left ${
+                    disabled
+                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left opacity-55 cursor-not-allowed ${
                       paymentProvider === "xendit"
                         ? "border-primary-500 bg-primary-50/30"
                         : "border-gray-200 hover:border-gray-300"
@@ -2331,18 +2382,11 @@ export default function SettingsPage() {
                 {/* Provider-specific content */}
                 {paymentProvider === "vayada" ? (
                   <div className="space-y-3">
-                    <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
-                      <p className="text-[13px] text-green-800 font-medium">
-                        {t("settings.billing.vayadaNoSetupTitle")}
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                      <p className="text-[13px] text-amber-900 font-medium">Coming soon</p>
+                      <p className="text-[12px] text-amber-800 mt-1">
+                        vayada Payments is not available in target checkout yet.
                       </p>
-                      <p className="text-[12px] text-green-700 mt-1">
-                        {t("settings.billing.vayadaNoSetupDesc")}
-                      </p>
-                    </div>
-                    <div className="flex justify-end pt-2">
-                      <SaveButton onClick={savePaymentProviderSettings} saving={savingPayment}>
-                        {t("common.save")}
-                      </SaveButton>
                     </div>
                   </div>
                 ) : paymentProvider === "xendit" ? (
