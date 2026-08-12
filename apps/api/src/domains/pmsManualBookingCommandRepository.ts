@@ -75,6 +75,9 @@ export function createPgPmsManualBookingCommandRepository(config: {
           acceptedAt,
         });
         assertPersistableTotal(preview.grandTotal.amountDecimal);
+        const attribution = config.dependencies.attribution.resolveManualAttribution({
+          directSource: command.directSource,
+        });
         const guestBookingId = randomId();
         const bookingReference = publicReference(guestBookingId);
         const accepted = await config.dependencies.booking.persistBookingFacts({
@@ -83,19 +86,13 @@ export function createPgPmsManualBookingCommandRepository(config: {
           preview,
           guestBookingId,
           bookingReference,
+          attribution,
         });
         await config.dependencies.operations.persistOperationalFacts({
           transaction,
           command,
           rooms,
           guestBookingId,
-        });
-        await config.dependencies.attribution.recordManualAttribution({
-          transaction,
-          propertyId: command.propertyId,
-          guestBookingId,
-          bookingChannel: "direct",
-          directSource: command.directSource,
         });
         await config.dependencies.nightlyEvidence.appendExactNightlyEvidence({
           transaction,
