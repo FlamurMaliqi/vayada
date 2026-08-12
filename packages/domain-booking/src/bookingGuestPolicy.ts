@@ -5,6 +5,7 @@ import type { BookingPricingSourceFingerprint } from "./bookingPricingEvidence.j
 
 export const BOOKING_GUEST_POLICY_CONTRACT_VERSION = "booking-guest-policy.v1" as const;
 export const BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE = "guest_policy_revision" as const;
+export const BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION = "guest-policy:absent" as const;
 export const BOOKING_GUEST_POLICY_CHANGED_EVENT_TYPE = "booking.guest_policy.changed" as const;
 export const BOOKING_GUEST_POLICY_OUTBOX_DESTINATION = "hotel-catalog.public-policy" as const;
 export const BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES = Object.freeze([
@@ -28,8 +29,18 @@ export type BookingGuestPolicySourceRevision = Readonly<
   SourceEntityRevision & {
     ownerDomain: "booking";
     entityType: typeof BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE;
+    revision: `guest-policy:${number}`;
   }
 >;
+export type BookingGuestPolicyAbsentSourceRevision = Readonly<
+  SourceEntityRevision & {
+    ownerDomain: "booking";
+    entityType: typeof BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE;
+    revision: typeof BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION;
+  }
+>;
+export type BookingGuestPolicyCurrentSourceRevision =
+  BookingGuestPolicySourceRevision | BookingGuestPolicyAbsentSourceRevision;
 
 export type BookingGuestPolicyChoices = Readonly<{
   defaultGuestLanguage: BookingGuestLanguage;
@@ -175,6 +186,58 @@ export function parseBookingGuestPolicyHash(value: unknown): BookingGuestPolicyH
     : null;
 }
 
+export function parseBookingGuestPolicyCatalogProfileEvidenceResult(
+  value: unknown,
+  propertyId: string,
+): BookingGuestPolicyCatalogProfileEvidenceResult | null {
+  if (!uuid(propertyId) || !exact(value, ["outcome", ...catalogResultKeys(value)])) return null;
+  if (value.outcome === "malformed") return Object.freeze({ outcome: "malformed" });
+  if (value.outcome === "unavailable") {
+    return value.errorSource === "provider" || value.errorSource === "system"
+      ? Object.freeze({ outcome: "unavailable", errorSource: value.errorSource })
+      : null;
+  }
+  let evidence: Record<string, unknown> | null = null;
+  let sourceValue: unknown;
+  if (value.outcome === "available") {
+    if (!exact(value.evidence, ["source", "timeZone"])) return null;
+    evidence = value.evidence;
+    sourceValue = evidence.source;
+  } else {
+    sourceValue = value.source;
+  }
+  if (
+    (value.outcome !== "available" &&
+      value.outcome !== "timezone_missing" &&
+      value.outcome !== "timezone_invalid") ||
+    !exact(sourceValue, ["ownerDomain", "entityType", "entityId", "revision"]) ||
+    sourceValue.ownerDomain !== "hotel_catalog" ||
+    sourceValue.entityType !== "property_profile" ||
+    sourceValue.entityId !== propertyId.toLowerCase() ||
+    typeof sourceValue.revision !== "string" ||
+    !/^profile:[1-9][0-9]*$/.test(sourceValue.revision)
+  )
+    return null;
+  const source = Object.freeze({
+    ownerDomain: "hotel_catalog" as const,
+    entityType: "property_profile" as const,
+    entityId: sourceValue.entityId,
+    revision: sourceValue.revision,
+  });
+  if (!evidence) {
+    if (value.outcome === "timezone_missing")
+      return Object.freeze({ outcome: "timezone_missing", source });
+    if (value.outcome === "timezone_invalid")
+      return Object.freeze({ outcome: "timezone_invalid", source });
+    return null;
+  }
+  if (typeof evidence.timeZone !== "string" || !timeZone(evidence.timeZone)) return null;
+  return deepFreeze({
+    outcome: "available",
+    evidence: { source, timeZone: evidence.timeZone },
+  });
+}
+
 export function createBookingGuestPolicySourceRevision(
   propertyId: string,
   revision: number,
@@ -190,6 +253,45 @@ export function createBookingGuestPolicySourceRevision(
   });
 }
 
+export function createBookingGuestPolicyAbsentSourceRevision(
+  propertyId: string,
+): BookingGuestPolicyAbsentSourceRevision {
+  if (!uuid(propertyId)) {
+    throw new TypeError("Booking guest-policy absent source revision is invalid");
+  }
+  return Object.freeze({
+    ownerDomain: "booking",
+    entityType: BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE,
+    entityId: propertyId.toLowerCase(),
+    revision: BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION,
+  });
+}
+
+export function parseBookingGuestPolicyCurrentSourceRevision(
+  value: unknown,
+  expectedPropertyId: string,
+): BookingGuestPolicyCurrentSourceRevision | null {
+  if (
+    !uuid(expectedPropertyId) ||
+    !exact(value, ["ownerDomain", "entityType", "entityId", "revision"]) ||
+    value.ownerDomain !== "booking" ||
+    value.entityType !== BOOKING_GUEST_POLICY_SOURCE_ENTITY_TYPE ||
+    typeof value.entityId !== "string" ||
+    value.entityId !== expectedPropertyId.toLowerCase() ||
+    typeof value.revision !== "string"
+  )
+    return null;
+  if (value.revision === BOOKING_GUEST_POLICY_ABSENT_SOURCE_REVISION) {
+    return createBookingGuestPolicyAbsentSourceRevision(expectedPropertyId);
+  }
+  const match = /^guest-policy:([1-9][0-9]*)$/.exec(value.revision);
+  if (!match) return null;
+  const revision = Number(match[1]);
+  return positiveRevision(revision)
+    ? createBookingGuestPolicySourceRevision(expectedPropertyId, revision)
+    : null;
+}
+
 function age(value: unknown, required: boolean): boolean {
   return value === null
     ? !required
@@ -198,6 +300,25 @@ function age(value: unknown, required: boolean): boolean {
 
 function localTime(value: unknown): value is string {
   return typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function catalogResultKeys(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const outcome = Object.getOwnPropertyDescriptor(value, "outcome")?.value;
+  if (outcome === "malformed") return [];
+  if (outcome === "unavailable") return ["errorSource"];
+  if (outcome === "available") return ["evidence"];
+  if (outcome === "timezone_missing" || outcome === "timezone_invalid") return ["source"];
+  return [];
+}
+
+function timeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format();
+    return value.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function positiveRevision(value: unknown): value is number {

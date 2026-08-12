@@ -10,6 +10,7 @@ import {
   type PublicBookabilityProfileProjection,
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
+import type { BillingConfigReadModel, BillingConfigReadPort } from "@vayada/domain-finance";
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
@@ -1070,6 +1071,8 @@ type TargetCheckoutConfigRow = QueryResultRow & {
   phoneRequired: boolean | null;
   adultAgeThreshold: number | null;
   childrenEnabled: boolean | null;
+  termsText: string | null;
+  cancellationPolicyText: string | null;
   paymentsEnabled: boolean | null;
   acceptedMethods: string[] | null;
   depositPolicy: unknown;
@@ -1192,6 +1195,7 @@ type TargetPaymentSettingsRow = QueryResultRow & {
 type PgTargetBookingWebCheckoutAdapterConfig = {
   connectionString: string;
   inventoryReservationPort: DirectBookingInventoryReservationPort;
+  billingConfigReadPortFactory?: (executor: Pick<pg.PoolClient, "query">) => BillingConfigReadPort;
   max?: number;
   pool?: pg.Pool;
 };
@@ -1495,6 +1499,11 @@ export function createTargetBookingWebCheckoutAdapter(
           request,
           context.occurredAt,
         );
+        const billingConfigReadPort = config.billingConfigReadPortFactory?.(client);
+        const billingConfig = await billingConfigReadPort?.getBillingConfig(property.propertyId);
+        if (billingConfigReadPort && !billingConfig) {
+          throw createHttpError(409, "Finance billing configuration is not available.");
+        }
         resolveTargetCheckoutAmountSnapshot(request, quote);
         const booking = await createTargetGuestBooking(
           client,
@@ -1504,6 +1513,7 @@ export function createTargetBookingWebCheckoutAdapter(
           context,
           quote,
           guestPhone,
+          billingConfig ?? null,
         );
         await enqueueBankTransferReservedPendingPaymentEmail(
           client,
@@ -1886,7 +1896,6 @@ async function resolveTargetCheckoutProperty(
      WHERE s.slug = $1
        AND s.purpose = 'canonical'
        AND s.status = 'active'
-       AND p.profile_status = 'complete'
        AND profile.public_visibility = 'public_safe'
        AND profile.profile_status = 'public'
        AND (profile.expires_at IS NULL OR profile.expires_at > now())
@@ -1945,6 +1954,8 @@ async function loadTargetCheckoutConfig(
        bs.phone_required AS "phoneRequired",
        bs.adult_age_threshold AS "adultAgeThreshold",
        bs.children_enabled AS "childrenEnabled",
+       policy.terms_and_conditions AS "termsText",
+       policy.cancellation_summary AS "cancellationPolicyText",
        fs.payments_enabled AS "paymentsEnabled",
        fs.accepted_methods AS "acceptedMethods",
        fs.deposit_policy AS "depositPolicy",
@@ -1952,6 +1963,7 @@ async function loadTargetCheckoutConfig(
        fs.requires_manual_review AS "requiresManualReview"
      FROM hotel_catalog.properties p
      LEFT JOIN booking.booking_settings bs ON bs.property_id = p.id
+     LEFT JOIN hotel_catalog.property_policy_summaries policy ON policy.property_id = p.id
      LEFT JOIN finance.payment_settings fs ON fs.property_id = p.id
      WHERE p.id = $1::uuid
      LIMIT 1`,
@@ -1984,6 +1996,8 @@ function serializeTargetCheckoutConfig(
     phoneRequired: row?.phoneRequired ?? true,
     adultAgeThreshold: row?.adultAgeThreshold ?? 18,
     childrenEnabled: row?.childrenEnabled ?? true,
+    termsText: row?.termsText ?? "",
+    cancellationPolicyText: row?.cancellationPolicyText ?? "",
     benefits: Array.isArray(row?.benefits) ? row?.benefits : [],
     cancellationSummary: stringValue(refundPolicy["summary"]),
     depositSummary: stringValue(depositPolicy["summary"]),
@@ -2552,6 +2566,7 @@ async function createTargetGuestBooking(
   context: BookingWebCheckoutCommandContext,
   quote: TargetCheckoutQuoteSnapshot,
   guestPhone: string | null,
+  billingConfig: BillingConfigReadModel | null,
 ): Promise<TargetBookingRow> {
   const { totalAmount, balanceAmount } = resolveTargetCheckoutAmountSnapshot(request, quote);
   const publicReference = targetPublicReference("B", [
@@ -2654,6 +2669,9 @@ async function createTargetGuestBooking(
            total_amount,
            balance_amount,
            booking_metadata,
+           billing_plan_snapshot,
+           commission_terms_snapshot,
+           finance_terms_captured_at,
            created_at,
            updated_at
          )
@@ -2674,6 +2692,9 @@ async function createTargetGuestBooking(
          $17::numeric,
          $18::numeric,
          $19::jsonb,
+         $30,
+         $31::jsonb,
+         $20::timestamptz,
          $20::timestamptz,
          $20::timestamptz
        FROM checkout
@@ -2817,6 +2838,17 @@ async function createTargetGuestBooking(
       stringField(request, "specialRequests"),
       JSON.stringify({ requestId: context.requestId, correlationId: context.correlationId }),
       quote.quoteSessionId,
+      billingConfig?.activePlan ?? "commission",
+      JSON.stringify(
+        billingConfig
+          ? {
+              bookingEngineFeePercent: billingConfig.bookingEngineFeePercent,
+              channelManagerFeePercent: billingConfig.channelManagerFeePercent,
+              affiliatePlatformFeePercent: billingConfig.affiliatePlatformFeePercent,
+              financeConfigUpdatedAt: billingConfig.updatedAt,
+            }
+          : {},
+      ),
     ],
   );
   const booking = result.rows[0];

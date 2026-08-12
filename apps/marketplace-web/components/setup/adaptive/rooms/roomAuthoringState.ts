@@ -6,7 +6,6 @@ import { parseDraftRoomId, parseRoomTypeFacts, type RoomTypeFacts } from "@vayad
 
 export const ROOM_NAME_MAX_LENGTH = 200;
 export const ROOM_DESCRIPTION_MAX_LENGTH = 5_000;
-export const ROOM_MEDIA_MAX_ITEMS = 20;
 export const ROOM_MEDIA_MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 export const ROOM_CATEGORIES = [

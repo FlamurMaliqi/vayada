@@ -4,6 +4,7 @@ import {
   FINANCE_BILLING_PLANS,
   FINANCE_PAYMENT_METHODS,
   FINANCE_ROUTE_CONTRACT_VERSION,
+  PROPERTY_FEATURE_LIMITS,
   buildManualPaymentProjectionJobIdempotencyKey,
   buildCheckoutChargeSettlementIdempotencyKey,
   buildUpdateAddOnPriceIdempotencyKey,
@@ -11,6 +12,7 @@ import {
   cancellationPolicyFromRefundPolicy,
   financeCommandIdempotencyKey,
   financeCommandTypes,
+  propertyFeatureLimitsFor,
   toFinancePaymentSettingsResponse,
   toPublicPaymentCapabilityProjection,
   type AddOnPricingReadPort,
@@ -57,6 +59,20 @@ describe("@vayada/domain-finance constants", () => {
   it("exports billing plans", () => {
     expect(FINANCE_BILLING_PLANS).toContain("fixed");
     expect(FINANCE_BILLING_PLANS).toContain("commission");
+  });
+
+  it("keeps property feature limits centralized by billing plan", () => {
+    expect(propertyFeatureLimitsFor("commission")).toEqual({
+      maxRoomPhotosPerType: 10,
+      maxAddons: 3,
+      guestContactAccess: "after_acceptance",
+    });
+    expect(propertyFeatureLimitsFor("fixed")).toEqual({
+      maxRoomPhotosPerType: 15,
+      maxAddons: 9,
+      guestContactAccess: "always",
+    });
+    expect(PROPERTY_FEATURE_LIMITS.commission.maxAddons).toBe(3);
   });
 
   it("exports payment methods that replace the booking_hotels flag columns", () => {
