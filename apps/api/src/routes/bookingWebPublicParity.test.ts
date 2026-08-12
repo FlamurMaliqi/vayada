@@ -1204,6 +1204,7 @@ describe("Booking Web public bootstrap parity", () => {
 
   it("exposes target checkout phone required settings", async () => {
     const calls: string[] = [];
+    let termsText: string | null = "Hotel Alpenrose booking terms.";
     const pool = {
       async query(text: string) {
         calls.push(text);
@@ -1225,7 +1226,7 @@ describe("Booking Web public bootstrap parity", () => {
                 propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
                 defaultCurrency: "EUR",
                 phoneRequired: false,
-                termsText: "Hotel Alpenrose booking terms.",
+                termsText,
                 cancellationPolicyText: "Free cancellation until seven days before arrival.",
                 paymentsEnabled: true,
                 acceptedMethods: [
@@ -1259,6 +1260,10 @@ describe("Booking Web public bootstrap parity", () => {
       paymentsEnabled: true,
       acceptedPaymentMethods: ["pay_at_property"],
       bankTransfer: false,
+    });
+    termsText = null;
+    await expect(adapter.getCheckoutConfig("hotel-alpenrose")).resolves.toMatchObject({
+      termsText: "",
     });
     expect(calls.find((call) => call.includes("FROM hotel_catalog.properties p"))).toContain(
       "hotel_catalog.property_policy_summaries",

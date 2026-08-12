@@ -459,7 +459,9 @@ describe("hotel operations setup client", () => {
       false,
     );
 
-    expect(seeded.termsAndConditions).toContain('direct agreement with Green Poya Resort ("Host")');
+    expect(seeded.termsAndConditions).toContain(
+      "direct agreement with us for our accommodation services",
+    );
     expect(revisited.termsAndConditions).toBe("");
     expect(mocks.patch).toHaveBeenCalledWith(
       "/api/booking/hotels/property-1/settings/property",

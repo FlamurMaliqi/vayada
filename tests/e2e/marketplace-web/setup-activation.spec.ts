@@ -724,7 +724,7 @@ test.describe("marketplace-web shared setup activation", () => {
       currentStep.getByRole("heading", { name: "Review guest settings and policies" }),
     ).toBeVisible();
     const terms = currentStep.getByRole("textbox", { name: "Terms & Conditions", exact: true });
-    await expect(terms).toHaveValue(/direct agreement with Hotel Alpenrose/);
+    await expect(terms).toHaveValue(/direct agreement with us for our accommodation services/);
     await expect(terms).toHaveAttribute(
       "placeholder",
       "Enter your Terms & Conditions. These are shown to guests before they confirm a booking.",

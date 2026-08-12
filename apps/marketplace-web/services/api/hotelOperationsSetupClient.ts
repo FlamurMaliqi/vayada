@@ -192,10 +192,7 @@ export const hotelOperationsSetupApi = {
       checkInTime: stringValue(response.check_in_time, "15:00"),
       checkOutTime: stringValue(response.check_out_time, "11:00"),
       termsAndConditions:
-        stringValue(response.terms_text) ||
-        (seedDefaultTerms
-          ? defaultTermsAndConditions(stringValue(response.property_name, "the property"))
-          : ""),
+        stringValue(response.terms_text) || (seedDefaultTerms ? defaultTermsAndConditions() : ""),
       cancellationPolicyText: stringValue(response.cancellation_policy_text),
     };
   },
@@ -387,9 +384,8 @@ export const hotelOperationsSetupApi = {
     ),
 };
 
-function defaultTermsAndConditions(propertyName: string): string {
-  const hostName = propertyName.trim() || "the property";
-  return `These Terms & Conditions govern your booking made through the vayada platform ("vayada"). By completing this booking, you ("Guest") enter into a direct agreement with ${hostName} ("Host") for the accommodation services. vayada acts solely as an intermediary platform that facilitates bookings and payment processing between the Guest and the Host. vayada is not a party to the accommodation agreement and is not the provider of the accommodation services.
+function defaultTermsAndConditions(): string {
+  return `These Terms & Conditions govern your booking made through the vayada platform ("vayada"). By completing this booking, you ("Guest") enter into a direct agreement with us for our accommodation services. vayada acts solely as an intermediary platform that facilitates bookings and payment processing between you and us. vayada is not a party to the accommodation agreement and is not the provider of our accommodation services.
 
 1. Booking Confirmation
 Your booking is confirmed immediately upon submission and successful payment. You will receive a confirmation email with your booking details shortly after completing checkout. Your card will be charged the full booking amount shown at checkout.`;
