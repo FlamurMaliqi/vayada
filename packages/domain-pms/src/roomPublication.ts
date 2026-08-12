@@ -46,6 +46,12 @@ export type AssignRoomTypeMediaCommand = {
 export type AssignRoomTypeMediaError =
   | { readonly code: "setup_scope_unavailable" | "room_type_not_found" }
   | { readonly code: "room_media_revision_conflict"; readonly currentRevision: number }
+  | {
+      readonly code: "room_media_plan_limit_reached";
+      readonly plan: "commission" | "fixed";
+      readonly currentCount: number;
+      readonly maxAllowed: number;
+    }
   | { readonly code: "idempotency_key_conflict" | "command_in_progress" }
   | {
       readonly code: "media_not_found" | "media_not_authorized" | "media_not_ready";
@@ -521,6 +527,19 @@ function parseMediaError(value: unknown): AssignRoomTypeMediaError | null {
       ? Object.freeze({ code: value["code"], currentRevision: value["currentRevision"] })
       : null;
   }
+  if (value["code"] === "room_media_plan_limit_reached") {
+    return isExactDataRecord(value, ["code", "plan", "currentCount", "maxAllowed"]) &&
+      ["commission", "fixed"].includes(value["plan"] as string) &&
+      isNonNegativeCount(value["currentCount"]) &&
+      isNonNegativeCount(value["maxAllowed"])
+      ? Object.freeze({
+          code: value["code"],
+          plan: value["plan"] as "commission" | "fixed",
+          currentCount: value["currentCount"],
+          maxAllowed: value["maxAllowed"],
+        })
+      : null;
+  }
   if (
     !["media_not_found", "media_not_authorized", "media_not_ready"].includes(value["code"]) ||
     !isExactDataRecord(value, ["code", "mediaObjectIds"]) ||
@@ -623,6 +642,10 @@ function isPositiveRevision(value: unknown): value is number {
   return (
     Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= 2_147_483_647
   );
+}
+
+function isNonNegativeCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 20;
 }
 
 function isText(value: unknown, maximum: number): value is string {

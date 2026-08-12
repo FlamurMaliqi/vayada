@@ -5,7 +5,10 @@ import type {
   PlatformMediaObjectRecord,
   PlatformMediaSessionRecord,
 } from "../routes/platformMedia.js";
-import { PlatformMediaTargetInvalidError } from "../routes/platformMedia.js";
+import {
+  PlatformMediaPlanLimitError,
+  PlatformMediaTargetInvalidError,
+} from "../routes/platformMedia.js";
 import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
 
 describe("PostgreSQL platform media repository", () => {
@@ -133,6 +136,20 @@ describe("PostgreSQL platform media repository", () => {
       } as never),
     ).rejects.toThrow("Property media requires a canonical property target");
     expect(database.queries).toEqual([]);
+  });
+
+  it("blocks room-media upload sessions at the commission plan limit", async () => {
+    const database = createFakeDatabase();
+    database.setRoomMediaCount(10);
+
+    await expect(
+      createSession(repositoryFor(database.pool), "pms.room_type.media"),
+    ).rejects.toBeInstanceOf(PlatformMediaPlanLimitError);
+    expect(
+      database.clientQueries.some(({ text }) =>
+        text.includes("INSERT INTO platform.media_upload_sessions"),
+      ),
+    ).toBe(false);
   });
 
   it("rejects a persisted noncanonical property session during finalization", async () => {
@@ -829,6 +846,7 @@ function createFakeDatabase(failAuditAction?: string) {
   let committed = emptyDatabaseState();
   let transaction: FakeDatabaseState | null = null;
   let roomTargetExists = true;
+  let roomMediaCount = 0;
   let commitMode: "normal" | "apply_then_throw" | "throw_before_apply" = "normal";
   const queries: QueryCall[] = [];
   const poolQueries: QueryCall[] = [];
@@ -841,7 +859,14 @@ function createFakeDatabase(failAuditAction?: string) {
     const call = { text, values };
     queries.push(call);
     poolQueries.push(call);
-    return executeFakeQuery(committed, text, values, failAuditActions, roomTargetExists);
+    return executeFakeQuery(
+      committed,
+      text,
+      values,
+      failAuditActions,
+      roomTargetExists,
+      roomMediaCount,
+    );
   });
 
   const clientQuery = vi.fn(async (text: string, values?: readonly unknown[]) => {
@@ -877,6 +902,7 @@ function createFakeDatabase(failAuditAction?: string) {
       values,
       failAuditActions,
       roomTargetExists,
+      roomMediaCount,
     );
   });
 
@@ -893,6 +919,9 @@ function createFakeDatabase(failAuditAction?: string) {
     failAuditActions,
     setRoomTargetExists(value: boolean) {
       roomTargetExists = value;
+    },
+    setRoomMediaCount(value: number) {
+      roomMediaCount = value;
     },
     setCommitMode(value: "normal" | "apply_then_throw" | "throw_before_apply") {
       commitMode = value;
@@ -930,6 +959,7 @@ function executeFakeQuery(
   values: readonly unknown[] | undefined,
   failAuditActions: ReadonlySet<string>,
   roomTargetExists: boolean,
+  roomMediaCount: number,
 ) {
   if (
     text.includes("INSERT INTO platform.product_audit_events") &&
@@ -949,6 +979,12 @@ function executeFakeQuery(
   } else if (text.includes("FROM hotel_catalog.properties property")) {
     return String(values?.[0]) === PROPERTY_ID
       ? { rows: [{ propertyId: PROPERTY_ID }] }
+      : { rows: [] };
+  } else if (text.includes('AS "currentCount"') && text.includes("FROM pms.room_types room_type")) {
+    return roomTargetExists &&
+      String(values?.[0]) === PROPERTY_ID &&
+      String(values?.[1]) === ROOM_TYPE_ID
+      ? { rows: [{ currentCount: roomMediaCount }] }
       : { rows: [] };
   } else if (text.includes("FROM pms.room_types room_type")) {
     return roomTargetExists &&
